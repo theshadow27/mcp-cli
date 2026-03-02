@@ -7,7 +7,7 @@
  */
 
 import type { GetLogsResult } from "@mcp-cli/core";
-import { ipcCall } from "../ipc-client.js";
+import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
 export async function cmdLogs(args: string[]): Promise<void> {

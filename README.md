@@ -1,22 +1,29 @@
 # mcp-cli
 
-Call MCP server tools from the command line — zero context overhead.
+**MCP tools from the command line. Zero context overhead.**
 
-`mcp-cli` gives you a fast CLI (`mcp`) and a background daemon (`mcpd`) for calling any [Model Context Protocol](https://modelcontextprotocol.io) server. It reads your existing Claude Code config (`~/.claude.json`, `.mcp.json`) so there's nothing to set up.
+MCP servers like Atlassian inject ~12,000 tokens into every Claude Code conversation — every message, every subagent. The `gh` CLI costs 0 tokens when unused.
+
+`mcp-cli` gives you the same MCP tools via Bash: discoverable, pipeable, composable, and invisible until needed.
+
+```bash
+$ mcp atlassian search '{"query":"sprint planning"}' | jq '.results[].title'
+"Q1 Sprint Planning"
+"Sprint Planning Template"
+"Sprint Planning Best Practices"
+
+$ mcp coralogix-server get_datetime '{}'
+2026-03-02T21:48:22.122294+00:00
+
+$ mcp grep confluence
+  getConfluencePage                atlassian  Get a Confluence page by page ID
+  searchConfluenceUsingCql         atlassian  Search content with CQL
+  createConfluencePage             atlassian  Create Confluence page
+  ...
+  14 tool(s)
+```
 
 ## Install
-
-**Homebrew** (macOS/Linux):
-
-```bash
-brew install theshadow27/mcp-cli/mcp-cli
-```
-
-**curl** (macOS/Linux):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/theshadow27/mcp-cli/main/scripts/install.sh | sh
-```
 
 **From source** (requires [Bun](https://bun.sh)):
 
@@ -24,63 +31,141 @@ curl -fsSL https://raw.githubusercontent.com/theshadow27/mcp-cli/main/scripts/in
 git clone https://github.com/theshadow27/mcp-cli.git
 cd mcp-cli
 bun install
-bun run build
-# binaries in dist/
+bun run build    # binaries in dist/
 ```
 
-## Quick Start
+## Zero Config
 
-```bash
-mcp ls                                    # list configured servers
-mcp ls atlassian                          # list tools on a server
-mcp info atlassian getJiraIssue           # show tool schema
-mcp grep confluence                       # search tools by name
-mcp call atlassian search '{"query":"sprint planning"}'  # call a tool
-```
+`mcp-cli` reads your existing Claude Code configuration — `~/.claude.json` and `.mcp.json`. If Claude Code can see a server, so can `mcp`.
+
+No extra setup. No duplicate config. Just works.
+
+You can also add servers in `~/.mcp-cli/servers.json` for standalone use.
 
 ## How It Works
 
 ```
 mcp call server tool '{...}'
-  │
-  ├─► mcpd (daemon)         auto-starts on first call
-  │     ├─► server-pool      manages persistent connections
-  │     ├─► auth             OAuth + macOS Keychain integration
-  │     └─► SQLite           caches tools, state, tokens
-  │
-  └─► stdout (JSON)          pipe to jq, scripts, etc.
+  |
+  +-> mcpd (daemon)         auto-starts on first call, stays alive 5min
+  |     +-> server-pool      persistent connections (stdio, SSE, HTTP)
+  |     +-> auth             OAuth/PKCE + macOS Keychain (reads Claude Code tokens)
+  |     +-> SQLite           tool cache, usage stats, auth tokens
+  |
+  +-> stdout (JSON)          pipe to jq, scripts, other tools
 ```
 
-The `mcp` CLI is a thin client that talks to `mcpd` over a Unix socket (`~/.mcp-cli/mcpd.sock`). The daemon manages server connections, authentication, and tool caching so every call after the first is fast.
-
-## Configuration
-
-Zero config needed — `mcp-cli` reads the same config files as Claude Code:
-
-- `~/.claude.json` — user-level MCP servers
-- `.mcp.json` — project-level MCP servers
-- `~/.mcp-cli/servers.json` — standalone server config (optional)
-
-## Claude Code Integration
-
-Add `mcp-cli` as a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) to reduce context window usage by ~12,000 tokens per MCP server. See [`skill/SKILL.md`](skill/SKILL.md) for setup.
+The `mcp` CLI is a thin client. The `mcpd` daemon manages connections, auth, and caching over a Unix socket. First call cold-starts the daemon (~2s); every call after that is instant.
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `mcp ls` | List configured servers |
-| `mcp ls <server>` | List tools for a server |
-| `mcp call <server> <tool> [json]` | Call a tool (JSON from arg, `@file`, or stdin) |
-| `mcp <server> <tool> [json]` | Shorthand for `call` |
-| `mcp info <server> <tool>` | Show tool schema |
-| `mcp grep <pattern>` | Search tools by name/description |
-| `mcp auth <server>` | Authenticate with an OAuth server |
-| `mcp config show` | Show resolved server config |
-| `mcp status` | Daemon status |
-| `mcp restart [server]` | Restart server connection(s) |
-| `mcp shutdown` | Stop the daemon |
-| `mcp --version` | Print version |
+### Discovery
+
+```bash
+mcp ls                              # list servers and their status
+mcp ls <server>                     # list tools on a server
+mcp info <server> <tool>            # show tool schema (TypeScript notation)
+mcp grep <pattern>                  # search tools across all servers
+```
+
+### Calling Tools
+
+```bash
+mcp call <server> <tool> [json]     # call a tool with inline JSON
+mcp call <server> <tool> @file.json # load args from a file
+echo '{"query":"test"}' | mcp call <server> <tool>  # pipe from stdin
+mcp <server> <tool> [json]          # shorthand (skip "call")
+```
+
+### Auth & Management
+
+```bash
+mcp auth <server>                   # trigger OAuth flow (opens browser)
+mcp config show                     # show resolved config + sources
+mcp config sources                  # list config file locations
+mcp status                          # daemon PID, uptime, server states
+mcp restart [server]                # reconnect server(s)
+mcp shutdown                        # stop the daemon
+mcp logs <server> [-f]              # view server stderr output
+```
+
+### Aliases
+
+Save multi-step workflows as TypeScript scripts:
+
+```bash
+mcp alias save sprint-board - <<'TS'
+const issues = await mcp.atlassian.searchJiraIssuesUsingJql({
+  cloudId: "abc-123",
+  jql: "sprint in openSprints() AND assignee = currentUser()",
+  fields: ["summary", "status", "priority"]
+});
+for (const issue of issues.issues) {
+  console.log(`${issue.key} [${issue.fields.status.name}] ${issue.fields.summary}`);
+}
+TS
+
+mcp run sprint-board
+# or just: mcp sprint-board
+```
+
+```bash
+mcp alias ls                        # list saved aliases
+mcp alias save <name> <@file | ->   # save a script
+mcp alias show <name>               # print source
+mcp alias edit <name>               # open in $EDITOR
+mcp alias rm <name>                 # delete
+mcp run <alias> [--key value ...]   # run with arguments
+```
+
+Alias scripts get a virtual `mcp-cli` module with:
+- `mcp` — proxy object: `mcp.<server>.<tool>(args)` calls tools through the daemon
+- `args` — parsed `--key value` pairs from the CLI
+- `file(path)` — read a file as string
+- `json(path)` — read and parse a JSON file
+
+### TUI
+
+```bash
+mcpctl                              # interactive dashboard
+# or: bun run packages/control/src/index.tsx
+```
+
+Navigate servers, view tool counts, trigger restarts, see connection states.
+
+## Claude Code Integration
+
+Add `mcp-cli` as a Claude Code skill to eliminate context bloat. Instead of injecting 31 Atlassian tool definitions (~12K tokens) into every conversation, Claude calls tools via Bash on demand — 0 tokens at rest.
+
+See [`skill/SKILL.md`](skill/SKILL.md) for the skill definition.
+
+## Architecture
+
+```
+packages/
+  core/      Shared types, IPC protocol, config types, env expansion
+  daemon/    mcpd — background daemon, server pool, auth, SQLite
+  command/   mcp — CLI entry point, output formatting, alias runner
+  control/   mcpctl — React/Ink TUI dashboard
+```
+
+- **Runtime:** [Bun](https://bun.sh) (build, test, compile, SQLite)
+- **Single prod dep:** `@modelcontextprotocol/sdk`
+- **Transports:** stdio, SSE, Streamable HTTP
+- **State:** `~/.mcp-cli/` — SQLite db, aliases, PID file, Unix socket
+
+## Development
+
+```bash
+bun install                  # install deps
+bun test                     # run tests
+bun typecheck                # TypeScript validation
+bun lint                     # biome lint + format
+bun run build                # compile binaries to dist/
+
+bun dev:daemon               # run daemon directly
+bun dev:mcp -- ls            # run CLI directly
+```
 
 ## License
 

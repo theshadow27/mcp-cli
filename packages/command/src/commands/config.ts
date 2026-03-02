@@ -3,7 +3,7 @@
  */
 
 import type { GetConfigResult } from "@mcp-cli/core";
-import { ipcCall } from "../ipc-client.js";
+import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;

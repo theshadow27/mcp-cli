@@ -91,7 +91,7 @@ export class IpcServer {
 
   private buffers = new WeakMap<object, string>();
 
-  private handleData(socket: { write(data: string): number }, data: Buffer): void {
+  private handleData(socket: { write(data: string): number; flush(): void }, data: Buffer): void {
     const prev = this.buffers.get(socket) ?? "";
     const text = prev + data.toString();
     const lines = text.split("\n");
@@ -106,7 +106,7 @@ export class IpcServer {
     }
   }
 
-  private handleLine(socket: { write(data: string): number }, line: string): void {
+  private handleLine(socket: { write(data: string): number; flush(): void }, line: string): void {
     this.onActivity();
 
     let request: IpcRequest;
@@ -117,21 +117,21 @@ export class IpcServer {
         id: "unknown",
         error: { code: IPC_ERROR.PARSE_ERROR, message: "Invalid JSON" },
       };
-      socket.write(encodeResponse(response));
+      writeAll(socket, encodeResponse(response));
       return;
     }
 
     this.dispatch(request).then(
       (result) => {
         const response: IpcResponse = { id: request.id, result };
-        socket.write(encodeResponse(response));
+        writeAll(socket, encodeResponse(response));
       },
       (err) => {
         const response: IpcResponse = {
           id: request.id,
           error: toIpcError(err),
         };
-        socket.write(encodeResponse(response));
+        writeAll(socket, encodeResponse(response));
       },
     );
   }
@@ -346,4 +346,18 @@ function toIpcError(err: unknown): IpcError {
     };
   }
   return { code: IPC_ERROR.INTERNAL_ERROR, message: String(err) };
+}
+
+/**
+ * Write a full message to a socket, handling partial writes.
+ * Bun's socket.write() may return fewer bytes than the payload for large messages.
+ * We must write the remainder and flush to ensure the client receives everything.
+ */
+function writeAll(socket: { write(data: string): number; flush(): void }, data: string): void {
+  let written = socket.write(data);
+  while (written < data.length) {
+    socket.flush();
+    written += socket.write(data.slice(written));
+  }
+  socket.flush();
 }

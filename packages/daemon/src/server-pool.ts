@@ -275,29 +275,43 @@ export class ServerPool {
     });
   }
 
-  /** List tools for a specific server (connects if needed) */
+  /** List tools for a specific server. Returns cached tools if available, connects only if no cache. */
   async listTools(serverName?: string): Promise<ToolInfo[]> {
     if (serverName) {
-      const conn = await this.ensureConnected(serverName);
-      return [...conn.tools.values()];
-    }
-    // List all — connect to all servers in parallel
-    const names = [...this.connections.keys()];
-    const settled = await Promise.allSettled(names.map((name) => this.ensureConnected(name)));
+      const conn = this.connections.get(serverName);
+      if (!conn) throw new Error(`Server "${serverName}" not found`);
 
+      // Return cached tools if we have any (from connect or SQLite)
+      if (conn.tools.size > 0) return [...conn.tools.values()];
+
+      // No cache — must connect to discover tools
+      const connected = await this.ensureConnected(serverName);
+      return [...connected.tools.values()];
+    }
+
+    // List all — return cached tools, connect only servers with no cache
     const results: ToolInfo[] = [];
-    const errors: string[] = [];
-    for (let i = 0; i < settled.length; i++) {
-      const outcome = settled[i];
-      if (outcome.status === "fulfilled") {
-        results.push(...outcome.value.tools.values());
+    const needConnect: string[] = [];
+
+    for (const [name, conn] of this.connections) {
+      if (conn.tools.size > 0) {
+        results.push(...conn.tools.values());
       } else {
-        errors.push(`${names[i]}: ${outcome.reason instanceof Error ? outcome.reason.message : outcome.reason}`);
+        needConnect.push(name);
       }
     }
-    if (errors.length > 0 && results.length === 0) {
-      throw new Error(`Failed to connect to any server:\n${errors.join("\n")}`);
+
+    if (needConnect.length > 0) {
+      const settled = await Promise.allSettled(needConnect.map((name) => this.ensureConnected(name)));
+      for (let i = 0; i < settled.length; i++) {
+        const outcome = settled[i];
+        if (outcome.status === "fulfilled") {
+          results.push(...outcome.value.tools.values());
+        }
+        // Silently skip connection failures — we already have tools from other servers
+      }
     }
+
     return results;
   }
 

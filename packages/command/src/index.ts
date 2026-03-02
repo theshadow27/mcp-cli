@@ -21,7 +21,7 @@ import { cmdAlias } from "./commands/alias.js";
 import { cmdConfig } from "./commands/config.js";
 import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
-import { ipcCall } from "./ipc-client.js";
+import { ipcCall } from "@mcp-cli/core";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
 
 async function main(): Promise<void> {
@@ -285,4 +285,4 @@ Examples:
   mcp run get-time`);
 }
 
-main();
+main().then(() => process.exit(0));

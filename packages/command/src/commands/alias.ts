@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
-import { ipcCall } from "../ipc-client.js";
+import { ipcCall } from "@mcp-cli/core";
 import { printAliasList, printError } from "../output.js";
 
 export async function cmdAlias(args: string[]): Promise<void> {

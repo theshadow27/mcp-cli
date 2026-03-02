@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "echo": {
+      "command": "bun",
+      "args": ["test/echo-server.ts"]
+    }
+  }
+}
