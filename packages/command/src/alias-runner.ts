@@ -9,7 +9,7 @@
  */
 
 import { plugin } from "bun";
-import { ipcCall } from "./ipc-client.js";
+import { ipcCall } from "@mcp-cli/core";
 
 type ToolFn = (args?: Record<string, unknown>) => Promise<unknown>;
 type ServerProxy = Record<string, ToolFn>;
@@ -55,7 +55,7 @@ function createMcpProxy(): McpProxy {
   });
 }
 
-function extractContent(result: unknown): unknown {
+export function extractContent(result: unknown): unknown {
   // MCP results: { content: [{type: "text", text: "..."}] }
   // Unwrap to actual content for ergonomic alias authoring
   if (result && typeof result === "object" && "content" in result) {

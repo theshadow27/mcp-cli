@@ -40,14 +40,19 @@ Where possible, verify the functionality works:
 
 Do NOT start the daemon or run live integration tests — focus on static verification and unit tests.
 
-### Step 4: Check for Tests
+### Step 4: Check for Tests — and Write Missing Ones
 
 Find test files (`*.spec.ts` or `*.test.ts`) that cover the described functionality. Assess:
 - Do tests exist for the core behaviors described in the issue?
 - Are the tests meaningful (not just smoke tests)?
 - Is coverage reasonable for the described scope?
 
-If tests are missing for core functionality, note this as a gap but don't block closing if the implementation is solid and existing tests do pass.
+**If tests are missing for core functionality, write them.** QA is responsible for ensuring the feature is covered before the issue is closed. This includes:
+- Unit tests for pure functions, parsers, and data transformations
+- Database CRUD tests for any new tables or methods
+- Tests for edge cases and error paths in the new code
+
+Follow existing test patterns in the codebase (bun:test, `*.spec.ts` files colocated with source). If a function needs to be exported to make it testable, export it. Keep tests focused and meaningful — don't pad with trivial assertions.
 
 ### Step 5: Run Tests
 
@@ -55,7 +60,7 @@ If tests are missing for core functionality, note this as a gap but don't block 
 bun test
 ```
 
-Run the full test suite. All tests must pass. If any fail, investigate and report.
+Run the full test suite. All tests — including any you just wrote — must pass. If any fail, fix them before proceeding.
 
 ### Step 6: Comment and Close
 
@@ -71,7 +76,7 @@ gh issue comment <number> --body "$(cat <<'EOF'
 <bullet list of files and what they implement, with line references>
 
 ### Test Coverage
-<bullet list of test files and what they verify>
+<bullet list of test files and what they verify — include any tests written during QA>
 
 ### Test Results
 <pass/fail summary from bun test>

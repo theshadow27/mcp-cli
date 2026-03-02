@@ -248,6 +248,271 @@ describe("StateDb", () => {
     });
   });
 
+  describe("aliases", () => {
+    test("saveAlias and listAliases round-trip", () => {
+      const db = createDb();
+      db.saveAlias("greet", "/tmp/greet.ts", "Say hello");
+      db.saveAlias("fetch", "/tmp/fetch.ts");
+
+      const aliases = db.listAliases();
+      expect(aliases).toHaveLength(2);
+      expect(aliases[0].name).toBe("fetch"); // ORDER BY name
+      expect(aliases[1].name).toBe("greet");
+      expect(aliases[1].description).toBe("Say hello");
+      expect(aliases[1].filePath).toBe("/tmp/greet.ts");
+      db.close();
+    });
+
+    test("getAlias returns alias by name", () => {
+      const db = createDb();
+      db.saveAlias("greet", "/tmp/greet.ts", "Say hello");
+
+      const alias = db.getAlias("greet");
+      expect(alias).toBeDefined();
+      expect(alias!.name).toBe("greet");
+      expect(alias!.description).toBe("Say hello");
+      expect(alias!.filePath).toBe("/tmp/greet.ts");
+      db.close();
+    });
+
+    test("getAlias returns undefined for unknown name", () => {
+      const db = createDb();
+      expect(db.getAlias("nope")).toBeUndefined();
+      db.close();
+    });
+
+    test("saveAlias upserts on conflict", () => {
+      const db = createDb();
+      db.saveAlias("greet", "/tmp/greet-v1.ts", "version 1");
+      db.saveAlias("greet", "/tmp/greet-v2.ts", "version 2");
+
+      const aliases = db.listAliases();
+      expect(aliases).toHaveLength(1);
+      expect(aliases[0].filePath).toBe("/tmp/greet-v2.ts");
+      expect(aliases[0].description).toBe("version 2");
+      db.close();
+    });
+
+    test("saveAlias with no description stores null", () => {
+      const db = createDb();
+      db.saveAlias("minimal", "/tmp/min.ts");
+
+      const alias = db.getAlias("minimal");
+      expect(alias).toBeDefined();
+      expect(alias!.description).toBe("");
+      db.close();
+    });
+
+    test("deleteAlias removes by name", () => {
+      const db = createDb();
+      db.saveAlias("keep", "/tmp/keep.ts");
+      db.saveAlias("remove", "/tmp/remove.ts");
+      db.deleteAlias("remove");
+
+      expect(db.listAliases()).toHaveLength(1);
+      expect(db.getAlias("remove")).toBeUndefined();
+      expect(db.getAlias("keep")).toBeDefined();
+      db.close();
+    });
+
+    test("deleteAlias is a no-op for unknown name", () => {
+      const db = createDb();
+      db.saveAlias("exists", "/tmp/exists.ts");
+      db.deleteAlias("nope"); // should not throw
+      expect(db.listAliases()).toHaveLength(1);
+      db.close();
+    });
+
+    test("listAliases returns empty for fresh db", () => {
+      const db = createDb();
+      expect(db.listAliases()).toEqual([]);
+      db.close();
+    });
+  });
+
+  describe("auth_tokens", () => {
+    test("saveTokens and getTokens round-trip", () => {
+      const db = createDb();
+      db.saveTokens("srv", {
+        access_token: "acc-123",
+        token_type: "Bearer",
+        refresh_token: "ref-456",
+        scope: "read write",
+        expires_in: 3600,
+      });
+
+      const tokens = db.getTokens("srv");
+      expect(tokens).toBeDefined();
+      expect(tokens!.access_token).toBe("acc-123");
+      expect(tokens!.token_type).toBe("Bearer");
+      expect(tokens!.refresh_token).toBe("ref-456");
+      expect(tokens!.scope).toBe("read write");
+      // expires_in is converted to absolute then back to relative, so just check > 0
+      expect(tokens!.expires_in).toBeGreaterThan(0);
+      db.close();
+    });
+
+    test("expires_in converts to absolute timestamp and back", () => {
+      const db = createDb();
+      db.saveTokens("srv", {
+        access_token: "tok",
+        token_type: "Bearer",
+        expires_in: 7200,
+      });
+
+      const tokens = db.getTokens("srv");
+      // Should be roughly 7200s minus tiny elapsed time
+      expect(tokens!.expires_in).toBeGreaterThan(7190);
+      expect(tokens!.expires_in).toBeLessThanOrEqual(7200);
+      db.close();
+    });
+
+    test("upsert replaces existing tokens", () => {
+      const db = createDb();
+      db.saveTokens("srv", { access_token: "old", token_type: "Bearer" });
+      db.saveTokens("srv", { access_token: "new", token_type: "Bearer" });
+
+      const tokens = db.getTokens("srv");
+      expect(tokens!.access_token).toBe("new");
+      db.close();
+    });
+
+    test("getTokens returns undefined for missing server", () => {
+      const db = createDb();
+      expect(db.getTokens("nope")).toBeUndefined();
+      db.close();
+    });
+
+    test("deleteTokens removes tokens", () => {
+      const db = createDb();
+      db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
+      db.deleteTokens("srv");
+      expect(db.getTokens("srv")).toBeUndefined();
+      db.close();
+    });
+
+    test("omits optional fields when not stored", () => {
+      const db = createDb();
+      db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
+
+      const tokens = db.getTokens("srv");
+      expect(tokens!.access_token).toBe("tok");
+      expect(tokens!.refresh_token).toBeUndefined();
+      expect(tokens!.scope).toBeUndefined();
+      expect(tokens!.expires_in).toBeUndefined();
+      db.close();
+    });
+  });
+
+  describe("oauth_clients", () => {
+    test("saveClientInfo and getClientInfo round-trip", () => {
+      const db = createDb();
+      db.saveClientInfo("srv", { client_id: "cid-123" });
+
+      const info = db.getClientInfo("srv");
+      expect(info).toBeDefined();
+      expect(info!.client_id).toBe("cid-123");
+      db.close();
+    });
+
+    test("stores full client info as JSON", () => {
+      const db = createDb();
+      const fullInfo = {
+        client_id: "cid",
+        client_secret: "secret-abc",
+        redirect_uris: ["http://localhost:9999/callback"],
+      };
+      db.saveClientInfo("srv", fullInfo as Record<string, unknown> & { client_id: string });
+
+      const info = db.getClientInfo("srv");
+      expect(info).toEqual(fullInfo);
+      db.close();
+    });
+
+    test("upsert replaces existing client info", () => {
+      const db = createDb();
+      db.saveClientInfo("srv", { client_id: "old" });
+      db.saveClientInfo("srv", { client_id: "new" });
+
+      const info = db.getClientInfo("srv");
+      expect(info!.client_id).toBe("new");
+      db.close();
+    });
+
+    test("getClientInfo returns undefined for missing server", () => {
+      const db = createDb();
+      expect(db.getClientInfo("nope")).toBeUndefined();
+      db.close();
+    });
+  });
+
+  describe("oauth_verifiers", () => {
+    test("saveVerifier and getVerifier round-trip", () => {
+      const db = createDb();
+      db.saveVerifier("srv", "pkce-verifier-123");
+
+      expect(db.getVerifier("srv")).toBe("pkce-verifier-123");
+      db.close();
+    });
+
+    test("upsert replaces existing verifier", () => {
+      const db = createDb();
+      db.saveVerifier("srv", "old-verifier");
+      db.saveVerifier("srv", "new-verifier");
+
+      expect(db.getVerifier("srv")).toBe("new-verifier");
+      db.close();
+    });
+
+    test("getVerifier returns undefined for missing server", () => {
+      const db = createDb();
+      expect(db.getVerifier("nope")).toBeUndefined();
+      db.close();
+    });
+  });
+
+  describe("oauth_discovery", () => {
+    test("saveDiscoveryState and getDiscoveryState round-trip", () => {
+      const db = createDb();
+      const state = { authorizationServerUrl: "https://auth.example.com" };
+      db.saveDiscoveryState("srv", state);
+
+      expect(db.getDiscoveryState("srv")).toEqual(state);
+      db.close();
+    });
+
+    test("stores complex discovery state as JSON", () => {
+      const db = createDb();
+      const state = {
+        authorizationServerUrl: "https://auth.example.com",
+        authorizationServerMetadata: {
+          issuer: "https://auth.example.com",
+          authorization_endpoint: "https://auth.example.com/authorize",
+          token_endpoint: "https://auth.example.com/token",
+        },
+      };
+      db.saveDiscoveryState("srv", state);
+
+      expect(db.getDiscoveryState("srv")).toEqual(state);
+      db.close();
+    });
+
+    test("upsert replaces existing discovery state", () => {
+      const db = createDb();
+      db.saveDiscoveryState("srv", { authorizationServerUrl: "https://old.com" });
+      db.saveDiscoveryState("srv", { authorizationServerUrl: "https://new.com" });
+
+      expect(db.getDiscoveryState("srv")).toEqual({ authorizationServerUrl: "https://new.com" });
+      db.close();
+    });
+
+    test("getDiscoveryState returns undefined for missing server", () => {
+      const db = createDb();
+      expect(db.getDiscoveryState("nope")).toBeUndefined();
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);
