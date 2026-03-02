@@ -19,6 +19,7 @@ import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli
 import { VERSION } from "@mcp-cli/core";
 import { cmdAlias } from "./commands/alias.js";
 import { cmdConfig } from "./commands/config.js";
+import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { ipcCall } from "./ipc-client.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
@@ -76,6 +77,10 @@ async function main(): Promise<void> {
 
       case "run":
         await cmdRun(args.slice(1));
+        break;
+
+      case "logs":
+        await cmdLogs(args.slice(1));
         break;
 
       case "restart":
@@ -255,6 +260,7 @@ Usage:
   mcp config show                     Show resolved server config
   mcp config sources                  Show config file sources
   mcp status                          Daemon status
+  mcp logs <server> [-f] [--lines N]  View server stderr output
   mcp restart [server]                Restart server connection(s)
   mcp shutdown                        Stop the daemon
 

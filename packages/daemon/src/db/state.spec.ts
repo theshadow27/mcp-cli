@@ -161,6 +161,93 @@ describe("StateDb", () => {
     });
   });
 
+  describe("server logs", () => {
+    test("insertServerLog and getServerLogs round-trip", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("srv", "line 1", now);
+      db.insertServerLog("srv", "line 2", now + 1);
+
+      const logs = db.getServerLogs("srv");
+      expect(logs).toHaveLength(2);
+      expect(logs[0].line).toBe("line 1");
+      expect(logs[1].line).toBe("line 2");
+      expect(logs[0].timestampMs).toBe(now);
+      db.close();
+    });
+
+    test("getServerLogs with limit", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("srv", "a", now);
+      db.insertServerLog("srv", "b", now + 1);
+      db.insertServerLog("srv", "c", now + 2);
+
+      const logs = db.getServerLogs("srv", 2);
+      expect(logs).toHaveLength(2);
+      expect(logs[0].line).toBe("a");
+      expect(logs[1].line).toBe("b");
+      db.close();
+    });
+
+    test("getServerLogs with since filter", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("srv", "old", now);
+      db.insertServerLog("srv", "new", now + 100);
+
+      const logs = db.getServerLogs("srv", undefined, now);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].line).toBe("new");
+      db.close();
+    });
+
+    test("getServerLogs returns empty for unknown server", () => {
+      const db = createDb();
+      expect(db.getServerLogs("nope")).toEqual([]);
+      db.close();
+    });
+
+    test("clearServerLogs by server", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("s1", "a", now);
+      db.insertServerLog("s2", "b", now);
+      db.clearServerLogs("s1");
+
+      expect(db.getServerLogs("s1")).toHaveLength(0);
+      expect(db.getServerLogs("s2")).toHaveLength(1);
+      db.close();
+    });
+
+    test("clearServerLogs all", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("s1", "a", now);
+      db.insertServerLog("s2", "b", now);
+      db.clearServerLogs();
+
+      expect(db.getServerLogs("s1")).toHaveLength(0);
+      expect(db.getServerLogs("s2")).toHaveLength(0);
+      db.close();
+    });
+
+    test("prunes to 500 rows per server", () => {
+      const db = createDb();
+      const now = Date.now();
+      // Insert 502 rows
+      for (let i = 0; i < 502; i++) {
+        db.insertServerLog("srv", `line-${i}`, now + i);
+      }
+
+      const logs = db.getServerLogs("srv");
+      expect(logs.length).toBeLessThanOrEqual(500);
+      // Oldest lines should have been pruned
+      expect(logs[0].line).toBe("line-2");
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);

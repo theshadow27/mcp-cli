@@ -87,6 +87,16 @@ EOF
 gh issue close <number>
 ```
 
+### Step 7: File Follow-Up Issues
+
+For each "remaining work" item from the issue, create a new GitHub issue using `gh issue create`. Each follow-up should include:
+
+- **Title**: concise, actionable description of the work item
+- **Body**: Background (reference the parent issue), problem description, proposed behavior, and relevant file paths with line numbers discovered during QA
+- **Labels**: carry over labels from the parent issue
+
+This ensures no planned work is lost when the parent issue is closed.
+
 ## Rules
 
 - Be factual. Every claim needs a file path or test result as evidence.

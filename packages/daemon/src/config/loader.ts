@@ -44,9 +44,14 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
   if (mcpJsonPath) {
     const mcpConfig = await readJsonFile<McpConfigFile>(mcpJsonPath);
     if (mcpConfig?.mcpServers) {
-      // Check if Claude Code has enabled/disabled any of these
-      const projectPath = resolve(cwd);
-      const projectSettings = claudeConfig?.projects?.[projectPath];
+      // Check if Claude Code has enabled/disabled any of these .mcp.json servers.
+      // Look at all matching project scopes (most specific first) to find settings.
+      const matchingPaths = claudeConfig?.projects
+        ? findMatchingProjects(Object.keys(claudeConfig.projects), cwd).reverse()
+        : [];
+      const projectSettings = matchingPaths
+        .map((p) => claudeConfig?.projects?.[p])
+        .find((s) => s?.enabledMcpjsonServers || s?.disabledMcpjsonServers);
       const disabledMcpJson = projectSettings?.disabledMcpjsonServers ?? [];
       const enabledMcpJson = projectSettings?.enabledMcpjsonServers;
       const source: ConfigSource = { file: mcpJsonPath, scope: "project" };
@@ -60,11 +65,13 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
   }
 
   // Priority 2: Claude Code local scope (project-specific in ~/.claude.json)
+  // Walk all matching ancestor project scopes, broadest first, so child scopes
+  // inherit parent servers and can override or disable them.
   if (claudeConfig?.projects) {
-    const projectPath = findMatchingProject(Object.keys(claudeConfig.projects), cwd);
-    if (projectPath) {
+    const matchingPaths = findMatchingProjects(Object.keys(claudeConfig.projects), cwd);
+    for (const projectPath of matchingPaths) {
       const projectConfig = claudeConfig.projects[projectPath];
-      if (projectConfig?.mcpServers) {
+      if (projectConfig?.mcpServers && Object.keys(projectConfig.mcpServers).length > 0) {
         const disabled = projectConfig.disabledMcpServers ?? [];
         const source: ConfigSource = { file: CLAUDE_CONFIG_PATH, scope: "local" };
         sources.push(source);
@@ -152,25 +159,16 @@ function findFileUpward(filename: string, startDir: string): string | null {
 }
 
 /**
- * Find the best matching project path from Claude Code config.
- * Matches the CWD exactly or finds the longest prefix match.
+ * Find all matching project paths from Claude Code config.
+ * Returns paths sorted broadest-first (shortest path first) so that
+ * child scopes inherit servers from parent scopes and can override them.
+ *
+ * E.g. for cwd=/a/b/c, returns ["/a", "/a/b", "/a/b/c"] if all exist.
  */
-function findMatchingProject(projectPaths: string[], cwd: string): string | null {
+function findMatchingProjects(projectPaths: string[], cwd: string): string[] {
   const resolved = resolve(cwd);
 
-  // Exact match first
-  if (projectPaths.includes(resolved)) return resolved;
-
-  // Longest prefix match
-  let best: string | null = null;
-  let bestLen = 0;
-  for (const p of projectPaths) {
-    if ((resolved.startsWith(`${p}/`) || resolved === p) && p.length > bestLen) {
-      best = p;
-      bestLen = p.length;
-    }
-  }
-  return best;
+  return projectPaths.filter((p) => resolved.startsWith(`${p}/`) || resolved === p).sort((a, b) => a.length - b.length);
 }
 
 /**

@@ -10,6 +10,7 @@ import type {
   CallToolParams,
   DeleteAliasParams,
   GetAliasParams,
+  GetLogsParams,
   GetToolInfoParams,
   GrepToolsParams,
   IpcError,
@@ -299,6 +300,31 @@ export class IpcServer {
         this.db.deleteAlias(name);
       }
       return { ok: true };
+    });
+
+    this.handlers.set("getLogs", async (params) => {
+      const { server, limit, since } = (params ?? {}) as GetLogsParams;
+      if (!server) {
+        throw Object.assign(new Error("Missing required parameter: server"), {
+          code: IPC_ERROR.INVALID_PARAMS,
+        });
+      }
+
+      // Fast path: in-memory ring buffer (no since filter)
+      if (since === undefined) {
+        const lines = this.pool.getStderrLines(server, limit);
+        return {
+          server,
+          lines: lines.map((l) => ({ timestamp: l.timestamp, line: l.line })),
+        };
+      }
+
+      // Fall back to DB for since-filtered queries
+      const dbLogs = this.db.getServerLogs(server, limit, since);
+      return {
+        server,
+        lines: dbLogs.map((l) => ({ timestamp: l.timestampMs, line: l.line })),
+      };
     });
 
     this.handlers.set("shutdown", async () => {

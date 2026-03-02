@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
-import { wrapTransportError } from "./server-pool.js";
+import { isRetryableError, wrapTransportError } from "./server-pool.js";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
@@ -11,6 +11,73 @@ function errWithCode(message: string, code: string): Error {
   (e as unknown as Record<string, unknown>).code = code;
   return e;
 }
+
+describe("isRetryableError", () => {
+  test("returns false for non-Error values", () => {
+    expect(isRetryableError("string error")).toBe(false);
+    expect(isRetryableError(null)).toBe(false);
+    expect(isRetryableError(undefined)).toBe(false);
+    expect(isRetryableError(42)).toBe(false);
+  });
+
+  describe("retryable system error codes", () => {
+    const retryableCodes = [
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "ESOCKETTIMEDOUT",
+      "ENOTFOUND",
+      "EPIPE",
+      "EAI_AGAIN",
+    ];
+
+    for (const code of retryableCodes) {
+      test(`retries ${code}`, () => {
+        expect(isRetryableError(errWithCode("connect failed", code))).toBe(true);
+      });
+    }
+  });
+
+  describe("retryable message patterns", () => {
+    test("retries fetch failed", () => {
+      expect(isRetryableError(new Error("TypeError: fetch failed"))).toBe(true);
+    });
+
+    test("retries socket hang up", () => {
+      expect(isRetryableError(new Error("socket hang up"))).toBe(true);
+    });
+  });
+
+  describe("non-retryable errors", () => {
+    test("does not retry 401 auth errors", () => {
+      expect(isRetryableError(new Error("HTTP 401 Unauthorized"))).toBe(false);
+    });
+
+    test("does not retry 403 forbidden errors", () => {
+      expect(isRetryableError(new Error("HTTP 403 Forbidden"))).toBe(false);
+    });
+
+    test("does not retry command not found", () => {
+      expect(isRetryableError(new Error("command not found: foo"))).toBe(false);
+    });
+
+    test("does not retry permission denied", () => {
+      expect(isRetryableError(new Error("permission denied for /usr/bin/foo"))).toBe(false);
+    });
+
+    test("does not retry ENOENT (bad config)", () => {
+      expect(isRetryableError(errWithCode("spawn foo", "ENOENT"))).toBe(false);
+    });
+
+    test("does not retry EACCES", () => {
+      expect(isRetryableError(errWithCode("spawn foo", "EACCES"))).toBe(false);
+    });
+
+    test("does not retry generic errors", () => {
+      expect(isRetryableError(new Error("something went wrong"))).toBe(false);
+    });
+  });
+});
 
 describe("wrapTransportError", () => {
   // -- Stdio transport --

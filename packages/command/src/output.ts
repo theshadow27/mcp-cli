@@ -58,6 +58,7 @@ export function printServerList(
     state: string;
     toolCount: number;
     source: string;
+    recentStderr?: string[];
   }>,
 ): void {
   if (servers.length === 0) {
@@ -72,6 +73,11 @@ export function printServerList(
     console.log(
       `  ${c.cyan}${s.name.padEnd(maxName)}${c.reset}  ${stateColor}${s.state.padEnd(12)}${c.reset}  ${c.dim}${s.transport}${c.reset}  ${s.toolCount > 0 ? `${s.toolCount} tools` : ""}`,
     );
+    // Show last stderr line for error-state servers
+    if (s.state === "error" && s.recentStderr?.length) {
+      const lastLine = s.recentStderr[s.recentStderr.length - 1];
+      console.log(`  ${"".padEnd(maxName)}  ${c.dim}stderr: ${lastLine}${c.reset}`);
+    }
   }
   console.log(`\n${servers.length} server(s)`);
 }

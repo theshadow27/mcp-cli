@@ -102,6 +102,16 @@ export class StateDb {
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
+
+      CREATE TABLE IF NOT EXISTS server_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_name TEXT NOT NULL,
+        line TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
+        ON server_logs(server_name, timestamp_ms DESC);
     `);
   }
 
@@ -390,6 +400,51 @@ export class StateDb {
 
   deleteAlias(name: string): void {
     this.db.run("DELETE FROM aliases WHERE name = ?", [name]);
+  }
+
+  // -- Server logs (stderr persistence) --
+
+  insertServerLog(serverName: string, line: string, timestampMs: number): void {
+    this.db.run("INSERT INTO server_logs (server_name, line, timestamp_ms) VALUES (?, ?, ?)", [
+      serverName,
+      line,
+      timestampMs,
+    ]);
+    // Prune to 500 rows per server
+    this.db.run(
+      `DELETE FROM server_logs WHERE server_name = ? AND id NOT IN (
+        SELECT id FROM server_logs WHERE server_name = ? ORDER BY timestamp_ms DESC LIMIT 500
+      )`,
+      [serverName, serverName],
+    );
+  }
+
+  getServerLogs(serverName: string, limit?: number, sinceMs?: number): Array<{ line: string; timestampMs: number }> {
+    const conditions = ["server_name = ?"];
+    const params: (string | number)[] = [serverName];
+
+    if (sinceMs !== undefined) {
+      conditions.push("timestamp_ms > ?");
+      params.push(sinceMs);
+    }
+
+    const where = conditions.join(" AND ");
+    const limitClause = limit ? `LIMIT ${Number(limit)}` : "";
+
+    return this.db
+      .query<{ line: string; timestamp_ms: number }, (string | number)[]>(
+        `SELECT line, timestamp_ms FROM server_logs WHERE ${where} ORDER BY timestamp_ms ASC ${limitClause}`,
+      )
+      .all(...params)
+      .map((row) => ({ line: row.line, timestampMs: row.timestamp_ms }));
+  }
+
+  clearServerLogs(serverName?: string): void {
+    if (serverName) {
+      this.db.run("DELETE FROM server_logs WHERE server_name = ?", [serverName]);
+    } else {
+      this.db.run("DELETE FROM server_logs");
+    }
   }
 
   close(): void {

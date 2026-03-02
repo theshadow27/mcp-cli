@@ -22,7 +22,8 @@ export type IpcMethod =
   | "listAliases"
   | "getAlias"
   | "saveAlias"
-  | "deleteAlias";
+  | "deleteAlias"
+  | "getLogs";
 
 // -- Request/Response --
 
@@ -88,6 +89,12 @@ export interface GetAliasParams {
   name: string;
 }
 
+export interface GetLogsParams {
+  server: string;
+  limit?: number;
+  since?: number;
+}
+
 export interface AliasInfo {
   name: string;
   description: string;
@@ -97,6 +104,18 @@ export interface AliasInfo {
 
 export interface AliasDetail extends AliasInfo {
   script: string;
+}
+
+// -- Log types --
+
+export interface LogEntry {
+  timestamp: number;
+  line: string;
+}
+
+export interface GetLogsResult {
+  server: string;
+  lines: LogEntry[];
 }
 
 // -- Result types --
@@ -109,6 +128,7 @@ export interface ServerStatus {
   lastUsed?: number;
   lastError?: string;
   source: string;
+  recentStderr?: string[];
 }
 
 export interface ToolInfo {

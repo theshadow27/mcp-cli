@@ -25,6 +25,7 @@ import {
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
 import type { StateDb } from "./db/state.js";
+import { StderrRingBuffer } from "./stderr-buffer.js";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
@@ -38,12 +39,14 @@ interface ServerConnection {
   lastUsed: number;
   lastError?: string;
   connectingPromise?: Promise<ServerConnection>;
+  stderrCleanup?: () => void;
 }
 
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
   private config: ResolvedConfig;
   private db: StateDb | null;
+  private stderrBuffer = new StderrRingBuffer();
 
   constructor(config: ResolvedConfig, db?: StateDb) {
     this.config = config;
@@ -117,13 +120,16 @@ export class ServerPool {
         authProvider = new McpOAuthProvider(name, config.url, this.db);
       }
 
-      let lastErr: Error | undefined;
+      let lastErr: Error = new Error("Connection failed");
       const maxRetries = CONNECT_MAX_RETRIES;
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           const transport = createTransport(config, authProvider);
           const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+
+          // Attach stderr capture before connect so early output isn't lost
+          this.attachStderrCapture(name, transport, conn);
 
           await client.connect(transport);
 
@@ -153,7 +159,7 @@ export class ServerPool {
       }
 
       conn.state = "error";
-      const wrapped = wrapTransportError(name, conn.resolved.config, lastErr!);
+      const wrapped = wrapTransportError(name, conn.resolved.config, lastErr);
       conn.lastError = wrapped.message;
       throw wrapped;
     })().finally(() => {
@@ -190,17 +196,64 @@ export class ServerPool {
     }
   }
 
+  /** Attach a stderr listener to a stdio transport for capture and forwarding. */
+  private attachStderrCapture(name: string, transport: Transport, conn: ServerConnection): void {
+    // Only StdioClientTransport exposes a stderr stream
+    const stdio = transport as unknown as { stderr: import("node:stream").Readable | null };
+    if (typeof stdio.stderr?.on !== "function") return;
+
+    const stream = stdio.stderr;
+    let partial = "";
+
+    const onData = (chunk: Buffer | string) => {
+      const text = partial + chunk.toString();
+      const lines = text.split("\n");
+      // Last element is a partial line (or empty if text ended with \n)
+      partial = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line === "") continue;
+        const entry = this.stderrBuffer.push(name, line);
+        process.stderr.write(`[${name}] ${line}\n`);
+        this.db?.insertServerLog(name, line, entry.timestamp);
+      }
+    };
+
+    stream.on("data", onData);
+
+    conn.stderrCleanup = () => {
+      stream.removeListener("data", onData);
+      // Flush any remaining partial line
+      if (partial) {
+        const entry = this.stderrBuffer.push(name, partial);
+        process.stderr.write(`[${name}] ${partial}\n`);
+        this.db?.insertServerLog(name, partial, entry.timestamp);
+        partial = "";
+      }
+    };
+  }
+
+  /** Get recent stderr lines for a server from the in-memory ring buffer. */
+  getStderrLines(server: string, limit?: number): Array<{ timestamp: number; line: string }> {
+    return this.stderrBuffer.getLines(server, limit);
+  }
+
   /** List all configured servers with status */
   listServers(): ServerStatus[] {
-    return [...this.connections.values()].map((conn) => ({
-      name: conn.name,
-      transport: getTransportType(conn.resolved.config),
-      state: conn.state,
-      toolCount: conn.tools.size,
-      lastUsed: conn.lastUsed || undefined,
-      lastError: conn.lastError,
-      source: conn.resolved.source.file,
-    }));
+    return [...this.connections.values()].map((conn) => {
+      const recent = this.stderrBuffer.getLines(conn.name, 3);
+      const recentStderr = recent.length > 0 ? recent.map((l) => l.line) : undefined;
+      return {
+        name: conn.name,
+        transport: getTransportType(conn.resolved.config),
+        state: conn.state,
+        toolCount: conn.tools.size,
+        lastUsed: conn.lastUsed || undefined,
+        lastError: conn.lastError,
+        source: conn.resolved.source.file,
+        recentStderr,
+      };
+    });
   }
 
   /** List tools for a specific server (connects if needed) */
@@ -261,6 +314,12 @@ export class ServerPool {
   async disconnect(name: string): Promise<void> {
     const conn = this.connections.get(name);
     if (!conn) return;
+
+    // Flush and detach stderr listener
+    if (conn.stderrCleanup) {
+      conn.stderrCleanup();
+      conn.stderrCleanup = undefined;
+    }
 
     try {
       await conn.client?.close();

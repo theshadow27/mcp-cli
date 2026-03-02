@@ -37,5 +37,10 @@ export const DAEMON_START_TIMEOUT_MS = 5_000;
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
 
+/** Connection retry defaults */
+export const CONNECT_MAX_RETRIES = 3;
+export const CONNECT_INITIAL_DELAY_MS = 1_000;
+export const CONNECT_MAX_DELAY_MS = 15_000;
+
 /** Daemon ready signal (stdout) */
 export const DAEMON_READY_SIGNAL = "MCPD_READY";
