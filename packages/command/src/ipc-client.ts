@@ -4,14 +4,16 @@
  * Auto-starts the daemon if not running.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMethod, IpcRequest, IpcResponse } from "@mcp-cli/core";
 import {
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
+  PID_MAX_AGE_MS,
   PID_PATH,
+  PING_TIMEOUT_MS,
   SOCKET_PATH,
   encodeRequest,
   nextId,
@@ -100,23 +102,137 @@ async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
 
 /** Check if daemon is running, start it if not */
 async function ensureDaemon(): Promise<void> {
-  if (isDaemonRunning()) return;
+  if (await isDaemonRunning()) return;
   await startDaemon();
 }
 
-/** Check PID file and process liveness */
-function isDaemonRunning(): boolean {
-  if (!existsSync(PID_PATH)) return false;
-
+/** Remove stale PID and socket files so a fresh daemon can start */
+function cleanStaleFiles(): void {
   try {
-    const data = JSON.parse(readFileSync(PID_PATH, "utf-8"));
-    // Check if process is alive
-    process.kill(data.pid, 0);
-    // Check if socket exists
-    return existsSync(SOCKET_PATH);
+    unlinkSync(PID_PATH);
+  } catch {
+    /* already gone */
+  }
+  try {
+    unlinkSync(SOCKET_PATH);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Verify the process at `pid` is actually mcpd (guards against PID recycling) */
+export function isProcessMcpd(pid: number): boolean {
+  try {
+    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
+    const output = result.stdout.toString().trim();
+    // Match compiled binary (mcpd) or dev script (daemon/src/index)
+    return output.includes("mcpd") || output.includes("daemon/src/index");
   } catch {
     return false;
   }
+}
+
+/** Send a quick IPC ping to verify the daemon is responsive */
+function pingDaemon(): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => resolve(false), PING_TIMEOUT_MS);
+    const request: IpcRequest = { id: nextId(), method: "ping" };
+
+    try {
+      Bun.connect({
+        unix: SOCKET_PATH,
+        socket: {
+          data(_socket, data) {
+            const lines = data.toString().split("\n");
+            for (const line of lines) {
+              if (line.trim() === "") continue;
+              try {
+                const response = JSON.parse(line) as IpcResponse;
+                if (response.id === request.id) {
+                  clearTimeout(timeout);
+                  _socket.end();
+                  resolve(!response.error);
+                  return;
+                }
+              } catch {
+                /* ignore malformed */
+              }
+            }
+          },
+          error() {
+            clearTimeout(timeout);
+            resolve(false);
+          },
+          close() {
+            /* handled by timeout or response */
+          },
+          open(_socket) {
+            _socket.write(encodeRequest(request));
+          },
+          connectError() {
+            clearTimeout(timeout);
+            resolve(false);
+          },
+        },
+      });
+    } catch {
+      clearTimeout(timeout);
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Layered daemon liveness check:
+ * 1. PID file exists and is parseable
+ * 2. startedAt is not unreasonably old
+ * 3. Process exists at that PID
+ * 4. Process is actually mcpd (not a recycled PID)
+ * 5. Socket file exists
+ * 6. Daemon responds to IPC ping
+ */
+export async function isDaemonRunning(): Promise<boolean> {
+  if (!existsSync(PID_PATH)) return false;
+
+  let data: { pid: number; startedAt: number };
+  try {
+    data = JSON.parse(readFileSync(PID_PATH, "utf-8"));
+  } catch {
+    cleanStaleFiles();
+    return false;
+  }
+
+  // Reject unreasonably old PID files
+  if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
+    cleanStaleFiles();
+    return false;
+  }
+
+  // Check if process is alive
+  try {
+    process.kill(data.pid, 0);
+  } catch {
+    cleanStaleFiles();
+    return false;
+  }
+
+  // Verify the process is actually mcpd (not a recycled PID)
+  if (!isProcessMcpd(data.pid)) {
+    cleanStaleFiles();
+    return false;
+  }
+
+  // Socket must exist (but don't clean PID — daemon might be initializing)
+  if (!existsSync(SOCKET_PATH)) return false;
+
+  // Definitive check: daemon responds to ping
+  const alive = await pingDaemon();
+  if (!alive) {
+    cleanStaleFiles();
+    return false;
+  }
+
+  return true;
 }
 
 /** Spawn the daemon as a detached background process */

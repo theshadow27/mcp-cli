@@ -37,6 +37,12 @@ export const DAEMON_START_TIMEOUT_MS = 5_000;
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
 
+/** Daemon health-check ping timeout (ms) */
+export const PING_TIMEOUT_MS = 2_000;
+
+/** Max PID file age before treating as stale (ms) — 7 days */
+export const PID_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Connection retry defaults */
 export const CONNECT_MAX_RETRIES = 3;
 export const CONNECT_INITIAL_DELAY_MS = 1_000;
