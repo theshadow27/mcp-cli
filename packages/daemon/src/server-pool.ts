@@ -71,12 +71,18 @@ export class ServerPool {
     }
   }
 
-  /** Update config (e.g., after file change) */
-  updateConfig(config: ResolvedConfig): void {
+  /** Update config (e.g., after file change). Returns names of changed/added/removed servers. */
+  updateConfig(config: ResolvedConfig): { added: string[]; removed: string[]; changed: string[] } {
     this.config = config;
-    // Add new servers
+    const added: string[] = [];
+    const removed: string[] = [];
+    const changed: string[] = [];
+
+    // Add new servers, detect changed configs
     for (const [name, resolved] of config.servers) {
-      if (!this.connections.has(name)) {
+      const existing = this.connections.get(name);
+      if (!existing) {
+        added.push(name);
         this.connections.set(name, {
           name,
           resolved,
@@ -86,15 +92,28 @@ export class ServerPool {
           state: "disconnected",
           lastUsed: 0,
         });
+      } else if (JSON.stringify(existing.resolved.config) !== JSON.stringify(resolved.config)) {
+        changed.push(name);
+        existing.resolved = resolved;
+        // Reconnect if currently connected
+        if (existing.state === "connected") {
+          this.disconnect(name)
+            .then(() => console.error(`[pool] Reconnecting "${name}" after config change`))
+            .catch(() => {});
+        }
       }
     }
+
     // Remove servers no longer in config
     for (const name of this.connections.keys()) {
       if (!config.servers.has(name)) {
+        removed.push(name);
         this.disconnect(name).catch(() => {});
         this.connections.delete(name);
       }
     }
+
+    return { added, removed, changed };
   }
 
   /** Get or establish connection to a server */

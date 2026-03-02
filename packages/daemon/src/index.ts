@@ -24,6 +24,7 @@ import {
   SOCKET_PATH,
 } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./config/loader.js";
+import { ConfigWatcher } from "./config/watcher.js";
 import { StateDb } from "./db/state.js";
 import { IpcServer } from "./ipc-server.js";
 import { ServerPool } from "./server-pool.js";
@@ -68,6 +69,24 @@ async function main(): Promise<void> {
   const ipcServer = new IpcServer(pool, config, db, { onActivity: resetIdleTimer });
   ipcServer.start();
 
+  // Watch config files for hot reload
+  const watcher = new ConfigWatcher(config, (event) => {
+    const { added, removed, changed } = pool.updateConfig(event.config);
+    const parts: string[] = [];
+    if (added.length) parts.push(`added: ${added.join(", ")}`);
+    if (removed.length) parts.push(`removed: ${removed.join(", ")}`);
+    if (changed.length) parts.push(`changed: ${changed.join(", ")}`);
+    if (parts.length) {
+      console.error(`[mcpd] Config reloaded: ${parts.join("; ")}`);
+    } else {
+      console.error("[mcpd] Config reloaded (no server changes)");
+    }
+    // Update PID file with new hash
+    const updatedPid = { pid: process.pid, configHash: event.hash, startedAt: pidData.startedAt };
+    writeFileSync(PID_PATH, JSON.stringify(updatedPid));
+  });
+  watcher.start();
+
   // Start idle timer
   resetIdleTimer();
 
@@ -77,6 +96,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   async function shutdown(): Promise<void> {
     console.error("[mcpd] Shutting down...");
+    watcher.stop();
     ipcServer.stop();
     await pool.closeAll();
     db.close();
