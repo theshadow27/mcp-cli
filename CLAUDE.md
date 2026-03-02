@@ -39,7 +39,7 @@ packages/
 - **Config**: reads Claude Code's `~/.claude.json` + `.mcp.json` natively
 - **Transports**: stdio (command+args), HTTP (StreamableHTTP), SSE
 - **Auth**: macOS Keychain reader (Claude Code tokens) → SQLite → env vars
-- **Aliases**: TypeScript scripts executed by Bun via virtual module `"mcp-cli"`
+- **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed by Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Scripts get `mcp` (Proxy → IPC → daemon → MCP server), `args`, `file()`, `json()`. Import auto-prepended if missing.
 
 ## Rules
 
@@ -70,6 +70,7 @@ packages/daemon/src/
 
 packages/command/src/
   index.ts        Entry point, arg dispatch
+  alias-runner.ts Bun virtual module registration + Proxy + import() execution
   commands/       call, ls, info, grep, run, alias, note, status, auth, config
   ipc/            Socket client, auto-start daemon
   output/         Formatting, schema display
