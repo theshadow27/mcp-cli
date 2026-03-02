@@ -14,7 +14,15 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { type JsonSchema, formatToolSignature } from "@mcp-cli/command/schema-display.js";
 import type { ResolvedConfig, ResolvedServer, ServerConfig, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { getTransportType, isHttpConfig, isSseConfig, isStdioConfig } from "@mcp-cli/core";
+import {
+  CONNECT_INITIAL_DELAY_MS,
+  CONNECT_MAX_DELAY_MS,
+  CONNECT_MAX_RETRIES,
+  getTransportType,
+  isHttpConfig,
+  isSseConfig,
+  isStdioConfig,
+} from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
 import type { StateDb } from "./db/state.js";
 
@@ -101,34 +109,53 @@ export class ServerPool {
 
     conn.connectingPromise = (async () => {
       conn.state = "connecting";
-      try {
-        // Create auth provider for remote transports
-        let authProvider: OAuthClientProvider | undefined;
-        const config = conn.resolved.config;
-        if (this.db && (isSseConfig(config) || isHttpConfig(config))) {
-          authProvider = new McpOAuthProvider(name, config.url, this.db);
-        }
 
-        const transport = createTransport(config, authProvider);
-        const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
-
-        await client.connect(transport);
-
-        conn.client = client;
-        conn.transport = transport;
-        conn.state = "connected";
-        conn.lastUsed = Date.now();
-        conn.lastError = undefined;
-
-        // Cache tools on connect
-        await this.refreshTools(conn);
-
-        return conn;
-      } catch (err) {
-        conn.state = "error";
-        conn.lastError = err instanceof Error ? err.message : String(err);
-        throw err;
+      // Auth provider is reusable across retries — create once
+      let authProvider: OAuthClientProvider | undefined;
+      const config = conn.resolved.config;
+      if (this.db && (isSseConfig(config) || isHttpConfig(config))) {
+        authProvider = new McpOAuthProvider(name, config.url, this.db);
       }
+
+      let lastErr: Error | undefined;
+      const maxRetries = CONNECT_MAX_RETRIES;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const transport = createTransport(config, authProvider);
+          const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+
+          await client.connect(transport);
+
+          conn.client = client;
+          conn.transport = transport;
+          conn.state = "connected";
+          conn.lastUsed = Date.now();
+          conn.lastError = undefined;
+
+          // Cache tools on connect
+          await this.refreshTools(conn);
+
+          return conn;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error(String(err));
+
+          if (attempt < maxRetries && isRetryableError(err)) {
+            const delay = Math.min(CONNECT_INITIAL_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);
+            console.error(
+              `[mcpd] Connection to "${name}" failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${lastErr.message}`,
+            );
+            await new Promise((r) => setTimeout(r, delay));
+            continue;
+          }
+          break;
+        }
+      }
+
+      conn.state = "error";
+      const wrapped = wrapTransportError(name, conn.resolved.config, lastErr!);
+      conn.lastError = wrapped.message;
+      throw wrapped;
     })().finally(() => {
       conn.connectingPromise = undefined;
     });
@@ -291,6 +318,38 @@ export class ServerPool {
   }
 }
 
+// -- Retry classification --
+
+const RETRYABLE_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ESOCKETTIMEDOUT",
+  "ENOTFOUND",
+  "EPIPE",
+  "EAI_AGAIN",
+]);
+
+/** Classify whether a connection error is transient and worth retrying. */
+export function isRetryableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  const code = (err as NodeJS.ErrnoException).code;
+
+  // System-level transient network errors
+  if (code && RETRYABLE_CODES.has(code)) return true;
+
+  // Fetch-style network errors (no system code)
+  if (msg.includes("fetch failed") || msg.includes("socket hang up")) return true;
+
+  // NOT retryable: auth failures, bad config
+  if (msg.includes("401") || msg.includes("403") || msg.includes("not found") || msg.includes("permission denied")) {
+    return false;
+  }
+
+  return false;
+}
+
 // -- Transport factories --
 
 function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
@@ -325,6 +384,81 @@ function createTransport(config: ServerConfig, authProvider?: OAuthClientProvide
   }
 
   throw new Error(`Unknown transport type for config: ${JSON.stringify(config)}`);
+}
+
+// -- Error wrapping --
+
+/**
+ * Inspect a transport-level error and return a new Error with an actionable,
+ * user-friendly message that includes the server name and hints for resolution.
+ * @internal Exported for testing only.
+ */
+export function wrapTransportError(serverName: string, config: ServerConfig, raw: unknown): Error {
+  const err = raw instanceof Error ? raw : new Error(String(raw));
+  const msg = err.message.toLowerCase();
+
+  // Extract system error code (Node/Bun set `err.code` on system errors)
+  const code: string | undefined = (err as unknown as Record<string, unknown>).code as string | undefined;
+
+  const prefix = `Server "${serverName}"`;
+
+  if (isStdioConfig(config)) {
+    if (code === "ENOENT" || msg.includes("not found") || msg.includes("enoent")) {
+      return new Error(
+        `${prefix} failed: command "${config.command}" not found. Check that it's installed and on your PATH.`,
+      );
+    }
+    if (code === "EACCES" || msg.includes("permission denied") || msg.includes("eacces")) {
+      return new Error(`${prefix} failed: permission denied for "${config.command}". Check file permissions.`);
+    }
+    if (msg.includes("exited") || msg.includes("exit code") || msg.includes("killed") || msg.includes("spawn")) {
+      return new Error(
+        `${prefix} process exited unexpectedly. Check server logs or run the command manually: ${config.command} ${(config.args ?? []).join(" ")}`,
+      );
+    }
+    // Generic stdio fallback
+    return new Error(`${prefix} failed (stdio): ${err.message}`);
+  }
+
+  // HTTP and SSE share most network-level errors
+  const url = (config as { url: string }).url;
+
+  if (code === "ECONNREFUSED" || msg.includes("econnrefused") || msg.includes("connection refused")) {
+    return new Error(`${prefix} failed: could not connect to ${url}. Is the server running?`);
+  }
+  if (code === "ENOTFOUND" || msg.includes("enotfound") || msg.includes("getaddrinfo")) {
+    return new Error(`${prefix} failed: DNS lookup failed for ${url}. Check the URL and your network connection.`);
+  }
+  if (
+    msg.includes("certificate") ||
+    msg.includes("ssl") ||
+    msg.includes("tls") ||
+    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+  ) {
+    return new Error(`${prefix} failed: TLS/certificate error connecting to ${url}. ${err.message}`);
+  }
+  if (msg.includes("401") || msg.includes("unauthorized")) {
+    return new Error(`${prefix} auth failed (401). Run "mcp auth ${serverName}" to re-authenticate.`);
+  }
+  if (msg.includes("403") || msg.includes("forbidden")) {
+    return new Error(
+      `${prefix} auth failed (403 Forbidden). Run "mcp auth ${serverName}" to re-authenticate or check your permissions.`,
+    );
+  }
+  if (msg.includes("timeout") || code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
+    return new Error(
+      `${prefix} failed: connection to ${url} timed out. Check network connectivity and server availability.`,
+    );
+  }
+
+  // SSE-specific
+  if (isSseConfig(config) && (msg.includes("stream") || msg.includes("event source") || msg.includes("eventsource"))) {
+    return new Error(`${prefix} SSE stream error from ${url}: ${err.message}`);
+  }
+
+  // Generic network fallback
+  const transport = isHttpConfig(config) ? "http" : "sse";
+  return new Error(`${prefix} failed (${transport}): ${err.message}`);
 }
 
 // -- Utility --
