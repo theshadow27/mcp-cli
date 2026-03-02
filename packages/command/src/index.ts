@@ -15,7 +15,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import type { ServerStatus, ToolInfo } from "@mcp-cli/core";
+import type { DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
+import { cmdConfig } from "./commands/config.js";
 import { ipcCall } from "./ipc-client.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
 
@@ -51,6 +52,14 @@ async function main(): Promise<void> {
 
       case "status":
         await cmdStatus();
+        break;
+
+      case "config":
+        await cmdConfig(args.slice(1));
+        break;
+
+      case "auth":
+        await cmdAuth(args.slice(1));
         break;
 
       case "restart":
@@ -134,15 +143,24 @@ async function cmdGrep(args: string[]): Promise<void> {
 }
 
 async function cmdStatus(): Promise<void> {
-  const status = (await ipcCall("status")) as {
-    pid: number;
-    uptime: number;
-    servers: ServerStatus[];
-  };
+  const status = (await ipcCall("status")) as DaemonStatus;
 
   console.log(`Daemon PID: ${status.pid}`);
-  console.log(`Uptime: ${Math.round(status.uptime)}s\n`);
+  console.log(`Uptime: ${Math.round(status.uptime)}s`);
+  console.log(`Database: ${status.dbPath}\n`);
   printServerList(status.servers);
+}
+
+async function cmdAuth(args: string[]): Promise<void> {
+  if (args.length < 1) {
+    printError("Usage: mcp auth <server>");
+    process.exit(1);
+  }
+
+  const server = args[0];
+  console.error(`Authenticating with ${server}...`);
+  const result = (await ipcCall("triggerAuth", { server })) as { ok: boolean; message: string };
+  console.error(result.message);
 }
 
 async function cmdRestart(args: string[]): Promise<void> {
@@ -205,6 +223,9 @@ Usage:
   mcp <server> <tool> [json]          Shorthand for call
   mcp info <server> <tool>            Show tool schema
   mcp grep <pattern>                  Search tools by name/description
+  mcp auth <server>                    Authenticate with an OAuth server
+  mcp config show                     Show resolved server config
+  mcp config sources                  Show config file sources
   mcp status                          Daemon status
   mcp restart [server]                Restart server connection(s)
   mcp shutdown                        Stop the daemon

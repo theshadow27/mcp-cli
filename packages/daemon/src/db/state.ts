@@ -1,0 +1,348 @@
+/**
+ * SQLite persistence layer for daemon state.
+ *
+ * Uses bun:sqlite for zero-dependency persistence of:
+ * - Tool cache (survive daemon restarts)
+ * - Usage statistics
+ * - Daemon state (config hash, etc.)
+ */
+
+import { Database } from "bun:sqlite";
+import type { ToolInfo } from "@mcp-cli/core";
+import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+
+export interface UsageStat {
+  serverName: string;
+  toolName: string;
+  callCount: number;
+  totalDurationMs: number;
+  successCount: number;
+  errorCount: number;
+  lastCalledAt: number;
+  lastError: string | null;
+}
+
+export class StateDb {
+  private db: Database;
+
+  constructor(dbPath: string) {
+    this.db = new Database(dbPath, { create: true });
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA busy_timeout = 3000");
+    this.migrate();
+  }
+
+  // -- Migrations --
+
+  private migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tool_cache (
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        description TEXT,
+        input_schema_json TEXT,
+        signature TEXT,
+        cached_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (server_name, tool_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        called_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        duration_ms INTEGER,
+        success INTEGER NOT NULL DEFAULT 1,
+        error_message TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS daemon_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_usage_server_tool ON usage_stats(server_name, tool_name);
+
+      CREATE TABLE IF NOT EXISTS auth_tokens (
+        server_name TEXT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        token_type TEXT DEFAULT 'Bearer',
+        expires_at INTEGER,
+        scope TEXT,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        server_name TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        client_secret TEXT,
+        client_info_json TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_verifiers (
+        server_name TEXT PRIMARY KEY,
+        code_verifier TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_discovery (
+        server_name TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+    `);
+  }
+
+  // -- Tool cache --
+
+  getCachedTools(server: string): ToolInfo[] {
+    const rows = this.db
+      .query<
+        {
+          server_name: string;
+          tool_name: string;
+          description: string | null;
+          input_schema_json: string | null;
+          signature: string | null;
+        },
+        [string]
+      >(
+        "SELECT server_name, tool_name, description, input_schema_json, signature FROM tool_cache WHERE server_name = ?",
+      )
+      .all(server);
+
+    return rows.map((row) => ({
+      name: row.tool_name,
+      server: row.server_name,
+      description: row.description ?? "",
+      inputSchema: row.input_schema_json ? JSON.parse(row.input_schema_json) : {},
+      signature: row.signature ?? undefined,
+    }));
+  }
+
+  cacheTools(server: string, tools: ToolInfo[]): void {
+    const txn = this.db.transaction(() => {
+      this.db.run("DELETE FROM tool_cache WHERE server_name = ?", [server]);
+      const insert = this.db.prepare(
+        "INSERT INTO tool_cache (server_name, tool_name, description, input_schema_json, signature) VALUES (?, ?, ?, ?, ?)",
+      );
+      for (const tool of tools) {
+        insert.run(server, tool.name, tool.description, JSON.stringify(tool.inputSchema), tool.signature ?? null);
+      }
+    });
+    txn();
+  }
+
+  clearCache(server?: string): void {
+    if (server) {
+      this.db.run("DELETE FROM tool_cache WHERE server_name = ?", [server]);
+    } else {
+      this.db.run("DELETE FROM tool_cache");
+    }
+  }
+
+  // -- Usage stats --
+
+  recordUsage(server: string, tool: string, durationMs: number, success: boolean, error?: string): void {
+    this.db.run(
+      "INSERT INTO usage_stats (server_name, tool_name, duration_ms, success, error_message) VALUES (?, ?, ?, ?, ?)",
+      [server, tool, durationMs, success ? 1 : 0, error ?? null],
+    );
+  }
+
+  getUsageStats(): UsageStat[] {
+    return this.db
+      .query<
+        {
+          server_name: string;
+          tool_name: string;
+          call_count: number;
+          total_duration_ms: number;
+          success_count: number;
+          error_count: number;
+          last_called_at: number;
+          last_error: string | null;
+        },
+        []
+      >(
+        `SELECT
+          server_name, tool_name,
+          COUNT(*) as call_count,
+          COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+          SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+          SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as error_count,
+          MAX(called_at) as last_called_at,
+          (SELECT error_message FROM usage_stats u2
+           WHERE u2.server_name = usage_stats.server_name
+             AND u2.tool_name = usage_stats.tool_name
+             AND u2.error_message IS NOT NULL
+           ORDER BY u2.called_at DESC LIMIT 1) as last_error
+        FROM usage_stats
+        GROUP BY server_name, tool_name
+        ORDER BY last_called_at DESC`,
+      )
+      .all()
+      .map((row) => ({
+        serverName: row.server_name,
+        toolName: row.tool_name,
+        callCount: row.call_count,
+        totalDurationMs: row.total_duration_ms,
+        successCount: row.success_count,
+        errorCount: row.error_count,
+        lastCalledAt: row.last_called_at,
+        lastError: row.last_error,
+      }));
+  }
+
+  // -- Daemon state --
+
+  getState(key: string): string | null {
+    const row = this.db.query<{ value: string }, [string]>("SELECT value FROM daemon_state WHERE key = ?").get(key);
+    return row?.value ?? null;
+  }
+
+  setState(key: string, value: string): void {
+    this.db.run(
+      "INSERT INTO daemon_state (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      [key, value],
+    );
+  }
+
+  // -- Auth tokens --
+
+  getTokens(serverName: string): OAuthTokens | undefined {
+    const row = this.db
+      .query<
+        {
+          access_token: string;
+          refresh_token: string | null;
+          token_type: string;
+          expires_at: number | null;
+          scope: string | null;
+        },
+        [string]
+      >("SELECT access_token, refresh_token, token_type, expires_at, scope FROM auth_tokens WHERE server_name = ?")
+      .get(serverName);
+
+    if (!row) return undefined;
+
+    const tokens: OAuthTokens = {
+      access_token: row.access_token,
+      token_type: row.token_type,
+    };
+    if (row.refresh_token) tokens.refresh_token = row.refresh_token;
+    if (row.scope) tokens.scope = row.scope;
+    // Convert stored absolute ms timestamp to relative expires_in seconds
+    if (row.expires_at) {
+      const remainingSec = Math.floor((row.expires_at - Date.now()) / 1000);
+      if (remainingSec > 0) tokens.expires_in = remainingSec;
+    }
+    return tokens;
+  }
+
+  saveTokens(serverName: string, tokens: OAuthTokens): void {
+    // Convert relative expires_in to absolute ms timestamp for storage
+    const expiresAt = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null;
+    this.db.run(
+      `INSERT INTO auth_tokens (server_name, access_token, refresh_token, token_type, expires_at, scope, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+       ON CONFLICT(server_name) DO UPDATE SET
+         access_token = excluded.access_token,
+         refresh_token = excluded.refresh_token,
+         token_type = excluded.token_type,
+         expires_at = excluded.expires_at,
+         scope = excluded.scope,
+         updated_at = excluded.updated_at`,
+      [
+        serverName,
+        tokens.access_token,
+        tokens.refresh_token ?? null,
+        tokens.token_type,
+        expiresAt,
+        tokens.scope ?? null,
+      ],
+    );
+  }
+
+  deleteTokens(serverName: string): void {
+    this.db.run("DELETE FROM auth_tokens WHERE server_name = ?", [serverName]);
+  }
+
+  // -- OAuth client registration --
+
+  getClientInfo(serverName: string): OAuthClientInformationMixed | undefined {
+    const row = this.db
+      .query<{ client_id: string; client_secret: string | null; client_info_json: string | null }, [string]>(
+        "SELECT client_id, client_secret, client_info_json FROM oauth_clients WHERE server_name = ?",
+      )
+      .get(serverName);
+
+    if (!row) return undefined;
+    if (row.client_info_json) return JSON.parse(row.client_info_json);
+    const info: OAuthClientInformationMixed = { client_id: row.client_id };
+    if (row.client_secret) (info as Record<string, unknown>).client_secret = row.client_secret;
+    return info;
+  }
+
+  saveClientInfo(serverName: string, info: OAuthClientInformationMixed): void {
+    this.db.run(
+      `INSERT INTO oauth_clients (server_name, client_id, client_secret, client_info_json, created_at)
+       VALUES (?, ?, ?, ?, unixepoch())
+       ON CONFLICT(server_name) DO UPDATE SET
+         client_id = excluded.client_id,
+         client_secret = excluded.client_secret,
+         client_info_json = excluded.client_info_json`,
+      [
+        serverName,
+        info.client_id,
+        ((info as Record<string, unknown>).client_secret as string) ?? null,
+        JSON.stringify(info),
+      ],
+    );
+  }
+
+  // -- PKCE code verifier --
+
+  getVerifier(serverName: string): string | undefined {
+    const row = this.db
+      .query<{ code_verifier: string }, [string]>("SELECT code_verifier FROM oauth_verifiers WHERE server_name = ?")
+      .get(serverName);
+    return row?.code_verifier;
+  }
+
+  saveVerifier(serverName: string, verifier: string): void {
+    this.db.run(
+      `INSERT INTO oauth_verifiers (server_name, code_verifier, created_at)
+       VALUES (?, ?, unixepoch())
+       ON CONFLICT(server_name) DO UPDATE SET code_verifier = excluded.code_verifier`,
+      [serverName, verifier],
+    );
+  }
+
+  // -- OAuth discovery state --
+
+  getDiscoveryState(serverName: string): OAuthDiscoveryState | undefined {
+    const row = this.db
+      .query<{ state_json: string }, [string]>("SELECT state_json FROM oauth_discovery WHERE server_name = ?")
+      .get(serverName);
+    if (!row) return undefined;
+    return JSON.parse(row.state_json);
+  }
+
+  saveDiscoveryState(serverName: string, state: OAuthDiscoveryState): void {
+    this.db.run(
+      `INSERT INTO oauth_discovery (server_name, state_json, updated_at)
+       VALUES (?, ?, unixepoch())
+       ON CONFLICT(server_name) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
+      [serverName, JSON.stringify(state)],
+    );
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}

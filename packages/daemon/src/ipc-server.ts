@@ -14,10 +14,15 @@ import type {
   IpcRequest,
   IpcResponse,
   ListToolsParams,
+  ResolvedConfig,
   RestartServerParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { IPC_ERROR, SOCKET_PATH, encodeResponse } from "@mcp-cli/core";
+import { DB_PATH, IPC_ERROR, SOCKET_PATH, encodeResponse } from "@mcp-cli/core";
+import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { startCallbackServer } from "./auth/callback-server.js";
+import { McpOAuthProvider } from "./auth/oauth-provider.js";
+import type { StateDb } from "./db/state.js";
 import type { ServerPool } from "./server-pool.js";
 
 type RequestHandler = (params: unknown) => Promise<unknown>;
@@ -29,6 +34,8 @@ export class IpcServer {
 
   constructor(
     private pool: ServerPool,
+    private config: ResolvedConfig,
+    private db: StateDb,
     options: { onActivity: () => void },
   ) {
     this.onActivity = options.onActivity;
@@ -143,6 +150,7 @@ export class IpcServer {
       pid: process.pid,
       uptime: process.uptime(),
       servers: this.pool.listServers(),
+      dbPath: DB_PATH,
     }));
 
     this.handlers.set("listServers", async () => this.pool.listServers());
@@ -164,19 +172,85 @@ export class IpcServer {
 
     this.handlers.set("callTool", async (params) => {
       const { server, tool, arguments: args } = params as CallToolParams;
-      return this.pool.callTool(server, tool, args);
+      const start = Date.now();
+      try {
+        const result = await this.pool.callTool(server, tool, args);
+        this.db.recordUsage(server, tool, Date.now() - start, true);
+        return result;
+      } catch (err) {
+        this.db.recordUsage(server, tool, Date.now() - start, false, err instanceof Error ? err.message : String(err));
+        throw err;
+      }
     });
 
     this.handlers.set("triggerAuth", async (params) => {
       const { server } = params as TriggerAuthParams;
-      // TODO: implement auth flow
-      return { message: `Auth flow for "${server}" not yet implemented` };
+      const serverUrl = this.pool.getServerUrl(server);
+      if (!serverUrl) {
+        throw Object.assign(new Error(`Server "${server}" not found or is not a remote (SSE/HTTP) server`), {
+          code: IPC_ERROR.SERVER_NOT_FOUND,
+        });
+      }
+
+      const poolDb = this.pool.getDb();
+      if (!poolDb) {
+        throw Object.assign(new Error("Database not available"), { code: IPC_ERROR.INTERNAL_ERROR });
+      }
+
+      // Start callback server for OAuth redirect
+      const callback = startCallbackServer();
+      try {
+        // Create provider with callback URL
+        const provider = new McpOAuthProvider(server, serverUrl, poolDb);
+        provider.setRedirectUrl(callback.url);
+
+        // Run the SDK auth orchestrator
+        const result = await auth(provider, { serverUrl });
+
+        if (result === "AUTHORIZED") {
+          // Already authorized (tokens were valid) — restart server to reconnect
+          await this.pool.restart(server);
+          callback.stop();
+          return { ok: true, message: "Already authorized" };
+        }
+
+        // result === "REDIRECT" — browser was opened, wait for callback
+        const code = await callback.waitForCode;
+
+        // Exchange code for tokens
+        await auth(provider, { serverUrl, authorizationCode: code });
+
+        // Reconnect with new tokens
+        await this.pool.restart(server);
+
+        return { ok: true, message: "Authenticated successfully" };
+      } catch (err) {
+        callback.stop();
+        throw err;
+      }
     });
 
     this.handlers.set("restartServer", async (params) => {
       const { server } = (params ?? {}) as RestartServerParams;
       await this.pool.restart(server);
       return { ok: true };
+    });
+
+    this.handlers.set("getConfig", async () => {
+      const servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }> = {};
+      for (const [name, resolved] of this.config.servers) {
+        const status = this.pool.listServers().find((s) => s.name === name);
+        servers[name] = {
+          transport: status?.transport ?? "unknown",
+          source: resolved.source.file,
+          scope: resolved.source.scope,
+          toolCount: status?.toolCount ?? 0,
+        };
+      }
+      return {
+        servers,
+        sources: this.config.sources,
+      };
     });
 
     this.handlers.set("shutdown", async () => {

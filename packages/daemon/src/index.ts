@@ -13,18 +13,20 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
+  DB_PATH,
   MCP_CLI_DIR,
   PID_PATH,
   SOCKET_PATH,
 } from "@mcp-cli/core";
-import { loadConfig, configHash } from "./config/loader.js";
-import { ServerPool } from "./server-pool.js";
+import { configHash, loadConfig } from "./config/loader.js";
+import { StateDb } from "./db/state.js";
 import { IpcServer } from "./ipc-server.js";
+import { ServerPool } from "./server-pool.js";
 
 async function main(): Promise<void> {
   // Ensure state directory exists
@@ -43,8 +45,12 @@ async function main(): Promise<void> {
   };
   writeFileSync(PID_PATH, JSON.stringify(pidData));
 
+  // Open SQLite database
+  const db = new StateDb(DB_PATH);
+  console.error(`[mcpd] Database: ${DB_PATH}`);
+
   // Create server pool
-  const pool = new ServerPool(config);
+  const pool = new ServerPool(config, db);
 
   // Idle timeout management
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
@@ -59,7 +65,7 @@ async function main(): Promise<void> {
   }
 
   // Start IPC server
-  const ipcServer = new IpcServer(pool, { onActivity: resetIdleTimer });
+  const ipcServer = new IpcServer(pool, config, db, { onActivity: resetIdleTimer });
   ipcServer.start();
 
   // Start idle timer
@@ -73,6 +79,7 @@ async function main(): Promise<void> {
     console.error("[mcpd] Shutting down...");
     ipcServer.stop();
     await pool.closeAll();
+    db.close();
     try {
       unlinkSync(PID_PATH);
     } catch {

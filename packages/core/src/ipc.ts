@@ -17,6 +17,7 @@ export type IpcMethod =
   | "callTool"
   | "triggerAuth"
   | "restartServer"
+  | "getConfig"
   | "shutdown";
 
 // -- Request/Response --
@@ -97,6 +98,11 @@ export interface DaemonStatus {
   dbPath: string;
 }
 
+export interface GetConfigResult {
+  servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }>;
+  sources: Array<{ file: string; scope: string }>;
+}
+
 // -- Error codes --
 
 export const IPC_ERROR = {
@@ -123,12 +129,12 @@ export function nextId(): string {
 
 /** Encode a request to NDJSON line */
 export function encodeRequest(req: IpcRequest): string {
-  return JSON.stringify(req) + "\n";
+  return `${JSON.stringify(req)}\n`;
 }
 
 /** Encode a response to NDJSON line */
 export function encodeResponse(res: IpcResponse): string {
-  return JSON.stringify(res) + "\n";
+  return `${JSON.stringify(res)}\n`;
 }
 
 /** Parse a single NDJSON line */

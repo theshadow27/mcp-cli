@@ -4,6 +4,8 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
+import { type JsonSchema, jsonSchemaToTs } from "./schema-display.js";
+
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
 
 const c = {
@@ -117,55 +119,21 @@ export function printToolInfo(tool: {
   }
 
   // Print input schema as compact TS-like notation
-  const props = (tool.inputSchema as { properties?: Record<string, SchemaProperty> }).properties;
-  const required = (tool.inputSchema as { required?: string[] }).required ?? [];
+  const schema = tool.inputSchema as JsonSchema;
+  const props = schema.properties;
+  const required = schema.required ?? [];
 
   if (props) {
     console.log("Parameters:");
-    for (const [name, schema] of Object.entries(props)) {
+    for (const [name, propSchema] of Object.entries(props)) {
       const isRequired = required.includes(name);
-      const typeStr = schemaToTypeString(schema);
+      const typeStr = jsonSchemaToTs(propSchema as JsonSchema);
       const optMark = isRequired ? "" : "?";
-      const desc = schema.description ? `  ${c.dim}// ${schema.description}${c.reset}` : "";
+      const desc = (propSchema as JsonSchema).description
+        ? `  ${c.dim}// ${(propSchema as JsonSchema).description}${c.reset}`
+        : "";
       console.log(`  ${c.yellow}${name}${optMark}${c.reset}: ${typeStr}${desc}`);
     }
-  }
-}
-
-interface SchemaProperty {
-  type?: string;
-  enum?: unknown[];
-  description?: string;
-  items?: SchemaProperty;
-  properties?: Record<string, SchemaProperty>;
-  default?: unknown;
-}
-
-/** Convert a JSON Schema property to a compact TypeScript type string */
-function schemaToTypeString(schema: SchemaProperty): string {
-  if (schema.enum) {
-    return schema.enum.map((v) => JSON.stringify(v)).join(" | ");
-  }
-  switch (schema.type) {
-    case "string":
-      return "string";
-    case "number":
-    case "integer":
-      return "number";
-    case "boolean":
-      return "boolean";
-    case "array":
-      return schema.items ? `${schemaToTypeString(schema.items)}[]` : "unknown[]";
-    case "object":
-      if (schema.properties) {
-        const entries = Object.entries(schema.properties)
-          .map(([k, v]) => `${k}: ${schemaToTypeString(v)}`)
-          .join("; ");
-        return `{ ${entries} }`;
-      }
-      return "Record<string, unknown>";
-    default:
-      return "unknown";
   }
 }
 

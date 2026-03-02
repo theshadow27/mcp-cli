@@ -5,20 +5,18 @@
  * disconnected after idle timeout.
  */
 
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import type {
-  ResolvedConfig,
-  ResolvedServer,
-  ServerConfig,
-  ServerStatus,
-  ToolInfo,
-} from "@mcp-cli/core";
+import { type JsonSchema, formatToolSignature } from "@mcp-cli/command/schema-display.js";
+import type { ResolvedConfig, ResolvedServer, ServerConfig, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { getTransportType, isHttpConfig, isSseConfig, isStdioConfig } from "@mcp-cli/core";
+import { McpOAuthProvider } from "./auth/oauth-provider.js";
+import type { StateDb } from "./db/state.js";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
@@ -31,22 +29,31 @@ interface ServerConnection {
   state: ConnectionState;
   lastUsed: number;
   lastError?: string;
+  connectingPromise?: Promise<ServerConnection>;
 }
 
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
   private config: ResolvedConfig;
+  private db: StateDb | null;
 
-  constructor(config: ResolvedConfig) {
+  constructor(config: ResolvedConfig, db?: StateDb) {
     this.config = config;
-    // Pre-populate connection entries (disconnected)
+    this.db = db ?? null;
+    // Pre-populate connection entries (disconnected, with cached tools if available)
     for (const [name, resolved] of config.servers) {
+      const cachedTools = new Map<string, ToolInfo>();
+      if (db) {
+        for (const tool of db.getCachedTools(name)) {
+          cachedTools.set(tool.name, tool);
+        }
+      }
       this.connections.set(name, {
         name,
         resolved,
         client: null,
         transport: null,
-        tools: new Map(),
+        tools: cachedTools,
         state: "disconnected",
         lastUsed: 0,
       });
@@ -89,29 +96,44 @@ export class ServerPool {
       return conn;
     }
 
-    // Connect
-    conn.state = "connecting";
-    try {
-      const transport = createTransport(conn.resolved.config);
-      const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+    // Deduplicate concurrent connection attempts
+    if (conn.connectingPromise) return conn.connectingPromise;
 
-      await client.connect(transport);
+    conn.connectingPromise = (async () => {
+      conn.state = "connecting";
+      try {
+        // Create auth provider for remote transports
+        let authProvider: OAuthClientProvider | undefined;
+        const config = conn.resolved.config;
+        if (this.db && (isSseConfig(config) || isHttpConfig(config))) {
+          authProvider = new McpOAuthProvider(name, config.url, this.db);
+        }
 
-      conn.client = client;
-      conn.transport = transport;
-      conn.state = "connected";
-      conn.lastUsed = Date.now();
-      conn.lastError = undefined;
+        const transport = createTransport(config, authProvider);
+        const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
 
-      // Cache tools on connect
-      await this.refreshTools(conn);
+        await client.connect(transport);
 
-      return conn;
-    } catch (err) {
-      conn.state = "error";
-      conn.lastError = err instanceof Error ? err.message : String(err);
-      throw err;
-    }
+        conn.client = client;
+        conn.transport = transport;
+        conn.state = "connected";
+        conn.lastUsed = Date.now();
+        conn.lastError = undefined;
+
+        // Cache tools on connect
+        await this.refreshTools(conn);
+
+        return conn;
+      } catch (err) {
+        conn.state = "error";
+        conn.lastError = err instanceof Error ? err.message : String(err);
+        throw err;
+      }
+    })().finally(() => {
+      conn.connectingPromise = undefined;
+    });
+
+    return conn.connectingPromise;
   }
 
   /** Refresh cached tool list for a connection */
@@ -120,13 +142,21 @@ export class ServerPool {
     try {
       const { tools } = await conn.client.listTools();
       conn.tools.clear();
+      const { allowedTools, disabledTools } = conn.resolved.config;
       for (const tool of tools) {
+        if (!isToolAllowed(tool.name, allowedTools, disabledTools)) continue;
+        const inputSchema = (tool.inputSchema as Record<string, unknown>) ?? {};
         conn.tools.set(tool.name, {
           name: tool.name,
           server: conn.name,
           description: tool.description ?? "",
-          inputSchema: (tool.inputSchema as Record<string, unknown>) ?? {},
+          inputSchema,
+          signature: formatToolSignature(tool.name, inputSchema as JsonSchema),
         });
+      }
+      // Persist to SQLite cache
+      if (this.db) {
+        this.db.cacheTools(conn.name, [...conn.tools.values()]);
       }
     } catch (err) {
       console.error(`[pool] Failed to list tools for "${conn.name}": ${err}`);
@@ -152,15 +182,18 @@ export class ServerPool {
       const conn = await this.ensureConnected(serverName);
       return [...conn.tools.values()];
     }
-    // List all — connect to all servers
+    // List all — connect to all servers in parallel
+    const names = [...this.connections.keys()];
+    const settled = await Promise.allSettled(names.map((name) => this.ensureConnected(name)));
+
     const results: ToolInfo[] = [];
     const errors: string[] = [];
-    for (const name of this.connections.keys()) {
-      try {
-        const conn = await this.ensureConnected(name);
-        results.push(...conn.tools.values());
-      } catch (err) {
-        errors.push(`${name}: ${err instanceof Error ? err.message : err}`);
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i];
+      if (outcome.status === "fulfilled") {
+        results.push(...outcome.value.tools.values());
+      } else {
+        errors.push(`${names[i]}: ${outcome.reason instanceof Error ? outcome.reason.message : outcome.reason}`);
       }
     }
     if (errors.length > 0 && results.length === 0) {
@@ -235,6 +268,20 @@ export class ServerPool {
     }
   }
 
+  /** Get the URL of a remote server, or undefined for stdio */
+  getServerUrl(name: string): string | undefined {
+    const conn = this.connections.get(name);
+    if (!conn) return undefined;
+    const config = conn.resolved.config;
+    if (isSseConfig(config) || isHttpConfig(config)) return config.url;
+    return undefined;
+  }
+
+  /** Get the StateDb instance */
+  getDb(): StateDb | null {
+    return this.db;
+  }
+
   /** Get names of servers idle longer than the threshold */
   getIdleServers(thresholdMs: number): string[] {
     const now = Date.now();
@@ -246,7 +293,7 @@ export class ServerPool {
 
 // -- Transport factories --
 
-function createTransport(config: ServerConfig): Transport {
+function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
   if (isStdioConfig(config)) {
     const mergedEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) {
@@ -265,12 +312,14 @@ function createTransport(config: ServerConfig): Transport {
 
   if (isHttpConfig(config)) {
     return new StreamableHTTPClientTransport(new URL(config.url), {
+      authProvider,
       requestInit: config.headers ? { headers: config.headers } : undefined,
     });
   }
 
   if (isSseConfig(config)) {
     return new SSEClientTransport(new URL(config.url), {
+      authProvider,
       requestInit: config.headers ? { headers: config.headers } : undefined,
     });
   }
@@ -281,6 +330,27 @@ function createTransport(config: ServerConfig): Transport {
 // -- Utility --
 
 function globToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
   return new RegExp(escaped, "i");
+}
+
+/** Check if a tool passes allowedTools/disabledTools glob filters */
+function isToolAllowed(name: string, allowed?: string[], disabled?: string[]): boolean {
+  // disabledTools takes precedence
+  if (disabled?.length) {
+    for (const pattern of disabled) {
+      if (globToRegex(pattern).test(name)) return false;
+    }
+  }
+  // If allowedTools is set, tool must match at least one pattern
+  if (allowed?.length) {
+    for (const pattern of allowed) {
+      if (globToRegex(pattern).test(name)) return true;
+    }
+    return false;
+  }
+  return true;
 }

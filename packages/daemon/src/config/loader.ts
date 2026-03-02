@@ -44,15 +44,17 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
   if (mcpJsonPath) {
     const mcpConfig = await readJsonFile<McpConfigFile>(mcpJsonPath);
     if (mcpConfig?.mcpServers) {
-      // Check if Claude Code has disabled any of these
+      // Check if Claude Code has enabled/disabled any of these
       const projectPath = resolve(cwd);
-      const disabledMcpJson = claudeConfig?.projects?.[projectPath]?.disabledMcpjsonServers ?? [];
+      const projectSettings = claudeConfig?.projects?.[projectPath];
+      const disabledMcpJson = projectSettings?.disabledMcpjsonServers ?? [];
+      const enabledMcpJson = projectSettings?.enabledMcpjsonServers;
       const source: ConfigSource = { file: mcpJsonPath, scope: "project" };
       sources.push(source);
       for (const [name, config] of Object.entries(mcpConfig.mcpServers)) {
-        if (!disabledMcpJson.includes(name)) {
-          addServer(servers, name, config, source);
-        }
+        if (disabledMcpJson.includes(name)) continue;
+        if (enabledMcpJson && !enabledMcpJson.includes(name)) continue;
+        addServer(servers, name, config, source);
       }
     }
   }
@@ -102,11 +104,7 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
 
 // -- Helpers --
 
-function addServers(
-  target: Map<string, ResolvedServer>,
-  configs: ServerConfigMap,
-  source: ConfigSource,
-): void {
+function addServers(target: Map<string, ResolvedServer>, configs: ServerConfigMap, source: ConfigSource): void {
   for (const [name, config] of Object.entries(configs)) {
     addServer(target, name, config, source);
   }
@@ -129,7 +127,10 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
   try {
     const text = await readFile(path, "utf-8");
     return JSON.parse(text) as T;
-  } catch {
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      console.error(`[config] Failed to parse ${path}: ${err.message}`);
+    }
     return null;
   }
 }
@@ -164,7 +165,7 @@ function findMatchingProject(projectPaths: string[], cwd: string): string | null
   let best: string | null = null;
   let bestLen = 0;
   for (const p of projectPaths) {
-    if (resolved.startsWith(p) && p.length > bestLen) {
+    if ((resolved.startsWith(`${p}/`) || resolved === p) && p.length > bestLen) {
       best = p;
       bestLen = p.length;
     }
