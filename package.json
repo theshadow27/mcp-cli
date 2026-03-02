@@ -1,0 +1,26 @@
+{
+  "name": "mcp-cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "typecheck": "bun --bun tsc -b",
+    "lint": "bunx biome check --write .",
+    "lint:check": "bunx biome check .",
+    "test": "bun test",
+    "dev:daemon": "bun packages/daemon/src/index.ts",
+    "dev:mcp": "bun packages/command/src/index.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0"
+  }
+}

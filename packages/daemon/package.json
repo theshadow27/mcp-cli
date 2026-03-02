@@ -1,0 +1,12 @@
+{
+  "name": "@mcp-cli/daemon",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mcp-cli/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.26.0"
+  }
+}

@@ -1,0 +1,222 @@
+#!/usr/bin/env bun
+/**
+ * mcp — MCP CLI
+ *
+ * Call MCP server tools from the command line.
+ * Talks to mcpd daemon via Unix socket for connection management.
+ *
+ * Usage:
+ *   mcp ls                                      # list servers
+ *   mcp ls <server>                              # list tools for a server
+ *   mcp call <server> <tool> [json|@file]        # call a tool
+ *   mcp info <server> <tool>                     # show tool schema
+ *   mcp grep <pattern>                           # search tools
+ *   mcp status                                   # daemon status
+ */
+
+import { readFileSync } from "node:fs";
+import type { ServerStatus, ToolInfo } from "@mcp-cli/core";
+import { ipcCall } from "./ipc-client.js";
+import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
+    printUsage();
+    return;
+  }
+
+  const command = args[0];
+
+  try {
+    switch (command) {
+      case "ls":
+      case "list":
+        await cmdLs(args.slice(1));
+        break;
+
+      case "call":
+        await cmdCall(args.slice(1));
+        break;
+
+      case "info":
+        await cmdInfo(args.slice(1));
+        break;
+
+      case "grep":
+      case "search":
+        await cmdGrep(args.slice(1));
+        break;
+
+      case "status":
+        await cmdStatus();
+        break;
+
+      case "restart":
+        await cmdRestart(args.slice(1));
+        break;
+
+      case "shutdown":
+        await ipcCall("shutdown");
+        console.error("Daemon shut down.");
+        break;
+
+      default:
+        // Check if it looks like "mcp server tool" (missing "call")
+        if (!command.startsWith("-") && args.length >= 2 && !args[1].startsWith("-")) {
+          // Treat as shorthand: mcp <server> <tool> [args]
+          await cmdCall(args);
+        } else {
+          printError(`Unknown command: ${command}`);
+          printUsage();
+          process.exit(1);
+        }
+    }
+  } catch (err) {
+    printError(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+// -- Commands --
+
+async function cmdLs(args: string[]): Promise<void> {
+  const serverName = args[0];
+
+  if (serverName) {
+    // List tools for a specific server
+    const tools = (await ipcCall("listTools", { server: serverName })) as ToolInfo[];
+    printToolList(tools);
+  } else {
+    // List servers
+    const servers = (await ipcCall("listServers")) as ServerStatus[];
+    printServerList(servers);
+  }
+}
+
+async function cmdCall(args: string[]): Promise<void> {
+  if (args.length < 2) {
+    printError("Usage: mcp call <server> <tool> [json|@file]");
+    process.exit(1);
+  }
+
+  const [server, tool, ...rest] = args;
+  const inputArg = rest.join(" ").trim();
+  const toolArgs = await parseToolArgs(inputArg);
+
+  const result = await ipcCall("callTool", { server, tool, arguments: toolArgs });
+  printToolResult(result);
+}
+
+async function cmdInfo(args: string[]): Promise<void> {
+  if (args.length < 2) {
+    printError("Usage: mcp info <server> <tool>");
+    process.exit(1);
+  }
+
+  const [server, tool] = args;
+  const info = (await ipcCall("getToolInfo", { server, tool })) as ToolInfo & {
+    inputSchema: Record<string, unknown>;
+  };
+  printToolInfo(info);
+}
+
+async function cmdGrep(args: string[]): Promise<void> {
+  if (args.length === 0) {
+    printError("Usage: mcp grep <pattern>");
+    process.exit(1);
+  }
+
+  const pattern = args.join(" ");
+  const tools = (await ipcCall("grepTools", { pattern })) as ToolInfo[];
+  printToolList(tools);
+}
+
+async function cmdStatus(): Promise<void> {
+  const status = (await ipcCall("status")) as {
+    pid: number;
+    uptime: number;
+    servers: ServerStatus[];
+  };
+
+  console.log(`Daemon PID: ${status.pid}`);
+  console.log(`Uptime: ${Math.round(status.uptime)}s\n`);
+  printServerList(status.servers);
+}
+
+async function cmdRestart(args: string[]): Promise<void> {
+  const server = args[0];
+  await ipcCall("restartServer", server ? { server } : {});
+  console.error(server ? `Restarted ${server}` : "Restarted all servers");
+}
+
+// -- Argument parsing --
+
+/**
+ * Parse tool arguments from CLI input.
+ * Supports: JSON string, @file.json, stdin pipe, empty (defaults to {}).
+ */
+async function parseToolArgs(input: string): Promise<Record<string, unknown>> {
+  // Empty input
+  if (!input) {
+    // Check for piped stdin
+    if (!process.stdin.isTTY) {
+      return readStdinJson();
+    }
+    return {};
+  }
+
+  // File reference: @file.json
+  if (input.startsWith("@")) {
+    const filePath = input.slice(1);
+    const content = readFileSync(filePath, "utf-8");
+    return JSON.parse(content);
+  }
+
+  // Inline JSON
+  try {
+    return JSON.parse(input);
+  } catch {
+    throw new Error(`Invalid JSON argument: ${input}`);
+  }
+}
+
+/** Read JSON from stdin (piped input) */
+async function readStdinJson(): Promise<Record<string, unknown>> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString("utf-8").trim();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+// -- Help --
+
+function printUsage(): void {
+  console.log(`mcp — MCP tools from the command line
+
+Usage:
+  mcp ls                              List configured servers
+  mcp ls <server>                     List tools for a server
+  mcp call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
+  mcp <server> <tool> [json]          Shorthand for call
+  mcp info <server> <tool>            Show tool schema
+  mcp grep <pattern>                  Search tools by name/description
+  mcp status                          Daemon status
+  mcp restart [server]                Restart server connection(s)
+  mcp shutdown                        Stop the daemon
+
+Examples:
+  mcp ls atlassian
+  mcp call atlassian search '{"query":"sprint planning"}'
+  mcp atlassian search '{"query":"sprint planning"}'
+  mcp call atlassian getJiraIssue @issue.json
+  echo '{"query":"test"}' | mcp call atlassian search
+  mcp info atlassian getConfluencePage
+  mcp grep confluence`);
+}
+
+main();

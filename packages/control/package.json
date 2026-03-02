@@ -1,0 +1,11 @@
+{
+  "name": "@mcp-cli/control",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mcp-cli/core": "workspace:*"
+  }
+}

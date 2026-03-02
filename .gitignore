@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# State directory (local to each machine)
+# ~/.mcp-cli/ is the runtime state dir, not in repo
+
+# Build artifacts
+*.js.map

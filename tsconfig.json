@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "paths": {
+      "@mcp-cli/core": ["./packages/core/src/index.ts"],
+      "@mcp-cli/core/*": ["./packages/core/src/*"],
+      "@mcp-cli/daemon": ["./packages/daemon/src/index.ts"],
+      "@mcp-cli/daemon/*": ["./packages/daemon/src/*"],
+      "@mcp-cli/command": ["./packages/command/src/index.ts"],
+      "@mcp-cli/command/*": ["./packages/command/src/*"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
