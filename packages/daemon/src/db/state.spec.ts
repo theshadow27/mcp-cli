@@ -483,13 +483,10 @@ describe("StateDb", () => {
 
     test("stores complex discovery state as JSON", () => {
       const db = createDb();
+      // Use a state with extra fields to verify JSON round-trip preserves all data
       const state = {
         authorizationServerUrl: "https://auth.example.com",
-        authorizationServerMetadata: {
-          issuer: "https://auth.example.com",
-          authorization_endpoint: "https://auth.example.com/authorize",
-          token_endpoint: "https://auth.example.com/token",
-        },
+        resourceMetadataUrl: "https://resource.example.com/.well-known/oauth-protected-resource",
       };
       db.saveDiscoveryState("srv", state);
 

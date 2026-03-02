@@ -52,7 +52,8 @@ export function startCallbackServer(): CallbackServer {
 
         if (error) {
           const desc = url.searchParams.get("error_description") ?? error;
-          rejectCode(new Error(`OAuth error: ${desc}`));
+          // Defer rejection so the HTTP response is sent before the error propagates
+          queueMicrotask(() => rejectCode(new Error(`OAuth error: ${desc}`)));
           return new Response(ERROR_HTML, {
             headers: { "Content-Type": "text/html" },
           });
@@ -94,8 +95,8 @@ export function startCallbackServer(): CallbackServer {
     }
   }, 120_000);
 
-  // Clean up timeout when code is received
-  waitForCode.finally(() => clearTimeout(timeout));
+  // Clean up timeout when code is received (suppress floating rejection from .finally() chain)
+  waitForCode.finally(() => clearTimeout(timeout)).catch(() => {});
 
   return {
     url,
