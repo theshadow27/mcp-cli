@@ -4,9 +4,12 @@
  * Listens on ~/.mcp-cli/mcpd.sock for NDJSON requests from the `mcp` CLI.
  */
 
-import { unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   CallToolParams,
+  DeleteAliasParams,
+  GetAliasParams,
   GetToolInfoParams,
   GrepToolsParams,
   IpcError,
@@ -16,9 +19,10 @@ import type {
   ListToolsParams,
   ResolvedConfig,
   RestartServerParams,
+  SaveAliasParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { DB_PATH, IPC_ERROR, SOCKET_PATH, encodeResponse } from "@mcp-cli/core";
+import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH, encodeResponse } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
@@ -251,6 +255,50 @@ export class IpcServer {
         servers,
         sources: this.config.sources,
       };
+    });
+
+    this.handlers.set("listAliases", async () => {
+      return this.db.listAliases();
+    });
+
+    this.handlers.set("getAlias", async (params) => {
+      const { name } = params as GetAliasParams;
+      const alias = this.db.getAlias(name);
+      if (!alias) return null;
+      try {
+        const script = readFileSync(alias.filePath, "utf-8");
+        return { ...alias, script };
+      } catch {
+        return { ...alias, script: "" };
+      }
+    });
+
+    this.handlers.set("saveAlias", async (params) => {
+      const { name, script, description } = params as SaveAliasParams;
+      mkdirSync(ALIASES_DIR, { recursive: true });
+      const filePath = join(ALIASES_DIR, `${name}.ts`);
+
+      // Auto-prepend import if not present
+      const hasImport = /import\s.*from\s+["']mcp-cli["']/.test(script);
+      const finalScript = hasImport ? script : `import { mcp, args, file, json } from "mcp-cli";\n${script}`;
+
+      writeFileSync(filePath, finalScript, "utf-8");
+      this.db.saveAlias(name, filePath, description);
+      return { ok: true, filePath };
+    });
+
+    this.handlers.set("deleteAlias", async (params) => {
+      const { name } = params as DeleteAliasParams;
+      const alias = this.db.getAlias(name);
+      if (alias) {
+        try {
+          unlinkSync(alias.filePath);
+        } catch {
+          // file already gone, fine
+        }
+        this.db.deleteAlias(name);
+      }
+      return { ok: true };
     });
 
     this.handlers.set("shutdown", async () => {

@@ -15,13 +15,21 @@
  */
 
 import { readFileSync } from "node:fs";
-import type { DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
+import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
+import { VERSION } from "@mcp-cli/core";
+import { cmdAlias } from "./commands/alias.js";
 import { cmdConfig } from "./commands/config.js";
+import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { ipcCall } from "./ipc-client.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(`mcp-cli ${VERSION}`);
+    return;
+  }
 
   if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
     printUsage();
@@ -62,6 +70,14 @@ async function main(): Promise<void> {
         await cmdAuth(args.slice(1));
         break;
 
+      case "alias":
+        await cmdAlias(args.slice(1));
+        break;
+
+      case "run":
+        await cmdRun(args.slice(1));
+        break;
+
       case "restart":
         await cmdRestart(args.slice(1));
         break;
@@ -71,16 +87,28 @@ async function main(): Promise<void> {
         console.error("Daemon shut down.");
         break;
 
-      default:
+      default: {
         // Check if it looks like "mcp server tool" (missing "call")
         if (!command.startsWith("-") && args.length >= 2 && !args[1].startsWith("-")) {
           // Treat as shorthand: mcp <server> <tool> [args]
           await cmdCall(args);
-        } else {
-          printError(`Unknown command: ${command}`);
-          printUsage();
-          process.exit(1);
+          break;
         }
+
+        // Check if command matches an alias name → run it
+        if (!command.startsWith("-")) {
+          const alias = (await ipcCall("getAlias", { name: command })) as AliasDetail | null;
+          if (alias) {
+            const { runAlias } = await import("./alias-runner.js");
+            await runAlias(alias.filePath, parseRunArgs(args.slice(1)));
+            break;
+          }
+        }
+
+        printError(`Unknown command: ${command}`);
+        printUsage();
+        process.exit(1);
+      }
     }
   } catch (err) {
     printError(err instanceof Error ? err.message : String(err));
@@ -223,12 +251,21 @@ Usage:
   mcp <server> <tool> [json]          Shorthand for call
   mcp info <server> <tool>            Show tool schema
   mcp grep <pattern>                  Search tools by name/description
-  mcp auth <server>                    Authenticate with an OAuth server
+  mcp auth <server>                   Authenticate with an OAuth server
   mcp config show                     Show resolved server config
   mcp config sources                  Show config file sources
   mcp status                          Daemon status
   mcp restart [server]                Restart server connection(s)
   mcp shutdown                        Stop the daemon
+
+Aliases:
+  mcp alias ls                        List saved aliases
+  mcp alias save <name> <@file | ->   Save a TypeScript alias script
+  mcp alias show <name>               Print alias source
+  mcp alias edit <name>               Open alias in $EDITOR
+  mcp alias rm <name>                 Delete an alias
+  mcp run <alias> [--key value ...]   Run an alias with arguments
+  mcp <alias> [--key value ...]       Shorthand for run
 
 Examples:
   mcp ls atlassian
@@ -237,7 +274,9 @@ Examples:
   mcp call atlassian getJiraIssue @issue.json
   echo '{"query":"test"}' | mcp call atlassian search
   mcp info atlassian getConfluencePage
-  mcp grep confluence`);
+  mcp grep confluence
+  mcp alias save get-time @get-time.ts
+  mcp run get-time`);
 }
 
 main();

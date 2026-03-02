@@ -94,6 +94,14 @@ export class StateDb {
         state_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
+
+      CREATE TABLE IF NOT EXISTS aliases (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        file_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
     `);
   }
 
@@ -340,6 +348,48 @@ export class StateDb {
        ON CONFLICT(server_name) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
       [serverName, JSON.stringify(state)],
     );
+  }
+
+  // -- Aliases --
+
+  listAliases(): Array<{ name: string; description: string; filePath: string; updatedAt: number }> {
+    return this.db
+      .query<{ name: string; description: string | null; file_path: string; updated_at: number }, []>(
+        "SELECT name, description, file_path, updated_at FROM aliases ORDER BY name",
+      )
+      .all()
+      .map((row) => ({
+        name: row.name,
+        description: row.description ?? "",
+        filePath: row.file_path,
+        updatedAt: row.updated_at,
+      }));
+  }
+
+  getAlias(name: string): { name: string; description: string; filePath: string } | undefined {
+    const row = this.db
+      .query<{ name: string; description: string | null; file_path: string }, [string]>(
+        "SELECT name, description, file_path FROM aliases WHERE name = ?",
+      )
+      .get(name);
+    if (!row) return undefined;
+    return { name: row.name, description: row.description ?? "", filePath: row.file_path };
+  }
+
+  saveAlias(name: string, filePath: string, description?: string): void {
+    this.db.run(
+      `INSERT INTO aliases (name, file_path, description, created_at, updated_at)
+       VALUES (?, ?, ?, unixepoch(), unixepoch())
+       ON CONFLICT(name) DO UPDATE SET
+         file_path = excluded.file_path,
+         description = excluded.description,
+         updated_at = unixepoch()`,
+      [name, filePath, description ?? null],
+    );
+  }
+
+  deleteAlias(name: string): void {
+    this.db.run("DELETE FROM aliases WHERE name = ?", [name]);
   }
 
   close(): void {

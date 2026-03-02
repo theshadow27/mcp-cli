@@ -11,6 +11,8 @@
     "declaration": false,
     "sourceMap": true,
     "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
     "types": ["bun"],
     "paths": {
       "@mcp-cli/core": ["./packages/core/src/index.ts"],
@@ -18,9 +20,11 @@
       "@mcp-cli/daemon": ["./packages/daemon/src/index.ts"],
       "@mcp-cli/daemon/*": ["./packages/daemon/src/*"],
       "@mcp-cli/command": ["./packages/command/src/index.ts"],
-      "@mcp-cli/command/*": ["./packages/command/src/*"]
+      "@mcp-cli/command/*": ["./packages/command/src/*"],
+      "@mcp-cli/control": ["./packages/control/src/index.tsx"],
+      "@mcp-cli/control/*": ["./packages/control/src/*"]
     }
   },
-  "include": ["packages/*/src/**/*.ts"],
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"],
   "exclude": ["node_modules", "dist"]
 }

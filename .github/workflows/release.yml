@@ -1,0 +1,62 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: bun-darwin-arm64
+            suffix: darwin-arm64
+          - os: macos-13
+            target: bun-darwin-x64
+            suffix: darwin-x64
+          - os: ubuntu-latest
+            target: bun-linux-x64
+            suffix: linux-x64
+          # Cross-compile linux-arm64 from x64 (no free arm64 Linux runners)
+          - os: ubuntu-latest
+            target: bun-linux-arm64
+            suffix: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/build.ts --release --target=${{ matrix.target }}
+      - name: Create tarball
+        run: |
+          cd dist
+          tar czf mcp-${{ matrix.suffix }}.tar.gz mcp-${{ matrix.suffix }} mcpd-${{ matrix.suffix }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums.txt
+          generate_release_notes: true

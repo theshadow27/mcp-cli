@@ -3,9 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.tsx"
   },
   "dependencies": {
-    "@mcp-cli/core": "workspace:*"
+    "@mcp-cli/core": "workspace:*",
+    "react": "^18.3.0",
+    "ink": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0"
   }
 }

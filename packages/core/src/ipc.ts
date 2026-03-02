@@ -18,7 +18,11 @@ export type IpcMethod =
   | "triggerAuth"
   | "restartServer"
   | "getConfig"
-  | "shutdown";
+  | "shutdown"
+  | "listAliases"
+  | "getAlias"
+  | "saveAlias"
+  | "deleteAlias";
 
 // -- Request/Response --
 
@@ -68,6 +72,31 @@ export interface TriggerAuthParams {
 
 export interface RestartServerParams {
   server?: string; // if omitted, restart all
+}
+
+export interface SaveAliasParams {
+  name: string;
+  script: string;
+  description?: string;
+}
+
+export interface DeleteAliasParams {
+  name: string;
+}
+
+export interface GetAliasParams {
+  name: string;
+}
+
+export interface AliasInfo {
+  name: string;
+  description: string;
+  filePath: string;
+  updatedAt: number;
+}
+
+export interface AliasDetail extends AliasInfo {
+  script: string;
 }
 
 // -- Result types --

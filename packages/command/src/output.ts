@@ -137,6 +137,24 @@ export function printToolInfo(tool: {
   }
 }
 
+/** Print a list of aliases */
+export function printAliasList(
+  aliases: Array<{ name: string; description: string; filePath: string; updatedAt: number }>,
+): void {
+  if (aliases.length === 0) {
+    console.error("No aliases saved. Use `mcp alias save <name> <@file | ->` to create one.");
+    return;
+  }
+
+  const maxName = Math.max(...aliases.map((a) => a.name.length));
+
+  for (const a of aliases) {
+    const desc = a.description ? `  ${c.dim}${a.description}${c.reset}` : "";
+    console.log(`  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${a.filePath}${desc}`);
+  }
+  console.log(`\n${aliases.length} alias(es)`);
+}
+
 /** Print an error to stderr */
 export function printError(message: string): void {
   console.error(`${c.red}Error${c.reset}: ${message}`);

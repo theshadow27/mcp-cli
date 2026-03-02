@@ -1,6 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/** CLI version — updated on release */
+export const VERSION = "0.1.0";
+
 /** Runtime state directory */
 export const MCP_CLI_DIR = join(homedir(), ".mcp-cli");
 
