@@ -6,7 +6,7 @@
  */
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
@@ -197,10 +197,14 @@ export async function isDaemonRunning(): Promise<boolean> {
 
 /** Spawn the daemon as a detached background process */
 async function startDaemon(): Promise<void> {
-  // Resolve daemon entry point relative to this file's location in core/src/
+  // Detect compiled binary: argv[0] won't be "bun" and import.meta.dir
+  // won't resolve to the source tree.
   const daemonScript = join(import.meta.dir, "../../daemon/src/index.ts");
+  const isCompiled = !existsSync(daemonScript);
 
-  const proc = Bun.spawn(["bun", "run", daemonScript], {
+  const cmd = isCompiled ? [join(dirname(process.execPath), "mcpd")] : ["bun", "run", daemonScript];
+
+  const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env },
