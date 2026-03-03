@@ -25,11 +25,15 @@ import {
 } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./config/loader.js";
 import { ConfigWatcher } from "./config/watcher.js";
+import { installDaemonLogCapture } from "./daemon-log.js";
 import { StateDb } from "./db/state.js";
 import { IpcServer } from "./ipc-server.js";
 import { ServerPool } from "./server-pool.js";
 
 async function main(): Promise<void> {
+  // Capture daemon logs before anything else
+  installDaemonLogCapture();
+
   // Ensure state directory exists
   mkdirSync(MCP_CLI_DIR, { recursive: true });
 
@@ -66,7 +70,10 @@ async function main(): Promise<void> {
   }
 
   // Start IPC server
-  const ipcServer = new IpcServer(pool, config, db, { onActivity: resetIdleTimer });
+  const ipcServer = new IpcServer(pool, config, db, {
+    onActivity: resetIdleTimer,
+    onShutdown: () => shutdown(),
+  });
   ipcServer.start();
 
   // Watch config files for hot reload

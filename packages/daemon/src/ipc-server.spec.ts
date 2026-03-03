@@ -219,6 +219,29 @@ describe("IpcServer HTTP transport", () => {
     expect(lines.find((l) => l.line === marker)).toBeDefined();
   });
 
+  test("shutdown calls onShutdown callback instead of process.exit", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onShutdown: () => {
+        shutdownCalled = true;
+      },
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "sd1", method: "shutdown" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("sd1");
+    expect(json.result).toEqual({ ok: true });
+
+    // onShutdown is called after a 100ms setTimeout
+    await Bun.sleep(150);
+    expect(shutdownCalled).toBe(true);
+  });
+
   test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {
     socketPath = tmpSocket();
     const pool = Object.assign(mockPool(), {

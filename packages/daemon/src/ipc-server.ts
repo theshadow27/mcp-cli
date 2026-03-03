@@ -39,14 +39,16 @@ export class IpcServer {
   private socketPath = SOCKET_PATH;
   private handlers = new Map<IpcMethod, RequestHandler>();
   private onActivity: () => void;
+  private onShutdown: () => void;
 
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
     private db: StateDb,
-    options: { onActivity: () => void },
+    options: { onActivity: () => void; onShutdown?: () => void },
   ) {
     this.onActivity = options.onActivity;
+    this.onShutdown = options.onShutdown ?? (() => process.exit(0));
     this.registerHandlers();
   }
 
@@ -322,8 +324,8 @@ export class IpcServer {
     });
 
     this.handlers.set("shutdown", async () => {
-      // Schedule shutdown after response is sent
-      setTimeout(() => process.exit(0), 100);
+      // Schedule graceful shutdown after response is sent
+      setTimeout(() => this.onShutdown(), 100);
       return { ok: true };
     });
   }
