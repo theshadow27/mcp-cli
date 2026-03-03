@@ -1,8 +1,29 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** CLI version — updated on release */
 export const VERSION = "0.1.0";
+
+/**
+ * IPC protocol version — content hash of ipc.ts.
+ * Injected at build time via --define; computed at runtime in dev mode.
+ * Changes whenever the IPC contract (methods, params, result types) changes.
+ */
+declare const __PROTOCOL_HASH__: string;
+export const PROTOCOL_VERSION: string =
+  typeof __PROTOCOL_HASH__ !== "undefined" ? __PROTOCOL_HASH__ : computeDevProtocolHash();
+
+function computeDevProtocolHash(): string {
+  try {
+    const content = readFileSync(join(import.meta.dir, "ipc.ts"), "utf-8");
+    const hasher = new Bun.CryptoHasher("sha256");
+    hasher.update(content);
+    return hasher.digest("hex").slice(0, 12);
+  } catch {
+    return "dev";
+  }
+}
 
 /** Runtime state directory */
 export const MCP_CLI_DIR = join(homedir(), ".mcp-cli");

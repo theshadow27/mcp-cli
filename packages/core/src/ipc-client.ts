@@ -16,6 +16,7 @@ import {
   PID_MAX_AGE_MS,
   PID_PATH,
   PING_TIMEOUT_MS,
+  PROTOCOL_VERSION,
   SOCKET_PATH,
 } from "./constants.js";
 import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
@@ -61,6 +62,12 @@ async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return;
 
+  // If the daemon is alive but has the wrong protocol version, shut it down first
+  if (versionMismatchPid !== null) {
+    await stopDaemon();
+    versionMismatchPid = null;
+  }
+
   // Try to acquire exclusive lock
   let lockFd: number | null = null;
   try {
@@ -75,6 +82,13 @@ async function ensureDaemon(): Promise<void> {
   try {
     // Double-check after acquiring lock (daemon may have started between our check and lock)
     if (await isDaemonRunning()) return;
+
+    // Re-check mismatch after lock (another CLI may not have restarted yet)
+    if (versionMismatchPid !== null) {
+      await stopDaemon();
+      versionMismatchPid = null;
+    }
+
     await startDaemon();
   } finally {
     if (lockFd !== null) closeSync(lockFd);
@@ -129,6 +143,27 @@ export function isProcessMcpd(pid: number): boolean {
   }
 }
 
+/** Set when isDaemonRunning detects a version-mismatched daemon that needs to be stopped */
+let versionMismatchPid: number | null = null;
+
+/** Send shutdown command to a running daemon and clean up stale files */
+async function stopDaemon(): Promise<void> {
+  try {
+    await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: nextId(), method: "shutdown" }),
+      unix: SOCKET_PATH,
+      signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+    } as RequestInit);
+    // Wait briefly for the daemon process to exit
+    await Bun.sleep(200);
+  } catch {
+    // Daemon may already be unreachable — fall through to clean up
+  }
+  cleanStaleFiles();
+}
+
 /** Send a quick HTTP ping to verify the daemon is responsive */
 function pingDaemon(): Promise<boolean> {
   return fetch("http://localhost/rpc", {
@@ -152,9 +187,11 @@ function pingDaemon(): Promise<boolean> {
  * 6. Daemon responds to IPC ping
  */
 export async function isDaemonRunning(): Promise<boolean> {
+  versionMismatchPid = null;
+
   if (!existsSync(PID_PATH)) return false;
 
-  let data: { pid: number; startedAt: number };
+  let data: { pid: number; startedAt: number; protocolVersion?: string };
   try {
     data = JSON.parse(readFileSync(PID_PATH, "utf-8"));
   } catch {
@@ -179,6 +216,15 @@ export async function isDaemonRunning(): Promise<boolean> {
   // Verify the process is actually mcpd (not a recycled PID)
   if (!isProcessMcpd(data.pid)) {
     cleanStaleFiles();
+    return false;
+  }
+
+  // Protocol version mismatch — daemon is alive but wrong version
+  if (data.protocolVersion !== PROTOCOL_VERSION) {
+    console.error(
+      `[mcp] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
+    );
+    versionMismatchPid = data.pid;
     return false;
   }
 

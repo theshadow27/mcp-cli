@@ -21,6 +21,7 @@ import {
   DB_PATH,
   MCP_CLI_DIR,
   PID_PATH,
+  PROTOCOL_VERSION,
   SOCKET_PATH,
 } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./config/loader.js";
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
     pid: process.pid,
     configHash: configHash(config),
     startedAt: Date.now(),
+    protocolVersion: PROTOCOL_VERSION,
   };
   writeFileSync(PID_PATH, JSON.stringify(pidData));
 
@@ -89,7 +91,12 @@ async function main(): Promise<void> {
       console.error("[mcpd] Config reloaded (no server changes)");
     }
     // Update PID file with new hash
-    const updatedPid = { pid: process.pid, configHash: event.hash, startedAt: pidData.startedAt };
+    const updatedPid = {
+      pid: process.pid,
+      configHash: event.hash,
+      startedAt: pidData.startedAt,
+      protocolVersion: PROTOCOL_VERSION,
+    };
     writeFileSync(PID_PATH, JSON.stringify(updatedPid));
   });
   watcher.start();

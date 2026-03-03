@@ -167,6 +167,7 @@ export interface ToolInfo {
 export interface DaemonStatus {
   pid: number;
   uptime: number;
+  protocolVersion: string;
   servers: ServerStatus[];
   dbPath: string;
   usageStats: UsageStat[];
