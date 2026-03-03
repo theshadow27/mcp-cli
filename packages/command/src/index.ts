@@ -19,11 +19,39 @@ import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli
 import { VERSION } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { cmdAlias } from "./commands/alias.js";
+import { cmdCompletions } from "./commands/completions.js";
 import { cmdConfig } from "./commands/config.js";
 import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
+import { splitServerTool } from "./parse.js";
+
+/**
+ * Extract --format json / -j flag from args.
+ * Returns whether JSON output was requested and the remaining args.
+ */
+export function extractJsonFlag(args: string[]): { json: boolean; rest: string[] } {
+  const rest: string[] = [];
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-j") {
+      json = true;
+    } else if (args[i] === "--format") {
+      if (args[i + 1] === "json") {
+        json = true;
+        i++; // skip "json"
+      } else {
+        rest.push(args[i]);
+      }
+    } else {
+      rest.push(args[i]);
+    }
+  }
+
+  return { json, rest };
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -61,7 +89,7 @@ async function main(): Promise<void> {
         break;
 
       case "status":
-        await cmdStatus();
+        await cmdStatus(args.slice(1));
         break;
 
       case "config":
@@ -88,6 +116,10 @@ async function main(): Promise<void> {
         await cmdTypegen(args.slice(1));
         break;
 
+      case "completions":
+        await cmdCompletions(args.slice(1));
+        break;
+
       case "restart":
         await cmdRestart(args.slice(1));
         break;
@@ -98,6 +130,12 @@ async function main(): Promise<void> {
         break;
 
       default: {
+        // Check if it looks like "mcp server/tool" (slash notation shorthand)
+        if (!command.startsWith("-") && splitServerTool(command)) {
+          await cmdCall(args);
+          break;
+        }
+
         // Check if it looks like "mcp server tool" (missing "call")
         if (!command.startsWith("-") && args.length >= 2 && !args[1].startsWith("-")) {
           // Treat as shorthand: mcp <server> <tool> [args]
@@ -129,26 +167,39 @@ async function main(): Promise<void> {
 // -- Commands --
 
 async function cmdLs(args: string[]): Promise<void> {
-  const serverName = args[0];
+  const { json, rest } = extractJsonFlag(args);
+  const serverName = rest[0];
 
   if (serverName) {
     // List tools for a specific server
     const tools = (await ipcCall("listTools", { server: serverName })) as ToolInfo[];
-    printToolList(tools);
+    if (json) {
+      console.log(JSON.stringify(tools, null, 2));
+    } else {
+      printToolList(tools);
+    }
   } else {
     // List servers
     const servers = (await ipcCall("listServers")) as ServerStatus[];
-    printServerList(servers);
+    if (json) {
+      console.log(JSON.stringify(servers, null, 2));
+    } else {
+      printServerList(servers);
+    }
   }
 }
 
 async function cmdCall(args: string[]): Promise<void> {
-  if (args.length < 2) {
+  // Support slash notation: "server/tool" → ["server", "tool"]
+  const split = args.length >= 1 ? splitServerTool(args[0]) : null;
+  const resolved = split ? [...split, ...args.slice(1)] : args;
+
+  if (resolved.length < 2) {
     printError("Usage: mcp call <server> <tool> [json|@file]");
     process.exit(1);
   }
 
-  const [server, tool, ...rest] = args;
+  const [server, tool, ...rest] = resolved;
   const inputArg = rest.join(" ").trim();
   const toolArgs = await parseToolArgs(inputArg);
 
@@ -157,36 +208,57 @@ async function cmdCall(args: string[]): Promise<void> {
 }
 
 async function cmdInfo(args: string[]): Promise<void> {
-  if (args.length < 2) {
+  const { json, rest } = extractJsonFlag(args);
+
+  // Support slash notation: "server/tool" → ["server", "tool"]
+  const split = rest.length >= 1 ? splitServerTool(rest[0]) : null;
+  const resolved = split ? [...split, ...rest.slice(1)] : rest;
+
+  if (resolved.length < 2) {
     printError("Usage: mcp info <server> <tool>");
     process.exit(1);
   }
 
-  const [server, tool] = args;
+  const [server, tool] = resolved;
   const info = (await ipcCall("getToolInfo", { server, tool })) as ToolInfo & {
     inputSchema: Record<string, unknown>;
   };
-  printToolInfo(info);
+  if (json) {
+    console.log(JSON.stringify(info, null, 2));
+  } else {
+    printToolInfo(info);
+  }
 }
 
 async function cmdGrep(args: string[]): Promise<void> {
-  if (args.length === 0) {
+  const { json, rest } = extractJsonFlag(args);
+
+  if (rest.length === 0) {
     printError("Usage: mcp grep <pattern>");
     process.exit(1);
   }
 
-  const pattern = args.join(" ");
+  const pattern = rest.join(" ");
   const tools = (await ipcCall("grepTools", { pattern })) as ToolInfo[];
-  printToolList(tools);
+  if (json) {
+    console.log(JSON.stringify(tools, null, 2));
+  } else {
+    printToolList(tools);
+  }
 }
 
-async function cmdStatus(): Promise<void> {
+async function cmdStatus(args: string[] = []): Promise<void> {
+  const { json } = extractJsonFlag(args);
   const status = (await ipcCall("status")) as DaemonStatus;
 
-  console.log(`Daemon PID: ${status.pid}`);
-  console.log(`Uptime: ${Math.round(status.uptime)}s`);
-  console.log(`Database: ${status.dbPath}\n`);
-  printServerList(status.servers);
+  if (json) {
+    console.log(JSON.stringify(status, null, 2));
+  } else {
+    console.log(`Daemon PID: ${status.pid}`);
+    console.log(`Uptime: ${Math.round(status.uptime)}s`);
+    console.log(`Database: ${status.dbPath}\n`);
+    printServerList(status.servers);
+  }
 }
 
 async function cmdAuth(args: string[]): Promise<void> {
@@ -258,8 +330,11 @@ Usage:
   mcp ls                              List configured servers
   mcp ls <server>                     List tools for a server
   mcp call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
+  mcp call <server/tool> [json]       Slash notation
   mcp <server> <tool> [json]          Shorthand for call
+  mcp <server/tool> [json]            Shorthand with slash notation
   mcp info <server> <tool>            Show tool schema
+  mcp info <server/tool>              Slash notation
   mcp grep <pattern>                  Search tools by name/description
   mcp auth <server>                   Authenticate with an OAuth server
   mcp config show                     Show resolved server config
@@ -267,6 +342,7 @@ Usage:
   mcp status                          Daemon status
   mcp logs <server> [-f] [--lines N]  View server stderr output
   mcp typegen                         Generate TypeScript types for alias scripts
+  mcp completions {bash|zsh|fish}     Generate shell completion script
   mcp restart [server]                Restart server connection(s)
   mcp shutdown                        Stop the daemon
 
@@ -279,14 +355,23 @@ Aliases:
   mcp run <alias> [--key value ...]   Run an alias with arguments
   mcp <alias> [--key value ...]       Shorthand for run
 
+Options:
+  --format json, -j                 Machine-readable JSON output (ls, info, grep, status)
+
 Examples:
   mcp ls atlassian
+  mcp ls --format json
+  mcp ls atlassian -j
   mcp call atlassian search '{"query":"sprint planning"}'
+  mcp call atlassian/search '{"query":"sprint planning"}'
   mcp atlassian search '{"query":"sprint planning"}'
+  mcp atlassian/search '{"query":"sprint planning"}'
   mcp call atlassian getJiraIssue @issue.json
   echo '{"query":"test"}' | mcp call atlassian search
   mcp info atlassian getConfluencePage
+  mcp info atlassian/getConfluencePage -j
   mcp grep confluence
+  mcp status -j
   mcp alias save get-time @get-time.ts
   mcp run get-time`);
 }
