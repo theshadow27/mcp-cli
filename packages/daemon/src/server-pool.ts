@@ -442,15 +442,59 @@ export function isRetryableError(err: unknown): boolean {
   return false;
 }
 
+// -- Environment allowlist --
+
+/**
+ * Minimal set of environment variables passed to stdio child processes.
+ * Only these vars are inherited from the daemon's process.env — all others
+ * (AWS_*, GITHUB_TOKEN, SSH_AUTH_SOCK, etc.) are excluded unless explicitly
+ * configured in the server's `env` block.
+ */
+export const BASE_ENV_ALLOWLIST: ReadonlyArray<string> = [
+  "PATH",
+  "HOME",
+  "TERM",
+  "LANG",
+  "SHELL",
+  "USER",
+  "TMPDIR",
+  "XDG_RUNTIME_DIR",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+];
+
+/**
+ * Build the environment object for a stdio child process.
+ *
+ * Returns only: (a) allowlisted base vars from `parentEnv`, plus
+ * (b) explicitly configured vars from `configuredEnv`. This prevents
+ * leaking secrets (AWS credentials, GitHub tokens, etc.) to child servers.
+ *
+ * @internal Exported for testing only.
+ */
+export function buildChildEnv(
+  parentEnv: Record<string, string | undefined>,
+  configuredEnv?: Record<string, string>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // (a) Only inherit allowlisted vars from the parent process
+  for (const key of BASE_ENV_ALLOWLIST) {
+    const value = parentEnv[key];
+    if (value !== undefined) env[key] = value;
+  }
+
+  // (b) Merge explicitly configured vars (these may override allowlisted ones)
+  if (configuredEnv) Object.assign(env, configuredEnv);
+
+  return env;
+}
+
 // -- Transport factories --
 
 function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
   if (isStdioConfig(config)) {
-    const mergedEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined) mergedEnv[key] = value;
-    }
-    if (config.env) Object.assign(mergedEnv, config.env);
+    const mergedEnv = buildChildEnv(process.env as Record<string, string | undefined>, config.env);
 
     return new StdioClientTransport({
       command: config.command,
