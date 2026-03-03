@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-commit hook: typecheck, lint, and test must all pass.
+
+set -euo pipefail
+
+echo "Running pre-commit checks..."
+
+echo "  typecheck..."
+bun run typecheck
+
+echo "  lint..."
+bun run lint:check
+
+echo "  test..."
+bun run test
+
+echo "All checks passed."

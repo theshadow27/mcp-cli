@@ -12,7 +12,8 @@
     "test": "bun test",
     "dev:daemon": "bun packages/daemon/src/index.ts",
     "dev:mcp": "bun packages/command/src/index.ts",
-    "dev:mcpctl": "bun packages/control/src/index.tsx"
+    "dev:mcpctl": "bun packages/control/src/index.tsx",
+    "prepare": "git config core.hooksPath .git-hooks"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
