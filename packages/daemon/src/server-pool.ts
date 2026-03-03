@@ -326,14 +326,32 @@ export class ServerPool {
     return tool;
   }
 
-  /** Call a tool on a server */
+  /** Call a tool on a server. Auto-retries once on transient errors (connection lost, timeout). */
   async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
     const conn = await this.ensureConnected(serverName);
     if (!conn.client) throw new Error(`Not connected to "${serverName}"`);
 
-    const result = await conn.client.callTool({ name: toolName, arguments: args });
-    conn.lastUsed = Date.now();
-    return result;
+    try {
+      const result = await conn.client.callTool({ name: toolName, arguments: args });
+      conn.lastUsed = Date.now();
+      return result;
+    } catch (err) {
+      // Surface non-transient errors immediately (auth, config, etc.)
+      if (!isTransientCallError(err)) throw err;
+
+      console.error(
+        `[mcpd] callTool "${toolName}" on "${serverName}" failed with transient error, reconnecting: ${err instanceof Error ? err.message : String(err)}`,
+      );
+
+      // Attempt one reconnect + retry
+      await this.disconnect(serverName);
+      const reconnected = await this.ensureConnected(serverName);
+      if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
+
+      const result = await reconnected.client.callTool({ name: toolName, arguments: args });
+      reconnected.lastUsed = Date.now();
+      return result;
+    }
   }
 
   /** Search tools across all servers by pattern */
@@ -488,6 +506,53 @@ export function buildChildEnv(
   if (configuredEnv) Object.assign(env, configuredEnv);
 
   return env;
+}
+
+/**
+ * Classify whether a callTool error is transient and worth a single reconnect + retry.
+ *
+ * Covers the same network-level codes as `isRetryableError` plus patterns that indicate
+ * a stale or broken connection (e.g., the MCP server disconnected between calls).
+ *
+ * Auth errors, config errors, and application-level failures are NOT transient.
+ */
+export function isTransientCallError(err: unknown): boolean {
+  // All connection-level retryable errors are also transient call errors
+  if (isRetryableError(err)) return true;
+
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+
+  // NOT transient: auth failures, bad config, missing tools/servers
+  if (
+    msg.includes("401") ||
+    msg.includes("403") ||
+    msg.includes("unauthorized") ||
+    msg.includes("forbidden") ||
+    msg.includes("not found") ||
+    msg.includes("permission denied") ||
+    msg.includes("invalid") ||
+    msg.includes("not allowed")
+  ) {
+    return false;
+  }
+
+  // Stale connection / disconnected patterns
+  if (
+    msg.includes("closed") ||
+    msg.includes("disconnected") ||
+    msg.includes("connection lost") ||
+    msg.includes("broken pipe") ||
+    msg.includes("stream") ||
+    msg.includes("aborted") ||
+    msg.includes("transport") ||
+    msg.includes("eof") ||
+    msg.includes("reset")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 // -- Transport factories --

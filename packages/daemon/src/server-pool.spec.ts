@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   ConfigSource,
   HttpServerConfig,
@@ -7,7 +7,14 @@ import type {
   SseServerConfig,
   StdioServerConfig,
 } from "@mcp-cli/core";
-import { BASE_ENV_ALLOWLIST, ServerPool, buildChildEnv, isRetryableError, wrapTransportError } from "./server-pool.js";
+import {
+  BASE_ENV_ALLOWLIST,
+  ServerPool,
+  buildChildEnv,
+  isRetryableError,
+  isTransientCallError,
+  wrapTransportError,
+} from "./server-pool.js";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
@@ -475,5 +482,321 @@ describe("BASE_ENV_ALLOWLIST", () => {
     // verify the constant is a plain array (not frozen, but typed as readonly).
     expect(Array.isArray(BASE_ENV_ALLOWLIST)).toBe(true);
     expect(BASE_ENV_ALLOWLIST.length).toBeGreaterThan(0);
+  });
+});
+
+// -- isTransientCallError --
+
+describe("isTransientCallError", () => {
+  test("returns false for non-Error values", () => {
+    expect(isTransientCallError("string")).toBe(false);
+    expect(isTransientCallError(null)).toBe(false);
+    expect(isTransientCallError(42)).toBe(false);
+  });
+
+  describe("inherits all isRetryableError patterns", () => {
+    test("ECONNRESET is transient", () => {
+      expect(isTransientCallError(errWithCode("connection reset", "ECONNRESET"))).toBe(true);
+    });
+
+    test("ECONNREFUSED is transient", () => {
+      expect(isTransientCallError(errWithCode("connection refused", "ECONNREFUSED"))).toBe(true);
+    });
+
+    test("ETIMEDOUT is transient", () => {
+      expect(isTransientCallError(errWithCode("timeout", "ETIMEDOUT"))).toBe(true);
+    });
+
+    test("fetch failed is transient", () => {
+      expect(isTransientCallError(new Error("TypeError: fetch failed"))).toBe(true);
+    });
+
+    test("socket hang up is transient", () => {
+      expect(isTransientCallError(new Error("socket hang up"))).toBe(true);
+    });
+  });
+
+  describe("stale connection patterns", () => {
+    test("'connection closed' is transient", () => {
+      expect(isTransientCallError(new Error("Connection closed"))).toBe(true);
+    });
+
+    test("'disconnected' is transient", () => {
+      expect(isTransientCallError(new Error("Client disconnected"))).toBe(true);
+    });
+
+    test("'connection lost' is transient", () => {
+      expect(isTransientCallError(new Error("connection lost"))).toBe(true);
+    });
+
+    test("'broken pipe' is transient", () => {
+      expect(isTransientCallError(new Error("broken pipe"))).toBe(true);
+    });
+
+    test("'stream ended' is transient", () => {
+      expect(isTransientCallError(new Error("SSE stream ended unexpectedly"))).toBe(true);
+    });
+
+    test("'aborted' is transient", () => {
+      expect(isTransientCallError(new Error("request aborted"))).toBe(true);
+    });
+
+    test("'transport closed' is transient", () => {
+      expect(isTransientCallError(new Error("transport closed"))).toBe(true);
+    });
+
+    test("'eof' is transient", () => {
+      expect(isTransientCallError(new Error("unexpected eof"))).toBe(true);
+    });
+
+    test("'reset' is transient", () => {
+      expect(isTransientCallError(new Error("connection reset by peer"))).toBe(true);
+    });
+  });
+
+  describe("non-transient errors", () => {
+    test("401 is not transient", () => {
+      expect(isTransientCallError(new Error("HTTP 401 Unauthorized"))).toBe(false);
+    });
+
+    test("403 is not transient", () => {
+      expect(isTransientCallError(new Error("HTTP 403 Forbidden"))).toBe(false);
+    });
+
+    test("'unauthorized' is not transient", () => {
+      expect(isTransientCallError(new Error("Unauthorized access"))).toBe(false);
+    });
+
+    test("'forbidden' is not transient", () => {
+      expect(isTransientCallError(new Error("Forbidden resource"))).toBe(false);
+    });
+
+    test("'not found' is not transient", () => {
+      expect(isTransientCallError(new Error("Tool not found"))).toBe(false);
+    });
+
+    test("'permission denied' is not transient", () => {
+      expect(isTransientCallError(new Error("permission denied"))).toBe(false);
+    });
+
+    test("'invalid' is not transient", () => {
+      expect(isTransientCallError(new Error("Invalid arguments"))).toBe(false);
+    });
+
+    test("generic unknown error is not transient", () => {
+      expect(isTransientCallError(new Error("something went wrong"))).toBe(false);
+    });
+  });
+});
+
+// -- callTool auto-retry --
+
+/** Type-safe accessor for private ServerPool internals used in tests. */
+interface PoolInternals {
+  connections: Map<string, Record<string, unknown>>;
+  ensureConnected: (...args: unknown[]) => Promise<unknown>;
+}
+
+function getPoolInternals(pool: ServerPool): PoolInternals {
+  return pool as unknown as PoolInternals;
+}
+
+function getConn(pool: ServerPool, name: string): Record<string, unknown> {
+  const conn = getPoolInternals(pool).connections.get(name);
+  if (!conn) throw new Error(`Connection "${name}" not found in pool`);
+  return conn;
+}
+
+function makeMockTransport() {
+  return {
+    close: mock(() => Promise.resolve()),
+    start: mock(() => Promise.resolve()),
+    send: mock(() => Promise.resolve()),
+  };
+}
+
+describe("ServerPool.callTool auto-retry", () => {
+  /**
+   * Helper to create a ServerPool with a fake connection injected.
+   * We bypass ensureConnected() by directly setting the connection state to "connected"
+   * and injecting a mock client.
+   */
+  function setupPoolWithMockClient(callToolFn: (...args: unknown[]) => Promise<unknown>) {
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    conn.state = "connected";
+    conn.lastUsed = Date.now();
+    conn.client = {
+      callTool: callToolFn,
+      close: mock(() => Promise.resolve()),
+      listTools: mock(() => Promise.resolve({ tools: [] })),
+      connect: mock(() => Promise.resolve()),
+    };
+    conn.transport = makeMockTransport();
+
+    return { pool, conn };
+  }
+
+  test("successful call does not trigger retry logic", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
+    const { pool } = setupPoolWithMockClient(callToolMock);
+
+    const result = await pool.callTool("test", "my-tool", { arg: 1 });
+
+    expect(result).toEqual({ content: [{ text: "ok" }] });
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("non-transient error surfaces immediately without retry", async () => {
+    const callToolMock = mock(() => Promise.reject(new Error("HTTP 401 Unauthorized")));
+    const { pool } = setupPoolWithMockClient(callToolMock);
+
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("401 Unauthorized");
+    // Should only be called once — no retry
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("transient error triggers reconnect and successful retry", async () => {
+    let callCount = 0;
+    const callToolMock = mock((): Promise<unknown> => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.reject(new Error("Connection closed"));
+      }
+      return Promise.resolve({ content: [{ text: "retried-ok" }] });
+    });
+
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    const mockClient = {
+      callTool: callToolMock,
+      close: mock(() => Promise.resolve()),
+      listTools: mock(() => Promise.resolve({ tools: [] })),
+      connect: mock(() => Promise.resolve()),
+    };
+
+    conn.state = "connected";
+    conn.lastUsed = Date.now();
+    conn.client = mockClient;
+    conn.transport = makeMockTransport();
+
+    // Mock ensureConnected: after disconnect, the pool calls ensureConnected which will
+    // try to create a real transport. We need to intercept that. We'll replace the
+    // private method with a mock that re-injects our mock client.
+    let ensureConnectedCallCount = 0;
+    getPoolInternals(pool).ensureConnected = async (..._args: unknown[]) => {
+      ensureConnectedCallCount++;
+      if (ensureConnectedCallCount === 1) {
+        // First call — return the connection as-is (before the callTool failure)
+        return conn;
+      }
+      // Second call (after disconnect + reconnect) — re-inject mock client
+      conn.state = "connected";
+      conn.client = mockClient;
+      conn.lastUsed = Date.now();
+      return conn;
+    };
+
+    const result = await pool.callTool("test", "my-tool", { x: 42 });
+
+    expect(result).toEqual({ content: [{ text: "retried-ok" }] });
+    // callTool was called twice: once failed, once succeeded
+    expect(callToolMock).toHaveBeenCalledTimes(2);
+    // ensureConnected was called twice: initial + reconnect
+    expect(ensureConnectedCallCount).toBe(2);
+  });
+
+  test("only one retry attempt — second transient error is not retried", async () => {
+    const callToolMock = mock(() => Promise.reject(new Error("Connection closed")));
+
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    const mockClient = {
+      callTool: callToolMock,
+      close: mock(() => Promise.resolve()),
+      listTools: mock(() => Promise.resolve({ tools: [] })),
+      connect: mock(() => Promise.resolve()),
+    };
+
+    conn.state = "connected";
+    conn.lastUsed = Date.now();
+    conn.client = mockClient;
+    conn.transport = makeMockTransport();
+
+    // Mock ensureConnected to re-inject mock client on reconnect
+    let ensureConnectedCallCount = 0;
+    getPoolInternals(pool).ensureConnected = async () => {
+      ensureConnectedCallCount++;
+      conn.state = "connected";
+      conn.client = mockClient;
+      conn.lastUsed = Date.now();
+      return conn;
+    };
+
+    // Both calls fail — the retry should also throw, not loop infinitely
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("Connection closed");
+    // callTool was called exactly twice: initial + one retry
+    expect(callToolMock).toHaveBeenCalledTimes(2);
+    expect(ensureConnectedCallCount).toBe(2);
+  });
+
+  test("ECONNRESET during call triggers auto-retry", async () => {
+    let callCount = 0;
+    const callToolMock = mock((): Promise<unknown> => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.reject(errWithCode("read ECONNRESET", "ECONNRESET"));
+      }
+      return Promise.resolve({ content: [{ text: "recovered" }] });
+    });
+
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    const mockClient = {
+      callTool: callToolMock,
+      close: mock(() => Promise.resolve()),
+      listTools: mock(() => Promise.resolve({ tools: [] })),
+      connect: mock(() => Promise.resolve()),
+    };
+
+    conn.state = "connected";
+    conn.lastUsed = Date.now();
+    conn.client = mockClient;
+    conn.transport = makeMockTransport();
+
+    getPoolInternals(pool).ensureConnected = async () => {
+      conn.state = "connected";
+      conn.client = mockClient;
+      conn.lastUsed = Date.now();
+      return conn;
+    };
+
+    const result = await pool.callTool("test", "my-tool", {});
+    expect(result).toEqual({ content: [{ text: "recovered" }] });
+    expect(callToolMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("permission denied error is not retried", async () => {
+    const callToolMock = mock(() => Promise.reject(new Error("permission denied for resource")));
+    const { pool } = setupPoolWithMockClient(callToolMock);
+
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("permission denied");
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("'not found' error is not retried", async () => {
+    const callToolMock = mock(() => Promise.reject(new Error("Tool not found on server")));
+    const { pool } = setupPoolWithMockClient(callToolMock);
+
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("not found");
+    expect(callToolMock).toHaveBeenCalledTimes(1);
   });
 });
