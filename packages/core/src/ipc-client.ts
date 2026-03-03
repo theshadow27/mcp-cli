@@ -5,12 +5,14 @@
  * Auto-starts the daemon if not running.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
+  LOCK_PATH,
+  MCP_CLI_DIR,
   PID_MAX_AGE_MS,
   PID_PATH,
   PING_TIMEOUT_MS,
@@ -52,10 +54,53 @@ async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
   return (await res.json()) as IpcResponse;
 }
 
-/** Check if daemon is running, start it if not */
+/**
+ * Check if daemon is running, start it if not.
+ * Uses an exclusive lock file to prevent concurrent startups (race condition).
+ */
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return;
-  await startDaemon();
+
+  // Try to acquire exclusive lock
+  let lockFd: number | null = null;
+  try {
+    mkdirSync(MCP_CLI_DIR, { recursive: true });
+    lockFd = openSync(LOCK_PATH, "wx"); // O_WRONLY | O_CREAT | O_EXCL — atomic
+  } catch {
+    // Another process holds the lock — wait for daemon to appear
+    await waitForDaemon();
+    return;
+  }
+
+  try {
+    // Double-check after acquiring lock (daemon may have started between our check and lock)
+    if (await isDaemonRunning()) return;
+    await startDaemon();
+  } finally {
+    if (lockFd !== null) closeSync(lockFd);
+    try {
+      unlinkSync(LOCK_PATH);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/** Wait for another process to finish starting the daemon */
+async function waitForDaemon(): Promise<void> {
+  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await isDaemonRunning()) return;
+    await Bun.sleep(100);
+  }
+  // Lock may be stale — clean it up and try once more
+  try {
+    unlinkSync(LOCK_PATH);
+  } catch {
+    /* already gone */
+  }
+  if (await isDaemonRunning()) return;
+  throw new Error(`Timed out waiting for daemon to start (${DAEMON_START_TIMEOUT_MS}ms)`);
 }
 
 /** Remove stale PID and socket files so a fresh daemon can start */
@@ -161,20 +206,39 @@ async function startDaemon(): Promise<void> {
     env: { ...process.env },
   });
 
+  // Drain stderr in parallel to prevent pipe buffer deadlock (64KB limit).
+  // Capture output for inclusion in timeout error messages.
+  let stderrOutput = "";
+  const stderrDrain = (async () => {
+    const decoder = new TextDecoder();
+    const reader = proc.stderr.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      stderrOutput += decoder.decode(value, { stream: true });
+    }
+    stderrOutput += decoder.decode(); // flush
+  })();
+
+  const stdoutDecoder = new TextDecoder();
   const reader = proc.stdout.getReader();
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
-  let accumulated = "";
+  let stdout = "";
 
   while (Date.now() < deadline) {
     const { done, value } = await reader.read();
     if (done) break;
-    accumulated += new TextDecoder().decode(value);
-    if (accumulated.includes(DAEMON_READY_SIGNAL)) {
+    stdout += stdoutDecoder.decode(value, { stream: true });
+    if (stdout.includes(DAEMON_READY_SIGNAL)) {
       proc.unref();
       return;
     }
   }
 
   proc.kill();
-  throw new Error(`Daemon failed to start within ${DAEMON_START_TIMEOUT_MS}ms. Output: ${accumulated}`);
+  await stderrDrain.catch(() => {}); // collect any remaining stderr
+  const details = [stdout && `stdout: ${stdout.trim()}`, stderrOutput && `stderr: ${stderrOutput.trim()}`]
+    .filter(Boolean)
+    .join("; ");
+  throw new Error(`Daemon failed to start within ${DAEMON_START_TIMEOUT_MS}ms${details ? `. ${details}` : ""}`);
 }
