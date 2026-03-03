@@ -80,6 +80,9 @@ export const CONNECT_MAX_RETRIES = 3;
 export const CONNECT_INITIAL_DELAY_MS = 1_000;
 export const CONNECT_MAX_DELAY_MS = 15_000;
 
+/** MCP server connect timeout (ms) — how long to wait for client.connect() */
+export const CONNECT_TIMEOUT_MS = 30_000;
+
 /** Daemon startup lock file path */
 export const LOCK_PATH = join(MCP_CLI_DIR, "mcpd.lock");
 

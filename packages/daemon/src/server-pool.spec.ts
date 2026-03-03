@@ -612,6 +612,8 @@ function makeMockTransport() {
     close: mock(() => Promise.resolve()),
     start: mock(() => Promise.resolve()),
     send: mock(() => Promise.resolve()),
+    onclose: undefined as (() => void) | undefined,
+    onerror: undefined as ((err: Error) => void) | undefined,
   };
 }
 
@@ -798,5 +800,137 @@ describe("ServerPool.callTool auto-retry", () => {
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("not found");
     expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// -- Transport lifecycle (crash detection) --
+
+describe("transport lifecycle handlers", () => {
+  test("transport onclose resets connection state to disconnected", () => {
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    conn.state = "connected";
+    conn.client = { close: mock(() => Promise.resolve()) };
+
+    const transport = makeMockTransport();
+    conn.transport = transport;
+
+    // Simulate what attachTransportLifecycle does by calling it via the pool internals
+    // We access the private method through type-casting
+    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
+    poolAny.attachTransportLifecycle("test", transport, conn);
+
+    // Verify transport handlers were attached
+    expect(transport.onclose).toBeDefined();
+    expect(transport.onerror).toBeDefined();
+
+    // Fire onclose
+    (transport as unknown as { onclose: () => void }).onclose();
+
+    expect(conn.state).toBe("disconnected");
+    expect(conn.client).toBeNull();
+    expect(conn.transport).toBeNull();
+  });
+
+  test("transport onerror resets connection state and records lastError", () => {
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    conn.state = "connected";
+    conn.client = { close: mock(() => Promise.resolve()) };
+
+    const transport = makeMockTransport();
+    conn.transport = transport;
+
+    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
+    poolAny.attachTransportLifecycle("test", transport, conn);
+
+    // Fire onerror
+    (transport as unknown as { onerror: (err: Error) => void }).onerror(new Error("server crashed"));
+
+    expect(conn.state).toBe("disconnected");
+    expect(conn.client).toBeNull();
+    expect(conn.transport).toBeNull();
+    expect(conn.lastError).toBe("server crashed");
+  });
+
+  test("transport onclose is a no-op if already disconnected", () => {
+    const config = makeConfig({ test: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "test");
+    conn.state = "disconnected";
+    conn.client = null;
+
+    const transport = makeMockTransport();
+    conn.transport = null;
+
+    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
+    poolAny.attachTransportLifecycle("test", transport, conn);
+
+    // Fire onclose when already disconnected — should be a no-op
+    (transport as unknown as { onclose: () => void }).onclose();
+
+    expect(conn.state).toBe("disconnected");
+  });
+});
+
+// -- Config-triggered reconnect --
+
+describe("ServerPool.updateConfig reconnect", () => {
+  test("config change on connected server triggers disconnect + reconnect", async () => {
+    const config = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    const conn = getConn(pool, "a");
+    conn.state = "connected";
+    conn.client = {
+      close: mock(() => Promise.resolve()),
+      listTools: mock(() => Promise.resolve({ tools: [] })),
+      connect: mock(() => Promise.resolve()),
+    };
+    conn.transport = makeMockTransport();
+
+    // Track ensureConnected calls
+    let reconnectCalled = false;
+    getPoolInternals(pool).ensureConnected = async () => {
+      reconnectCalled = true;
+      conn.state = "connected";
+      return conn;
+    };
+
+    const updated = makeConfig({ a: { command: "cat" } });
+    pool.updateConfig(updated);
+
+    // Wait for the async disconnect → reconnect chain
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(reconnectCalled).toBe(true);
+  });
+
+  test("config change on disconnected server does not trigger reconnect", async () => {
+    const config = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(config);
+
+    // Server is disconnected
+    const conn = getConn(pool, "a");
+    expect(conn.state).toBe("disconnected");
+
+    let reconnectCalled = false;
+    getPoolInternals(pool).ensureConnected = async () => {
+      reconnectCalled = true;
+      return conn;
+    };
+
+    const updated = makeConfig({ a: { command: "cat" } });
+    pool.updateConfig(updated);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should NOT reconnect because the server wasn't connected
+    expect(reconnectCalled).toBe(false);
   });
 });
