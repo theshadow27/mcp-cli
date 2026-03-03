@@ -19,6 +19,9 @@ export const PID_PATH = join(MCP_CLI_DIR, "mcpd.pid");
 /** Alias scripts directory */
 export const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
 
+/** Generated TypeScript declarations for alias scripts */
+export const TYPES_PATH = join(MCP_CLI_DIR, "mcp-cli.d.ts");
+
 /** User-level server config (standalone, outside Claude Code) */
 export const USER_SERVERS_PATH = join(MCP_CLI_DIR, "servers.json");
 

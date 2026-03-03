@@ -17,11 +17,12 @@
 import { readFileSync } from "node:fs";
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { VERSION } from "@mcp-cli/core";
+import { ipcCall } from "@mcp-cli/core";
 import { cmdAlias } from "./commands/alias.js";
 import { cmdConfig } from "./commands/config.js";
 import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
-import { ipcCall } from "@mcp-cli/core";
+import { cmdTypegen } from "./commands/typegen.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
 
 async function main(): Promise<void> {
@@ -81,6 +82,10 @@ async function main(): Promise<void> {
 
       case "logs":
         await cmdLogs(args.slice(1));
+        break;
+
+      case "typegen":
+        await cmdTypegen(args.slice(1));
         break;
 
       case "restart":
@@ -261,6 +266,7 @@ Usage:
   mcp config sources                  Show config file sources
   mcp status                          Daemon status
   mcp logs <server> [-f] [--lines N]  View server stderr output
+  mcp typegen                         Generate TypeScript types for alias scripts
   mcp restart [server]                Restart server connection(s)
   mcp shutdown                        Stop the daemon
 
