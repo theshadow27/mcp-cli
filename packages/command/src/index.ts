@@ -24,8 +24,16 @@ import { cmdConfig } from "./commands/config.js";
 import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
-import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
-import { extractJsonFlag, splitServerTool } from "./parse.js";
+import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index.js";
+import {
+  formatToolResult,
+  printError,
+  printServerList,
+  printToolInfo,
+  printToolList,
+  printToolResult,
+} from "./output.js";
+import { extractFullFlag, extractJqFlag, extractJsonFlag, splitServerTool } from "./parse.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -164,12 +172,16 @@ async function cmdLs(args: string[]): Promise<void> {
 }
 
 async function cmdCall(args: string[]): Promise<void> {
+  // Extract --full/-f and --jq flags before parsing positional args
+  const { full, rest: afterFull } = extractFullFlag(args);
+  const { jq: jqFilter, rest: afterJq } = extractJqFlag(afterFull);
+
   // Support slash notation: "server/tool" → ["server", "tool"]
-  const split = args.length >= 1 ? splitServerTool(args[0]) : null;
-  const resolved = split ? [...split, ...args.slice(1)] : args;
+  const split = afterJq.length >= 1 ? splitServerTool(afterJq[0]) : null;
+  const resolved = split ? [...split, ...afterJq.slice(1)] : afterJq;
 
   if (resolved.length < 2) {
-    printError("Usage: mcp call <server> <tool> [json|@file]");
+    printError("Usage: mcp call <server> <tool> [json|@file] [--jq '<filter>'] [--full]");
     process.exit(1);
   }
 
@@ -178,6 +190,54 @@ async function cmdCall(args: string[]): Promise<void> {
   const toolArgs = await parseToolArgs(inputArg);
 
   const result = await ipcCall("callTool", { server, tool, arguments: toolArgs });
+
+  // Explicit --jq filter: apply client-side regardless of size/env
+  if (jqFilter) {
+    const formatted = formatToolResult(result);
+    try {
+      const data = JSON.parse(formatted);
+      const filtered = await applyJqFilter(data, jqFilter);
+      console.log(JSON.stringify(filtered, null, 2));
+    } catch (err) {
+      printError(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Size protection: only under CLAUDE=1 and without --full
+  const isClaude = process.env.CLAUDE === "1";
+  if (isClaude && !full) {
+    const formatted = formatToolResult(result);
+    const sizeBytes = Buffer.byteLength(formatted, "utf-8");
+
+    if (sizeBytes > SIZE_HINT) {
+      // Too large — replace with structural analysis
+      try {
+        const data = JSON.parse(formatted);
+        console.log(generateAnalysis(data, sizeBytes));
+      } catch {
+        // Not valid JSON — just report size
+        console.log(
+          `Response too large (${(sizeBytes / 1024).toFixed(1)}KB). Use --jq '<filter>' to filter, or --full for raw output.`,
+        );
+      }
+      return;
+    }
+
+    if (sizeBytes > SIZE_OK) {
+      // Medium — pass through + stderr hint
+      console.log(formatted);
+      console.error(`[mcp] ${(sizeBytes / 1024).toFixed(1)}KB response. Use --jq to filter.`);
+      return;
+    }
+
+    // Small — pass through unchanged
+    console.log(formatted);
+    return;
+  }
+
+  // Default: no protection (no CLAUDE env, or --full)
   printToolResult(result);
 }
 
@@ -331,6 +391,8 @@ Aliases:
 
 Options:
   --format json, -j                 Machine-readable JSON output (ls, info, grep, status)
+  --jq '<filter>'                   Apply jq filter to call output (client-side)
+  --full, -f                        Bypass output size protection (call)
 
 Examples:
   mcp ls atlassian

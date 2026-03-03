@@ -18,35 +18,45 @@ const c = {
   cyan: isTTY ? "\x1b[36m" : "",
 };
 
-/** Format and print a tool call result to stdout */
-export function printToolResult(result: unknown): void {
-  if (result === null || result === undefined) return;
+/**
+ * Format a tool call result into a string (pure, no side effects).
+ * Returns the formatted text content.
+ */
+export function formatToolResult(result: unknown): string {
+  if (result === null || result === undefined) return "";
 
   // MCP tool results have a content[] array
   if (typeof result === "object" && "content" in (result as Record<string, unknown>)) {
     const { content } = result as { content: Array<{ type: string; text?: string }> };
     if (Array.isArray(content)) {
+      const parts: string[] = [];
       for (const item of content) {
         if (item.type === "text" && item.text) {
-          printJson(item.text);
+          parts.push(formatJson(item.text));
         } else {
-          console.log(JSON.stringify(item, null, 2));
+          parts.push(JSON.stringify(item, null, 2));
         }
       }
-      return;
+      return parts.join("\n");
     }
   }
 
   // Fallback: print as JSON
-  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
 }
 
-/** Try to pretty-print as JSON, fallback to raw text */
-function printJson(text: string): void {
+/** Format and print a tool call result to stdout */
+export function printToolResult(result: unknown): void {
+  const text = formatToolResult(result);
+  if (text) console.log(text);
+}
+
+/** Try to pretty-format as JSON string, fallback to raw text */
+function formatJson(text: string): string {
   try {
-    console.log(JSON.stringify(JSON.parse(text), null, 2));
+    return JSON.stringify(JSON.parse(text), null, 2);
   } catch {
-    console.log(text);
+    return text;
   }
 }
 
