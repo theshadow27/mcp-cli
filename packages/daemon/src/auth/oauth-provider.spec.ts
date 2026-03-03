@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +13,18 @@ mock.module("./keychain.js", () => ({
 }));
 
 // Now import the provider — it will use our mocked keychain
-const { McpOAuthProvider } = await import("./oauth-provider.js");
+const { McpOAuthProvider, getBrowserCommand } = await import("./oauth-provider.js");
 const { StateDb } = await import("../db/state.js");
+
+const originalPlatform = process.platform;
+const originalWslDistro = process.env.WSL_DISTRO_NAME;
+
+function setPlatform(p: string): void {
+  Object.defineProperty(process, "platform", { value: p });
+}
+function restorePlatform(): void {
+  Object.defineProperty(process, "platform", { value: originalPlatform });
+}
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -344,7 +354,7 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("redirectToAuthorization calls Bun.spawn with open", () => {
+    test("redirectToAuthorization calls Bun.spawn with platform command", () => {
       const db = createDb();
       const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
 
@@ -359,8 +369,8 @@ describe("McpOAuthProvider", () => {
       try {
         provider.redirectToAuthorization(new URL("https://auth.example.com/authorize?code=abc"));
         expect(spawnedArgs).toBeDefined();
-        expect(spawnedArgs?.[0]).toBe("open");
-        expect(spawnedArgs?.[1]).toBe("https://auth.example.com/authorize?code=abc");
+        // The exact command depends on platform; just verify the URL is included
+        expect(spawnedArgs).toContain("https://auth.example.com/authorize?code=abc");
       } finally {
         Bun.spawn = origSpawn;
       }
@@ -393,5 +403,38 @@ describe("McpOAuthProvider", () => {
       expect(provider.redirectUrl).toBe("http://localhost:9999/callback");
       db.close();
     });
+  });
+});
+
+describe("getBrowserCommand", () => {
+  afterEach(() => {
+    restorePlatform();
+    if (originalWslDistro === undefined) {
+      process.env.WSL_DISTRO_NAME = "";
+    } else {
+      process.env.WSL_DISTRO_NAME = originalWslDistro;
+    }
+  });
+
+  test("returns 'open' on macOS", () => {
+    setPlatform("darwin");
+    expect(getBrowserCommand("https://example.com")).toEqual(["open", "https://example.com"]);
+  });
+
+  test("returns 'xdg-open' on Linux", () => {
+    setPlatform("linux");
+    process.env.WSL_DISTRO_NAME = "";
+    expect(getBrowserCommand("https://example.com")).toEqual(["xdg-open", "https://example.com"]);
+  });
+
+  test("returns 'wslview' on WSL", () => {
+    setPlatform("linux");
+    process.env.WSL_DISTRO_NAME = "Ubuntu";
+    expect(getBrowserCommand("https://example.com")).toEqual(["wslview", "https://example.com"]);
+  });
+
+  test("returns 'cmd.exe' on Windows", () => {
+    setPlatform("win32");
+    expect(getBrowserCommand("https://example.com")).toEqual(["cmd.exe", "/c", "start", "", "https://example.com"]);
   });
 });

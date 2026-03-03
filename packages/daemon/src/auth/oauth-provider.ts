@@ -18,6 +18,21 @@ import type {
 import type { StateDb } from "../db/state.js";
 import { type KeychainTokens, readKeychainTokens } from "./keychain.js";
 
+/** Return the platform-appropriate command to open a URL in a browser. */
+export function getBrowserCommand(url: string): string[] {
+  if (process.platform === "darwin") {
+    return ["open", url];
+  }
+  if (process.platform === "win32") {
+    return ["cmd.exe", "/c", "start", "", url];
+  }
+  // Linux — prefer wslview when running under WSL
+  if (process.env.WSL_DISTRO_NAME) {
+    return ["wslview", url];
+  }
+  return ["xdg-open", url];
+}
+
 export class McpOAuthProvider implements OAuthClientProvider {
   private serverName: string;
   private serverUrl: string;
@@ -100,7 +115,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   redirectToAuthorization(authorizationUrl: URL): void {
     const urlStr = authorizationUrl.toString();
     console.error(`[auth] Opening browser for ${this.serverName}: ${urlStr}`);
-    Bun.spawn(["open", urlStr], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn(getBrowserCommand(urlStr), { stdout: "ignore", stderr: "ignore" });
   }
 
   saveCodeVerifier(codeVerifier: string): void {

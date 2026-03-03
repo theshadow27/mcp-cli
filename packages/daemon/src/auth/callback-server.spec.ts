@@ -67,6 +67,42 @@ describe("startCallbackServer", () => {
     expect(resp.status).toBe(404);
   });
 
+  test("timeout rejects waitForCode and stops the server", async () => {
+    // Capture the timeout callback so we can fire it manually
+    const origSetTimeout = globalThis.setTimeout;
+    let timeoutFn: (() => void) | undefined;
+    let timeoutMs: number | undefined;
+    globalThis.setTimeout = ((fn: () => void, ms: number) => {
+      timeoutFn = fn;
+      timeoutMs = ms;
+      // Return a fake timer ID (never actually fires)
+      return origSetTimeout(() => {}, 999_999) as ReturnType<typeof setTimeout>;
+    }) as typeof globalThis.setTimeout;
+
+    try {
+      server = startCallbackServer();
+
+      // Verify timeout was registered at 2 minutes
+      expect(timeoutMs).toBe(120_000);
+      expect(timeoutFn).toBeDefined();
+
+      // Wrap in allSettled before triggering rejection
+      const settled = Promise.allSettled([server.waitForCode]);
+
+      // Fire the timeout callback
+      timeoutFn?.();
+
+      const [result] = await settled;
+      expect(result.status).toBe("rejected");
+      expect((result as PromiseRejectedResult).reason.message).toContain("timeout");
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+    }
+
+    // Server was stopped by timeout — prevent afterEach double-stop
+    server = undefined;
+  });
+
   test("stop() is idempotent", () => {
     server = startCallbackServer();
 
