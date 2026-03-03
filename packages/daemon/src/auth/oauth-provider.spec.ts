@@ -264,6 +264,58 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
+    test("invalidateCredentials('all') also deletes SQLite tokens", async () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+
+      db.saveTokens("srv", { access_token: "to-delete", token_type: "Bearer" });
+      expect(db.getTokens("srv")).toBeDefined();
+
+      provider.invalidateCredentials("all");
+
+      expect(db.getTokens("srv")).toBeUndefined();
+      db.close();
+    });
+
+    test("invalidateCredentials('client') does not affect tokens or verifier", () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+
+      db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
+      db.saveVerifier("srv", "pkce-123");
+
+      provider.invalidateCredentials("client");
+
+      expect(db.getTokens("srv")?.access_token).toBe("tok");
+      expect(db.getVerifier("srv")).toBe("pkce-123");
+      db.close();
+    });
+
+    test("invalidateCredentials('verifier') does not affect tokens", () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+
+      db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
+
+      provider.invalidateCredentials("verifier");
+
+      expect(db.getTokens("srv")?.access_token).toBe("tok");
+      db.close();
+    });
+
+    test("invalidateCredentials('discovery') does not affect tokens", () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+
+      db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
+      db.saveDiscoveryState("srv", { authorizationServerUrl: "https://auth.example.com" });
+
+      provider.invalidateCredentials("discovery");
+
+      expect(db.getTokens("srv")?.access_token).toBe("tok");
+      db.close();
+    });
+
     test("invalidateCredentials('tokens') clears Keychain cache", async () => {
       const db = createDb();
       let callCount = 0;
