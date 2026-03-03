@@ -1,8 +1,8 @@
 /**
  * IPC protocol between mcp (command) and mcpd (daemon).
  *
- * Transport: Unix socket at ~/.mcp-cli/mcpd.sock
- * Encoding: Newline-delimited JSON (NDJSON)
+ * Transport: HTTP over Unix socket at ~/.mcp-cli/mcpd.sock
+ * Encoding: JSON request/response bodies
  */
 
 // -- Methods --
@@ -174,19 +174,4 @@ let counter = 0;
 /** Generate a short unique request ID */
 export function nextId(): string {
   return `r${++counter}`;
-}
-
-/** Encode a request to NDJSON line */
-export function encodeRequest(req: IpcRequest): string {
-  return `${JSON.stringify(req)}\n`;
-}
-
-/** Encode a response to NDJSON line */
-export function encodeResponse(res: IpcResponse): string {
-  return `${JSON.stringify(res)}\n`;
-}
-
-/** Parse a single NDJSON line */
-export function parseLine(line: string): IpcRequest | IpcResponse {
-  return JSON.parse(line);
 }

@@ -1,5 +1,5 @@
 /**
- * IPC client — connects to mcpd daemon via Unix socket.
+ * IPC client — connects to mcpd daemon via HTTP-over-Unix-socket.
  *
  * Shared by both the CLI (command) and TUI (control) packages.
  * Auto-starts the daemon if not running.
@@ -17,7 +17,7 @@ import {
   SOCKET_PATH,
 } from "./constants.js";
 import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
-import { encodeRequest, nextId } from "./ipc.js";
+import { nextId } from "./ipc.js";
 
 /**
  * Send a single request to the daemon and return the response.
@@ -35,69 +35,21 @@ export async function ipcCall(method: IpcMethod, params?: unknown): Promise<unkn
   return response.result;
 }
 
-/** Send a request over Unix socket and wait for the matching response */
+/** Send a request via HTTP-over-Unix-socket and return the response */
 async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
-  return new Promise<IpcResponse>((resolve, reject) => {
-    let buffer = "";
-    let settled = false;
+  const res = await fetch("http://localhost/rpc", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    unix: SOCKET_PATH,
+    signal: AbortSignal.timeout(IPC_REQUEST_TIMEOUT_MS),
+  } as RequestInit);
 
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`Request timed out after ${IPC_REQUEST_TIMEOUT_MS}ms`));
-      }
-    }, IPC_REQUEST_TIMEOUT_MS);
+  if (!res.ok) {
+    throw new Error(`IPC HTTP error: ${res.status} ${res.statusText}`);
+  }
 
-    Bun.connect({
-      unix: SOCKET_PATH,
-      socket: {
-        data(_socket, data) {
-          buffer += data.toString();
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (line.trim() === "") continue;
-            try {
-              const response = JSON.parse(line) as IpcResponse;
-              if (response.id === request.id && !settled) {
-                settled = true;
-                clearTimeout(timeout);
-                _socket.end();
-                resolve(response);
-              }
-            } catch {
-              // ignore malformed lines
-            }
-          }
-        },
-        error(_socket, err) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            reject(new Error(`Socket error: ${err.message}`));
-          }
-        },
-        close() {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            reject(new Error("Connection closed before response received"));
-          }
-        },
-        open(_socket) {
-          _socket.write(encodeRequest(request));
-        },
-        connectError(_socket, err) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            reject(new Error(`Failed to connect to daemon: ${err.message}`));
-          }
-        },
-      },
-    });
-  });
+  return (await res.json()) as IpcResponse;
 }
 
 /** Check if daemon is running, start it if not */
@@ -121,64 +73,28 @@ function cleanStaleFiles(): void {
 }
 
 /** Verify the process at `pid` is actually mcpd (guards against PID recycling) */
-function isProcessMcpd(pid: number): boolean {
+export function isProcessMcpd(pid: number): boolean {
   try {
     const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
     const output = result.stdout.toString().trim();
+    // Match compiled binary (mcpd) or dev script (daemon/src/index)
     return output.includes("mcpd") || output.includes("daemon/src/index");
   } catch {
     return false;
   }
 }
 
-/** Send a quick IPC ping to verify the daemon is responsive */
+/** Send a quick HTTP ping to verify the daemon is responsive */
 function pingDaemon(): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const timeout = setTimeout(() => resolve(false), PING_TIMEOUT_MS);
-    const request: IpcRequest = { id: nextId(), method: "ping" };
-
-    try {
-      Bun.connect({
-        unix: SOCKET_PATH,
-        socket: {
-          data(_socket, data) {
-            const lines = data.toString().split("\n");
-            for (const line of lines) {
-              if (line.trim() === "") continue;
-              try {
-                const response = JSON.parse(line) as IpcResponse;
-                if (response.id === request.id) {
-                  clearTimeout(timeout);
-                  _socket.end();
-                  resolve(!response.error);
-                  return;
-                }
-              } catch {
-                /* ignore malformed */
-              }
-            }
-          },
-          error() {
-            clearTimeout(timeout);
-            resolve(false);
-          },
-          close() {
-            /* handled by timeout or response */
-          },
-          open(_socket) {
-            _socket.write(encodeRequest(request));
-          },
-          connectError() {
-            clearTimeout(timeout);
-            resolve(false);
-          },
-        },
-      });
-    } catch {
-      clearTimeout(timeout);
-      resolve(false);
-    }
-  });
+  return fetch("http://localhost/rpc", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: nextId(), method: "ping" }),
+    unix: SOCKET_PATH,
+    signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+  } as RequestInit)
+    .then((res) => res.ok)
+    .catch(() => false);
 }
 
 /**
@@ -190,7 +106,7 @@ function pingDaemon(): Promise<boolean> {
  * 5. Socket file exists
  * 6. Daemon responds to IPC ping
  */
-async function isDaemonRunning(): Promise<boolean> {
+export async function isDaemonRunning(): Promise<boolean> {
   if (!existsSync(PID_PATH)) return false;
 
   let data: { pid: number; startedAt: number };
@@ -221,7 +137,7 @@ async function isDaemonRunning(): Promise<boolean> {
     return false;
   }
 
-  // Socket must exist
+  // Socket must exist (but don't clean PID — daemon might be initializing)
   if (!existsSync(SOCKET_PATH)) return false;
 
   // Definitive check: daemon responds to ping

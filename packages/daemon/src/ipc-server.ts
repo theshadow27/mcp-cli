@@ -1,7 +1,7 @@
 /**
- * Unix socket IPC server.
+ * HTTP-over-Unix-socket IPC server.
  *
- * Listens on ~/.mcp-cli/mcpd.sock for NDJSON requests from the `mcp` CLI.
+ * Listens on ~/.mcp-cli/mcpd.sock for JSON requests from the `mcp` CLI.
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -23,7 +23,7 @@ import type {
   SaveAliasParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH, encodeResponse } from "@mcp-cli/core";
+import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
@@ -33,7 +33,8 @@ import type { ServerPool } from "./server-pool.js";
 type RequestHandler = (params: unknown) => Promise<unknown>;
 
 export class IpcServer {
-  private server: ReturnType<typeof Bun.listen> | null = null;
+  private server: ReturnType<typeof Bun.serve> | null = null;
+  private socketPath = SOCKET_PATH;
   private handlers = new Map<IpcMethod, RequestHandler>();
   private onActivity: () => void;
 
@@ -48,93 +49,72 @@ export class IpcServer {
   }
 
   /** Start listening on the Unix socket */
-  start(): void {
+  start(socketPath = SOCKET_PATH): void {
+    this.socketPath = socketPath;
+
     // Remove stale socket file
     try {
-      unlinkSync(SOCKET_PATH);
+      unlinkSync(socketPath);
     } catch {
       // doesn't exist, fine
     }
 
-    this.server = Bun.listen({
-      unix: SOCKET_PATH,
-      socket: {
-        data: (socket, data) => {
-          this.handleData(socket, data);
-        },
-        error: (_socket, err) => {
-          console.error("[ipc] Socket error:", err.message);
-        },
-        close: () => {
-          // client disconnected
-        },
-        open: () => {
-          this.onActivity();
-        },
+    const onActivity = this.onActivity;
+    const dispatch = this.dispatch.bind(this);
+
+    this.server = Bun.serve({
+      unix: socketPath,
+      async fetch(req) {
+        if (req.method !== "POST") {
+          return new Response("Method Not Allowed", { status: 405 });
+        }
+
+        const url = new URL(req.url);
+        if (url.pathname !== "/rpc") {
+          return new Response("Not Found", { status: 404 });
+        }
+
+        onActivity();
+
+        let request: IpcRequest;
+        try {
+          request = await req.json();
+        } catch {
+          const error: IpcResponse = {
+            id: "unknown",
+            error: { code: IPC_ERROR.PARSE_ERROR, message: "Invalid JSON" },
+          };
+          return Response.json(error, { status: 400 });
+        }
+
+        try {
+          const result = await dispatch(request);
+          const response: IpcResponse = { id: request.id, result };
+          return Response.json(response);
+        } catch (err) {
+          const response: IpcResponse = {
+            id: request.id,
+            error: toIpcError(err),
+          };
+          return Response.json(response);
+        }
       },
     });
 
-    console.error(`[ipc] Listening on ${SOCKET_PATH}`);
+    console.error(`[ipc] Listening on ${socketPath}`);
   }
 
   /** Stop listening and clean up socket */
   stop(): void {
     this.server?.stop(true);
     try {
-      unlinkSync(SOCKET_PATH);
+      unlinkSync(this.socketPath);
     } catch {
       // already gone
     }
   }
 
-  // -- Data handling --
-
-  private buffers = new WeakMap<object, string>();
-
-  private handleData(socket: { write(data: string): number; flush(): void }, data: Buffer): void {
-    const prev = this.buffers.get(socket) ?? "";
-    const text = prev + data.toString();
-    const lines = text.split("\n");
-
-    // Last element is either empty (complete line) or partial (buffer it)
-    const remaining = lines.pop() ?? "";
-    this.buffers.set(socket, remaining);
-
-    for (const line of lines) {
-      if (line.trim() === "") continue;
-      this.handleLine(socket, line);
-    }
-  }
-
-  private handleLine(socket: { write(data: string): number; flush(): void }, line: string): void {
-    this.onActivity();
-
-    let request: IpcRequest;
-    try {
-      request = JSON.parse(line);
-    } catch {
-      const response: IpcResponse = {
-        id: "unknown",
-        error: { code: IPC_ERROR.PARSE_ERROR, message: "Invalid JSON" },
-      };
-      writeAll(socket, encodeResponse(response));
-      return;
-    }
-
-    this.dispatch(request).then(
-      (result) => {
-        const response: IpcResponse = { id: request.id, result };
-        writeAll(socket, encodeResponse(response));
-      },
-      (err) => {
-        const response: IpcResponse = {
-          id: request.id,
-          error: toIpcError(err),
-        };
-        writeAll(socket, encodeResponse(response));
-      },
-    );
-  }
+  // -- Dispatch --
 
   private async dispatch(request: IpcRequest): Promise<unknown> {
     const handler = this.handlers.get(request.method);
@@ -346,18 +326,4 @@ function toIpcError(err: unknown): IpcError {
     };
   }
   return { code: IPC_ERROR.INTERNAL_ERROR, message: String(err) };
-}
-
-/**
- * Write a full message to a socket, handling partial writes.
- * Bun's socket.write() may return fewer bytes than the payload for large messages.
- * We must write the remainder and flush to ensure the client receives everything.
- */
-function writeAll(socket: { write(data: string): number; flush(): void }, data: string): void {
-  let written = socket.write(data);
-  while (written < data.length) {
-    socket.flush();
-    written += socket.write(data.slice(written));
-  }
-  socket.flush();
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { PID_MAX_AGE_MS, PID_PATH, SOCKET_PATH } from "@mcp-cli/core";
-import { isDaemonRunning, isProcessMcpd } from "./ipc-client.js";
+import { isDaemonRunning, isProcessMcpd } from "@mcp-cli/core";
 
 describe("PID staleness detection", () => {
   let savedPid: string | null = null;
