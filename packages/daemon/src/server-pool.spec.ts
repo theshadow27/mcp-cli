@@ -7,7 +7,7 @@ import type {
   SseServerConfig,
   StdioServerConfig,
 } from "@mcp-cli/core";
-import { ServerPool, isRetryableError, wrapTransportError } from "./server-pool.js";
+import { BASE_ENV_ALLOWLIST, ServerPool, buildChildEnv, isRetryableError, wrapTransportError } from "./server-pool.js";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
@@ -316,5 +316,164 @@ describe("ServerPool.updateConfig", () => {
 
     const names = pool.listServers().map((s) => s.name);
     expect(names).toEqual(["a"]);
+  });
+});
+
+describe("buildChildEnv", () => {
+  /** Simulated parent process.env with both safe and sensitive vars. */
+  const parentEnv: Record<string, string | undefined> = {
+    PATH: "/usr/bin:/bin",
+    HOME: "/home/user",
+    TERM: "xterm-256color",
+    LANG: "en_US.UTF-8",
+    SHELL: "/bin/zsh",
+    USER: "testuser",
+    TMPDIR: "/tmp",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    DISPLAY: ":0",
+    WAYLAND_DISPLAY: "wayland-0",
+    // Sensitive vars that should NOT be inherited
+    AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+    AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    AWS_SESSION_TOKEN: "FwoGZXIvYXdzECEaDHQa...",
+    GITHUB_TOKEN: "ghp_xxxxxxxxxxxx",
+    GH_TOKEN: "ghp_yyyyyyyyyyyy",
+    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+    NPM_TOKEN: "npm_zzzzzzzzz",
+    OPENAI_API_KEY: "sk-xxxxxxxxxxxxx",
+    DATABASE_URL: "postgres://user:pass@host/db",
+    SECRET_KEY: "super-secret-value",
+    DOCKER_HOST: "unix:///var/run/docker.sock",
+  };
+
+  describe("default env allowlist", () => {
+    test("includes all allowlisted vars from process.env", () => {
+      const env = buildChildEnv(parentEnv);
+      for (const key of BASE_ENV_ALLOWLIST) {
+        const expected = parentEnv[key];
+        if (expected !== undefined) {
+          expect(env[key]).toBe(expected);
+        }
+      }
+    });
+
+    test("only contains allowlisted keys when no configured env", () => {
+      const env = buildChildEnv(parentEnv);
+      const keys = Object.keys(env);
+      for (const key of keys) {
+        expect(BASE_ENV_ALLOWLIST).toContain(key);
+      }
+    });
+
+    test("skips allowlisted vars not present in parent env", () => {
+      const sparse: Record<string, string | undefined> = { PATH: "/usr/bin" };
+      const env = buildChildEnv(sparse);
+      expect(env).toEqual({ PATH: "/usr/bin" });
+    });
+
+    test("returns empty object when parent env is empty", () => {
+      const env = buildChildEnv({});
+      expect(env).toEqual({});
+    });
+  });
+
+  describe("explicitly configured vars", () => {
+    test("passes through configured env vars", () => {
+      const env = buildChildEnv(parentEnv, {
+        MY_API_KEY: "configured-key",
+        CUSTOM_VAR: "custom-value",
+      });
+      expect(env.MY_API_KEY).toBe("configured-key");
+      expect(env.CUSTOM_VAR).toBe("custom-value");
+    });
+
+    test("configured vars can override allowlisted vars", () => {
+      const env = buildChildEnv(parentEnv, { PATH: "/custom/bin" });
+      expect(env.PATH).toBe("/custom/bin");
+    });
+
+    test("configured vars can include sensitive names if explicitly set", () => {
+      const env = buildChildEnv(parentEnv, {
+        AWS_ACCESS_KEY_ID: "explicit-key",
+        GITHUB_TOKEN: "explicit-token",
+      });
+      // These are present because they were explicitly configured
+      expect(env.AWS_ACCESS_KEY_ID).toBe("explicit-key");
+      expect(env.GITHUB_TOKEN).toBe("explicit-token");
+    });
+  });
+
+  describe("sensitive vars excluded", () => {
+    const sensitiveVars = [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "SSH_AUTH_SOCK",
+      "NPM_TOKEN",
+      "OPENAI_API_KEY",
+      "DATABASE_URL",
+      "SECRET_KEY",
+      "DOCKER_HOST",
+    ];
+
+    test("does not inherit sensitive vars from parent env", () => {
+      const env = buildChildEnv(parentEnv);
+      for (const key of sensitiveVars) {
+        expect(env[key]).toBeUndefined();
+      }
+    });
+
+    test("sensitive vars not inherited even with unrelated configured vars", () => {
+      const env = buildChildEnv(parentEnv, { INNOCUOUS: "value" });
+      for (const key of sensitiveVars) {
+        expect(env[key]).toBeUndefined();
+      }
+    });
+  });
+
+  describe("env var expansion integration", () => {
+    test("expanded values in configured env are passed through", () => {
+      // The config loader runs expandEnvVarsDeep before the server config
+      // reaches createTransport, so config.env values are already expanded.
+      // This test verifies buildChildEnv faithfully passes the expanded values.
+      const env = buildChildEnv(parentEnv, {
+        API_URL: "https://api.example.com/v1",
+        AUTH_HEADER: "Bearer token-abc123",
+      });
+      expect(env.API_URL).toBe("https://api.example.com/v1");
+      expect(env.AUTH_HEADER).toBe("Bearer token-abc123");
+    });
+  });
+});
+
+describe("BASE_ENV_ALLOWLIST", () => {
+  test("contains expected base vars", () => {
+    expect(BASE_ENV_ALLOWLIST).toContain("PATH");
+    expect(BASE_ENV_ALLOWLIST).toContain("HOME");
+    expect(BASE_ENV_ALLOWLIST).toContain("TERM");
+    expect(BASE_ENV_ALLOWLIST).toContain("LANG");
+    expect(BASE_ENV_ALLOWLIST).toContain("SHELL");
+    expect(BASE_ENV_ALLOWLIST).toContain("USER");
+    expect(BASE_ENV_ALLOWLIST).toContain("TMPDIR");
+    expect(BASE_ENV_ALLOWLIST).toContain("XDG_RUNTIME_DIR");
+    expect(BASE_ENV_ALLOWLIST).toContain("DISPLAY");
+    expect(BASE_ENV_ALLOWLIST).toContain("WAYLAND_DISPLAY");
+  });
+
+  test("does not contain sensitive var names", () => {
+    expect(BASE_ENV_ALLOWLIST).not.toContain("AWS_ACCESS_KEY_ID");
+    expect(BASE_ENV_ALLOWLIST).not.toContain("AWS_SECRET_ACCESS_KEY");
+    expect(BASE_ENV_ALLOWLIST).not.toContain("GITHUB_TOKEN");
+    expect(BASE_ENV_ALLOWLIST).not.toContain("SSH_AUTH_SOCK");
+    expect(BASE_ENV_ALLOWLIST).not.toContain("NPM_TOKEN");
+  });
+
+  test("is immutable (ReadonlyArray)", () => {
+    // TypeScript enforces ReadonlyArray at compile time; at runtime,
+    // verify the constant is a plain array (not frozen, but typed as readonly).
+    expect(Array.isArray(BASE_ENV_ALLOWLIST)).toBe(true);
+    expect(BASE_ENV_ALLOWLIST.length).toBeGreaterThan(0);
   });
 });

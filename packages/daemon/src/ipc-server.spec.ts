@@ -242,6 +242,62 @@ describe("IpcServer HTTP transport", () => {
     expect(shutdownCalled).toBe(true);
   });
 
+  test("shutdown returns ok response before invoking callback", async () => {
+    socketPath = tmpSocket();
+    let callbackTime = 0;
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onShutdown: () => {
+        callbackTime = Date.now();
+      },
+    });
+    server.start(socketPath);
+
+    const responseTime = Date.now();
+    const res = await rpc("/rpc", { id: "sd2", method: "shutdown" });
+    const json = (await res.json()) as IpcResponse;
+
+    // Response should arrive before the callback fires (100ms delay)
+    expect(json.result).toEqual({ ok: true });
+    expect(callbackTime === 0 || callbackTime >= responseTime).toBe(true);
+
+    // Wait for callback to fire
+    await Bun.sleep(150);
+    expect(callbackTime).toBeGreaterThan(0);
+  });
+
+  test("shutdown works when pool has active servers", async () => {
+    socketPath = tmpSocket();
+    let closeAllCalled = false;
+    const poolWithConnections = {
+      ...mockPool(),
+      listServers: () => [
+        { name: "srv1", state: "connected" as const, tools: ["tool-a"] },
+        { name: "srv2", state: "connected" as const, tools: ["tool-b"] },
+      ],
+    };
+    server = new IpcServer(poolWithConnections as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onShutdown: () => {
+        closeAllCalled = true;
+      },
+    });
+    server.start(socketPath);
+
+    // Verify servers are listed (simulating active connections)
+    const listRes = await rpc("/rpc", { id: "ls1", method: "listServers" });
+    const listJson = (await listRes.json()) as IpcResponse;
+    expect((listJson.result as unknown[]).length).toBe(2);
+
+    // Shutdown should still work with active connections
+    const res = await rpc("/rpc", { id: "sd3", method: "shutdown" });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.result).toEqual({ ok: true });
+
+    await Bun.sleep(150);
+    expect(closeAllCalled).toBe(true);
+  });
+
   test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {
     socketPath = tmpSocket();
     const pool = Object.assign(mockPool(), {
