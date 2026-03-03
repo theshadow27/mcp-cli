@@ -24,6 +24,7 @@ if (releaseMode) {
     await Promise.all([
       $`bun build --compile --minify --target=${target} packages/daemon/src/index.ts --outfile dist/mcpd-${suffix}`,
       $`bun build --compile --minify --target=${target} packages/command/src/index.ts --outfile dist/mcp-${suffix}`,
+      $`bun build --compile --minify --target=${target} --external react-devtools-core packages/control/src/index.tsx --outfile dist/mcpctl-${suffix}`,
     ]);
   }
 
@@ -33,6 +34,7 @@ if (releaseMode) {
   await Promise.all([
     $`bun build --compile --minify packages/daemon/src/index.ts --outfile dist/mcpd`,
     $`bun build --compile --minify packages/command/src/index.ts --outfile dist/mcp`,
+    $`bun build --compile --minify --external react-devtools-core packages/control/src/index.tsx --outfile dist/mcpctl`,
   ]);
-  console.log("Built: dist/mcpd, dist/mcp");
+  console.log("Built: dist/mcpd, dist/mcp, dist/mcpctl");
 }

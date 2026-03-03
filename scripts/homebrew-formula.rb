@@ -29,6 +29,7 @@ class McpCli < Formula
   def install
     bin.install "mcp"
     bin.install "mcpd"
+    bin.install "mcpctl"
   end
 
   test do

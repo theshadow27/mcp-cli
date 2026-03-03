@@ -48,9 +48,10 @@ tar xzf "$TMP/mcp.tar.gz" -C "$TMP"
 
 mv "$TMP/mcp-${TARGET}" "$INSTALL_DIR/mcp"
 mv "$TMP/mcpd-${TARGET}" "$INSTALL_DIR/mcpd"
-chmod +x "$INSTALL_DIR/mcp" "$INSTALL_DIR/mcpd"
+mv "$TMP/mcpctl-${TARGET}" "$INSTALL_DIR/mcpctl"
+chmod +x "$INSTALL_DIR/mcp" "$INSTALL_DIR/mcpd" "$INSTALL_DIR/mcpctl"
 
-echo "Installed mcp and mcpd to $INSTALL_DIR"
+echo "Installed mcp, mcpd, and mcpctl to $INSTALL_DIR"
 
 # Check if install dir is in PATH
 case ":$PATH:" in

@@ -23,7 +23,7 @@ function mockPool() {
     getDb: () => null,
     restart: async () => {},
     getStderrLines: () => [],
-  } as never;
+  };
 }
 
 function mockDb() {
@@ -61,7 +61,7 @@ describe("IpcServer HTTP transport", () => {
 
   function startServer(): void {
     socketPath = tmpSocket();
-    server = new IpcServer(mockPool(), mockConfig(), mockDb(), {
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), {
       onActivity: () => {},
     });
     server.start(socketPath);
@@ -152,5 +152,37 @@ describe("IpcServer HTTP transport", () => {
       expect(results[i].id).toBe(`c${i}`);
       expect(results[i].result).toHaveProperty("pong", true);
     }
+  });
+
+  test("triggerAuth with unknown server returns SERVER_NOT_FOUND error", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "auth1", method: "triggerAuth", params: { server: "nonexistent" } });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth1");
+    expect(json.error?.code).toBe(IPC_ERROR.SERVER_NOT_FOUND);
+    expect(json.error?.message).toContain("nonexistent");
+  });
+
+  test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: (name: string) => (name === "myserver" ? "https://example.com" : null),
+      getDb: () => null,
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth2", method: "triggerAuth", params: { server: "myserver" } });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth2");
+    expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
+    expect(json.error?.message).toContain("Database not available");
   });
 });
