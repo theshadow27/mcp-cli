@@ -7,7 +7,6 @@
 
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
 import {
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
@@ -17,6 +16,7 @@ import {
   PING_TIMEOUT_MS,
   SOCKET_PATH,
 } from "./constants.js";
+import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
 import { encodeRequest, nextId } from "./ipc.js";
 
 /**

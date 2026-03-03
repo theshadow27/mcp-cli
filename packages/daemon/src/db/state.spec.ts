@@ -269,9 +269,9 @@ describe("StateDb", () => {
 
       const alias = db.getAlias("greet");
       expect(alias).toBeDefined();
-      expect(alias!.name).toBe("greet");
-      expect(alias!.description).toBe("Say hello");
-      expect(alias!.filePath).toBe("/tmp/greet.ts");
+      expect(alias?.name).toBe("greet");
+      expect(alias?.description).toBe("Say hello");
+      expect(alias?.filePath).toBe("/tmp/greet.ts");
       db.close();
     });
 
@@ -299,7 +299,7 @@ describe("StateDb", () => {
 
       const alias = db.getAlias("minimal");
       expect(alias).toBeDefined();
-      expect(alias!.description).toBe("");
+      expect(alias?.description).toBe("");
       db.close();
     });
 
@@ -343,12 +343,12 @@ describe("StateDb", () => {
 
       const tokens = db.getTokens("srv");
       expect(tokens).toBeDefined();
-      expect(tokens!.access_token).toBe("acc-123");
-      expect(tokens!.token_type).toBe("Bearer");
-      expect(tokens!.refresh_token).toBe("ref-456");
-      expect(tokens!.scope).toBe("read write");
+      expect(tokens?.access_token).toBe("acc-123");
+      expect(tokens?.token_type).toBe("Bearer");
+      expect(tokens?.refresh_token).toBe("ref-456");
+      expect(tokens?.scope).toBe("read write");
       // expires_in is converted to absolute then back to relative, so just check > 0
-      expect(tokens!.expires_in).toBeGreaterThan(0);
+      expect(tokens?.expires_in).toBeGreaterThan(0);
       db.close();
     });
 
@@ -362,8 +362,8 @@ describe("StateDb", () => {
 
       const tokens = db.getTokens("srv");
       // Should be roughly 7200s minus tiny elapsed time
-      expect(tokens!.expires_in).toBeGreaterThan(7190);
-      expect(tokens!.expires_in).toBeLessThanOrEqual(7200);
+      expect(tokens?.expires_in).toBeGreaterThan(7190);
+      expect(tokens?.expires_in).toBeLessThanOrEqual(7200);
       db.close();
     });
 
@@ -373,7 +373,7 @@ describe("StateDb", () => {
       db.saveTokens("srv", { access_token: "new", token_type: "Bearer" });
 
       const tokens = db.getTokens("srv");
-      expect(tokens!.access_token).toBe("new");
+      expect(tokens?.access_token).toBe("new");
       db.close();
     });
 
@@ -396,10 +396,10 @@ describe("StateDb", () => {
       db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
 
       const tokens = db.getTokens("srv");
-      expect(tokens!.access_token).toBe("tok");
-      expect(tokens!.refresh_token).toBeUndefined();
-      expect(tokens!.scope).toBeUndefined();
-      expect(tokens!.expires_in).toBeUndefined();
+      expect(tokens?.access_token).toBe("tok");
+      expect(tokens?.refresh_token).toBeUndefined();
+      expect(tokens?.scope).toBeUndefined();
+      expect(tokens?.expires_in).toBeUndefined();
       db.close();
     });
   });
@@ -411,7 +411,7 @@ describe("StateDb", () => {
 
       const info = db.getClientInfo("srv");
       expect(info).toBeDefined();
-      expect(info!.client_id).toBe("cid-123");
+      expect(info?.client_id).toBe("cid-123");
       db.close();
     });
 
@@ -435,7 +435,7 @@ describe("StateDb", () => {
       db.saveClientInfo("srv", { client_id: "new" });
 
       const info = db.getClientInfo("srv");
-      expect(info!.client_id).toBe("new");
+      expect(info?.client_id).toBe("new");
       db.close();
     });
 

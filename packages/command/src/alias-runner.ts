@@ -8,8 +8,8 @@
  * - `json(path)`: Read and parse a JSON file
  */
 
-import { plugin } from "bun";
 import { ipcCall } from "@mcp-cli/core";
+import { plugin } from "bun";
 
 type ToolFn = (args?: Record<string, unknown>) => Promise<unknown>;
 type ServerProxy = Record<string, ToolFn>;

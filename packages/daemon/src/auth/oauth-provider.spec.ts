@@ -6,9 +6,7 @@ import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { KeychainTokens } from "./keychain.js";
 
 // Set up module mock BEFORE importing McpOAuthProvider
-const mockReadKeychain = mock<(url: string) => Promise<KeychainTokens | null>>(
-  () => Promise.resolve(null),
-);
+const mockReadKeychain = mock<(url: string) => Promise<KeychainTokens | null>>(() => Promise.resolve(null));
 
 mock.module("./keychain.js", () => ({
   readKeychainTokens: (...args: Parameters<typeof mockReadKeychain>) => mockReadKeychain(...args),
@@ -68,8 +66,8 @@ describe("McpOAuthProvider", () => {
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
-      expect(tokens!.access_token).toBe("sqlite-tok");
-      expect(tokens!.refresh_token).toBe("sqlite-refresh");
+      expect(tokens?.access_token).toBe("sqlite-tok");
+      expect(tokens?.refresh_token).toBe("sqlite-refresh");
       // Keychain should not have been called — SQLite had tokens
       expect(mockReadKeychain).not.toHaveBeenCalled();
       db.close();
@@ -91,11 +89,11 @@ describe("McpOAuthProvider", () => {
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
-      expect(tokens!.access_token).toBe("kc-access");
-      expect(tokens!.token_type).toBe("Bearer");
-      expect(tokens!.refresh_token).toBe("kc-refresh");
-      expect(tokens!.scope).toBe("read");
-      expect(tokens!.expires_in).toBeGreaterThan(0);
+      expect(tokens?.access_token).toBe("kc-access");
+      expect(tokens?.token_type).toBe("Bearer");
+      expect(tokens?.refresh_token).toBe("kc-refresh");
+      expect(tokens?.scope).toBe("read");
+      expect(tokens?.expires_in).toBeGreaterThan(0);
       db.close();
     });
 
@@ -112,16 +110,14 @@ describe("McpOAuthProvider", () => {
 
     test("omits expires_in for Keychain tokens with no expiresAt", async () => {
       const db = createDb();
-      mockReadKeychain.mockImplementation(() =>
-        Promise.resolve({ accessToken: "kc-tok", clientId: "kc-client" }),
-      );
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "kc-tok", clientId: "kc-client" }));
 
       const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
-      expect(tokens!.access_token).toBe("kc-tok");
-      expect(tokens!.expires_in).toBeUndefined();
+      expect(tokens?.access_token).toBe("kc-tok");
+      expect(tokens?.expires_in).toBeUndefined();
       db.close();
     });
   });
@@ -132,29 +128,25 @@ describe("McpOAuthProvider", () => {
     test("returns SQLite client info when available", async () => {
       const db = createDb();
       db.saveClientInfo("srv", { client_id: "sqlite-client" });
-      mockReadKeychain.mockImplementation(() =>
-        Promise.resolve({ accessToken: "x", clientId: "kc-client" }),
-      );
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client" }));
 
       const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
       const info = await provider.clientInformation();
 
       expect(info).toBeDefined();
-      expect(info!.client_id).toBe("sqlite-client");
+      expect(info?.client_id).toBe("sqlite-client");
       db.close();
     });
 
     test("falls back to Keychain client_id", async () => {
       const db = createDb();
-      mockReadKeychain.mockImplementation(() =>
-        Promise.resolve({ accessToken: "x", clientId: "kc-client-id" }),
-      );
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client-id" }));
 
       const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
       const info = await provider.clientInformation();
 
       expect(info).toBeDefined();
-      expect(info!.client_id).toBe("kc-client-id");
+      expect(info?.client_id).toBe("kc-client-id");
       db.close();
     });
 
@@ -224,9 +216,7 @@ describe("McpOAuthProvider", () => {
   describe("caching", () => {
     test("reads Keychain only once per provider instance", async () => {
       const db = createDb();
-      mockReadKeychain.mockImplementation(() =>
-        Promise.resolve({ accessToken: "tok", clientId: "cid" }),
-      );
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "tok", clientId: "cid" }));
 
       const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
 
@@ -252,14 +242,14 @@ describe("McpOAuthProvider", () => {
 
       // First call caches
       const first = await provider.tokens();
-      expect(first!.access_token).toBe("tok-1");
+      expect(first?.access_token).toBe("tok-1");
 
       // Invalidate clears the cache
       provider.invalidateCredentials("all");
 
       // Second call re-reads Keychain
       const second = await provider.tokens();
-      expect(second!.access_token).toBe("tok-2");
+      expect(second?.access_token).toBe("tok-2");
       expect(callCount).toBe(2);
       db.close();
     });
@@ -297,7 +287,7 @@ describe("McpOAuthProvider", () => {
 
       const stored = db.getTokens("srv");
       expect(stored).toBeDefined();
-      expect(stored!.access_token).toBe("saved-tok");
+      expect(stored?.access_token).toBe("saved-tok");
       db.close();
     });
 
@@ -309,7 +299,7 @@ describe("McpOAuthProvider", () => {
 
       const stored = db.getClientInfo("srv");
       expect(stored).toBeDefined();
-      expect(stored!.client_id).toBe("saved-client");
+      expect(stored?.client_id).toBe("saved-client");
       db.close();
     });
 
@@ -369,8 +359,8 @@ describe("McpOAuthProvider", () => {
       try {
         provider.redirectToAuthorization(new URL("https://auth.example.com/authorize?code=abc"));
         expect(spawnedArgs).toBeDefined();
-        expect(spawnedArgs![0]).toBe("open");
-        expect(spawnedArgs![1]).toBe("https://auth.example.com/authorize?code=abc");
+        expect(spawnedArgs?.[0]).toBe("open");
+        expect(spawnedArgs?.[1]).toBe("https://auth.example.com/authorize?code=abc");
       } finally {
         Bun.spawn = origSpawn;
       }

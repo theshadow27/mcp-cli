@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { formatUptime } from "./header.js";
 import { isAuthError } from "./auth-banner.js";
+import { formatUptime } from "./header.js";
 import { formatRelativeTime } from "./server-detail.js";
 
 describe("formatUptime", () => {

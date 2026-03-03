@@ -300,7 +300,10 @@ describe("ServerPool.updateConfig", () => {
     const updated = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
     pool.updateConfig(updated);
 
-    const names = pool.listServers().map((s) => s.name).sort();
+    const names = pool
+      .listServers()
+      .map((s) => s.name)
+      .sort();
     expect(names).toEqual(["a", "b"]);
   });
 

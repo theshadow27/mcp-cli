@@ -49,9 +49,7 @@ describe("readKeychainTokens", () => {
     if (originalPlatform !== "darwin") return;
     const readKeychainTokens = await importKeychain();
 
-    const result = await withSpawnMock(["false"], () =>
-      readKeychainTokens("https://api.example.com"),
-    );
+    const result = await withSpawnMock(["false"], () => readKeychainTokens("https://api.example.com"));
     expect(result).toBeNull();
   });
 
@@ -59,9 +57,8 @@ describe("readKeychainTokens", () => {
     if (originalPlatform !== "darwin") return;
     const readKeychainTokens = await importKeychain();
 
-    const result = await withSpawnMock(
-      ["echo", JSON.stringify({ otherKey: true })],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", JSON.stringify({ otherKey: true })], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).toBeNull();
   });
@@ -81,9 +78,8 @@ describe("readKeychainTokens", () => {
       },
     };
 
-    const result = await withSpawnMock(
-      ["echo", JSON.stringify(keychainData)],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).toBeNull();
   });
@@ -109,16 +105,15 @@ describe("readKeychainTokens", () => {
       },
     };
 
-    const result = await withSpawnMock(
-      ["echo", JSON.stringify(keychainData)],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).not.toBeNull();
-    expect(result!.accessToken).toBe("access-123");
-    expect(result!.refreshToken).toBe("refresh-456");
-    expect(result!.clientId).toBe("client-789");
-    expect(result!.scope).toBe("read write");
-    expect(result!.discoveryState).toEqual({
+    expect(result?.accessToken).toBe("access-123");
+    expect(result?.refreshToken).toBe("refresh-456");
+    expect(result?.clientId).toBe("client-789");
+    expect(result?.scope).toBe("read write");
+    expect(result?.discoveryState).toEqual({
       authorizationServerUrl: "https://auth.example.com",
     });
   });
@@ -139,9 +134,8 @@ describe("readKeychainTokens", () => {
       },
     };
 
-    const result = await withSpawnMock(
-      ["echo", JSON.stringify(keychainData)],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).toBeNull();
   });
@@ -163,22 +157,20 @@ describe("readKeychainTokens", () => {
       },
     };
 
-    const result = await withSpawnMock(
-      ["echo", JSON.stringify(keychainData)],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).not.toBeNull();
-    expect(result!.accessToken).toBe("expired-tok");
-    expect(result!.refreshToken).toBe("refresh-tok");
+    expect(result?.accessToken).toBe("expired-tok");
+    expect(result?.refreshToken).toBe("refresh-tok");
   });
 
   test("returns null on malformed JSON", async () => {
     if (originalPlatform !== "darwin") return;
     const readKeychainTokens = await importKeychain();
 
-    const result = await withSpawnMock(
-      ["echo", "not-valid-json{{{"],
-      () => readKeychainTokens("https://api.example.com"),
+    const result = await withSpawnMock(["echo", "not-valid-json{{{"], () =>
+      readKeychainTokens("https://api.example.com"),
     );
     expect(result).toBeNull();
   });

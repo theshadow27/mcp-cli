@@ -1,6 +1,6 @@
 import type { ServerStatus } from "@mcp-cli/core";
-import { useApp, useInput } from "ink";
 import { ipcCall } from "@mcp-cli/core";
+import { useApp, useInput } from "ink";
 
 interface UseKeyboardOptions {
   servers: ServerStatus[];

@@ -3,8 +3,8 @@
  */
 
 import type { AliasDetail } from "@mcp-cli/core";
-import { runAlias } from "../alias-runner.js";
 import { ipcCall } from "@mcp-cli/core";
+import { runAlias } from "../alias-runner.js";
 import { printError } from "../output.js";
 
 export async function cmdRun(args: string[]): Promise<void> {

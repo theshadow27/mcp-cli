@@ -1,6 +1,6 @@
 import type { DaemonStatus } from "@mcp-cli/core";
-import { useCallback, useEffect, useState } from "react";
 import { ipcCall } from "@mcp-cli/core";
+import { useCallback, useEffect, useState } from "react";
 
 interface UseDaemonResult {
   status: DaemonStatus | null;
