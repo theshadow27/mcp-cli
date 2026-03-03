@@ -18,6 +18,7 @@ import {
   CONNECT_INITIAL_DELAY_MS,
   CONNECT_MAX_DELAY_MS,
   CONNECT_MAX_RETRIES,
+  CONNECT_TIMEOUT_MS,
   getTransportType,
   isHttpConfig,
   isSseConfig,
@@ -98,8 +99,13 @@ export class ServerPool {
         // Reconnect if currently connected
         if (existing.state === "connected") {
           this.disconnect(name)
-            .then(() => console.error(`[pool] Reconnecting "${name}" after config change`))
-            .catch(() => {});
+            .then(() => {
+              console.error(`[pool] Reconnecting "${name}" after config change`);
+              return this.ensureConnected(name);
+            })
+            .catch((err) => {
+              console.error(`[pool] Failed to reconnect "${name}" after config change: ${err}`);
+            });
         }
       }
     }
@@ -150,13 +156,25 @@ export class ServerPool {
           // Attach stderr capture before connect so early output isn't lost
           this.attachStderrCapture(name, transport, conn);
 
-          await client.connect(transport);
+          // Connect with timeout to prevent permanent hang on unresponsive servers
+          await Promise.race([
+            client.connect(transport),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
+                CONNECT_TIMEOUT_MS,
+              ),
+            ),
+          ]);
 
           conn.client = client;
           conn.transport = transport;
           conn.state = "connected";
           conn.lastUsed = Date.now();
           conn.lastError = undefined;
+
+          // Detect server crashes / transport close to reset stale "connected" state
+          this.attachTransportLifecycle(name, transport, conn);
 
           // Cache tools on connect
           await this.refreshTools(conn);
@@ -249,6 +267,24 @@ export class ServerPool {
         this.db?.insertServerLog(name, partial, entry.timestamp);
         partial = "";
       }
+    };
+  }
+
+  /** Attach onclose/onerror handlers to detect server crashes and reset state. */
+  private attachTransportLifecycle(name: string, transport: Transport, conn: ServerConnection): void {
+    const reset = (reason: string) => {
+      if (conn.state === "connected") {
+        console.error(`[pool] Server "${name}" transport ${reason}, resetting connection state`);
+        conn.state = "disconnected";
+        conn.client = null;
+        conn.transport = null;
+      }
+    };
+
+    transport.onclose = () => reset("closed");
+    transport.onerror = (err: Error) => {
+      conn.lastError = err.message;
+      reset(`error: ${err.message}`);
     };
   }
 
