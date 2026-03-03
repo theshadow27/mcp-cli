@@ -74,7 +74,12 @@ export function App() {
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
-          <ServerList servers={servers} selectedIndex={selectedIndex} expandedServer={expandedServer} />
+          <ServerList
+            servers={servers}
+            selectedIndex={selectedIndex}
+            expandedServer={expandedServer}
+            usageStats={status?.usageStats ?? []}
+          />
         </>
       ) : (
         <LogViewer

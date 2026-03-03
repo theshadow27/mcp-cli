@@ -26,6 +26,11 @@ export function Header({ status, error }: HeaderProps) {
   const disconnected = servers.filter((s) => s.state === "disconnected").length;
   const connecting = servers.filter((s) => s.state === "connecting").length;
 
+  const usageStats = status?.usageStats ?? [];
+  const totalCalls = usageStats.reduce((sum, s) => sum + s.callCount, 0);
+  const totalErrors = usageStats.reduce((sum, s) => sum + s.errorCount, 0);
+  const successRate = totalCalls > 0 ? (((totalCalls - totalErrors) / totalCalls) * 100).toFixed(1) : null;
+
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold color="cyan">
@@ -68,6 +73,25 @@ export function Header({ status, error }: HeaderProps) {
         )}
         {servers.length === 0 && <Text dimColor>none</Text>}
       </Text>
+
+      {totalCalls > 0 && (
+        <Text>
+          <Text dimColor>Usage: </Text>
+          <Text>{totalCalls} calls</Text>
+          {totalErrors > 0 && (
+            <Text>
+              <Text dimColor>, </Text>
+              <Text color="red">{totalErrors} errors</Text>
+            </Text>
+          )}
+          {successRate !== null && (
+            <Text>
+              <Text dimColor> | </Text>
+              <Text color={totalErrors === 0 ? "green" : "yellow"}>{successRate}% success</Text>
+            </Text>
+          )}
+        </Text>
+      )}
 
       <Text dimColor>{"─".repeat(60)}</Text>
     </Box>

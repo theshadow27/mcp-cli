@@ -30,15 +30,17 @@ function mockPool() {
   };
 }
 
-function mockDb() {
+function mockDb(overrides?: Partial<Record<string, unknown>>) {
   return {
     recordUsage: () => {},
+    getUsageStats: () => [],
     listAliases: () => [],
     getAlias: () => null,
     saveAlias: () => {},
     deleteAlias: () => {},
     getServerLogs: () => [],
     getCachedTools: () => [],
+    ...overrides,
   } as never;
 }
 
@@ -296,6 +298,97 @@ describe("IpcServer HTTP transport", () => {
 
     await Bun.sleep(150);
     expect(closeAllCalled).toBe(true);
+  });
+
+  test("status response includes usageStats field", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "us1", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("us1");
+
+    const result = json.result as { usageStats: unknown[] };
+    expect(Array.isArray(result.usageStats)).toBe(true);
+    expect(result.usageStats).toEqual([]);
+  });
+
+  test("status with usage data aggregates per-server stats onto ServerStatus", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      listServers: () => [
+        { name: "srv1", transport: "stdio", state: "connected", toolCount: 2, source: "test" },
+        { name: "srv2", transport: "http", state: "connected", toolCount: 1, source: "test" },
+      ],
+    });
+    const db = mockDb({
+      getUsageStats: () => [
+        {
+          serverName: "srv1",
+          toolName: "tool-a",
+          callCount: 5,
+          totalDurationMs: 500,
+          successCount: 4,
+          errorCount: 1,
+          lastCalledAt: 1000,
+          lastError: "fail",
+        },
+        {
+          serverName: "srv1",
+          toolName: "tool-b",
+          callCount: 3,
+          totalDurationMs: 300,
+          successCount: 3,
+          errorCount: 0,
+          lastCalledAt: 900,
+          lastError: null,
+        },
+        {
+          serverName: "srv2",
+          toolName: "tool-c",
+          callCount: 2,
+          totalDurationMs: 200,
+          successCount: 2,
+          errorCount: 0,
+          lastCalledAt: 800,
+          lastError: null,
+        },
+      ],
+    });
+    server = new IpcServer(pool as never, mockConfig(), db, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "us2", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as {
+      servers: Array<{
+        name: string;
+        callCount?: number;
+        errorCount?: number;
+        avgDurationMs?: number;
+      }>;
+      usageStats: Array<{ serverName: string; toolName: string }>;
+    };
+
+    // usageStats should be present
+    expect(result.usageStats).toHaveLength(3);
+
+    // srv1 aggregates: 5+3=8 calls, 1+0=1 error, (500+300)/8=100ms avg
+    const srv1 = result.servers.find((s) => s.name === "srv1");
+    expect(srv1?.callCount).toBe(8);
+    expect(srv1?.errorCount).toBe(1);
+    expect(srv1?.avgDurationMs).toBe(100);
+
+    // srv2 aggregates: 2 calls, 0 errors, 200/2=100ms avg
+    const srv2 = result.servers.find((s) => s.name === "srv2");
+    expect(srv2?.callCount).toBe(2);
+    expect(srv2?.errorCount).toBe(0);
+    expect(srv2?.avgDurationMs).toBe(100);
   });
 
   test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {

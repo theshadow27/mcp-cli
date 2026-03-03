@@ -130,6 +130,17 @@ export interface GetDaemonLogsResult {
 
 // -- Result types --
 
+export interface UsageStat {
+  serverName: string;
+  toolName: string;
+  callCount: number;
+  totalDurationMs: number;
+  successCount: number;
+  errorCount: number;
+  lastCalledAt: number;
+  lastError: string | null;
+}
+
 export interface ServerStatus {
   name: string;
   transport: "stdio" | "http" | "sse";
@@ -139,6 +150,9 @@ export interface ServerStatus {
   lastError?: string;
   source: string;
   recentStderr?: string[];
+  callCount?: number;
+  errorCount?: number;
+  avgDurationMs?: number;
 }
 
 export interface ToolInfo {
@@ -155,6 +169,7 @@ export interface DaemonStatus {
   uptime: number;
   servers: ServerStatus[];
   dbPath: string;
+  usageStats: UsageStat[];
 }
 
 export interface GetConfigResult {

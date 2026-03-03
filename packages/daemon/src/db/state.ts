@@ -8,20 +8,11 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { ToolInfo } from "@mcp-cli/core";
+import type { ToolInfo, UsageStat } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
-export interface UsageStat {
-  serverName: string;
-  toolName: string;
-  callCount: number;
-  totalDurationMs: number;
-  successCount: number;
-  errorCount: number;
-  lastCalledAt: number;
-  lastError: string | null;
-}
+export type { UsageStat } from "@mcp-cli/core";
 
 export class StateDb {
   private db: Database;

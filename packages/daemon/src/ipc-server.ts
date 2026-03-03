@@ -135,12 +135,29 @@ export class IpcServer {
   private registerHandlers(): void {
     this.handlers.set("ping", async () => ({ pong: true, time: Date.now() }));
 
-    this.handlers.set("status", async () => ({
-      pid: process.pid,
-      uptime: process.uptime(),
-      servers: this.pool.listServers(),
-      dbPath: DB_PATH,
-    }));
+    this.handlers.set("status", async () => {
+      const servers = this.pool.listServers();
+      const usageStats = this.db.getUsageStats();
+
+      // Compute per-server aggregates
+      for (const server of servers) {
+        const serverStats = usageStats.filter((s) => s.serverName === server.name);
+        if (serverStats.length > 0) {
+          server.callCount = serverStats.reduce((sum, s) => sum + s.callCount, 0);
+          server.errorCount = serverStats.reduce((sum, s) => sum + s.errorCount, 0);
+          const totalDuration = serverStats.reduce((sum, s) => sum + s.totalDurationMs, 0);
+          server.avgDurationMs = Math.round(totalDuration / server.callCount);
+        }
+      }
+
+      return {
+        pid: process.pid,
+        uptime: process.uptime(),
+        servers,
+        dbPath: DB_PATH,
+        usageStats,
+      };
+    });
 
     this.handlers.set("listServers", async () => this.pool.listServers());
 

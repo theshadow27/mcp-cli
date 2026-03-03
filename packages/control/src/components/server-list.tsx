@@ -1,4 +1,4 @@
-import type { ServerStatus } from "@mcp-cli/core";
+import type { ServerStatus, UsageStat } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 import { ServerDetail } from "./server-detail.js";
@@ -7,6 +7,7 @@ interface ServerListProps {
   servers: ServerStatus[];
   selectedIndex: number;
   expandedServer: string | null;
+  usageStats: UsageStat[];
 }
 
 const stateColor: Record<ServerStatus["state"], string> = {
@@ -16,7 +17,7 @@ const stateColor: Record<ServerStatus["state"], string> = {
   error: "red",
 };
 
-export function ServerList({ servers, selectedIndex, expandedServer }: ServerListProps) {
+export function ServerList({ servers, selectedIndex, expandedServer, usageStats }: ServerListProps) {
   if (servers.length === 0) {
     return (
       <Box marginLeft={2}>
@@ -42,6 +43,12 @@ export function ServerList({ servers, selectedIndex, expandedServer }: ServerLis
               <Text color={color}>{server.state}</Text>
               {"  "}
               <Text dimColor>[{server.toolCount} tools]</Text>
+              {(server.callCount ?? 0) > 0 && (
+                <Text>
+                  {"  "}
+                  <Text dimColor>{server.callCount} calls</Text>
+                </Text>
+              )}
               {server.state === "error" && server.lastError && (
                 <Text color="red">
                   {"  "}
@@ -49,7 +56,9 @@ export function ServerList({ servers, selectedIndex, expandedServer }: ServerLis
                 </Text>
               )}
             </Text>
-            {expanded && <ServerDetail server={server} />}
+            {expanded && (
+              <ServerDetail server={server} toolStats={usageStats.filter((s) => s.serverName === server.name)} />
+            )}
           </Box>
         );
       })}
