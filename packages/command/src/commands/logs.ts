@@ -10,10 +10,18 @@ import type { GetLogsResult } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
-export async function cmdLogs(args: string[]): Promise<void> {
+export interface LogsArgs {
+  server: string | undefined;
+  follow: boolean;
+  lines: number;
+  error: string | undefined;
+}
+
+export function parseLogsArgs(args: string[]): LogsArgs {
   let server: string | undefined;
   let follow = false;
   let lines = 50;
+  let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -22,8 +30,8 @@ export async function cmdLogs(args: string[]): Promise<void> {
     } else if (arg === "--lines" || arg === "-n") {
       const next = args[++i];
       if (!next || Number.isNaN(Number(next))) {
-        printError("--lines requires a number");
-        process.exit(1);
+        error = "--lines requires a number";
+        break;
       }
       lines = Number(next);
     } else if (!arg.startsWith("-")) {
@@ -31,12 +39,24 @@ export async function cmdLogs(args: string[]): Promise<void> {
     }
   }
 
-  if (!server) {
+  return { server, follow, lines, error };
+}
+
+export async function cmdLogs(args: string[]): Promise<void> {
+  const parsed = parseLogsArgs(args);
+
+  if (parsed.error) {
+    printError(parsed.error);
+    process.exit(1);
+  }
+
+  if (!parsed.server) {
     printError("Usage: mcp logs <server> [-f|--follow] [--lines N]");
     process.exit(1);
   }
 
-  const serverName: string = server;
+  const serverName = parsed.server;
+  const { follow, lines } = parsed;
 
   // Fetch initial batch
   const result = (await ipcCall("getLogs", { server: serverName, limit: lines })) as GetLogsResult;

@@ -1,10 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
-import { isRetryableError, wrapTransportError } from "./server-pool.js";
+import type {
+  ConfigSource,
+  HttpServerConfig,
+  ResolvedConfig,
+  ResolvedServer,
+  SseServerConfig,
+  StdioServerConfig,
+} from "@mcp-cli/core";
+import { ServerPool, isRetryableError, wrapTransportError } from "./server-pool.js";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
 const sse: SseServerConfig = { type: "sse", url: "https://sse.example.com/events" };
+
+const testSource: ConfigSource = { file: "/test", scope: "user" };
+
+/** Build a minimal ResolvedConfig for testing. */
+function makeConfig(servers: Record<string, StdioServerConfig>): ResolvedConfig {
+  const map = new Map<string, ResolvedServer>();
+  for (const [name, config] of Object.entries(servers)) {
+    map.set(name, { name, config, source: testSource });
+  }
+  return { servers: map, sources: [] };
+}
 
 function errWithCode(message: string, code: string): Error {
   const e = new Error(message);
@@ -211,5 +229,89 @@ describe("wrapTransportError", () => {
       );
       expect(result.message).toContain("TLS/certificate error");
     });
+  });
+});
+
+describe("ServerPool.updateConfig", () => {
+  test("detects added servers", () => {
+    const initial = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const result = pool.updateConfig(updated);
+
+    expect(result.added).toEqual(["b"]);
+    expect(result.removed).toEqual([]);
+    expect(result.changed).toEqual([]);
+  });
+
+  test("detects removed servers", () => {
+    const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "echo" } });
+    const result = pool.updateConfig(updated);
+
+    expect(result.added).toEqual([]);
+    expect(result.removed).toEqual(["b"]);
+    expect(result.changed).toEqual([]);
+  });
+
+  test("detects changed server configs", () => {
+    const initial = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "cat" } });
+    const result = pool.updateConfig(updated);
+
+    expect(result.added).toEqual([]);
+    expect(result.removed).toEqual([]);
+    expect(result.changed).toEqual(["a"]);
+  });
+
+  test("returns empty lists when config unchanged", () => {
+    const initial = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "echo" } });
+    const result = pool.updateConfig(updated);
+
+    expect(result.added).toEqual([]);
+    expect(result.removed).toEqual([]);
+    expect(result.changed).toEqual([]);
+  });
+
+  test("handles simultaneous add, remove, and change", () => {
+    const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "sed" }, c: { command: "grep" } });
+    const result = pool.updateConfig(updated);
+
+    expect(result.added).toEqual(["c"]);
+    expect(result.removed).toEqual(["b"]);
+    expect(result.changed).toEqual(["a"]);
+  });
+
+  test("listServers reflects updated config after add", () => {
+    const initial = makeConfig({ a: { command: "echo" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    pool.updateConfig(updated);
+
+    const names = pool.listServers().map((s) => s.name).sort();
+    expect(names).toEqual(["a", "b"]);
+  });
+
+  test("listServers reflects updated config after remove", () => {
+    const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const pool = new ServerPool(initial);
+
+    const updated = makeConfig({ a: { command: "echo" } });
+    pool.updateConfig(updated);
+
+    const names = pool.listServers().map((s) => s.name);
+    expect(names).toEqual(["a"]);
   });
 });
