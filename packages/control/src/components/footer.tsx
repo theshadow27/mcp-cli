@@ -6,6 +6,7 @@ export function Footer() {
     <Box marginTop={1}>
       <Text>
         <Text dimColor>q</Text> quit{"  "}
+        <Text dimColor>a</Text> auth{"  "}
         <Text dimColor>r</Text> restart{"  "}
         <Text dimColor>R</Text> restart-all{"  "}
         <Text dimColor>s</Text> shutdown{"  "}

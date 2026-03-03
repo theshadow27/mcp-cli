@@ -1,6 +1,6 @@
 import { Box } from "ink";
-import React, { useState } from "react";
-import { AuthBanner, isAuthError } from "./components/auth-banner.js";
+import React, { useEffect, useRef, useState } from "react";
+import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
@@ -12,6 +12,19 @@ export function App() {
   const { status, error, loading, refresh } = useDaemon(2500);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const authTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-clear success/error auth status after 5 seconds
+  useEffect(() => {
+    if (authStatus && authStatus.state !== "pending") {
+      if (authTimerRef.current) clearTimeout(authTimerRef.current);
+      authTimerRef.current = setTimeout(() => setAuthStatus(null), 5000);
+    }
+    return () => {
+      if (authTimerRef.current) clearTimeout(authTimerRef.current);
+    };
+  }, [authStatus]);
 
   const servers = status?.servers ?? [];
 
@@ -22,6 +35,8 @@ export function App() {
     expandedServer,
     setExpandedServer,
     refresh,
+    authStatus,
+    setAuthStatus,
   });
 
   if (loading && !status) return <Loading />;
@@ -31,7 +46,7 @@ export function App() {
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} />
-      {needsAuth.length > 0 && <AuthBanner servers={needsAuth} />}
+      {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
       <ServerList servers={servers} selectedIndex={selectedIndex} expandedServer={expandedServer} />
       <Footer />
     </Box>

@@ -1,6 +1,7 @@
 import type { ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
+import type { AuthStatus } from "../components/auth-banner.js";
 
 interface UseKeyboardOptions {
   servers: ServerStatus[];
@@ -9,6 +10,8 @@ interface UseKeyboardOptions {
   expandedServer: string | null;
   setExpandedServer: (name: string | null) => void;
   refresh: () => void;
+  authStatus: AuthStatus | null;
+  setAuthStatus: (status: AuthStatus | null) => void;
 }
 
 export function useKeyboard({
@@ -18,6 +21,8 @@ export function useKeyboard({
   expandedServer,
   setExpandedServer,
   refresh,
+  authStatus,
+  setAuthStatus,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
 
@@ -38,6 +43,27 @@ export function useKeyboard({
       if (server) {
         setExpandedServer(expandedServer === server.name ? null : server.name);
       }
+      return;
+    }
+
+    // Trigger auth for selected server
+    if (input === "a") {
+      if (authStatus?.state === "pending") return;
+      const server = servers[selectedIndex];
+      if (!server) return;
+      setAuthStatus({ server: server.name, state: "pending" });
+      ipcCall("triggerAuth", { server: server.name })
+        .then(() => {
+          setAuthStatus({ server: server.name, state: "success" });
+          refresh();
+        })
+        .catch((err) => {
+          setAuthStatus({
+            server: server.name,
+            state: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
       return;
     }
 

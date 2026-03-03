@@ -2,8 +2,15 @@ import type { ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 
+export interface AuthStatus {
+  server: string;
+  state: "pending" | "success" | "error";
+  message?: string;
+}
+
 interface AuthBannerProps {
   servers: ServerStatus[];
+  authStatus?: AuthStatus | null;
 }
 
 export function isAuthError(error?: string): boolean {
@@ -19,11 +26,31 @@ export function isAuthError(error?: string): boolean {
   );
 }
 
-export function AuthBanner({ servers }: AuthBannerProps) {
-  if (servers.length === 0) return null;
+export function AuthBanner({ servers, authStatus }: AuthBannerProps) {
+  if (servers.length === 0 && !authStatus) return null;
 
   return (
     <Box flexDirection="column" marginBottom={1}>
+      {authStatus?.state === "pending" && (
+        <Text color="yellow">
+          {"⏳ Authenticating "}
+          <Text bold>{authStatus.server}</Text>
+          {"... (check browser)"}
+        </Text>
+      )}
+      {authStatus?.state === "success" && (
+        <Text color="green">
+          {"✓  Authenticated "}
+          <Text bold>{authStatus.server}</Text>
+        </Text>
+      )}
+      {authStatus?.state === "error" && (
+        <Text color="red">
+          {"✗  Auth failed for "}
+          <Text bold>{authStatus.server}</Text>
+          {authStatus.message && <Text>: {authStatus.message.slice(0, 60)}</Text>}
+        </Text>
+      )}
       {servers.map((server) => (
         <Box key={server.name} flexDirection="column">
           <Text color="yellow">
@@ -31,7 +58,7 @@ export function AuthBanner({ servers }: AuthBannerProps) {
             <Text bold>{server.name}</Text>
             {server.lastError && <Text> ({server.lastError.slice(0, 50)})</Text>}
           </Text>
-          <Text dimColor> Run: mcp auth {server.name}</Text>
+          <Text dimColor> Press a or run: mcp auth {server.name}</Text>
         </Box>
       ))}
     </Box>
