@@ -2,6 +2,9 @@ import type { ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner.js";
+import type { LogSource } from "./use-logs.js";
+
+export type View = "servers" | "logs";
 
 interface UseKeyboardOptions {
   servers: ServerStatus[];
@@ -12,6 +15,13 @@ interface UseKeyboardOptions {
   refresh: () => void;
   authStatus: AuthStatus | null;
   setAuthStatus: (status: AuthStatus | null) => void;
+  view: View;
+  setView: (view: View) => void;
+  logSource: LogSource;
+  setLogSource: (source: LogSource) => void;
+  logScrollOffset: number;
+  setLogScrollOffset: (fn: (offset: number) => number) => void;
+  logLineCount: number;
 }
 
 export function useKeyboard({
@@ -23,10 +33,78 @@ export function useKeyboard({
   refresh,
   authStatus,
   setAuthStatus,
+  view,
+  setView,
+  logSource,
+  setLogSource,
+  logScrollOffset,
+  setLogScrollOffset,
+  logLineCount,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
 
   useInput((input, key) => {
+    // Global: shutdown daemon
+    if (input === "s") {
+      ipcCall("shutdown").catch(() => {});
+      exit();
+      return;
+    }
+
+    // Global: quit
+    if (input === "q") {
+      exit();
+      return;
+    }
+
+    // -- Logs view --
+    if (view === "logs") {
+      // Back to servers
+      if (input === "l" || key.escape) {
+        setView("servers");
+        return;
+      }
+
+      // Scroll up
+      if (key.upArrow || input === "k") {
+        setLogScrollOffset((o) => Math.max(0, o - 1));
+        return;
+      }
+
+      // Scroll down
+      if (key.downArrow || input === "j") {
+        setLogScrollOffset((o) => Math.min(Math.max(0, logLineCount - 1), o + 1));
+        return;
+      }
+
+      // Cycle log source
+      if (key.tab) {
+        const sources: LogSource[] = [
+          { type: "daemon" },
+          ...servers.map((s) => ({ type: "server" as const, name: s.name })),
+        ];
+        const currentIdx = sources.findIndex((s) => {
+          if (s.type === "daemon" && logSource.type === "daemon") return true;
+          if (s.type === "server" && logSource.type === "server" && s.name === logSource.name) return true;
+          return false;
+        });
+        const nextIdx = (currentIdx + 1) % sources.length;
+        setLogSource(sources[nextIdx]);
+        setLogScrollOffset(() => 0);
+        return;
+      }
+
+      return;
+    }
+
+    // -- Servers view --
+
+    // Toggle to logs view
+    if (input === "l") {
+      setView("logs");
+      return;
+    }
+
     // Navigation
     if (key.upArrow || input === "k") {
       setSelectedIndex((i) => Math.max(0, i - 1));
@@ -84,18 +162,6 @@ export function useKeyboard({
         .then(refresh)
         .catch(() => {});
       return;
-    }
-
-    // Shutdown daemon
-    if (input === "s") {
-      ipcCall("shutdown").catch(() => {});
-      exit();
-      return;
-    }
-
-    // Quit
-    if (input === "q") {
-      exit();
     }
   });
 }

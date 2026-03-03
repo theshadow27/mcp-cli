@@ -23,7 +23,8 @@ export type IpcMethod =
   | "getAlias"
   | "saveAlias"
   | "deleteAlias"
-  | "getLogs";
+  | "getLogs"
+  | "getDaemonLogs";
 
 // -- Request/Response --
 
@@ -115,6 +116,15 @@ export interface LogEntry {
 
 export interface GetLogsResult {
   server: string;
+  lines: LogEntry[];
+}
+
+export interface GetDaemonLogsParams {
+  limit?: number;
+  since?: number;
+}
+
+export interface GetDaemonLogsResult {
   lines: LogEntry[];
 }
 
