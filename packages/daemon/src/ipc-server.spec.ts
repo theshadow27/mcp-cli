@@ -391,6 +391,107 @@ describe("IpcServer HTTP transport", () => {
     expect(srv2?.avgDurationMs).toBe(100);
   });
 
+  test("onRequestComplete fires after each dispatched request", async () => {
+    socketPath = tmpSocket();
+    let completions = 0;
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onRequestComplete: () => {
+        completions++;
+      },
+    });
+    server.start(socketPath);
+
+    await rpc("/rpc", { id: "rc1", method: "ping" });
+    await rpc("/rpc", { id: "rc2", method: "listServers" });
+
+    expect(completions).toBe(2);
+  });
+
+  test("onRequestComplete fires even on parse errors", async () => {
+    socketPath = tmpSocket();
+    let completions = 0;
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onRequestComplete: () => {
+        completions++;
+      },
+    });
+    server.start(socketPath);
+
+    await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not valid json{{{",
+      unix: socketPath,
+    } as RequestInit);
+
+    expect(completions).toBe(1);
+  });
+
+  test("onRequestComplete fires after handler error", async () => {
+    socketPath = tmpSocket();
+    let completions = 0;
+    const failPool = {
+      ...mockPool(),
+      callTool: async () => {
+        throw new Error("tool failed");
+      },
+    };
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), {
+      onActivity: () => {},
+      onRequestComplete: () => {
+        completions++;
+      },
+    });
+    server.start(socketPath);
+
+    await rpc("/rpc", { id: "rc3", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    expect(completions).toBe(1);
+  });
+
+  test("long-running request keeps onActivity/onRequestComplete balanced", async () => {
+    socketPath = tmpSocket();
+    let activities = 0;
+    let completions = 0;
+    const gate: { resolve: (() => void) | null } = { resolve: null };
+    const slowPool = {
+      ...mockPool(),
+      callTool: () =>
+        new Promise<{ content: never[] }>((resolve) => {
+          gate.resolve = () => resolve({ content: [] });
+        }),
+    };
+    server = new IpcServer(slowPool as never, mockConfig(), mockDb(), {
+      onActivity: () => {
+        activities++;
+      },
+      onRequestComplete: () => {
+        completions++;
+      },
+    });
+    server.start(socketPath);
+
+    // Start a long-running tool call (don't await)
+    const pending = rpc("/rpc", { id: "slow1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    // Give the request time to arrive
+    await Bun.sleep(50);
+    expect(activities).toBe(1);
+    expect(completions).toBe(0); // Still in-flight
+
+    // Fire a second request while the first is pending
+    await rpc("/rpc", { id: "fast1", method: "ping" });
+    expect(activities).toBe(2);
+    expect(completions).toBe(1); // Only ping completed
+
+    // Now resolve the slow call
+    gate.resolve?.();
+    await pending;
+    expect(completions).toBe(2); // Both completed
+  });
+
   test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {
     socketPath = tmpSocket();
     const pool = Object.assign(mockPool(), {

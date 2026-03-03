@@ -39,15 +39,17 @@ export class IpcServer {
   private socketPath = SOCKET_PATH;
   private handlers = new Map<IpcMethod, RequestHandler>();
   private onActivity: () => void;
+  private onRequestComplete: () => void;
   private onShutdown: () => void;
 
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
     private db: StateDb,
-    options: { onActivity: () => void; onShutdown?: () => void },
+    options: { onActivity: () => void; onRequestComplete?: () => void; onShutdown?: () => void },
   ) {
     this.onActivity = options.onActivity;
+    this.onRequestComplete = options.onRequestComplete ?? (() => {});
     this.onShutdown = options.onShutdown ?? (() => process.exit(0));
     this.registerHandlers();
   }
@@ -64,6 +66,7 @@ export class IpcServer {
     }
 
     const onActivity = this.onActivity;
+    const onRequestComplete = this.onRequestComplete;
     const dispatch = this.dispatch.bind(this);
 
     this.server = Bun.serve({
@@ -84,6 +87,7 @@ export class IpcServer {
         try {
           request = await req.json();
         } catch {
+          onRequestComplete();
           const error: IpcResponse = {
             id: "unknown",
             error: { code: IPC_ERROR.PARSE_ERROR, message: "Invalid JSON" },
@@ -101,6 +105,8 @@ export class IpcServer {
             error: toIpcError(err),
           };
           return Response.json(response);
+        } finally {
+          onRequestComplete();
         }
       },
     });

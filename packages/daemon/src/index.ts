@@ -57,13 +57,19 @@ async function main(): Promise<void> {
   // Create server pool
   const pool = new ServerPool(config, db);
 
-  // Idle timeout management
+  // Idle timeout management with in-flight request tracking
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
   let idleTimer: Timer | null = null;
+  let inFlightCount = 0;
 
   function resetIdleTimer(): void {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      if (inFlightCount > 0) {
+        console.error(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
+        resetIdleTimer();
+        return;
+      }
       console.error("[mcpd] Idle timeout reached, shutting down");
       shutdown();
     }, idleTimeoutMs);
@@ -71,7 +77,14 @@ async function main(): Promise<void> {
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, {
-    onActivity: resetIdleTimer,
+    onActivity: () => {
+      inFlightCount++;
+      resetIdleTimer();
+    },
+    onRequestComplete: () => {
+      inFlightCount = Math.max(0, inFlightCount - 1);
+      resetIdleTimer();
+    },
     onShutdown: () => shutdown(),
   });
   ipcServer.start();
