@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR } from "@mcp-cli/core";
+import { installDaemonLogCapture } from "./daemon-log.js";
 import { IpcServer } from "./ipc-server.js";
+
+// Install daemon log capture so getDaemonLogs handler works
+installDaemonLogCapture();
 
 /** Unique socket path per test run to avoid conflicts */
 function tmpSocket(): string {
@@ -164,6 +168,55 @@ describe("IpcServer HTTP transport", () => {
     expect(json.id).toBe("auth1");
     expect(json.error?.code).toBe(IPC_ERROR.SERVER_NOT_FOUND);
     expect(json.error?.message).toContain("nonexistent");
+  });
+
+  test("getDaemonLogs returns captured log lines", async () => {
+    startServer();
+
+    // Emit a recognizable log line via console.error (captured by daemon-log)
+    const marker = `ipc-test-${Date.now()}`;
+    console.error(marker);
+
+    const res = await rpc("/rpc", { id: "dl1", method: "getDaemonLogs", params: { limit: 5 } });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("dl1");
+
+    const lines = (json.result as { lines: { timestamp: number; line: string }[] }).lines;
+    expect(Array.isArray(lines)).toBe(true);
+    expect(lines.length).toBeGreaterThan(0);
+
+    const match = lines.find((l) => l.line === marker);
+    expect(match).toBeDefined();
+    expect(match?.timestamp).toBeGreaterThan(0);
+  });
+
+  test("getDaemonLogs respects since filter", async () => {
+    startServer();
+
+    const before = Date.now();
+    // Small delay to ensure timestamp separation
+    await Bun.sleep(5);
+    const marker = `since-test-${Date.now()}`;
+    console.error(marker);
+
+    const res = await rpc("/rpc", {
+      id: "dl2",
+      method: "getDaemonLogs",
+      params: { since: before },
+    });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const lines = (json.result as { lines: { timestamp: number; line: string }[] }).lines;
+
+    // All returned lines should be after 'before'
+    for (const l of lines) {
+      expect(l.timestamp).toBeGreaterThan(before);
+    }
+    // Our marker should be present
+    expect(lines.find((l) => l.line === marker)).toBeDefined();
   });
 
   test("triggerAuth with server found but no db returns INTERNAL_ERROR", async () => {

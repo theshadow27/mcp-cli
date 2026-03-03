@@ -19,6 +19,35 @@ export const PID_PATH = join(MCP_CLI_DIR, "mcpd.pid");
 /** Alias scripts directory */
 export const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
 
+/** Valid alias name pattern — alphanumeric, hyphens, underscores only */
+const ALIAS_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Validate an alias name is safe for use in file paths.
+ * Throws if the name is empty, contains path traversal characters, or other unsafe chars.
+ */
+export function validateAliasName(name: string): void {
+  if (!name || !ALIAS_NAME_RE.test(name)) {
+    throw new Error(
+      `Invalid alias name "${name}": must match ${ALIAS_NAME_RE} (letters, digits, hyphens, underscores)`,
+    );
+  }
+}
+
+/**
+ * Resolve an alias file path and verify it's inside ALIASES_DIR.
+ * Returns the resolved path or throws on path traversal.
+ */
+export function safeAliasPath(name: string): string {
+  validateAliasName(name);
+  const resolved = join(ALIASES_DIR, `${name}.ts`);
+  // Defense-in-depth: verify resolved path is inside ALIASES_DIR
+  if (!resolved.startsWith(`${ALIASES_DIR}/`)) {
+    throw new Error(`Alias path "${resolved}" escapes aliases directory`);
+  }
+  return resolved;
+}
+
 /** Generated TypeScript declarations for alias scripts */
 export const TYPES_PATH = join(MCP_CLI_DIR, "mcp-cli.d.ts");
 

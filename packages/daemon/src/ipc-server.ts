@@ -10,6 +10,7 @@ import type {
   CallToolParams,
   DeleteAliasParams,
   GetAliasParams,
+  GetDaemonLogsParams,
   GetLogsParams,
   GetToolInfoParams,
   GrepToolsParams,
@@ -23,10 +24,11 @@ import type {
   SaveAliasParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH } from "@mcp-cli/core";
+import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH, safeAliasPath } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
+import { getDaemonLogLines } from "./daemon-log.js";
 import type { StateDb } from "./db/state.js";
 import type { ServerPool } from "./server-pool.js";
 
@@ -256,8 +258,8 @@ export class IpcServer {
 
     this.handlers.set("saveAlias", async (params) => {
       const { name, script, description } = params as SaveAliasParams;
+      const filePath = safeAliasPath(name);
       mkdirSync(ALIASES_DIR, { recursive: true });
-      const filePath = join(ALIASES_DIR, `${name}.ts`);
 
       // Auto-prepend import if not present
       const hasImport = /import\s.*from\s+["']mcp-cli["']/.test(script);
@@ -305,6 +307,18 @@ export class IpcServer {
         server,
         lines: dbLogs.map((l) => ({ timestamp: l.timestampMs, line: l.line })),
       };
+    });
+
+    this.handlers.set("getDaemonLogs", async (params) => {
+      const { limit, since } = (params ?? {}) as GetDaemonLogsParams;
+      let lines = getDaemonLogLines(limit).map((l) => ({
+        timestamp: l.timestamp,
+        line: l.line,
+      }));
+      if (since !== undefined) {
+        lines = lines.filter((l) => l.timestamp > since);
+      }
+      return { lines };
     });
 
     this.handlers.set("shutdown", async () => {

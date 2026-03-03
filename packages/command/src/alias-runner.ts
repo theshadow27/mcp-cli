@@ -8,7 +8,8 @@
  * - `json(path)`: Read and parse a JSON file
  */
 
-import { ipcCall } from "@mcp-cli/core";
+import { resolve } from "node:path";
+import { ALIASES_DIR, ipcCall } from "@mcp-cli/core";
 import { plugin } from "bun";
 
 type ToolFn = (args?: Record<string, unknown>) => Promise<unknown>;
@@ -31,6 +32,12 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       }));
     },
   });
+
+  // Defense-in-depth: verify the alias path is inside the aliases directory
+  const resolved = resolve(aliasPath);
+  if (!resolved.startsWith(`${ALIASES_DIR}/`)) {
+    throw new Error(`Refusing to execute alias outside aliases directory: ${resolved}`);
+  }
 
   // Execute the alias script
   await import(aliasPath);
