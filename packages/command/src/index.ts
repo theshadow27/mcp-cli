@@ -25,33 +25,7 @@ import { cmdLogs } from "./commands/logs.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
 import { printError, printServerList, printToolInfo, printToolList, printToolResult } from "./output.js";
-import { splitServerTool } from "./parse.js";
-
-/**
- * Extract --format json / -j flag from args.
- * Returns whether JSON output was requested and the remaining args.
- */
-export function extractJsonFlag(args: string[]): { json: boolean; rest: string[] } {
-  const rest: string[] = [];
-  let json = false;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "-j") {
-      json = true;
-    } else if (args[i] === "--format") {
-      if (args[i + 1] === "json") {
-        json = true;
-        i++; // skip "json"
-      } else {
-        rest.push(args[i]);
-      }
-    } else {
-      rest.push(args[i]);
-    }
-  }
-
-  return { json, rest };
-}
+import { extractJsonFlag, splitServerTool } from "./parse.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
