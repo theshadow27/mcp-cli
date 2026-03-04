@@ -9,7 +9,7 @@ import type { RegistryEntry } from "./registry/client.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
 
-const c = {
+export const c = {
   reset: isTTY ? "\x1b[0m" : "",
   bold: isTTY ? "\x1b[1m" : "",
   dim: isTTY ? "\x1b[2m" : "",

@@ -14,8 +14,12 @@ import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprot
 
 export type { UsageStat } from "@mcp-cli/core";
 
+/** How many inserts between log prune operations (amortized O(1)) */
+const LOG_PRUNE_INTERVAL = 100;
+
 export class StateDb {
   private db: Database;
+  private logInsertCount = new Map<string, number>();
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
@@ -401,13 +405,19 @@ export class StateDb {
       line,
       timestampMs,
     ]);
-    // Prune to 500 rows per server
-    this.db.run(
-      `DELETE FROM server_logs WHERE server_name = ? AND id NOT IN (
-        SELECT id FROM server_logs WHERE server_name = ? ORDER BY timestamp_ms DESC LIMIT 500
-      )`,
-      [serverName, serverName],
-    );
+    // Prune to 500 rows per server, but only every LOG_PRUNE_INTERVAL inserts
+    const count = (this.logInsertCount.get(serverName) ?? 0) + 1;
+    if (count >= LOG_PRUNE_INTERVAL) {
+      this.db.run(
+        `DELETE FROM server_logs WHERE server_name = ? AND id NOT IN (
+          SELECT id FROM server_logs WHERE server_name = ? ORDER BY timestamp_ms DESC LIMIT 500
+        )`,
+        [serverName, serverName],
+      );
+      this.logInsertCount.set(serverName, 0);
+    } else {
+      this.logInsertCount.set(serverName, count);
+    }
   }
 
   getServerLogs(serverName: string, limit?: number, sinceMs?: number): Array<{ line: string; timestampMs: number }> {

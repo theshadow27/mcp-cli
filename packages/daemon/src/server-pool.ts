@@ -93,7 +93,7 @@ export class ServerPool {
           state: "disconnected",
           lastUsed: 0,
         });
-      } else if (JSON.stringify(existing.resolved.config) !== JSON.stringify(resolved.config)) {
+      } else if (!Bun.deepEquals(existing.resolved.config, resolved.config)) {
         changed.push(name);
         existing.resolved = resolved;
         // Reconnect if currently connected
@@ -391,10 +391,10 @@ export class ServerPool {
     }
   }
 
-  /** Search tools across all servers by pattern */
+  /** Search tools across all servers by pattern (case-insensitive substring) */
   async grepTools(pattern: string): Promise<ToolInfo[]> {
     const allTools = await this.listTools();
-    const regex = globToRegex(pattern);
+    const regex = searchRegex(pattern);
     return allTools.filter((t) => regex.test(t.name) || regex.test(t.description));
   }
 
@@ -706,7 +706,8 @@ export function wrapTransportError(serverName: string, config: ServerConfig, raw
 
 // -- Utility --
 
-function globToRegex(pattern: string): RegExp {
+/** Case-insensitive substring regex for grepTools search (unanchored). */
+function searchRegex(pattern: string): RegExp {
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, ".*")
@@ -714,18 +715,19 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(escaped, "i");
 }
 
-/** Check if a tool passes allowedTools/disabledTools glob filters */
+/** Check if a tool passes allowedTools/disabledTools glob filters.
+ *  Uses Bun.Glob for anchored, case-sensitive matching. */
 function isToolAllowed(name: string, allowed?: string[], disabled?: string[]): boolean {
   // disabledTools takes precedence
   if (disabled?.length) {
     for (const pattern of disabled) {
-      if (globToRegex(pattern).test(name)) return false;
+      if (new Bun.Glob(pattern).match(name)) return false;
     }
   }
   // If allowedTools is set, tool must match at least one pattern
   if (allowed?.length) {
     for (const pattern of allowed) {
-      if (globToRegex(pattern).test(name)) return true;
+      if (new Bun.Glob(pattern).match(name)) return true;
     }
     return false;
   }

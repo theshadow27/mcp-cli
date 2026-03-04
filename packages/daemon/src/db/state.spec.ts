@@ -232,18 +232,19 @@ describe("StateDb", () => {
       db.close();
     });
 
-    test("prunes to 500 rows per server", () => {
+    test("prunes to 500 rows per server (batched every 100 inserts)", () => {
       const db = createDb();
       const now = Date.now();
-      // Insert 502 rows
-      for (let i = 0; i < 502; i++) {
+      // Insert 600 rows — prune fires at 100, 200, ..., 600
+      // At insert 600: 600 rows exist, prune keeps newest 500
+      for (let i = 0; i < 600; i++) {
         db.insertServerLog("srv", `line-${i}`, now + i);
       }
 
       const logs = db.getServerLogs("srv");
       expect(logs.length).toBeLessThanOrEqual(500);
-      // Oldest lines should have been pruned
-      expect(logs[0].line).toBe("line-2");
+      // Oldest 100 lines should have been pruned
+      expect(logs[0].line).toBe("line-100");
       db.close();
     });
   });

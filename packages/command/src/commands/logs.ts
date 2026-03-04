@@ -4,7 +4,7 @@
  *
  * Options:
  *   --daemon        Show daemon logs (reads ~/.mcp-cli/mcpd.log)
- *   -f, --follow    Stream new lines in real time (poll every 500ms)
+ *   -f, --follow    Stream new lines in real time (adaptive polling with backoff)
  *   --lines N       Number of initial lines to show (default: 50)
  */
 
@@ -49,6 +49,10 @@ export function parseLogsArgs(args: string[]): LogsArgs {
   return { server, daemon, follow, lines, error };
 }
 
+/** Backoff constants for follow-mode polling */
+const POLL_MIN_MS = 200;
+const POLL_MAX_MS = 5_000;
+
 export async function cmdLogs(args: string[]): Promise<void> {
   const parsed = parseLogsArgs(args);
 
@@ -81,25 +85,31 @@ export async function cmdLogs(args: string[]): Promise<void> {
 
   if (!follow) return;
 
-  // Follow mode: poll with since param
+  // Follow mode: poll with adaptive backoff
   let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
+  let delay = POLL_MIN_MS;
 
   const poll = async () => {
     try {
       const update = (await ipcCall("getLogs", { server: serverName, since: lastTimestamp })) as GetLogsResult;
-      for (const entry of update.lines) {
-        printLogLine(serverName, entry.timestamp, entry.line);
-        lastTimestamp = entry.timestamp;
+      if (update.lines.length > 0) {
+        for (const entry of update.lines) {
+          printLogLine(serverName, entry.timestamp, entry.line);
+          lastTimestamp = entry.timestamp;
+        }
+        delay = POLL_MIN_MS; // Reset backoff on data
+      } else {
+        delay = Math.min(delay * 2, POLL_MAX_MS); // Exponential backoff on idle
       }
     } catch {
-      // Connection lost — ignore, will retry next tick
+      delay = Math.min(delay * 2, POLL_MAX_MS);
     }
+    timeout = setTimeout(poll, delay);
   };
 
-  // Poll every 500ms until Ctrl+C
-  const interval = setInterval(poll, 500);
+  let timeout = setTimeout(poll, delay);
   process.on("SIGINT", () => {
-    clearInterval(interval);
+    clearTimeout(timeout);
     process.exit(0);
   });
 
@@ -128,7 +138,7 @@ async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
     return;
   }
 
-  // Follow mode: use IPC getDaemonLogs with polling
+  // Follow mode: use IPC getDaemonLogs with adaptive backoff
   const result = (await ipcCall("getDaemonLogs", { limit: lines })) as GetDaemonLogsResult;
 
   for (const entry of result.lines) {
@@ -136,22 +146,29 @@ async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
   }
 
   let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
+  let delay = POLL_MIN_MS;
 
   const poll = async () => {
     try {
       const update = (await ipcCall("getDaemonLogs", { since: lastTimestamp })) as GetDaemonLogsResult;
-      for (const entry of update.lines) {
-        printLogLine("mcpd", entry.timestamp, entry.line);
-        lastTimestamp = entry.timestamp;
+      if (update.lines.length > 0) {
+        for (const entry of update.lines) {
+          printLogLine("mcpd", entry.timestamp, entry.line);
+          lastTimestamp = entry.timestamp;
+        }
+        delay = POLL_MIN_MS;
+      } else {
+        delay = Math.min(delay * 2, POLL_MAX_MS);
       }
     } catch {
-      // Connection lost — ignore, will retry next tick
+      delay = Math.min(delay * 2, POLL_MAX_MS);
     }
+    timeout = setTimeout(poll, delay);
   };
 
-  const interval = setInterval(poll, 500);
+  let timeout = setTimeout(poll, delay);
   process.on("SIGINT", () => {
-    clearInterval(interval);
+    clearTimeout(timeout);
     process.exit(0);
   });
 

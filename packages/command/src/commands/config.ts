@@ -5,17 +5,7 @@
 
 import type { GetConfigResult } from "@mcp-cli/core";
 import { ipcCall, readCliConfig, writeCliConfig } from "@mcp-cli/core";
-import { printError } from "../output.js";
-
-const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
-const c = {
-  reset: isTTY ? "\x1b[0m" : "",
-  bold: isTTY ? "\x1b[1m" : "",
-  dim: isTTY ? "\x1b[2m" : "",
-  cyan: isTTY ? "\x1b[36m" : "",
-  green: isTTY ? "\x1b[32m" : "",
-  yellow: isTTY ? "\x1b[33m" : "",
-};
+import { c, printError } from "../output.js";
 
 export async function cmdConfig(args: string[]): Promise<void> {
   const sub = args[0] ?? "show";

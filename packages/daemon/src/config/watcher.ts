@@ -52,7 +52,7 @@ export class ConfigWatcher {
       const prev = oldServers.get(name);
       if (!prev) {
         added.push(name);
-      } else if (JSON.stringify(prev.config) !== JSON.stringify(resolved.config)) {
+      } else if (!Bun.deepEquals(prev.config, resolved.config)) {
         changed.push(name);
       }
     }

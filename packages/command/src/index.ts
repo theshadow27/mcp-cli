@@ -15,7 +15,7 @@
  */
 
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { VERSION } from "@mcp-cli/core";
+import { VERSION, isDaemonRunning } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add.js";
 import { cmdAlias } from "./commands/alias.js";
@@ -191,7 +191,8 @@ async function main(): Promise<void> {
         }
 
         // Check if command matches an alias name → run it
-        if (!command.startsWith("-")) {
+        // Only check if daemon is already running to avoid 5s startup delay on typos
+        if (!command.startsWith("-") && (await isDaemonRunning())) {
           const alias = (await ipcCall("getAlias", { name: command })) as AliasDetail | null;
           if (alias) {
             const { runAlias } = await import("./alias-runner.js");
@@ -251,6 +252,11 @@ async function cmdCall(args: string[]): Promise<void> {
   }
 
   const [server, tool, ...rest] = resolved;
+
+  // Warn on ambiguous multi-slash notation: "a/b/c" → tool="b/c"
+  if (split && tool.includes("/")) {
+    console.error(`Warning: tool name "${tool}" contains "/". Did you mean "${split[0]}/${tool.split("/")[0]}"?`);
+  }
   const inputArg = rest.join(" ").trim();
   const toolArgs = await parseToolArgs(inputArg);
 
@@ -319,6 +325,10 @@ async function cmdInfo(args: string[]): Promise<void> {
   }
 
   const [server, tool] = resolved;
+
+  if (split && tool.includes("/")) {
+    console.error(`Warning: tool name "${tool}" contains "/". Did you mean "${split[0]}/${tool.split("/")[0]}"?`);
+  }
   const info = (await ipcCall("getToolInfo", { server, tool })) as ToolInfo & {
     inputSchema: Record<string, unknown>;
   };
