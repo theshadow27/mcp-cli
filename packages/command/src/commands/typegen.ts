@@ -6,10 +6,8 @@
  */
 
 import { writeFileSync } from "node:fs";
-import type { ToolInfo } from "@mcp-cli/core";
-import { TYPES_PATH, ipcCall } from "@mcp-cli/core";
+import { type JsonSchema, TYPES_PATH, type ToolInfo, ipcCall, jsonSchemaToTs } from "@mcp-cli/core";
 import { printError } from "../output.js";
-import { type JsonSchema, jsonSchemaToTs } from "../schema-display.js";
 
 /** Higher limits than default for declaration files — we want full detail. */
 const SCHEMA_OPTS = { maxDepth: 4, maxProps: 20 };

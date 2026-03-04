@@ -8,6 +8,8 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  DAEMON_BINARY_NAME,
+  DAEMON_DEV_SCRIPT,
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
@@ -123,7 +125,7 @@ export function isProcessMcpd(pid: number): boolean {
     const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
     const output = result.stdout.toString().trim();
     // Match compiled binary (mcpd) or dev script (daemon/src/index)
-    return output.includes("mcpd") || output.includes("daemon/src/index");
+    return output.includes(DAEMON_BINARY_NAME) || output.includes(DAEMON_DEV_SCRIPT);
   } catch {
     return false;
   }
@@ -195,14 +197,35 @@ export async function isDaemonRunning(): Promise<boolean> {
   return true;
 }
 
+/**
+ * Resolve the command to launch the daemon.
+ *
+ * 1. Compiled mode: look for `mcpd` binary next to the current executable.
+ * 2. Dev mode: walk up from this file to find the workspace root, then resolve the daemon script.
+ * 3. Fallback: assume `mcpd` is on PATH.
+ */
+export function resolveDaemonCommand(): string[] {
+  // Compiled mode: mcpd binary next to current executable
+  const siblingBinary = join(dirname(process.execPath), DAEMON_BINARY_NAME);
+  if (existsSync(siblingBinary)) return [siblingBinary];
+
+  // Dev mode: walk up from this file to find workspace root, then resolve daemon script
+  let dir = import.meta.dir;
+  for (let i = 0; i < 10; i++) {
+    const candidate = join(dir, DAEMON_DEV_SCRIPT);
+    if (existsSync(candidate)) return ["bun", "run", candidate];
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // Fallback: assume mcpd is on PATH
+  return [DAEMON_BINARY_NAME];
+}
+
 /** Spawn the daemon as a detached background process */
 async function startDaemon(): Promise<void> {
-  // Detect compiled binary: argv[0] won't be "bun" and import.meta.dir
-  // won't resolve to the source tree.
-  const daemonScript = join(import.meta.dir, "../../daemon/src/index.ts");
-  const isCompiled = !existsSync(daemonScript);
-
-  const cmd = isCompiled ? [join(dirname(process.execPath), "mcpd")] : ["bun", "run", daemonScript];
+  const cmd = resolveDaemonCommand();
 
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",

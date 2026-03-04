@@ -4,8 +4,8 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
+import { type JsonSchema, jsonSchemaToTs } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client.js";
-import { type JsonSchema, jsonSchemaToTs } from "./schema-display.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
 

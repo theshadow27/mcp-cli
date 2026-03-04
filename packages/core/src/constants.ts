@@ -91,3 +91,9 @@ export const LOCK_PATH = join(MCP_CLI_DIR, "mcpd.lock");
 
 /** Daemon ready signal (stdout) */
 export const DAEMON_READY_SIGNAL = "MCPD_READY";
+
+/** Compiled daemon binary name */
+export const DAEMON_BINARY_NAME = "mcpd";
+
+/** Daemon dev-mode script path (relative to workspace root) */
+export const DAEMON_DEV_SCRIPT = "packages/daemon/src/index.ts";
