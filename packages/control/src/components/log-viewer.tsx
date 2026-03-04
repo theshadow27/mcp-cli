@@ -9,6 +9,8 @@ interface LogViewerProps {
   servers: ServerStatus[];
   scrollOffset: number;
   height: number;
+  filterText?: string;
+  totalCount?: number;
 }
 
 function sourceLabel(source: LogSource): string {
@@ -24,7 +26,7 @@ function formatTime(ts: number): string {
   return `${h}:${m}:${s}.${ms}`;
 }
 
-export function LogViewer({ lines, source, servers, scrollOffset, height }: LogViewerProps) {
+export function LogViewer({ lines, source, servers, scrollOffset, height, filterText, totalCount }: LogViewerProps) {
   // Build source tabs
   const sources: LogSource[] = [{ type: "daemon" }, ...servers.map((s) => ({ type: "server" as const, name: s.name }))];
 
@@ -79,6 +81,15 @@ export function LogViewer({ lines, source, servers, scrollOffset, height }: LogV
           <Text dimColor>
             {effectiveOffset + 1}-{Math.min(effectiveOffset + height, lines.length)} of {lines.length}
             {isFollowing ? " (following)" : ""}
+            {filterText ? ` — filter: "${filterText}"` : ""}
+            {filterText && totalCount !== undefined ? ` (${lines.length}/${totalCount})` : ""}
+          </Text>
+        </Box>
+      )}
+      {lines.length === 0 && filterText && (
+        <Box marginTop={1}>
+          <Text dimColor>
+            filter: &quot;{filterText}&quot; — no matches ({totalCount ?? 0} total lines)
           </Text>
         </Box>
       )}

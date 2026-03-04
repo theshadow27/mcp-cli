@@ -1,5 +1,5 @@
 import { Box } from "ink";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
@@ -9,7 +9,7 @@ import { ServerList } from "./components/server-list.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
-import { useLogs } from "./hooks/use-logs.js";
+import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 
 const LOG_VIEW_HEIGHT = 20;
 
@@ -21,19 +21,27 @@ export function App() {
   const authTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [view, setView] = useState<View>("servers");
   const [logScrollOffset, setLogScrollOffset] = useState(0);
+  const [filterText, setFilterText] = useState("");
+  const [filterMode, setFilterMode] = useState(false);
 
   const servers = status?.servers ?? [];
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
-  // Auto-scroll to bottom when new lines arrive and user is following
+  const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
+  const prevFilterRef = useRef(filterText);
+
+  // Auto-scroll: follow new lines at the tail, or force-jump when filter changes
   useEffect(() => {
-    const maxOffset = Math.max(0, logLines.length - LOG_VIEW_HEIGHT);
+    const filterChanged = prevFilterRef.current !== filterText;
+    prevFilterRef.current = filterText;
+
+    const maxOffset = Math.max(0, filteredLogLines.length - LOG_VIEW_HEIGHT);
     setLogScrollOffset((prev) => {
-      // If already at or past the end, follow new lines
+      if (filterChanged) return maxOffset;
       if (prev >= maxOffset - 1 || prev === 0) return maxOffset;
       return prev;
     });
-  }, [logLines.length]);
+  }, [filteredLogLines.length, filterText]);
 
   // Auto-clear success/error auth status after 5 seconds
   useEffect(() => {
@@ -61,7 +69,11 @@ export function App() {
     setLogSource,
     logScrollOffset,
     setLogScrollOffset,
-    logLineCount: logLines.length,
+    logLineCount: filteredLogLines.length,
+    filterMode,
+    setFilterMode,
+    filterText,
+    setFilterText,
   });
 
   if (loading && !status) return <Loading />;
@@ -83,14 +95,16 @@ export function App() {
         </>
       ) : (
         <LogViewer
-          lines={logLines}
+          lines={filteredLogLines}
           source={logSource}
           servers={servers}
           scrollOffset={logScrollOffset}
           height={LOG_VIEW_HEIGHT}
+          filterText={filterText}
+          totalCount={logLines.length}
         />
       )}
-      <Footer view={view} />
+      <Footer view={view} filterMode={filterMode} filterText={filterText} />
     </Box>
   );
 }

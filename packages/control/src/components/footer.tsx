@@ -4,9 +4,25 @@ import type { View } from "../hooks/use-keyboard.js";
 
 interface FooterProps {
   view?: View;
+  filterMode?: boolean;
+  filterText?: string;
 }
 
-export function Footer({ view = "servers" }: FooterProps) {
+export function Footer({ view = "servers", filterMode, filterText }: FooterProps) {
+  if (filterMode) {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text color="cyan">filter:</Text> {filterText}
+          <Text dimColor>█</Text>
+          {"  "}
+          <Text dimColor>enter</Text> apply{"  "}
+          <Text dimColor>esc</Text> clear
+        </Text>
+      </Box>
+    );
+  }
+
   if (view === "logs") {
     return (
       <Box marginTop={1}>
@@ -14,6 +30,7 @@ export function Footer({ view = "servers" }: FooterProps) {
           <Text dimColor>l/esc</Text> back{"  "}
           <Text dimColor>j/k</Text> scroll{"  "}
           <Text dimColor>tab</Text> source{"  "}
+          <Text dimColor>f</Text> filter{"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
         </Text>

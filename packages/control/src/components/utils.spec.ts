@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { filterLogLines } from "../hooks/use-logs.js";
 import { isAuthError } from "./auth-banner.js";
 import { formatUptime } from "./header.js";
 import { formatRelativeTime } from "./server-detail.js";
@@ -62,6 +63,43 @@ describe("isAuthError", () => {
     expect(isAuthError("Connection refused")).toBe(false);
     expect(isAuthError("ECONNRESET")).toBe(false);
     expect(isAuthError("Timeout after 5000ms")).toBe(false);
+  });
+});
+
+describe("filterLogLines", () => {
+  const lines = [
+    { timestamp: 1000, line: "INFO: server started" },
+    { timestamp: 2000, line: "WARN: slow query detected" },
+    { timestamp: 3000, line: "ERROR: connection refused" },
+    { timestamp: 4000, line: "INFO: request handled" },
+    { timestamp: 5000, line: "DEBUG: cache miss" },
+  ];
+
+  it("returns all lines when filter is empty", () => {
+    expect(filterLogLines(lines, "")).toEqual(lines);
+    expect(filterLogLines(lines, "")).toBe(lines); // same reference
+  });
+
+  it("filters by case-insensitive substring", () => {
+    const result = filterLogLines(lines, "error");
+    expect(result).toHaveLength(1);
+    expect(result[0].line).toBe("ERROR: connection refused");
+  });
+
+  it("matches partial strings", () => {
+    const result = filterLogLines(lines, "info");
+    expect(result).toHaveLength(2);
+    expect(result.map((l) => l.timestamp)).toEqual([1000, 4000]);
+  });
+
+  it("returns empty array when nothing matches", () => {
+    expect(filterLogLines(lines, "FATAL")).toEqual([]);
+  });
+
+  it("matches mixed case", () => {
+    const result = filterLogLines(lines, "Cache");
+    expect(result).toHaveLength(1);
+    expect(result[0].line).toBe("DEBUG: cache miss");
   });
 });
 

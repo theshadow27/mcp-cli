@@ -22,6 +22,10 @@ interface UseKeyboardOptions {
   logScrollOffset: number;
   setLogScrollOffset: (fn: (offset: number) => number) => void;
   logLineCount: number;
+  filterMode: boolean;
+  setFilterMode: (mode: boolean) => void;
+  filterText: string;
+  setFilterText: (fn: string | ((prev: string) => string)) => void;
 }
 
 export function useKeyboard({
@@ -40,10 +44,36 @@ export function useKeyboard({
   logScrollOffset,
   setLogScrollOffset,
   logLineCount,
+  filterMode,
+  setFilterMode,
+  filterText,
+  setFilterText,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
 
   useInput((input, key) => {
+    // -- Filter mode: capture all input for filter text --
+    if (filterMode) {
+      if (key.return) {
+        setFilterMode(false);
+        return;
+      }
+      if (key.escape) {
+        setFilterText("");
+        setFilterMode(false);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setFilterText((prev) => prev.slice(0, -1));
+        return;
+      }
+      // Append printable characters
+      if (input && !key.ctrl && !key.meta) {
+        setFilterText((prev) => prev + input);
+      }
+      return;
+    }
+
     // Global: shutdown daemon
     if (input === "s") {
       ipcCall("shutdown").catch(() => {});
@@ -61,7 +91,14 @@ export function useKeyboard({
     if (view === "logs") {
       // Back to servers
       if (input === "l" || key.escape) {
+        setFilterText("");
         setView("servers");
+        return;
+      }
+
+      // Enter filter mode
+      if (input === "f" || input === "/") {
+        setFilterMode(true);
         return;
       }
 

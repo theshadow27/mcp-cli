@@ -4,6 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type LogSource = { type: "daemon" } | { type: "server"; name: string };
 
+/** Case-insensitive substring filter for log entries. */
+export function filterLogLines(lines: LogEntry[], filterText: string): LogEntry[] {
+  if (!filterText) return lines;
+  const lower = filterText.toLowerCase();
+  return lines.filter((entry) => entry.line.toLowerCase().includes(lower));
+}
+
 const MAX_LINES = 500;
 const INITIAL_LIMIT = 50;
 const POLL_INTERVAL_MS = 1000;
