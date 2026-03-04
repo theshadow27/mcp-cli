@@ -483,10 +483,10 @@ describe("resolveConfigPath", () => {
     expect(resolveConfigPath("local")).toBe(resolveConfigPath("user"));
   });
 
-  test("project scope resolves to .mcp.json in cwd", () => {
+  test("project scope resolves to mcp-cli project config", () => {
     const path = resolveConfigPath("project");
-    expect(path).toContain(".mcp.json");
-    expect(path).toContain(process.cwd());
+    expect(path).toContain(".mcp-cli/projects");
+    expect(path).toContain("servers.json");
   });
 });
 

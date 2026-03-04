@@ -6,16 +6,16 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { PROJECT_MCP_FILENAME, USER_SERVERS_PATH } from "@mcp-cli/core";
+import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
 
 export type ConfigScope = "user" | "project" | "local";
 
 /** Resolve config file path from scope. "local" is an alias for "user". */
 export function resolveConfigPath(scope: ConfigScope): string {
   if (scope === "project") {
-    return join(process.cwd(), PROJECT_MCP_FILENAME);
+    return projectConfigPath(process.cwd());
   }
   // "user" and "local" both write to servers.json
   return USER_SERVERS_PATH;
