@@ -107,12 +107,13 @@ export function isHttpConfig(config: ServerConfig): config is HttpServerConfig {
 }
 
 export function isSseConfig(config: ServerConfig): config is SseServerConfig {
-  return "url" in config && (config.type === "sse" || (!("command" in config) && config.type !== "http"));
+  return "url" in config && config.type === "sse";
 }
 
 /** Get the transport type for a server config */
 export function getTransportType(config: ServerConfig): "stdio" | "http" | "sse" {
   if (isStdioConfig(config)) return "stdio";
   if (isHttpConfig(config)) return "http";
-  return "sse";
+  if (isSseConfig(config)) return "sse";
+  throw new Error('Unknown server config type: missing or invalid "type" field');
 }

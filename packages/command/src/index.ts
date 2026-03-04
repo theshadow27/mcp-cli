@@ -14,7 +14,6 @@
  *   mcp status                                   # daemon status
  */
 
-import { readFileSync } from "node:fs";
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { VERSION } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
@@ -29,6 +28,7 @@ import { cmdRegistryDispatch } from "./commands/registry-cmd.js";
 import { cmdRemove } from "./commands/remove.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
+import { readFileWithLimit } from "./file-read.js";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index.js";
 import {
   formatToolResult,
@@ -397,7 +397,7 @@ async function parseToolArgs(input: string): Promise<Record<string, unknown>> {
   // File reference: @file.json
   if (input.startsWith("@")) {
     const filePath = input.slice(1);
-    const content = readFileSync(filePath, "utf-8");
+    const content = readFileWithLimit(filePath);
     return JSON.parse(content);
   }
 

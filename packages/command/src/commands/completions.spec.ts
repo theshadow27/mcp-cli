@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   ALIAS_SUBCOMMANDS,
   CONFIG_SUBCOMMANDS,
@@ -147,6 +147,44 @@ describe("fishScript", () => {
 
   test("contains all subcommands in initial completion", () => {
     expect(script).toContain(SUBCOMMANDS.join(" "));
+  });
+});
+
+describe("daemon guard", () => {
+  test("completion helpers do not call ipcCall when daemon is not running", async () => {
+    const ipcCallMock = mock(() => Promise.resolve([]));
+    const isDaemonRunningMock = mock(() => Promise.resolve(false));
+
+    mock.module("@mcp-cli/core", () => ({
+      ipcCall: ipcCallMock,
+      isDaemonRunning: isDaemonRunningMock,
+    }));
+
+    // Re-import to pick up mocked module
+    const { cmdCompletions } = await import("./completions.js");
+
+    // --servers
+    await cmdCompletions(["--servers"]);
+    expect(isDaemonRunningMock).toHaveBeenCalled();
+    expect(ipcCallMock).not.toHaveBeenCalled();
+
+    // Reset
+    isDaemonRunningMock.mockClear();
+    ipcCallMock.mockClear();
+
+    // --tools
+    await cmdCompletions(["--tools", "some-server"]);
+    expect(isDaemonRunningMock).toHaveBeenCalled();
+    expect(ipcCallMock).not.toHaveBeenCalled();
+
+    // Reset
+    isDaemonRunningMock.mockClear();
+    ipcCallMock.mockClear();
+
+    // --aliases
+    await cmdCompletions(["--aliases"]);
+    expect(isDaemonRunningMock).toHaveBeenCalled();
+    expect(ipcCallMock).not.toHaveBeenCalled();
   });
 });
 

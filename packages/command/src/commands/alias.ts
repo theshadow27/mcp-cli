@@ -3,9 +3,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
+import { readFileWithLimit } from "../file-read.js";
 import { printAliasList, printError } from "../output.js";
 
 export async function cmdAlias(args: string[]): Promise<void> {
@@ -34,7 +34,7 @@ export async function cmdAlias(args: string[]): Promise<void> {
         script = await readStdin();
       } else if (source.startsWith("@")) {
         // Read from file
-        script = readFileSync(source.slice(1), "utf-8");
+        script = readFileWithLimit(source.slice(1));
       } else {
         // Inline script (remaining args joined)
         script = args.slice(2).join(" ");
@@ -92,7 +92,7 @@ export async function cmdAlias(args: string[]): Promise<void> {
       }
 
       // Re-save to update timestamp
-      const updatedScript = readFileSync(alias.filePath, "utf-8");
+      const updatedScript = readFileWithLimit(alias.filePath);
       const description = extractDescription(updatedScript);
       await ipcCall("saveAlias", { name, script: updatedScript, description });
       console.error(`Updated alias "${name}"`);

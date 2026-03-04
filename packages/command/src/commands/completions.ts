@@ -7,7 +7,7 @@
  */
 
 import type { AliasInfo, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { ipcCall, isDaemonRunning } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
 /** Top-level subcommands for the mcp CLI */
@@ -90,9 +90,10 @@ export async function cmdCompletions(args: string[]): Promise<void> {
   }
 }
 
-/** Print server names, one per line. Fails silently if daemon unavailable. */
+/** Print server names, one per line. Skips if daemon not running. */
 async function printServers(): Promise<void> {
   try {
+    if (!(await isDaemonRunning())) return;
     const servers = (await ipcCall("listServers")) as ServerStatus[];
     for (const s of servers) {
       console.log(s.name);
@@ -102,9 +103,10 @@ async function printServers(): Promise<void> {
   }
 }
 
-/** Print tool names for a server, one per line. Fails silently if daemon unavailable. */
+/** Print tool names for a server, one per line. Skips if daemon not running. */
 async function printTools(server: string): Promise<void> {
   try {
+    if (!(await isDaemonRunning())) return;
     const tools = (await ipcCall("listTools", { server })) as ToolInfo[];
     for (const t of tools) {
       console.log(t.name);
@@ -114,9 +116,10 @@ async function printTools(server: string): Promise<void> {
   }
 }
 
-/** Print alias names, one per line. Fails silently if daemon unavailable. */
+/** Print alias names, one per line. Skips if daemon not running. */
 async function printAliases(): Promise<void> {
   try {
+    if (!(await isDaemonRunning())) return;
     const aliases = (await ipcCall("listAliases")) as AliasInfo[];
     for (const a of aliases) {
       console.log(a.name);
