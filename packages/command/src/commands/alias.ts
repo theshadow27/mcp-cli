@@ -3,10 +3,36 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read.js";
 import { printAliasList, printError } from "../output.js";
+
+/** Wrap a defineAlias object literal body into a full script */
+export function wrapDefineAlias(code: string): string {
+  return `import { defineAlias, z } from "mcp-cli";\ndefineAlias(({ mcp, z }) => (${code}));\n`;
+}
+
+/** Extract the `name` field from a defineAlias object literal (no execution) */
+export function extractDefinitionName(code: string): string | undefined {
+  const match = code.match(/name\s*:\s*["']([^"']+)["']/);
+  return match?.[1];
+}
+
+/** Default defineAlias skeleton for new aliases */
+export const DEFINE_ALIAS_SKELETON = `import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ mcp, z }) => ({
+  name: "my-alias",
+  description: "Describe what this alias does",
+  input: z.object({}),
+  fn: async (input, ctx) => {
+    // Your implementation here
+  },
+}));
+`;
 
 export async function cmdAlias(args: string[]): Promise<void> {
   const sub = args[0];
@@ -21,9 +47,49 @@ export async function cmdAlias(args: string[]): Promise<void> {
     }
 
     case "save": {
+      // Parse -c / --code flag
+      const codeIdx = args.indexOf("-c") !== -1 ? args.indexOf("-c") : args.indexOf("--code");
+      const hasCode = codeIdx !== -1;
+
+      if (hasCode) {
+        // mcp alias save [-c CODE] [name]
+        // or: mcp alias save [name] -c CODE
+        const codeBody = args[codeIdx + 1];
+        if (!codeBody) {
+          printError("Missing code body after -c/--code flag");
+          process.exit(1);
+        }
+
+        // Collect remaining args (not -c or its value) after "save"
+        const rest = args.slice(1).filter((_, i) => {
+          const absIdx = i + 1; // offset because we sliced at 1
+          return absIdx !== codeIdx && absIdx !== codeIdx + 1;
+        });
+        const positionalName = rest[0];
+
+        const definitionName = extractDefinitionName(codeBody);
+        const name = positionalName ?? definitionName;
+        if (!name) {
+          printError("No alias name — provide a name field in the definition or as a positional arg");
+          process.exit(1);
+        }
+
+        const script = wrapDefineAlias(codeBody);
+        const description = extractDescription(script);
+        const result = (await ipcCall("saveAlias", { name, script, description })) as {
+          ok: boolean;
+          filePath: string;
+        };
+        console.error(`Saved alias "${name}" → ${result.filePath}`);
+        break;
+      }
+
+      // Standard save: mcp alias save <name> <@file | - | script>
       const name = args[1];
       if (!name) {
-        printError("Usage: mcp alias save <name> <@file | - | script>");
+        printError(
+          "Usage: mcp alias save <name> <@file | - | script>\n       mcp alias save -c '{...defineAlias body...}'",
+        );
         process.exit(1);
       }
 
@@ -80,23 +146,31 @@ export async function cmdAlias(args: string[]): Promise<void> {
       }
 
       const alias = (await ipcCall("getAlias", { name })) as AliasDetail | null;
-      if (!alias) {
-        printError(`Alias "${name}" not found`);
-        process.exit(1);
+      let filePath: string;
+
+      if (alias) {
+        filePath = alias.filePath;
+      } else {
+        // New alias — create file with defineAlias skeleton
+        filePath = safeAliasPath(name);
+        const skeleton = DEFINE_ALIAS_SKELETON.replace('name: "my-alias"', `name: "${name}"`);
+        mkdirSync(dirname(filePath), { recursive: true });
+        writeFileSync(filePath, skeleton, "utf-8");
+        console.error(`Creating new alias "${name}"…`);
       }
 
       const editor = process.env.EDITOR ?? process.env.VISUAL ?? "vi";
-      const result = spawnSync(editor, [alias.filePath], { stdio: "inherit" });
+      const result = spawnSync(editor, [filePath], { stdio: "inherit" });
       if (result.status !== 0) {
         printError(`Editor exited with code ${result.status}`);
         process.exit(1);
       }
 
-      // Re-save to update timestamp
-      const updatedScript = readFileWithLimit(alias.filePath);
+      // Re-save to update timestamp and extract metadata
+      const updatedScript = readFileWithLimit(filePath);
       const description = extractDescription(updatedScript);
       await ipcCall("saveAlias", { name, script: updatedScript, description });
-      console.error(`Updated alias "${name}"`);
+      console.error(`${alias ? "Updated" : "Saved"} alias "${name}"`);
       break;
     }
 
