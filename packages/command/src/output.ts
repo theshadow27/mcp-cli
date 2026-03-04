@@ -156,7 +156,13 @@ export function printToolInfo(tool: {
 
 /** Print a list of aliases */
 export function printAliasList(
-  aliases: Array<{ name: string; description: string; filePath: string; updatedAt: number }>,
+  aliases: Array<{
+    name: string;
+    description: string;
+    filePath: string;
+    updatedAt: number;
+    aliasType?: "freeform" | "defineAlias";
+  }>,
 ): void {
   if (aliases.length === 0) {
     console.error("No aliases saved. Use `mcp alias save <name> <@file | ->` to create one.");
@@ -166,8 +172,9 @@ export function printAliasList(
   const maxName = Math.max(...aliases.map((a) => a.name.length));
 
   for (const a of aliases) {
+    const tag = a.aliasType === "defineAlias" ? `${c.cyan}[defined]${c.reset} ` : "";
     const desc = a.description ? `  ${c.dim}${a.description}${c.reset}` : "";
-    console.log(`  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${a.filePath}${desc}`);
+    console.log(`  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${tag}${a.filePath}${desc}`);
   }
   console.log(`\n${aliases.length} alias(es)`);
 }

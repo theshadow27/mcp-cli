@@ -329,6 +329,51 @@ describe("StateDb", () => {
       expect(db.listAliases()).toEqual([]);
       db.close();
     });
+
+    test("saveAlias stores aliasType as defineAlias", () => {
+      const db = createDb();
+      db.saveAlias("structured", "/tmp/structured.ts", "A defined alias", "defineAlias");
+      const alias = db.getAlias("structured");
+      expect(alias?.aliasType).toBe("defineAlias");
+      db.close();
+    });
+
+    test("saveAlias defaults aliasType to freeform", () => {
+      const db = createDb();
+      db.saveAlias("legacy", "/tmp/legacy.ts");
+      const alias = db.getAlias("legacy");
+      expect(alias?.aliasType).toBe("freeform");
+      db.close();
+    });
+
+    test("listAliases includes aliasType", () => {
+      const db = createDb();
+      db.saveAlias("a", "/tmp/a.ts", undefined, "freeform");
+      db.saveAlias("b", "/tmp/b.ts", undefined, "defineAlias");
+      const aliases = db.listAliases();
+      expect(aliases[0].aliasType).toBe("freeform");
+      expect(aliases[1].aliasType).toBe("defineAlias");
+      db.close();
+    });
+
+    test("saveAlias stores schema JSON", () => {
+      const db = createDb();
+      const inputSchema = '{"type":"object","properties":{"q":{"type":"string"}}}';
+      db.saveAlias("search", "/tmp/search.ts", "Search", "defineAlias", inputSchema, '{"type":"string"}');
+      const alias = db.getAlias("search");
+      expect(alias).toBeDefined();
+      expect(alias?.aliasType).toBe("defineAlias");
+      db.close();
+    });
+
+    test("upsert updates aliasType", () => {
+      const db = createDb();
+      db.saveAlias("evolve", "/tmp/evolve.ts", "v1", "freeform");
+      expect(db.getAlias("evolve")?.aliasType).toBe("freeform");
+      db.saveAlias("evolve", "/tmp/evolve.ts", "v2", "defineAlias");
+      expect(db.getAlias("evolve")?.aliasType).toBe("defineAlias");
+      db.close();
+    });
   });
 
   describe("auth_tokens", () => {

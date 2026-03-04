@@ -24,7 +24,15 @@ import type {
   SaveAliasParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { ALIASES_DIR, DB_PATH, IPC_ERROR, PROTOCOL_VERSION, SOCKET_PATH, safeAliasPath } from "@mcp-cli/core";
+import {
+  ALIASES_DIR,
+  DB_PATH,
+  IPC_ERROR,
+  PROTOCOL_VERSION,
+  SOCKET_PATH,
+  isDefineAlias,
+  safeAliasPath,
+} from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
@@ -291,12 +299,42 @@ export class IpcServer {
       const filePath = safeAliasPath(name);
       mkdirSync(ALIASES_DIR, { recursive: true });
 
-      // Auto-prepend import if not present
-      const hasImport = /import\s.*from\s+["']mcp-cli["']/.test(script);
-      const finalScript = hasImport ? script : `import { mcp, args, file, json } from "mcp-cli";\n${script}`;
+      const isStructured = isDefineAlias(script);
+
+      let finalScript: string;
+      if (isStructured) {
+        // defineAlias scripts get everything via the virtual module — no auto-import
+        finalScript = script;
+      } else {
+        // Freeform: auto-prepend import if not present (existing behavior)
+        const hasImport = /import\s.*from\s+["']mcp-cli["']/.test(script);
+        finalScript = hasImport ? script : `import { mcp, args, file, json } from "mcp-cli";\n${script}`;
+      }
 
       writeFileSync(filePath, finalScript, "utf-8");
-      this.db.saveAlias(name, filePath, description);
+
+      const aliasType = isStructured ? "defineAlias" : "freeform";
+
+      // For defineAlias scripts, extract metadata via worker
+      if (isStructured) {
+        try {
+          const meta = await extractAliasMetadata(filePath);
+          this.db.saveAlias(
+            name,
+            filePath,
+            meta.description || description,
+            aliasType,
+            meta.inputSchema ? JSON.stringify(meta.inputSchema) : undefined,
+            meta.outputSchema ? JSON.stringify(meta.outputSchema) : undefined,
+          );
+        } catch {
+          // Worker extraction failed — save with sentinel-detected type only
+          this.db.saveAlias(name, filePath, description, aliasType);
+        }
+      } else {
+        this.db.saveAlias(name, filePath, description, aliasType);
+      }
+
       return { ok: true, filePath };
     });
 
@@ -360,6 +398,43 @@ export class IpcServer {
 }
 
 // -- Helpers --
+
+interface AliasMetadata {
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+}
+
+/** Extract metadata from a defineAlias script using a Bun Worker */
+function extractAliasMetadata(aliasPath: string): Promise<AliasMetadata> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(join(import.meta.dir, "alias-worker.ts"));
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("Alias metadata extraction timed out"));
+    }, 5_000);
+
+    worker.onmessage = (event: MessageEvent) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      const data = event.data as AliasMetadata | { error: string };
+      if ("error" in data) {
+        reject(new Error(data.error));
+      } else {
+        resolve(data);
+      }
+    };
+
+    worker.onerror = (err) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      reject(err);
+    };
+
+    worker.postMessage({ aliasPath });
+  });
+}
 
 function toIpcError(err: unknown): IpcError {
   if (err instanceof Error) {

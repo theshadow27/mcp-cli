@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@mcp-cli/core": "workspace:*"
+    "@mcp-cli/core": "workspace:*",
+    "zod": "^3.25 || ^4.0"
   }
 }

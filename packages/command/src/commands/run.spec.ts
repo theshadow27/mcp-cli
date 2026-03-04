@@ -4,29 +4,51 @@ import { parseRunArgs } from "./run.js";
 describe("parseRunArgs", () => {
   test("parses --key value pairs", () => {
     expect(parseRunArgs(["--name", "alice", "--age", "30"])).toEqual({
-      name: "alice",
-      age: "30",
+      jsonInput: undefined,
+      cliArgs: { name: "alice", age: "30" },
     });
   });
 
-  test("returns empty object for no args", () => {
-    expect(parseRunArgs([])).toEqual({});
+  test("returns empty for no args", () => {
+    expect(parseRunArgs([])).toEqual({ jsonInput: undefined, cliArgs: {} });
   });
 
   test("ignores flags without a following value", () => {
-    expect(parseRunArgs(["--orphan"])).toEqual({});
+    expect(parseRunArgs(["--orphan"])).toEqual({ jsonInput: undefined, cliArgs: {} });
   });
 
-  test("ignores positional args without -- prefix", () => {
-    expect(parseRunArgs(["positional", "--key", "val"])).toEqual({ key: "val" });
+  test("captures first positional arg as jsonInput", () => {
+    expect(parseRunArgs(['{"email":"a@b.com"}', "--key", "val"])).toEqual({
+      jsonInput: '{"email":"a@b.com"}',
+      cliArgs: { key: "val" },
+    });
+  });
+
+  test("captures plain string as jsonInput", () => {
+    expect(parseRunArgs(['"hello"'])).toEqual({
+      jsonInput: '"hello"',
+      cliArgs: {},
+    });
   });
 
   test("last value wins for duplicate keys", () => {
-    expect(parseRunArgs(["--k", "first", "--k", "second"])).toEqual({ k: "second" });
+    expect(parseRunArgs(["--k", "first", "--k", "second"])).toEqual({
+      jsonInput: undefined,
+      cliArgs: { k: "second" },
+    });
   });
 
   test("handles values that look like flags", () => {
-    // --flag --other-flag is parsed as flag="--other-flag"
-    expect(parseRunArgs(["--flag", "--other"])).toEqual({ flag: "--other" });
+    expect(parseRunArgs(["--flag", "--other"])).toEqual({
+      jsonInput: undefined,
+      cliArgs: { flag: "--other" },
+    });
+  });
+
+  test("json input and flags together", () => {
+    expect(parseRunArgs(['{"q":"test"}', "--verbose", "true"])).toEqual({
+      jsonInput: '{"q":"test"}',
+      cliArgs: { verbose: "true" },
+    });
   });
 });

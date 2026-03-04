@@ -1,3 +1,4 @@
+export * from "./alias.js";
 export * from "./ipc.js";
 export * from "./ipc-client.js";
 export * from "./config.js";
