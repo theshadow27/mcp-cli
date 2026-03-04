@@ -64,3 +64,54 @@ describe("ConfigWatcher", () => {
     expect(configHash(config1)).not.toBe(configHash(config2));
   });
 });
+
+describe("ConfigWatcher.diffServers", () => {
+  test("detects added servers", () => {
+    const oldConfig = makeConfig({ a: { command: "echo" } });
+    const newConfig = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+
+    const diff = ConfigWatcher.diffServers(oldConfig.servers, newConfig.servers);
+    expect(diff.added).toEqual(["b"]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+  });
+
+  test("detects removed servers", () => {
+    const oldConfig = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const newConfig = makeConfig({ a: { command: "echo" } });
+
+    const diff = ConfigWatcher.diffServers(oldConfig.servers, newConfig.servers);
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual(["b"]);
+    expect(diff.changed).toEqual([]);
+  });
+
+  test("detects changed server config", () => {
+    const oldConfig = makeConfig({ a: { command: "echo" } });
+    const newConfig = makeConfig({ a: { command: "cat" } });
+
+    const diff = ConfigWatcher.diffServers(oldConfig.servers, newConfig.servers);
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual(["a"]);
+  });
+
+  test("detects simultaneous add, remove, and change", () => {
+    const oldConfig = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const newConfig = makeConfig({ a: { command: "modified" }, c: { command: "new" } });
+
+    const diff = ConfigWatcher.diffServers(oldConfig.servers, newConfig.servers);
+    expect(diff.added).toEqual(["c"]);
+    expect(diff.removed).toEqual(["b"]);
+    expect(diff.changed).toEqual(["a"]);
+  });
+
+  test("returns empty arrays when nothing changed", () => {
+    const config = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+
+    const diff = ConfigWatcher.diffServers(config.servers, config.servers);
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.changed).toEqual([]);
+  });
+});

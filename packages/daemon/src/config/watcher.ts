@@ -7,7 +7,7 @@
 
 import { type FSWatcher, existsSync, watch } from "node:fs";
 import { dirname } from "node:path";
-import type { ResolvedConfig } from "@mcp-cli/core";
+import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { CLAUDE_CONFIG_PATH, MCP_CLI_CONFIG_PATH, PROJECT_MCP_FILENAME, USER_SERVERS_PATH } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./loader.js";
 
@@ -27,14 +27,43 @@ export class ConfigWatcher {
   private watchers: FSWatcher[] = [];
   private debounceTimer: Timer | null = null;
   private currentHash: string;
+  private previousServers: Map<string, ResolvedServer>;
   private cwd: string;
   private callback: ConfigChangeCallback;
   private stopped = false;
 
   constructor(initialConfig: ResolvedConfig, callback: ConfigChangeCallback, cwd = process.cwd()) {
     this.currentHash = configHash(initialConfig);
+    this.previousServers = initialConfig.servers;
     this.callback = callback;
     this.cwd = cwd;
+  }
+
+  /** Compare two server maps and return the diff. */
+  static diffServers(
+    oldServers: Map<string, ResolvedServer>,
+    newServers: Map<string, ResolvedServer>,
+  ): { added: string[]; removed: string[]; changed: string[] } {
+    const added: string[] = [];
+    const removed: string[] = [];
+    const changed: string[] = [];
+
+    for (const [name, resolved] of newServers) {
+      const prev = oldServers.get(name);
+      if (!prev) {
+        added.push(name);
+      } else if (JSON.stringify(prev.config) !== JSON.stringify(resolved.config)) {
+        changed.push(name);
+      }
+    }
+
+    for (const name of oldServers.keys()) {
+      if (!newServers.has(name)) {
+        removed.push(name);
+      }
+    }
+
+    return { added, removed, changed };
   }
 
   /** Start watching config files. */
@@ -127,9 +156,11 @@ export class ConfigWatcher {
       if (hash === this.currentHash) return;
 
       const previousHash = this.currentHash;
+      const { added, removed, changed } = ConfigWatcher.diffServers(this.previousServers, config.servers);
       this.currentHash = hash;
+      this.previousServers = config.servers;
       console.error(`[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`);
-      this.callback({ added: [], removed: [], changed: [], config, hash });
+      this.callback({ added, removed, changed, config, hash });
     } catch (err) {
       console.error(`[config-watcher] Failed to reload config: ${err}`);
     }
