@@ -4,17 +4,34 @@ You are the QA controller for the mcp-cli project. Your job is to verify that a 
 
 ## Input
 
-The user will provide a GitHub issue number (e.g., `/qa 5` or `/qa #5`). Parse the number from: $ARGUMENTS
+The user will provide a GitHub issue number or PR number (e.g., `/qa 5`, `/qa #5`, or a PR URL). Parse the number from: $ARGUMENTS
 
 ## Workflow
 
 Execute these steps in order. Be thorough but concise in your reporting.
+
+### Step 0: Determine Context and Checkout
+
+First, determine whether the input refers to a PR or an issue:
+
+```bash
+gh pr view <number> --json number,headRefName,state 2>/dev/null
+```
+
+- **If a PR exists**: check out the PR branch so QA runs against the actual changes:
+  ```bash
+  git checkout main && git pull origin main
+  gh pr checkout <number>
+  ```
+- **If no PR exists**: stay on the current branch and proceed with issue-based QA.
 
 ### Step 1: Pull the Issue
 
 ```bash
 gh issue view <number>
 ```
+
+If working from a PR, also pull the linked issue number from the PR body or title (look for `fixes #N` or `closes #N`).
 
 Read the issue title, body, labels, and any existing comments. Understand:
 - What functionality was promised
@@ -62,15 +79,15 @@ bun test
 
 Run the full test suite. All tests — including any you just wrote — must pass. If any fail, fix them before proceeding.
 
-### Step 6: Comment and Close
+### Step 6: Comment, Close, and Merge
 
-Post a structured QA comment to the issue, then close it. Use this format:
+Post a structured QA comment to the issue, then close it:
 
 ```bash
-gh issue comment <number> --body "$(cat <<'EOF'
+gh issue comment <issue-number> --body "$(cat <<'EOF'
 ## QA Verification ✅
 
-**Issue:** #<number> — <title>
+**Issue:** #<issue-number> — <title>
 
 ### Implementation Evidence
 <bullet list of files and what they implement, with line references>
@@ -89,7 +106,19 @@ All described functionality is implemented and verified. Tests pass. Closing.
 EOF
 )"
 
-gh issue close <number>
+gh issue close <issue-number>
+```
+
+**If a PR was checked out in Step 0**, merge it after closing the issue:
+
+```bash
+gh pr merge <pr-number> --squash --delete-branch
+```
+
+Then return to main:
+
+```bash
+git checkout main && git pull origin main
 ```
 
 ### Step 7: File Follow-Up Issues

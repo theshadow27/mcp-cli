@@ -8,6 +8,23 @@ The user will provide a GitHub issue number (e.g., `/implement 12` or `/implemen
 
 ## Workflow
 
+### Step 0: Prepare Branch
+
+Start from a clean, up-to-date main:
+
+```bash
+git checkout main
+git pull origin main
+```
+
+Create a feature branch named after the issue:
+
+```bash
+git checkout -b feat/issue-<number>-<short-slug>
+```
+
+Use a prefix that matches the expected commit type (`feat/`, `fix/`, `refactor/`, etc.).
+
 ### Step 1: Fetch the Issue
 
 ```bash
@@ -71,18 +88,31 @@ Stage the relevant files and create a commit. Follow the repo's commit style (lo
 - Reference the issue number (e.g., `fixes #12` or `closes #12`)
 - Be concise but descriptive
 
-### Step 7: Push
+### Step 7: Push and Create PR
 
 ```bash
-git push
+git push -u origin <branch>
 ```
 
-If the branch is new or doesn't track a remote yet, use `git push -u origin <branch>`.
+Then create a pull request targeting main:
+
+```bash
+gh pr create --title "<conventional commit style title> (fixes #<number>)" --body "$(cat <<'EOF'
+## Summary
+<1-3 bullet points describing the changes>
+
+## Test plan
+<bulleted checklist of how the changes were verified>
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
 
 After pushing, report back with:
 - What was implemented
 - What tests were added
-- The commit hash
+- The PR URL
 
 ## Rules
 
