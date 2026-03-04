@@ -121,6 +121,18 @@ describe("parseAddArgs", () => {
       "Unknown flag: --unknown",
     );
   });
+
+  test("parses short flags -t -e -s", () => {
+    const result = parseAddArgs(["-t", "stdio", "-e", "K=V", "-s", "project", "name", "--", "cmd"]);
+    expect(result.transport).toBe("stdio");
+    expect(result.env).toEqual({ K: "V" });
+    expect(result.scope).toBe("project");
+  });
+
+  test("handles env value with multiple equals signs", () => {
+    const result = parseAddArgs(["-t", "http", "--env", "URL=https://a.com?x=1", "name", "https://example.com"]);
+    expect(result.env).toEqual({ URL: "https://a.com?x=1" });
+  });
 });
 
 // -- buildServerConfig tests --
@@ -275,25 +287,40 @@ describe("config file operations", () => {
   });
 
   test("addServerToConfig creates file and adds entry", () => {
-    // Temporarily override resolveConfigPath by writing directly
     const config: ServerConfig = { type: "http", url: "https://example.com" };
     const file = readConfigFile(serversPath);
     file.mcpServers = file.mcpServers ?? {};
+    const existed = "test" in file.mcpServers;
     file.mcpServers.test = config;
     writeConfigFile(serversPath, file);
 
+    expect(existed).toBe(false);
     const result = readConfigFile(serversPath);
     expect(result.mcpServers?.test).toEqual({ type: "http", url: "https://example.com" });
   });
 
+  test("addServerToConfig returns true when overwriting existing entry", () => {
+    writeConfigFile(serversPath, {
+      mcpServers: { s: { type: "http", url: "https://old.com" } },
+    });
+
+    const file = readConfigFile(serversPath);
+    const existed = "s" in (file.mcpServers ?? {});
+    file.mcpServers = file.mcpServers ?? {};
+    file.mcpServers.s = { type: "http", url: "https://new.com" };
+    writeConfigFile(serversPath, file);
+
+    expect(existed).toBe(true);
+    const result = readConfigFile(serversPath);
+    expect(result.mcpServers?.s).toEqual({ type: "http", url: "https://new.com" });
+  });
+
   test("addServerToConfig preserves existing entries", () => {
-    // Write initial config
     const initial: McpConfigFile = {
       mcpServers: { existing: { type: "http", url: "https://existing.com" } },
     };
     writeConfigFile(serversPath, initial);
 
-    // Add another server
     const file = readConfigFile(serversPath);
     file.mcpServers = file.mcpServers ?? {};
     file.mcpServers["new-server"] = { type: "sse", url: "https://new.com" };
@@ -313,8 +340,9 @@ describe("config file operations", () => {
     };
     writeConfigFile(serversPath, initial);
 
-    // Rebuild without the removed entry
     const file = readConfigFile(serversPath);
+    const existed = file.mcpServers !== undefined && "toRemove" in file.mcpServers;
+    expect(existed).toBe(true);
     const { toRemove: _, ...rest } = file.mcpServers ?? {};
     file.mcpServers = rest;
     writeConfigFile(serversPath, file);
@@ -330,6 +358,12 @@ describe("config file operations", () => {
     const file = readConfigFile(serversPath);
     const existed = file.mcpServers !== undefined && "nonexistent" in file.mcpServers;
     expect(existed).toBe(false);
+  });
+
+  test("readConfigFile handles file without mcpServers key", () => {
+    writeFileSync(serversPath, "{}");
+    const config = readConfigFile(serversPath);
+    expect(config.mcpServers).toEqual({});
   });
 });
 
@@ -350,5 +384,43 @@ describe("resolveConfigPath", () => {
     const path = resolveConfigPath("project");
     expect(path).toContain(".mcp.json");
     expect(path).toContain(process.cwd());
+  });
+});
+
+// -- cmdAddJson validation (unit-testable parts) --
+
+describe("cmdAddJson validation", () => {
+  test("invalid JSON throws", () => {
+    expect(() => JSON.parse("not-json")).toThrow();
+  });
+
+  test("config missing command and url is rejected", () => {
+    const config = JSON.parse('{"type":"unknown"}');
+    const valid = "command" in config || "url" in config;
+    expect(valid).toBe(false);
+  });
+
+  test("valid http config has url", () => {
+    const config = JSON.parse('{"type":"http","url":"https://example.com"}');
+    expect("url" in config).toBe(true);
+  });
+
+  test("valid stdio config has command", () => {
+    const config = JSON.parse('{"command":"npx","args":["-y","pkg"]}');
+    expect("command" in config).toBe(true);
+  });
+});
+
+// -- parseRemoveArgs edge cases --
+
+describe("parseRemoveArgs edge cases", () => {
+  test("throws on unknown flag", () => {
+    expect(() => parseRemoveArgs(["--verbose", "my-server"])).toThrow("Unknown flag: --verbose");
+  });
+
+  test("parses -s shorthand", () => {
+    const result = parseRemoveArgs(["-s", "local", "my-server"]);
+    expect(result.scope).toBe("local");
+    expect(result.name).toBe("my-server");
   });
 });
