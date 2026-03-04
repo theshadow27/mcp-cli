@@ -1,5 +1,35 @@
-import { describe, expect, test } from "bun:test";
-import { SIZE_HINT, SIZE_OK, analyzeStructure, generateAnalysis } from "./index.js";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  JqUnavailableError,
+  SIZE_HINT,
+  SIZE_OK,
+  _resetJqStateForTesting,
+  analyzeStructure,
+  applyJqFilter,
+  generateAnalysis,
+} from "./index.js";
+
+describe("applyJqFilter", () => {
+  afterEach(() => {
+    _resetJqStateForTesting();
+  });
+
+  test("throws JqUnavailableError when WASM is marked unavailable", async () => {
+    _resetJqStateForTesting("test: WASM not loaded");
+    await expect(applyJqFilter({ a: 1 }, ".a")).rejects.toBeInstanceOf(JqUnavailableError);
+  });
+
+  test("JqUnavailableError contains reason", async () => {
+    _resetJqStateForTesting("missing binary");
+    try {
+      await applyJqFilter({}, ".");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(JqUnavailableError);
+      expect((err as Error).message).toContain("missing binary");
+    }
+  });
+});
 
 describe("constants", () => {
   test("SIZE_OK is 10KB", () => {
