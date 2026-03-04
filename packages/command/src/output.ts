@@ -5,6 +5,7 @@
  */
 
 import { type JsonSchema, formatAliasSignature, jsonSchemaToTs } from "@mcp-cli/core";
+import type { AliasDetail } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -192,6 +193,35 @@ export function printAliasList(
     console.log(line);
   }
   console.log(`\n${aliases.length} alias(es)`);
+}
+
+/** Print alias metadata header for --debug mode */
+export function printAliasDebug(alias: AliasDetail): void {
+  const type = alias.aliasType === "defineAlias" ? "defineAlias" : "freeform";
+  const width = 46;
+  const header = `── ${alias.name} (${type}) `;
+  const pad = Math.max(0, width - header.length);
+
+  console.error(`${c.dim}${header}${"─".repeat(pad)}${c.reset}`);
+
+  if (alias.description) {
+    console.error(`  ${c.bold}description${c.reset}: ${alias.description}`);
+  }
+
+  if (alias.aliasType === "defineAlias") {
+    if (alias.inputSchemaJson) {
+      const ts = jsonSchemaToTs(alias.inputSchemaJson as JsonSchema, { maxDepth: 2, maxProps: 6 });
+      console.error(`  ${c.bold}input${c.reset}:       ${ts}`);
+    }
+    if (alias.outputSchemaJson) {
+      const ts = jsonSchemaToTs(alias.outputSchemaJson as JsonSchema, { maxDepth: 2, maxProps: 6 });
+      console.error(`  ${c.bold}output${c.reset}:      ${ts}`);
+    }
+  }
+
+  console.error(`  ${c.bold}source${c.reset}:      ${alias.filePath}`);
+  console.error(`${c.dim}${"─".repeat(width)}${c.reset}`);
+  console.error("");
 }
 
 /** Print a list of registry servers */

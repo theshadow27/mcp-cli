@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read.js";
-import { printAliasList, printError } from "../output.js";
+import { printAliasDebug, printAliasList, printError } from "../output.js";
 
 /** Wrap a defineAlias object literal body into a full script */
 export function wrapDefineAlias(code: string): string {
@@ -122,9 +122,10 @@ export async function cmdAlias(args: string[]): Promise<void> {
     }
 
     case "show": {
-      const name = args[1];
+      const debug = args.includes("--debug");
+      const name = args.filter((a) => a !== "--debug")[1];
       if (!name) {
-        printError("Usage: mcp alias show <name>");
+        printError("Usage: mcp alias show <name> [--debug]");
         process.exit(1);
       }
 
@@ -134,6 +135,9 @@ export async function cmdAlias(args: string[]): Promise<void> {
         process.exit(1);
       }
 
+      if (debug) {
+        printAliasDebug(alias);
+      }
       console.log(alias.script);
       break;
     }
@@ -187,9 +191,12 @@ export async function cmdAlias(args: string[]): Promise<void> {
       break;
     }
 
-    default:
-      printError("Usage: mcp alias {ls|save|show|edit|rm} [name]");
-      process.exit(1);
+    default: {
+      printAliasHelp();
+      const isHelp = !sub || sub === "help" || sub === "--help" || sub === "-h";
+      if (!isHelp) process.exit(1);
+      break;
+    }
   }
 }
 
@@ -200,6 +207,44 @@ async function readStdin(): Promise<string> {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
+/** Print help text with defineAlias usage examples */
+function printAliasHelp(): void {
+  console.error(`Usage: mcp alias <command> [options]
+
+Commands:
+  ls, list          List all aliases (-v for signatures)
+  save <name> ...   Save an alias
+  show <name>       Show alias source (--debug for metadata)
+  edit <name>       Open alias in $EDITOR
+  rm, delete        Delete an alias
+
+Examples:
+
+  # Structured alias with typed I/O (recommended):
+  mcp alias save my-tool @my-tool.ts
+
+  # Where my-tool.ts contains:
+  #   defineAlias(({ mcp, z }) => ({
+  #     name: 'my-tool',
+  #     description: 'Look up a user by email',
+  #     input: z.object({ email: z.string().email() }),
+  #     output: z.object({ id: z.string(), name: z.string() }),
+  #     fn: async ({ email }, { mcp }) => {
+  #       const user = await mcp.db.find_user({ email });
+  #       return { id: user.id, name: user.name };
+  #     },
+  #   }));
+
+  # Inline structured alias:
+  mcp alias save greet -c '{ name: "greet", description: "Say hello", input: z.string(), output: z.string(), fn: (name) => \`Hello, \${name}!\` }'
+
+  # Legacy freeform script (still supported):
+  mcp alias save my-script @script.ts
+
+  # Inspect parsed metadata:
+  mcp alias show my-tool --debug`);
 }
 
 /** Extract a description from a `// description: ...` comment on the first few lines */
