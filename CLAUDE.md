@@ -29,17 +29,19 @@ packages/
 
 **Build output:** `dist/mcpd`, `dist/mcp`, `dist/mcpctl` via `bun build --compile`
 
-**Single prod dependency:** `@modelcontextprotocol/sdk`
+**Prod dependencies:** `@modelcontextprotocol/sdk`, `zod` (v4)
 
 **Runtime state:** `~/.mcp-cli/` — SQLite db, aliases, PID file, socket
 
 ## Key Patterns
 
-- **IPC**: Unix socket at `~/.mcp-cli/mcpd.sock`, NDJSON protocol
+- **IPC**: Unix socket at `~/.mcp-cli/mcpd.sock`, HTTP with JSON request/response bodies (`POST /rpc`)
 - **Config**: reads Claude Code's `~/.claude.json` + `.mcp.json` natively
 - **Transports**: stdio (command+args), HTTP (StreamableHTTP), SSE
 - **Auth**: macOS Keychain reader (Claude Code tokens) → SQLite → env vars
-- **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed by Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Scripts get `mcp` (Proxy → IPC → daemon → MCP server), `args`, `file()`, `json()`. Import auto-prepended if missing.
+- **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed via Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Two modes:
+  - **defineAlias**: structured definitions with Zod input/output schemas, typed handler function. Virtual module provides `defineAlias`, `z`.
+  - **Freeform** (legacy): side-effect scripts; `import { mcp, args, file, json }` auto-prepended if missing.
 
 ## Rules
 
@@ -56,6 +58,7 @@ packages/
 ```
 packages/core/src/
   ipc.ts          IPC protocol types (IpcRequest, IpcResponse, IpcMethod)
+  alias.ts        AliasDefinition<I,O>, AliasContext, sentinel detection
   config.ts       Server config types and schemas
   constants.ts    Paths, defaults
   env.ts          ${VAR} and ${VAR:-default} expansion
@@ -64,6 +67,7 @@ packages/daemon/src/
   index.ts        Entry point
   daemon.ts       Main daemon loop
   server-pool.ts  Multiplexed server connection management
+  alias-worker.ts Bun Worker for extracting defineAlias metadata
   transports/     Stdio, HTTP, SSE transport wrappers
   auth/           OAuth, Keychain, token management
   config/         Config file loading and merging
