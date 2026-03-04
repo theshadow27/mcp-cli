@@ -8,7 +8,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { ToolInfo, UsageStat } from "@mcp-cli/core";
+import { type ToolInfo, type UsageStat, hardenFile } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
@@ -23,6 +23,7 @@ export class StateDb {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
+    hardenFile(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 3000");
     this.migrate();

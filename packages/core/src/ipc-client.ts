@@ -5,7 +5,7 @@
  * Auto-starts the daemon if not running.
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   DAEMON_BINARY_NAME,
@@ -14,13 +14,13 @@ import {
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
   LOCK_PATH,
-  MCP_CLI_DIR,
   PID_MAX_AGE_MS,
   PID_PATH,
   PING_TIMEOUT_MS,
   PROTOCOL_VERSION,
   SOCKET_PATH,
 } from "./constants.js";
+import { ensureStateDir } from "./fs.js";
 import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
 import { nextId } from "./ipc.js";
 
@@ -73,7 +73,7 @@ async function ensureDaemon(): Promise<void> {
   // Try to acquire exclusive lock
   let lockFd: number | null = null;
   try {
-    mkdirSync(MCP_CLI_DIR, { recursive: true });
+    ensureStateDir();
     lockFd = openSync(LOCK_PATH, "wx"); // O_WRONLY | O_CREAT | O_EXCL — atomic
   } catch {
     // Another process holds the lock — wait for daemon to appear
