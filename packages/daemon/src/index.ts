@@ -13,16 +13,17 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   DB_PATH,
-  MCP_CLI_DIR,
   PID_PATH,
   PROTOCOL_VERSION,
   SOCKET_PATH,
+  auditRuntimePermissions,
+  ensureStateDir,
 } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./config/loader.js";
 import { ConfigWatcher } from "./config/watcher.js";
@@ -36,8 +37,8 @@ async function main(): Promise<void> {
   installDaemonLogCapture();
   installDaemonLogFile();
 
-  // Ensure state directory exists
-  mkdirSync(MCP_CLI_DIR, { recursive: true });
+  // Ensure state directory exists with secure permissions (0700)
+  ensureStateDir();
 
   // Load config
   const config = await loadConfig();
@@ -56,6 +57,9 @@ async function main(): Promise<void> {
   // Open SQLite database
   const db = new StateDb(DB_PATH);
   console.error(`[mcpd] Database: ${DB_PATH}`);
+
+  // Warn if runtime state permissions have been loosened
+  auditRuntimePermissions();
 
   // Create server pool
   const pool = new ServerPool(config, db);
