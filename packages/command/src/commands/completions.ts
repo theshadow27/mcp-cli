@@ -29,6 +29,9 @@ export const SUBCOMMANDS = [
   "typegen",
   "restart",
   "shutdown",
+  "search",
+  "install",
+  "registry",
   "completions",
   "help",
 ] as const;

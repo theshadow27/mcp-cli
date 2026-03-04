@@ -27,6 +27,9 @@ describe("SUBCOMMANDS", () => {
     "typegen",
     "restart",
     "shutdown",
+    "search",
+    "install",
+    "registry",
     "completions",
     "help",
   ];

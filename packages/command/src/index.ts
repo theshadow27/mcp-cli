@@ -23,7 +23,9 @@ import { cmdAlias } from "./commands/alias.js";
 import { cmdCompletions } from "./commands/completions.js";
 import { cmdConfig } from "./commands/config.js";
 import { cmdGet } from "./commands/get.js";
+import { cmdInstall } from "./commands/install.js";
 import { cmdLogs } from "./commands/logs.js";
+import { cmdRegistryDispatch } from "./commands/registry-cmd.js";
 import { cmdRemove } from "./commands/remove.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
@@ -31,12 +33,14 @@ import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index.
 import {
   formatToolResult,
   printError,
+  printRegistryList,
   printServerList,
   printToolInfo,
   printToolList,
   printToolResult,
 } from "./output.js";
 import { extractFullFlag, extractJqFlag, extractJsonFlag, splitServerTool } from "./parse.js";
+import { searchRegistry } from "./registry/client.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -69,8 +73,49 @@ async function main(): Promise<void> {
         break;
 
       case "grep":
-      case "search":
         await cmdGrep(args.slice(1));
+        break;
+
+      case "search": {
+        const { json: searchJson, rest: searchRest } = extractJsonFlag(args.slice(1));
+        const searchPattern = searchRest.join(" ");
+        if (!searchPattern) {
+          printError("Usage: mcp search <query>");
+          process.exit(1);
+        }
+        const searchTools = (await ipcCall("grepTools", { pattern: searchPattern })) as ToolInfo[];
+        if (searchTools.length > 0) {
+          if (searchJson) {
+            console.log(JSON.stringify(searchTools, null, 2));
+          } else {
+            printToolList(searchTools);
+          }
+        } else {
+          try {
+            const registryResult = await searchRegistry(searchPattern, { limit: 20 });
+            if (registryResult.servers.length > 0) {
+              if (searchJson) {
+                console.log(JSON.stringify(registryResult.servers, null, 2));
+              } else {
+                console.error("No local tools matched. Registry results:\n");
+                printRegistryList(registryResult.servers);
+              }
+            } else {
+              console.error("No results found locally or in the registry.");
+            }
+          } catch {
+            console.error("No local tools matched. (Registry unavailable.)");
+          }
+        }
+        break;
+      }
+
+      case "install":
+        await cmdInstall(args.slice(1));
+        break;
+
+      case "registry":
+        await cmdRegistryDispatch(args.slice(1));
         break;
 
       case "status":
@@ -389,6 +434,10 @@ Usage:
   mcp info <server> <tool>            Show tool schema
   mcp info <server/tool>              Slash notation
   mcp grep <pattern>                  Search tools by name/description
+  mcp search <query>                  Search local tools, then registry
+  mcp install <slug>                  Install a server from the registry
+  mcp registry search <query>         Search the MCP registry
+  mcp registry list                   List available registry servers
   mcp add --transport {stdio|http|sse} <name> ...   Add a server
   mcp add-json <name> '<json>'        Add a server from raw JSON
   mcp remove <name>                   Remove a server

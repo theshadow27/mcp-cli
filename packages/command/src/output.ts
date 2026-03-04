@@ -4,6 +4,7 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
+import type { RegistryEntry } from "./registry/client.js";
 import { type JsonSchema, jsonSchemaToTs } from "./schema-display.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -169,6 +170,28 @@ export function printAliasList(
     console.log(`  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${a.filePath}${desc}`);
   }
   console.log(`\n${aliases.length} alias(es)`);
+}
+
+/** Print a list of registry servers */
+export function printRegistryList(entries: RegistryEntry[]): void {
+  if (entries.length === 0) {
+    console.error("No servers found.");
+    return;
+  }
+
+  const maxSlug = Math.max(...entries.map((e) => e._meta["com.anthropic.api/mcp-registry"].slug.length));
+  const maxName = Math.max(...entries.map((e) => e._meta["com.anthropic.api/mcp-registry"].displayName.length));
+
+  for (const e of entries) {
+    const meta = e._meta["com.anthropic.api/mcp-registry"];
+    const oneLiner = meta.oneLiner.length > 60 ? `${meta.oneLiner.slice(0, 57)}...` : meta.oneLiner;
+    const toolCount = meta.toolNames?.length ?? 0;
+    const tools = toolCount > 0 ? `${c.dim}${toolCount} tools${c.reset}` : "";
+    console.log(
+      `  ${c.cyan}${meta.slug.padEnd(maxSlug)}${c.reset}  ${c.bold}${meta.displayName.padEnd(maxName)}${c.reset}  ${oneLiner}  ${tools}`,
+    );
+  }
+  console.log(`\n${entries.length} server(s)`);
 }
 
 /** Print an error to stderr */
