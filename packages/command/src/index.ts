@@ -18,10 +18,13 @@ import { readFileSync } from "node:fs";
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { VERSION } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
+import { cmdAdd, cmdAddJson } from "./commands/add.js";
 import { cmdAlias } from "./commands/alias.js";
 import { cmdCompletions } from "./commands/completions.js";
 import { cmdConfig } from "./commands/config.js";
+import { cmdGet } from "./commands/get.js";
 import { cmdLogs } from "./commands/logs.js";
+import { cmdRemove } from "./commands/remove.js";
 import { cmdRun, parseRunArgs } from "./commands/run.js";
 import { cmdTypegen } from "./commands/typegen.js";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index.js";
@@ -76,6 +79,22 @@ async function main(): Promise<void> {
 
       case "config":
         await cmdConfig(args.slice(1));
+        break;
+
+      case "add":
+        await cmdAdd(args.slice(1));
+        break;
+
+      case "add-json":
+        await cmdAddJson(args.slice(1));
+        break;
+
+      case "remove":
+        await cmdRemove(args.slice(1));
+        break;
+
+      case "get":
+        await cmdGet(args.slice(1));
         break;
 
       case "auth":
@@ -370,6 +389,10 @@ Usage:
   mcp info <server> <tool>            Show tool schema
   mcp info <server/tool>              Slash notation
   mcp grep <pattern>                  Search tools by name/description
+  mcp add --transport {stdio|http|sse} <name> ...   Add a server
+  mcp add-json <name> '<json>'        Add a server from raw JSON
+  mcp remove <name>                   Remove a server
+  mcp get <name>                      Inspect a server's config and status
   mcp auth <server>                   Authenticate with an OAuth server
   mcp config show                     Show resolved server config
   mcp config sources                  Show config file sources

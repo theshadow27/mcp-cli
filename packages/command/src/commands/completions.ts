@@ -18,6 +18,10 @@ export const SUBCOMMANDS = [
   "grep",
   "status",
   "config",
+  "add",
+  "add-json",
+  "remove",
+  "get",
   "auth",
   "alias",
   "run",
@@ -36,7 +40,7 @@ export const ALIAS_SUBCOMMANDS = ["ls", "save", "show", "edit", "rm"] as const;
 export const CONFIG_SUBCOMMANDS = ["show", "sources"] as const;
 
 /** Subcommands that accept a server name as their first argument */
-const SERVER_COMMANDS = ["call", "info", "ls", "auth", "logs", "restart"];
+const SERVER_COMMANDS = ["call", "info", "ls", "auth", "logs", "restart", "remove", "get"];
 
 /** Subcommands that accept a tool name as their second argument (after server) */
 const TOOL_COMMANDS = ["call", "info"];
