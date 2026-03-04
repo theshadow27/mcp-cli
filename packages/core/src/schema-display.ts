@@ -76,6 +76,42 @@ export function formatToolSignature(name: string, inputSchema: JsonSchema): stri
   return `${name}({${parts.join(", ")}})`;
 }
 
+/**
+ * Format an alias name + optional input/output schemas as a compact signature.
+ *
+ * Example: `gf-search({query: string}): {dashboards: {name, url}[]}`
+ */
+export function formatAliasSignature(name: string, inputSchema?: JsonSchema, outputSchema?: JsonSchema): string {
+  // Input part
+  let input = "";
+  if (inputSchema?.properties && Object.keys(inputSchema.properties).length > 0) {
+    const required = inputSchema.required ?? [];
+    const entries = Object.entries(inputSchema.properties);
+    const parts: string[] = [];
+    const maxSigProps = 6;
+    for (let i = 0; i < entries.length && i < maxSigProps; i++) {
+      const [key, value] = entries[i];
+      const opt = required.includes(key) ? "" : "?";
+      const type = walk(value, { maxDepth: 1, maxProps: 4 }, 0);
+      parts.push(`${key}${opt}: ${type}`);
+    }
+    if (entries.length > maxSigProps) {
+      parts.push(`...${entries.length - maxSigProps} more`);
+    }
+    input = `{${parts.join(", ")}}`;
+  }
+
+  // Output part
+  let output = "";
+  if (outputSchema) {
+    const ts = walk(outputSchema, { maxDepth: 3, maxProps: 4 }, 0);
+    if (ts !== "unknown") output = ts;
+  }
+
+  const sig = `${name}(${input})`;
+  return output ? `${sig}: ${output}` : sig;
+}
+
 // -- Internal recursive walker --
 
 function walk(schema: JsonSchema, opts: Required<SchemaDisplayOpts>, depth: number): string {

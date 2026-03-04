@@ -105,6 +105,8 @@ export interface AliasInfo {
   filePath: string;
   updatedAt: number;
   aliasType: "freeform" | "defineAlias";
+  inputSchemaJson?: Record<string, unknown>;
+  outputSchemaJson?: Record<string, unknown>;
 }
 
 export interface AliasDetail extends AliasInfo {

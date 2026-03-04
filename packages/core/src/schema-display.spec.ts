@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type JsonSchema, formatToolSignature, jsonSchemaToTs } from "./schema-display.js";
+import { type JsonSchema, formatAliasSignature, formatToolSignature, jsonSchemaToTs } from "./schema-display.js";
 
 describe("jsonSchemaToTs", () => {
   test("primitive types", () => {
@@ -218,5 +218,65 @@ describe("formatToolSignature", () => {
     expect(formatToolSignature("getConfluencePage", schema)).toBe(
       "getConfluencePage({cloudId: string, pageId: string, contentFormat?: 'markdown' | 'adf'})",
     );
+  });
+});
+
+describe("formatAliasSignature", () => {
+  test("no schemas", () => {
+    expect(formatAliasSignature("my-alias")).toBe("my-alias()");
+    expect(formatAliasSignature("my-alias", undefined, undefined)).toBe("my-alias()");
+  });
+
+  test("input schema only", () => {
+    const input: JsonSchema = {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    };
+    expect(formatAliasSignature("search", input)).toBe("search({query: string})");
+  });
+
+  test("input and output schemas", () => {
+    const input: JsonSchema = {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    };
+    const output: JsonSchema = {
+      type: "object",
+      properties: {
+        dashboards: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, url: { type: "string" } },
+            required: ["name", "url"],
+          },
+        },
+      },
+      required: ["dashboards"],
+    };
+    expect(formatAliasSignature("gf-search", input, output)).toBe(
+      "gf-search({query: string}): {dashboards: {name: string, url: string}[]}",
+    );
+  });
+
+  test("output schema only", () => {
+    const output: JsonSchema = {
+      type: "object",
+      properties: { panels: { type: "array", items: { type: "string" } } },
+      required: ["panels"],
+    };
+    expect(formatAliasSignature("go-dashboards", undefined, output)).toBe("go-dashboards(): {panels: string[]}");
+  });
+
+  test("empty input schema properties", () => {
+    const input: JsonSchema = { type: "object", properties: {} };
+    expect(formatAliasSignature("ping", input)).toBe("ping()");
+  });
+
+  test("output with no useful type returns no colon", () => {
+    const output: JsonSchema = {};
+    expect(formatAliasSignature("test", undefined, output)).toBe("test()");
   });
 });

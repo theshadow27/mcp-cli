@@ -381,12 +381,24 @@ export class StateDb {
     filePath: string;
     updatedAt: number;
     aliasType: "freeform" | "defineAlias";
+    inputSchemaJson?: Record<string, unknown>;
+    outputSchemaJson?: Record<string, unknown>;
   }> {
     return this.db
       .query<
-        { name: string; description: string | null; file_path: string; updated_at: number; alias_type: string },
+        {
+          name: string;
+          description: string | null;
+          file_path: string;
+          updated_at: number;
+          alias_type: string;
+          input_schema_json: string | null;
+          output_schema_json: string | null;
+        },
         []
-      >("SELECT name, description, file_path, updated_at, alias_type FROM aliases ORDER BY name")
+      >(
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json FROM aliases ORDER BY name",
+      )
       .all()
       .map((row) => ({
         name: row.name,
@@ -394,6 +406,8 @@ export class StateDb {
         filePath: row.file_path,
         updatedAt: row.updated_at,
         aliasType: row.alias_type as "freeform" | "defineAlias",
+        ...(row.input_schema_json ? { inputSchemaJson: JSON.parse(row.input_schema_json) } : {}),
+        ...(row.output_schema_json ? { outputSchemaJson: JSON.parse(row.output_schema_json) } : {}),
       }));
   }
 
