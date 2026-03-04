@@ -170,3 +170,7 @@ bun dev:mcp -- ls            # run CLI directly
 ## License
 
 [MIT](LICENSE)
+
+## Disclaimer
+
+This project was developed entirely by Claude Code, without any sort of IDE.
