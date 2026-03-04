@@ -37,6 +37,7 @@ export interface OAuthProviderOpts {
   clientId?: string;
   clientSecret?: string;
   callbackPort?: number;
+  readKeychain?: (url: string) => Promise<KeychainTokens | null>;
 }
 
 export class McpOAuthProvider implements OAuthClientProvider {
@@ -189,7 +190,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
   private async loadKeychain(): Promise<KeychainTokens | null> {
     if (this.keychainCache !== undefined) return this.keychainCache;
-    this.keychainCache = await readKeychainTokens(this.serverUrl);
+    const reader = this.opts.readKeychain ?? readKeychainTokens;
+    this.keychainCache = await reader(this.serverUrl);
     return this.keychainCache;
   }
 }

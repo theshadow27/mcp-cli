@@ -3,18 +3,9 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { StateDb } from "../db/state.js";
 import type { KeychainTokens } from "./keychain.js";
-
-// Set up module mock BEFORE importing McpOAuthProvider
-const mockReadKeychain = mock<(url: string) => Promise<KeychainTokens | null>>(() => Promise.resolve(null));
-
-mock.module("./keychain.js", () => ({
-  readKeychainTokens: (...args: Parameters<typeof mockReadKeychain>) => mockReadKeychain(...args),
-}));
-
-// Now import the provider — it will use our mocked keychain
-const { McpOAuthProvider, getBrowserCommand } = await import("./oauth-provider.js");
-const { StateDb } = await import("../db/state.js");
+import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider.js";
 
 const originalPlatform = process.platform;
 const originalWslDistro = process.env.WSL_DISTRO_NAME;
@@ -42,11 +33,22 @@ function cleanup(path: string): void {
 
 describe("McpOAuthProvider", () => {
   const paths: string[] = [];
+  const mockReadKeychain = mock<(url: string) => Promise<KeychainTokens | null>>(() => Promise.resolve(null));
 
   function createDb(): InstanceType<typeof StateDb> {
     const p = tmpDb();
     paths.push(p);
     return new StateDb(p);
+  }
+
+  function createProvider(
+    db: InstanceType<typeof StateDb>,
+    opts?: { clientId?: string; clientSecret?: string; callbackPort?: number },
+  ): InstanceType<typeof McpOAuthProvider> {
+    return new McpOAuthProvider("srv", "https://api.example.com", db, {
+      ...opts,
+      readKeychain: mockReadKeychain,
+    });
   }
 
   afterEach(() => {
@@ -72,7 +74,7 @@ describe("McpOAuthProvider", () => {
         Promise.resolve({ accessToken: "keychain-tok", clientId: "kc-client" }),
       );
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
@@ -95,7 +97,7 @@ describe("McpOAuthProvider", () => {
         }),
       );
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
@@ -111,7 +113,7 @@ describe("McpOAuthProvider", () => {
       const db = createDb();
       // mockReadKeychain already returns null by default
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const tokens = await provider.tokens();
 
       expect(tokens).toBeUndefined();
@@ -122,7 +124,7 @@ describe("McpOAuthProvider", () => {
       const db = createDb();
       mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "kc-tok", clientId: "kc-client" }));
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const tokens = await provider.tokens();
 
       expect(tokens).toBeDefined();
@@ -140,7 +142,7 @@ describe("McpOAuthProvider", () => {
       db.saveClientInfo("srv", { client_id: "sqlite-client" });
       mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client" }));
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const info = await provider.clientInformation();
 
       expect(info).toBeDefined();
@@ -152,7 +154,7 @@ describe("McpOAuthProvider", () => {
       const db = createDb();
       mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client-id" }));
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const info = await provider.clientInformation();
 
       expect(info).toBeDefined();
@@ -163,7 +165,7 @@ describe("McpOAuthProvider", () => {
     test("returns undefined when no client info anywhere", async () => {
       const db = createDb();
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const info = await provider.clientInformation();
 
       expect(info).toBeUndefined();
@@ -176,7 +178,7 @@ describe("McpOAuthProvider", () => {
       db.saveClientInfo("srv", { client_id: "sqlite-client" });
       mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client" }));
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+      const provider = createProvider(db, {
         clientId: "config-client",
         clientSecret: "config-secret",
       });
@@ -193,7 +195,7 @@ describe("McpOAuthProvider", () => {
     test("returns config-level clientId without secret when only clientId provided", async () => {
       const db = createDb();
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+      const provider = createProvider(db, {
         clientId: "config-only-id",
       });
       const info = await provider.clientInformation();
@@ -206,14 +208,14 @@ describe("McpOAuthProvider", () => {
 
     test("exposes callbackPort from opts", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, { callbackPort: 9876 });
+      const provider = createProvider(db, { callbackPort: 9876 });
       expect(provider.callbackPort).toBe(9876);
       db.close();
     });
 
     test("callbackPort is undefined when not configured", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       expect(provider.callbackPort).toBeUndefined();
       db.close();
     });
@@ -234,7 +236,7 @@ describe("McpOAuthProvider", () => {
         }),
       );
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const result = await provider.discoveryState();
 
       expect(result).toEqual({ authorizationServerUrl: "https://auth.sqlite.com" });
@@ -251,7 +253,7 @@ describe("McpOAuthProvider", () => {
         }),
       );
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const result = await provider.discoveryState();
 
       expect(result).toEqual({ authorizationServerUrl: "https://auth.keychain.com" });
@@ -261,7 +263,7 @@ describe("McpOAuthProvider", () => {
     test("returns undefined when no discovery state anywhere", async () => {
       const db = createDb();
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       const result = await provider.discoveryState();
 
       expect(result).toBeUndefined();
@@ -276,7 +278,7 @@ describe("McpOAuthProvider", () => {
       const db = createDb();
       mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "tok", clientId: "cid" }));
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       // Call multiple methods that trigger Keychain lookup
       await provider.tokens();
@@ -296,7 +298,7 @@ describe("McpOAuthProvider", () => {
         return Promise.resolve({ accessToken: `tok-${callCount}`, clientId: "cid" });
       });
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       // First call caches
       const first = await provider.tokens();
@@ -314,7 +316,7 @@ describe("McpOAuthProvider", () => {
 
     test("invalidateCredentials('all') also deletes SQLite tokens", async () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       db.saveTokens("srv", { access_token: "to-delete", token_type: "Bearer" });
       expect(db.getTokens("srv")).toBeDefined();
@@ -327,7 +329,7 @@ describe("McpOAuthProvider", () => {
 
     test("invalidateCredentials('client') does not affect tokens or verifier", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
       db.saveVerifier("srv", "pkce-123");
@@ -341,7 +343,7 @@ describe("McpOAuthProvider", () => {
 
     test("invalidateCredentials('verifier') does not affect tokens", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
 
@@ -353,7 +355,7 @@ describe("McpOAuthProvider", () => {
 
     test("invalidateCredentials('discovery') does not affect tokens", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       db.saveTokens("srv", { access_token: "tok", token_type: "Bearer" });
       db.saveDiscoveryState("srv", { authorizationServerUrl: "https://auth.example.com" });
@@ -372,7 +374,7 @@ describe("McpOAuthProvider", () => {
         return Promise.resolve({ accessToken: `tok-${callCount}`, clientId: "cid" });
       });
 
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       await provider.tokens();
       provider.invalidateCredentials("tokens");
@@ -388,7 +390,7 @@ describe("McpOAuthProvider", () => {
   describe("writes go to SQLite", () => {
     test("saveTokens persists to SQLite", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       provider.saveTokens({
         access_token: "saved-tok",
@@ -403,7 +405,7 @@ describe("McpOAuthProvider", () => {
 
     test("saveClientInformation persists to SQLite", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       provider.saveClientInformation({ client_id: "saved-client" });
 
@@ -415,7 +417,7 @@ describe("McpOAuthProvider", () => {
 
     test("saveDiscoveryState persists to SQLite", async () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       await provider.saveDiscoveryState({
         authorizationServerUrl: "https://auth.example.com",
@@ -432,7 +434,7 @@ describe("McpOAuthProvider", () => {
   describe("other behavior", () => {
     test("clientMetadata returns correct defaults without redirect URL", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       const meta = provider.clientMetadata;
       expect(meta.client_name).toBe("mcp-cli");
@@ -446,7 +448,7 @@ describe("McpOAuthProvider", () => {
 
     test("clientMetadata uses setRedirectUrl when set", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
       provider.setRedirectUrl("http://127.0.0.1:12345/callback");
 
       const meta = provider.clientMetadata;
@@ -456,7 +458,7 @@ describe("McpOAuthProvider", () => {
 
     test("redirectToAuthorization calls Bun.spawn with platform command", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       const origSpawn = Bun.spawn;
       let spawnedArgs: string[] | undefined;
@@ -479,7 +481,7 @@ describe("McpOAuthProvider", () => {
 
     test("codeVerifier throws when no verifier saved", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       expect(() => provider.codeVerifier()).toThrow("No PKCE code verifier");
       db.close();
@@ -487,7 +489,7 @@ describe("McpOAuthProvider", () => {
 
     test("saveCodeVerifier and codeVerifier round-trip", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       provider.saveCodeVerifier("my-verifier-123");
       expect(provider.codeVerifier()).toBe("my-verifier-123");
@@ -496,7 +498,7 @@ describe("McpOAuthProvider", () => {
 
     test("setRedirectUrl updates redirectUrl", () => {
       const db = createDb();
-      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      const provider = createProvider(db);
 
       expect(provider.redirectUrl).toBeUndefined();
       provider.setRedirectUrl("http://localhost:9999/callback");

@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-
-// Dynamic import to avoid mock.module pollution from oauth-provider.spec.ts.
-// We re-import each test to get the real (un-mocked) module.
-async function importKeychain() {
-  const mod = await import(`./keychain.js?t=${Date.now()}`);
-  return mod.readKeychainTokens as typeof import("./keychain.js")["readKeychainTokens"];
-}
+import { readKeychainTokens } from "./keychain.js";
 
 // Save original so we can restore after platform override tests
 const originalPlatform = process.platform;
@@ -41,22 +35,17 @@ afterEach(() => {
 describe("readKeychainTokens", () => {
   test("returns null on non-darwin platforms", async () => {
     setPlatform("linux");
-    const readKeychainTokens = await importKeychain();
     expect(await readKeychainTokens("https://api.example.com")).toBeNull();
   });
 
   test("returns null when security command fails", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const result = await withSpawnMock(["false"], () => readKeychainTokens("https://api.example.com"));
     expect(result).toBeNull();
   });
 
   test("returns null when no mcpOAuth entries exist", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const result = await withSpawnMock(["echo", JSON.stringify({ otherKey: true })], () =>
       readKeychainTokens("https://api.example.com"),
     );
@@ -65,8 +54,6 @@ describe("readKeychainTokens", () => {
 
   test("returns null when no entry matches the target URL", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const keychainData = {
       mcpOAuth: {
         "server1|abc": {
@@ -86,8 +73,6 @@ describe("readKeychainTokens", () => {
 
   test("returns tokens when URL matches", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const keychainData = {
       mcpOAuth: {
         "myserver|xyz": {
@@ -120,8 +105,6 @@ describe("readKeychainTokens", () => {
 
   test("returns null for expired token without refresh token", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const keychainData = {
       mcpOAuth: {
         "srv|a": {
@@ -142,8 +125,6 @@ describe("readKeychainTokens", () => {
 
   test("returns tokens for expired token with refresh token", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const keychainData = {
       mcpOAuth: {
         "srv|a": {
@@ -167,8 +148,6 @@ describe("readKeychainTokens", () => {
 
   test("returns null on malformed JSON", async () => {
     if (originalPlatform !== "darwin") return;
-    const readKeychainTokens = await importKeychain();
-
     const result = await withSpawnMock(["echo", "not-valid-json{{{"], () =>
       readKeychainTokens("https://api.example.com"),
     );
