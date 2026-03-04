@@ -30,6 +30,7 @@ import {
   IPC_ERROR,
   PROTOCOL_VERSION,
   SOCKET_PATH,
+  hardenFile,
   isDefineAlias,
   safeAliasPath,
 } from "@mcp-cli/core";
@@ -118,6 +119,9 @@ export class IpcServer {
         }
       },
     });
+
+    // Restrict socket to owner-only access (0600)
+    hardenFile(socketPath);
 
     console.error(`[ipc] Listening on ${socketPath}`);
   }
