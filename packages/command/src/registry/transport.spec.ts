@@ -91,6 +91,30 @@ describe("selectTransport", () => {
     expect(result).toBeNull();
   });
 
+  test("skips package without runtimeHint", () => {
+    const entry = makeEntry({
+      packages: [
+        {
+          registryType: "npm",
+          identifier: "some-pkg",
+          runtimeHint: "",
+          transport: { type: "stdio" },
+        },
+      ],
+    });
+    const result = selectTransport(entry);
+    expect(result).toBeNull();
+  });
+
+  test("templated sse remote gets transport sse", () => {
+    const entry = makeEntry({
+      remotes: [{ type: "sse", url: "https://{{org}}.example.com/sse" }],
+    });
+    const result = selectTransport(entry);
+    expect(result?.kind).toBe("templated");
+    expect(result?.transport).toBe("sse");
+  });
+
   test("npx gets -y flag", () => {
     const entry = makeEntry({
       packages: [

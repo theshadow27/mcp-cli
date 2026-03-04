@@ -114,4 +114,16 @@ describe("listRegistry", () => {
     expect(capturedUrl).toContain("visibility=commercial");
     expect(capturedUrl).toContain("limit=10");
   });
+
+  test("passes cursor parameter", async () => {
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify(MOCK_RESPONSE), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await listRegistry({ cursor: "page2" });
+
+    expect(capturedUrl).toContain("cursor=page2");
+  });
 });

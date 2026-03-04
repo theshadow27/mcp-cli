@@ -114,4 +114,42 @@ describe("cmdRegistryDispatch", () => {
 
     expect(capturedUrl).toContain("limit=5");
   });
+
+  test("passes -n short limit flag", async () => {
+    const { cmdRegistryDispatch } = await import("./registry-cmd.js");
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify(MOCK_RESPONSE), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const origLog = console.log;
+    console.log = () => {};
+
+    await cmdRegistryDispatch(["search", "test", "-n", "3", "-j"]);
+
+    console.log = origLog;
+
+    expect(capturedUrl).toContain("limit=3");
+    expect(capturedUrl).toContain("search=test");
+  });
+
+  test("defaults to list when no subcommand given", async () => {
+    const { cmdRegistryDispatch } = await import("./registry-cmd.js");
+    let capturedUrl = "";
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify(MOCK_RESPONSE), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const origErr = console.error;
+    console.error = () => {};
+
+    await cmdRegistryDispatch([]);
+
+    console.error = origErr;
+
+    expect(capturedUrl).toContain("version=latest");
+    expect(capturedUrl).not.toContain("search=");
+  });
 });
