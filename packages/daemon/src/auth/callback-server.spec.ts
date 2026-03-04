@@ -13,7 +13,7 @@ describe("startCallbackServer", () => {
     server = startCallbackServer();
 
     expect(server.port).toBeGreaterThan(0);
-    expect(server.url).toBe(`http://127.0.0.1:${server.port}/callback`);
+    expect(server.url).toBe(`http://localhost:${server.port}/callback`);
   });
 
   test("GET /callback?code=abc resolves waitForCode", async () => {
@@ -62,7 +62,7 @@ describe("startCallbackServer", () => {
   test("GET /other-path returns 404", async () => {
     server = startCallbackServer();
 
-    const base = `http://127.0.0.1:${server.port}`;
+    const base = `http://localhost:${server.port}`;
     const resp = await fetch(`${base}/other-path`);
     expect(resp.status).toBe(404);
   });
@@ -123,7 +123,7 @@ describe("startCallbackServer", () => {
 
     // Server should be stopped — fetch should fail
     try {
-      await fetch(`http://127.0.0.1:${port}/callback?code=again`);
+      await fetch(`http://localhost:${port}/callback?code=again`);
       // If we get here, the server is still running (unexpected but not fatal)
     } catch {
       // Expected: connection refused

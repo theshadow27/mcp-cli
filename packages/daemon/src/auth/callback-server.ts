@@ -42,7 +42,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
   let stopped = false;
   const server = Bun.serve({
     port: preferredPort ?? 0, // explicit or random available port
-    hostname: "127.0.0.1",
+    hostname: "localhost",
     fetch(req) {
       const url = new URL(req.url);
 
@@ -84,7 +84,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
   });
 
   const port = server.port as number;
-  const url = `http://127.0.0.1:${port}/callback`;
+  const url = `http://localhost:${port}/callback`;
 
   // Timeout: reject if no callback within 2 minutes
   const timeout = setTimeout(() => {

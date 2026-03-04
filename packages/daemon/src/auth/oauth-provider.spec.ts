@@ -442,7 +442,7 @@ describe("McpOAuthProvider", () => {
       expect(meta.grant_types).toContain("authorization_code");
       expect(meta.grant_types).toContain("refresh_token");
       expect(meta.response_types).toContain("code");
-      expect(meta.redirect_uris).toEqual(["http://localhost:0/callback"]);
+      expect(meta.redirect_uris).toEqual(["http://localhost/callback"]);
       db.close();
     });
 
