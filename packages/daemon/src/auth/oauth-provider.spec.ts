@@ -169,6 +169,54 @@ describe("McpOAuthProvider", () => {
       expect(info).toBeUndefined();
       db.close();
     });
+
+    test("returns config-level clientId/clientSecret before DB or Keychain", async () => {
+      const db = createDb();
+      // Populate both DB and Keychain with different values
+      db.saveClientInfo("srv", { client_id: "sqlite-client" });
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "x", clientId: "kc-client" }));
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        clientId: "config-client",
+        clientSecret: "config-secret",
+      });
+      const info = await provider.clientInformation();
+
+      expect(info).toBeDefined();
+      expect(info?.client_id).toBe("config-client");
+      expect(info?.client_secret).toBe("config-secret");
+      // Neither DB nor Keychain should have been used
+      expect(mockReadKeychain).not.toHaveBeenCalled();
+      db.close();
+    });
+
+    test("returns config-level clientId without secret when only clientId provided", async () => {
+      const db = createDb();
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        clientId: "config-only-id",
+      });
+      const info = await provider.clientInformation();
+
+      expect(info).toBeDefined();
+      expect(info?.client_id).toBe("config-only-id");
+      expect(info?.client_secret).toBeUndefined();
+      db.close();
+    });
+
+    test("exposes callbackPort from opts", () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, { callbackPort: 9876 });
+      expect(provider.callbackPort).toBe(9876);
+      db.close();
+    });
+
+    test("callbackPort is undefined when not configured", () => {
+      const db = createDb();
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db);
+      expect(provider.callbackPort).toBeUndefined();
+      db.close();
+    });
   });
 
   // -- discoveryState() --

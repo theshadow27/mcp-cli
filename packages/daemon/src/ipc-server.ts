@@ -209,11 +209,15 @@ export class IpcServer {
         throw Object.assign(new Error("Database not available"), { code: IPC_ERROR.INTERNAL_ERROR });
       }
 
-      // Start callback server for OAuth redirect
-      const callback = startCallbackServer();
+      // Read OAuth config from server configuration
+      const serverConfig = this.pool.getServerConfig(server);
+      const { clientId, clientSecret, callbackPort } = serverConfig ?? {};
+
+      // Start callback server for OAuth redirect (use configured port if available)
+      const callback = startCallbackServer(callbackPort);
       try {
-        // Create provider with callback URL
-        const provider = new McpOAuthProvider(server, serverUrl, poolDb);
+        // Create provider with callback URL and config-level OAuth credentials
+        const provider = new McpOAuthProvider(server, serverUrl, poolDb, { clientId, clientSecret, callbackPort });
         provider.setRedirectUrl(callback.url);
 
         // Run the SDK auth orchestrator

@@ -33,17 +33,30 @@ export function getBrowserCommand(url: string): string[] {
   return ["xdg-open", url];
 }
 
+export interface OAuthProviderOpts {
+  clientId?: string;
+  clientSecret?: string;
+  callbackPort?: number;
+}
+
 export class McpOAuthProvider implements OAuthClientProvider {
   private serverName: string;
   private serverUrl: string;
   private db: StateDb;
   private _redirectUrl: string | undefined;
   private keychainCache: KeychainTokens | null | undefined; // undefined = not loaded
+  private opts: OAuthProviderOpts;
 
-  constructor(serverName: string, serverUrl: string, db: StateDb) {
+  constructor(serverName: string, serverUrl: string, db: StateDb, opts?: OAuthProviderOpts) {
     this.serverName = serverName;
     this.serverUrl = serverUrl;
     this.db = db;
+    this.opts = opts ?? {};
+  }
+
+  /** Get the configured callback port (if any) */
+  get callbackPort(): number | undefined {
+    return this.opts.callbackPort;
   }
 
   /** Set the redirect URL (callback server URL) before starting auth flow */
@@ -66,6 +79,13 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
+    // 0. Config-level credentials take priority (from mcp add --client-id)
+    if (this.opts.clientId) {
+      const info: OAuthClientInformationMixed = { client_id: this.opts.clientId };
+      if (this.opts.clientSecret) info.client_secret = this.opts.clientSecret;
+      return info;
+    }
+
     // 1. Check SQLite
     const dbInfo = this.db.getClientInfo(this.serverName);
     if (dbInfo) return dbInfo;

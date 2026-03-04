@@ -133,6 +133,56 @@ describe("parseAddArgs", () => {
     const result = parseAddArgs(["-t", "http", "--env", "URL=https://a.com?x=1", "name", "https://example.com"]);
     expect(result.env).toEqual({ URL: "https://a.com?x=1" });
   });
+
+  test("parses --client-id and --client-secret for http transport", () => {
+    const result = parseAddArgs([
+      "--transport",
+      "http",
+      "--client-id",
+      "my-id",
+      "--client-secret",
+      "my-secret",
+      "name",
+      "https://example.com",
+    ]);
+    expect(result.clientId).toBe("my-id");
+    expect(result.clientSecret).toBe("my-secret");
+  });
+
+  test("parses --callback-port for http transport", () => {
+    const result = parseAddArgs(["--transport", "http", "--callback-port", "9876", "name", "https://example.com"]);
+    expect(result.callbackPort).toBe(9876);
+  });
+
+  test("throws on non-numeric --callback-port", () => {
+    expect(() =>
+      parseAddArgs(["--transport", "http", "--callback-port", "abc", "name", "https://example.com"]),
+    ).toThrow('Invalid --callback-port "abc"');
+  });
+
+  test("throws on negative --callback-port", () => {
+    expect(() => parseAddArgs(["--transport", "http", "--callback-port", "-1", "name", "https://example.com"])).toThrow(
+      'Invalid --callback-port "-1"',
+    );
+  });
+
+  test("rejects --client-id on stdio transport", () => {
+    expect(() => parseAddArgs(["--transport", "stdio", "--client-id", "id", "name", "--", "cmd"])).toThrow(
+      "not valid for stdio transport",
+    );
+  });
+
+  test("rejects --client-secret on stdio transport", () => {
+    expect(() => parseAddArgs(["--transport", "stdio", "--client-secret", "secret", "name", "--", "cmd"])).toThrow(
+      "not valid for stdio transport",
+    );
+  });
+
+  test("rejects --callback-port on stdio transport", () => {
+    expect(() => parseAddArgs(["--transport", "stdio", "--callback-port", "8080", "name", "--", "cmd"])).toThrow(
+      "not valid for stdio transport",
+    );
+  });
 });
 
 // -- buildServerConfig tests --
@@ -208,6 +258,59 @@ describe("buildServerConfig", () => {
     expect(config).toEqual({ command: "cmd" });
     expect("args" in config).toBe(false);
     expect("env" in config).toBe(false);
+  });
+
+  test("includes OAuth fields for http when present", () => {
+    const config = buildServerConfig({
+      transport: "http",
+      name: "s",
+      url: "https://example.com",
+      env: {},
+      headers: {},
+      scope: "user",
+      clientId: "my-id",
+      clientSecret: "my-secret",
+      callbackPort: 9876,
+    });
+    expect(config).toEqual({
+      type: "http",
+      url: "https://example.com",
+      clientId: "my-id",
+      clientSecret: "my-secret",
+      callbackPort: 9876,
+    });
+  });
+
+  test("omits OAuth fields when absent", () => {
+    const config = buildServerConfig({
+      transport: "http",
+      name: "s",
+      url: "https://example.com",
+      env: {},
+      headers: {},
+      scope: "user",
+    });
+    expect(config).toEqual({ type: "http", url: "https://example.com" });
+    expect("clientId" in config).toBe(false);
+    expect("clientSecret" in config).toBe(false);
+    expect("callbackPort" in config).toBe(false);
+  });
+
+  test("includes OAuth fields for sse when present", () => {
+    const config = buildServerConfig({
+      transport: "sse",
+      name: "s",
+      url: "https://example.com",
+      env: {},
+      headers: {},
+      scope: "user",
+      clientId: "sse-id",
+    });
+    expect(config).toEqual({
+      type: "sse",
+      url: "https://example.com",
+      clientId: "sse-id",
+    });
   });
 });
 

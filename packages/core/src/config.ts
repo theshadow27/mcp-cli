@@ -10,6 +10,12 @@ export interface BaseServerConfig {
   allowedTools?: string[];
   /** Optional: filter which tools are hidden (takes precedence over allowedTools) */
   disabledTools?: string[];
+  /** Optional: OAuth client ID for pre-configured credentials */
+  clientId?: string;
+  /** Optional: OAuth client secret for pre-configured credentials */
+  clientSecret?: string;
+  /** Optional: fixed port for OAuth callback server (default: random) */
+  callbackPort?: number;
 }
 
 /** Stdio transport: spawn a local process */

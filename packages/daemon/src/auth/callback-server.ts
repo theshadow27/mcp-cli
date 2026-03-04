@@ -29,7 +29,7 @@ const ERROR_HTML = `<!DOCTYPE html>
 <h2>Authentication Error</h2><p>No authorization code received.</p>
 </body></html>`;
 
-export function startCallbackServer(): CallbackServer {
+export function startCallbackServer(preferredPort?: number): CallbackServer {
   // Promise executor runs synchronously, so these are assigned before use
   let resolveCode = (_code: string): void => {};
   let rejectCode = (_err: Error): void => {};
@@ -41,7 +41,7 @@ export function startCallbackServer(): CallbackServer {
 
   let stopped = false;
   const server = Bun.serve({
-    port: 0, // random available port
+    port: preferredPort ?? 0, // explicit or random available port
     hostname: "127.0.0.1",
     fetch(req) {
       const url = new URL(req.url);

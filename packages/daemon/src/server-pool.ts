@@ -142,7 +142,8 @@ export class ServerPool {
       let authProvider: OAuthClientProvider | undefined;
       const config = conn.resolved.config;
       if (this.db && (isSseConfig(config) || isHttpConfig(config))) {
-        authProvider = new McpOAuthProvider(name, config.url, this.db);
+        const { clientId, clientSecret, callbackPort } = config;
+        authProvider = new McpOAuthProvider(name, config.url, this.db, { clientId, clientSecret, callbackPort });
       }
 
       let lastErr: Error = new Error("Connection failed");
@@ -453,6 +454,11 @@ export class ServerPool {
   /** Get the StateDb instance */
   getDb(): StateDb | null {
     return this.db;
+  }
+
+  /** Get the resolved config for a server by name */
+  getServerConfig(name: string): ServerConfig | undefined {
+    return this.connections.get(name)?.resolved.config;
   }
 
   /** Get names of servers idle longer than the threshold */

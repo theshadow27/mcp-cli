@@ -20,6 +20,9 @@ export interface ParsedAddArgs {
   env: Record<string, string>;
   headers: Record<string, string>;
   scope: ConfigScope;
+  clientId?: string;
+  clientSecret?: string;
+  callbackPort?: number;
 }
 
 /**
@@ -44,6 +47,9 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
   const env: Record<string, string> = {};
   const headers: Record<string, string> = {};
   const positional: string[] = [];
+  let clientId: string | undefined;
+  let clientSecret: string | undefined;
+  let callbackPort: number | undefined;
 
   for (let i = 0; i < flagArgs.length; i++) {
     const arg = flagArgs[i];
@@ -74,6 +80,19 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
         throw new Error(`Invalid scope "${val}": must be user, project, or local`);
       }
       scope = val;
+    } else if (arg === "--client-id") {
+      clientId = flagArgs[++i];
+      if (!clientId) throw new Error("--client-id requires a value");
+    } else if (arg === "--client-secret") {
+      clientSecret = flagArgs[++i];
+      if (!clientSecret) throw new Error("--client-secret requires a value");
+    } else if (arg === "--callback-port") {
+      const val = flagArgs[++i];
+      if (!val) throw new Error("--callback-port requires a value");
+      callbackPort = Number.parseInt(val, 10);
+      if (!Number.isFinite(callbackPort) || callbackPort <= 0) {
+        throw new Error(`Invalid --callback-port "${val}": must be a positive integer`);
+      }
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
     } else {
@@ -99,12 +118,15 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
     if (afterDd.length > 0) {
       throw new Error(`-- command separator is not valid for ${transport} transport`);
     }
-    return { transport, name, url, env, headers, scope };
+    return { transport, name, url, env, headers, scope, clientId, clientSecret, callbackPort };
   }
 
   // stdio
   if (Object.keys(headers).length > 0) {
     throw new Error("--header is not valid for stdio transport");
+  }
+  if (clientId || clientSecret || callbackPort) {
+    throw new Error("--client-id, --client-secret, and --callback-port are not valid for stdio transport");
   }
   if (afterDd.length === 0) {
     throw new Error("stdio transport requires a command after --");
@@ -119,6 +141,9 @@ export function buildServerConfig(parsed: ParsedAddArgs): ServerConfig {
     const url = parsed.url ?? "";
     const config: ServerConfig = parsed.transport === "http" ? { type: "http", url } : { type: "sse", url };
     if (Object.keys(parsed.headers).length > 0) config.headers = parsed.headers;
+    if (parsed.clientId) config.clientId = parsed.clientId;
+    if (parsed.clientSecret) config.clientSecret = parsed.clientSecret;
+    if (parsed.callbackPort) config.callbackPort = parsed.callbackPort;
     return config;
   }
   // stdio
@@ -134,7 +159,7 @@ export function buildServerConfig(parsed: ParsedAddArgs): ServerConfig {
 export async function cmdAdd(args: string[]): Promise<void> {
   if (args.length === 0) {
     printError(
-      'Usage: mcp add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--scope {user|project}] <name> [<url> | -- <command> [args...]]',
+      'Usage: mcp add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--client-id ID] [--client-secret SECRET] [--callback-port PORT] [--scope {user|project}] <name> [<url> | -- <command> [args...]]',
     );
     process.exit(1);
   }
