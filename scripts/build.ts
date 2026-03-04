@@ -78,6 +78,24 @@ const jqWasmPlugin: BunPlugin = {
   },
 };
 
+// ── react-devtools-core stub plugin ──
+// Ink's devtools.js has an unconditional `import devtools from 'react-devtools-core'`.
+// Using --external defers resolution to runtime where the package doesn't exist.
+// Instead, stub it at build time so the import resolves to a no-op.
+const devtoolsStubPlugin: BunPlugin = {
+  name: "devtools-stub",
+  setup(build) {
+    build.onResolve({ filter: /^react-devtools-core$/ }, () => ({
+      path: "react-devtools-core",
+      namespace: "devtools-stub",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "devtools-stub" }, () => ({
+      contents: "export default { connectToDevTools() {} };",
+      loader: "js",
+    }));
+  },
+};
+
 await $`mkdir -p dist`;
 
 async function buildMcp(outfile: string, target?: string): Promise<void> {
@@ -109,6 +127,33 @@ async function buildMcp(outfile: string, target?: string): Promise<void> {
   } catch {}
 }
 
+async function buildMcpctl(outfile: string, target?: string): Promise<void> {
+  const result = await Bun.build({
+    entrypoints: [resolve("packages/control/src/index.tsx")],
+    outdir: resolve("dist"),
+    naming: "mcpctl-bundle.[ext]",
+    minify: true,
+    target: (target as "bun") ?? "bun",
+    plugins: [devtoolsStubPlugin],
+    define: { __PROTOCOL_HASH__: JSON.stringify(protocolHash) },
+  });
+  if (!result.success) {
+    console.error("mcpctl build failed:");
+    for (const msg of result.logs) console.error(msg);
+    process.exit(1);
+  }
+  const bundlePath = resolve("dist/mcpctl-bundle.js");
+  if (target) {
+    await $`bun build --compile --minify --target=${target} ${bundlePath} --outfile ${outfile}`;
+  } else {
+    await $`bun build --compile --minify ${bundlePath} --outfile ${outfile}`;
+  }
+  const { unlinkSync } = await import("node:fs");
+  try {
+    unlinkSync(bundlePath);
+  } catch {}
+}
+
 if (releaseMode) {
   const targets = targetArg ? TARGETS.filter((t) => t === targetArg) : [...TARGETS];
 
@@ -124,7 +169,7 @@ if (releaseMode) {
     await Promise.all([
       $`bun build --compile --minify ${defineFlag} --target=${target} packages/daemon/src/index.ts --outfile dist/mcpd-${suffix}`,
       buildMcp(`dist/mcp-${suffix}`, target),
-      $`bun build --compile --minify ${defineFlag} --target=${target} --external react-devtools-core packages/control/src/index.tsx --outfile dist/mcpctl-${suffix}`,
+      buildMcpctl(`dist/mcpctl-${suffix}`, target),
     ]);
   }
 
@@ -134,7 +179,7 @@ if (releaseMode) {
   await Promise.all([
     $`bun build --compile --minify ${defineFlag} packages/daemon/src/index.ts --outfile dist/mcpd`,
     buildMcp("dist/mcp"),
-    $`bun build --compile --minify ${defineFlag} --external react-devtools-core packages/control/src/index.tsx --outfile dist/mcpctl`,
+    buildMcpctl("dist/mcpctl"),
   ]);
   console.log("Built: dist/mcpd, dist/mcp, dist/mcpctl");
 }
