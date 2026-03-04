@@ -41,7 +41,7 @@ export const SUBCOMMANDS = [
 export const ALIAS_SUBCOMMANDS = ["ls", "save", "show", "edit", "rm"] as const;
 
 /** Subcommands for `mcp config` */
-export const CONFIG_SUBCOMMANDS = ["show", "sources"] as const;
+export const CONFIG_SUBCOMMANDS = ["show", "sources", "set", "get"] as const;
 
 /** Subcommands that accept a server name as their first argument */
 const SERVER_COMMANDS = ["call", "info", "ls", "tools", "auth", "logs", "restart", "remove", "get"];

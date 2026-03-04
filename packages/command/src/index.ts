@@ -447,6 +447,8 @@ Usage:
   mcp auth <server>                   Authenticate with an OAuth server
   mcp config show                     Show resolved server config
   mcp config sources                  Show config file sources
+  mcp config set <key> <value>        Set a CLI option (e.g. trust-claude)
+  mcp config get <key>                Get a CLI option value
   mcp status                          Daemon status
   mcp logs <server> [-f] [--lines N]  View server stderr output
   mcp typegen                         Generate TypeScript types for alias scripts

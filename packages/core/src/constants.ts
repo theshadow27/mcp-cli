@@ -10,6 +10,9 @@ export const MCP_CLI_DIR = join(homedir(), ".mcp-cli");
 /** SQLite database path */
 export const DB_PATH = join(MCP_CLI_DIR, "state.db");
 
+/** CLI config file path (trust-claude, etc.) */
+export const MCP_CLI_CONFIG_PATH = join(MCP_CLI_DIR, "config.json");
+
 /** Daemon Unix socket path */
 export const SOCKET_PATH = join(MCP_CLI_DIR, "mcpd.sock");
 

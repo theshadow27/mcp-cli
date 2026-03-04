@@ -52,6 +52,17 @@ export interface McpConfigFile {
   mcpServers?: ServerConfigMap;
 }
 
+/** mcp-cli config file (~/.mcp-cli/config.json) */
+export interface CliConfig {
+  trustClaude?: boolean;
+}
+
+/** Claude Code project settings (.claude/settings.local.json) */
+export interface ClaudeProjectSettings {
+  enabledMcpjsonServers?: string[];
+  disabledMcpjsonServers?: string[];
+}
+
 /** Claude Code's ~/.claude.json structure (relevant parts) */
 export interface ClaudeConfigFile {
   mcpServers?: ServerConfigMap;

@@ -53,8 +53,8 @@ describe("ALIAS_SUBCOMMANDS", () => {
 });
 
 describe("CONFIG_SUBCOMMANDS", () => {
-  test("contains show and sources", () => {
-    expect([...CONFIG_SUBCOMMANDS]).toEqual(["show", "sources"]);
+  test("contains show, sources, set, and get", () => {
+    expect([...CONFIG_SUBCOMMANDS]).toEqual(["show", "sources", "set", "get"]);
   });
 });
 

@@ -5,11 +5,12 @@
  * and merges them with priority ordering.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type {
   ClaudeConfigFile,
+  ClaudeProjectSettings,
   McpConfigFile,
   ResolvedConfig,
   ResolvedServer,
@@ -17,7 +18,7 @@ import type {
   ServerConfigMap,
 } from "@mcp-cli/core";
 import { CLAUDE_CONFIG_PATH, PROJECT_MCP_FILENAME, USER_SERVERS_PATH } from "@mcp-cli/core";
-import { expandEnvVarsDeep } from "@mcp-cli/core";
+import { expandEnvVarsDeep, readCliConfig } from "@mcp-cli/core";
 
 interface ConfigSource {
   file: string;
@@ -44,16 +45,33 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
   if (mcpJsonPath) {
     const mcpConfig = await readJsonFile<McpConfigFile>(mcpJsonPath);
     if (mcpConfig?.mcpServers) {
-      // Check if Claude Code has enabled/disabled any of these .mcp.json servers.
-      // Look at all matching project scopes (most specific first) to find settings.
-      const matchingPaths = claudeConfig?.projects
-        ? findMatchingProjects(Object.keys(claudeConfig.projects), cwd).reverse()
-        : [];
-      const projectSettings = matchingPaths
-        .map((p) => claudeConfig?.projects?.[p])
-        .find((s) => s?.enabledMcpjsonServers || s?.disabledMcpjsonServers);
-      const disabledMcpJson = projectSettings?.disabledMcpjsonServers ?? [];
-      const enabledMcpJson = projectSettings?.enabledMcpjsonServers;
+      const cliConfig = readCliConfig();
+      let disabledMcpJson: string[] = [];
+      let enabledMcpJson: string[] | undefined;
+
+      if (cliConfig.trustClaude) {
+        // trust-claude mode: use .claude/settings.local.json next to .mcp.json
+        const settingsPath = join(dirname(mcpJsonPath), ".claude", "settings.local.json");
+        const settings = readJsonFileSync<ClaudeProjectSettings>(settingsPath);
+        if (!settings) {
+          // Settings file missing → skip all .mcp.json servers (safe default)
+          enabledMcpJson = [];
+        } else {
+          enabledMcpJson = settings.enabledMcpjsonServers;
+          disabledMcpJson = settings.disabledMcpjsonServers ?? [];
+        }
+      } else {
+        // Default: use ~/.claude.json project scopes for filtering
+        const matchingPaths = claudeConfig?.projects
+          ? findMatchingProjects(Object.keys(claudeConfig.projects), cwd).reverse()
+          : [];
+        const projectSettings = matchingPaths
+          .map((p) => claudeConfig?.projects?.[p])
+          .find((s) => s?.enabledMcpjsonServers || s?.disabledMcpjsonServers);
+        disabledMcpJson = projectSettings?.disabledMcpjsonServers ?? [];
+        enabledMcpJson = projectSettings?.enabledMcpjsonServers;
+      }
+
       const source: ConfigSource = { file: mcpJsonPath, scope: "project" };
       sources.push(source);
       for (const [name, config] of Object.entries(mcpConfig.mcpServers)) {
@@ -138,6 +156,15 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
     if (err instanceof SyntaxError) {
       console.error(`[config] Failed to parse ${path}: ${err.message}`);
     }
+    return null;
+  }
+}
+
+function readJsonFileSync<T>(path: string): T | null {
+  try {
+    const text = readFileSync(path, "utf-8");
+    return JSON.parse(text) as T;
+  } catch {
     return null;
   }
 }
