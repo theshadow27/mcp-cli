@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
@@ -93,6 +93,13 @@ describe("IpcServer HTTP transport", () => {
     expect(json.result).toHaveProperty("pong", true);
     expect(json.result).toHaveProperty("time");
     expect(json.error).toBeUndefined();
+  });
+
+  test("socket file has 0600 permissions after start", () => {
+    startServer();
+
+    const mode = statSync(socketPath).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   test("ping response includes protocolVersion", async () => {

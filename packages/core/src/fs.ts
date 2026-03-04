@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { DB_PATH, MCP_CLI_DIR } from "./constants.js";
+import { DB_PATH, MCP_CLI_DIR, SOCKET_PATH } from "./constants.js";
 
 /** Ensure ~/.mcp-cli/ exists with owner-only permissions (0700) */
 export function ensureStateDir(): void {
@@ -25,15 +25,17 @@ export function auditRuntimePermissions(): void {
     /* directory doesn't exist yet */
   }
 
-  try {
-    const fileMode = statSync(DB_PATH).mode & 0o777;
-    if (fileMode & 0o077) {
-      console.error(
-        `[security] Warning: ${DB_PATH} has mode 0${fileMode.toString(8)}, expected 0600 — run: chmod 600 ${DB_PATH}`,
-      );
+  for (const filePath of [DB_PATH, SOCKET_PATH]) {
+    try {
+      const fileMode = statSync(filePath).mode & 0o777;
+      if (fileMode & 0o077) {
+        console.error(
+          `[security] Warning: ${filePath} has mode 0${fileMode.toString(8)}, expected 0600 — run: chmod 600 ${filePath}`,
+        );
+      }
+    } catch {
+      /* file doesn't exist yet */
     }
-  } catch {
-    /* db doesn't exist yet */
   }
 }
 
