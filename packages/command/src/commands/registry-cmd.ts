@@ -29,7 +29,7 @@ export async function cmdRegistryDispatch(args: string[]): Promise<void> {
 
 async function cmdRegistrySearch(args: string[]): Promise<void> {
   const { json, rest } = extractJsonFlag(args);
-  const { limit, remaining } = extractLimit(rest);
+  const { limit, noCache, remaining } = extractRegistryFlags(rest);
 
   const query = remaining.join(" ");
   if (!query) {
@@ -37,7 +37,7 @@ async function cmdRegistrySearch(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const result = await searchRegistry(query, { limit });
+  const result = await searchRegistry(query, { limit, noCache });
   if (json) {
     console.log(JSON.stringify(result.servers, null, 2));
   } else {
@@ -47,9 +47,9 @@ async function cmdRegistrySearch(args: string[]): Promise<void> {
 
 async function cmdRegistryList(args: string[]): Promise<void> {
   const { json, rest } = extractJsonFlag(args);
-  const { limit } = extractLimit(rest);
+  const { limit, noCache } = extractRegistryFlags(rest);
 
-  const result = await listRegistry({ limit });
+  const result = await listRegistry({ limit, noCache });
   if (json) {
     console.log(JSON.stringify(result.servers, null, 2));
   } else {
@@ -57,18 +57,25 @@ async function cmdRegistryList(args: string[]): Promise<void> {
   }
 }
 
-function extractLimit(args: string[]): { limit: number | undefined; remaining: string[] } {
+function extractRegistryFlags(args: string[]): {
+  limit: number | undefined;
+  noCache: boolean;
+  remaining: string[];
+} {
   const remaining: string[] = [];
   let limit: number | undefined;
+  let noCache = false;
 
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === "--limit" || args[i] === "-n") && i + 1 < args.length) {
       limit = Number.parseInt(args[i + 1], 10);
       i++;
+    } else if (args[i] === "--no-cache") {
+      noCache = true;
     } else {
       remaining.push(args[i]);
     }
   }
 
-  return { limit, remaining };
+  return { limit, noCache, remaining };
 }

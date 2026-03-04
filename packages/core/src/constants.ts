@@ -43,6 +43,12 @@ export const PID_PATH = join(MCP_CLI_DIR, "mcpd.pid");
 /** Alias scripts directory */
 export const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
 
+/** Registry response cache directory */
+export const CACHE_DIR = join(MCP_CLI_DIR, "cache");
+
+/** Registry cache TTL (ms) — 1 hour */
+export const REGISTRY_CACHE_TTL_MS = 60 * 60 * 1000;
+
 /** Valid alias name pattern — alphanumeric, hyphens, underscores only */
 const ALIAS_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 

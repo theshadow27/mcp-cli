@@ -17,6 +17,7 @@ export interface ParsedInstallArgs {
   scope: ConfigScope;
   env: Record<string, string>;
   json: boolean;
+  noCache: boolean;
 }
 
 export function parseInstallArgs(args: string[]): ParsedInstallArgs {
@@ -24,6 +25,7 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
 
   let scope: ConfigScope = "user";
   let name: string | undefined;
+  let noCache = false;
   const env: Record<string, string> = {};
   const positional: string[] = [];
 
@@ -46,6 +48,8 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
       }
       const eqIndex = val.indexOf("=");
       env[val.slice(0, eqIndex)] = val.slice(eqIndex + 1);
+    } else if (arg === "--no-cache") {
+      noCache = true;
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
     } else {
@@ -58,7 +62,7 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
     throw new Error("Server slug is required. Usage: mcp install <slug> [--as name] [--scope user|project]");
   }
 
-  return { slug, name, scope, env, json };
+  return { slug, name, scope, env, json, noCache };
 }
 
 export async function cmdInstall(args: string[]): Promise<void> {
@@ -70,7 +74,7 @@ export async function cmdInstall(args: string[]): Promise<void> {
   const parsed = parseInstallArgs(args);
 
   // Search registry for exact slug match
-  const result = await searchRegistry(parsed.slug);
+  const result = await searchRegistry(parsed.slug, { noCache: parsed.noCache });
   const entry = result.servers.find((s) => s._meta["com.anthropic.api/mcp-registry"].slug === parsed.slug);
 
   if (!entry) {

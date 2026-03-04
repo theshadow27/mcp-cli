@@ -1,5 +1,11 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RegistryResponse } from "../registry/client.js";
+import { _setCacheDir } from "../registry/client.js";
+
+const testCacheDir = mkdtempSync(join(tmpdir(), "mcp-regcmd-test-"));
 
 const MOCK_RESPONSE: RegistryResponse = {
   servers: [
@@ -33,6 +39,11 @@ describe("cmdRegistryDispatch", () => {
     originalFetch = globalThis.fetch;
     exitCode = undefined;
     stderrOutput = [];
+    _setCacheDir(testCacheDir);
+    // Clean cache between tests
+    for (const f of readdirSync(testCacheDir)) {
+      rmSync(join(testCacheDir, f), { force: true });
+    }
 
     globalThis.fetch = mock(async () => {
       return new Response(JSON.stringify(MOCK_RESPONSE), { status: 200 });
@@ -48,6 +59,11 @@ describe("cmdRegistryDispatch", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    _setCacheDir(null);
+  });
+
+  afterAll(() => {
+    rmSync(testCacheDir, { recursive: true, force: true });
   });
 
   test("search subcommand calls searchRegistry", async () => {

@@ -9,6 +9,7 @@ describe("parseInstallArgs", () => {
     expect(result.scope).toBe("user");
     expect(result.env).toEqual({});
     expect(result.json).toBe(false);
+    expect(result.noCache).toBe(false);
   });
 
   test("parses --as flag", () => {
@@ -70,5 +71,10 @@ describe("parseInstallArgs", () => {
   test("handles env value with equals signs", () => {
     const result = parseInstallArgs(["sentry", "--env", "URL=https://a.com?x=1"]);
     expect(result.env).toEqual({ URL: "https://a.com?x=1" });
+  });
+
+  test("parses --no-cache flag", () => {
+    const result = parseInstallArgs(["sentry", "--no-cache"]);
+    expect(result.noCache).toBe(true);
   });
 });
