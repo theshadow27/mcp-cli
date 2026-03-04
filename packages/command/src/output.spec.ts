@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail } from "@mcp-cli/core";
-import { formatToolResult, printAliasDebug } from "./output.js";
+import { formatToolResult, printAliasDebug, printAliasList } from "./output.js";
 
 describe("formatToolResult", () => {
   test("returns empty string for null", () => {
@@ -48,6 +48,69 @@ describe("formatToolResult", () => {
   test("formats plain object as JSON", () => {
     const result = { foo: "bar" };
     expect(formatToolResult(result)).toBe('{\n  "foo": "bar"\n}');
+  });
+});
+
+describe("printAliasList", () => {
+  function captureStdout(fn: () => void): string {
+    const original = console.log;
+    const lines: string[] = [];
+    console.log = mock((...args: unknown[]) => lines.push(args.join(" ")));
+    try {
+      fn();
+      return lines.join("\n");
+    } finally {
+      console.log = original;
+    }
+  }
+
+  const defineAliasEntry = {
+    name: "my-tool",
+    description: "Look up a user",
+    filePath: "/tmp/my-tool.ts",
+    updatedAt: 0,
+    aliasType: "defineAlias" as const,
+  };
+
+  const freeformEntry = {
+    name: "old-script",
+    description: "Legacy script",
+    filePath: "/tmp/old-script.ts",
+    updatedAt: 0,
+    aliasType: "freeform" as const,
+  };
+
+  test("shows defineAlias type indicator", () => {
+    const output = captureStdout(() => printAliasList([defineAliasEntry]));
+    expect(output).toContain("defineAlias");
+    expect(output).toContain("my-tool");
+    expect(output).toContain("Look up a user");
+  });
+
+  test("shows freeform type indicator", () => {
+    const output = captureStdout(() => printAliasList([freeformEntry]));
+    expect(output).toContain("freeform");
+    expect(output).toContain("old-script");
+    expect(output).toContain("Legacy script");
+  });
+
+  test("shows both types in mixed list", () => {
+    const output = captureStdout(() => printAliasList([defineAliasEntry, freeformEntry]));
+    expect(output).toContain("defineAlias");
+    expect(output).toContain("freeform");
+    expect(output).toContain("2 alias(es)");
+  });
+
+  test("shows empty message when no aliases", () => {
+    const original = console.error;
+    const lines: string[] = [];
+    console.error = mock((...args: unknown[]) => lines.push(args.join(" ")));
+    try {
+      printAliasList([]);
+      expect(lines.join("\n")).toContain("No aliases saved");
+    } finally {
+      console.error = original;
+    }
   });
 });
 
