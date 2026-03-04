@@ -80,6 +80,9 @@ export interface SaveAliasParams {
   name: string;
   script: string;
   description?: string;
+  aliasType?: "freeform" | "defineAlias";
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
 }
 
 export interface DeleteAliasParams {
@@ -101,6 +104,7 @@ export interface AliasInfo {
   description: string;
   filePath: string;
   updatedAt: number;
+  aliasType: "freeform" | "defineAlias";
 }
 
 export interface AliasDetail extends AliasInfo {

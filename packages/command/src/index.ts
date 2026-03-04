@@ -201,7 +201,8 @@ async function main(): Promise<void> {
           const alias = (await ipcCall("getAlias", { name: command })) as AliasDetail | null;
           if (alias) {
             const { runAlias } = await import("./alias-runner.js");
-            await runAlias(alias.filePath, parseRunArgs(args.slice(1)));
+            const { jsonInput, cliArgs } = parseRunArgs(args.slice(1));
+            await runAlias(alias.filePath, cliArgs, jsonInput);
             break;
           }
         }

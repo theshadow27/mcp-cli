@@ -109,6 +109,23 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
         ON server_logs(server_name, timestamp_ms DESC);
     `);
+
+    // -- Additive migrations (new columns on existing tables) --
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN alias_type TEXT NOT NULL DEFAULT 'freeform'");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN input_schema_json TEXT");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN output_schema_json TEXT");
+    } catch {
+      /* column already exists */
+    }
   }
 
   // -- Tool cache --
@@ -358,39 +375,64 @@ export class StateDb {
 
   // -- Aliases --
 
-  listAliases(): Array<{ name: string; description: string; filePath: string; updatedAt: number }> {
+  listAliases(): Array<{
+    name: string;
+    description: string;
+    filePath: string;
+    updatedAt: number;
+    aliasType: "freeform" | "defineAlias";
+  }> {
     return this.db
-      .query<{ name: string; description: string | null; file_path: string; updated_at: number }, []>(
-        "SELECT name, description, file_path, updated_at FROM aliases ORDER BY name",
-      )
+      .query<
+        { name: string; description: string | null; file_path: string; updated_at: number; alias_type: string },
+        []
+      >("SELECT name, description, file_path, updated_at, alias_type FROM aliases ORDER BY name")
       .all()
       .map((row) => ({
         name: row.name,
         description: row.description ?? "",
         filePath: row.file_path,
         updatedAt: row.updated_at,
+        aliasType: row.alias_type as "freeform" | "defineAlias",
       }));
   }
 
-  getAlias(name: string): { name: string; description: string; filePath: string } | undefined {
+  getAlias(
+    name: string,
+  ): { name: string; description: string; filePath: string; aliasType: "freeform" | "defineAlias" } | undefined {
     const row = this.db
-      .query<{ name: string; description: string | null; file_path: string }, [string]>(
-        "SELECT name, description, file_path FROM aliases WHERE name = ?",
+      .query<{ name: string; description: string | null; file_path: string; alias_type: string }, [string]>(
+        "SELECT name, description, file_path, alias_type FROM aliases WHERE name = ?",
       )
       .get(name);
     if (!row) return undefined;
-    return { name: row.name, description: row.description ?? "", filePath: row.file_path };
+    return {
+      name: row.name,
+      description: row.description ?? "",
+      filePath: row.file_path,
+      aliasType: row.alias_type as "freeform" | "defineAlias",
+    };
   }
 
-  saveAlias(name: string, filePath: string, description?: string): void {
+  saveAlias(
+    name: string,
+    filePath: string,
+    description?: string,
+    aliasType: "freeform" | "defineAlias" = "freeform",
+    inputSchemaJson?: string,
+    outputSchemaJson?: string,
+  ): void {
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, created_at, updated_at)
-       VALUES (?, ?, ?, unixepoch(), unixepoch())
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
        ON CONFLICT(name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
+         alias_type = excluded.alias_type,
+         input_schema_json = excluded.input_schema_json,
+         output_schema_json = excluded.output_schema_json,
          updated_at = unixepoch()`,
-      [name, filePath, description ?? null],
+      [name, filePath, description ?? null, aliasType, inputSchemaJson ?? null, outputSchemaJson ?? null],
     );
   }
 
