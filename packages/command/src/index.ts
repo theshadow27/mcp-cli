@@ -61,6 +61,7 @@ async function main(): Promise<void> {
     switch (command) {
       case "ls":
       case "list":
+      case "tools":
         await cmdLs(args.slice(1));
         break;
 
@@ -427,6 +428,7 @@ function printUsage(): void {
 Usage:
   mcp ls                              List configured servers
   mcp ls <server>                     List tools for a server
+  mcp tools <server>                  Alias for ls <server>
   mcp call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
   mcp call <server/tool> [json]       Slash notation
   mcp <server> <tool> [json]          Shorthand for call
