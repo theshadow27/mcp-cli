@@ -18,6 +18,7 @@ declare module "jq-web" {
     raw(jsonString: string, filter: string, flags?: string[]): string;
   }
 
-  const jq: Promise<JqModule>;
+  // Dev mode: raw Promise. Build plugin: { ready: Promise }.
+  const jq: Promise<JqModule> & { ready?: Promise<JqModule> };
   export default jq;
 }

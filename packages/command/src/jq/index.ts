@@ -1,13 +1,12 @@
 /**
  * Client-side JQ filtering for output protection.
  *
- * Lazy-loads jq-web WASM (embedded at build time, extracted to ~/.mcp-cli/lib/jq-web/).
- * In dev mode (bun run), imports jq-web directly from node_modules.
+ * At build time, a Bun.build plugin patches jq-web's Emscripten loader
+ * to inline the WASM binary directly (via Module.wasmBinary), so no
+ * filesystem extraction is needed at runtime.
+ *
+ * In dev mode (bun run), jq-web resolves from node_modules normally.
  */
-
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { MCP_CLI_DIR } from "@mcp-cli/core";
 
 // ============================================================================
 // Configuration
@@ -36,55 +35,24 @@ export function _resetJqStateForTesting(reason?: string): void {
   jqPromise = null;
 }
 
-const JQ_LIB_DIR = join(MCP_CLI_DIR, "lib", "jq-web");
-
-async function extractEmbeddedJq(): Promise<void> {
-  const wasmPath = join(JQ_LIB_DIR, "jq.wasm");
-  if (existsSync(wasmPath)) return;
-
-  const { JQ_WASM_ZSTD_BASE64, JQ_JS_BASE64 } = await import("./jq-web-embedded.js");
-  if (!JQ_WASM_ZSTD_BASE64 || !JQ_JS_BASE64) {
-    throw new Error("jq-web not embedded (dev mode — install jq-web and use direct import)");
-  }
-
-  mkdirSync(JQ_LIB_DIR, { recursive: true });
-
-  // Decompress WASM (zstd compressed at build time)
-  const wasmCompressed = Buffer.from(JQ_WASM_ZSTD_BASE64, "base64");
-  const wasmBytes = Bun.zstdDecompressSync(new Uint8Array(wasmCompressed));
-  writeFileSync(wasmPath, wasmBytes);
-
-  // Write JS (plain base64)
-  const jsBytes = Buffer.from(JQ_JS_BASE64, "base64");
-  writeFileSync(join(JQ_LIB_DIR, "jq.js"), jsBytes);
-
-  // Write minimal package.json for dynamic import
-  writeFileSync(join(JQ_LIB_DIR, "package.json"), JSON.stringify({ main: "jq.js" }));
-}
-
 async function getJq(): Promise<JqModule | null> {
   if (jqUnavailableReason) return null;
   if (!jqPromise) {
-    jqPromise = (async () => {
+    // In compiled binary: build plugin patches jq-web to export { ready: Promise }
+    // instead of a raw Promise (avoids Bun's __toESM thenable breakage).
+    // In dev mode: jq-web exports a raw Promise as default export.
+    jqPromise = (async (): Promise<JqModule | null> => {
       try {
-        // Try embedded extraction first (compiled binary)
-        await extractEmbeddedJq();
-        const m = await import(JQ_LIB_DIR);
-        // jq-web exports a promise that resolves to { json, raw }
-        return (m.default ?? m) as JqModule;
-      } catch {
-        // Fallback: try direct import from node_modules (dev mode)
-        try {
-          const m = await import("jq-web");
-          // jq-web default export is a Promise<JqModule>
-          const resolved = await (m.default ?? m);
-          return resolved as JqModule;
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          jqUnavailableReason = message;
-          jqPromise = null;
-          return null;
-        }
+        const m = await import("jq-web");
+        const exported = m.default;
+        // Build plugin wraps in { ready: Promise }, dev mode is raw Promise
+        const resolved = exported?.ready ? await exported.ready : await exported;
+        return resolved as JqModule;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        jqUnavailableReason = message;
+        jqPromise = null;
+        return null;
       }
     })();
   }
