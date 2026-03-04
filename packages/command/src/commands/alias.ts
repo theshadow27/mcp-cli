@@ -14,8 +14,9 @@ export async function cmdAlias(args: string[]): Promise<void> {
   switch (sub) {
     case "ls":
     case "list": {
+      const verbose = args.includes("--verbose") || args.includes("-v");
       const aliases = (await ipcCall("listAliases")) as AliasInfo[];
-      printAliasList(aliases);
+      printAliasList(aliases, { verbose });
       break;
     }
 

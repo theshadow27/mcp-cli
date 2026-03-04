@@ -4,7 +4,7 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
-import { type JsonSchema, jsonSchemaToTs } from "@mcp-cli/core";
+import { type JsonSchema, formatAliasSignature, jsonSchemaToTs } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client.js";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -162,7 +162,10 @@ export function printAliasList(
     filePath: string;
     updatedAt: number;
     aliasType?: "freeform" | "defineAlias";
+    inputSchemaJson?: Record<string, unknown>;
+    outputSchemaJson?: Record<string, unknown>;
   }>,
+  opts?: { verbose?: boolean },
 ): void {
   if (aliases.length === 0) {
     console.error("No aliases saved. Use `mcp alias save <name> <@file | ->` to create one.");
@@ -170,11 +173,23 @@ export function printAliasList(
   }
 
   const maxName = Math.max(...aliases.map((a) => a.name.length));
+  const typeLabel = (a: { aliasType?: string }) =>
+    a.aliasType === "defineAlias" ? `${c.cyan}defineAlias${c.reset}` : `${c.dim}freeform${c.reset}  `;
 
   for (const a of aliases) {
-    const tag = a.aliasType === "defineAlias" ? `${c.cyan}[defined]${c.reset} ` : "";
-    const desc = a.description ? `  ${c.dim}${a.description}${c.reset}` : "";
-    console.log(`  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${tag}${a.filePath}${desc}`);
+    const desc = a.description ? `  ${a.description}` : "";
+    let line = `  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${typeLabel(a)}${desc}`;
+
+    if (opts?.verbose && a.aliasType === "defineAlias") {
+      const sig = formatAliasSignature(
+        a.name,
+        a.inputSchemaJson as JsonSchema | undefined,
+        a.outputSchemaJson as JsonSchema | undefined,
+      );
+      line += `  ${c.dim}${sig}${c.reset}`;
+    }
+
+    console.log(line);
   }
   console.log(`\n${aliases.length} alias(es)`);
 }
