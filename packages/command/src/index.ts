@@ -21,6 +21,7 @@ import { cmdAdd, cmdAddJson } from "./commands/add.js";
 import { cmdAlias } from "./commands/alias.js";
 import { cmdCompletions } from "./commands/completions.js";
 import { cmdConfig } from "./commands/config.js";
+import { cmdExport } from "./commands/export.js";
 import { cmdGet } from "./commands/get.js";
 import { cmdImport } from "./commands/import.js";
 import { cmdInstall } from "./commands/install.js";
@@ -114,6 +115,10 @@ async function main(): Promise<void> {
 
       case "import":
         await cmdImport(args.slice(1));
+        break;
+
+      case "export":
+        await cmdExport(args.slice(1));
         break;
 
       case "install":
@@ -457,6 +462,7 @@ Usage:
   mcp registry search <query>         Search the MCP registry
   mcp registry list                   List available registry servers
   mcp import [source] [--scope ...]    Import servers from .mcp.json or config file
+  mcp export [file] [--scope ...]      Export servers to .mcp.json format
   mcp add --transport {stdio|http|sse} <name> ...   Add a server
   mcp add-json <name> '<json>'        Add a server from raw JSON
   mcp remove <name>                   Remove a server
