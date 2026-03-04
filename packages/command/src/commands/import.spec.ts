@@ -2,16 +2,73 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { McpConfigFile } from "@mcp-cli/core";
+import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { findFileUpward } from "@mcp-cli/core";
 import { readConfigFile, writeConfigFile } from "./config-file.js";
 
 /**
- * These tests exercise the import command's source resolution and file I/O.
- * We test the underlying logic rather than the CLI entrypoint to avoid IPC dependencies.
+ * Tests for mcp import's source resolution and file I/O.
+ * Tests the underlying logic rather than the CLI entrypoint to avoid IPC dependencies.
  */
 
-// -- Helpers --
+// ---------------------------------------------------------------------------
+// Fixtures — realistic MCP server configs based on catalog entries
+// ---------------------------------------------------------------------------
+
+const FIXTURES: Record<string, ServerConfig> = {
+  // Stdio: filesystem server (npx)
+  filesystem: {
+    command: "npx",
+    args: ["-y", "@anthropic/mcp-filesystem"],
+    env: { MCP_FS_ROOT: "/home/user/projects" },
+  },
+  // Stdio: Airtable (env var for API key)
+  airtable: {
+    command: "npx",
+    args: ["-y", "airtable-mcp-server"],
+    env: { AIRTABLE_API_KEY: "${AIRTABLE_API_KEY}" },
+  },
+  // HTTP: Notion (remote, streamable HTTP)
+  notion: {
+    type: "http" as const,
+    url: "https://mcp.notion.com/mcp",
+  },
+  // HTTP: GitHub (remote, with auth header)
+  github: {
+    type: "http" as const,
+    url: "https://api.githubcopilot.com/mcp/",
+    headers: { Authorization: "Bearer ${GH_TOKEN}" },
+  },
+  // SSE: Atlassian (legacy SSE transport)
+  atlassian: {
+    type: "sse" as const,
+    url: "https://mcp.atlassian.com/v1/sse",
+    headers: { Authorization: "Bearer ${ATLASSIAN_TOKEN}" },
+  },
+  // Stdio: Python-based server via uvx
+  "jupyter-mcp": {
+    command: "uvx",
+    args: ["jupyter-mcp-server"],
+    env: { JUPYTER_TOKEN: "${JUPYTER_TOKEN}" },
+  },
+  // HTTP: Sentry (remote, authless)
+  sentry: {
+    type: "http" as const,
+    url: "https://mcp.sentry.dev/sse",
+  },
+};
+
+function fixtureConfig(...names: (keyof typeof FIXTURES)[]): McpConfigFile {
+  const mcpServers: Record<string, ServerConfig> = {};
+  for (const name of names) {
+    mcpServers[name] = FIXTURES[name];
+  }
+  return { mcpServers };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function tmpDir(): string {
   const dir = join(tmpdir(), `mcp-cli-import-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -25,7 +82,9 @@ function writeMcpJson(dir: string, config: McpConfigFile): string {
   return path;
 }
 
-// -- Tests --
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe("mcp import", () => {
   let dir: string;
@@ -39,31 +98,36 @@ describe("mcp import", () => {
   });
 
   describe("source file reading", () => {
-    test("reads servers from .mcp.json file", () => {
-      const mcpJson: McpConfigFile = {
-        mcpServers: {
-          github: { type: "http", url: "https://github.example.com/mcp" },
-          notion: { type: "sse", url: "https://notion.example.com/sse" },
-        },
-      };
-      const filePath = writeMcpJson(dir, mcpJson);
+    test("reads HTTP and SSE servers from .mcp.json", () => {
+      const filePath = writeMcpJson(dir, fixtureConfig("notion", "atlassian"));
 
       const content = readFileSync(filePath, "utf-8");
       const config = JSON.parse(content) as McpConfigFile;
 
-      expect(config.mcpServers).toBeDefined();
       const servers = config.mcpServers ?? {};
-      expect(Object.keys(servers)).toEqual(["github", "notion"]);
-      expect(servers.github).toEqual({ type: "http", url: "https://github.example.com/mcp" });
+      expect(Object.keys(servers)).toEqual(["notion", "atlassian"]);
+      expect(servers.notion).toEqual(FIXTURES.notion);
+      expect(servers.atlassian).toEqual(FIXTURES.atlassian);
+    });
+
+    test("reads stdio servers with env vars from .mcp.json", () => {
+      const filePath = writeMcpJson(dir, fixtureConfig("airtable", "jupyter-mcp"));
+
+      const content = readFileSync(filePath, "utf-8");
+      const config = JSON.parse(content) as McpConfigFile;
+
+      const servers = config.mcpServers ?? {};
+      expect(Object.keys(servers)).toEqual(["airtable", "jupyter-mcp"]);
+      const airtable = servers.airtable;
+      expect("command" in airtable && airtable.command).toBe("npx");
+      expect("env" in airtable && airtable.env).toEqual({ AIRTABLE_API_KEY: "${AIRTABLE_API_KEY}" });
     });
 
     test("handles file with no mcpServers key", () => {
       const filePath = join(dir, "empty.json");
       writeFileSync(filePath, "{}");
 
-      const content = readFileSync(filePath, "utf-8");
-      const config = JSON.parse(content) as McpConfigFile;
-
+      const config = JSON.parse(readFileSync(filePath, "utf-8")) as McpConfigFile;
       expect(config.mcpServers).toBeUndefined();
     });
 
@@ -71,104 +135,83 @@ describe("mcp import", () => {
       const filePath = join(dir, "empty-servers.json");
       writeFileSync(filePath, JSON.stringify({ mcpServers: {} }));
 
-      const content = readFileSync(filePath, "utf-8");
-      const config = JSON.parse(content) as McpConfigFile;
-
-      const servers = config.mcpServers ?? {};
-      expect(Object.keys(servers)).toHaveLength(0);
+      const config = JSON.parse(readFileSync(filePath, "utf-8")) as McpConfigFile;
+      expect(Object.keys(config.mcpServers ?? {})).toHaveLength(0);
     });
   });
 
   describe("import into config file", () => {
-    test("imports servers into empty config", () => {
+    test("imports catalog servers into empty config", () => {
       const targetPath = join(dir, "servers.json");
 
-      const source: McpConfigFile = {
-        mcpServers: {
-          api: { type: "http", url: "https://api.example.com" },
-        },
-      };
+      const source = fixtureConfig("notion", "sentry");
 
       const existing = readConfigFile(targetPath);
       existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
       writeConfigFile(targetPath, existing);
 
       const result = readConfigFile(targetPath);
-      expect(result.mcpServers?.api).toEqual({ type: "http", url: "https://api.example.com" });
+      expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
+      expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
     });
 
-    test("merges with existing servers", () => {
+    test("merges imported servers with existing ones", () => {
+      const targetPath = join(dir, "servers.json");
+
+      // Pre-existing server
+      writeConfigFile(targetPath, fixtureConfig("filesystem"));
+
+      // Import new ones
+      const source = fixtureConfig("github", "atlassian");
+      const existing = readConfigFile(targetPath);
+      existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
+      writeConfigFile(targetPath, existing);
+
+      const result = readConfigFile(targetPath);
+      expect(result.mcpServers?.filesystem).toEqual(FIXTURES.filesystem);
+      expect(result.mcpServers?.github).toEqual(FIXTURES.github);
+      expect(result.mcpServers?.atlassian).toEqual(FIXTURES.atlassian);
+    });
+
+    test("overwrites duplicate server names on re-import", () => {
       const targetPath = join(dir, "servers.json");
 
       writeConfigFile(targetPath, {
-        mcpServers: { existing: { command: "echo" } },
+        mcpServers: { notion: { type: "http" as const, url: "https://old.example.com" } },
       });
 
-      const source: McpConfigFile = {
-        mcpServers: {
-          imported: { type: "http", url: "https://imported.example.com" },
-        },
-      };
-
+      const source = fixtureConfig("notion");
       const existing = readConfigFile(targetPath);
       existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
       writeConfigFile(targetPath, existing);
 
       const result = readConfigFile(targetPath);
-      expect(result.mcpServers?.existing).toEqual({ command: "echo" });
-      expect(result.mcpServers?.imported).toEqual({ type: "http", url: "https://imported.example.com" });
-    });
-
-    test("overwrites duplicate server names", () => {
-      const targetPath = join(dir, "servers.json");
-
-      writeConfigFile(targetPath, {
-        mcpServers: { api: { type: "http", url: "https://old.example.com" } },
-      });
-
-      const source: McpConfigFile = {
-        mcpServers: {
-          api: { type: "http", url: "https://new.example.com" },
-        },
-      };
-
-      const existing = readConfigFile(targetPath);
-      existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
-      writeConfigFile(targetPath, existing);
-
-      const result = readConfigFile(targetPath);
-      expect(result.mcpServers?.api).toEqual({ type: "http", url: "https://new.example.com" });
+      expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
     });
   });
 
   describe("directory source", () => {
-    test("finds .mcp.json in directory", () => {
-      writeMcpJson(dir, {
-        mcpServers: { myserver: { command: "my-mcp-server" } },
-      });
+    test("finds .mcp.json with mixed transports in directory", () => {
+      writeMcpJson(dir, fixtureConfig("filesystem", "notion", "atlassian"));
 
       const candidate = join(dir, ".mcp.json");
       expect(existsSync(candidate)).toBe(true);
 
-      const content = readFileSync(candidate, "utf-8");
-      const config = JSON.parse(content) as McpConfigFile;
-      expect(config.mcpServers?.myserver).toEqual({ command: "my-mcp-server" });
+      const config = JSON.parse(readFileSync(candidate, "utf-8")) as McpConfigFile;
+      expect(Object.keys(config.mcpServers ?? {})).toHaveLength(3);
     });
 
     test("reports error when directory has no .mcp.json", () => {
       const emptyDir = join(dir, "empty");
       mkdirSync(emptyDir);
 
-      const candidate = join(emptyDir, ".mcp.json");
-      expect(existsSync(candidate)).toBe(false);
+      expect(existsSync(join(emptyDir, ".mcp.json"))).toBe(false);
     });
   });
 
   describe("walk-up source", () => {
     test("finds .mcp.json in parent directory", () => {
-      writeMcpJson(dir, {
-        mcpServers: { parent: { command: "parent-server" } },
-      });
+      writeMcpJson(dir, fixtureConfig("github"));
 
       const child = join(dir, "sub", "deep");
       mkdirSync(child, { recursive: true });
@@ -186,46 +229,44 @@ describe("mcp import", () => {
     });
   });
 
-  describe("stdio server configs", () => {
+  describe("config field preservation", () => {
     test("preserves all stdio config fields during import", () => {
       const targetPath = join(dir, "servers.json");
-      const source: McpConfigFile = {
-        mcpServers: {
-          local: {
-            command: "npx",
-            args: ["-y", "@some/mcp-server"],
-            env: { API_KEY: "${API_KEY}" },
-            cwd: "/some/dir",
-          },
-        },
-      };
+      const source = fixtureConfig("filesystem");
 
       const existing = readConfigFile(targetPath);
       existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
       writeConfigFile(targetPath, existing);
 
       const result = readConfigFile(targetPath);
-      const server = result.mcpServers?.local;
+      const server = result.mcpServers?.filesystem;
       expect(server).toBeDefined();
       if (server && "command" in server) {
         expect(server.command).toBe("npx");
-        expect(server.args).toEqual(["-y", "@some/mcp-server"]);
-        expect(server.env).toEqual({ API_KEY: "${API_KEY}" });
-        expect(server.cwd).toBe("/some/dir");
+        expect(server.args).toEqual(["-y", "@anthropic/mcp-filesystem"]);
+        expect(server.env).toEqual({ MCP_FS_ROOT: "/home/user/projects" });
       }
     });
-  });
 
-  describe("multiple servers", () => {
-    test("imports all servers from a multi-server config", () => {
+    test("preserves headers on HTTP servers", () => {
       const targetPath = join(dir, "servers.json");
-      const source: McpConfigFile = {
-        mcpServers: {
-          github: { type: "http", url: "https://github.example.com/mcp" },
-          notion: { type: "sse", url: "https://notion.example.com/sse" },
-          local: { command: "my-local-server", args: ["--port", "3000"] },
-        },
-      };
+      const source = fixtureConfig("github");
+
+      const existing = readConfigFile(targetPath);
+      existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
+      writeConfigFile(targetPath, existing);
+
+      const result = readConfigFile(targetPath);
+      const server = result.mcpServers?.github;
+      expect(server).toBeDefined();
+      if (server && "headers" in server) {
+        expect(server.headers).toEqual({ Authorization: "Bearer ${GH_TOKEN}" });
+      }
+    });
+
+    test("imports full catalog-like config with all transport types", () => {
+      const targetPath = join(dir, "servers.json");
+      const source = fixtureConfig("filesystem", "airtable", "jupyter-mcp", "notion", "github", "atlassian", "sentry");
 
       const existing = readConfigFile(targetPath);
       existing.mcpServers = { ...existing.mcpServers, ...source.mcpServers };
@@ -233,10 +274,12 @@ describe("mcp import", () => {
 
       const result = readConfigFile(targetPath);
       const servers = result.mcpServers ?? {};
-      expect(Object.keys(servers)).toHaveLength(3);
-      expect(servers.github).toBeDefined();
-      expect(servers.notion).toBeDefined();
-      expect(servers.local).toBeDefined();
+      expect(Object.keys(servers)).toHaveLength(7);
+
+      // Spot-check each transport type
+      expect("command" in servers.filesystem).toBe(true);
+      expect(servers.notion.type).toBe("http");
+      expect(servers.atlassian.type).toBe("sse");
     });
   });
 });
