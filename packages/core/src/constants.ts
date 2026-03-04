@@ -25,8 +25,8 @@ function computeDevProtocolHash(): string {
   }
 }
 
-/** Runtime state directory */
-export const MCP_CLI_DIR = join(homedir(), ".mcp-cli");
+/** Runtime state directory (override with MCP_CLI_DIR env var for test isolation) */
+export const MCP_CLI_DIR = process.env.MCP_CLI_DIR || join(homedir(), ".mcp-cli");
 
 /** SQLite database path */
 export const DB_PATH = join(MCP_CLI_DIR, "state.db");
