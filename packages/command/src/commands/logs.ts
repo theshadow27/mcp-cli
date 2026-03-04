@@ -1,17 +1,21 @@
 /**
  * mcp logs <server> — view stderr output from an MCP server.
+ * mcp logs --daemon  — view persistent daemon log file.
  *
  * Options:
+ *   --daemon        Show daemon logs (reads ~/.mcp-cli/mcpd.log)
  *   -f, --follow    Stream new lines in real time (poll every 500ms)
  *   --lines N       Number of initial lines to show (default: 50)
  */
 
-import type { GetLogsResult } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { readFileSync } from "node:fs";
+import type { GetDaemonLogsResult, GetLogsResult } from "@mcp-cli/core";
+import { DAEMON_LOG_PATH, ipcCall } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
 export interface LogsArgs {
   server: string | undefined;
+  daemon: boolean;
   follow: boolean;
   lines: number;
   error: string | undefined;
@@ -19,13 +23,16 @@ export interface LogsArgs {
 
 export function parseLogsArgs(args: string[]): LogsArgs {
   let server: string | undefined;
+  let daemon = false;
   let follow = false;
   let lines = 50;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "-f" || arg === "--follow") {
+    if (arg === "--daemon") {
+      daemon = true;
+    } else if (arg === "-f" || arg === "--follow") {
       follow = true;
     } else if (arg === "--lines" || arg === "-n") {
       const next = args[++i];
@@ -39,7 +46,7 @@ export function parseLogsArgs(args: string[]): LogsArgs {
     }
   }
 
-  return { server, follow, lines, error };
+  return { server, daemon, follow, lines, error };
 }
 
 export async function cmdLogs(args: string[]): Promise<void> {
@@ -50,8 +57,15 @@ export async function cmdLogs(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  if (parsed.daemon) {
+    await cmdDaemonLogs(parsed);
+    return;
+  }
+
   if (!parsed.server) {
-    printError("Usage: mcp logs <server> [-f|--follow] [--lines N]");
+    printError(
+      "Usage: mcp logs <server> [-f|--follow] [--lines N]\n       mcp logs --daemon [-f|--follow] [--lines N]",
+    );
     process.exit(1);
   }
 
@@ -90,6 +104,57 @@ export async function cmdLogs(args: string[]): Promise<void> {
   });
 
   // Keep process alive
+  await new Promise(() => {});
+}
+
+async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
+  const { follow, lines } = parsed;
+
+  if (!follow) {
+    // Read log file directly — works even when daemon is down (post-mortem)
+    let content: string;
+    try {
+      content = readFileSync(DAEMON_LOG_PATH, "utf-8");
+    } catch {
+      printError(`No daemon log file found at ${DAEMON_LOG_PATH}`);
+      process.exit(1);
+    }
+
+    const allLines = content.split("\n").filter(Boolean);
+    const tail = allLines.slice(-lines);
+    for (const line of tail) {
+      process.stderr.write(`${line}\n`);
+    }
+    return;
+  }
+
+  // Follow mode: use IPC getDaemonLogs with polling
+  const result = (await ipcCall("getDaemonLogs", { limit: lines })) as GetDaemonLogsResult;
+
+  for (const entry of result.lines) {
+    printLogLine("mcpd", entry.timestamp, entry.line);
+  }
+
+  let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
+
+  const poll = async () => {
+    try {
+      const update = (await ipcCall("getDaemonLogs", { since: lastTimestamp })) as GetDaemonLogsResult;
+      for (const entry of update.lines) {
+        printLogLine("mcpd", entry.timestamp, entry.line);
+        lastTimestamp = entry.timestamp;
+      }
+    } catch {
+      // Connection lost — ignore, will retry next tick
+    }
+  };
+
+  const interval = setInterval(poll, 500);
+  process.on("SIGINT", () => {
+    clearInterval(interval);
+    process.exit(0);
+  });
+
   await new Promise(() => {});
 }
 

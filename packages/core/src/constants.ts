@@ -110,6 +110,15 @@ export const CONNECT_TIMEOUT_MS = 30_000;
 /** Daemon startup lock file path */
 export const LOCK_PATH = join(MCP_CLI_DIR, "mcpd.lock");
 
+/** Persistent daemon log file path */
+export const DAEMON_LOG_PATH = join(MCP_CLI_DIR, "mcpd.log");
+
+/** Rotated daemon log backup path */
+export const DAEMON_LOG_BACKUP_PATH = join(MCP_CLI_DIR, "mcpd.log.1");
+
+/** Max daemon log file size before rotation (5 MB) */
+export const DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
 /** Daemon ready signal (stdout) */
 export const DAEMON_READY_SIGNAL = "MCPD_READY";
 

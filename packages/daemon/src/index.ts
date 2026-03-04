@@ -26,7 +26,7 @@ import {
 } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./config/loader.js";
 import { ConfigWatcher } from "./config/watcher.js";
-import { installDaemonLogCapture } from "./daemon-log.js";
+import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log.js";
 import { StateDb } from "./db/state.js";
 import { IpcServer } from "./ipc-server.js";
 import { ServerPool } from "./server-pool.js";
@@ -34,6 +34,7 @@ import { ServerPool } from "./server-pool.js";
 async function main(): Promise<void> {
   // Capture daemon logs before anything else
   installDaemonLogCapture();
+  installDaemonLogFile();
 
   // Ensure state directory exists
   mkdirSync(MCP_CLI_DIR, { recursive: true });
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
     ipcServer.stop();
     await pool.closeAll();
     db.close();
+    closeDaemonLogFile();
     try {
       unlinkSync(PID_PATH);
     } catch {

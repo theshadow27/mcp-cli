@@ -6,6 +6,7 @@ describe("parseLogsArgs", () => {
     const result = parseLogsArgs(["myserver"]);
     expect(result.server).toBe("myserver");
     expect(result.follow).toBe(false);
+    expect(result.daemon).toBe(false);
     expect(result.lines).toBe(50);
     expect(result.error).toBeUndefined();
   });
@@ -57,8 +58,27 @@ describe("parseLogsArgs", () => {
   test("returns defaults for empty args", () => {
     const result = parseLogsArgs([]);
     expect(result.server).toBeUndefined();
+    expect(result.daemon).toBe(false);
     expect(result.follow).toBe(false);
     expect(result.lines).toBe(50);
     expect(result.error).toBeUndefined();
+  });
+
+  test("parses --daemon flag", () => {
+    const result = parseLogsArgs(["--daemon"]);
+    expect(result.daemon).toBe(true);
+    expect(result.server).toBeUndefined();
+  });
+
+  test("parses --daemon with --follow", () => {
+    const result = parseLogsArgs(["--daemon", "-f"]);
+    expect(result.daemon).toBe(true);
+    expect(result.follow).toBe(true);
+  });
+
+  test("parses --daemon with --lines", () => {
+    const result = parseLogsArgs(["--daemon", "--lines", "100"]);
+    expect(result.daemon).toBe(true);
+    expect(result.lines).toBe(100);
   });
 });
