@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
-import { IPC_ERROR } from "@mcp-cli/core";
+import { IPC_ERROR, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { installDaemonLogCapture } from "./daemon-log.js";
 import { IpcServer } from "./ipc-server.js";
 
@@ -93,6 +93,28 @@ describe("IpcServer HTTP transport", () => {
     expect(json.result).toHaveProperty("pong", true);
     expect(json.result).toHaveProperty("time");
     expect(json.error).toBeUndefined();
+  });
+
+  test("ping response includes protocolVersion", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "pv1", method: "ping" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { pong: boolean; time: number; protocolVersion: string };
+    expect(result.protocolVersion).toBe(PROTOCOL_VERSION);
+  });
+
+  test("status response includes protocolVersion", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "pv2", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { protocolVersion: string };
+    expect(result.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
   test("POST /rpc with invalid JSON returns 400", async () => {

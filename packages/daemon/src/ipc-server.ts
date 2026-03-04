@@ -24,7 +24,7 @@ import type {
   SaveAliasParams,
   TriggerAuthParams,
 } from "@mcp-cli/core";
-import { ALIASES_DIR, DB_PATH, IPC_ERROR, SOCKET_PATH, safeAliasPath } from "@mcp-cli/core";
+import { ALIASES_DIR, DB_PATH, IPC_ERROR, PROTOCOL_VERSION, SOCKET_PATH, safeAliasPath } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
@@ -139,7 +139,7 @@ export class IpcServer {
   // -- Handler registration --
 
   private registerHandlers(): void {
-    this.handlers.set("ping", async () => ({ pong: true, time: Date.now() }));
+    this.handlers.set("ping", async () => ({ pong: true, time: Date.now(), protocolVersion: PROTOCOL_VERSION }));
 
     this.handlers.set("status", async () => {
       const servers = this.pool.listServers();
@@ -159,6 +159,7 @@ export class IpcServer {
       return {
         pid: process.pid,
         uptime: process.uptime(),
+        protocolVersion: PROTOCOL_VERSION,
         servers,
         dbPath: DB_PATH,
         usageStats,
