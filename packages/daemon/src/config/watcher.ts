@@ -8,7 +8,7 @@
 import { type FSWatcher, existsSync, watch } from "node:fs";
 import { dirname } from "node:path";
 import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
-import { CLAUDE_CONFIG_PATH, MCP_CLI_CONFIG_PATH, PROJECT_MCP_FILENAME, USER_SERVERS_PATH } from "@mcp-cli/core";
+import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./loader.js";
 
 const DEBOUNCE_MS = 300;
@@ -92,17 +92,9 @@ export class ConfigWatcher {
   private getWatchPaths(): string[] {
     const paths = new Set<string>();
 
-    // Always watch the standard config locations
-    paths.add(CLAUDE_CONFIG_PATH);
+    // Watch mcp-cli's own config files only
     paths.add(USER_SERVERS_PATH);
-    paths.add(MCP_CLI_CONFIG_PATH);
-
-    // Watch .mcp.json in CWD (or parent chain — but we just watch CWD for simplicity)
-    const projectMcp = `${this.cwd}/${PROJECT_MCP_FILENAME}`;
-    paths.add(projectMcp);
-
-    // Watch Claude Code project settings for trust-claude approval changes
-    paths.add(`${this.cwd}/.claude/settings.local.json`);
+    paths.add(projectConfigPath(this.cwd));
 
     return [...paths];
   }

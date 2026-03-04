@@ -22,6 +22,7 @@ import { cmdAlias } from "./commands/alias.js";
 import { cmdCompletions } from "./commands/completions.js";
 import { cmdConfig } from "./commands/config.js";
 import { cmdGet } from "./commands/get.js";
+import { cmdImport } from "./commands/import.js";
 import { cmdInstall } from "./commands/install.js";
 import { cmdLogs } from "./commands/logs.js";
 import { cmdRegistryDispatch } from "./commands/registry-cmd.js";
@@ -110,6 +111,10 @@ async function main(): Promise<void> {
         }
         break;
       }
+
+      case "import":
+        await cmdImport(args.slice(1));
+        break;
 
       case "install":
         await cmdInstall(args.slice(1));
@@ -450,6 +455,7 @@ Usage:
   mcp install <slug>                  Install a server from the registry
   mcp registry search <query>         Search the MCP registry
   mcp registry list                   List available registry servers
+  mcp import [source] [--scope ...]    Import servers from .mcp.json or config file
   mcp add --transport {stdio|http|sse} <name> ...   Add a server
   mcp add-json <name> '<json>'        Add a server from raw JSON
   mcp remove <name>                   Remove a server

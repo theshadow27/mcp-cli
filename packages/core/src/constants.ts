@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /** CLI version — updated on release */
 export const VERSION = "0.1.0";
@@ -89,6 +89,18 @@ export const CLAUDE_CONFIG_PATH = join(homedir(), ".claude.json");
 
 /** Project-level MCP config filename */
 export const PROJECT_MCP_FILENAME = ".mcp.json";
+
+/** Directory for project-scoped server configs */
+export const PROJECTS_DIR = join(MCP_CLI_DIR, "projects");
+
+/**
+ * Return the project-scoped server config path for a given working directory.
+ * Uses mangled absolute path as directory name (e.g. `/Users/j/code/app` → `Users_j_code_app`).
+ */
+export function projectConfigPath(cwd: string): string {
+  const mangled = resolve(cwd).replaceAll("/", "_").replace(/^_/, "");
+  return join(PROJECTS_DIR, mangled, "servers.json");
+}
 
 /** Default daemon idle timeout (ms) */
 export const DAEMON_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
