@@ -4,7 +4,10 @@
  *
  * Each test group runs in an isolated temp directory via MCP_CLI_DIR.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+
+// CI runners are slower — give daemon spawn + test logic plenty of room
+setDefaultTimeout(30_000);
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestDaemon } from "./harness.js";
