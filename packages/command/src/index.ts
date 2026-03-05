@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 /**
- * mcp — MCP CLI
+ * mcx — MCP CLI
  *
  * Call MCP server tools from the command line.
  * Talks to mcpd daemon via Unix socket for connection management.
  *
  * Usage:
- *   mcp ls                                      # list servers
- *   mcp ls <server>                              # list tools for a server
- *   mcp call <server> <tool> [json|@file]        # call a tool
- *   mcp info <server> <tool>                     # show tool schema
- *   mcp grep <pattern>                           # search tools
- *   mcp status                                   # daemon status
+ *   mcx ls                                      # list servers
+ *   mcx ls <server>                              # list tools for a server
+ *   mcx call <server> <tool> [json|@file]        # call a tool
+ *   mcx info <server> <tool>                     # show tool schema
+ *   mcx grep <pattern>                           # search tools
+ *   mcx status                                   # daemon status
  */
 
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
         const { json: searchJson, rest: searchRest } = extractJsonFlag(args.slice(1));
         const searchPattern = searchRest.join(" ");
         if (!searchPattern) {
-          printError("Usage: mcp search <query>");
+          printError("Usage: mcx search <query>");
           process.exit(1);
         }
         const searchTools = (await ipcCall("grepTools", { pattern: searchPattern })) as ToolInfo[];
@@ -187,15 +187,15 @@ async function main(): Promise<void> {
         break;
 
       default: {
-        // Check if it looks like "mcp server/tool" (slash notation shorthand)
+        // Check if it looks like "mcx server/tool" (slash notation shorthand)
         if (!command.startsWith("-") && splitServerTool(command)) {
           await cmdCall(args);
           break;
         }
 
-        // Check if it looks like "mcp server tool" (missing "call")
+        // Check if it looks like "mcx server tool" (missing "call")
         if (!command.startsWith("-") && args.length >= 2 && !args[1].startsWith("-")) {
-          // Treat as shorthand: mcp <server> <tool> [args]
+          // Treat as shorthand: mcx <server> <tool> [args]
           await cmdCall(args);
           break;
         }
@@ -258,7 +258,7 @@ async function cmdCall(args: string[]): Promise<void> {
   const resolved = split ? [...split, ...afterJq.slice(1)] : afterJq;
 
   if (resolved.length < 2) {
-    printError("Usage: mcp call <server> <tool> [json|@file] [--jq '<filter>'] [--full]");
+    printError("Usage: mcx call <server> <tool> [json|@file] [--jq '<filter>'] [--full]");
     process.exit(1);
   }
 
@@ -310,7 +310,7 @@ async function cmdCall(args: string[]): Promise<void> {
     if (sizeBytes > SIZE_OK) {
       // Medium — pass through + stderr hint
       console.log(formatted);
-      console.error(`[mcp] ${(sizeBytes / 1024).toFixed(1)}KB response. Use --jq to filter.`);
+      console.error(`[mcx] ${(sizeBytes / 1024).toFixed(1)}KB response. Use --jq to filter.`);
       return;
     }
 
@@ -331,7 +331,7 @@ async function cmdInfo(args: string[]): Promise<void> {
   const resolved = split ? [...split, ...rest.slice(1)] : rest;
 
   if (resolved.length < 2) {
-    printError("Usage: mcp info <server> <tool>");
+    printError("Usage: mcx info <server> <tool>");
     process.exit(1);
   }
 
@@ -354,7 +354,7 @@ async function cmdGrep(args: string[]): Promise<void> {
   const { json, rest } = extractJsonFlag(args);
 
   if (rest.length === 0) {
-    printError("Usage: mcp grep <pattern>");
+    printError("Usage: mcx grep <pattern>");
     process.exit(1);
   }
 
@@ -383,7 +383,7 @@ async function cmdStatus(args: string[] = []): Promise<void> {
 
 async function cmdAuth(args: string[]): Promise<void> {
   if (args.length < 1) {
-    printError("Usage: mcp auth <server>");
+    printError("Usage: mcx auth <server>");
     process.exit(1);
   }
 
@@ -444,50 +444,50 @@ async function readStdinJson(): Promise<Record<string, unknown>> {
 // -- Help --
 
 function printUsage(): void {
-  console.log(`mcp — MCP tools from the command line
+  console.log(`mcx — MCP tools from the command line
 
 Usage:
-  mcp ls                              List configured servers
-  mcp ls <server>                     List tools for a server
-  mcp tools <server>                  Alias for ls <server>
-  mcp call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
-  mcp call <server/tool> [json]       Slash notation
-  mcp <server> <tool> [json]          Shorthand for call
-  mcp <server/tool> [json]            Shorthand with slash notation
-  mcp info <server> <tool>            Show tool schema
-  mcp info <server/tool>              Slash notation
-  mcp grep <pattern>                  Search tools by name/description
-  mcp search <query>                  Search local tools, then registry
-  mcp install <slug>                  Install a server from the registry
-  mcp registry search <query>         Search the MCP registry
-  mcp registry list                   List available registry servers
-  mcp import [source] [--scope ...]    Import servers from .mcp.json or config file
-  mcp import --claude [--all]          Import servers from ~/.claude.json
-  mcp export [file] [--scope ...]      Export servers to .mcp.json format
-  mcp add --transport {stdio|http|sse} <name> ...   Add a server
-  mcp add-json <name> '<json>'        Add a server from raw JSON
-  mcp remove <name>                   Remove a server
-  mcp get <name>                      Inspect a server's config and status
-  mcp auth <server>                   Authenticate with an OAuth server
-  mcp config show                     Show resolved server config
-  mcp config sources                  Show config file sources
-  mcp config set <key> <value>        Set a CLI option (e.g. trust-claude)
-  mcp config get <key>                Get a CLI option value
-  mcp status                          Daemon status
-  mcp logs <server> [-f] [--lines N]  View server stderr output
-  mcp typegen                         Generate TypeScript types for alias scripts
-  mcp completions {bash|zsh|fish}     Generate shell completion script
-  mcp restart [server]                Restart server connection(s)
-  mcp shutdown                        Stop the daemon
+  mcx ls                              List configured servers
+  mcx ls <server>                     List tools for a server
+  mcx tools <server>                  Alias for ls <server>
+  mcx call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
+  mcx call <server/tool> [json]       Slash notation
+  mcx <server> <tool> [json]          Shorthand for call
+  mcx <server/tool> [json]            Shorthand with slash notation
+  mcx info <server> <tool>            Show tool schema
+  mcx info <server/tool>              Slash notation
+  mcx grep <pattern>                  Search tools by name/description
+  mcx search <query>                  Search local tools, then registry
+  mcx install <slug>                  Install a server from the registry
+  mcx registry search <query>         Search the MCP registry
+  mcx registry list                   List available registry servers
+  mcx import [source] [--scope ...]    Import servers from .mcp.json or config file
+  mcx import --claude [--all]          Import servers from ~/.claude.json
+  mcx export [file] [--scope ...]      Export servers to .mcp.json format
+  mcx add --transport {stdio|http|sse} <name> ...   Add a server
+  mcx add-json <name> '<json>'        Add a server from raw JSON
+  mcx remove <name>                   Remove a server
+  mcx get <name>                      Inspect a server's config and status
+  mcx auth <server>                   Authenticate with an OAuth server
+  mcx config show                     Show resolved server config
+  mcx config sources                  Show config file sources
+  mcx config set <key> <value>        Set a CLI option (e.g. trust-claude)
+  mcx config get <key>                Get a CLI option value
+  mcx status                          Daemon status
+  mcx logs <server> [-f] [--lines N]  View server stderr output
+  mcx typegen                         Generate TypeScript types for alias scripts
+  mcx completions {bash|zsh|fish}     Generate shell completion script
+  mcx restart [server]                Restart server connection(s)
+  mcx shutdown                        Stop the daemon
 
 Aliases:
-  mcp alias ls                        List saved aliases
-  mcp alias save <name> <@file | ->   Save a TypeScript alias script
-  mcp alias show <name>               Print alias source
-  mcp alias edit <name>               Open alias in $EDITOR
-  mcp alias rm <name>                 Delete an alias
-  mcp run <alias> [--key value ...]   Run an alias with arguments
-  mcp <alias> [--key value ...]       Shorthand for run
+  mcx alias ls                        List saved aliases
+  mcx alias save <name> <@file | ->   Save a TypeScript alias script
+  mcx alias show <name>               Print alias source
+  mcx alias edit <name>               Open alias in $EDITOR
+  mcx alias rm <name>                 Delete an alias
+  mcx run <alias> [--key value ...]   Run an alias with arguments
+  mcx <alias> [--key value ...]       Shorthand for run
 
 Options:
   --format json, -j                 Machine-readable JSON output (ls, info, grep, status)
@@ -495,21 +495,21 @@ Options:
   --full, -f                        Bypass output size protection (call)
 
 Examples:
-  mcp ls atlassian
-  mcp ls --format json
-  mcp ls atlassian -j
-  mcp call atlassian search '{"query":"sprint planning"}'
-  mcp call atlassian/search '{"query":"sprint planning"}'
-  mcp atlassian search '{"query":"sprint planning"}'
-  mcp atlassian/search '{"query":"sprint planning"}'
-  mcp call atlassian getJiraIssue @issue.json
-  echo '{"query":"test"}' | mcp call atlassian search
-  mcp info atlassian getConfluencePage
-  mcp info atlassian/getConfluencePage -j
-  mcp grep confluence
-  mcp status -j
-  mcp alias save get-time @get-time.ts
-  mcp run get-time`);
+  mcx ls atlassian
+  mcx ls --format json
+  mcx ls atlassian -j
+  mcx call atlassian search '{"query":"sprint planning"}'
+  mcx call atlassian/search '{"query":"sprint planning"}'
+  mcx atlassian search '{"query":"sprint planning"}'
+  mcx atlassian/search '{"query":"sprint planning"}'
+  mcx call atlassian getJiraIssue @issue.json
+  echo '{"query":"test"}' | mcx call atlassian search
+  mcx info atlassian getConfluencePage
+  mcx info atlassian/getConfluencePage -j
+  mcx grep confluence
+  mcx status -j
+  mcx alias save get-time @get-time.ts
+  mcx run get-time`);
 }
 
 main().then(() => process.exit(0));

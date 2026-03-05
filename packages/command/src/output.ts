@@ -169,7 +169,7 @@ export function printAliasList(
   opts?: { verbose?: boolean },
 ): void {
   if (aliases.length === 0) {
-    console.error("No aliases saved. Use `mcp alias save <name> <@file | ->` to create one.");
+    console.error("No aliases saved. Use `mcx alias save <name> <@file | ->` to create one.");
     return;
   }
 

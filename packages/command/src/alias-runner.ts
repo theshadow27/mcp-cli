@@ -6,7 +6,7 @@
  * - **defineAlias**: structured definition with typed input/output via Zod schemas
  *
  * The virtual "mcp-cli" module provides both APIs:
- * - Legacy: `mcp`, `args`, `file`, `json`
+ * - Legacy: `mcp` (API proxy), `args`, `file`, `json`
  * - Structured: `defineAlias`, `z`
  */
 

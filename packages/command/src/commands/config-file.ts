@@ -1,5 +1,5 @@
 /**
- * Config file read/write helpers for `mcp add`, `mcp remove`.
+ * Config file read/write helpers for `mcx add`, `mcx remove`.
  *
  * Writes to either ~/.mcp-cli/servers.json (user scope) or .mcp.json (project scope).
  * The daemon's ConfigWatcher picks up changes automatically — no IPC needed.

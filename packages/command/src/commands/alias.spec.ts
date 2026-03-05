@@ -338,7 +338,7 @@ describe("cmdAlias show", () => {
   test("exits when no name provided", async () => {
     const deps = makeDeps();
     await expect(cmdAlias(["show"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith("Usage: mcp alias show <name> [--debug]");
+    expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias show <name> [--debug]");
   });
 
   test("exits when alias not found", async () => {
@@ -424,7 +424,7 @@ describe("cmdAlias edit", () => {
   test("exits when no name provided", async () => {
     const deps = makeDeps();
     await expect(cmdAlias(["edit"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith("Usage: mcp alias edit <name>");
+    expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias edit <name>");
   });
 });
 
@@ -448,7 +448,7 @@ describe("cmdAlias rm", () => {
   test("exits when no name provided", async () => {
     const deps = makeDeps();
     await expect(cmdAlias(["rm"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith("Usage: mcp alias rm <name>");
+    expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias rm <name>");
   });
 });
 

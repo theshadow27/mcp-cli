@@ -1,5 +1,5 @@
 /**
- * `mcp remove` — unregister an MCP server.
+ * `mcx remove` — unregister an MCP server.
  *
  * Removes a server entry from the config file. The daemon's ConfigWatcher picks up changes.
  */
@@ -8,9 +8,9 @@ import { printError } from "../output";
 import { type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
 
 /**
- * Parse `mcp remove` arguments.
+ * Parse `mcx remove` arguments.
  *
- * Format: mcp remove [--scope {user|project|local}] <name>
+ * Format: mcx remove [--scope {user|project|local}] <name>
  */
 export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigScope } {
   let scope: ConfigScope = "user";
@@ -41,7 +41,7 @@ export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigSc
 
 export async function cmdRemove(args: string[]): Promise<void> {
   if (args.length === 0) {
-    printError("Usage: mcp remove [--scope {user|project}] <name>");
+    printError("Usage: mcx remove [--scope {user|project}] <name>");
     process.exit(1);
   }
 

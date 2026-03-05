@@ -98,7 +98,7 @@ const devtoolsStubPlugin: BunPlugin = {
 
 await $`mkdir -p dist`;
 
-async function buildMcp(outfile: string, target?: string): Promise<void> {
+async function buildMcx(outfile: string, target?: string): Promise<void> {
   const result = await Bun.build({
     entrypoints: [resolve("packages/command/src/index.ts")],
     outdir: resolve("dist"),
@@ -109,7 +109,7 @@ async function buildMcp(outfile: string, target?: string): Promise<void> {
     define: { __PROTOCOL_HASH__: JSON.stringify(protocolHash) },
   });
   if (!result.success) {
-    console.error("mcp build failed:");
+    console.error("mcx build failed:");
     for (const msg of result.logs) console.error(msg);
     process.exit(1);
   }
@@ -168,7 +168,7 @@ if (releaseMode) {
     console.log(`Building for ${suffix}...`);
     await Promise.all([
       $`bun build --compile --minify ${defineFlag} --target=${target} packages/daemon/src/index.ts --outfile dist/mcpd-${suffix}`,
-      buildMcp(`dist/mcp-${suffix}`, target),
+      buildMcx(`dist/mcx-${suffix}`, target),
       buildMcpctl(`dist/mcpctl-${suffix}`, target),
     ]);
   }
@@ -178,8 +178,8 @@ if (releaseMode) {
   // Dev build: current platform, simple names
   await Promise.all([
     $`bun build --compile --minify ${defineFlag} packages/daemon/src/index.ts --outfile dist/mcpd`,
-    buildMcp("dist/mcp"),
+    buildMcx("dist/mcx"),
     buildMcpctl("dist/mcpctl"),
   ]);
-  console.log("Built: dist/mcpd, dist/mcp, dist/mcpctl");
+  console.log("Built: dist/mcpd, dist/mcx, dist/mcpctl");
 }

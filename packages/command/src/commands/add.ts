@@ -1,6 +1,6 @@
 /**
- * `mcp add` — register a new MCP server.
- * `mcp add-json` — register from raw JSON config.
+ * `mcx add` — register a new MCP server.
+ * `mcx add-json` — register from raw JSON config.
  *
  * Writes to the config file directly; the daemon's ConfigWatcher picks up changes.
  */
@@ -26,9 +26,9 @@ export interface ParsedAddArgs {
 }
 
 /**
- * Parse `mcp add` arguments.
+ * Parse `mcx add` arguments.
  *
- * Format: mcp add [flags...] <name> [<url> | -- <command> [args...]]
+ * Format: mcx add [flags...] <name> [<url> | -- <command> [args...]]
  *
  * Flags:
  *   --transport {stdio|http|sse}  (required)
@@ -159,7 +159,7 @@ export function buildServerConfig(parsed: ParsedAddArgs): ServerConfig {
 export async function cmdAdd(args: string[]): Promise<void> {
   if (args.length === 0) {
     printError(
-      'Usage: mcp add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--client-id ID] [--client-secret SECRET] [--callback-port PORT] [--scope {user|project}] <name> [<url> | -- <command> [args...]]',
+      'Usage: mcx add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--client-id ID] [--client-secret SECRET] [--callback-port PORT] [--scope {user|project}] <name> [<url> | -- <command> [args...]]',
     );
     process.exit(1);
   }
@@ -177,7 +177,7 @@ export async function cmdAdd(args: string[]): Promise<void> {
 
 export async function cmdAddJson(args: string[]): Promise<void> {
   if (args.length < 2) {
-    printError("Usage: mcp add-json <name> '<json>'");
+    printError("Usage: mcx add-json <name> '<json>'");
     process.exit(1);
   }
 

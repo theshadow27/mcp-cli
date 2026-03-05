@@ -1,5 +1,5 @@
 /**
- * `mcp get` — inspect a single server's config and status.
+ * `mcx get` — inspect a single server's config and status.
  *
  * Shows config details, source file, scope, and connection status.
  */
@@ -14,7 +14,7 @@ export async function cmdGet(args: string[]): Promise<void> {
   const name = rest[0];
 
   if (!name) {
-    printError("Usage: mcp get <name> [--json]");
+    printError("Usage: mcx get <name> [--json]");
     process.exit(1);
   }
 
