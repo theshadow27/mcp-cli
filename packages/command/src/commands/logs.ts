@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import type { GetDaemonLogsResult, GetLogsResult } from "@mcp-cli/core";
+import type { GetDaemonLogsResult, GetLogsResult, IpcMethod } from "@mcp-cli/core";
 import { DAEMON_LOG_PATH, ipcCall } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
@@ -20,6 +20,32 @@ export interface LogsArgs {
   lines: number;
   error: string | undefined;
 }
+
+export interface LogsDeps {
+  ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
+  printError: (msg: string) => void;
+  readFileSync: (path: string, encoding: BufferEncoding) => string;
+  daemonLogPath: string;
+  writeStderr: (msg: string) => void;
+  exit: (code: number) => never;
+  schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  cancelSchedule: (id: ReturnType<typeof setTimeout>) => void;
+  onSigint: (fn: () => void) => void;
+  keepAlive: () => Promise<void>;
+}
+
+const defaultDeps: LogsDeps = {
+  ipcCall,
+  printError,
+  readFileSync: (path, enc) => readFileSync(path, enc),
+  daemonLogPath: DAEMON_LOG_PATH,
+  writeStderr: (msg) => process.stderr.write(msg),
+  exit: (code) => process.exit(code),
+  schedule: (fn, ms) => setTimeout(fn, ms),
+  cancelSchedule: (id) => clearTimeout(id),
+  onSigint: (fn) => process.on("SIGINT", fn),
+  keepAlive: () => new Promise(() => {}),
+};
 
 export function parseLogsArgs(args: string[]): LogsArgs {
   let server: string | undefined;
@@ -53,34 +79,35 @@ export function parseLogsArgs(args: string[]): LogsArgs {
 const POLL_MIN_MS = 200;
 const POLL_MAX_MS = 5_000;
 
-export async function cmdLogs(args: string[]): Promise<void> {
+export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise<void> {
+  const d: LogsDeps = { ...defaultDeps, ...deps };
   const parsed = parseLogsArgs(args);
 
   if (parsed.error) {
-    printError(parsed.error);
-    process.exit(1);
+    d.printError(parsed.error);
+    d.exit(1);
   }
 
   if (parsed.daemon) {
-    await cmdDaemonLogs(parsed);
+    await cmdDaemonLogs(parsed, d);
     return;
   }
 
   if (!parsed.server) {
-    printError(
+    d.printError(
       "Usage: mcp logs <server> [-f|--follow] [--lines N]\n       mcp logs --daemon [-f|--follow] [--lines N]",
     );
-    process.exit(1);
+    d.exit(1);
   }
 
   const serverName = parsed.server;
   const { follow, lines } = parsed;
 
   // Fetch initial batch
-  const result = (await ipcCall("getLogs", { server: serverName, limit: lines })) as GetLogsResult;
+  const result = (await d.ipcCall("getLogs", { server: serverName, limit: lines })) as GetLogsResult;
 
   for (const entry of result.lines) {
-    printLogLine(serverName, entry.timestamp, entry.line);
+    printLogLine(serverName, entry.timestamp, entry.line, d);
   }
 
   if (!follow) return;
@@ -91,10 +118,10 @@ export async function cmdLogs(args: string[]): Promise<void> {
 
   const poll = async () => {
     try {
-      const update = (await ipcCall("getLogs", { server: serverName, since: lastTimestamp })) as GetLogsResult;
+      const update = (await d.ipcCall("getLogs", { server: serverName, since: lastTimestamp })) as GetLogsResult;
       if (update.lines.length > 0) {
         for (const entry of update.lines) {
-          printLogLine(serverName, entry.timestamp, entry.line);
+          printLogLine(serverName, entry.timestamp, entry.line, d);
           lastTimestamp = entry.timestamp;
         }
         delay = POLL_MIN_MS; // Reset backoff on data
@@ -104,45 +131,45 @@ export async function cmdLogs(args: string[]): Promise<void> {
     } catch {
       delay = Math.min(delay * 2, POLL_MAX_MS);
     }
-    timeout = setTimeout(poll, delay);
+    timeout = d.schedule(poll, delay);
   };
 
-  let timeout = setTimeout(poll, delay);
-  process.on("SIGINT", () => {
-    clearTimeout(timeout);
-    process.exit(0);
+  let timeout = d.schedule(poll, delay);
+  d.onSigint(() => {
+    d.cancelSchedule(timeout);
+    d.exit(0);
   });
 
   // Keep process alive
-  await new Promise(() => {});
+  await d.keepAlive();
 }
 
-async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
+async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
   const { follow, lines } = parsed;
 
   if (!follow) {
     // Read log file directly — works even when daemon is down (post-mortem)
     let content: string;
     try {
-      content = readFileSync(DAEMON_LOG_PATH, "utf-8");
+      content = d.readFileSync(d.daemonLogPath, "utf-8");
     } catch {
-      printError(`No daemon log file found at ${DAEMON_LOG_PATH}`);
-      process.exit(1);
+      d.printError(`No daemon log file found at ${d.daemonLogPath}`);
+      d.exit(1);
     }
 
     const allLines = content.split("\n").filter(Boolean);
     const tail = allLines.slice(-lines);
     for (const line of tail) {
-      process.stderr.write(`${line}\n`);
+      d.writeStderr(`${line}\n`);
     }
     return;
   }
 
   // Follow mode: use IPC getDaemonLogs with adaptive backoff
-  const result = (await ipcCall("getDaemonLogs", { limit: lines })) as GetDaemonLogsResult;
+  const result = (await d.ipcCall("getDaemonLogs", { limit: lines })) as GetDaemonLogsResult;
 
   for (const entry of result.lines) {
-    printLogLine("mcpd", entry.timestamp, entry.line);
+    printLogLine("mcpd", entry.timestamp, entry.line, d);
   }
 
   let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
@@ -150,10 +177,10 @@ async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
 
   const poll = async () => {
     try {
-      const update = (await ipcCall("getDaemonLogs", { since: lastTimestamp })) as GetDaemonLogsResult;
+      const update = (await d.ipcCall("getDaemonLogs", { since: lastTimestamp })) as GetDaemonLogsResult;
       if (update.lines.length > 0) {
         for (const entry of update.lines) {
-          printLogLine("mcpd", entry.timestamp, entry.line);
+          printLogLine("mcpd", entry.timestamp, entry.line, d);
           lastTimestamp = entry.timestamp;
         }
         delay = POLL_MIN_MS;
@@ -163,28 +190,29 @@ async function cmdDaemonLogs(parsed: LogsArgs): Promise<void> {
     } catch {
       delay = Math.min(delay * 2, POLL_MAX_MS);
     }
-    timeout = setTimeout(poll, delay);
+    timeout = d.schedule(poll, delay);
   };
 
-  let timeout = setTimeout(poll, delay);
-  process.on("SIGINT", () => {
-    clearTimeout(timeout);
-    process.exit(0);
+  let timeout = d.schedule(poll, delay);
+  d.onSigint(() => {
+    d.cancelSchedule(timeout);
+    d.exit(0);
   });
 
-  await new Promise(() => {});
+  await d.keepAlive();
 }
 
-function printLogLine(server: string, timestamp: number, line: string): void {
-  const d = new Date(timestamp);
-  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
-  process.stderr.write(`${time} [${server}] ${line}\n`);
+export function printLogLine(server: string, timestamp: number, line: string, deps?: Partial<LogsDeps>): void {
+  const write = deps?.writeStderr ?? defaultDeps.writeStderr;
+  const dt = new Date(timestamp);
+  const time = `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}.${pad3(dt.getMilliseconds())}`;
+  write(`${time} [${server}] ${line}\n`);
 }
 
-function pad2(n: number): string {
+export function pad2(n: number): string {
   return n.toString().padStart(2, "0");
 }
 
-function pad3(n: number): string {
+export function pad3(n: number): string {
   return n.toString().padStart(3, "0");
 }
