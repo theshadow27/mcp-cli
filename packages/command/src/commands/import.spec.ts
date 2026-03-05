@@ -1,10 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { findFileUpward } from "@mcp-cli/core";
-import { USER_SERVERS_PATH } from "@mcp-cli/core";
+import { _restoreOptions, findFileUpward, options } from "@mcp-cli/core";
 import { readConfigFile, writeConfigFile } from "./config-file.js";
 import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude, importServers } from "./import.js";
 
@@ -96,6 +95,7 @@ describe("mcp import", () => {
   });
 
   afterEach(() => {
+    _restoreOptions();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -548,31 +548,33 @@ describe("mcp import", () => {
       await cmdImport(["-h"]);
     });
 
-    test("cmdImport --claude flag sets claude mode", async () => {
-      // --claude reads ~/.claude.json which exists on dev machines.
-      // We just verify it doesn't throw "Unknown flag" (i.e., flag is recognized).
-      // The actual import behavior is tested via importFromClaude tests.
-      try {
-        await cmdImport(["--claude"]);
-      } catch {
-        // May throw if no matching servers for CWD — that's fine, flag was parsed
-      }
+    test("cmdImport --claude flag reads from options.CLAUDE_CONFIG_PATH", async () => {
+      const claudePath = join(dir, "test-claude.json");
+      writeFileSync(claudePath, JSON.stringify({ mcpServers: { notion: FIXTURES.notion } }));
+      options.CLAUDE_CONFIG_PATH = claudePath;
+      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      await cmdImport(["--claude"]);
     });
 
     test("cmdImport -c shorthand sets claude mode", async () => {
-      try {
-        await cmdImport(["-c"]);
-      } catch {
-        // May throw — flag was parsed
-      }
+      const claudePath = join(dir, "test-claude-c.json");
+      writeFileSync(claudePath, JSON.stringify({ mcpServers: { sentry: FIXTURES.sentry } }));
+      options.CLAUDE_CONFIG_PATH = claudePath;
+      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      await cmdImport(["-c"]);
     });
 
     test("cmdImport --claude --all parses both flags", async () => {
-      try {
-        await cmdImport(["--claude", "--all"]);
-      } catch {
-        // May throw — flags were parsed
-      }
+      const claudePath = join(dir, "test-claude-all.json");
+      writeFileSync(
+        claudePath,
+        JSON.stringify({
+          projects: { "/other/path": { mcpServers: { github: FIXTURES.github } } },
+        }),
+      );
+      options.CLAUDE_CONFIG_PATH = claudePath;
+      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      await cmdImport(["--claude", "--all"]);
     });
 
     test("cmdImport throws when file not found", async () => {

@@ -16,7 +16,7 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
-import { CLAUDE_CONFIG_PATH, PROJECT_MCP_FILENAME, findFileUpward } from "@mcp-cli/core";
+import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
 import { printError } from "../output.js";
 import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file.js";
 
@@ -156,7 +156,7 @@ export function importServers(servers: ServerConfigMap, scope: ConfigScope, sour
 export async function importFromClaude(
   scope: ConfigScope,
   all: boolean,
-  configPath = CLAUDE_CONFIG_PATH,
+  configPath = options.CLAUDE_CONFIG_PATH,
 ): Promise<void> {
   if (!existsSync(configPath)) {
     throw new Error(`Claude Code config not found: ${configPath}`);

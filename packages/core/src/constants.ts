@@ -46,6 +46,32 @@ export const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
 /** Registry response cache directory */
 export const CACHE_DIR = join(MCP_CLI_DIR, "cache");
 
+/**
+ * Mutable options object for testability.
+ * Tests can override individual values and call `_restoreOptions()` in afterAll.
+ * Production code should read from `options.X` instead of the top-level constant.
+ */
+const _originalOptions = {
+  MCP_CLI_DIR,
+  DB_PATH,
+  MCP_CLI_CONFIG_PATH,
+  SOCKET_PATH,
+  PID_PATH,
+  ALIASES_DIR,
+  CACHE_DIR,
+  CLAUDE_CONFIG_PATH: join(homedir(), ".claude.json"),
+  USER_SERVERS_PATH: join(MCP_CLI_DIR, "servers.json"),
+  PROJECTS_DIR: join(MCP_CLI_DIR, "projects"),
+  TYPES_PATH: join(MCP_CLI_DIR, "mcp-cli.d.ts"),
+  LOCK_PATH: join(MCP_CLI_DIR, "mcpd.lock"),
+  DAEMON_LOG_PATH: join(MCP_CLI_DIR, "mcpd.log"),
+  DAEMON_LOG_BACKUP_PATH: join(MCP_CLI_DIR, "mcpd.log.1"),
+};
+export const options = { ..._originalOptions };
+export function _restoreOptions(): void {
+  Object.assign(options, _originalOptions);
+}
+
 /** Registry cache TTL (ms) — 1 hour */
 export const REGISTRY_CACHE_TTL_MS = 60 * 60 * 1000;
 
