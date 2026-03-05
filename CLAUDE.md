@@ -52,6 +52,7 @@ packages/
 - Never use `mock.module()` — it pollutes Bun's global module registry across test files. Use dependency injection (optional constructor/function params) instead.
 - Keep binaries lean — fast startup matters (<50ms for `mcp call`)
 - JSON output to stdout, errors/status to stderr
+- **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
 
 ## Project Structure
 

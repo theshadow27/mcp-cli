@@ -5,22 +5,78 @@
  *   mcp import                  Walk up from CWD to find .mcp.json, import those servers
  *   mcp import <file>           Import from a specific JSON config file
  *   mcp import . | <dir>        Import from .mcp.json in the given directory (project scope)
+ *   mcp import --claude         Import from ~/.claude.json (global + project-scoped for CWD)
+ *   mcp import --claude --all   Import all servers from ~/.claude.json (all projects)
  *
  * Target:
- *   --scope user    → ~/.mcp-cli/servers.json (default for file / no-arg)
+ *   --scope user    → ~/.mcp-cli/servers.json (default for file / no-arg / --claude)
  *   --scope project → ~/.mcp-cli/projects/{mangled-cwd}/servers.json (default for . / dir)
  */
 
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { McpConfigFile } from "@mcp-cli/core";
-import { PROJECT_MCP_FILENAME, findFileUpward } from "@mcp-cli/core";
+import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
+import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
 import { printError } from "../output.js";
 import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file.js";
+
+/** Shape of ~/.claude.json relevant to server config */
+export interface ClaudeConfig {
+  mcpServers?: ServerConfigMap;
+  projects?: Record<string, { mcpServers?: ServerConfigMap }>;
+}
+
+/** Result of collecting servers from Claude Code config */
+export interface ClaudeCollectResult {
+  servers: ServerConfigMap;
+  sources: string[];
+  warnings: string[];
+}
+
+/**
+ * Extract MCP servers from a Claude Code config structure.
+ * Pure function — no I/O, easy to test.
+ */
+export function collectClaudeServers(config: ClaudeConfig, cwd: string, all: boolean): ClaudeCollectResult {
+  const servers: ServerConfigMap = {};
+  const sources: string[] = [];
+  const warnings: string[] = [];
+
+  // Global mcpServers
+  if (config.mcpServers) {
+    for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+      servers[name] = serverConfig;
+    }
+    if (Object.keys(config.mcpServers).length > 0) {
+      sources.push("global");
+    }
+  }
+
+  // Project-scoped mcpServers
+  const projects = config.projects ?? {};
+  const resolvedCwd = resolve(cwd);
+
+  for (const [projectPath, projectConfig] of Object.entries(projects)) {
+    if (!projectConfig?.mcpServers) continue;
+    if (!all && !resolvedCwd.startsWith(resolve(projectPath))) continue;
+
+    for (const [name, serverConfig] of Object.entries(projectConfig.mcpServers)) {
+      if (name in servers) {
+        warnings.push(`"${name}" from ${projectPath} overwrites earlier definition`);
+      }
+      servers[name] = serverConfig;
+    }
+    sources.push(projectPath);
+  }
+
+  return { servers, sources, warnings };
+}
 
 export async function cmdImport(args: string[]): Promise<void> {
   // Parse flags
   let scope: ConfigScope | undefined;
+  let claude = false;
+  let all = false;
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -31,6 +87,10 @@ export async function cmdImport(args: string[]): Promise<void> {
         throw new Error(`Invalid scope "${val}": must be user or project`);
       }
       scope = val;
+    } else if (arg === "--claude" || arg === "-c") {
+      claude = true;
+    } else if (arg === "--all") {
+      all = true;
     } else if (arg === "--help" || arg === "-h") {
       printImportUsage();
       return;
@@ -39,6 +99,11 @@ export async function cmdImport(args: string[]): Promise<void> {
     } else {
       positional.push(arg);
     }
+  }
+
+  if (claude) {
+    await importFromClaude(scope ?? "user", all);
+    return;
   }
 
   const source = positional[0];
@@ -67,21 +132,62 @@ export async function cmdImport(args: string[]): Promise<void> {
   }
 
   // Import each server
+  importServers(servers, effectiveScope, filePath);
+}
+
+export function importServers(servers: ServerConfigMap, scope: ConfigScope, source: string): void {
   const names = Object.keys(servers);
   let overwritten = 0;
   for (const name of names) {
-    const existed = addServerToConfig(effectiveScope, name, servers[name]);
+    const existed = addServerToConfig(scope, name, servers[name]);
     if (existed) overwritten++;
   }
 
-  const targetPath = resolveConfigPath(effectiveScope);
-  console.error(`Imported ${names.length} server(s) from ${filePath} → ${targetPath}`);
+  const targetPath = resolveConfigPath(scope);
+  console.error(`Imported ${names.length} server(s) from ${source} → ${targetPath}`);
   for (const name of names) {
     console.error(`  ${name}`);
   }
   if (overwritten > 0) {
     console.error(`(${overwritten} existing server(s) overwritten)`);
   }
+}
+
+export async function importFromClaude(
+  scope: ConfigScope,
+  all: boolean,
+  configPath = options.CLAUDE_CONFIG_PATH,
+): Promise<void> {
+  if (!existsSync(configPath)) {
+    throw new Error(`Claude Code config not found: ${configPath}`);
+  }
+
+  let claudeConfig: ClaudeConfig;
+  try {
+    claudeConfig = JSON.parse(readFileSync(configPath, "utf-8")) as ClaudeConfig;
+  } catch {
+    throw new Error(`Cannot parse ${configPath}`);
+  }
+
+  const cwd = process.cwd();
+  const { servers, sources, warnings } = collectClaudeServers(claudeConfig, cwd, all);
+
+  for (const w of warnings) {
+    console.error(`  warning: ${w}`);
+  }
+
+  if (Object.keys(servers).length === 0) {
+    if (all) {
+      console.error(`No servers found in ${configPath}`);
+    } else {
+      console.error(`No servers found in ${configPath} for ${resolve(cwd)}`);
+      console.error("Hint: use --all to import from all projects");
+    }
+    return;
+  }
+
+  const label = sources.length === 1 ? `~/.claude.json (${sources[0]})` : `~/.claude.json (${sources.length} sources)`;
+  importServers(servers, scope, label);
 }
 
 interface ResolvedSource {
@@ -125,8 +231,12 @@ Usage:
   mcp import <file>                   Import from a specific config file
   mcp import .                        Import from .mcp.json in CWD (project scope)
   mcp import <dir>                    Import from .mcp.json in directory (project scope)
+  mcp import --claude                 Import from ~/.claude.json (global + matching projects)
+  mcp import --claude --all           Import from ~/.claude.json (all projects)
 
 Options:
+  --claude, -c                        Read servers from Claude Code's ~/.claude.json
+  --all                               With --claude: import from all projects, not just CWD
   --scope user|project                Override target scope (default varies by source)
   -s                                  Shorthand for --scope
 

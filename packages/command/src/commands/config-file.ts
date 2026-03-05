@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
+import { options, projectConfigPath } from "@mcp-cli/core";
 
 export type ConfigScope = "user" | "project" | "local";
 
@@ -18,7 +18,7 @@ export function resolveConfigPath(scope: ConfigScope): string {
     return projectConfigPath(process.cwd());
   }
   // "user" and "local" both write to servers.json
-  return USER_SERVERS_PATH;
+  return options.USER_SERVERS_PATH;
 }
 
 /** Read existing config file or return empty structure. */
