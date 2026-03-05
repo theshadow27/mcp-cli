@@ -5,10 +5,42 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
+import type { AliasDetail, AliasInfo, IpcMethod } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read.js";
 import { printAliasDebug, printAliasList, printError } from "../output.js";
+
+export interface AliasDeps {
+  ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
+  readFileWithLimit: (path: string) => string;
+  readStdin: () => Promise<string>;
+  printError: (msg: string) => void;
+  printAliasList: typeof printAliasList;
+  printAliasDebug: typeof printAliasDebug;
+  safeAliasPath: (name: string) => string;
+  mkdirSync: (path: string, opts?: { recursive?: boolean }) => void;
+  writeFileSync: (path: string, data: string, encoding: BufferEncoding) => void;
+  spawnSync: (cmd: string, args: string[], opts: { stdio: string }) => { status: number | null };
+  exit: (code: number) => never;
+  log: (msg: string) => void;
+  logError: (msg: string) => void;
+}
+
+const defaultDeps: AliasDeps = {
+  ipcCall,
+  readFileWithLimit,
+  readStdin: defaultReadStdin,
+  printError,
+  printAliasList,
+  printAliasDebug,
+  safeAliasPath,
+  mkdirSync: (path, opts) => mkdirSync(path, opts),
+  writeFileSync: (path, data, enc) => writeFileSync(path, data, enc),
+  spawnSync: (cmd, args, opts) => spawnSync(cmd, args, opts as Parameters<typeof spawnSync>[2]),
+  exit: (code) => process.exit(code),
+  log: (msg) => console.log(msg),
+  logError: (msg) => console.error(msg),
+};
 
 /** Wrap a defineAlias object literal body into a full script */
 export function wrapDefineAlias(code: string): string {
@@ -34,15 +66,16 @@ defineAlias(({ mcp, z }) => ({
 }));
 `;
 
-export async function cmdAlias(args: string[]): Promise<void> {
+export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promise<void> {
+  const d: AliasDeps = { ...defaultDeps, ...deps };
   const sub = args[0];
 
   switch (sub) {
     case "ls":
     case "list": {
       const verbose = args.includes("--verbose") || args.includes("-v");
-      const aliases = (await ipcCall("listAliases")) as AliasInfo[];
-      printAliasList(aliases, { verbose });
+      const aliases = (await d.ipcCall("listAliases")) as AliasInfo[];
+      d.printAliasList(aliases, { verbose });
       break;
     }
 
@@ -56,8 +89,8 @@ export async function cmdAlias(args: string[]): Promise<void> {
         // or: mcp alias save [name] -c CODE
         const codeBody = args[codeIdx + 1];
         if (!codeBody) {
-          printError("Missing code body after -c/--code flag");
-          process.exit(1);
+          d.printError("Missing code body after -c/--code flag");
+          d.exit(1);
         }
 
         // Collect remaining args (not -c or its value) after "save"
@@ -70,27 +103,27 @@ export async function cmdAlias(args: string[]): Promise<void> {
         const definitionName = extractDefinitionName(codeBody);
         const name = positionalName ?? definitionName;
         if (!name) {
-          printError("No alias name — provide a name field in the definition or as a positional arg");
-          process.exit(1);
+          d.printError("No alias name — provide a name field in the definition or as a positional arg");
+          d.exit(1);
         }
 
         const script = wrapDefineAlias(codeBody);
         const description = extractDescription(script);
-        const result = (await ipcCall("saveAlias", { name, script, description })) as {
+        const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
           ok: boolean;
           filePath: string;
         };
-        console.error(`Saved alias "${name}" → ${result.filePath}`);
+        d.logError(`Saved alias "${name}" → ${result.filePath}`);
         break;
       }
 
       // Standard save: mcp alias save <name> <@file | - | script>
       const name = args[1];
       if (!name) {
-        printError(
+        d.printError(
           "Usage: mcp alias save <name> <@file | - | script>\n       mcp alias save -c '{...defineAlias body...}'",
         );
-        process.exit(1);
+        d.exit(1);
       }
 
       const source = args[2];
@@ -98,26 +131,26 @@ export async function cmdAlias(args: string[]): Promise<void> {
 
       if (!source || source === "-") {
         // Read from stdin
-        script = await readStdin();
+        script = await d.readStdin();
       } else if (source.startsWith("@")) {
         // Read from file
-        script = readFileWithLimit(source.slice(1));
+        script = d.readFileWithLimit(source.slice(1));
       } else {
         // Inline script (remaining args joined)
         script = args.slice(2).join(" ");
       }
 
       if (!script.trim()) {
-        printError("Empty script — nothing to save");
-        process.exit(1);
+        d.printError("Empty script — nothing to save");
+        d.exit(1);
       }
 
       const description = extractDescription(script);
-      const result = (await ipcCall("saveAlias", { name, script, description })) as {
+      const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
         ok: boolean;
         filePath: string;
       };
-      console.error(`Saved alias "${name}" → ${result.filePath}`);
+      d.logError(`Saved alias "${name}" → ${result.filePath}`);
       break;
     }
 
@@ -125,56 +158,56 @@ export async function cmdAlias(args: string[]): Promise<void> {
       const debug = args.includes("--debug");
       const name = args.filter((a) => a !== "--debug")[1];
       if (!name) {
-        printError("Usage: mcp alias show <name> [--debug]");
-        process.exit(1);
+        d.printError("Usage: mcp alias show <name> [--debug]");
+        d.exit(1);
       }
 
-      const alias = (await ipcCall("getAlias", { name })) as AliasDetail | null;
+      const alias = (await d.ipcCall("getAlias", { name })) as AliasDetail | null;
       if (!alias) {
-        printError(`Alias "${name}" not found`);
-        process.exit(1);
+        d.printError(`Alias "${name}" not found`);
+        d.exit(1);
       }
 
       if (debug) {
-        printAliasDebug(alias);
+        d.printAliasDebug(alias);
       }
-      console.log(alias.script);
+      d.log(alias.script);
       break;
     }
 
     case "edit": {
       const name = args[1];
       if (!name) {
-        printError("Usage: mcp alias edit <name>");
-        process.exit(1);
+        d.printError("Usage: mcp alias edit <name>");
+        d.exit(1);
       }
 
-      const alias = (await ipcCall("getAlias", { name })) as AliasDetail | null;
+      const alias = (await d.ipcCall("getAlias", { name })) as AliasDetail | null;
       let filePath: string;
 
       if (alias) {
         filePath = alias.filePath;
       } else {
         // New alias — create file with defineAlias skeleton
-        filePath = safeAliasPath(name);
+        filePath = d.safeAliasPath(name);
         const skeleton = DEFINE_ALIAS_SKELETON.replace('name: "my-alias"', `name: "${name}"`);
-        mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(filePath, skeleton, "utf-8");
-        console.error(`Creating new alias "${name}"…`);
+        d.mkdirSync(dirname(filePath), { recursive: true });
+        d.writeFileSync(filePath, skeleton, "utf-8");
+        d.logError(`Creating new alias "${name}"…`);
       }
 
       const editor = process.env.EDITOR ?? process.env.VISUAL ?? "vi";
-      const result = spawnSync(editor, [filePath], { stdio: "inherit" });
+      const result = d.spawnSync(editor, [filePath], { stdio: "inherit" });
       if (result.status !== 0) {
-        printError(`Editor exited with code ${result.status}`);
-        process.exit(1);
+        d.printError(`Editor exited with code ${result.status}`);
+        d.exit(1);
       }
 
       // Re-save to update timestamp and extract metadata
-      const updatedScript = readFileWithLimit(filePath);
+      const updatedScript = d.readFileWithLimit(filePath);
       const description = extractDescription(updatedScript);
-      await ipcCall("saveAlias", { name, script: updatedScript, description });
-      console.error(`${alias ? "Updated" : "Saved"} alias "${name}"`);
+      await d.ipcCall("saveAlias", { name, script: updatedScript, description });
+      d.logError(`${alias ? "Updated" : "Saved"} alias "${name}"`);
       break;
     }
 
@@ -182,26 +215,26 @@ export async function cmdAlias(args: string[]): Promise<void> {
     case "delete": {
       const name = args[1];
       if (!name) {
-        printError("Usage: mcp alias rm <name>");
-        process.exit(1);
+        d.printError("Usage: mcp alias rm <name>");
+        d.exit(1);
       }
 
-      await ipcCall("deleteAlias", { name });
-      console.error(`Deleted alias "${name}"`);
+      await d.ipcCall("deleteAlias", { name });
+      d.logError(`Deleted alias "${name}"`);
       break;
     }
 
     default: {
       printAliasHelp();
       const isHelp = !sub || sub === "help" || sub === "--help" || sub === "-h";
-      if (!isHelp) process.exit(1);
+      if (!isHelp) d.exit(1);
       break;
     }
   }
 }
 
 /** Read all of stdin as text */
-async function readStdin(): Promise<string> {
+async function defaultReadStdin(): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk);
@@ -248,7 +281,7 @@ Examples:
 }
 
 /** Extract a description from a `// description: ...` comment on the first few lines */
-function extractDescription(script: string): string | undefined {
+export function extractDescription(script: string): string | undefined {
   const lines = script.split("\n").slice(0, 5);
   for (const line of lines) {
     const match = line.match(/\/\/\s*description:\s*(.+)/i);
