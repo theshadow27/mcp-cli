@@ -9,7 +9,7 @@ import { type FSWatcher, existsSync, watch } from "node:fs";
 import { dirname } from "node:path";
 import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
-import { configHash, loadConfig } from "./loader.js";
+import { configHash, loadConfig } from "./loader";
 
 const DEBOUNCE_MS = 300;
 

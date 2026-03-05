@@ -8,7 +8,7 @@
 
 import type { AliasInfo, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { ipcCall as realIpcCall, isDaemonRunning as realIsDaemonRunning } from "@mcp-cli/core";
-import { printError } from "../output.js";
+import { printError } from "../output";
 
 export interface CompletionDeps {
   ipcCall: typeof realIpcCall;

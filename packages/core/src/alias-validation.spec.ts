@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { options, safeAliasPath, validateAliasName } from "./constants.js";
+import { options, safeAliasPath, validateAliasName } from "./constants";
 
 describe("validateAliasName", () => {
   it("accepts valid names", () => {

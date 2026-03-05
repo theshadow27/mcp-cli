@@ -23,12 +23,12 @@ import {
   ensureStateDir,
   options,
 } from "@mcp-cli/core";
-import { configHash, loadConfig } from "./config/loader.js";
-import { ConfigWatcher } from "./config/watcher.js";
-import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log.js";
-import { StateDb } from "./db/state.js";
-import { IpcServer } from "./ipc-server.js";
-import { ServerPool } from "./server-pool.js";
+import { configHash, loadConfig } from "./config/loader";
+import { ConfigWatcher } from "./config/watcher";
+import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
+import { StateDb } from "./db/state";
+import { IpcServer } from "./ipc-server";
+import { ServerPool } from "./server-pool";
 
 async function main(): Promise<void> {
   // Capture daemon logs before anything else

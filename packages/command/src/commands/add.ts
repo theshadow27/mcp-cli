@@ -6,8 +6,8 @@
  */
 
 import type { ServerConfig } from "@mcp-cli/core";
-import { printError } from "../output.js";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file.js";
+import { printError } from "../output";
+import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 // -- Arg parsing --
 

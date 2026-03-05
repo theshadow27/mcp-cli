@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseInstallArgs } from "./install.js";
+import { parseInstallArgs } from "./install";
 
 describe("parseInstallArgs", () => {
   test("parses slug only", () => {

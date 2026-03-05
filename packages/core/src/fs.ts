@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { options } from "./constants.js";
+import { options } from "./constants";
 
 /** Ensure ~/.mcp-cli/ exists with owner-only permissions (0700) */
 export function ensureStateDir(): void {

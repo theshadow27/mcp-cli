@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFINE_ALIAS_SENTINEL, isDefineAlias } from "./alias.js";
+import { DEFINE_ALIAS_SENTINEL, isDefineAlias } from "./alias";
 
 describe("DEFINE_ALIAS_SENTINEL", () => {
   test("is the expected string", () => {

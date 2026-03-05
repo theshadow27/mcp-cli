@@ -24,9 +24,9 @@ import {
   isSseConfig,
   isStdioConfig,
 } from "@mcp-cli/core";
-import { McpOAuthProvider } from "./auth/oauth-provider.js";
-import type { StateDb } from "./db/state.js";
-import { StderrRingBuffer } from "./stderr-buffer.js";
+import { McpOAuthProvider } from "./auth/oauth-provider";
+import type { StateDb } from "./db/state";
+import { StderrRingBuffer } from "./stderr-buffer";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
 

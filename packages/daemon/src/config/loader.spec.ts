@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
 import { projectConfigPath } from "@mcp-cli/core";
-import { testOptions } from "../../../../test/test-options.js";
-import { loadConfig } from "./loader.js";
+import { testOptions } from "../../../../test/test-options";
+import { loadConfig } from "./loader";
 
 // ---------------------------------------------------------------------------
 // Fixtures — realistic MCP server configs based on catalog entries

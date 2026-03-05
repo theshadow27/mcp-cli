@@ -7,7 +7,7 @@
 
 import { writeFileSync } from "node:fs";
 import { type JsonSchema, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
-import { printError } from "../output.js";
+import { printError } from "../output";
 
 /** Higher limits than default for declaration files — we want full detail. */
 const SCHEMA_OPTS = { maxDepth: 4, maxProps: 20 };

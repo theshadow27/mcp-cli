@@ -8,7 +8,7 @@
 
 import { appendFileSync, closeSync, openSync, renameSync, statSync } from "node:fs";
 import { DAEMON_LOG_MAX_BYTES, options } from "@mcp-cli/core";
-import { type StderrLine, StderrRingBuffer } from "./stderr-buffer.js";
+import { type StderrLine, StderrRingBuffer } from "./stderr-buffer";
 
 const DAEMON_KEY = "__daemon__";
 const DAEMON_CAPACITY = 200;

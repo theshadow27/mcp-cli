@@ -17,10 +17,10 @@ import {
   PING_TIMEOUT_MS,
   PROTOCOL_VERSION,
   options,
-} from "./constants.js";
-import { ensureStateDir } from "./fs.js";
-import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
-import { nextId } from "./ipc.js";
+} from "./constants";
+import { ensureStateDir } from "./fs";
+import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc";
+import { nextId } from "./ipc";
 
 /**
  * Send a single request to the daemon and return the response.

@@ -28,11 +28,11 @@ import {
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
-import { startCallbackServer } from "./auth/callback-server.js";
-import { McpOAuthProvider } from "./auth/oauth-provider.js";
-import { getDaemonLogLines } from "./daemon-log.js";
-import type { StateDb } from "./db/state.js";
-import type { ServerPool } from "./server-pool.js";
+import { startCallbackServer } from "./auth/callback-server";
+import { McpOAuthProvider } from "./auth/oauth-provider";
+import { getDaemonLogLines } from "./daemon-log";
+import type { StateDb } from "./db/state";
+import type { ServerPool } from "./server-pool";
 
 type RequestHandler = (params: unknown) => Promise<unknown>;
 

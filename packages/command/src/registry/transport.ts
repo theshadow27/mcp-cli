@@ -5,7 +5,7 @@
  */
 
 import type { ServerConfig } from "@mcp-cli/core";
-import type { RegistryEntry, RegistryEnvVar } from "./client.js";
+import type { RegistryEntry, RegistryEnvVar } from "./client";
 
 export interface TransportSelection {
   kind: "remote" | "package" | "templated";

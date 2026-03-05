@@ -3,9 +3,9 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { StateDb } from "../db/state.js";
-import type { KeychainTokens } from "./keychain.js";
-import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider.js";
+import { StateDb } from "../db/state";
+import type { KeychainTokens } from "./keychain";
+import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
 
 const originalPlatform = process.platform;
 const originalWslDistro = process.env.WSL_DISTRO_NAME;

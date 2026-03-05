@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { isProcessMcpd, resolveDaemonCommand } from "./ipc-client.js";
+import { isProcessMcpd, resolveDaemonCommand } from "./ipc-client";
 
 describe("resolveDaemonCommand", () => {
   test("returns array starting with 'bun' in dev mode", () => {

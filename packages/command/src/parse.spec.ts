@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractFullFlag, extractJqFlag, splitServerTool } from "./parse.js";
+import { extractFullFlag, extractJqFlag, splitServerTool } from "./parse";
 
 describe("splitServerTool", () => {
   test("splits server/tool into tuple", () => {

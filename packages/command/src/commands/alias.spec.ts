@@ -1,13 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
-import type { AliasDeps } from "./alias.js";
-import {
-  DEFINE_ALIAS_SKELETON,
-  cmdAlias,
-  extractDefinitionName,
-  extractDescription,
-  wrapDefineAlias,
-} from "./alias.js";
+import type { AliasDeps } from "./alias";
+import { DEFINE_ALIAS_SKELETON, cmdAlias, extractDefinitionName, extractDescription, wrapDefineAlias } from "./alias";
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 

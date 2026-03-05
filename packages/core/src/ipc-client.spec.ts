@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { closeSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { testOptions } from "../../../test/test-options.js";
-import { PROTOCOL_VERSION } from "./constants.js";
-import { isDaemonRunning } from "./ipc-client.js";
+import { testOptions } from "../../../test/test-options";
+import { PROTOCOL_VERSION } from "./constants";
+import { isDaemonRunning } from "./ipc-client";
 
 /**
  * Tests for ensureDaemon startup lock and stderr handling.

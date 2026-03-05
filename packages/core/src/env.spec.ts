@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { expandEnvVars, expandEnvVarsDeep } from "./env.js";
+import { expandEnvVars, expandEnvVarsDeep } from "./env";
 
 describe("expandEnvVars", () => {
   const env = { FOO: "bar", API_KEY: "secret123" };

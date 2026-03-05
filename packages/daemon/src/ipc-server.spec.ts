@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR, PROTOCOL_VERSION } from "@mcp-cli/core";
-import { installDaemonLogCapture } from "./daemon-log.js";
-import { IpcServer } from "./ipc-server.js";
+import { installDaemonLogCapture } from "./daemon-log";
+import { IpcServer } from "./ipc-server";
 
 // Install daemon log capture so getDaemonLogs handler works
 installDaemonLogCapture();

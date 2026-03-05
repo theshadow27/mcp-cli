@@ -5,11 +5,11 @@
  * and writes the config via addServerToConfig.
  */
 
-import { printError } from "../output.js";
-import { extractJsonFlag } from "../parse.js";
-import { searchRegistry } from "../registry/client.js";
-import { buildConfigFromSelection, selectTransport } from "../registry/transport.js";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file.js";
+import { printError } from "../output";
+import { extractJsonFlag } from "../parse";
+import { searchRegistry } from "../registry/client";
+import { buildConfigFromSelection, selectTransport } from "../registry/transport";
+import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 export interface ParsedInstallArgs {
   slug: string;

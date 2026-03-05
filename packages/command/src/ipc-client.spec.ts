@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { PID_MAX_AGE_MS } from "@mcp-cli/core";
 import { isDaemonRunning, isProcessMcpd } from "@mcp-cli/core";
-import { testOptions } from "../../../test/test-options.js";
+import { testOptions } from "../../../test/test-options";
 
 describe("PID staleness detection", () => {
   describe("isProcessMcpd", () => {

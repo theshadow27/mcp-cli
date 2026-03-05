@@ -10,8 +10,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 setDefaultTimeout(30_000);
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { TestDaemon } from "./harness.js";
-import { echoServerConfig, rpc, startTestDaemon } from "./harness.js";
+import type { TestDaemon } from "./harness";
+import { echoServerConfig, rpc, startTestDaemon } from "./harness";
 
 // ---------------------------------------------------------------------------
 // P1: Daemon lifecycle

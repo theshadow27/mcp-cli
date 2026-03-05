@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDaemonLogFile, getDaemonLogLines, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log.js";
+import { closeDaemonLogFile, getDaemonLogLines, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 
 // installDaemonLogCapture is a one-time singleton, so install once for all tests.
 installDaemonLogCapture();

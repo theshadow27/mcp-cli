@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { testOptions } from "../../../../test/test-options.js";
-import { readConfigFile, writeConfigFile } from "./config-file.js";
+import { testOptions } from "../../../../test/test-options";
+import { readConfigFile, writeConfigFile } from "./config-file";
 
 /**
  * Tests for mcp export's core logic: reading mcp-cli configs and writing .mcp.json format.

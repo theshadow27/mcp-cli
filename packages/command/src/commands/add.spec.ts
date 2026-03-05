@@ -3,15 +3,15 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { buildServerConfig, parseAddArgs } from "./add.js";
+import { buildServerConfig, parseAddArgs } from "./add";
 import {
   addServerToConfig,
   readConfigFile,
   removeServerFromConfig,
   resolveConfigPath,
   writeConfigFile,
-} from "./config-file.js";
-import { parseRemoveArgs } from "./remove.js";
+} from "./config-file";
+import { parseRemoveArgs } from "./remove";
 
 // -- parseAddArgs tests --
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod/v4";
-import { extractContent, formatAliasOutput, parseAliasInput } from "./alias-runner.js";
+import { extractContent, formatAliasOutput, parseAliasInput } from "./alias-runner";
 
 describe("extractContent", () => {
   test("unwraps single text content to parsed JSON", () => {

@@ -4,8 +4,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CliConfig } from "./config.js";
-import { options } from "./constants.js";
+import type { CliConfig } from "./config";
+import { options } from "./constants";
 
 /** Read the CLI config file. Returns `{}` if missing or malformed. */
 export function readCliConfig(): CliConfig {

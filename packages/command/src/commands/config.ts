@@ -5,7 +5,7 @@
 
 import type { GetConfigResult } from "@mcp-cli/core";
 import { ipcCall, readCliConfig, writeCliConfig } from "@mcp-cli/core";
-import { c, printError } from "../output.js";
+import { c, printError } from "../output";
 
 export async function cmdConfig(args: string[]): Promise<void> {
   const sub = args[0] ?? "show";

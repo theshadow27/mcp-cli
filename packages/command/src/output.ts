@@ -6,7 +6,7 @@
 
 import { type JsonSchema, formatAliasSignature, jsonSchemaToTs } from "@mcp-cli/core";
 import type { AliasDetail } from "@mcp-cli/core";
-import type { RegistryEntry } from "./registry/client.js";
+import type { RegistryEntry } from "./registry/client";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
 

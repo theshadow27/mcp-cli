@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { findFileUpward } from "@mcp-cli/core";
-import { testOptions } from "../../../../test/test-options.js";
-import { readConfigFile, writeConfigFile } from "./config-file.js";
-import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude } from "./import.js";
+import { testOptions } from "../../../../test/test-options";
+import { readConfigFile, writeConfigFile } from "./config-file";
+import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude } from "./import";
 
 /**
  * Tests for mcp import's source resolution and file I/O.
@@ -495,7 +495,7 @@ describe("mcp import", () => {
           "bun",
           "-e",
           `
-        import { cmdImport } from "./packages/command/src/commands/import.js";
+        import { cmdImport } from "./packages/command/src/commands/import";
         await cmdImport(["${filePath}"]);
       `,
         ],
@@ -599,7 +599,7 @@ describe("mcp import", () => {
         [
           "bun",
           "-e",
-          `import { cmdImport } from "./packages/command/src/commands/import.js"; await cmdImport(["${opts.dir}"]);`,
+          `import { cmdImport } from "./packages/command/src/commands/import"; await cmdImport(["${opts.dir}"]);`,
         ],
         { env: { ...process.env, MCP_CLI_DIR: opts.dir }, stdout: "pipe", stderr: "pipe" },
       );
@@ -634,7 +634,7 @@ describe("mcp import", () => {
           "bun",
           "-e",
           `
-        import { importFromClaude } from "./packages/command/src/commands/import.js";
+        import { importFromClaude } from "./packages/command/src/commands/import";
         await importFromClaude("user", false, "${claudePath}");
       `,
         ],
@@ -669,7 +669,7 @@ describe("mcp import", () => {
           "bun",
           "-e",
           `
-        import { importFromClaude } from "./packages/command/src/commands/import.js";
+        import { importFromClaude } from "./packages/command/src/commands/import";
         await importFromClaude("user", true, "${claudePath}");
       `,
         ],

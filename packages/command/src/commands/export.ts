@@ -19,7 +19,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
-import { readConfigFile } from "./config-file.js";
+import { readConfigFile } from "./config-file";
 
 type ExportScope = "user" | "project";
 

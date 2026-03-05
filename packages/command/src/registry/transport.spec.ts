@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { RegistryEntry } from "./client.js";
-import { buildConfigFromSelection, selectTransport } from "./transport.js";
+import type { RegistryEntry } from "./client";
+import { buildConfigFromSelection, selectTransport } from "./transport";
 
 function makeEntry(overrides: Partial<RegistryEntry["server"]> = {}): RegistryEntry {
   return {

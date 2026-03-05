@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readFileWithLimit } from "./file-read.js";
+import { readFileWithLimit } from "./file-read";
 
 const TMP = join(import.meta.dir, "__tmp_file_read_test__");
 

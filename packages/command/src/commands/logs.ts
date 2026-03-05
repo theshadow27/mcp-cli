@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import type { GetDaemonLogsResult, GetLogsResult, IpcMethod } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
-import { printError } from "../output.js";
+import { printError } from "../output";
 
 export interface LogsArgs {
   server: string | undefined;
