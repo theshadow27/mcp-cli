@@ -462,6 +462,7 @@ Usage:
   mcp registry search <query>         Search the MCP registry
   mcp registry list                   List available registry servers
   mcp import [source] [--scope ...]    Import servers from .mcp.json or config file
+  mcp import --claude [--all]          Import servers from ~/.claude.json
   mcp export [file] [--scope ...]      Export servers to .mcp.json format
   mcp add --transport {stdio|http|sse} <name> ...   Add a server
   mcp add-json <name> '<json>'        Add a server from raw JSON
