@@ -540,4 +540,68 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
     expect(json.error?.message).toContain("Database not available");
   });
+
+  // -- Parameter validation tests --
+
+  test("callTool with missing server param returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "v1", method: "callTool", params: { tool: "t" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("Invalid params");
+    expect(json.error?.message).toContain("server");
+  });
+
+  test("getToolInfo with missing tool param returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "v2", method: "getToolInfo", params: { server: "s" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("Invalid params");
+    expect(json.error?.message).toContain("tool");
+  });
+
+  test("saveAlias with missing name param returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "v3", method: "saveAlias", params: { script: "x" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("Invalid params");
+    expect(json.error?.message).toContain("name");
+  });
+
+  test("getLogs with non-number limit returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "v4", method: "getLogs", params: { server: "s", limit: "abc" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("Invalid params");
+    expect(json.error?.message).toContain("limit");
+  });
+
+  test("grepTools with no params returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "v5", method: "grepTools", params: {} });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("pattern");
+  });
+
+  test("callTool with valid params still works", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "v6",
+      method: "callTool",
+      params: { server: "s", tool: "t", arguments: { key: "val" } },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toHaveProperty("content");
+  });
 });
