@@ -71,29 +71,34 @@ describe("P1: Daemon lifecycle", () => {
     // Start a new daemon in the same directory — it should overwrite the stale PID
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: {} }));
     const proc2 = Bun.spawn(["bun", "packages/daemon/src/index.ts"], {
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
       cwd: process.cwd(),
       env: { ...process.env, MCP_CLI_DIR: daemon.dir, MCP_DAEMON_TIMEOUT: "30000" },
     });
 
-    const reader = proc2.stdout.getReader();
-    let stdout = "";
-    const deadline = Date.now() + 10_000;
+    // Poll socket + ping to detect readiness (avoids stdout pipe buffering issues)
+    const socketPath = join(daemon.dir, "mcpd.sock");
+    const deadline = Date.now() + 15_000;
+    let ready = false;
     while (Date.now() < deadline) {
-      const { done, value } = await Promise.race([
-        reader.read(),
-        Bun.sleep(100).then(() => ({ done: false, value: undefined }) as const),
-      ]);
-      if (value) stdout += new TextDecoder().decode(value);
-      if (stdout.includes("MCPD_READY")) break;
-      if (done) break;
+      const exited = await Promise.race([proc2.exited.then(() => true), Bun.sleep(50).then(() => false)]);
+      if (exited) break;
+      if (!existsSync(socketPath)) continue;
+      try {
+        const res = await rpc(socketPath, "ping");
+        if (res.result && (res.result as { pong?: boolean }).pong) {
+          ready = true;
+          break;
+        }
+      } catch {
+        await Bun.sleep(50);
+      }
     }
 
-    expect(stdout).toContain("MCPD_READY");
+    expect(ready).toBe(true);
 
     // New daemon responds to ping
-    const socketPath = join(daemon.dir, "mcpd.sock");
     const res = await rpc(socketPath, "ping");
     expect(res.result).toHaveProperty("pong", true);
 

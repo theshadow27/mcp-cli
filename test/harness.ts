@@ -4,11 +4,10 @@
  * Spawns real daemon processes in isolated temp directories
  * via the MCP_CLI_DIR env var override.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
-import { DAEMON_READY_SIGNAL } from "@mcp-cli/core";
 
 export interface TestDaemon {
   proc: ReturnType<typeof Bun.spawn>;
@@ -47,7 +46,7 @@ export async function startTestDaemon(
   writeFileSync(join(dir, "servers.json"), JSON.stringify({ mcpServers: servers }));
 
   const proc = Bun.spawn(["bun", resolve("packages/daemon/src/index.ts")], {
-    stdout: "pipe",
+    stdout: "ignore",
     stderr: "pipe",
     env: {
       ...process.env,
@@ -56,27 +55,37 @@ export async function startTestDaemon(
     },
   });
 
-  // Wait for MCPD_READY signal on stdout
-  const deadline = Date.now() + (options?.timeout ?? 10_000);
-  const reader = proc.stdout.getReader();
-  let stdout = "";
+  // Wait for daemon to be ready by polling the socket file + ping.
+  // This is more reliable than reading stdout (which has pipe buffering
+  // issues on Linux CI runners).
+  const deadline = Date.now() + (options?.timeout ?? 15_000);
+  let ready = false;
 
   while (Date.now() < deadline) {
-    const { done, value } = await Promise.race([
-      reader.read(),
-      Bun.sleep(100).then(() => ({ done: false, value: undefined }) as const),
-    ]);
-    if (value) stdout += new TextDecoder().decode(value);
-    if (stdout.includes(DAEMON_READY_SIGNAL)) break;
-    if (done) break;
+    // Check if process died
+    const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(50).then(() => false)]);
+    if (exited) break;
+
+    if (!existsSync(socketPath)) continue;
+
+    // Socket exists — try to ping
+    try {
+      const res = await rpc(socketPath, "ping");
+      if (res.result && (res.result as { pong?: boolean }).pong) {
+        ready = true;
+        break;
+      }
+    } catch {
+      // Socket not ready yet — keep polling
+      await Bun.sleep(50);
+    }
   }
 
-  if (!stdout.includes(DAEMON_READY_SIGNAL)) {
+  if (!ready) {
     proc.kill();
-    // Drain stderr for diagnostics
     const stderr = await new Response(proc.stderr).text();
     rmSync(dir, { recursive: true, force: true });
-    throw new Error(`Daemon failed to start. stdout: ${stdout}\nstderr: ${stderr}`);
+    throw new Error(`Daemon failed to start within ${options?.timeout ?? 15_000}ms.\nstderr: ${stderr}`);
   }
 
   return {
