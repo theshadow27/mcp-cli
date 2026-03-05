@@ -5,6 +5,8 @@
  * Encoding: JSON request/response bodies
  */
 
+import { z } from "zod/v4";
+
 // -- Methods --
 
 export type IpcMethod =
@@ -54,27 +56,55 @@ export interface CallToolParams {
   arguments: Record<string, unknown>;
 }
 
+export const CallToolParamsSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
+  arguments: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
 export interface ListToolsParams {
   server?: string;
   format?: "compact" | "full";
 }
+
+export const ListToolsParamsSchema = z.object({
+  server: z.string().optional(),
+  format: z.enum(["compact", "full"]).optional(),
+});
 
 export interface GetToolInfoParams {
   server: string;
   tool: string;
 }
 
+export const GetToolInfoParamsSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
+});
+
 export interface GrepToolsParams {
   pattern: string;
 }
+
+export const GrepToolsParamsSchema = z.object({
+  pattern: z.string(),
+});
 
 export interface TriggerAuthParams {
   server: string;
 }
 
+export const TriggerAuthParamsSchema = z.object({
+  server: z.string(),
+});
+
 export interface RestartServerParams {
   server?: string; // if omitted, restart all
 }
+
+export const RestartServerParamsSchema = z.object({
+  server: z.string().optional(),
+});
 
 export interface SaveAliasParams {
   name: string;
@@ -85,19 +115,42 @@ export interface SaveAliasParams {
   outputSchema?: Record<string, unknown>;
 }
 
+export const SaveAliasParamsSchema = z.object({
+  name: z.string(),
+  script: z.string(),
+  description: z.string().optional(),
+  aliasType: z.enum(["freeform", "defineAlias"]).optional(),
+  inputSchema: z.record(z.string(), z.unknown()).optional(),
+  outputSchema: z.record(z.string(), z.unknown()).optional(),
+});
+
 export interface DeleteAliasParams {
   name: string;
 }
 
+export const DeleteAliasParamsSchema = z.object({
+  name: z.string(),
+});
+
 export interface GetAliasParams {
   name: string;
 }
+
+export const GetAliasParamsSchema = z.object({
+  name: z.string(),
+});
 
 export interface GetLogsParams {
   server: string;
   limit?: number;
   since?: number;
 }
+
+export const GetLogsParamsSchema = z.object({
+  server: z.string(),
+  limit: z.number().optional(),
+  since: z.number().optional(),
+});
 
 export interface AliasInfo {
   name: string;
@@ -129,6 +182,11 @@ export interface GetDaemonLogsParams {
   limit?: number;
   since?: number;
 }
+
+export const GetDaemonLogsParamsSchema = z.object({
+  limit: z.number().optional(),
+  since: z.number().optional(),
+});
 
 export interface GetDaemonLogsResult {
   lines: LogEntry[];

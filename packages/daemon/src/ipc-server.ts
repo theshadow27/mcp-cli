@@ -6,35 +6,30 @@
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type {
-  CallToolParams,
-  DeleteAliasParams,
-  GetAliasParams,
-  GetDaemonLogsParams,
-  GetLogsParams,
-  GetToolInfoParams,
-  GrepToolsParams,
-  IpcError,
-  IpcMethod,
-  IpcRequest,
-  IpcResponse,
-  ListToolsParams,
-  ResolvedConfig,
-  RestartServerParams,
-  SaveAliasParams,
-  TriggerAuthParams,
-} from "@mcp-cli/core";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig } from "@mcp-cli/core";
 import {
   ALIASES_DIR,
+  CallToolParamsSchema,
   DB_PATH,
+  DeleteAliasParamsSchema,
+  GetAliasParamsSchema,
+  GetDaemonLogsParamsSchema,
+  GetLogsParamsSchema,
+  GetToolInfoParamsSchema,
+  GrepToolsParamsSchema,
   IPC_ERROR,
+  ListToolsParamsSchema,
   PROTOCOL_VERSION,
+  RestartServerParamsSchema,
   SOCKET_PATH,
+  SaveAliasParamsSchema,
+  TriggerAuthParamsSchema,
   hardenFile,
   isDefineAlias,
   safeAliasPath,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { z } from "zod/v4";
 import { startCallbackServer } from "./auth/callback-server.js";
 import { McpOAuthProvider } from "./auth/oauth-provider.js";
 import { getDaemonLogLines } from "./daemon-log.js";
@@ -181,22 +176,22 @@ export class IpcServer {
     this.handlers.set("listServers", async () => this.pool.listServers());
 
     this.handlers.set("listTools", async (params) => {
-      const { server, format } = (params ?? {}) as ListToolsParams;
+      const { server } = ListToolsParamsSchema.parse(params ?? {});
       return this.pool.listTools(server);
     });
 
     this.handlers.set("getToolInfo", async (params) => {
-      const { server, tool } = params as GetToolInfoParams;
+      const { server, tool } = GetToolInfoParamsSchema.parse(params);
       return this.pool.getToolInfo(server, tool);
     });
 
     this.handlers.set("grepTools", async (params) => {
-      const { pattern } = params as GrepToolsParams;
+      const { pattern } = GrepToolsParamsSchema.parse(params);
       return this.pool.grepTools(pattern);
     });
 
     this.handlers.set("callTool", async (params) => {
-      const { server, tool, arguments: args } = params as CallToolParams;
+      const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
       const start = Date.now();
       try {
         const result = await this.pool.callTool(server, tool, args);
@@ -209,7 +204,7 @@ export class IpcServer {
     });
 
     this.handlers.set("triggerAuth", async (params) => {
-      const { server } = params as TriggerAuthParams;
+      const { server } = TriggerAuthParamsSchema.parse(params);
       const serverUrl = this.pool.getServerUrl(server);
       if (!serverUrl) {
         throw Object.assign(new Error(`Server "${server}" not found or is not a remote (SSE/HTTP) server`), {
@@ -260,7 +255,7 @@ export class IpcServer {
     });
 
     this.handlers.set("restartServer", async (params) => {
-      const { server } = (params ?? {}) as RestartServerParams;
+      const { server } = RestartServerParamsSchema.parse(params ?? {});
       await this.pool.restart(server);
       return { ok: true };
     });
@@ -287,7 +282,7 @@ export class IpcServer {
     });
 
     this.handlers.set("getAlias", async (params) => {
-      const { name } = params as GetAliasParams;
+      const { name } = GetAliasParamsSchema.parse(params);
       const alias = this.db.getAlias(name);
       if (!alias) return null;
       try {
@@ -299,7 +294,7 @@ export class IpcServer {
     });
 
     this.handlers.set("saveAlias", async (params) => {
-      const { name, script, description } = params as SaveAliasParams;
+      const { name, script, description } = SaveAliasParamsSchema.parse(params);
       const filePath = safeAliasPath(name);
       mkdirSync(ALIASES_DIR, { recursive: true });
 
@@ -343,7 +338,7 @@ export class IpcServer {
     });
 
     this.handlers.set("deleteAlias", async (params) => {
-      const { name } = params as DeleteAliasParams;
+      const { name } = DeleteAliasParamsSchema.parse(params);
       const alias = this.db.getAlias(name);
       if (alias) {
         try {
@@ -357,12 +352,7 @@ export class IpcServer {
     });
 
     this.handlers.set("getLogs", async (params) => {
-      const { server, limit, since } = (params ?? {}) as GetLogsParams;
-      if (!server) {
-        throw Object.assign(new Error("Missing required parameter: server"), {
-          code: IPC_ERROR.INVALID_PARAMS,
-        });
-      }
+      const { server, limit, since } = GetLogsParamsSchema.parse(params);
 
       // Fast path: in-memory ring buffer (no since filter)
       if (since === undefined) {
@@ -382,7 +372,7 @@ export class IpcServer {
     });
 
     this.handlers.set("getDaemonLogs", async (params) => {
-      const { limit, since } = (params ?? {}) as GetDaemonLogsParams;
+      const { limit, since } = GetDaemonLogsParamsSchema.parse(params ?? {});
       let lines = getDaemonLogLines(limit).map((l) => ({
         timestamp: l.timestamp,
         line: l.line,
@@ -441,6 +431,10 @@ function extractAliasMetadata(aliasPath: string): Promise<AliasMetadata> {
 }
 
 function toIpcError(err: unknown): IpcError {
+  if (err instanceof z.ZodError) {
+    const detail = err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    return { code: IPC_ERROR.INVALID_PARAMS, message: `Invalid params: ${detail}` };
+  }
   if (err instanceof Error) {
     const code = (err as unknown as { code?: number }).code;
     return {
