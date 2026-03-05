@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { testOptions } from "../../../test/test-options.js";
 import { PROTOCOL_VERSION } from "./constants.js";
 import { isDaemonRunning } from "./ipc-client.js";
 
@@ -152,42 +153,16 @@ describe("PROTOCOL_VERSION", () => {
 });
 
 describe("protocol version mismatch detection", () => {
-  // Use the real PID_PATH so isDaemonRunning() checks our test data
-  const { PID_PATH } = require("./constants.js");
-  let savedPid: string | null = null;
-
-  // Save and restore the real PID file around each test
-  afterEach(() => {
-    try {
-      if (savedPid !== null) {
-        writeFileSync(PID_PATH, savedPid);
-      } else {
-        unlinkSync(PID_PATH);
-      }
-    } catch {
-      /* ok */
-    }
-  });
-
-  // Capture current state before each test
-  function savePidFile(): void {
-    try {
-      savedPid = readFileSync(PID_PATH, "utf-8");
-    } catch {
-      savedPid = null;
-    }
-  }
-
   it("returns false for PID file with mismatched protocolVersion", async () => {
-    savePidFile();
+    using opts = testOptions();
     const data = {
       pid: process.pid,
       configHash: "test",
       startedAt: Date.now(),
       protocolVersion: "wrong-version",
     };
-    mkdirSync(join(PID_PATH, ".."), { recursive: true });
-    writeFileSync(PID_PATH, JSON.stringify(data));
+    mkdirSync(join(opts.PID_PATH, ".."), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
 
     // isDaemonRunning will fail at isProcessMcpd (test process isn't mcpd)
     // before reaching the version check, but we can verify it returns false
@@ -196,15 +171,15 @@ describe("protocol version mismatch detection", () => {
   });
 
   it("returns false for PID file without protocolVersion (old daemon)", async () => {
-    savePidFile();
+    using opts = testOptions();
     const data = {
       pid: process.pid,
       configHash: "test",
       startedAt: Date.now(),
       // no protocolVersion — simulates old daemon
     };
-    mkdirSync(join(PID_PATH, ".."), { recursive: true });
-    writeFileSync(PID_PATH, JSON.stringify(data));
+    mkdirSync(join(opts.PID_PATH, ".."), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
 
     const result = await isDaemonRunning();
     expect(result).toBe(false);

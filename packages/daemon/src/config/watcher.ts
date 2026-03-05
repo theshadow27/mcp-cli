@@ -8,7 +8,7 @@
 import { type FSWatcher, existsSync, watch } from "node:fs";
 import { dirname } from "node:path";
 import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
-import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
+import { options, projectConfigPath } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./loader.js";
 
 const DEBOUNCE_MS = 300;
@@ -93,7 +93,7 @@ export class ConfigWatcher {
     const paths = new Set<string>();
 
     // Watch mcp-cli's own config files only
-    paths.add(USER_SERVERS_PATH);
+    paths.add(options.USER_SERVERS_PATH);
     paths.add(projectConfigPath(this.cwd));
 
     return [...paths];

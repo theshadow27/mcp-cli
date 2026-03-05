@@ -8,9 +8,7 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig } from "@mcp-cli/core";
 import {
-  ALIASES_DIR,
   CallToolParamsSchema,
-  DB_PATH,
   DeleteAliasParamsSchema,
   GetAliasParamsSchema,
   GetDaemonLogsParamsSchema,
@@ -21,11 +19,11 @@ import {
   ListToolsParamsSchema,
   PROTOCOL_VERSION,
   RestartServerParamsSchema,
-  SOCKET_PATH,
   SaveAliasParamsSchema,
   TriggerAuthParamsSchema,
   hardenFile,
   isDefineAlias,
+  options,
   safeAliasPath,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -40,7 +38,7 @@ type RequestHandler = (params: unknown) => Promise<unknown>;
 
 export class IpcServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
-  private socketPath = SOCKET_PATH;
+  private socketPath = options.SOCKET_PATH;
   private handlers = new Map<IpcMethod, RequestHandler>();
   private onActivity: () => void;
   private onRequestComplete: () => void;
@@ -59,7 +57,7 @@ export class IpcServer {
   }
 
   /** Start listening on the Unix socket */
-  start(socketPath = SOCKET_PATH): void {
+  start(socketPath = options.SOCKET_PATH): void {
     this.socketPath = socketPath;
 
     // Remove stale socket file
@@ -168,7 +166,7 @@ export class IpcServer {
         uptime: process.uptime(),
         protocolVersion: PROTOCOL_VERSION,
         servers,
-        dbPath: DB_PATH,
+        dbPath: options.DB_PATH,
         usageStats,
       };
     });
@@ -296,7 +294,7 @@ export class IpcServer {
     this.handlers.set("saveAlias", async (params) => {
       const { name, script, description } = SaveAliasParamsSchema.parse(params);
       const filePath = safeAliasPath(name);
-      mkdirSync(ALIASES_DIR, { recursive: true });
+      mkdirSync(options.ALIASES_DIR, { recursive: true });
 
       const isStructured = isDefineAlias(script);
 

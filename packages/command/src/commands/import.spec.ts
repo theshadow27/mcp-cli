@@ -1,11 +1,11 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { _restoreOptions, findFileUpward, options } from "@mcp-cli/core";
+import { findFileUpward } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options.js";
 import { readConfigFile, writeConfigFile } from "./config-file.js";
-import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude, importServers } from "./import.js";
+import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude } from "./import.js";
 
 /**
  * Tests for mcp import's source resolution and file I/O.
@@ -71,12 +71,6 @@ function fixtureConfig(...names: (keyof typeof FIXTURES)[]): McpConfigFile {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function tmpDir(): string {
-  const dir = join(tmpdir(), `mcp-cli-import-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 function writeMcpJson(dir: string, config: McpConfigFile): string {
   const path = join(dir, ".mcp.json");
   writeFileSync(path, JSON.stringify(config, null, 2));
@@ -88,20 +82,10 @@ function writeMcpJson(dir: string, config: McpConfigFile): string {
 // ---------------------------------------------------------------------------
 
 describe("mcp import", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = tmpDir();
-  });
-
-  afterEach(() => {
-    _restoreOptions();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
   describe("source file reading", () => {
     test("reads HTTP and SSE servers from .mcp.json", () => {
-      const filePath = writeMcpJson(dir, fixtureConfig("notion", "atlassian"));
+      using opts = testOptions();
+      const filePath = writeMcpJson(opts.dir, fixtureConfig("notion", "atlassian"));
 
       const content = readFileSync(filePath, "utf-8");
       const config = JSON.parse(content) as McpConfigFile;
@@ -113,7 +97,8 @@ describe("mcp import", () => {
     });
 
     test("reads stdio servers with env vars from .mcp.json", () => {
-      const filePath = writeMcpJson(dir, fixtureConfig("airtable", "jupyter-mcp"));
+      using opts = testOptions();
+      const filePath = writeMcpJson(opts.dir, fixtureConfig("airtable", "jupyter-mcp"));
 
       const content = readFileSync(filePath, "utf-8");
       const config = JSON.parse(content) as McpConfigFile;
@@ -126,7 +111,8 @@ describe("mcp import", () => {
     });
 
     test("handles file with no mcpServers key", () => {
-      const filePath = join(dir, "empty.json");
+      using opts = testOptions();
+      const filePath = join(opts.dir, "empty.json");
       writeFileSync(filePath, "{}");
 
       const config = JSON.parse(readFileSync(filePath, "utf-8")) as McpConfigFile;
@@ -134,7 +120,8 @@ describe("mcp import", () => {
     });
 
     test("handles empty mcpServers", () => {
-      const filePath = join(dir, "empty-servers.json");
+      using opts = testOptions();
+      const filePath = join(opts.dir, "empty-servers.json");
       writeFileSync(filePath, JSON.stringify({ mcpServers: {} }));
 
       const config = JSON.parse(readFileSync(filePath, "utf-8")) as McpConfigFile;
@@ -144,7 +131,8 @@ describe("mcp import", () => {
 
   describe("import into config file", () => {
     test("imports catalog servers into empty config", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
 
       const source = fixtureConfig("notion", "sentry");
 
@@ -158,7 +146,8 @@ describe("mcp import", () => {
     });
 
     test("merges imported servers with existing ones", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
 
       // Pre-existing server
       writeConfigFile(targetPath, fixtureConfig("filesystem"));
@@ -176,7 +165,8 @@ describe("mcp import", () => {
     });
 
     test("overwrites duplicate server names on re-import", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
 
       writeConfigFile(targetPath, {
         mcpServers: { notion: { type: "http" as const, url: "https://old.example.com" } },
@@ -194,9 +184,10 @@ describe("mcp import", () => {
 
   describe("directory source", () => {
     test("finds .mcp.json with mixed transports in directory", () => {
-      writeMcpJson(dir, fixtureConfig("filesystem", "notion", "atlassian"));
+      using opts = testOptions();
+      writeMcpJson(opts.dir, fixtureConfig("filesystem", "notion", "atlassian"));
 
-      const candidate = join(dir, ".mcp.json");
+      const candidate = join(opts.dir, ".mcp.json");
       expect(existsSync(candidate)).toBe(true);
 
       const config = JSON.parse(readFileSync(candidate, "utf-8")) as McpConfigFile;
@@ -204,7 +195,8 @@ describe("mcp import", () => {
     });
 
     test("reports error when directory has no .mcp.json", () => {
-      const emptyDir = join(dir, "empty");
+      using opts = testOptions();
+      const emptyDir = join(opts.dir, "empty");
       mkdirSync(emptyDir);
 
       expect(existsSync(join(emptyDir, ".mcp.json"))).toBe(false);
@@ -213,17 +205,19 @@ describe("mcp import", () => {
 
   describe("walk-up source", () => {
     test("finds .mcp.json in parent directory", () => {
-      writeMcpJson(dir, fixtureConfig("github"));
+      using opts = testOptions();
+      writeMcpJson(opts.dir, fixtureConfig("github"));
 
-      const child = join(dir, "sub", "deep");
+      const child = join(opts.dir, "sub", "deep");
       mkdirSync(child, { recursive: true });
 
       const found = findFileUpward(".mcp.json", child);
-      expect(found).toBe(join(dir, ".mcp.json"));
+      expect(found).toBe(join(opts.dir, ".mcp.json"));
     });
 
     test("returns null when no .mcp.json found", () => {
-      const isolated = join(dir, "isolated");
+      using opts = testOptions();
+      const isolated = join(opts.dir, "isolated");
       mkdirSync(isolated);
 
       const result = findFileUpward(".mcp.json", isolated);
@@ -247,6 +241,8 @@ describe("mcp import", () => {
       type: "sse" as const,
       url: "https://mcp.atlassian.com/v1/sse",
     };
+
+    // collectClaudeServers is a pure function — no options mutation needed
 
     test("collects global mcpServers", () => {
       const config: ClaudeConfig = {
@@ -361,12 +357,10 @@ describe("mcp import", () => {
 
   describe("importServers writes to config file", () => {
     test("imports servers to user scope config", () => {
-      // Point MCP_CLI_DIR to our temp dir so USER_SERVERS_PATH resolves there
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
       writeConfigFile(targetPath, { mcpServers: {} });
 
-      // importServers writes via addServerToConfig which uses resolveConfigPath
-      // We test the underlying write separately since resolveConfigPath uses a module-level constant
       const servers: Record<string, ServerConfig> = { notion: FIXTURES.notion, sentry: FIXTURES.sentry };
       for (const [name, config] of Object.entries(servers)) {
         const existing = readConfigFile(targetPath);
@@ -384,16 +378,15 @@ describe("mcp import", () => {
 
   describe("importFromClaude end-to-end", () => {
     test("imports global servers from claude config file", async () => {
-      const claudePath = join(dir, "claude.json");
+      using opts = testOptions();
+      const claudePath = join(opts.dir, "claude.json");
       const claudeConfig: ClaudeConfig = {
         mcpServers: { notion: FIXTURES.notion, github: FIXTURES.github },
       };
       writeFileSync(claudePath, JSON.stringify(claudeConfig));
 
-      // importFromClaude writes to USER_SERVERS_PATH via addServerToConfig
-      // Since USER_SERVERS_PATH is module-level, we verify via collectClaudeServers + manual write
-      const { servers } = collectClaudeServers(claudeConfig, dir, false);
-      const targetPath = join(dir, "servers.json");
+      const { servers } = collectClaudeServers(claudeConfig, opts.dir, false);
+      const targetPath = join(opts.dir, "servers.json");
       for (const [name, config] of Object.entries(servers)) {
         const existing = readConfigFile(targetPath);
         existing.mcpServers = existing.mcpServers ?? {};
@@ -407,25 +400,28 @@ describe("mcp import", () => {
     });
 
     test("importFromClaude throws when config file missing", async () => {
-      const missingPath = join(dir, "nonexistent.json");
+      using opts = testOptions();
+      const missingPath = join(opts.dir, "nonexistent.json");
       await expect(importFromClaude("user", false, missingPath)).rejects.toThrow("config not found");
     });
 
     test("importFromClaude throws on invalid JSON", async () => {
-      const badPath = join(dir, "bad.json");
+      using opts = testOptions();
+      const badPath = join(opts.dir, "bad.json");
       writeFileSync(badPath, "not valid json{{{");
       await expect(importFromClaude("user", false, badPath)).rejects.toThrow("Cannot parse");
     });
 
     test("importFromClaude handles empty config gracefully", async () => {
-      const emptyPath = join(dir, "empty-claude.json");
+      using opts = testOptions();
+      const emptyPath = join(opts.dir, "empty-claude.json");
       writeFileSync(emptyPath, JSON.stringify({}));
-      // Should not throw, just print "no servers found"
       await importFromClaude("user", false, emptyPath);
     });
 
     test("importFromClaude with --all on empty config", async () => {
-      const emptyPath = join(dir, "empty-claude.json");
+      using opts = testOptions();
+      const emptyPath = join(opts.dir, "empty-claude.json");
       writeFileSync(emptyPath, JSON.stringify({}));
       await importFromClaude("user", true, emptyPath);
     });
@@ -433,7 +429,8 @@ describe("mcp import", () => {
 
   describe("config field preservation", () => {
     test("preserves all stdio config fields during import", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
       const source = fixtureConfig("filesystem");
 
       const existing = readConfigFile(targetPath);
@@ -451,7 +448,8 @@ describe("mcp import", () => {
     });
 
     test("preserves headers on HTTP servers", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
       const source = fixtureConfig("github");
 
       const existing = readConfigFile(targetPath);
@@ -467,7 +465,8 @@ describe("mcp import", () => {
     });
 
     test("imports full catalog-like config with all transport types", () => {
-      const targetPath = join(dir, "servers.json");
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
       const source = fixtureConfig("filesystem", "airtable", "jupyter-mcp", "notion", "github", "atlassian", "sentry");
 
       const existing = readConfigFile(targetPath);
@@ -487,11 +486,10 @@ describe("mcp import", () => {
 
   describe("cmdImport with file source", () => {
     test("imports from a specific JSON file", async () => {
-      const filePath = join(dir, "my-servers.json");
+      using opts = testOptions();
+      const filePath = join(opts.dir, "my-servers.json");
       writeFileSync(filePath, JSON.stringify(fixtureConfig("notion", "sentry")));
 
-      // cmdImport writes to USER_SERVERS_PATH (module-level const).
-      // We test it via subprocess to get proper isolation.
       const proc = Bun.spawn(
         [
           "bun",
@@ -502,7 +500,7 @@ describe("mcp import", () => {
       `,
         ],
         {
-          env: { ...process.env, MCP_CLI_DIR: dir },
+          env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -513,29 +511,31 @@ describe("mcp import", () => {
       expect(stderr).toContain("notion");
       expect(stderr).toContain("sentry");
 
-      const result = readConfigFile(join(dir, "servers.json"));
+      const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
       expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
     });
 
     test("cmdImport throws on unknown flag", async () => {
+      using opts = testOptions();
       await expect(cmdImport(["--bogus"])).rejects.toThrow("Unknown flag");
     });
 
     test("cmdImport throws on invalid scope", async () => {
+      using opts = testOptions();
       await expect(cmdImport(["--scope", "invalid"])).rejects.toThrow('Invalid scope "invalid"');
     });
 
     test("cmdImport accepts valid --scope user", async () => {
-      // --scope user with a valid file still works (though it writes to real config)
-      // We just verify the parsing doesn't throw
-      const filePath = join(dir, "scoped.json");
+      using opts = testOptions();
+      const filePath = join(opts.dir, "scoped.json");
       writeFileSync(filePath, JSON.stringify({ mcpServers: {} }));
       await cmdImport(["--scope", "user", filePath]);
     });
 
     test("cmdImport accepts -s shorthand for scope", async () => {
-      const filePath = join(dir, "scoped2.json");
+      using opts = testOptions();
+      const filePath = join(opts.dir, "scoped2.json");
       writeFileSync(filePath, JSON.stringify({ mcpServers: {} }));
       await cmdImport(["-s", "user", filePath]);
     });
@@ -549,61 +549,59 @@ describe("mcp import", () => {
     });
 
     test("cmdImport --claude flag reads from options.CLAUDE_CONFIG_PATH", async () => {
-      const claudePath = join(dir, "test-claude.json");
-      writeFileSync(claudePath, JSON.stringify({ mcpServers: { notion: FIXTURES.notion } }));
-      options.CLAUDE_CONFIG_PATH = claudePath;
-      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      using opts = testOptions({
+        files: { "claude.json": { mcpServers: { notion: FIXTURES.notion } } },
+      });
       await cmdImport(["--claude"]);
     });
 
     test("cmdImport -c shorthand sets claude mode", async () => {
-      const claudePath = join(dir, "test-claude-c.json");
-      writeFileSync(claudePath, JSON.stringify({ mcpServers: { sentry: FIXTURES.sentry } }));
-      options.CLAUDE_CONFIG_PATH = claudePath;
-      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      using opts = testOptions({
+        files: { "claude.json": { mcpServers: { sentry: FIXTURES.sentry } } },
+      });
       await cmdImport(["-c"]);
     });
 
     test("cmdImport --claude --all parses both flags", async () => {
-      const claudePath = join(dir, "test-claude-all.json");
-      writeFileSync(
-        claudePath,
-        JSON.stringify({
-          projects: { "/other/path": { mcpServers: { github: FIXTURES.github } } },
-        }),
-      );
-      options.CLAUDE_CONFIG_PATH = claudePath;
-      options.USER_SERVERS_PATH = join(dir, "servers.json");
+      using opts = testOptions({
+        files: {
+          "claude.json": {
+            projects: { "/other/path": { mcpServers: { github: FIXTURES.github } } },
+          },
+        },
+      });
       await cmdImport(["--claude", "--all"]);
     });
 
     test("cmdImport throws when file not found", async () => {
-      await expect(cmdImport([join(dir, "nonexistent.json")])).rejects.toThrow("File not found");
+      using opts = testOptions();
+      await expect(cmdImport([join(opts.dir, "nonexistent.json")])).rejects.toThrow("File not found");
     });
 
     test("cmdImport throws on unreadable file content", async () => {
-      const badPath = join(dir, "bad.json");
+      using opts = testOptions();
+      const badPath = join(opts.dir, "bad.json");
       writeFileSync(badPath, "{{invalid json");
       await expect(cmdImport([badPath])).rejects.toThrow("Invalid JSON");
     });
 
     test("cmdImport reports empty servers without throwing", async () => {
-      const emptyPath = join(dir, "empty.json");
+      using opts = testOptions();
+      const emptyPath = join(opts.dir, "empty.json");
       writeFileSync(emptyPath, JSON.stringify({ mcpServers: {} }));
-      // Should not throw
       await cmdImport([emptyPath]);
     });
 
     test("cmdImport with directory source finds .mcp.json", async () => {
-      writeMcpJson(dir, fixtureConfig("notion"));
-      // Since this writes to real config, just verify no error in subprocess
+      using opts = testOptions();
+      writeMcpJson(opts.dir, fixtureConfig("notion"));
       const proc = Bun.spawn(
         [
           "bun",
           "-e",
-          `import { cmdImport } from "./packages/command/src/commands/import.js"; await cmdImport(["${dir}"]);`,
+          `import { cmdImport } from "./packages/command/src/commands/import.js"; await cmdImport(["${opts.dir}"]);`,
         ],
-        { env: { ...process.env, MCP_CLI_DIR: dir }, stdout: "pipe", stderr: "pipe" },
+        { env: { ...process.env, MCP_CLI_DIR: opts.dir }, stdout: "pipe", stderr: "pipe" },
       );
       await proc.exited;
       const stderr = await new Response(proc.stderr).text();
@@ -611,7 +609,8 @@ describe("mcp import", () => {
     });
 
     test("cmdImport with directory without .mcp.json throws", async () => {
-      const emptyDir = join(dir, "empty-dir");
+      using opts = testOptions();
+      const emptyDir = join(opts.dir, "empty-dir");
       mkdirSync(emptyDir);
       await expect(cmdImport([emptyDir])).rejects.toThrow("No .mcp.json found");
     });
@@ -619,8 +618,8 @@ describe("mcp import", () => {
 
   describe("cmdImport --claude end-to-end via subprocess", () => {
     test("imports project-scoped servers from claude config", async () => {
-      const claudePath = join(dir, "claude.json");
-      // Use CWD (project root) as the project path so it matches process.cwd() in the subprocess
+      using opts = testOptions();
+      const claudePath = join(opts.dir, "claude.json");
       const cwd = process.cwd();
       const claudeConfig: ClaudeConfig = {
         mcpServers: { notion: FIXTURES.notion },
@@ -640,7 +639,7 @@ describe("mcp import", () => {
       `,
         ],
         {
-          env: { ...process.env, MCP_CLI_DIR: dir },
+          env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -649,13 +648,14 @@ describe("mcp import", () => {
       const stderr = await new Response(proc.stderr).text();
       expect(stderr).toContain("Imported 2 server(s)");
 
-      const result = readConfigFile(join(dir, "servers.json"));
+      const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
       expect(result.mcpServers?.atlassian).toEqual(FIXTURES.atlassian);
     });
 
     test("imports all projects with --all flag", async () => {
-      const claudePath = join(dir, "claude.json");
+      using opts = testOptions();
+      const claudePath = join(opts.dir, "claude.json");
       const claudeConfig: ClaudeConfig = {
         projects: {
           "/some/other/path": { mcpServers: { github: FIXTURES.github } },
@@ -674,7 +674,7 @@ describe("mcp import", () => {
       `,
         ],
         {
-          env: { ...process.env, MCP_CLI_DIR: dir },
+          env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -683,7 +683,7 @@ describe("mcp import", () => {
       const stderr = await new Response(proc.stderr).text();
       expect(stderr).toContain("Imported 2 server(s)");
 
-      const result = readConfigFile(join(dir, "servers.json"));
+      const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.github).toEqual(FIXTURES.github);
       expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
     });

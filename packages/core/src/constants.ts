@@ -29,22 +29,22 @@ function computeDevProtocolHash(): string {
 export const MCP_CLI_DIR = process.env.MCP_CLI_DIR || join(homedir(), ".mcp-cli");
 
 /** SQLite database path */
-export const DB_PATH = join(MCP_CLI_DIR, "state.db");
+const DB_PATH = join(MCP_CLI_DIR, "state.db");
 
 /** CLI config file path (trust-claude, etc.) */
-export const MCP_CLI_CONFIG_PATH = join(MCP_CLI_DIR, "config.json");
+const MCP_CLI_CONFIG_PATH = join(MCP_CLI_DIR, "config.json");
 
 /** Daemon Unix socket path */
-export const SOCKET_PATH = join(MCP_CLI_DIR, "mcpd.sock");
+const SOCKET_PATH = join(MCP_CLI_DIR, "mcpd.sock");
 
 /** Daemon PID file path */
-export const PID_PATH = join(MCP_CLI_DIR, "mcpd.pid");
+const PID_PATH = join(MCP_CLI_DIR, "mcpd.pid");
 
 /** Alias scripts directory */
-export const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
+const ALIASES_DIR = join(MCP_CLI_DIR, "aliases");
 
 /** Registry response cache directory */
-export const CACHE_DIR = join(MCP_CLI_DIR, "cache");
+const CACHE_DIR = join(MCP_CLI_DIR, "cache");
 
 /**
  * Mutable options object for testability.
@@ -96,28 +96,16 @@ export function validateAliasName(name: string): void {
  */
 export function safeAliasPath(name: string): string {
   validateAliasName(name);
-  const resolved = join(ALIASES_DIR, `${name}.ts`);
+  const resolved = join(options.ALIASES_DIR, `${name}.ts`);
   // Defense-in-depth: verify resolved path is inside ALIASES_DIR
-  if (!resolved.startsWith(`${ALIASES_DIR}/`)) {
+  if (!resolved.startsWith(`${options.ALIASES_DIR}/`)) {
     throw new Error(`Alias path "${resolved}" escapes aliases directory`);
   }
   return resolved;
 }
 
-/** Generated TypeScript declarations for alias scripts */
-export const TYPES_PATH = join(MCP_CLI_DIR, "mcp-cli.d.ts");
-
-/** User-level server config (standalone, outside Claude Code) */
-export const USER_SERVERS_PATH = join(MCP_CLI_DIR, "servers.json");
-
-/** Claude Code user config */
-export const CLAUDE_CONFIG_PATH = join(homedir(), ".claude.json");
-
 /** Project-level MCP config filename */
 export const PROJECT_MCP_FILENAME = ".mcp.json";
-
-/** Directory for project-scoped server configs */
-export const PROJECTS_DIR = join(MCP_CLI_DIR, "projects");
 
 /**
  * Return the project-scoped server config path for a given working directory.
@@ -125,7 +113,7 @@ export const PROJECTS_DIR = join(MCP_CLI_DIR, "projects");
  */
 export function projectConfigPath(cwd: string): string {
   const mangled = resolve(cwd).replaceAll("/", "_").replace(/^_/, "");
-  return join(PROJECTS_DIR, mangled, "servers.json");
+  return join(options.PROJECTS_DIR, mangled, "servers.json");
 }
 
 /** Default daemon idle timeout (ms) */
@@ -150,15 +138,6 @@ export const CONNECT_MAX_DELAY_MS = 15_000;
 
 /** MCP server connect timeout (ms) — how long to wait for client.connect() */
 export const CONNECT_TIMEOUT_MS = 30_000;
-
-/** Daemon startup lock file path */
-export const LOCK_PATH = join(MCP_CLI_DIR, "mcpd.lock");
-
-/** Persistent daemon log file path */
-export const DAEMON_LOG_PATH = join(MCP_CLI_DIR, "mcpd.log");
-
-/** Rotated daemon log backup path */
-export const DAEMON_LOG_BACKUP_PATH = join(MCP_CLI_DIR, "mcpd.log.1");
 
 /** Max daemon log file size before rotation (5 MB) */
 export const DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024;

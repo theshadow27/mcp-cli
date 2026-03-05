@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options.js";
 import { readConfigFile, writeConfigFile } from "./config-file.js";
 
 /**
@@ -49,39 +49,18 @@ function fixtureConfig(...names: (keyof typeof FIXTURES)[]): McpConfigFile {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function tmpDir(): string {
-  const dir = join(tmpdir(), `mcp-cli-export-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("mcp export", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = tmpDir();
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
   describe("export to file", () => {
     test("exports all servers from a config file to .mcp.json format", () => {
-      // Simulate user-scoped config
-      const sourcePath = join(dir, "servers.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "servers.json");
       writeConfigFile(sourcePath, fixtureConfig("notion", "github", "filesystem"));
 
-      // Read and re-write as export would
       const config = readConfigFile(sourcePath);
-      const outputPath = join(dir, ".mcp.json");
+      const outputPath = join(opts.dir, ".mcp.json");
       writeConfigFile(outputPath, config);
 
       const result = JSON.parse(readFileSync(outputPath, "utf-8")) as McpConfigFile;
@@ -92,13 +71,13 @@ describe("mcp export", () => {
     });
 
     test("exports specific servers via filtering", () => {
-      const sourcePath = join(dir, "servers.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "servers.json");
       writeConfigFile(sourcePath, fixtureConfig("notion", "github", "filesystem", "sentry"));
 
       const config = readConfigFile(sourcePath);
       const serverFilter = ["notion", "github"];
 
-      // Apply filter (same logic as cmdExport)
       const filtered: Record<string, ServerConfig> = {};
       for (const name of serverFilter) {
         if (config.mcpServers && name in config.mcpServers) {
@@ -106,7 +85,7 @@ describe("mcp export", () => {
         }
       }
 
-      const outputPath = join(dir, "filtered.json");
+      const outputPath = join(opts.dir, "filtered.json");
       writeConfigFile(outputPath, { mcpServers: filtered });
 
       const result = JSON.parse(readFileSync(outputPath, "utf-8")) as McpConfigFile;
@@ -117,7 +96,8 @@ describe("mcp export", () => {
     });
 
     test("handles empty config gracefully", () => {
-      const sourcePath = join(dir, "servers.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "servers.json");
       writeConfigFile(sourcePath, { mcpServers: {} });
 
       const config = readConfigFile(sourcePath);
@@ -125,7 +105,8 @@ describe("mcp export", () => {
     });
 
     test("handles non-existent config (returns empty)", () => {
-      const sourcePath = join(dir, "nonexistent.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "nonexistent.json");
       const config = readConfigFile(sourcePath);
       expect(config.mcpServers).toEqual({});
     });
@@ -133,13 +114,12 @@ describe("mcp export", () => {
 
   describe("scope merging (--all)", () => {
     test("merges project and user configs, user takes priority", () => {
-      const projectPath = join(dir, "project-servers.json");
-      const userPath = join(dir, "user-servers.json");
+      using opts = testOptions();
+      const projectPath = join(opts.dir, "project-servers.json");
+      const userPath = join(opts.dir, "user-servers.json");
 
-      // Project has notion + filesystem
       writeConfigFile(projectPath, fixtureConfig("notion", "filesystem"));
 
-      // User has github + notion (overrides project's notion)
       const userConfig: McpConfigFile = {
         mcpServers: {
           github: FIXTURES.github,
@@ -148,17 +128,15 @@ describe("mcp export", () => {
       };
       writeConfigFile(userPath, userConfig);
 
-      // Merge: project first, then user overrides
       const merged: Record<string, ServerConfig> = {};
       const project = readConfigFile(projectPath);
       Object.assign(merged, project.mcpServers);
       const user = readConfigFile(userPath);
       Object.assign(merged, user.mcpServers);
 
-      expect(Object.keys(merged)).toHaveLength(3); // filesystem, notion, github
+      expect(Object.keys(merged)).toHaveLength(3);
       expect(merged.filesystem).toEqual(FIXTURES.filesystem);
       expect(merged.github).toEqual(FIXTURES.github);
-      // User's notion override wins
       expect((merged.notion as { url: string }).url).toBe("https://user-override.example.com");
     });
   });
@@ -203,19 +181,18 @@ describe("mcp export", () => {
 
   describe("output format", () => {
     test("exported JSON is valid and re-importable", () => {
-      const sourcePath = join(dir, "servers.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "servers.json");
       writeConfigFile(sourcePath, fixtureConfig("filesystem", "notion", "atlassian"));
 
       const config = readConfigFile(sourcePath);
-      const outputPath = join(dir, "export.json");
+      const outputPath = join(opts.dir, "export.json");
       writeConfigFile(outputPath, config);
 
-      // Verify the output is valid JSON that can be re-imported
       const exported = readConfigFile(outputPath);
       expect(exported.mcpServers).toBeDefined();
 
-      // Re-import into a fresh config
-      const reimportPath = join(dir, "reimport.json");
+      const reimportPath = join(opts.dir, "reimport.json");
       writeConfigFile(reimportPath, exported);
 
       const reimported = readConfigFile(reimportPath);
@@ -225,11 +202,12 @@ describe("mcp export", () => {
     });
 
     test("preserves all server config fields through export", () => {
-      const sourcePath = join(dir, "servers.json");
+      using opts = testOptions();
+      const sourcePath = join(opts.dir, "servers.json");
       writeConfigFile(sourcePath, fixtureConfig("github"));
 
       const config = readConfigFile(sourcePath);
-      const outputPath = join(dir, "export.json");
+      const outputPath = join(opts.dir, "export.json");
       writeConfigFile(outputPath, config);
 
       const exported = readConfigFile(outputPath);

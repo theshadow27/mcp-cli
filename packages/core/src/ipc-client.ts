@@ -13,12 +13,10 @@ import {
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
-  LOCK_PATH,
   PID_MAX_AGE_MS,
-  PID_PATH,
   PING_TIMEOUT_MS,
   PROTOCOL_VERSION,
-  SOCKET_PATH,
+  options,
 } from "./constants.js";
 import { ensureStateDir } from "./fs.js";
 import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc.js";
@@ -46,7 +44,7 @@ async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
-    unix: SOCKET_PATH,
+    unix: options.SOCKET_PATH,
     signal: AbortSignal.timeout(IPC_REQUEST_TIMEOUT_MS),
   } as RequestInit);
 
@@ -74,7 +72,7 @@ async function ensureDaemon(): Promise<void> {
   let lockFd: number | null = null;
   try {
     ensureStateDir();
-    lockFd = openSync(LOCK_PATH, "wx"); // O_WRONLY | O_CREAT | O_EXCL — atomic
+    lockFd = openSync(options.LOCK_PATH, "wx"); // O_WRONLY | O_CREAT | O_EXCL — atomic
   } catch {
     // Another process holds the lock — wait for daemon to appear
     await waitForDaemon();
@@ -95,7 +93,7 @@ async function ensureDaemon(): Promise<void> {
   } finally {
     if (lockFd !== null) closeSync(lockFd);
     try {
-      unlinkSync(LOCK_PATH);
+      unlinkSync(options.LOCK_PATH);
     } catch {
       /* already gone */
     }
@@ -111,7 +109,7 @@ async function waitForDaemon(): Promise<void> {
   }
   // Lock may be stale — clean it up and try once more
   try {
-    unlinkSync(LOCK_PATH);
+    unlinkSync(options.LOCK_PATH);
   } catch {
     /* already gone */
   }
@@ -122,12 +120,12 @@ async function waitForDaemon(): Promise<void> {
 /** Remove stale PID and socket files so a fresh daemon can start */
 function cleanStaleFiles(): void {
   try {
-    unlinkSync(PID_PATH);
+    unlinkSync(options.PID_PATH);
   } catch {
     /* already gone */
   }
   try {
-    unlinkSync(SOCKET_PATH);
+    unlinkSync(options.SOCKET_PATH);
   } catch {
     /* already gone */
   }
@@ -155,7 +153,7 @@ async function stopDaemon(): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: nextId(), method: "shutdown" }),
-      unix: SOCKET_PATH,
+      unix: options.SOCKET_PATH,
       signal: AbortSignal.timeout(PING_TIMEOUT_MS),
     } as RequestInit);
     // Wait briefly for the daemon process to exit
@@ -172,7 +170,7 @@ function pingDaemon(): Promise<boolean> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: nextId(), method: "ping" }),
-    unix: SOCKET_PATH,
+    unix: options.SOCKET_PATH,
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
   } as RequestInit)
     .then((res) => res.ok)
@@ -191,11 +189,11 @@ function pingDaemon(): Promise<boolean> {
 export async function isDaemonRunning(): Promise<boolean> {
   versionMismatchPid = null;
 
-  if (!existsSync(PID_PATH)) return false;
+  if (!existsSync(options.PID_PATH)) return false;
 
   let data: { pid: number; startedAt: number; protocolVersion?: string };
   try {
-    data = JSON.parse(readFileSync(PID_PATH, "utf-8"));
+    data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
   } catch {
     cleanStaleFiles();
     return false;
@@ -231,7 +229,7 @@ export async function isDaemonRunning(): Promise<boolean> {
   }
 
   // Socket must exist (but don't clean PID — daemon might be initializing)
-  if (!existsSync(SOCKET_PATH)) return false;
+  if (!existsSync(options.SOCKET_PATH)) return false;
 
   // Definitive check: daemon responds to ping
   const alive = await pingDaemon();

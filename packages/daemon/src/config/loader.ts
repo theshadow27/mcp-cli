@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { McpConfigFile, ResolvedConfig, ResolvedServer, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
-import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
+import { options, projectConfigPath } from "@mcp-cli/core";
 import { expandEnvVarsDeep } from "@mcp-cli/core";
 
 interface ConfigSource {
@@ -43,10 +43,10 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
   }
 
   // Priority 1 (highest): ~/.mcp-cli/servers.json (global)
-  if (existsSync(USER_SERVERS_PATH)) {
-    const userConfig = await readJsonFile<McpConfigFile>(USER_SERVERS_PATH);
+  if (existsSync(options.USER_SERVERS_PATH)) {
+    const userConfig = await readJsonFile<McpConfigFile>(options.USER_SERVERS_PATH);
     if (userConfig?.mcpServers) {
-      const source: ConfigSource = { file: USER_SERVERS_PATH, scope: "mcp-cli" };
+      const source: ConfigSource = { file: options.USER_SERVERS_PATH, scope: "mcp-cli" };
       sources.push(source);
       addServers(servers, userConfig.mcpServers, source);
     }

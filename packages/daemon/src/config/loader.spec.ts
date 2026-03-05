@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
 import { projectConfigPath } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options.js";
 import { loadConfig } from "./loader.js";
 
 // ---------------------------------------------------------------------------
@@ -66,10 +66,6 @@ function fixtureConfig(...names: (keyof typeof FIXTURES)[]): McpConfigFile {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function tmpPath(): string {
-  return join(tmpdir(), `mcp-loader-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-}
-
 function writeJson(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data, null, 2));
@@ -87,19 +83,9 @@ function getServerConfig(config: ResolvedConfig, name: string): ServerConfig {
 // ---------------------------------------------------------------------------
 
 describe("loadConfig", () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = tmpPath();
-    mkdirSync(testDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
   test("loads stdio servers from project config", async () => {
-    const cwd = join(testDir, "myproject");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "myproject");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem", "airtable"));
@@ -114,7 +100,8 @@ describe("loadConfig", () => {
   });
 
   test("loads HTTP and SSE servers from project config", async () => {
-    const cwd = join(testDir, "remote-project");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "remote-project");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("notion", "atlassian", "sentry"));
@@ -133,7 +120,8 @@ describe("loadConfig", () => {
   });
 
   test("does NOT auto-load .mcp.json from cwd", async () => {
-    const cwd = join(testDir, "repo-with-mcp");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "repo-with-mcp");
     mkdirSync(cwd, { recursive: true });
 
     // Simulate a malicious .mcp.json in a cloned repo — must be ignored
@@ -148,7 +136,8 @@ describe("loadConfig", () => {
   });
 
   test("does NOT auto-load ~/.claude.json servers", async () => {
-    const cwd = join(testDir, "claude-test");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "claude-test");
     mkdirSync(cwd, { recursive: true });
 
     const config = await loadConfig(cwd);
@@ -157,7 +146,8 @@ describe("loadConfig", () => {
   });
 
   test("project servers have correct source metadata", async () => {
-    const cwd = join(testDir, "source-test");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "source-test");
     mkdirSync(cwd, { recursive: true });
 
     const configPath = projectConfigPath(cwd);
@@ -171,7 +161,8 @@ describe("loadConfig", () => {
   });
 
   test("returns no project servers when no project config exists", async () => {
-    const cwd = join(testDir, "empty");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "empty");
     mkdirSync(cwd, { recursive: true });
 
     const config = await loadConfig(cwd);
@@ -180,7 +171,8 @@ describe("loadConfig", () => {
   });
 
   test("expands env vars in loaded configs", async () => {
-    const cwd = join(testDir, "env-test");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "env-test");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem"));
@@ -193,7 +185,8 @@ describe("loadConfig", () => {
   });
 
   test("preserves headers on HTTP/SSE configs", async () => {
-    const cwd = join(testDir, "headers-test");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "headers-test");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("github", "atlassian"));
@@ -208,7 +201,8 @@ describe("loadConfig", () => {
   });
 
   test("loads mixed transport types in one config", async () => {
-    const cwd = join(testDir, "mixed");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "mixed");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem", "notion", "atlassian", "jupyter-mcp"));
@@ -225,7 +219,8 @@ describe("loadConfig", () => {
   });
 
   test("sources list tracks loaded config files", async () => {
-    const cwd = join(testDir, "sources-tracking");
+    using opts = testOptions();
+    const cwd = join(opts.dir, "sources-tracking");
     mkdirSync(cwd, { recursive: true });
 
     const configPath = projectConfigPath(cwd);

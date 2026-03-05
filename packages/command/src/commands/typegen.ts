@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { type JsonSchema, TYPES_PATH, type ToolInfo, ipcCall, jsonSchemaToTs } from "@mcp-cli/core";
+import { type JsonSchema, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
 import { printError } from "../output.js";
 
 /** Higher limits than default for declaration files — we want full detail. */
@@ -21,8 +21,8 @@ export async function cmdTypegen(_args: string[]): Promise<void> {
   }
 
   const dts = generateDeclarations(tools);
-  writeFileSync(TYPES_PATH, dts, "utf-8");
-  console.error(`Wrote ${TYPES_PATH} (${tools.length} tools)`);
+  writeFileSync(options.TYPES_PATH, dts, "utf-8");
+  console.error(`Wrote ${options.TYPES_PATH} (${tools.length} tools)`);
 }
 
 /**

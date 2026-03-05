@@ -18,7 +18,7 @@ import { writeFileSync } from "node:fs";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { USER_SERVERS_PATH, projectConfigPath } from "@mcp-cli/core";
+import { options, projectConfigPath } from "@mcp-cli/core";
 import { readConfigFile } from "./config-file.js";
 
 type ExportScope = "user" | "project";
@@ -66,11 +66,11 @@ export async function cmdExport(args: string[]): Promise<void> {
     // Merge both: project first, user overrides
     const projectConfig = readConfigFile(projectConfigPath(process.cwd()));
     Object.assign(servers, projectConfig.mcpServers);
-    const userConfig = readConfigFile(USER_SERVERS_PATH);
+    const userConfig = readConfigFile(options.USER_SERVERS_PATH);
     Object.assign(servers, userConfig.mcpServers);
   } else {
     const effectiveScope = scope ?? "user";
-    const configPath = effectiveScope === "project" ? projectConfigPath(process.cwd()) : USER_SERVERS_PATH;
+    const configPath = effectiveScope === "project" ? projectConfigPath(process.cwd()) : options.USER_SERVERS_PATH;
     const config = readConfigFile(configPath);
     Object.assign(servers, config.mcpServers);
   }
