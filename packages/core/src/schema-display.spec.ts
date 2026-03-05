@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type JsonSchema, formatAliasSignature, formatToolSignature, jsonSchemaToTs } from "./schema-display.js";
+import { type JsonSchema, formatAliasSignature, formatToolSignature, jsonSchemaToTs } from "./schema-display";
 
 describe("jsonSchemaToTs", () => {
   test("primitive types", () => {

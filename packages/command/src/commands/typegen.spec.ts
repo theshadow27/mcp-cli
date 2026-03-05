@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolInfo } from "@mcp-cli/core";
-import { generateDeclarations } from "./typegen.js";
+import { generateDeclarations } from "./typegen";
 
 function tool(server: string, name: string, schema: Record<string, unknown>, desc = ""): ToolInfo {
   return { server, name, description: desc, inputSchema: schema };

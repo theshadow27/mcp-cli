@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ConfigSource, ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
-import { configHash } from "./loader.js";
-import { type ConfigChangeEvent, ConfigWatcher } from "./watcher.js";
+import { configHash } from "./loader";
+import { type ConfigChangeEvent, ConfigWatcher } from "./watcher";
 
 const testSource: ConfigSource = { file: "/test", scope: "user" };
 

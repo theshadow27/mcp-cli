@@ -18,19 +18,17 @@ import { dirname } from "node:path";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
-  DB_PATH,
-  PID_PATH,
   PROTOCOL_VERSION,
-  SOCKET_PATH,
   auditRuntimePermissions,
   ensureStateDir,
+  options,
 } from "@mcp-cli/core";
-import { configHash, loadConfig } from "./config/loader.js";
-import { ConfigWatcher } from "./config/watcher.js";
-import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log.js";
-import { StateDb } from "./db/state.js";
-import { IpcServer } from "./ipc-server.js";
-import { ServerPool } from "./server-pool.js";
+import { configHash, loadConfig } from "./config/loader";
+import { ConfigWatcher } from "./config/watcher";
+import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
+import { StateDb } from "./db/state";
+import { IpcServer } from "./ipc-server";
+import { ServerPool } from "./server-pool";
 
 async function main(): Promise<void> {
   // Capture daemon logs before anything else
@@ -52,11 +50,11 @@ async function main(): Promise<void> {
     startedAt: Date.now(),
     protocolVersion: PROTOCOL_VERSION,
   };
-  writeFileSync(PID_PATH, JSON.stringify(pidData));
+  writeFileSync(options.PID_PATH, JSON.stringify(pidData));
 
   // Open SQLite database
-  const db = new StateDb(DB_PATH);
-  console.error(`[mcpd] Database: ${DB_PATH}`);
+  const db = new StateDb(options.DB_PATH);
+  console.error(`[mcpd] Database: ${options.DB_PATH}`);
 
   // Warn if runtime state permissions have been loosened
   auditRuntimePermissions();
@@ -115,7 +113,7 @@ async function main(): Promise<void> {
       startedAt: pidData.startedAt,
       protocolVersion: PROTOCOL_VERSION,
     };
-    writeFileSync(PID_PATH, JSON.stringify(updatedPid));
+    writeFileSync(options.PID_PATH, JSON.stringify(updatedPid));
   });
   watcher.start();
 
@@ -134,7 +132,7 @@ async function main(): Promise<void> {
     db.close();
     closeDaemonLogFile();
     try {
-      unlinkSync(PID_PATH);
+      unlinkSync(options.PID_PATH);
     } catch {
       // already gone
     }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ServerConfig } from "./config.js";
-import { getTransportType, isHttpConfig, isSseConfig, isStdioConfig } from "./config.js";
+import type { ServerConfig } from "./config";
+import { getTransportType, isHttpConfig, isSseConfig, isStdioConfig } from "./config";
 
 describe("isStdioConfig", () => {
   test("returns true for config with command", () => {

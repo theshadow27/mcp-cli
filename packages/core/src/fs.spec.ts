@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hardenFile } from "./fs.js";
+import { hardenFile } from "./fs";
 
 function tmpPath(prefix: string): string {
   return join(tmpdir(), `mcp-cli-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);

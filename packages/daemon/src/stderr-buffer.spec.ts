@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { StderrRingBuffer } from "./stderr-buffer.js";
+import { StderrRingBuffer } from "./stderr-buffer";
 
 describe("StderrRingBuffer", () => {
   test("push returns timestamped entry", () => {

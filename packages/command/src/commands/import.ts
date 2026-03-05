@@ -17,8 +17,8 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
 import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
-import { printError } from "../output.js";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file.js";
+import { printError } from "../output";
+import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 /** Shape of ~/.claude.json relevant to server config */
 export interface ClaudeConfig {

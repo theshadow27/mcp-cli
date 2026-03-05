@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractJsonFlag } from "./parse.js";
+import { extractJsonFlag } from "./parse";
 
 describe("extractJsonFlag", () => {
   test("extracts -j flag", () => {

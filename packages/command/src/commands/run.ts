@@ -8,8 +8,8 @@
 
 import type { AliasDetail } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { runAlias } from "../alias-runner.js";
-import { printError } from "../output.js";
+import { runAlias } from "../alias-runner";
+import { printError } from "../output";
 
 export async function cmdRun(args: string[]): Promise<void> {
   const aliasName = args[0];

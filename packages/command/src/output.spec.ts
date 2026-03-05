@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail } from "@mcp-cli/core";
-import { formatToolResult, printAliasDebug, printAliasList } from "./output.js";
+import { formatToolResult, printAliasDebug, printAliasList } from "./output";
 
 describe("formatToolResult", () => {
   test("returns empty string for null", () => {

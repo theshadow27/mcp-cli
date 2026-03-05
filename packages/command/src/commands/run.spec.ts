@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseRunArgs } from "./run.js";
+import { parseRunArgs } from "./run";
 
 describe("parseRunArgs", () => {
   test("parses --key value pairs", () => {

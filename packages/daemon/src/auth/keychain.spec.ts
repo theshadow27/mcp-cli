@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readKeychainTokens } from "./keychain.js";
+import { readKeychainTokens } from "./keychain";
 
 // Save original so we can restore after platform override tests
 const originalPlatform = process.platform;

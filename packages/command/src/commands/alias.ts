@@ -7,8 +7,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AliasDetail, AliasInfo, IpcMethod } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
-import { readFileWithLimit } from "../file-read.js";
-import { printAliasDebug, printAliasList, printError } from "../output.js";
+import { readFileWithLimit } from "../file-read";
+import { printAliasDebug, printAliasList, printError } from "../output";
 
 export interface AliasDeps {
   ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;

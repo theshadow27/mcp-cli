@@ -17,21 +17,21 @@
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { VERSION, isDaemonRunning } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { cmdAdd, cmdAddJson } from "./commands/add.js";
-import { cmdAlias } from "./commands/alias.js";
-import { cmdCompletions } from "./commands/completions.js";
-import { cmdConfig } from "./commands/config.js";
-import { cmdExport } from "./commands/export.js";
-import { cmdGet } from "./commands/get.js";
-import { cmdImport } from "./commands/import.js";
-import { cmdInstall } from "./commands/install.js";
-import { cmdLogs } from "./commands/logs.js";
-import { cmdRegistryDispatch } from "./commands/registry-cmd.js";
-import { cmdRemove } from "./commands/remove.js";
-import { cmdRun, parseRunArgs } from "./commands/run.js";
-import { cmdTypegen } from "./commands/typegen.js";
-import { readFileWithLimit } from "./file-read.js";
-import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index.js";
+import { cmdAdd, cmdAddJson } from "./commands/add";
+import { cmdAlias } from "./commands/alias";
+import { cmdCompletions } from "./commands/completions";
+import { cmdConfig } from "./commands/config";
+import { cmdExport } from "./commands/export";
+import { cmdGet } from "./commands/get";
+import { cmdImport } from "./commands/import";
+import { cmdInstall } from "./commands/install";
+import { cmdLogs } from "./commands/logs";
+import { cmdRegistryDispatch } from "./commands/registry-cmd";
+import { cmdRemove } from "./commands/remove";
+import { cmdRun, parseRunArgs } from "./commands/run";
+import { cmdTypegen } from "./commands/typegen";
+import { readFileWithLimit } from "./file-read";
+import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
   formatToolResult,
   printError,
@@ -40,9 +40,9 @@ import {
   printToolInfo,
   printToolList,
   printToolResult,
-} from "./output.js";
-import { extractFullFlag, extractJqFlag, extractJsonFlag, splitServerTool } from "./parse.js";
-import { searchRegistry } from "./registry/client.js";
+} from "./output";
+import { extractFullFlag, extractJqFlag, extractJsonFlag, splitServerTool } from "./parse";
+import { searchRegistry } from "./registry/client";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);

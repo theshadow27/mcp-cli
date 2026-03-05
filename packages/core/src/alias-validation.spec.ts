@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { safeAliasPath, validateAliasName } from "./constants.js";
-import { ALIASES_DIR } from "./constants.js";
+import { options, safeAliasPath, validateAliasName } from "./constants";
 
 describe("validateAliasName", () => {
   it("accepts valid names", () => {
@@ -40,10 +39,10 @@ describe("validateAliasName", () => {
 });
 
 describe("safeAliasPath", () => {
-  it("returns path inside ALIASES_DIR for valid names", () => {
+  it("returns path inside options.ALIASES_DIR for valid names", () => {
     const result = safeAliasPath("my-alias");
-    expect(result).toBe(`${ALIASES_DIR}/my-alias.ts`);
-    expect(result.startsWith(`${ALIASES_DIR}/`)).toBe(true);
+    expect(result).toBe(`${options.ALIASES_DIR}/my-alias.ts`);
+    expect(result.startsWith(`${options.ALIASES_DIR}/`)).toBe(true);
   });
 
   it("rejects path traversal via name validation", () => {

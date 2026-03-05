@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type CallbackServer, startCallbackServer } from "./callback-server.js";
+import { type CallbackServer, startCallbackServer } from "./callback-server";
 
 describe("startCallbackServer", () => {
   let server: CallbackServer | undefined;

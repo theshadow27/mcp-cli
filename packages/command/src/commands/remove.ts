@@ -4,8 +4,8 @@
  * Removes a server entry from the config file. The daemon's ConfigWatcher picks up changes.
  */
 
-import { printError } from "../output.js";
-import { type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file.js";
+import { printError } from "../output";
+import { type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
 
 /**
  * Parse `mcp remove` arguments.

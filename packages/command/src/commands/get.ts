@@ -6,8 +6,8 @@
 
 import type { GetConfigResult, ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { c, printError } from "../output.js";
-import { extractJsonFlag } from "../parse.js";
+import { c, printError } from "../output";
+import { extractJsonFlag } from "../parse";
 
 export async function cmdGet(args: string[]): Promise<void> {
   const { json, rest } = extractJsonFlag(args);

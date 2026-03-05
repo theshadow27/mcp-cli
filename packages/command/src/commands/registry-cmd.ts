@@ -6,9 +6,9 @@
  *   mcp registry list             List all servers
  */
 
-import { printError, printRegistryList } from "../output.js";
-import { extractJsonFlag } from "../parse.js";
-import { listRegistry, searchRegistry } from "../registry/client.js";
+import { printError, printRegistryList } from "../output";
+import { extractJsonFlag } from "../parse";
+import { listRegistry, searchRegistry } from "../registry/client";
 
 export async function cmdRegistryDispatch(args: string[]): Promise<void> {
   const sub = args[0];

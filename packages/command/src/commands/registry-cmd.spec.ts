@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RegistryResponse } from "../registry/client.js";
-import { _setCacheDir } from "../registry/client.js";
+import type { RegistryResponse } from "../registry/client";
+import { _setCacheDir } from "../registry/client";
 
 const testCacheDir = mkdtempSync(join(tmpdir(), "mcp-regcmd-test-"));
 

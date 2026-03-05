@@ -15,8 +15,8 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { StateDb } from "../db/state.js";
-import { type KeychainTokens, readKeychainTokens } from "./keychain.js";
+import type { StateDb } from "../db/state";
+import { type KeychainTokens, readKeychainTokens } from "./keychain";
 
 /** Return the platform-appropriate command to open a URL in a browser. */
 export function getBrowserCommand(url: string): string[] {

@@ -7,7 +7,7 @@ import {
   cmdCompletions,
   fishScript,
   zshScript,
-} from "./completions.js";
+} from "./completions";
 
 describe("SUBCOMMANDS", () => {
   const expected = [

@@ -8,7 +8,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CACHE_DIR, REGISTRY_CACHE_TTL_MS } from "@mcp-cli/core";
+import { REGISTRY_CACHE_TTL_MS, options } from "@mcp-cli/core";
 
 const REGISTRY_BASE = "https://api.anthropic.com/mcp-registry/v0";
 
@@ -66,11 +66,11 @@ export interface RegistryResponse {
 
 // -- Cache helpers --
 
-let _cacheDir = CACHE_DIR;
+let _cacheDir = options.CACHE_DIR;
 
 /** @internal Override cache directory (for tests). Pass null to reset. */
 export function _setCacheDir(dir: string | null): void {
-  _cacheDir = dir ?? CACHE_DIR;
+  _cacheDir = dir ?? options.CACHE_DIR;
 }
 
 interface CacheEntry {

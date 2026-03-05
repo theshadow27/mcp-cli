@@ -10,8 +10,8 @@
 
 import { readFileSync } from "node:fs";
 import type { GetDaemonLogsResult, GetLogsResult, IpcMethod } from "@mcp-cli/core";
-import { DAEMON_LOG_PATH, ipcCall } from "@mcp-cli/core";
-import { printError } from "../output.js";
+import { ipcCall, options } from "@mcp-cli/core";
+import { printError } from "../output";
 
 export interface LogsArgs {
   server: string | undefined;
@@ -38,7 +38,7 @@ const defaultDeps: LogsDeps = {
   ipcCall,
   printError,
   readFileSync: (path, enc) => readFileSync(path, enc),
-  daemonLogPath: DAEMON_LOG_PATH,
+  daemonLogPath: options.DAEMON_LOG_PATH,
   writeStderr: (msg) => process.stderr.write(msg),
   exit: (code) => process.exit(code),
   schedule: (fn, ms) => setTimeout(fn, ms),

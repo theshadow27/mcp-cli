@@ -1,8 +1,8 @@
 import type { ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
-import type { AuthStatus } from "../components/auth-banner.js";
-import type { LogSource } from "./use-logs.js";
+import type { AuthStatus } from "../components/auth-banner";
+import type { LogSource } from "./use-logs";
 
 export type View = "servers" | "logs";
 

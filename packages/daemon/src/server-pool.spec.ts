@@ -14,7 +14,7 @@ import {
   isRetryableError,
   isTransientCallError,
   wrapTransportError,
-} from "./server-pool.js";
+} from "./server-pool";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };

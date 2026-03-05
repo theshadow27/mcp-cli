@@ -11,7 +11,7 @@
  */
 
 import { resolve } from "node:path";
-import { ALIASES_DIR, type AliasContext, type AliasDefinition, type McpProxy, ipcCall } from "@mcp-cli/core";
+import { type AliasContext, type AliasDefinition, type McpProxy, ipcCall, options } from "@mcp-cli/core";
 import { plugin } from "bun";
 import { z } from "zod/v4";
 
@@ -58,7 +58,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
 
   // Defense-in-depth: verify the alias path is inside the aliases directory
   const resolved = resolve(aliasPath);
-  if (!resolved.startsWith(`${ALIASES_DIR}/`)) {
+  if (!resolved.startsWith(`${options.ALIASES_DIR}/`)) {
     throw new Error(`Refusing to execute alias outside aliases directory: ${resolved}`);
   }
 

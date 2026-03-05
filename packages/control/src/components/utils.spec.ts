@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { filterLogLines } from "../hooks/use-logs.js";
-import { isAuthError } from "./auth-banner.js";
-import { formatUptime } from "./header.js";
-import { formatRelativeTime } from "./server-detail.js";
+import { filterLogLines } from "../hooks/use-logs";
+import { isAuthError } from "./auth-banner";
+import { formatUptime } from "./header";
+import { formatRelativeTime } from "./server-detail";
 
 describe("formatUptime", () => {
   it("formats seconds only", () => {

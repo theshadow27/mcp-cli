@@ -7,7 +7,7 @@ import {
   analyzeStructure,
   applyJqFilter,
   generateAnalysis,
-} from "./index.js";
+} from "./index";
 
 describe("applyJqFilter", () => {
   afterEach(() => {

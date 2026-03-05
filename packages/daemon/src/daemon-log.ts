@@ -7,8 +7,8 @@
  */
 
 import { appendFileSync, closeSync, openSync, renameSync, statSync } from "node:fs";
-import { DAEMON_LOG_BACKUP_PATH, DAEMON_LOG_MAX_BYTES, DAEMON_LOG_PATH } from "@mcp-cli/core";
-import { type StderrLine, StderrRingBuffer } from "./stderr-buffer.js";
+import { DAEMON_LOG_MAX_BYTES, options } from "@mcp-cli/core";
+import { type StderrLine, StderrRingBuffer } from "./stderr-buffer";
 
 const DAEMON_KEY = "__daemon__";
 const DAEMON_CAPACITY = 200;
@@ -17,8 +17,8 @@ const buffer = new StderrRingBuffer(DAEMON_CAPACITY);
 
 let installed = false;
 let logFd: number | null = null;
-let logPath: string = DAEMON_LOG_PATH;
-let logBackupPath: string = DAEMON_LOG_BACKUP_PATH;
+let logPath: string = options.DAEMON_LOG_PATH;
+let logBackupPath: string = options.DAEMON_LOG_BACKUP_PATH;
 let logMaxBytes: number = DAEMON_LOG_MAX_BYTES;
 
 /** Intercept console.error to capture daemon logs. Call once at startup. */
