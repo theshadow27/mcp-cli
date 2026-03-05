@@ -11,7 +11,7 @@ bun run typecheck
 echo "  lint..."
 bun run lint:check
 
-echo "  test..."
-bun run test
+echo "  test + coverage..."
+bun run test:coverage
 
 echo "All checks passed."

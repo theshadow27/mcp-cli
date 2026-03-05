@@ -1,0 +1,5 @@
+[test]
+
+# Always generate coverage report when running tests
+coverage = true
+coverageReporter = ["text"]
