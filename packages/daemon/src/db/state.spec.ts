@@ -692,6 +692,40 @@ describe("StateDb", () => {
       db.close();
     });
 
+    test("reply-to-sender smoke: worker→manager→reply is picked up by getNextUnread", () => {
+      const db = createDb();
+
+      // 1. Worker sends mail to manager
+      const origId = db.insertMail("wt-262", "manager", "stopped", "tests pass");
+
+      // 2. Manager reads and marks as read
+      const orig = db.getMailById(origId);
+      expect(orig?.sender).toBe("wt-262");
+      expect(orig?.recipient).toBe("manager");
+      db.markMailRead(origId);
+
+      // 3. Manager replies — recipient should be original sender
+      const replyId = db.insertMail(
+        "manager",
+        orig?.sender ?? "",
+        `Re: ${orig?.subject}`,
+        "looks good, continue",
+        origId,
+      );
+      const reply = db.getMailById(replyId);
+      expect(reply?.sender).toBe("manager");
+      expect(reply?.recipient).toBe("wt-262");
+      expect(reply?.replyTo).toBe(origId);
+
+      // 4. Worker polls for unread mail addressed to wt-262
+      const next = db.getNextUnread("wt-262");
+      expect(next).toBeDefined();
+      expect(next?.id).toBe(replyId);
+      expect(next?.body).toBe("looks good, continue");
+
+      db.close();
+    });
+
     test("insertMail with no optional fields", () => {
       const db = createDb();
       const id = db.insertMail("a", "b");
