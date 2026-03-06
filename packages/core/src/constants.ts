@@ -66,6 +66,12 @@ const _originalOptions = {
   LOCK_PATH: join(MCP_CLI_DIR, "mcpd.lock"),
   DAEMON_LOG_PATH: join(MCP_CLI_DIR, "mcpd.log"),
   DAEMON_LOG_BACKUP_PATH: join(MCP_CLI_DIR, "mcpd.log.1"),
+  /** Mail TTL (ms) — read messages older than this are pruned (default 7 days) */
+  MAIL_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+  /** How many log inserts between prune passes (amortized O(1)) */
+  LOG_PRUNE_INTERVAL: 100,
+  /** How many mail operations between TTL prune passes */
+  MAIL_PRUNE_INTERVAL: 50,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
