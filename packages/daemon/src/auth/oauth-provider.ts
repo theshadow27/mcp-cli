@@ -80,7 +80,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
-    // 0. Config-level credentials take priority (from mcp add --client-id)
+    // 0. Config-level credentials take priority (from mcx add --client-id)
     if (this.opts.clientId) {
       const info: OAuthClientInformationMixed = { client_id: this.opts.clientId };
       if (this.opts.clientSecret) info.client_secret = this.opts.clientSecret;

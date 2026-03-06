@@ -96,7 +96,7 @@ describe("zshScript", () => {
     expect(script).toMatch(/^#compdef mcx/);
   });
 
-  test("defines the _mcp function", () => {
+  test("defines the _mcx function", () => {
     expect(script).toContain("_mcx()");
   });
 

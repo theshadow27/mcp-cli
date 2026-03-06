@@ -133,9 +133,9 @@ Options:
   --help, -h                        Show this help
 
 Examples:
-  mcp export .mcp.json              Export user servers to .mcp.json
-  mcp export --scope project .mcp.json
-  mcp export --server github --server notion .mcp.json
+  mcx export .mcp.json              Export user servers to .mcp.json
+  mcx export --scope project .mcp.json
+  mcx export --server github --server notion .mcp.json
   mcx export --all servers.json     Export everything
   mcx export | jq .                 Pipe to jq`);
 }

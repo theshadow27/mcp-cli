@@ -95,7 +95,7 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
 
   if (!parsed.server) {
     d.printError(
-      "Usage: mcx logs <server> [-f|--follow] [--lines N]\n       mcp logs --daemon [-f|--follow] [--lines N]",
+      "Usage: mcx logs <server> [-f|--follow] [--lines N]\n       mcx logs --daemon [-f|--follow] [--lines N]",
     );
     d.exit(1);
   }

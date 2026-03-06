@@ -222,7 +222,7 @@ export async function isDaemonRunning(): Promise<boolean> {
   // Protocol version mismatch — daemon is alive but wrong version
   if (data.protocolVersion !== PROTOCOL_VERSION) {
     console.error(
-      `[mcp] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
+      `[mcx] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
     );
     versionMismatchPid = data.pid;
     return false;
