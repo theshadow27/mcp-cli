@@ -23,6 +23,7 @@ import {
   ensureStateDir,
   options,
 } from "@mcp-cli/core";
+import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
@@ -61,6 +62,17 @@ async function main(): Promise<void> {
 
   // Create server pool
   const pool = new ServerPool(config, db);
+
+  // Start virtual alias server
+  const aliasServer = new AliasServer(db);
+  try {
+    const { client, transport } = await aliasServer.start();
+    const cachedTools = buildAliasToolCache(db);
+    pool.registerVirtualServer("_aliases", client, transport, cachedTools);
+    console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
+  } catch (err) {
+    console.error(`[mcpd] Failed to start alias server: ${err}`);
+  }
 
   // Idle timeout management with in-flight request tracking
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
@@ -104,7 +116,7 @@ async function main(): Promise<void> {
   watcher.start();
 
   // Start IPC server
-  const ipcServer = new IpcServer(pool, config, db, {
+  const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     onActivity: () => {
       inFlightCount++;
       resetIdleTimer();
@@ -129,6 +141,7 @@ async function main(): Promise<void> {
     console.error("[mcpd] Shutting down...");
     watcher.stop();
     ipcServer.stop();
+    await aliasServer.stop();
     await pool.closeAll();
     db.close();
     closeDaemonLogFile();

@@ -213,7 +213,7 @@ export interface UsageStat {
 
 export interface ServerStatus {
   name: string;
-  transport: "stdio" | "http" | "sse";
+  transport: "stdio" | "http" | "sse" | "virtual";
   state: "disconnected" | "connecting" | "connected" | "error";
   toolCount: number;
   lastUsed?: number;

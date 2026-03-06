@@ -33,6 +33,7 @@ import {
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
+import type { AliasServer } from "./alias-server";
 import { startCallbackServer } from "./auth/callback-server";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines } from "./daemon-log";
@@ -50,11 +51,13 @@ export class IpcServer {
   private onShutdown: () => void;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
+  private aliasServer: AliasServer | null = null;
 
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
     private db: StateDb,
+    aliasServer: AliasServer | null,
     options: {
       onActivity: () => void;
       onRequestComplete?: () => void;
@@ -66,6 +69,7 @@ export class IpcServer {
     this.onRequestComplete = options.onRequestComplete ?? (() => {});
     this.onShutdown = options.onShutdown ?? (() => process.exit(0));
     this.onReloadConfig = options.onReloadConfig ?? null;
+    this.aliasServer = aliasServer;
     this.registerHandlers();
   }
 
@@ -345,6 +349,8 @@ export class IpcServer {
         this.db.saveAlias(name, filePath, description, aliasType);
       }
 
+      // Refresh virtual alias server so new tool is immediately visible
+      await this.aliasServer?.refresh();
       return { ok: true, filePath };
     });
 
@@ -359,6 +365,8 @@ export class IpcServer {
         }
         this.db.deleteAlias(name);
       }
+      // Refresh virtual alias server so deleted tool is removed
+      await this.aliasServer?.refresh();
       return { ok: true };
     });
 
