@@ -80,20 +80,6 @@ async function main(): Promise<void> {
     }, idleTimeoutMs);
   }
 
-  // Start IPC server
-  const ipcServer = new IpcServer(pool, config, db, {
-    onActivity: () => {
-      inFlightCount++;
-      resetIdleTimer();
-    },
-    onRequestComplete: () => {
-      inFlightCount = Math.max(0, inFlightCount - 1);
-      resetIdleTimer();
-    },
-    onShutdown: () => shutdown(),
-  });
-  ipcServer.start();
-
   // Watch config files for hot reload
   const watcher = new ConfigWatcher(config, (event) => {
     const { added, removed, changed } = pool.updateConfig(event.config);
@@ -116,6 +102,21 @@ async function main(): Promise<void> {
     writeFileSync(options.PID_PATH, JSON.stringify(updatedPid));
   });
   watcher.start();
+
+  // Start IPC server
+  const ipcServer = new IpcServer(pool, config, db, {
+    onActivity: () => {
+      inFlightCount++;
+      resetIdleTimer();
+    },
+    onRequestComplete: () => {
+      inFlightCount = Math.max(0, inFlightCount - 1);
+      resetIdleTimer();
+    },
+    onShutdown: () => shutdown(),
+    onReloadConfig: () => watcher.forceReload(),
+  });
+  ipcServer.start();
 
   // Start idle timer
   resetIdleTimer();

@@ -31,7 +31,8 @@ export type IpcMethod =
   | "readMail"
   | "waitForMail"
   | "replyToMail"
-  | "markRead";
+  | "markRead"
+  | "reloadConfig";
 
 // -- Request/Response --
 
