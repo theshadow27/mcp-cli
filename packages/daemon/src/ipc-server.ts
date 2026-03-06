@@ -49,15 +49,23 @@ export class IpcServer {
   private onRequestComplete: () => void;
   private onShutdown: () => void;
 
+  private onReloadConfig: (() => Promise<void>) | null = null;
+
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
     private db: StateDb,
-    options: { onActivity: () => void; onRequestComplete?: () => void; onShutdown?: () => void },
+    options: {
+      onActivity: () => void;
+      onRequestComplete?: () => void;
+      onShutdown?: () => void;
+      onReloadConfig?: () => Promise<void>;
+    },
   ) {
     this.onActivity = options.onActivity;
     this.onRequestComplete = options.onRequestComplete ?? (() => {});
     this.onShutdown = options.onShutdown ?? (() => process.exit(0));
+    this.onReloadConfig = options.onReloadConfig ?? null;
     this.registerHandlers();
   }
 
@@ -434,6 +442,14 @@ export class IpcServer {
       const { id } = MarkReadParamsSchema.parse(params);
       this.db.markMailRead(id);
       return {};
+    });
+
+    this.handlers.set("reloadConfig", async () => {
+      if (!this.onReloadConfig) {
+        throw Object.assign(new Error("Config reload not available"), { code: IPC_ERROR.INTERNAL_ERROR });
+      }
+      await this.onReloadConfig();
+      return { ok: true };
     });
 
     this.handlers.set("shutdown", async () => {

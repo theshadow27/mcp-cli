@@ -99,21 +99,15 @@ export class ConfigWatcher {
     return [...paths];
   }
 
-  /** Set up fs.watch on a file (or its parent directory if it doesn't exist yet). */
+  /**
+   * Set up fs.watch on the parent directory of a config file.
+   *
+   * Always watches the directory rather than the file itself because many
+   * editors perform atomic saves (write tmp → rename), which replaces the
+   * file's inode and silently breaks a direct `fs.watch(file)` handle.
+   */
   private watchFile(filePath: string): void {
-    if (existsSync(filePath)) {
-      // Watch the file directly
-      try {
-        const watcher = watch(filePath, () => this.scheduleReload());
-        this.watchers.push(watcher);
-      } catch {
-        // Fall back to watching the directory
-        this.watchDirectory(filePath);
-      }
-    } else {
-      // File doesn't exist yet — watch the parent directory for creation
-      this.watchDirectory(filePath);
-    }
+    this.watchDirectory(filePath);
   }
 
   /** Watch a parent directory for file creation/modification. */
@@ -129,6 +123,11 @@ export class ConfigWatcher {
     } catch {
       // Directory not watchable — skip silently
     }
+  }
+
+  /** Force an immediate config reload, bypassing debounce. */
+  async forceReload(): Promise<void> {
+    await this.reload();
   }
 
   /** Schedule a debounced config reload. */
