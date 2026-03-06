@@ -681,11 +681,11 @@ export function wrapTransportError(serverName: string, config: ServerConfig, raw
     return new Error(`${prefix} failed: TLS/certificate error connecting to ${url}. ${err.message}`);
   }
   if (msg.includes("401") || msg.includes("unauthorized")) {
-    return new Error(`${prefix} auth failed (401). Run "mcp auth ${serverName}" to re-authenticate.`);
+    return new Error(`${prefix} auth failed (401). Run "mcx auth ${serverName}" to re-authenticate.`);
   }
   if (msg.includes("403") || msg.includes("forbidden")) {
     return new Error(
-      `${prefix} auth failed (403 Forbidden). Run "mcp auth ${serverName}" to re-authenticate or check your permissions.`,
+      `${prefix} auth failed (403 Forbidden). Run "mcx auth ${serverName}" to re-authenticate or check your permissions.`,
     );
   }
   if (msg.includes("timeout") || code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {

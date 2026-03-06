@@ -7,15 +7,15 @@ MCP servers like Atlassian inject ~12,000 tokens into every Claude Code conversa
 `mcp-cli` gives you the same MCP tools via Bash: discoverable, pipeable, composable, and invisible until needed.
 
 ```bash
-$ mcp atlassian search '{"query":"sprint planning"}' | jq '.results[].title'
+$ mcx atlassian search '{"query":"sprint planning"}' | jq '.results[].title'
 "Q1 Sprint Planning"
 "Sprint Planning Template"
 "Sprint Planning Best Practices"
 
-$ mcp coralogix-server get_datetime '{}'
+$ mcx coralogix-server get_datetime '{}'
 2026-03-02T21:48:22.122294+00:00
 
-$ mcp grep confluence
+$ mcx grep confluence
   getConfluencePage                atlassian  Get a Confluence page by page ID
   searchConfluenceUsingCql         atlassian  Search content with CQL
   createConfluencePage             atlassian  Create Confluence page
@@ -36,7 +36,7 @@ bun run build    # binaries in dist/
 
 ## Zero Config
 
-`mcp-cli` reads your existing Claude Code configuration — `~/.claude.json` and `.mcp.json`. If Claude Code can see a server, so can `mcp`.
+`mcp-cli` reads your existing Claude Code configuration — `~/.claude.json` and `.mcp.json`. If Claude Code can see a server, so can `mcx`.
 
 No extra setup. No duplicate config. Just works.
 
@@ -45,7 +45,7 @@ You can also add servers in `~/.mcp-cli/servers.json` for standalone use.
 ## How It Works
 
 ```
-mcp call server tool '{...}'
+mcx call server tool '{...}'
   |
   +-> mcpd (daemon)         auto-starts on first call, stays alive 5min
   |     +-> server-pool      persistent connections (stdio, SSE, HTTP)
@@ -55,38 +55,38 @@ mcp call server tool '{...}'
   +-> stdout (JSON)          pipe to jq, scripts, other tools
 ```
 
-The `mcp` CLI is a thin client. The `mcpd` daemon manages connections, auth, and caching over a Unix socket. First call cold-starts the daemon (~2s); every call after that is instant.
+The `mcx` CLI is a thin client. The `mcpd` daemon manages connections, auth, and caching over a Unix socket. First call cold-starts the daemon (~2s); every call after that is instant.
 
 ## Commands
 
 ### Discovery
 
 ```bash
-mcp ls                              # list servers and their status
-mcp ls <server>                     # list tools on a server
-mcp info <server> <tool>            # show tool schema (TypeScript notation)
-mcp grep <pattern>                  # search tools across all servers
+mcx ls                              # list servers and their status
+mcx ls <server>                     # list tools on a server
+mcx info <server> <tool>            # show tool schema (TypeScript notation)
+mcx grep <pattern>                  # search tools across all servers
 ```
 
 ### Calling Tools
 
 ```bash
-mcp call <server> <tool> [json]     # call a tool with inline JSON
-mcp call <server> <tool> @file.json # load args from a file
-echo '{"query":"test"}' | mcp call <server> <tool>  # pipe from stdin
-mcp <server> <tool> [json]          # shorthand (skip "call")
+mcx call <server> <tool> [json]     # call a tool with inline JSON
+mcx call <server> <tool> @file.json # load args from a file
+echo '{"query":"test"}' | mcx call <server> <tool>  # pipe from stdin
+mcx <server> <tool> [json]          # shorthand (skip "call")
 ```
 
 ### Auth & Management
 
 ```bash
-mcp auth <server>                   # trigger OAuth flow (opens browser)
-mcp config show                     # show resolved config + sources
-mcp config sources                  # list config file locations
-mcp status                          # daemon PID, uptime, server states
-mcp restart [server]                # reconnect server(s)
-mcp shutdown                        # stop the daemon
-mcp logs <server> [-f]              # view server stderr output
+mcx auth <server>                   # trigger OAuth flow (opens browser)
+mcx config show                     # show resolved config + sources
+mcx config sources                  # list config file locations
+mcx status                          # daemon PID, uptime, server states
+mcx restart [server]                # reconnect server(s)
+mcx shutdown                        # stop the daemon
+mcx logs <server> [-f]              # view server stderr output
 ```
 
 ### Aliases
@@ -94,7 +94,7 @@ mcp logs <server> [-f]              # view server stderr output
 Save multi-step workflows as TypeScript scripts:
 
 ```bash
-mcp alias save sprint-board - <<'TS'
+mcx alias save sprint-board - <<'TS'
 const issues = await mcp.atlassian.searchJiraIssuesUsingJql({
   cloudId: "abc-123",
   jql: "sprint in openSprints() AND assignee = currentUser()",
@@ -105,17 +105,17 @@ for (const issue of issues.issues) {
 }
 TS
 
-mcp run sprint-board
-# or just: mcp sprint-board
+mcx run sprint-board
+# or just: mcx sprint-board
 ```
 
 ```bash
-mcp alias ls                        # list saved aliases
-mcp alias save <name> <@file | ->   # save a script
-mcp alias show <name>               # print source
-mcp alias edit <name>               # open in $EDITOR
-mcp alias rm <name>                 # delete
-mcp run <alias> [--key value ...]   # run with arguments
+mcx alias ls                        # list saved aliases
+mcx alias save <name> <@file | ->   # save a script
+mcx alias show <name>               # print source
+mcx alias edit <name>               # open in $EDITOR
+mcx alias rm <name>                 # delete
+mcx run <alias> [--key value ...]   # run with arguments
 ```
 
 Alias scripts get a virtual `mcp-cli` module with:
@@ -135,7 +135,7 @@ Navigate servers, view tool counts, trigger restarts, see connection states.
 
 ## Claude Code Integration
 
-Add `mcp-cli` as a Claude Code skill to eliminate context bloat. Instead of injecting 31 Atlassian tool definitions (~12K tokens) into every conversation, Claude calls tools via Bash on demand — 0 tokens at rest.
+Add `mcp-cli` as a Claude Code skill to eliminate context bloat. Instead of injecting 31 Atlassian tool definitions (~12K tokens) into every conversation, Claude calls tools via `mcx` on demand — 0 tokens at rest.
 
 See [`skill/SKILL.md`](skill/SKILL.md) for the skill definition.
 
@@ -145,7 +145,7 @@ See [`skill/SKILL.md`](skill/SKILL.md) for the skill definition.
 packages/
   core/      Shared types, IPC protocol, config types, env expansion
   daemon/    mcpd — background daemon, server pool, auth, SQLite
-  command/   mcp — CLI entry point, output formatting, alias runner
+  command/   mcx — CLI entry point, output formatting, alias runner
   control/   mcpctl — React/Ink TUI dashboard
 ```
 
@@ -164,7 +164,7 @@ bun lint                     # biome lint + format
 bun run build                # compile binaries to dist/
 
 bun dev:daemon               # run daemon directly
-bun dev:mcp -- ls            # run CLI directly
+bun dev:mcx -- ls            # run CLI directly
 ```
 
 ## License

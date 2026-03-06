@@ -63,23 +63,23 @@ describe("bashScript", () => {
   const script = bashScript();
 
   test("defines the completion function", () => {
-    expect(script).toContain("_mcp_completions()");
+    expect(script).toContain("_mcx_completions()");
   });
 
   test("registers with complete builtin", () => {
-    expect(script).toContain("complete -F _mcp_completions mcp");
+    expect(script).toContain("complete -F _mcx_completions mcx");
   });
 
   test("calls back for dynamic server names", () => {
-    expect(script).toContain("mcp completions --servers 2>/dev/null");
+    expect(script).toContain("mcx completions --servers 2>/dev/null");
   });
 
   test("calls back for dynamic tool names", () => {
-    expect(script).toContain("mcp completions --tools");
+    expect(script).toContain("mcx completions --tools");
   });
 
   test("calls back for dynamic alias names", () => {
-    expect(script).toContain("mcp completions --aliases 2>/dev/null");
+    expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
   test("contains all subcommands", () => {
@@ -93,11 +93,11 @@ describe("zshScript", () => {
   const script = zshScript();
 
   test("starts with #compdef directive", () => {
-    expect(script).toMatch(/^#compdef mcp/);
+    expect(script).toMatch(/^#compdef mcx/);
   });
 
-  test("defines the _mcp function", () => {
-    expect(script).toContain("_mcp()");
+  test("defines the _mcx function", () => {
+    expect(script).toContain("_mcx()");
   });
 
   test("uses _describe for completions", () => {
@@ -105,15 +105,15 @@ describe("zshScript", () => {
   });
 
   test("calls back for dynamic server names", () => {
-    expect(script).toContain("mcp completions --servers 2>/dev/null");
+    expect(script).toContain("mcx completions --servers 2>/dev/null");
   });
 
   test("calls back for dynamic tool names", () => {
-    expect(script).toContain("mcp completions --tools");
+    expect(script).toContain("mcx completions --tools");
   });
 
   test("calls back for dynamic alias names", () => {
-    expect(script).toContain("mcp completions --aliases 2>/dev/null");
+    expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
   test("contains all subcommands", () => {
@@ -126,24 +126,24 @@ describe("zshScript", () => {
 describe("fishScript", () => {
   const script = fishScript();
 
-  test("uses complete -c mcp", () => {
-    expect(script).toContain("complete -c mcp");
+  test("uses complete -c mcx", () => {
+    expect(script).toContain("complete -c mcx");
   });
 
   test("disables file completions", () => {
-    expect(script).toContain("complete -c mcp -f");
+    expect(script).toContain("complete -c mcx -f");
   });
 
   test("calls back for dynamic server names", () => {
-    expect(script).toContain("mcp completions --servers 2>/dev/null");
+    expect(script).toContain("mcx completions --servers 2>/dev/null");
   });
 
   test("calls back for dynamic tool names", () => {
-    expect(script).toContain("mcp completions --tools");
+    expect(script).toContain("mcx completions --tools");
   });
 
   test("calls back for dynamic alias names", () => {
-    expect(script).toContain("mcp completions --aliases 2>/dev/null");
+    expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
   test("contains all subcommands in initial completion", () => {

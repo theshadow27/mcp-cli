@@ -1,9 +1,9 @@
 /**
- * `mcp registry` — browse the Anthropic MCP server registry.
+ * `mcx registry` — browse the Anthropic MCP server registry.
  *
  * Subcommands:
- *   mcp registry search <query>   Search by keyword
- *   mcp registry list             List all servers
+ *   mcx registry search <query>   Search by keyword
+ *   mcx registry list             List all servers
  */
 
 import { printError, printRegistryList } from "../output";
@@ -22,7 +22,7 @@ export async function cmdRegistryDispatch(args: string[]): Promise<void> {
       await cmdRegistryList(args.slice(sub ? 1 : 0));
       break;
     default:
-      printError("Usage: mcp registry {search|list} [--limit N] [--json]");
+      printError("Usage: mcx registry {search|list} [--limit N] [--json]");
       process.exit(1);
   }
 }
@@ -33,7 +33,7 @@ async function cmdRegistrySearch(args: string[]): Promise<void> {
 
   const query = remaining.join(" ");
   if (!query) {
-    printError("Usage: mcp registry search <query>");
+    printError("Usage: mcx registry search <query>");
     process.exit(1);
   }
 

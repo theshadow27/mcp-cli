@@ -1,12 +1,12 @@
 /**
- * `mcp import` — import servers from external config files into mcp-cli's own config.
+ * `mcx import` — import servers from external config files into mcp-cli's own config.
  *
  * Source resolution:
- *   mcp import                  Walk up from CWD to find .mcp.json, import those servers
- *   mcp import <file>           Import from a specific JSON config file
- *   mcp import . | <dir>        Import from .mcp.json in the given directory (project scope)
- *   mcp import --claude         Import from ~/.claude.json (global + project-scoped for CWD)
- *   mcp import --claude --all   Import all servers from ~/.claude.json (all projects)
+ *   mcx import                  Walk up from CWD to find .mcp.json, import those servers
+ *   mcx import <file>           Import from a specific JSON config file
+ *   mcx import . | <dir>        Import from .mcp.json in the given directory (project scope)
+ *   mcx import --claude         Import from ~/.claude.json (global + project-scoped for CWD)
+ *   mcx import --claude --all   Import all servers from ~/.claude.json (all projects)
  *
  * Target:
  *   --scope user    → ~/.mcp-cli/servers.json (default for file / no-arg / --claude)
@@ -224,15 +224,15 @@ function resolveSource(source: string | undefined): ResolvedSource {
 }
 
 function printImportUsage(): void {
-  console.log(`mcp import — import servers from external config files
+  console.log(`mcx import — import servers from external config files
 
 Usage:
-  mcp import                          Find .mcp.json by walking up, import servers
-  mcp import <file>                   Import from a specific config file
-  mcp import .                        Import from .mcp.json in CWD (project scope)
-  mcp import <dir>                    Import from .mcp.json in directory (project scope)
-  mcp import --claude                 Import from ~/.claude.json (global + matching projects)
-  mcp import --claude --all           Import from ~/.claude.json (all projects)
+  mcx import                          Find .mcp.json by walking up, import servers
+  mcx import <file>                   Import from a specific config file
+  mcx import .                        Import from .mcp.json in CWD (project scope)
+  mcx import <dir>                    Import from .mcp.json in directory (project scope)
+  mcx import --claude                 Import from ~/.claude.json (global + matching projects)
+  mcx import --claude --all           Import from ~/.claude.json (all projects)
 
 Options:
   --claude, -c                        Read servers from Claude Code's ~/.claude.json

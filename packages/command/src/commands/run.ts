@@ -1,5 +1,5 @@
 /**
- * `mcp run <alias> [json-input] [--key value ...]` — execute an alias script.
+ * `mcx run <alias> [json-input] [--key value ...]` — execute an alias script.
  *
  * For defineAlias aliases, the first non-flag argument after the alias name
  * is treated as JSON input (e.g. '{"email": "foo@bar.com"}').
@@ -14,7 +14,7 @@ import { printError } from "../output";
 export async function cmdRun(args: string[]): Promise<void> {
   const aliasName = args[0];
   if (!aliasName) {
-    printError("Usage: mcp run <alias> [json-input] [--key value ...]");
+    printError("Usage: mcx run <alias> [json-input] [--key value ...]");
     process.exit(1);
   }
 

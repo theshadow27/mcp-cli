@@ -3,7 +3,7 @@
  * mcpd — MCP CLI daemon
  *
  * Manages MCP server connections, auth tokens, and tool caching.
- * Communicates with the `mcp` CLI via Unix socket IPC.
+ * Communicates with the `mcx` CLI via Unix socket IPC.
  *
  * Lifecycle:
  * 1. Read config from Claude Code / .mcp.json / ~/.mcp-cli

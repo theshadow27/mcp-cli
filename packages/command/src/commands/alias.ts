@@ -1,5 +1,5 @@
 /**
- * `mcp alias {ls,save,show,edit,rm}` — alias CRUD commands.
+ * `mcx alias {ls,save,show,edit,rm}` — alias CRUD commands.
  */
 
 import { spawnSync } from "node:child_process";
@@ -85,8 +85,8 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       const hasCode = codeIdx !== -1;
 
       if (hasCode) {
-        // mcp alias save [-c CODE] [name]
-        // or: mcp alias save [name] -c CODE
+        // mcx alias save [-c CODE] [name]
+        // or: mcx alias save [name] -c CODE
         const codeBody = args[codeIdx + 1];
         if (!codeBody) {
           d.printError("Missing code body after -c/--code flag");
@@ -117,11 +117,11 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
         break;
       }
 
-      // Standard save: mcp alias save <name> <@file | - | script>
+      // Standard save: mcx alias save <name> <@file | - | script>
       const name = args[1];
       if (!name) {
         d.printError(
-          "Usage: mcp alias save <name> <@file | - | script>\n       mcp alias save -c '{...defineAlias body...}'",
+          "Usage: mcx alias save <name> <@file | - | script>\n       mcx alias save -c '{...defineAlias body...}'",
         );
         d.exit(1);
       }
@@ -158,7 +158,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       const debug = args.includes("--debug");
       const name = args.filter((a) => a !== "--debug")[1];
       if (!name) {
-        d.printError("Usage: mcp alias show <name> [--debug]");
+        d.printError("Usage: mcx alias show <name> [--debug]");
         d.exit(1);
       }
 
@@ -178,7 +178,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
     case "edit": {
       const name = args[1];
       if (!name) {
-        d.printError("Usage: mcp alias edit <name>");
+        d.printError("Usage: mcx alias edit <name>");
         d.exit(1);
       }
 
@@ -215,7 +215,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
     case "delete": {
       const name = args[1];
       if (!name) {
-        d.printError("Usage: mcp alias rm <name>");
+        d.printError("Usage: mcx alias rm <name>");
         d.exit(1);
       }
 
@@ -244,7 +244,7 @@ async function defaultReadStdin(): Promise<string> {
 
 /** Print help text with defineAlias usage examples */
 function printAliasHelp(): void {
-  console.error(`Usage: mcp alias <command> [options]
+  console.error(`Usage: mcx alias <command> [options]
 
 Commands:
   ls, list          List all aliases (-v for signatures)
@@ -256,7 +256,7 @@ Commands:
 Examples:
 
   # Structured alias with typed I/O (recommended):
-  mcp alias save my-tool @my-tool.ts
+  mcx alias save my-tool @my-tool.ts
 
   # Where my-tool.ts contains:
   #   defineAlias(({ mcp, z }) => ({
@@ -271,13 +271,13 @@ Examples:
   #   }));
 
   # Inline structured alias:
-  mcp alias save greet -c '{ name: "greet", description: "Say hello", input: z.string(), output: z.string(), fn: (name) => \`Hello, \${name}!\` }'
+  mcx alias save greet -c '{ name: "greet", description: "Say hello", input: z.string(), output: z.string(), fn: (name) => \`Hello, \${name}!\` }'
 
   # Legacy freeform script (still supported):
-  mcp alias save my-script @script.ts
+  mcx alias save my-script @script.ts
 
   # Inspect parsed metadata:
-  mcp alias show my-tool --debug`);
+  mcx alias show my-tool --debug`);
 }
 
 /** Extract a description from a `// description: ...` comment on the first few lines */

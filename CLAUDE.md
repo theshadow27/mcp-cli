@@ -13,8 +13,8 @@ bun build                    # compile binaries to dist/
 
 # Development
 bun dev:daemon               # run daemon directly
-bun dev:mcp -- ls            # run CLI directly
-bun dev:mcp -- call atlassian search '{"query":"test"}'
+bun dev:mcx -- ls            # run CLI directly
+bun dev:mcx -- call atlassian search '{"query":"test"}'
 ```
 
 ## Architecture
@@ -23,11 +23,11 @@ bun dev:mcp -- call atlassian search '{"query":"test"}'
 packages/
   core/      → Shared types, IPC protocol, config types, env expansion
   daemon/    → mcpd: background daemon managing MCP server connections
-  command/   → mcp: fast CLI that talks to daemon via Unix socket
+  command/   → mcx: fast CLI that talks to daemon via Unix socket
   control/   → mcpctl: TUI for daemon status and auth management
 ```
 
-**Build output:** `dist/mcpd`, `dist/mcp`, `dist/mcpctl` via `bun build --compile`
+**Build output:** `dist/mcpd`, `dist/mcx`, `dist/mcpctl` via `bun build --compile`
 
 **Prod dependencies:** `@modelcontextprotocol/sdk`, `zod` (v4)
 
@@ -50,7 +50,7 @@ packages/
 - Never use `any` — strict TypeScript
 - Tests: `*.spec.ts`, import from `bun:test`
 - Never use `mock.module()` — it pollutes Bun's global module registry across test files. Use dependency injection (optional constructor/function params) instead.
-- Keep binaries lean — fast startup matters (<50ms for `mcp call`)
+- Keep binaries lean — fast startup matters (<50ms for `mcx call`)
 - JSON output to stdout, errors/status to stderr
 - **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
 

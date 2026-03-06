@@ -1,7 +1,7 @@
 /**
  * HTTP-over-Unix-socket IPC server.
  *
- * Listens on ~/.mcp-cli/mcpd.sock for JSON requests from the `mcp` CLI.
+ * Listens on ~/.mcp-cli/mcpd.sock for JSON requests from the `mcx` CLI.
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";

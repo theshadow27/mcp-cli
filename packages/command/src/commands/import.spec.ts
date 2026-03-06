@@ -8,7 +8,7 @@ import { readConfigFile, writeConfigFile } from "./config-file";
 import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude } from "./import";
 
 /**
- * Tests for mcp import's source resolution and file I/O.
+ * Tests for mcx import's source resolution and file I/O.
  * Tests the underlying logic rather than the CLI entrypoint to avoid IPC dependencies.
  */
 
@@ -81,7 +81,7 @@ function writeMcpJson(dir: string, config: McpConfigFile): string {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("mcp import", () => {
+describe("mcx import", () => {
   describe("source file reading", () => {
     test("reads HTTP and SSE servers from .mcp.json", () => {
       using opts = testOptions();

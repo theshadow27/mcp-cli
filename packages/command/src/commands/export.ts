@@ -1,5 +1,5 @@
 /**
- * `mcp export` — export mcp-cli server configs to a standard .mcp.json file.
+ * `mcx export` — export mcp-cli server configs to a standard .mcp.json file.
  *
  * Source:
  *   --scope user       ~/.mcp-cli/servers.json (default)
@@ -10,8 +10,8 @@
  *   --server <name>    Export only specific servers (repeatable)
  *
  * Output:
- *   mcp export <file>           Write to file
- *   mcp export (no file arg)    Write to stdout
+ *   mcx export <file>           Write to file
+ *   mcx export (no file arg)    Write to stdout
  */
 
 import { writeFileSync } from "node:fs";
@@ -119,11 +119,11 @@ export async function cmdExport(args: string[]): Promise<void> {
 }
 
 function printExportUsage(): void {
-  console.log(`mcp export — export server configs to .mcp.json format
+  console.log(`mcx export — export server configs to .mcp.json format
 
 Usage:
-  mcp export <file>                 Export servers to a file
-  mcp export                        Export servers to stdout
+  mcx export <file>                 Export servers to a file
+  mcx export                        Export servers to stdout
 
 Options:
   --scope user|project              Source scope (default: user)
@@ -133,9 +133,9 @@ Options:
   --help, -h                        Show this help
 
 Examples:
-  mcp export .mcp.json              Export user servers to .mcp.json
-  mcp export --scope project .mcp.json
-  mcp export --server github --server notion .mcp.json
-  mcp export --all servers.json     Export everything
-  mcp export | jq .                 Pipe to jq`);
+  mcx export .mcp.json              Export user servers to .mcp.json
+  mcx export --scope project .mcp.json
+  mcx export --server github --server notion .mcp.json
+  mcx export --all servers.json     Export everything
+  mcx export | jq .                 Pipe to jq`);
 }

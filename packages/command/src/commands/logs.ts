@@ -1,6 +1,6 @@
 /**
- * mcp logs <server> — view stderr output from an MCP server.
- * mcp logs --daemon  — view persistent daemon log file.
+ * mcx logs <server> — view stderr output from an MCP server.
+ * mcx logs --daemon  — view persistent daemon log file.
  *
  * Options:
  *   --daemon        Show daemon logs (reads ~/.mcp-cli/mcpd.log)
@@ -95,7 +95,7 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
 
   if (!parsed.server) {
     d.printError(
-      "Usage: mcp logs <server> [-f|--follow] [--lines N]\n       mcp logs --daemon [-f|--follow] [--lines N]",
+      "Usage: mcx logs <server> [-f|--follow] [--lines N]\n       mcx logs --daemon [-f|--follow] [--lines N]",
     );
     d.exit(1);
   }

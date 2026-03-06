@@ -52,7 +52,7 @@ function fixtureConfig(...names: (keyof typeof FIXTURES)[]): McpConfigFile {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("mcp export", () => {
+describe("mcx export", () => {
   describe("export to file", () => {
     test("exports all servers from a config file to .mcp.json format", () => {
       using opts = testOptions();

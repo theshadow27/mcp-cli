@@ -169,16 +169,16 @@ describe("wrapTransportError", () => {
       expect(result.message).toContain("https://example.com/mcp");
     });
 
-    test("401 → auth failed with mcp auth hint", () => {
+    test("401 → auth failed with mcx auth hint", () => {
       const result = wrapTransportError("api", http, new Error("HTTP 401 Unauthorized"));
       expect(result.message).toContain("auth failed (401)");
-      expect(result.message).toContain("mcp auth api");
+      expect(result.message).toContain("mcx auth api");
     });
 
     test("403 → forbidden with auth hint", () => {
       const result = wrapTransportError("api", http, new Error("HTTP 403 Forbidden"));
       expect(result.message).toContain("auth failed (403 Forbidden)");
-      expect(result.message).toContain("mcp auth api");
+      expect(result.message).toContain("mcx auth api");
     });
 
     test("ETIMEDOUT → timeout", () => {

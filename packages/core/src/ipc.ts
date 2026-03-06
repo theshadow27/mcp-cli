@@ -1,5 +1,5 @@
 /**
- * IPC protocol between mcp (command) and mcpd (daemon).
+ * IPC protocol between mcx (command) and mcpd (daemon).
  *
  * Transport: HTTP over Unix socket at ~/.mcp-cli/mcpd.sock
  * Encoding: JSON request/response bodies

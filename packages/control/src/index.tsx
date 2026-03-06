@@ -10,7 +10,7 @@ import React from "react";
 import { App } from "./app.js";
 
 if (!process.stdout.isTTY) {
-  console.error("mcpctl requires a terminal. Use 'mcp status' for non-interactive output.");
+  console.error("mcpctl requires a terminal. Use 'mcx status' for non-interactive output.");
   process.exit(1);
 }
 

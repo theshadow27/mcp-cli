@@ -35,7 +35,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-URL="https://github.com/$REPO/releases/download/$VERSION/mcp-${TARGET}.tar.gz"
+URL="https://github.com/$REPO/releases/download/$VERSION/mcx-${TARGET}.tar.gz"
 
 echo "Installing mcp-cli $VERSION ($TARGET) to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
@@ -43,15 +43,15 @@ mkdir -p "$INSTALL_DIR"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-curl -fsSL "$URL" -o "$TMP/mcp.tar.gz"
-tar xzf "$TMP/mcp.tar.gz" -C "$TMP"
+curl -fsSL "$URL" -o "$TMP/mcx.tar.gz"
+tar xzf "$TMP/mcx.tar.gz" -C "$TMP"
 
-mv "$TMP/mcp-${TARGET}" "$INSTALL_DIR/mcp"
+mv "$TMP/mcx-${TARGET}" "$INSTALL_DIR/mcx"
 mv "$TMP/mcpd-${TARGET}" "$INSTALL_DIR/mcpd"
 mv "$TMP/mcpctl-${TARGET}" "$INSTALL_DIR/mcpctl"
-chmod +x "$INSTALL_DIR/mcp" "$INSTALL_DIR/mcpd" "$INSTALL_DIR/mcpctl"
+chmod +x "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcpd" "$INSTALL_DIR/mcpctl"
 
-echo "Installed mcp, mcpd, and mcpctl to $INSTALL_DIR"
+echo "Installed mcx, mcpd, and mcpctl to $INSTALL_DIR"
 
 # Check if install dir is in PATH
 case ":$PATH:" in

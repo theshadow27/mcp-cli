@@ -1,5 +1,5 @@
 /**
- * `mcp install` — install a server from the Anthropic MCP registry.
+ * `mcx install` — install a server from the Anthropic MCP registry.
  *
  * Searches the registry by slug, selects the best transport,
  * and writes the config via addServerToConfig.
@@ -59,7 +59,7 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
 
   const slug = positional[0];
   if (!slug) {
-    throw new Error("Server slug is required. Usage: mcp install <slug> [--as name] [--scope user|project]");
+    throw new Error("Server slug is required. Usage: mcx install <slug> [--as name] [--scope user|project]");
   }
 
   return { slug, name, scope, env, json, noCache };
@@ -67,7 +67,7 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
 
 export async function cmdInstall(args: string[]): Promise<void> {
   if (args.length === 0) {
-    printError("Usage: mcp install <slug> [--as name] [--scope user|project] [--env KEY=VALUE]");
+    printError("Usage: mcx install <slug> [--as name] [--scope user|project] [--env KEY=VALUE]");
     process.exit(1);
   }
 
@@ -78,7 +78,7 @@ export async function cmdInstall(args: string[]): Promise<void> {
   const entry = result.servers.find((s) => s._meta["com.anthropic.api/mcp-registry"].slug === parsed.slug);
 
   if (!entry) {
-    throw new Error(`Server "${parsed.slug}" not found. Use "mcp registry search ${parsed.slug}" to find servers.`);
+    throw new Error(`Server "${parsed.slug}" not found. Use "mcx registry search ${parsed.slug}" to find servers.`);
   }
 
   const meta = entry._meta["com.anthropic.api/mcp-registry"];

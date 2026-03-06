@@ -6,7 +6,7 @@
  * - ~/.mcp-cli/servers.json (global)
  *
  * External configs (.mcp.json, ~/.claude.json) are NOT auto-loaded.
- * Use `mcp import` to explicitly bring servers into mcp-cli's config.
+ * Use `mcx import` to explicitly bring servers into mcp-cli's config.
  */
 
 import { existsSync } from "node:fs";

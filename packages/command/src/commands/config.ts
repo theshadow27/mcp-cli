@@ -1,5 +1,5 @@
 /**
- * `mcp config` commands — display resolved configuration and sources,
+ * `mcx config` commands — display resolved configuration and sources,
  * plus get/set for CLI options like trust-claude.
  */
 
@@ -73,7 +73,7 @@ const KEY_MAP: Record<ConfigKey, "trustClaude"> = {
 function configSet(args: string[]): void {
   const [key, value] = args;
   if (!key || value === undefined) {
-    printError("Usage: mcp config set <key> <value>");
+    printError("Usage: mcx config set <key> <value>");
     process.exit(1);
   }
   if (!VALID_KEYS.includes(key as ConfigKey)) {
@@ -90,7 +90,7 @@ function configSet(args: string[]): void {
 function configGet(args: string[]): void {
   const key = args[0];
   if (!key) {
-    printError("Usage: mcp config get <key>");
+    printError("Usage: mcx config get <key>");
     process.exit(1);
   }
   if (!VALID_KEYS.includes(key as ConfigKey)) {

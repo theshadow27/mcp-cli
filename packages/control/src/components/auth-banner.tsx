@@ -58,7 +58,7 @@ export function AuthBanner({ servers, authStatus }: AuthBannerProps) {
             <Text bold>{server.name}</Text>
             {server.lastError && <Text> ({server.lastError.slice(0, 50)})</Text>}
           </Text>
-          <Text dimColor> Press a or run: mcp auth {server.name}</Text>
+          <Text dimColor> Press a or run: mcx auth {server.name}</Text>
         </Box>
       ))}
     </Box>
