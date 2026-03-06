@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { _restoreOptions, options } from "@mcp-cli/core";
 import { StateDb } from "./state";
 
 function tmpDb(): string {
@@ -700,6 +701,88 @@ describe("StateDb", () => {
       expect(msg?.body).toBeNull();
       expect(msg?.replyTo).toBeNull();
       db.close();
+    });
+
+    test("pruneExpiredMail deletes read messages older than TTL", () => {
+      const db = createDb();
+      const id1 = db.insertMail("a", "b", "old-read");
+      const id2 = db.insertMail("a", "b", "old-unread");
+      const id3 = db.insertMail("a", "b", "recent-read");
+
+      // Backdate id1 and id2 to 2 days ago
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
+      db["db"].run("UPDATE mail SET created_at = ? WHERE id IN (?, ?)", [twoDaysAgo, id1, id2]);
+
+      // Mark id1 and id3 as read
+      db.markMailRead(id1);
+      db.markMailRead(id3);
+
+      // Prune with 1-day TTL — should only delete id1 (read + old)
+      const pruned = db.pruneExpiredMail(1 * 24 * 60 * 60 * 1000);
+      expect(pruned).toBe(1);
+
+      // id1 gone, id2 (unread) and id3 (recent) remain
+      expect(db.getMailById(id1)).toBeUndefined();
+      expect(db.getMailById(id2)).toBeDefined();
+      expect(db.getMailById(id3)).toBeDefined();
+      db.close();
+    });
+
+    test("pruneExpiredMail never deletes unread messages", () => {
+      const db = createDb();
+      const id = db.insertMail("a", "b", "ancient-unread");
+
+      // Backdate to 30 days ago
+      const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
+      db["db"].run("UPDATE mail SET created_at = ? WHERE id = ?", [old, id]);
+
+      const pruned = db.pruneExpiredMail(1000);
+      expect(pruned).toBe(0);
+      expect(db.getMailById(id)).toBeDefined();
+      db.close();
+    });
+
+    test("pruneExpiredMail uses options.MAIL_TTL_MS by default", () => {
+      const db = createDb();
+      const id = db.insertMail("a", "b", "old-read");
+      db.markMailRead(id);
+
+      // Backdate to 8 days ago (beyond default 7d TTL)
+      const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
+      db["db"].run("UPDATE mail SET created_at = ? WHERE id = ?", [old, id]);
+
+      const pruned = db.pruneExpiredMail();
+      expect(pruned).toBe(1);
+      db.close();
+    });
+
+    test("amortized prune fires every 50 mail operations", () => {
+      const saved = options.MAIL_TTL_MS;
+      options.MAIL_TTL_MS = 1000; // 1 second TTL
+      try {
+        const db = createDb();
+
+        // Insert an old read message that should be pruned
+        const oldId = db.insertMail("a", "b", "old");
+        db.markMailRead(oldId);
+        const old = new Date(Date.now() - 5000).toISOString().replace("T", " ").slice(0, 19);
+        // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
+        db["db"].run("UPDATE mail SET created_at = ? WHERE id = ?", [old, oldId]);
+
+        // Do 49 more insertMail calls (first one already counted)
+        for (let i = 0; i < 49; i++) {
+          db.insertMail("a", "b", `msg-${i}`);
+        }
+
+        // At 50 ops the prune should have fired — old message gone
+        expect(db.getMailById(oldId)).toBeUndefined();
+        db.close();
+      } finally {
+        options.MAIL_TTL_MS = saved;
+      }
     });
   });
 

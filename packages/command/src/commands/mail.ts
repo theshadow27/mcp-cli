@@ -23,6 +23,29 @@ import type { IpcMethod, MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output";
 
+const MAIL_HELP = `mcx mail — interagent message queue
+
+Usage:
+  mcx mail -s "subject" <recipient>   Send a message (body from stdin)
+  mcx mail -H                        List message headers
+  mcx mail -u <user>                 Read a user's mailbox
+  mcx mail -r <msgnum>               Reply to a message (body from stdin)
+  mcx mail --wait [--timeout=N]      Block until a message arrives
+  mcx mail --wait --for=<name>       Wait for mail to specific recipient
+
+Options:
+  -s <subject>      Message subject
+  -H                Headers only (summary list)
+  -u <user>         Read a specific user's mailbox
+  -r <msgnum>       Reply to message number
+  -N                Suppress header list
+  --wait            Block until a message arrives
+  --timeout=<sec>   Timeout for --wait (default: 180)
+  --for=<name>      Filter --wait by recipient
+  --from=<name>     Override sender identity
+  -h, --help        Show this help
+`;
+
 export interface MailArgs {
   subject: string | undefined;
   headersOnly: boolean;
@@ -94,6 +117,10 @@ export function parseMailArgs(args: string[]): MailArgs {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      error = "HELP";
+      break;
+    }
     if (arg === "-s") {
       const next = args[++i];
       if (!next) {
@@ -164,6 +191,11 @@ export function parseMailArgs(args: string[]): MailArgs {
 export async function cmdMail(args: string[], deps?: Partial<MailDeps>): Promise<void> {
   const d: MailDeps = { ...defaultDeps, ...deps };
   const parsed = parseMailArgs(args);
+
+  if (parsed.error === "HELP") {
+    d.writeStderr(MAIL_HELP);
+    return;
+  }
 
   if (parsed.error) {
     d.printError(parsed.error);

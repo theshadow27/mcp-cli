@@ -8,18 +8,16 @@
  */
 
 import { Database } from "bun:sqlite";
-import { type MailMessage, type ToolInfo, type UsageStat, hardenFile } from "@mcp-cli/core";
+import { type MailMessage, type ToolInfo, type UsageStat, hardenFile, options } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 export type { UsageStat } from "@mcp-cli/core";
 
-/** How many inserts between log prune operations (amortized O(1)) */
-const LOG_PRUNE_INTERVAL = 100;
-
 export class StateDb {
   private db: Database;
   private logInsertCount = new Map<string, number>();
+  private mailOpCount = 0;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
@@ -478,7 +476,7 @@ export class StateDb {
     ]);
     // Prune to 500 rows per server, but only every LOG_PRUNE_INTERVAL inserts
     const count = (this.logInsertCount.get(serverName) ?? 0) + 1;
-    if (count >= LOG_PRUNE_INTERVAL) {
+    if (count >= options.LOG_PRUNE_INTERVAL) {
       this.db.run(
         `DELETE FROM server_logs WHERE server_name = ? AND id NOT IN (
           SELECT id FROM server_logs WHERE server_name = ? ORDER BY timestamp_ms DESC LIMIT 500
@@ -529,10 +527,13 @@ export class StateDb {
       body ?? null,
       replyTo ?? null,
     ]);
+    this.maybeRunMailPrune();
     return Number(result.lastInsertRowid);
   }
 
   readMail(recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
+    this.maybeRunMailPrune();
+
     const conditions: string[] = [];
     const params: (string | number)[] = [];
 
@@ -618,6 +619,21 @@ export class StateDb {
 
   markMailRead(id: number): void {
     this.db.run("UPDATE mail SET read = 1 WHERE id = ?", [id]);
+  }
+
+  /** Delete read messages older than ttlMs. Called opportunistically. */
+  pruneExpiredMail(ttlMs = options.MAIL_TTL_MS): number {
+    const cutoff = new Date(Date.now() - ttlMs).toISOString().replace("T", " ").slice(0, 19);
+    const result = this.db.run("DELETE FROM mail WHERE read = 1 AND created_at < ?", [cutoff]);
+    return result.changes;
+  }
+
+  private maybeRunMailPrune(): void {
+    this.mailOpCount++;
+    if (this.mailOpCount >= options.MAIL_PRUNE_INTERVAL) {
+      this.mailOpCount = 0;
+      this.pruneExpiredMail();
+    }
   }
 
   close(): void {
