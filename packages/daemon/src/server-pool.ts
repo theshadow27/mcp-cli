@@ -41,6 +41,8 @@ interface ServerConnection {
   lastError?: string;
   connectingPromise?: Promise<ServerConnection>;
   stderrCleanup?: () => void;
+  /** Virtual servers are not managed by config and survive updateConfig(). */
+  virtual?: boolean;
 }
 
 export class ServerPool {
@@ -70,6 +72,29 @@ export class ServerPool {
         lastUsed: 0,
       });
     }
+  }
+
+  /**
+   * Register a pre-connected virtual server (e.g., _aliases).
+   * Virtual servers survive updateConfig() and are reported with transport "virtual".
+   */
+  registerVirtualServer(name: string, client: Client, transport: Transport, tools?: Map<string, ToolInfo>): void {
+    // Disconnect existing connection if present
+    const existing = this.connections.get(name);
+    if (existing) {
+      existing.client?.close().catch(() => {});
+    }
+
+    this.connections.set(name, {
+      name,
+      resolved: { name, config: { command: "__virtual__" }, source: { file: "built-in", scope: "mcp-cli" } },
+      client,
+      transport,
+      tools: tools ?? new Map(),
+      state: "connected",
+      lastUsed: Date.now(),
+      virtual: true,
+    });
   }
 
   /** Update config (e.g., after file change). Returns names of changed/added/removed servers. */
@@ -110,8 +135,9 @@ export class ServerPool {
       }
     }
 
-    // Remove servers no longer in config
-    for (const name of this.connections.keys()) {
+    // Remove servers no longer in config (skip virtual servers)
+    for (const [name, conn] of this.connections) {
+      if (conn.virtual) continue;
       if (!config.servers.has(name)) {
         removed.push(name);
         this.disconnect(name).catch(() => {});
@@ -301,7 +327,7 @@ export class ServerPool {
       const recentStderr = recent.length > 0 ? recent.map((l) => l.line) : undefined;
       return {
         name: conn.name,
-        transport: getTransportType(conn.resolved.config),
+        transport: conn.virtual ? "virtual" : getTransportType(conn.resolved.config),
         state: conn.state,
         toolCount: conn.tools.size,
         lastUsed: conn.lastUsed || undefined,
