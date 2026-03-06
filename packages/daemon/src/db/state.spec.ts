@@ -556,6 +556,153 @@ describe("StateDb", () => {
     });
   });
 
+  describe("mail", () => {
+    test("insertMail and readMail round-trip", () => {
+      const db = createDb();
+      const id = db.insertMail("wt-1", "manager", "done", "tests pass");
+      expect(id).toBeGreaterThan(0);
+
+      const messages = db.readMail();
+      expect(messages).toHaveLength(1);
+      expect(messages[0].sender).toBe("wt-1");
+      expect(messages[0].recipient).toBe("manager");
+      expect(messages[0].subject).toBe("done");
+      expect(messages[0].body).toBe("tests pass");
+      expect(messages[0].read).toBe(false);
+      db.close();
+    });
+
+    test("readMail filters by recipient", () => {
+      const db = createDb();
+      db.insertMail("wt-1", "manager", "for manager");
+      db.insertMail("wt-1", "wt-2", "for wt-2");
+
+      const managerMail = db.readMail("manager");
+      expect(managerMail).toHaveLength(1);
+      expect(managerMail[0].subject).toBe("for manager");
+      db.close();
+    });
+
+    test("readMail includes broadcast messages", () => {
+      const db = createDb();
+      db.insertMail("admin", "*", "broadcast");
+      db.insertMail("wt-1", "manager", "direct");
+
+      const managerMail = db.readMail("manager");
+      expect(managerMail).toHaveLength(2);
+      db.close();
+    });
+
+    test("readMail filters unread only", () => {
+      const db = createDb();
+      const id1 = db.insertMail("a", "b", "unread");
+      db.insertMail("a", "b", "also unread");
+      db.markMailRead(id1);
+
+      const unread = db.readMail("b", true);
+      expect(unread).toHaveLength(1);
+      expect(unread[0].subject).toBe("also unread");
+      db.close();
+    });
+
+    test("readMail respects limit", () => {
+      const db = createDb();
+      db.insertMail("a", "b", "msg1");
+      db.insertMail("a", "b", "msg2");
+      db.insertMail("a", "b", "msg3");
+
+      const limited = db.readMail("b", false, 2);
+      expect(limited).toHaveLength(2);
+      db.close();
+    });
+
+    test("getMailById returns message", () => {
+      const db = createDb();
+      const id = db.insertMail("x", "y", "test", "body text");
+
+      const msg = db.getMailById(id);
+      expect(msg).toBeDefined();
+      expect(msg?.id).toBe(id);
+      expect(msg?.body).toBe("body text");
+      db.close();
+    });
+
+    test("getMailById returns undefined for missing id", () => {
+      const db = createDb();
+      expect(db.getMailById(9999)).toBeUndefined();
+      db.close();
+    });
+
+    test("getNextUnread returns oldest unread", () => {
+      const db = createDb();
+      db.insertMail("a", "b", "first");
+      db.insertMail("a", "b", "second");
+
+      const next = db.getNextUnread("b");
+      expect(next?.subject).toBe("first");
+      db.close();
+    });
+
+    test("getNextUnread filters by recipient", () => {
+      const db = createDb();
+      db.insertMail("a", "other", "not for b");
+      db.insertMail("a", "b", "for b");
+
+      const next = db.getNextUnread("b");
+      expect(next?.subject).toBe("for b");
+      db.close();
+    });
+
+    test("getNextUnread returns undefined when all read", () => {
+      const db = createDb();
+      const id = db.insertMail("a", "b", "read");
+      db.markMailRead(id);
+
+      expect(db.getNextUnread("b")).toBeUndefined();
+      db.close();
+    });
+
+    test("getNextUnread includes broadcast", () => {
+      const db = createDb();
+      db.insertMail("admin", "*", "broadcast");
+
+      const next = db.getNextUnread("anyone");
+      expect(next?.subject).toBe("broadcast");
+      db.close();
+    });
+
+    test("markMailRead marks message as read", () => {
+      const db = createDb();
+      const id = db.insertMail("a", "b", "test");
+
+      expect(db.getMailById(id)?.read).toBe(false);
+      db.markMailRead(id);
+      expect(db.getMailById(id)?.read).toBe(true);
+      db.close();
+    });
+
+    test("insertMail with replyTo sets threading", () => {
+      const db = createDb();
+      const original = db.insertMail("a", "b", "original");
+      const reply = db.insertMail("b", "a", "reply", "body", original);
+
+      const msg = db.getMailById(reply);
+      expect(msg?.replyTo).toBe(original);
+      db.close();
+    });
+
+    test("insertMail with no optional fields", () => {
+      const db = createDb();
+      const id = db.insertMail("a", "b");
+
+      const msg = db.getMailById(id);
+      expect(msg?.subject).toBeNull();
+      expect(msg?.body).toBeNull();
+      expect(msg?.replyTo).toBeNull();
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);

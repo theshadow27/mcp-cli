@@ -26,6 +26,7 @@ import { cmdGet } from "./commands/get";
 import { cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
+import { cmdMail } from "./commands/mail";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun, parseRunArgs } from "./commands/run";
@@ -167,6 +168,10 @@ async function main(): Promise<void> {
 
       case "logs":
         await cmdLogs(args.slice(1));
+        break;
+
+      case "mail":
+        await cmdMail(args.slice(1));
         break;
 
       case "typegen":
@@ -474,6 +479,12 @@ Usage:
   mcx config set <key> <value>        Set a CLI option (e.g. trust-claude)
   mcx config get <key>                Get a CLI option value
   mcx status                          Daemon status
+  mcx mail -s "subject" <recipient>   Send a message (body from stdin)
+  mcx mail -H                        List message headers
+  mcx mail -u <user>                 Read a user's mailbox
+  mcx mail -r <msgnum>               Reply to a message (body from stdin)
+  mcx mail --wait [--timeout=N]      Block until a message arrives
+  mcx mail --wait --for=<name>       Wait for mail to specific recipient
   mcx logs <server> [-f] [--lines N]  View server stderr output
   mcx typegen                         Generate TypeScript types for alias scripts
   mcx completions {bash|zsh|fish}     Generate shell completion script

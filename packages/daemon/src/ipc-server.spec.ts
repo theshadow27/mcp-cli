@@ -604,4 +604,193 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error).toBeUndefined();
     expect(json.result).toHaveProperty("content");
   });
+
+  // -- Mail handler tests --
+
+  test("sendMail inserts message and returns id", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({
+      insertMail: (_s: string, _r: string, _subj?: string, _body?: string, _rt?: number) => 42,
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "m1",
+      method: "sendMail",
+      params: { sender: "wt-1", recipient: "manager", subject: "done", body: "tests pass" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ id: 42 });
+  });
+
+  test("sendMail with missing sender returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "m2",
+      method: "sendMail",
+      params: { recipient: "manager" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+  });
+
+  test("readMail returns messages from db", async () => {
+    socketPath = tmpSocket();
+    const messages = [
+      {
+        id: 1,
+        sender: "wt-1",
+        recipient: "manager",
+        subject: "hi",
+        body: null,
+        replyTo: null,
+        read: false,
+        createdAt: "2025-01-01",
+      },
+    ];
+    const db = mockDb({ readMail: () => messages });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m3", method: "readMail", params: { recipient: "manager" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect((json.result as { messages: unknown[] }).messages).toHaveLength(1);
+  });
+
+  test("readMail with no params returns all messages", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({ readMail: () => [] });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m4", method: "readMail" });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect((json.result as { messages: unknown[] }).messages).toEqual([]);
+  });
+
+  test("waitForMail returns message when available immediately", async () => {
+    socketPath = tmpSocket();
+    const msg = {
+      id: 5,
+      sender: "wt-1",
+      recipient: "mgr",
+      subject: "done",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: "2025-01-01",
+    };
+    const db = mockDb({
+      getNextUnread: () => msg,
+      markMailRead: () => {},
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m5", method: "waitForMail", params: { recipient: "mgr", timeout: 1 } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect((json.result as { message: { id: number } }).message.id).toBe(5);
+  });
+
+  test("waitForMail returns null on timeout", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({
+      getNextUnread: () => undefined,
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m6", method: "waitForMail", params: { timeout: 1 } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect((json.result as { message: null }).message).toBeNull();
+  });
+
+  test("replyToMail creates reply with swapped sender/recipient", async () => {
+    socketPath = tmpSocket();
+    const original = {
+      id: 10,
+      sender: "wt-1",
+      recipient: "mgr",
+      subject: "help",
+      body: "stuck",
+      replyTo: null,
+      read: false,
+      createdAt: "2025-01-01",
+    };
+    let insertedArgs: unknown[] = [];
+    const db = mockDb({
+      getMailById: (id: number) => (id === 10 ? original : undefined),
+      insertMail: (...args: unknown[]) => {
+        insertedArgs = args;
+        return 11;
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "m7",
+      method: "replyToMail",
+      params: { id: 10, sender: "mgr", body: "looks good" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ id: 11 });
+    // Reply goes to the original sender
+    expect(insertedArgs[0]).toBe("mgr"); // sender
+    expect(insertedArgs[1]).toBe("wt-1"); // recipient (swapped)
+    expect(insertedArgs[2]).toBe("Re: help"); // auto-prefixed subject
+    expect(insertedArgs[4]).toBe(10); // replyTo
+  });
+
+  test("replyToMail with unknown message returns error", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({
+      getMailById: () => undefined,
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "m8",
+      method: "replyToMail",
+      params: { id: 999, sender: "mgr", body: "reply" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("999");
+  });
+
+  test("markRead calls db.markMailRead", async () => {
+    socketPath = tmpSocket();
+    let markedId: number | undefined;
+    const db = mockDb({
+      markMailRead: (id: number) => {
+        markedId = id;
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, { onActivity: () => {} });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m9", method: "markRead", params: { id: 7 } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({});
+    expect(markedId).toBe(7);
+  });
+
+  test("markRead with missing id returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "m10", method: "markRead", params: {} });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+  });
 });

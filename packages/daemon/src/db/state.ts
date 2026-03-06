@@ -8,7 +8,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { type ToolInfo, type UsageStat, hardenFile } from "@mcp-cli/core";
+import { type MailMessage, type ToolInfo, type UsageStat, hardenFile } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
@@ -108,6 +108,20 @@ export class StateDb {
 
       CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
         ON server_logs(server_name, timestamp_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS mail (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        subject TEXT,
+        body TEXT,
+        reply_to INTEGER REFERENCES mail(id),
+        read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mail_recipient
+        ON mail(recipient, read, created_at);
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -505,7 +519,132 @@ export class StateDb {
     }
   }
 
+  // -- Mail --
+
+  insertMail(sender: string, recipient: string, subject?: string, body?: string, replyTo?: number): number {
+    const result = this.db.run("INSERT INTO mail (sender, recipient, subject, body, reply_to) VALUES (?, ?, ?, ?, ?)", [
+      sender,
+      recipient,
+      subject ?? null,
+      body ?? null,
+      replyTo ?? null,
+    ]);
+    return Number(result.lastInsertRowid);
+  }
+
+  readMail(recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (recipient) {
+      conditions.push("(recipient = ? OR recipient = '*')");
+      params.push(recipient);
+    }
+    if (unreadOnly) {
+      conditions.push("read = 0");
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limitClause = limit ? `LIMIT ${Number(limit)}` : "";
+
+    return this.db
+      .query<
+        {
+          id: number;
+          sender: string;
+          recipient: string;
+          subject: string | null;
+          body: string | null;
+          reply_to: number | null;
+          read: number;
+          created_at: string;
+        },
+        (string | number)[]
+      >(
+        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail ${where} ORDER BY created_at DESC ${limitClause}`,
+      )
+      .all(...params)
+      .map(toMailMessage);
+  }
+
+  getMailById(id: number): MailMessage | undefined {
+    const row = this.db
+      .query<
+        {
+          id: number;
+          sender: string;
+          recipient: string;
+          subject: string | null;
+          body: string | null;
+          reply_to: number | null;
+          read: number;
+          created_at: string;
+        },
+        [number]
+      >("SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE id = ?")
+      .get(id);
+    return row ? toMailMessage(row) : undefined;
+  }
+
+  getNextUnread(recipient?: string): MailMessage | undefined {
+    const conditions = ["read = 0"];
+    const params: (string | number)[] = [];
+
+    if (recipient) {
+      conditions.push("(recipient = ? OR recipient = '*')");
+      params.push(recipient);
+    }
+
+    const where = conditions.join(" AND ");
+    const row = this.db
+      .query<
+        {
+          id: number;
+          sender: string;
+          recipient: string;
+          subject: string | null;
+          body: string | null;
+          reply_to: number | null;
+          read: number;
+          created_at: string;
+        },
+        (string | number)[]
+      >(
+        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE ${where} ORDER BY created_at ASC LIMIT 1`,
+      )
+      .all(...params)[0];
+    return row ? toMailMessage(row) : undefined;
+  }
+
+  markMailRead(id: number): void {
+    this.db.run("UPDATE mail SET read = 1 WHERE id = ?", [id]);
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+// -- Helpers --
+
+function toMailMessage(row: {
+  id: number;
+  sender: string;
+  recipient: string;
+  subject: string | null;
+  body: string | null;
+  reply_to: number | null;
+  read: number;
+  created_at: string;
+}): MailMessage {
+  return {
+    id: row.id,
+    sender: row.sender,
+    recipient: row.recipient,
+    subject: row.subject,
+    body: row.body,
+    replyTo: row.reply_to,
+    read: row.read === 1,
+    createdAt: row.created_at,
+  };
 }

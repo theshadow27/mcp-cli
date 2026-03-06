@@ -26,7 +26,12 @@ export type IpcMethod =
   | "saveAlias"
   | "deleteAlias"
   | "getLogs"
-  | "getDaemonLogs";
+  | "getDaemonLogs"
+  | "sendMail"
+  | "readMail"
+  | "waitForMail"
+  | "replyToMail"
+  | "markRead";
 
 // -- Request/Response --
 
@@ -241,6 +246,79 @@ export interface GetConfigResult {
   servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }>;
   sources: Array<{ file: string; scope: string }>;
 }
+
+// -- Mail types --
+
+export interface MailMessage {
+  id: number;
+  sender: string;
+  recipient: string;
+  subject: string | null;
+  body: string | null;
+  replyTo: number | null;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface SendMailParams {
+  sender: string;
+  recipient: string;
+  subject?: string;
+  body?: string;
+  replyTo?: number;
+}
+
+export const SendMailParamsSchema = z.object({
+  sender: z.string(),
+  recipient: z.string(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  replyTo: z.number().optional(),
+});
+
+export interface ReadMailParams {
+  recipient?: string;
+  unreadOnly?: boolean;
+  limit?: number;
+}
+
+export const ReadMailParamsSchema = z.object({
+  recipient: z.string().optional(),
+  unreadOnly: z.boolean().optional(),
+  limit: z.number().optional(),
+});
+
+export interface WaitForMailParams {
+  recipient?: string;
+  timeout?: number;
+}
+
+export const WaitForMailParamsSchema = z.object({
+  recipient: z.string().optional(),
+  timeout: z.number().optional(),
+});
+
+export interface ReplyToMailParams {
+  id: number;
+  sender: string;
+  body: string;
+  subject?: string;
+}
+
+export const ReplyToMailParamsSchema = z.object({
+  id: z.number(),
+  sender: z.string(),
+  body: z.string(),
+  subject: z.string().optional(),
+});
+
+export interface MarkReadParams {
+  id: number;
+}
+
+export const MarkReadParamsSchema = z.object({
+  id: z.number(),
+});
 
 // -- Error codes --
 
