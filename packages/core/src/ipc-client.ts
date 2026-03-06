@@ -60,6 +60,8 @@ async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
  * Uses an exclusive lock file to prevent concurrent startups (race condition).
  */
 async function ensureDaemon(): Promise<void> {
+  mismatchWarned = false;
+
   if (await isDaemonRunning()) return;
 
   // If the daemon is alive but has the wrong protocol version, shut it down first
@@ -90,6 +92,14 @@ async function ensureDaemon(): Promise<void> {
     }
 
     await startDaemon();
+
+    // After starting, verify the new daemon's version matches.
+    // If not, the daemon binary and CLI binary are from different builds.
+    if (!(await isDaemonRunning()) && versionMismatchPid !== null) {
+      throw new Error(
+        `Protocol version mismatch persists after restart (daemon: ${versionMismatchPid}, cli: ${PROTOCOL_VERSION}). Rebuild with: bun run build`,
+      );
+    }
   } finally {
     if (lockFd !== null) closeSync(lockFd);
     try {
@@ -131,13 +141,19 @@ function cleanStaleFiles(): void {
   }
 }
 
+/** Cache: skip repeated `ps` calls for the same PID within a single CLI invocation */
+let verifiedMcpdPid: number | null = null;
+
 /** Verify the process at `pid` is actually mcpd (guards against PID recycling) */
 export function isProcessMcpd(pid: number): boolean {
+  if (pid === verifiedMcpdPid) return true;
   try {
     const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
     const output = result.stdout.toString().trim();
     // Match compiled binary (mcpd) or dev script (daemon/src/index)
-    return output.includes(DAEMON_BINARY_NAME) || output.includes(DAEMON_DEV_SCRIPT);
+    const match = output.includes(DAEMON_BINARY_NAME) || output.includes(DAEMON_DEV_SCRIPT);
+    if (match) verifiedMcpdPid = pid;
+    return match;
   } catch {
     return false;
   }
@@ -146,8 +162,12 @@ export function isProcessMcpd(pid: number): boolean {
 /** Set when isDaemonRunning detects a version-mismatched daemon that needs to be stopped */
 let versionMismatchPid: number | null = null;
 
+/** Suppresses repeated mismatch warnings within a single ensureDaemon cycle */
+let mismatchWarned = false;
+
 /** Send shutdown command to a running daemon and clean up stale files */
 async function stopDaemon(): Promise<void> {
+  verifiedMcpdPid = null;
   try {
     await fetch("http://localhost/rpc", {
       method: "POST",
@@ -221,9 +241,12 @@ export async function isDaemonRunning(): Promise<boolean> {
 
   // Protocol version mismatch — daemon is alive but wrong version
   if (data.protocolVersion !== PROTOCOL_VERSION) {
-    console.error(
-      `[mcx] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
-    );
+    if (!mismatchWarned) {
+      console.error(
+        `[mcx] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
+      );
+      mismatchWarned = true;
+    }
     versionMismatchPid = data.pid;
     return false;
   }
