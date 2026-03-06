@@ -17,10 +17,15 @@ import {
   GrepToolsParamsSchema,
   IPC_ERROR,
   ListToolsParamsSchema,
+  MarkReadParamsSchema,
   PROTOCOL_VERSION,
+  ReadMailParamsSchema,
+  ReplyToMailParamsSchema,
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
+  SendMailParamsSchema,
   TriggerAuthParamsSchema,
+  WaitForMailParamsSchema,
   hardenFile,
   isDefineAlias,
   options,
@@ -379,6 +384,56 @@ export class IpcServer {
         lines = lines.filter((l) => l.timestamp > since);
       }
       return { lines };
+    });
+
+    // -- Mail handlers --
+
+    this.handlers.set("sendMail", async (params) => {
+      const { sender, recipient, subject, body, replyTo } = SendMailParamsSchema.parse(params);
+      const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
+      return { id };
+    });
+
+    this.handlers.set("readMail", async (params) => {
+      const { recipient, unreadOnly, limit } = ReadMailParamsSchema.parse(params ?? {});
+      const messages = this.db.readMail(recipient, unreadOnly, limit);
+      return { messages };
+    });
+
+    this.handlers.set("waitForMail", async (params) => {
+      const { recipient, timeout } = WaitForMailParamsSchema.parse(params ?? {});
+      // Server-side timeout capped at 30s to stay under IPC client's 60s timeout
+      const maxWait = Math.min((timeout ?? 30) * 1000, 30_000);
+      const deadline = Date.now() + maxWait;
+
+      while (Date.now() < deadline) {
+        const msg = this.db.getNextUnread(recipient);
+        if (msg) {
+          this.db.markMailRead(msg.id);
+          return { message: msg };
+        }
+        await Bun.sleep(500);
+      }
+      return { message: null };
+    });
+
+    this.handlers.set("replyToMail", async (params) => {
+      const { id, sender, body, subject } = ReplyToMailParamsSchema.parse(params);
+      const original = this.db.getMailById(id);
+      if (!original) {
+        throw Object.assign(new Error(`Mail message ${id} not found`), {
+          code: IPC_ERROR.INVALID_PARAMS,
+        });
+      }
+      const replySubject = subject ?? (original.subject ? `Re: ${original.subject}` : undefined);
+      const newId = this.db.insertMail(sender, original.sender, replySubject, body, id);
+      return { id: newId };
+    });
+
+    this.handlers.set("markRead", async (params) => {
+      const { id } = MarkReadParamsSchema.parse(params);
+      this.db.markMailRead(id);
+      return {};
     });
 
     this.handlers.set("shutdown", async () => {
