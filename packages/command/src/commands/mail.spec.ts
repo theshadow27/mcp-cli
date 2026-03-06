@@ -298,4 +298,17 @@ describe("defaultSenderName", () => {
       else process.env.USER = undefined;
     }
   });
+
+  test("returns claude-<cwd-basename> when CLAUDE=1", () => {
+    const origClaude = process.env.CLAUDE;
+    process.env.CLAUDE = "1";
+    try {
+      const cwd = process.cwd();
+      const base = cwd.split("/").pop() ?? "claude";
+      expect(defaultSenderName()).toBe(`claude-${base}`);
+    } finally {
+      if (origClaude !== undefined) process.env.CLAUDE = origClaude;
+      else process.env.CLAUDE = undefined;
+    }
+  });
 });
