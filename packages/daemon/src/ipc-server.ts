@@ -514,9 +514,12 @@ function toIpcError(err: unknown): IpcError {
   }
   if (err instanceof Error) {
     const code = (err as unknown as { code?: number }).code;
+    const data = (err as unknown as { data?: unknown }).data;
     return {
       code: typeof code === "number" ? code : IPC_ERROR.INTERNAL_ERROR,
       message: err.message,
+      ...(err.stack ? { stack: err.stack } : {}),
+      ...(data !== undefined ? { data } : {}),
     };
   }
   return { code: IPC_ERROR.INTERNAL_ERROR, message: String(err) };

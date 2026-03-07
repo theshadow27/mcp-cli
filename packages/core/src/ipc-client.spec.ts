@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { PROTOCOL_VERSION } from "./constants";
-import { isDaemonRunning } from "./ipc-client";
+import { IpcCallError, isDaemonRunning } from "./ipc-client";
 
 /**
  * Tests for ensureDaemon startup lock and stderr handling.
@@ -183,5 +183,36 @@ describe("protocol version mismatch detection", () => {
 
     const result = await isDaemonRunning();
     expect(result).toBe(false);
+  });
+});
+
+describe("IpcCallError", () => {
+  it("preserves code, message, data, and remoteStack", () => {
+    const err = new IpcCallError({
+      code: -1001,
+      message: "Server not found",
+      data: { server: "test" },
+      stack: "Error: Server not found\n    at dispatch (ipc-server.ts:42)",
+    });
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(IpcCallError);
+    expect(err.name).toBe("IpcCallError");
+    expect(err.message).toBe("Server not found");
+    expect(err.code).toBe(-1001);
+    expect(err.data).toEqual({ server: "test" });
+    expect(err.remoteStack).toBe("Error: Server not found\n    at dispatch (ipc-server.ts:42)");
+  });
+
+  it("handles missing optional fields", () => {
+    const err = new IpcCallError({
+      code: -32603,
+      message: "Internal error",
+    });
+
+    expect(err.message).toBe("Internal error");
+    expect(err.code).toBe(-32603);
+    expect(err.data).toBeUndefined();
+    expect(err.remoteStack).toBeUndefined();
   });
 });

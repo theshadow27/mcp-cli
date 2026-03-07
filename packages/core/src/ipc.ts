@@ -52,6 +52,7 @@ export interface IpcError {
   code: number;
   message: string;
   data?: unknown;
+  stack?: string;
 }
 
 // -- Param types per method --
