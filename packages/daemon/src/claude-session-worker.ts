@@ -1,0 +1,324 @@
+/**
+ * Bun Worker hosting the Claude Code session WebSocket server + MCP Server.
+ *
+ * Protocol:
+ *   1. Parent sends: { type: "init" }
+ *   2. Worker starts WS server + MCP Server, responds: { type: "ready", port }
+ *   3. Parent sends MCP JSON-RPC messages (via WorkerClientTransport)
+ *   4. Worker sends MCP JSON-RPC responses + DB event messages back
+ *
+ * DB event messages (worker → parent) for SQLite persistence:
+ *   { type: "db:upsert", session: { sessionId, pid?, state?, model?, cwd?, worktree? } }
+ *   { type: "db:state", sessionId, state }
+ *   { type: "db:cost", sessionId, cost, tokens }
+ *   { type: "db:end", sessionId }
+ */
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
+import type { SessionEvent } from "./claude-session/session-state";
+import { ClaudeWsServer } from "./claude-session/ws-server";
+import { WorkerServerTransport } from "./worker-transport";
+
+// ── Control messages ──
+
+interface InitMessage {
+  type: "init";
+}
+
+type ControlMessage = InitMessage;
+
+function isControlMessage(data: unknown): data is ControlMessage {
+  return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
+}
+
+// ── MCP Tool Schemas ──
+
+const TOOLS = [
+  {
+    name: "claude_prompt",
+    description:
+      "Start a new Claude Code session with a prompt, or send a follow-up prompt to an existing session. " +
+      "Blocks until Claude produces a result or times out.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "The message to send to Claude Code" },
+        sessionId: { type: "string", description: "Existing session ID to continue (omit for new session)" },
+        cwd: { type: "string", description: "Working directory for the Claude process" },
+        permissionMode: {
+          type: "string",
+          enum: ["auto", "rules"],
+          description: "Permission handling strategy (default: auto)",
+        },
+        allowedTools: {
+          type: "array",
+          items: { type: "string" },
+          description: "Tool patterns to auto-approve (e.g. 'Read', 'Bash(git *)')",
+        },
+        worktree: { type: "string", description: "Git worktree name for isolation" },
+        timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "claude_session_list",
+    description: "List all active Claude Code sessions with their status, model, cost, and token usage.",
+    inputSchema: { type: "object" as const, properties: {} },
+  },
+  {
+    name: "claude_session_status",
+    description: "Get detailed status for a specific Claude Code session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID to query" },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
+    name: "claude_interrupt",
+    description: "Interrupt the current turn of a Claude Code session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID to interrupt" },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
+    name: "claude_transcript",
+    description: "Get recent transcript entries from a Claude Code session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID to query" },
+        limit: { type: "number", description: "Max entries to return (default: 50)" },
+      },
+      required: ["sessionId"],
+    },
+  },
+] as const;
+
+// ── Worker globals ──
+
+declare const self: Worker;
+
+let wsServer: ClaudeWsServer | null = null;
+let mcpServer: Server | null = null;
+let transport: WorkerServerTransport | null = null;
+
+// ── Tool handlers ──
+
+async function handleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  if (!wsServer) {
+    return { content: [{ type: "text", text: "Claude session server not initialized" }], isError: true };
+  }
+
+  const server = wsServer;
+  try {
+    switch (name) {
+      case "claude_prompt":
+        return await handlePrompt(server, args);
+      case "claude_session_list":
+        return handleSessionList(server);
+      case "claude_session_status":
+        return handleSessionStatus(server, args);
+      case "claude_interrupt":
+        return handleInterrupt(server, args);
+      case "claude_transcript":
+        return handleTranscript(server, args);
+      default:
+        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+  }
+}
+
+async function handlePrompt(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): Promise<{
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+}> {
+  const prompt = args.prompt as string;
+  const timeoutMs = (args.timeout as number) ?? 300_000;
+
+  let sessionId = args.sessionId as string | undefined;
+
+  if (sessionId) {
+    // Follow-up prompt to existing session
+    server.sendPrompt(sessionId, prompt);
+  } else {
+    // New session
+    sessionId = crypto.randomUUID();
+    const permissionMode = (args.permissionMode as PermissionStrategy) ?? "auto";
+    const allowedTools = (args.allowedTools as string[]) ?? undefined;
+    const rules: PermissionRule[] | undefined =
+      permissionMode === "rules" && allowedTools
+        ? allowedTools.map((tool) => ({ tool, action: "allow" as const }))
+        : undefined;
+
+    server.prepareSession(sessionId, {
+      prompt,
+      cwd: args.cwd as string | undefined,
+      permissionStrategy: permissionMode,
+      permissionRules: rules,
+      allowedTools,
+      worktree: args.worktree as string | undefined,
+    });
+
+    // Post DB upsert
+    self.postMessage({
+      type: "db:upsert",
+      session: {
+        sessionId,
+        state: "connecting",
+        cwd: args.cwd as string | undefined,
+        worktree: args.worktree as string | undefined,
+      },
+    });
+
+    const pid = server.spawnClaude(sessionId);
+
+    // Update DB with PID
+    self.postMessage({
+      type: "db:upsert",
+      session: { sessionId, pid },
+    });
+  }
+
+  // Wait for result
+  const result = await server.waitForResult(sessionId, timeoutMs);
+  return {
+    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    isError: !result.success,
+  };
+}
+
+function handleSessionList(server: ClaudeWsServer): { content: Array<{ type: "text"; text: string }> } {
+  const sessions = server.listSessions();
+  return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
+}
+
+function handleSessionStatus(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const status = server.getStatus(args.sessionId as string);
+  return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+}
+
+function handleInterrupt(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  server.interrupt(args.sessionId as string);
+  return { content: [{ type: "text", text: JSON.stringify({ interrupted: true }) }] };
+}
+
+function handleTranscript(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const limit = (args.limit as number) ?? 50;
+  const transcript = server.getTranscript(args.sessionId as string, limit);
+  return { content: [{ type: "text", text: JSON.stringify(transcript, null, 2) }] };
+}
+
+// ── Session event → DB message forwarding ──
+
+function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
+  switch (event.type) {
+    case "session:init":
+      self.postMessage({
+        type: "db:upsert",
+        session: {
+          sessionId,
+          state: "init",
+          model: event.model,
+          cwd: event.cwd,
+        },
+      });
+      break;
+    case "session:result":
+      self.postMessage({ type: "db:cost", sessionId, cost: event.cost, tokens: event.tokens });
+      self.postMessage({ type: "db:state", sessionId, state: "idle" });
+      break;
+    case "session:error":
+      self.postMessage({ type: "db:cost", sessionId, cost: event.cost, tokens: 0 });
+      self.postMessage({ type: "db:state", sessionId, state: "idle" });
+      break;
+    case "session:ended":
+      self.postMessage({ type: "db:end", sessionId });
+      break;
+  }
+}
+
+// ── Server startup ──
+
+async function startServer(): Promise<void> {
+  // Start WebSocket server
+  wsServer = new ClaudeWsServer();
+  const port = wsServer.start();
+  wsServer.onSessionEvent = forwardSessionEvent;
+
+  // Report port to main thread
+  self.postMessage({ type: "ready", port });
+
+  // Start MCP Server
+  mcpServer = new Server({ name: "_claude", version: "0.1.0" }, { capabilities: { tools: {} } });
+
+  mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOLS.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
+  }));
+
+  mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    return handleToolCall(name, args ?? {});
+  });
+
+  transport = new WorkerServerTransport(self);
+  await mcpServer.connect(transport);
+
+  // Wrap self.onmessage to intercept control messages
+  const transportHandler = self.onmessage;
+  self.onmessage = async (event: MessageEvent) => {
+    const data = event.data;
+    if (isControlMessage(data)) {
+      // No additional control messages after init for now
+      return;
+    }
+    // Forward JSON-RPC messages to the transport
+    transportHandler?.call(self, event);
+  };
+}
+
+// ── Initial message handler ──
+
+self.onmessage = async (event: MessageEvent) => {
+  const data = event.data;
+  if (isControlMessage(data) && data.type === "init") {
+    await startServer();
+  }
+};

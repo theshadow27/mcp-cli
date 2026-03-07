@@ -1,0 +1,476 @@
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { serialize } from "./ndjson";
+import type { SessionEvent } from "./session-state";
+import type { SpawnFn } from "./ws-server";
+import { ClaudeWsServer } from "./ws-server";
+
+// ── Mock spawn ──
+
+function mockSpawn(): {
+  spawn: SpawnFn;
+  exitResolve: (code: number) => void;
+  killed: boolean;
+  lastCmd: string[];
+} {
+  let exitResolve: (code: number) => void = () => {};
+  const state = {
+    spawn: ((cmd: string[]) => {
+      state.lastCmd = cmd;
+      return {
+        pid: 12345,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {
+          state.killed = true;
+        },
+      };
+    }) as SpawnFn,
+    exitResolve: (code: number) => exitResolve(code),
+    killed: false,
+    lastCmd: [] as string[],
+  };
+  return state;
+}
+
+// ── Mock Claude CLI WebSocket client ──
+
+function connectMockClaude(port: number, sessionId: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://localhost:${port}/session/${sessionId}`);
+    ws.onopen = () => resolve(ws);
+    ws.onerror = () => reject(new Error("Failed to connect"));
+  });
+}
+
+function waitForMessage(ws: WebSocket): Promise<string> {
+  return new Promise((resolve) => {
+    ws.onmessage = (event) => resolve(String(event.data));
+  });
+}
+
+// ── Helpers ──
+
+function systemInitMessage(sessionId: string, model = "claude-sonnet-4-6"): string {
+  return serialize({
+    type: "system",
+    subtype: "init",
+    cwd: "/test",
+    session_id: sessionId,
+    tools: ["Read", "Write"],
+    mcp_servers: [],
+    model,
+    permissionMode: "default",
+    apiKeySource: "test",
+    claude_code_version: "2.1.70",
+    uuid: "test-uuid",
+  });
+}
+
+function assistantMessage(sessionId: string): string {
+  return serialize({
+    type: "assistant",
+    message: {
+      id: "msg-1",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-6",
+      content: [{ type: "text", text: "Hello!" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 100, output_tokens: 50 },
+    },
+    parent_tool_use_id: null,
+    uuid: "test-uuid",
+    session_id: sessionId,
+  });
+}
+
+function resultMessage(sessionId: string): string {
+  return serialize({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "Done!",
+    duration_ms: 1000,
+    duration_api_ms: 800,
+    num_turns: 1,
+    total_cost_usd: 0.01,
+    usage: { input_tokens: 100, output_tokens: 50 },
+    uuid: "test-uuid",
+    session_id: sessionId,
+  });
+}
+
+function canUseToolMessage(requestId: string): string {
+  return serialize({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: { command: "echo hello" },
+      tool_use_id: "tool-1",
+    },
+  });
+}
+
+// ── Tests ──
+
+describe("ClaudeWsServer", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(() => {
+    server?.stop();
+    server = undefined;
+  });
+
+  test("start() creates server and returns port", () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    const port = server.start();
+    expect(port).toBeGreaterThan(0);
+  });
+
+  test("prepareSession + spawnClaude starts claude process with correct args", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      allowedTools: ["Read", "Glob"],
+      worktree: "my-tree",
+    });
+    const pid = server.spawnClaude("test-session");
+
+    expect(pid).toBe(12345);
+    expect(ms.lastCmd).toContain("claude");
+    expect(ms.lastCmd).toContain("--sdk-url");
+    expect(ms.lastCmd).toContain(`ws://localhost:${port}/session/test-session`);
+    expect(ms.lastCmd).toContain("--allowedTools");
+    expect(ms.lastCmd).toContain("Read");
+    expect(ms.lastCmd).toContain("Glob");
+    expect(ms.lastCmd).toContain("--worktree");
+    expect(ms.lastCmd).toContain("my-tree");
+  });
+
+  test("WS connect sends user message immediately on open", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello Claude" });
+    server.spawnClaude("test-session");
+
+    // Connect as mock Claude CLI
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      const msg = await waitForMessage(ws);
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.type).toBe("user");
+      expect(parsed.message.content).toBe("Hello Claude");
+      expect(parsed.session_id).toBe("test-session");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("system/init triggers session:init event", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      // Read initial user message
+      await waitForMessage(ws);
+
+      // Send system/init
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(50);
+
+      const initEvent = events.find((e) => e.type === "session:init");
+      expect(initEvent).toBeDefined();
+      if (initEvent?.type === "session:init") {
+        expect(initEvent.model).toBe("claude-sonnet-4-6");
+        expect(initEvent.cwd).toBe("/test");
+      }
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("result message resolves waitForResult", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Start waiting for result
+      const resultPromise = server.waitForResult("test-session", 5000);
+
+      // Send system/init + assistant + result
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(assistantMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+      expect(result.result).toBe("Done!");
+      expect(result.cost).toBe(0.01);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("can_use_tool with auto router is auto-approved", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "auto",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // initial user message
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Set up message listener before sending can_use_tool
+      const responsePromise = waitForMessage(ws);
+      ws.send(canUseToolMessage("req-1"));
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.subtype).toBe("success");
+      expect(parsed.response.response.behavior).toBe("allow");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("can_use_tool with rules router denies unmatched tool", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "rules",
+      permissionRules: [{ tool: "Read", action: "allow" }],
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const responsePromise = waitForMessage(ws);
+      ws.send(canUseToolMessage("req-1")); // Bash tool — not in rules
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.response.behavior).toBe("deny");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("listSessions returns session info", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.prepareSession("s2", { prompt: "World" });
+
+    const sessions = server.listSessions();
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((s) => s.sessionId).sort()).toEqual(["s1", "s2"]);
+  });
+
+  test("getStatus returns detailed session info", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("s1", { prompt: "Hello", worktree: "my-tree" });
+    server.spawnClaude("s1");
+
+    const status = server.getStatus("s1");
+    expect(status.sessionId).toBe("s1");
+    expect(status.worktree).toBe("my-tree");
+    expect(status.pid).toBe(12345);
+    expect(status.state).toBe("connecting");
+  });
+
+  test("transcript stores messages up to limit", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const transcript = server.getTranscript("test-session");
+      // Should have at least: outbound user message + inbound system/init
+      expect(transcript.length).toBeGreaterThanOrEqual(2);
+      expect(transcript[0].direction).toBe("outbound");
+      expect(transcript[0].message.type).toBe("user");
+      expect(transcript[1].direction).toBe("inbound");
+      expect(transcript[1].message.type).toBe("system");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("getTranscript with limit returns last N entries", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(assistantMessage("test-session"));
+      await Bun.sleep(20);
+
+      const last1 = server.getTranscript("test-session", 1);
+      expect(last1).toHaveLength(1);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForResult rejects on timeout", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    await expect(server.waitForResult("test-session", 100)).rejects.toThrow("Timeout");
+  });
+
+  test("unknown session path returns 404", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    const res = await fetch(`http://localhost:${port}/session/nonexistent`);
+    expect(res.status).toBe(404);
+  });
+
+  test("invalid path returns 404", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    const res = await fetch(`http://localhost:${port}/invalid`);
+    expect(res.status).toBe(404);
+  });
+
+  test("sendPrompt on existing session sends user message", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // initial prompt
+
+      // system/init to move to init state
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Send result to move to idle
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Now send follow-up
+      const followUpPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Follow up question");
+
+      const msg = await followUpPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.type).toBe("user");
+      expect(parsed.message.content).toBe("Follow up question");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("process exit resolves waiters with error", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const resultPromise = server.waitForResult("test-session", 5000);
+
+    // Simulate process exit
+    ms.exitResolve(0);
+
+    try {
+      await resultPromise;
+      expect.unreachable("Should have thrown");
+    } catch (err) {
+      expect((err as Error).message).toContain("exited before producing a result");
+    }
+  });
+
+  test("stop() cleans up all sessions", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.prepareSession("s2", { prompt: "World" });
+    server.spawnClaude("s1");
+    server.spawnClaude("s2");
+
+    server.stop();
+    server = undefined; // prevent double stop in afterEach
+
+    expect(ms.killed).toBe(true);
+  });
+});
