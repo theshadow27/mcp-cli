@@ -166,6 +166,17 @@ describe("parseAddArgs", () => {
     );
   });
 
+  test("throws on --callback-port above 65535", () => {
+    expect(() =>
+      parseAddArgs(["--transport", "http", "--callback-port", "70000", "name", "https://example.com"]),
+    ).toThrow('Invalid --callback-port "70000"');
+  });
+
+  test("accepts --callback-port at boundary 65535", () => {
+    const result = parseAddArgs(["--transport", "http", "--callback-port", "65535", "name", "https://example.com"]);
+    expect(result.callbackPort).toBe(65535);
+  });
+
   test("rejects --client-id on stdio transport", () => {
     expect(() => parseAddArgs(["--transport", "stdio", "--client-id", "id", "name", "--", "cmd"])).toThrow(
       "not valid for stdio transport",

@@ -150,6 +150,21 @@ describe("cmdRegistryDispatch", () => {
     expect(capturedUrl).toContain("search=test");
   });
 
+  test("throws on non-numeric --limit", async () => {
+    const { extractRegistryFlags } = await import("./registry-cmd.js");
+    expect(() => extractRegistryFlags(["list", "--limit", "abc"])).toThrow('Invalid --limit "abc"');
+  });
+
+  test("throws on negative --limit", async () => {
+    const { extractRegistryFlags } = await import("./registry-cmd.js");
+    expect(() => extractRegistryFlags(["list", "--limit", "-5"])).toThrow('Invalid --limit "-5"');
+  });
+
+  test("throws on zero --limit", async () => {
+    const { extractRegistryFlags } = await import("./registry-cmd.js");
+    expect(() => extractRegistryFlags(["list", "--limit", "0"])).toThrow('Invalid --limit "0"');
+  });
+
   test("defaults to list when no subcommand given", async () => {
     const { cmdRegistryDispatch } = await import("./registry-cmd.js");
     let capturedUrl = "";

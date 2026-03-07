@@ -47,6 +47,7 @@ interface ServerConnection {
 
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
+  private reconnecting = new Map<string, Promise<void>>();
   private config: ResolvedConfig;
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
@@ -121,16 +122,21 @@ export class ServerPool {
       } else if (!Bun.deepEquals(existing.resolved.config, resolved.config)) {
         changed.push(name);
         existing.resolved = resolved;
-        // Reconnect if currently connected
-        if (existing.state === "connected") {
-          this.disconnect(name)
+        // Reconnect if currently connected (skip if already reconnecting)
+        if (existing.state === "connected" && !this.reconnecting.has(name)) {
+          const reconnectPromise = this.disconnect(name)
             .then(() => {
               console.error(`[pool] Reconnecting "${name}" after config change`);
               return this.ensureConnected(name);
             })
+            .then(() => {})
             .catch((err) => {
               console.error(`[pool] Failed to reconnect "${name}" after config change: ${err}`);
+            })
+            .finally(() => {
+              this.reconnecting.delete(name);
             });
+          this.reconnecting.set(name, reconnectPromise);
         }
       }
     }
@@ -208,7 +214,7 @@ export class ServerPool {
 
           return conn;
         } catch (err) {
-          lastErr = err instanceof Error ? err : new Error(String(err));
+          lastErr = err instanceof Error ? err : new Error(String(err), { cause: err });
 
           if (attempt < maxRetries && isRetryableError(err)) {
             const delay = Math.min(CONNECT_INITIAL_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);

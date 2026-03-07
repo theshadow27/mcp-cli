@@ -162,7 +162,7 @@ export class StateDb {
       name: row.tool_name,
       server: row.server_name,
       description: row.description ?? "",
-      inputSchema: row.input_schema_json ? JSON.parse(row.input_schema_json) : {},
+      inputSchema: row.input_schema_json ? safeJsonParse(row.input_schema_json, {}) : {},
       signature: row.signature ?? undefined,
     }));
   }
@@ -325,7 +325,10 @@ export class StateDb {
       .get(serverName);
 
     if (!row) return undefined;
-    if (row.client_info_json) return JSON.parse(row.client_info_json);
+    if (row.client_info_json) {
+      const parsed = safeJsonParse<OAuthClientInformationMixed | null>(row.client_info_json, null);
+      if (parsed) return parsed;
+    }
     const info: OAuthClientInformationMixed = { client_id: row.client_id };
     if (row.client_secret) (info as Record<string, unknown>).client_secret = row.client_secret;
     return info;
@@ -373,7 +376,7 @@ export class StateDb {
       .query<{ state_json: string }, [string]>("SELECT state_json FROM oauth_discovery WHERE server_name = ?")
       .get(serverName);
     if (!row) return undefined;
-    return JSON.parse(row.state_json);
+    return safeJsonParse<OAuthDiscoveryState | undefined>(row.state_json, undefined);
   }
 
   saveDiscoveryState(serverName: string, state: OAuthDiscoveryState): void {
@@ -418,8 +421,8 @@ export class StateDb {
         filePath: row.file_path,
         updatedAt: row.updated_at,
         aliasType: row.alias_type as "freeform" | "defineAlias",
-        ...(row.input_schema_json ? { inputSchemaJson: JSON.parse(row.input_schema_json) } : {}),
-        ...(row.output_schema_json ? { outputSchemaJson: JSON.parse(row.output_schema_json) } : {}),
+        ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
+        ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
       }));
   }
 
@@ -499,11 +502,12 @@ export class StateDb {
     }
 
     const where = conditions.join(" AND ");
-    const limitClause = limit ? `LIMIT ${Number(limit)}` : "";
+    const limitClause = limit ? " LIMIT ?" : "";
+    if (limit) params.push(limit);
 
     return this.db
       .query<{ line: string; timestamp_ms: number }, (string | number)[]>(
-        `SELECT line, timestamp_ms FROM server_logs WHERE ${where} ORDER BY timestamp_ms ASC ${limitClause}`,
+        `SELECT line, timestamp_ms FROM server_logs WHERE ${where} ORDER BY timestamp_ms ASC${limitClause}`,
       )
       .all(...params)
       .map((row) => ({ line: row.line, timestampMs: row.timestamp_ms }));
@@ -546,7 +550,8 @@ export class StateDb {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const limitClause = limit ? `LIMIT ${Number(limit)}` : "";
+    const limitClause = limit ? " LIMIT ?" : "";
+    if (limit) params.push(limit);
 
     return this.db
       .query<
@@ -562,7 +567,7 @@ export class StateDb {
         },
         (string | number)[]
       >(
-        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail ${where} ORDER BY created_at DESC ${limitClause}`,
+        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail ${where} ORDER BY created_at DESC${limitClause}`,
       )
       .all(...params)
       .map(toMailMessage);
@@ -642,6 +647,15 @@ export class StateDb {
 }
 
 // -- Helpers --
+
+/** Parse JSON safely, returning fallback on corrupt/invalid data. */
+function safeJsonParse<T>(json: string, fallback: T): T {
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 function toMailMessage(row: {
   id: number;

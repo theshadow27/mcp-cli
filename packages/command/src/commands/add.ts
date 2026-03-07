@@ -90,8 +90,8 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
       const val = flagArgs[++i];
       if (!val) throw new Error("--callback-port requires a value");
       callbackPort = Number.parseInt(val, 10);
-      if (!Number.isFinite(callbackPort) || callbackPort <= 0) {
-        throw new Error(`Invalid --callback-port "${val}": must be a positive integer`);
+      if (!Number.isFinite(callbackPort) || callbackPort <= 0 || callbackPort > 65535) {
+        throw new Error(`Invalid --callback-port "${val}": must be an integer between 1 and 65535`);
       }
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
