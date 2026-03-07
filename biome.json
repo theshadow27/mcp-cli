@@ -26,6 +26,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "*.d.ts", ".claude"]
+    "ignore": ["node_modules", "dist", "build", "*.d.ts", ".claude"]
   }
 }

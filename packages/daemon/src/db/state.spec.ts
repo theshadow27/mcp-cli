@@ -106,6 +106,19 @@ describe("StateDb", () => {
       expect(db.getCachedTools("s2")).toHaveLength(0);
       db.close();
     });
+
+    test("getCachedTools returns empty schema for corrupt JSON", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run(
+        "INSERT INTO tool_cache (server_name, tool_name, description, input_schema_json) VALUES (?, ?, ?, ?)",
+        ["s1", "broken", "desc", "{invalid json"],
+      );
+      const cached = db.getCachedTools("s1");
+      expect(cached).toHaveLength(1);
+      expect(cached[0].inputSchema).toEqual({});
+      db.close();
+    });
   });
 
   describe("usage stats", () => {
@@ -331,6 +344,21 @@ describe("StateDb", () => {
       db.close();
     });
 
+    test("listAliases returns empty schema for corrupt schema JSON", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run(
+        `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`,
+        ["broken", "/tmp/broken.ts", "desc", "defineAlias", "not{json", "also{bad"],
+      );
+      const aliases = db.listAliases();
+      expect(aliases).toHaveLength(1);
+      expect(aliases[0].inputSchemaJson).toEqual({});
+      expect(aliases[0].outputSchemaJson).toEqual({});
+      db.close();
+    });
+
     test("saveAlias stores aliasType as defineAlias", () => {
       const db = createDb();
       db.saveAlias("structured", "/tmp/structured.ts", "A defined alias", "defineAlias");
@@ -491,6 +519,19 @@ describe("StateDb", () => {
       expect(db.getClientInfo("nope")).toBeUndefined();
       db.close();
     });
+
+    test("getClientInfo falls back to basic fields on corrupt JSON", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run(
+        "INSERT INTO oauth_clients (server_name, client_id, client_secret, client_info_json, created_at) VALUES (?, ?, ?, ?, unixepoch())",
+        ["srv", "cid-123", "secret", "not valid json"],
+      );
+      const info = db.getClientInfo("srv");
+      expect(info).toBeDefined();
+      expect(info?.client_id).toBe("cid-123");
+      db.close();
+    });
   });
 
   describe("oauth_verifiers", () => {
@@ -553,6 +594,17 @@ describe("StateDb", () => {
     test("getDiscoveryState returns undefined for missing server", () => {
       const db = createDb();
       expect(db.getDiscoveryState("nope")).toBeUndefined();
+      db.close();
+    });
+
+    test("getDiscoveryState returns undefined for corrupt JSON", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run("INSERT INTO oauth_discovery (server_name, state_json, updated_at) VALUES (?, ?, unixepoch())", [
+        "srv",
+        "corrupt{",
+      ]);
+      expect(db.getDiscoveryState("srv")).toBeUndefined();
       db.close();
     });
   });

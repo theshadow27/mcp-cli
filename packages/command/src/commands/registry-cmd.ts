@@ -57,7 +57,8 @@ async function cmdRegistryList(args: string[]): Promise<void> {
   }
 }
 
-function extractRegistryFlags(args: string[]): {
+/** @internal Exported for testing. */
+export function extractRegistryFlags(args: string[]): {
   limit: number | undefined;
   noCache: boolean;
   remaining: string[];
@@ -69,6 +70,9 @@ function extractRegistryFlags(args: string[]): {
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === "--limit" || args[i] === "-n") && i + 1 < args.length) {
       limit = Number.parseInt(args[i + 1], 10);
+      if (Number.isNaN(limit) || limit <= 0) {
+        throw new Error(`Invalid --limit "${args[i + 1]}": must be a positive integer`);
+      }
       i++;
     } else if (args[i] === "--no-cache") {
       noCache = true;

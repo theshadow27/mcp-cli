@@ -8,3 +8,4 @@ dist/
 
 # Build artifacts
 *.js.map
+build/

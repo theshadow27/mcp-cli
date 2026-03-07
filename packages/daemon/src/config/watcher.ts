@@ -133,8 +133,15 @@ export class ConfigWatcher {
   /** Schedule a debounced config reload. */
   private scheduleReload(): void {
     if (this.stopped) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => this.reload(), DEBOUNCE_MS);
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      if (this.stopped) return;
+      this.reload();
+    }, DEBOUNCE_MS);
   }
 
   /** Reload config and fire callback if hash changed. */

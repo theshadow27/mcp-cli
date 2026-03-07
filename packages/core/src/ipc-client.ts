@@ -22,6 +22,9 @@ import { ensureStateDir } from "./fs";
 import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc";
 import { nextId } from "./ipc";
 
+/** Base URL for IPC requests over the Unix domain socket. */
+const IPC_RPC_URL = "http://localhost/rpc";
+
 /**
  * Send a single request to the daemon and return the response.
  * Auto-starts the daemon if it's not running.
@@ -40,7 +43,7 @@ export async function ipcCall(method: IpcMethod, params?: unknown): Promise<unkn
 
 /** Send a request via HTTP-over-Unix-socket and return the response */
 async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
-  const res = await fetch("http://localhost/rpc", {
+  const res = await fetch(IPC_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -169,7 +172,7 @@ let mismatchWarned = false;
 async function stopDaemon(): Promise<void> {
   verifiedMcpdPid = null;
   try {
-    await fetch("http://localhost/rpc", {
+    await fetch(IPC_RPC_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: nextId(), method: "shutdown" }),
@@ -186,7 +189,7 @@ async function stopDaemon(): Promise<void> {
 
 /** Send a quick HTTP ping to verify the daemon is responsive */
 function pingDaemon(): Promise<boolean> {
-  return fetch("http://localhost/rpc", {
+  return fetch(IPC_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: nextId(), method: "ping" }),
@@ -330,7 +333,9 @@ async function startDaemon(): Promise<void> {
   }
 
   proc.kill();
-  await stderrDrain.catch(() => {}); // collect any remaining stderr
+  await stderrDrain.catch((e) => {
+    stderrOutput += `\n[drain error: ${e instanceof Error ? e.message : String(e)}]`;
+  });
   const details = [stdout && `stdout: ${stdout.trim()}`, stderrOutput && `stderr: ${stderrOutput.trim()}`]
     .filter(Boolean)
     .join("; ");
