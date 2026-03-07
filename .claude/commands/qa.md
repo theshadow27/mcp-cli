@@ -79,6 +79,18 @@ bun test
 
 Run the full test suite. All tests — including any you just wrote — must pass. If any fail, fix them before proceeding.
 
+### Step 5b: Check CI Status
+
+If working from a PR, check that CI checks are passing:
+
+```bash
+gh pr checks <pr-number>
+```
+
+- If CI is **failing**, investigate the failure logs with `gh run view <run-id> --log-failed`.
+- Fix any CI failures before proceeding — do NOT close issues or merge PRs with red CI.
+- If the failure is pre-existing (not caused by this PR), note it but still fix it before merging.
+
 ### Step 6: Comment, Close, and Merge
 
 Post a structured QA comment to the issue, then close it:
@@ -97,6 +109,9 @@ gh issue comment <issue-number> --body "$(cat <<'EOF'
 
 ### Test Results
 <pass/fail summary from bun test>
+
+### CI Status
+<pass/fail — link to the CI run if from a PR>
 
 ### Remaining Work (non-blocking)
 <any "remaining work" items from the issue — these are known TODOs, not blockers>
@@ -138,4 +153,5 @@ This ensures no planned work is lost when the parent issue is closed.
 - If something is genuinely broken or missing (not just "remaining work"), do NOT close. Instead, comment with findings and ask the user what to do.
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
+- Check CI status on PRs — do NOT merge with failing CI. Fix failures first.
 - Process ONE issue per invocation.
