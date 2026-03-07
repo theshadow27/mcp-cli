@@ -122,6 +122,61 @@ export function checkRecursionGuard(): boolean {
   return process.env[MCX_SERVE_GUARD] === "1";
 }
 
+// -- Tool list change detection --
+
+const POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Compute a fingerprint of the current tool list from the daemon.
+ * Uses sorted server/name pairs so the result is order-independent.
+ */
+export async function computeToolsFingerprint(ipc: IpcCaller): Promise<string> {
+  const tools = (await ipc("listTools")) as ToolInfo[];
+  const key = tools
+    .map((t) => `${t.server}/${t.name}`)
+    .sort()
+    .join("\n");
+  const hash = new Bun.CryptoHasher("md5");
+  hash.update(key);
+  return hash.digest("hex");
+}
+
+/** Notifier interface for sending MCP notifications (matches MCP SDK Server). */
+export interface ToolListNotifier {
+  notification(params: { method: string }): Promise<void>;
+}
+
+/**
+ * Poll the daemon for tool list changes and send `tools/list_changed` notification.
+ * Returns a cleanup function that stops the polling.
+ */
+export function startToolListPoller(
+  notifier: ToolListNotifier,
+  ipc: IpcCaller,
+  intervalMs = POLL_INTERVAL_MS,
+): () => void {
+  let previousFingerprint: string | undefined;
+
+  const timer = setInterval(async () => {
+    try {
+      const fingerprint = await computeToolsFingerprint(ipc);
+      if (previousFingerprint === undefined) {
+        previousFingerprint = fingerprint;
+        return;
+      }
+      if (fingerprint !== previousFingerprint) {
+        previousFingerprint = fingerprint;
+        console.error("[mcx serve] Tool list changed, notifying client");
+        await notifier.notification({ method: "notifications/tools/list_changed" });
+      }
+    } catch (err) {
+      console.error(`[mcx serve] Tool list poll failed: ${err}`);
+    }
+  }, intervalMs);
+
+  return () => clearInterval(timer);
+}
+
 // -- Handler logic (extracted for testability) --
 
 export async function handleListTools(
@@ -223,7 +278,10 @@ export async function cmdServe(): Promise<void> {
   const { ipcCall } = await import("@mcp-cli/core");
   const curated = parseMcpTools(process.env.MCP_TOOLS);
 
-  const server = new Server({ name: "mcx-serve", version: "1.0.0" }, { capabilities: { tools: {} } });
+  const server = new Server(
+    { name: "mcx-serve", version: "1.0.0" },
+    { capabilities: { tools: { listChanged: true } } },
+  );
 
   server.setRequestHandler(ListToolsRequestSchema, () => handleListTools(curated, ipcCall));
 
@@ -234,5 +292,6 @@ export async function cmdServe(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  startToolListPoller(server, ipcCall);
   console.error("[mcx serve] MCP server running on stdio");
 }

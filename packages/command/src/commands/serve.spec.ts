@@ -5,10 +5,13 @@ import {
   type CuratedTool,
   FIND_TOOL,
   type IpcCaller,
+  type ToolListNotifier,
   checkRecursionGuard,
+  computeToolsFingerprint,
   handleCallTool,
   handleListTools,
   parseMcpTools,
+  startToolListPoller,
 } from "./serve";
 
 // -- parseMcpTools --
@@ -278,5 +281,131 @@ describe("meta-tool definitions", () => {
   test("CALL_TOOL has expected shape", () => {
     expect(CALL_TOOL.name).toBe("call");
     expect(CALL_TOOL.inputSchema.required).toContain("tool");
+  });
+});
+
+// -- computeToolsFingerprint --
+
+describe("computeToolsFingerprint", () => {
+  test("returns consistent hash for same tool list", async () => {
+    const ipc: IpcCaller = async () => [
+      { name: "search", server: "atlassian", description: "Search" },
+      { name: "echo", server: "test", description: "Echo" },
+    ];
+    const a = await computeToolsFingerprint(ipc);
+    const b = await computeToolsFingerprint(ipc);
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  test("returns same hash regardless of order", async () => {
+    const ipcA: IpcCaller = async () => [
+      { name: "search", server: "atlassian", description: "Search" },
+      { name: "echo", server: "test", description: "Echo" },
+    ];
+    const ipcB: IpcCaller = async () => [
+      { name: "echo", server: "test", description: "Echo" },
+      { name: "search", server: "atlassian", description: "Search" },
+    ];
+    expect(await computeToolsFingerprint(ipcA)).toBe(await computeToolsFingerprint(ipcB));
+  });
+
+  test("returns different hash when tools change", async () => {
+    const ipcBefore: IpcCaller = async () => [{ name: "search", server: "atlassian", description: "Search" }];
+    const ipcAfter: IpcCaller = async () => [
+      { name: "search", server: "atlassian", description: "Search" },
+      { name: "echo", server: "test", description: "Echo" },
+    ];
+    const before = await computeToolsFingerprint(ipcBefore);
+    const after = await computeToolsFingerprint(ipcAfter);
+    expect(before).not.toBe(after);
+  });
+});
+
+// -- startToolListPoller --
+
+describe("startToolListPoller", () => {
+  test("sends notification when tool list changes", async () => {
+    let callCount = 0;
+    const tools = [
+      [{ name: "search", server: "atlassian", description: "Search" }],
+      [{ name: "search", server: "atlassian", description: "Search" }],
+      [
+        { name: "search", server: "atlassian", description: "Search" },
+        { name: "echo", server: "test", description: "Echo" },
+      ],
+    ];
+    const ipc: IpcCaller = async () => tools[Math.min(callCount++, tools.length - 1)];
+
+    const notifications: string[] = [];
+    const notifier: ToolListNotifier = {
+      notification: async (params) => {
+        notifications.push(params.method);
+      },
+    };
+
+    const stop = startToolListPoller(notifier, ipc, 20);
+    // Wait for 3 poll cycles
+    await new Promise((r) => setTimeout(r, 80));
+    stop();
+
+    expect(notifications).toEqual(["notifications/tools/list_changed"]);
+  });
+
+  test("does not notify when tool list is unchanged", async () => {
+    const ipc: IpcCaller = async () => [{ name: "search", server: "atlassian", description: "Search" }];
+
+    const notifications: string[] = [];
+    const notifier: ToolListNotifier = {
+      notification: async (params) => {
+        notifications.push(params.method);
+      },
+    };
+
+    const stop = startToolListPoller(notifier, ipc, 20);
+    await new Promise((r) => setTimeout(r, 80));
+    stop();
+
+    expect(notifications).toEqual([]);
+  });
+
+  test("handles IPC errors gracefully without crashing", async () => {
+    let callCount = 0;
+    const ipc: IpcCaller = async () => {
+      callCount++;
+      if (callCount === 2) throw new Error("daemon unreachable");
+      return [{ name: "search", server: "atlassian", description: "Search" }];
+    };
+
+    const notifier: ToolListNotifier = {
+      notification: async () => {},
+    };
+
+    const stop = startToolListPoller(notifier, ipc, 20);
+    await new Promise((r) => setTimeout(r, 80));
+    stop();
+
+    // Should have made multiple calls despite the error
+    expect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  test("cleanup function stops polling", async () => {
+    let callCount = 0;
+    const ipc: IpcCaller = async () => {
+      callCount++;
+      return [];
+    };
+
+    const notifier: ToolListNotifier = {
+      notification: async () => {},
+    };
+
+    const stop = startToolListPoller(notifier, ipc, 20);
+    await new Promise((r) => setTimeout(r, 50));
+    stop();
+    const countAtStop = callCount;
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(callCount).toBe(countAtStop);
   });
 });
