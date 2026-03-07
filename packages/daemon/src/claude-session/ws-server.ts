@@ -11,7 +11,7 @@
 
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
-import { parseFrame, permissionAllow, permissionDeny, serialize, userMessage } from "./ndjson";
+import { keepAlive, parseFrame, permissionAllow, permissionDeny, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent, SessionStateEnum } from "./session-state";
@@ -67,6 +67,12 @@ export type SpawnFn = (
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
 ) => { pid: number; exited: Promise<number>; kill: (signal?: number) => void };
 
+interface ResultWaiter {
+  resolve: (r: SessionResult) => void;
+  reject: (e: Error) => void;
+  timer: Timer;
+}
+
 interface WsSession {
   state: SessionState;
   router: PermissionRouter;
@@ -76,7 +82,7 @@ interface WsSession {
   pid: number | null;
   proc: { kill: (signal?: number) => void; exited: Promise<number> } | null;
   worktree: string | null;
-  resultWaiters: Array<{ resolve: (r: SessionResult) => void; reject: (e: Error) => void }>;
+  resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
 }
 
@@ -86,6 +92,7 @@ interface WsData {
 
 const MAX_TRANSCRIPT = 100;
 const KEEP_ALIVE_MS = 30_000;
+const WS_OPEN = 1;
 
 // ── Server ──
 
@@ -132,13 +139,17 @@ export class ClaudeWsServer {
   }
 
   /** Stop the server and all sessions. */
-  stop(): void {
+  async stop(): Promise<void> {
+    const exitPromises: Promise<number>[] = [];
     for (const [sessionId, session] of this.sessions) {
-      this.cleanupSession(sessionId, session);
+      if (session.proc) exitPromises.push(session.proc.exited);
+      this.terminateSession(sessionId, session, "Server stopping");
     }
     this.sessions.clear();
     this.server?.stop();
     this.server = null;
+    // Wait for spawned processes to exit
+    await Promise.allSettled(exitPromises);
   }
 
   get port(): number {
@@ -210,16 +221,9 @@ export class ClaudeWsServer {
 
     // Watch for process exit
     proc.exited.then(() => {
-      const events = session.state.end();
-      for (const event of events) {
-        this.onSessionEvent?.(sessionId, event);
-      }
-      this.cleanupSession(sessionId, session);
-      // Resolve any waiters with an error if still pending
-      for (const waiter of session.resultWaiters) {
-        waiter.reject(new Error("Claude process exited before producing a result"));
-      }
-      session.resultWaiters.length = 0;
+      // Guard against double-cleanup (WS close may have already cleaned up)
+      if (session.state.state === "ended") return;
+      this.terminateSession(sessionId, session, "Claude process exited before producing a result");
     });
 
     return proc.pid;
@@ -249,16 +253,7 @@ export class ClaudeWsServer {
 
   /** List all sessions. */
   listSessions(): SessionInfo[] {
-    return [...this.sessions.entries()].map(([sessionId, s]) => ({
-      sessionId,
-      state: s.state.state,
-      model: s.state.model,
-      cwd: s.state.cwd,
-      cost: s.state.cost,
-      tokens: s.state.tokens,
-      numTurns: s.state.numTurns,
-      pendingPermissions: s.state.pendingPermissions.size,
-    }));
+    return [...this.sessions.entries()].map(([sessionId, s]) => this.buildSessionInfo(sessionId, s));
   }
 
   /** Get transcript for a session. */
@@ -274,14 +269,7 @@ export class ClaudeWsServer {
   getStatus(sessionId: string): SessionDetail {
     const session = this.getSession(sessionId);
     return {
-      sessionId,
-      state: session.state.state,
-      model: session.state.model,
-      cwd: session.state.cwd,
-      cost: session.state.cost,
-      tokens: session.state.tokens,
-      numTurns: session.state.numTurns,
-      pendingPermissions: session.state.pendingPermissions.size,
+      ...this.buildSessionInfo(sessionId, session),
       pendingPermissionIds: [...session.state.pendingPermissions.keys()],
       worktree: session.worktree,
       pid: session.pid,
@@ -292,28 +280,28 @@ export class ClaudeWsServer {
   waitForResult(sessionId: string, timeoutMs: number): Promise<SessionResult> {
     const session = this.getSession(sessionId);
 
-    // If already in result/idle/ended state, check immediately
     if (session.state.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
     }
 
     return new Promise<SessionResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const idx = session.resultWaiters.findIndex((w) => w.resolve === resolve);
-        if (idx >= 0) session.resultWaiters.splice(idx, 1);
-        reject(new Error(`Timeout waiting for session ${sessionId} result after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      session.resultWaiters.push({
+      const waiter: ResultWaiter = {
         resolve: (r) => {
-          clearTimeout(timer);
+          clearTimeout(waiter.timer);
           resolve(r);
         },
         reject: (e) => {
-          clearTimeout(timer);
+          clearTimeout(waiter.timer);
           reject(e);
         },
-      });
+        timer: setTimeout(() => {
+          const idx = session.resultWaiters.indexOf(waiter);
+          if (idx >= 0) session.resultWaiters.splice(idx, 1);
+          reject(new Error(`Timeout waiting for session ${sessionId} result after ${timeoutMs}ms`));
+        }, timeoutMs),
+      };
+
+      session.resultWaiters.push(waiter);
     });
   }
 
@@ -338,8 +326,8 @@ export class ClaudeWsServer {
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
-      if (session.ws?.readyState === 1) {
-        session.ws.send(serialize({ type: "keep_alive" }));
+      if (session.ws?.readyState === WS_OPEN) {
+        session.ws.send(keepAlive());
       }
     }, KEEP_ALIVE_MS);
   }
@@ -374,16 +362,7 @@ export class ClaudeWsServer {
     if (!session) return;
 
     session.ws = null;
-    const events = session.state.end();
-    for (const event of events) {
-      this.onSessionEvent?.(sessionId, event);
-    }
-
-    // Resolve waiters with error
-    for (const waiter of session.resultWaiters) {
-      waiter.reject(new Error("WebSocket closed before result"));
-    }
-    session.resultWaiters.length = 0;
+    this.terminateSession(sessionId, session, "WebSocket closed before result");
   }
 
   // ── Event handling ──
@@ -391,7 +370,9 @@ export class ClaudeWsServer {
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
     switch (event.type) {
       case "session:permission_request":
-        this.handlePermissionRequest(sessionId, session, event.requestId, event.request);
+        this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
+          console.error(`[_claude] Permission evaluation failed for session ${sessionId}: ${err}`);
+        });
         break;
       case "session:result":
         this.resolveWaiters(session, {
@@ -407,7 +388,7 @@ export class ClaudeWsServer {
         this.resolveWaiters(session, {
           sessionId,
           success: false,
-          errors: (event as SessionEvent & { type: "session:error" }).errors,
+          errors: event.errors,
           cost: event.cost,
           tokens: 0,
           numTurns: 0,
@@ -417,13 +398,11 @@ export class ClaudeWsServer {
   }
 
   private async handlePermissionRequest(
-    sessionId: string,
     session: WsSession,
     requestId: string,
     request: CanUseToolRequest,
   ): Promise<void> {
     if (session.router.strategy === "delegate") {
-      // Leave for external handling — the event was already emitted
       return;
     }
 
@@ -432,7 +411,6 @@ export class ClaudeWsServer {
       ? permissionAllow(requestId, decision.updatedInput ?? request.input)
       : permissionDeny(requestId, decision.message ?? "Denied");
 
-    // Update state machine
     session.state.respondToPermission(requestId, decision.allow, decision.message);
     this.sendToWs(session, outbound);
   }
@@ -445,8 +423,21 @@ export class ClaudeWsServer {
     return session;
   }
 
+  private buildSessionInfo(sessionId: string, s: WsSession): SessionInfo {
+    return {
+      sessionId,
+      state: s.state.state,
+      model: s.state.model,
+      cwd: s.state.cwd,
+      cost: s.state.cost,
+      tokens: s.state.tokens,
+      numTurns: s.state.numTurns,
+      pendingPermissions: s.state.pendingPermissions.size,
+    };
+  }
+
   private sendToWs(session: WsSession, message: string): void {
-    if (session.ws?.readyState === 1) {
+    if (session.ws?.readyState === WS_OPEN) {
       session.ws.send(message);
     }
   }
@@ -465,15 +456,36 @@ export class ClaudeWsServer {
     session.resultWaiters.length = 0;
   }
 
-  private cleanupSession(sessionId: string, session: WsSession): void {
+  /**
+   * Single cleanup path: end state machine, drain waiters, clear timers,
+   * close WS, kill process, remove from sessions map.
+   */
+  private terminateSession(sessionId: string, session: WsSession, errorMessage: string): void {
+    // End state machine (idempotent — returns [] if already ended)
+    const events = session.state.end();
+    for (const event of events) {
+      this.onSessionEvent?.(sessionId, event);
+    }
+
+    // Reject pending waiters
+    for (const waiter of session.resultWaiters) {
+      waiter.reject(new Error(errorMessage));
+    }
+    session.resultWaiters.length = 0;
+
+    // Clear keep-alive timer
     if (session.keepAliveTimer) {
       clearInterval(session.keepAliveTimer);
       session.keepAliveTimer = null;
     }
-    if (session.ws?.readyState === 1) {
+
+    // Close WebSocket
+    if (session.ws?.readyState === WS_OPEN) {
       session.ws.close(1000, "Session ended");
     }
     session.ws = null;
+
+    // Kill process
     if (session.proc) {
       try {
         session.proc.kill();
@@ -482,6 +494,9 @@ export class ClaudeWsServer {
       }
       session.proc = null;
     }
+
+    // Remove from map
+    this.sessions.delete(sessionId);
   }
 }
 

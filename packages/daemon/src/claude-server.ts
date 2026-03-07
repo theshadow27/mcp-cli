@@ -10,8 +10,10 @@
  */
 
 import { join } from "node:path";
-import type { ToolInfo } from "@mcp-cli/core";
+import type { JsonSchema, ToolInfo } from "@mcp-cli/core";
+import { formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { WorkerClientTransport } from "./worker-transport";
 
@@ -164,62 +166,14 @@ export class ClaudeServer {
 export function buildClaudeToolCache(): Map<string, ToolInfo> {
   const tools = new Map<string, ToolInfo>();
 
-  const toolDefs = [
-    {
-      name: "claude_prompt",
-      description: "Start or continue a Claude Code session",
-      inputSchema: {
-        type: "object",
-        properties: {
-          prompt: { type: "string" },
-          sessionId: { type: "string" },
-        },
-        required: ["prompt"],
-      },
-    },
-    {
-      name: "claude_session_list",
-      description: "List active Claude Code sessions",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "claude_session_status",
-      description: "Get status of a Claude Code session",
-      inputSchema: {
-        type: "object",
-        properties: { sessionId: { type: "string" } },
-        required: ["sessionId"],
-      },
-    },
-    {
-      name: "claude_interrupt",
-      description: "Interrupt a Claude Code session",
-      inputSchema: {
-        type: "object",
-        properties: { sessionId: { type: "string" } },
-        required: ["sessionId"],
-      },
-    },
-    {
-      name: "claude_transcript",
-      description: "Get transcript from a Claude Code session",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: { type: "string" },
-          limit: { type: "number" },
-        },
-        required: ["sessionId"],
-      },
-    },
-  ];
-
-  for (const def of toolDefs) {
+  for (const def of CLAUDE_TOOLS) {
+    const inputSchema = def.inputSchema as JsonSchema;
     tools.set(def.name, {
       name: def.name,
       server: CLAUDE_SERVER_NAME,
       description: def.description,
-      inputSchema: def.inputSchema,
+      inputSchema,
+      signature: formatToolSignature(def.name, inputSchema),
     });
   }
 

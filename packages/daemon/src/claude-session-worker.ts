@@ -18,6 +18,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
+import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer } from "./claude-session/ws-server";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -32,77 +33,6 @@ type ControlMessage = InitMessage;
 function isControlMessage(data: unknown): data is ControlMessage {
   return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
 }
-
-// ── MCP Tool Schemas ──
-
-const TOOLS = [
-  {
-    name: "claude_prompt",
-    description:
-      "Start a new Claude Code session with a prompt, or send a follow-up prompt to an existing session. " +
-      "Blocks until Claude produces a result or times out.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        prompt: { type: "string", description: "The message to send to Claude Code" },
-        sessionId: { type: "string", description: "Existing session ID to continue (omit for new session)" },
-        cwd: { type: "string", description: "Working directory for the Claude process" },
-        permissionMode: {
-          type: "string",
-          enum: ["auto", "rules"],
-          description: "Permission handling strategy (default: auto)",
-        },
-        allowedTools: {
-          type: "array",
-          items: { type: "string" },
-          description: "Tool patterns to auto-approve (e.g. 'Read', 'Bash(git *)')",
-        },
-        worktree: { type: "string", description: "Git worktree name for isolation" },
-        timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
-      },
-      required: ["prompt"],
-    },
-  },
-  {
-    name: "claude_session_list",
-    description: "List all active Claude Code sessions with their status, model, cost, and token usage.",
-    inputSchema: { type: "object" as const, properties: {} },
-  },
-  {
-    name: "claude_session_status",
-    description: "Get detailed status for a specific Claude Code session.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        sessionId: { type: "string", description: "Session ID to query" },
-      },
-      required: ["sessionId"],
-    },
-  },
-  {
-    name: "claude_interrupt",
-    description: "Interrupt the current turn of a Claude Code session.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        sessionId: { type: "string", description: "Session ID to interrupt" },
-      },
-      required: ["sessionId"],
-    },
-  },
-  {
-    name: "claude_transcript",
-    description: "Get recent transcript entries from a Claude Code session.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        sessionId: { type: "string", description: "Session ID to query" },
-        limit: { type: "number", description: "Max entries to return (default: 50)" },
-      },
-      required: ["sessionId"],
-    },
-  },
-] as const;
 
 // ── Worker globals ──
 
@@ -286,7 +216,7 @@ async function startServer(): Promise<void> {
   mcpServer = new Server({ name: "_claude", version: "0.1.0" }, { capabilities: { tools: {} } });
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
+    tools: CLAUDE_TOOLS.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
