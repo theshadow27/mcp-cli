@@ -24,6 +24,7 @@ import {
   options,
 } from "@mcp-cli/core";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
@@ -72,6 +73,17 @@ async function main(): Promise<void> {
     console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
   } catch (err) {
     console.error(`[mcpd] Failed to start alias server: ${err}`);
+  }
+
+  // Start virtual Claude session server
+  const claudeServer = new ClaudeServer(db);
+  try {
+    const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
+    const claudeTools = buildClaudeToolCache();
+    pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
+    console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
+  } catch (err) {
+    console.error(`[mcpd] Failed to start Claude session server: ${err}`);
   }
 
   // Idle timeout management with in-flight request tracking
@@ -141,6 +153,7 @@ async function main(): Promise<void> {
     console.error("[mcpd] Shutting down...");
     watcher.stop();
     ipcServer.stop();
+    await claudeServer.stop();
     await aliasServer.stop();
     await pool.closeAll();
     db.close();

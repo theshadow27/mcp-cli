@@ -96,10 +96,12 @@ describe("P2: Config hot reload", () => {
   test("adding a server to config is detected", async () => {
     daemon = await startTestDaemon({});
 
-    // Initially only the virtual _aliases server
+    // Initially only virtual servers (_aliases, _claude)
     const before = await rpc(daemon.socketPath, "listServers");
     const beforeServers = before.result as Array<{ name: string }>;
-    expect(beforeServers.every((s) => s.name === "_aliases")).toBe(true);
+    expect(beforeServers.some((s) => s.name === "_aliases")).toBe(true);
+    expect(beforeServers.some((s) => s.name === "_claude")).toBe(true);
+    expect(beforeServers.every((s) => s.name.startsWith("_"))).toBe(true);
 
     // Write echo server config
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: { echo: echoServerConfig() } }));
@@ -126,7 +128,9 @@ describe("P2: Config hot reload", () => {
 
     const after = await rpc(daemon.socketPath, "listServers");
     const afterServers = after.result as Array<{ name: string }>;
-    expect(afterServers.every((s) => s.name === "_aliases")).toBe(true);
+    expect(afterServers.some((s) => s.name === "_aliases")).toBe(true);
+    expect(afterServers.some((s) => s.name === "_claude")).toBe(true);
+    expect(afterServers.every((s) => s.name.startsWith("_"))).toBe(true);
   });
 });
 
