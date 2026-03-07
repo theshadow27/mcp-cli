@@ -19,6 +19,7 @@ import { IpcCallError, VERSION, isDaemonRunning } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
+import { cmdClaude } from "./commands/claude";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
 import { cmdExport } from "./commands/export";
@@ -186,6 +187,10 @@ async function main(): Promise<void> {
 
       case "tty":
         await cmdTty(args.slice(1));
+        break;
+
+      case "claude":
+        await cmdClaude(args.slice(1));
         break;
 
       case "serve":
@@ -506,6 +511,11 @@ Usage:
   mcx tty open <command>               Open command in new terminal tab
   mcx tty open --window <command>      Open command in new terminal window
   mcx tty open --headless <command>    Run command as background process
+  mcx claude spawn --task "..."        Start a Claude Code session
+  mcx claude ls                        List active Claude sessions
+  mcx claude send <session> <msg>      Send follow-up prompt to session
+  mcx claude kill <session>            Interrupt a session
+  mcx claude log <session>             View session transcript
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
