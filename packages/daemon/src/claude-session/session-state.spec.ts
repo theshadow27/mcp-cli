@@ -103,7 +103,6 @@ function activeSession(): SessionState {
 // ── Tests ──
 
 describe("SessionState", () => {
-
   // -- Construction --
 
   test("starts in connecting state", () => {

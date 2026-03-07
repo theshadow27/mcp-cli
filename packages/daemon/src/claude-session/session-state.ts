@@ -179,7 +179,15 @@ export class SessionState {
       this.numTurns += r.num_turns;
       this.tokens += resultTokens;
       this.state = "idle";
-      return [{ type: "session:result", cost: r.total_cost_usd, tokens: resultTokens, numTurns: r.num_turns, result: r.result }];
+      return [
+        {
+          type: "session:result",
+          cost: r.total_cost_usd,
+          tokens: resultTokens,
+          numTurns: r.num_turns,
+          result: r.result,
+        },
+      ];
     }
 
     const errorResult = ResultError.safeParse(msg);
