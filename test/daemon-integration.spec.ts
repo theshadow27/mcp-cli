@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 
 // CI runners are slower — give daemon spawn + test logic plenty of room
 setDefaultTimeout(30_000);
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestDaemon } from "./harness";
 import { echoServerConfig, rpc, startTestDaemon } from "./harness";
@@ -68,54 +68,14 @@ describe("P1: Daemon lifecycle", () => {
     await daemon.proc.exited;
     expect(existsSync(pidPath)).toBe(true);
 
-    // Remove stale socket left by SIGKILL so the new daemon can bind cleanly
-    const socketPath = join(daemon.dir, "mcpd.sock");
-    try {
-      unlinkSync(socketPath);
-    } catch {
-      // may not exist
-    }
-
     // Start a new daemon in the same directory — it should overwrite the stale PID
-    writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: {} }));
-    const proc2 = Bun.spawn(["bun", "packages/daemon/src/index.ts"], {
-      stdout: "ignore",
-      stderr: "pipe",
-      cwd: process.cwd(),
-      env: { ...process.env, MCP_CLI_DIR: daemon.dir, MCP_DAEMON_TIMEOUT: "30000" },
-    });
-
-    // Poll socket + ping to detect readiness (avoids stdout pipe buffering issues)
-    const deadline = Date.now() + 15_000;
-    let ready = false;
-    while (Date.now() < deadline) {
-      const exited = await Promise.race([proc2.exited.then(() => true), Bun.sleep(50).then(() => false)]);
-      if (exited) break;
-      if (!existsSync(socketPath)) continue;
-      try {
-        const res = await rpc(socketPath, "ping");
-        if (res.result && (res.result as { pong?: boolean }).pong) {
-          ready = true;
-          break;
-        }
-      } catch {
-        await Bun.sleep(50);
-      }
-    }
-
-    if (!ready) {
-      const stderr = await new Response(proc2.stderr).text();
-      proc2.kill();
-      await proc2.exited;
-      throw new Error(`Second daemon failed to start.\nstderr: ${stderr}`);
-    }
+    const daemon2 = await startTestDaemon({}, { dir: daemon.dir });
 
     // New daemon responds to ping
-    const res = await rpc(socketPath, "ping");
+    const res = await rpc(daemon2.socketPath, "ping");
     expect(res.result).toHaveProperty("pong", true);
 
-    proc2.kill("SIGTERM");
-    await proc2.exited;
+    await daemon2.kill();
     daemon = undefined;
   });
 });

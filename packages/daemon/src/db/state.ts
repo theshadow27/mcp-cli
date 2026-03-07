@@ -654,7 +654,7 @@ export class StateDb {
 
   /** Delete read messages older than ttlMs. Called opportunistically. */
   pruneExpiredMail(ttlMs = options.MAIL_TTL_MS): number {
-    const cutoff = new Date(Date.now() - ttlMs).toISOString().replace("T", " ").slice(0, 19);
+    const cutoff = formatSqliteDatetime(Date.now() - ttlMs);
     const result = this.db.run("DELETE FROM mail WHERE read = 1 AND created_at < ?", [cutoff]);
     return result.changes;
   }
@@ -735,7 +735,7 @@ export class StateDb {
   }
 
   pruneOldSessions(maxAgeDays = 30): number {
-    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+    const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const result = this.db.run("DELETE FROM claude_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);
     return result.changes;
   }
@@ -746,6 +746,11 @@ export class StateDb {
 }
 
 // -- Helpers --
+
+/** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
+function formatSqliteDatetime(ms: number): string {
+  return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+}
 
 /** Parse JSON safely, returning fallback on corrupt/invalid data. */
 function safeJsonParse<T>(json: string, fallback: T): T {
