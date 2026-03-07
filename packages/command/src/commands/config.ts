@@ -81,12 +81,16 @@ async function configSources(deps: ConfigDeps): Promise<void> {
 
 // -- CLI option keys --
 
-const VALID_KEYS = ["trust-claude"] as const;
+const VALID_KEYS = ["trust-claude", "terminal"] as const;
 type ConfigKey = (typeof VALID_KEYS)[number];
 
-const KEY_MAP: Record<ConfigKey, "trustClaude"> = {
+const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal"> = {
   "trust-claude": "trustClaude",
+  terminal: "terminal",
 };
+
+/** Keys whose values are stored as booleans (vs strings) */
+const BOOLEAN_KEYS = new Set<ConfigKey>(["trust-claude"]);
 
 /** Check if a key is a known CLI option (vs a server name). */
 export function isCliOptionKey(key: string): boolean {
@@ -139,7 +143,11 @@ function configSetCliOption(args: string[]): void {
   }
   const prop = KEY_MAP[key as ConfigKey];
   const config = readCliConfig();
-  config[prop] = value === "true";
+  if (BOOLEAN_KEYS.has(key as ConfigKey)) {
+    (config as Record<string, unknown>)[prop] = value === "true";
+  } else {
+    (config as Record<string, unknown>)[prop] = value;
+  }
   writeCliConfig(config);
   console.log(`${key} = ${config[prop]}`);
 }
@@ -156,7 +164,8 @@ function configGetCliOption(args: string[]): void {
   }
   const prop = KEY_MAP[key as ConfigKey];
   const config = readCliConfig();
-  console.log(String(config[prop] ?? false));
+  const defaultValue = BOOLEAN_KEYS.has(key as ConfigKey) ? false : "";
+  console.log(String(config[prop] ?? defaultValue));
 }
 
 // -- Server config get/set --
