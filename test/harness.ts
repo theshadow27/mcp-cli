@@ -4,7 +4,7 @@
  * Spawns real daemon processes in isolated temp directories
  * via the MCP_CLI_DIR env var override.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
@@ -37,10 +37,17 @@ export function echoServerConfig(): ServerConfig {
  */
 export async function startTestDaemon(
   servers: ServerConfigMap,
-  options?: { timeout?: number; idleTimeout?: number },
+  options?: { timeout?: number; idleTimeout?: number; dir?: string },
 ): Promise<TestDaemon> {
-  const dir = createTestDir();
+  const dir = options?.dir ?? createTestDir();
   const socketPath = join(dir, "mcpd.sock");
+
+  // Clean up stale socket from a previous daemon (e.g. after SIGKILL)
+  try {
+    unlinkSync(socketPath);
+  } catch {
+    // doesn't exist, fine
+  }
 
   // Write servers.json so daemon has config to load
   writeFileSync(join(dir, "servers.json"), JSON.stringify({ mcpServers: servers }));

@@ -872,6 +872,194 @@ describe("StateDb", () => {
     });
   });
 
+  describe("claude sessions", () => {
+    test("upsertSession and getSession round-trip", () => {
+      const db = createDb();
+      db.upsertSession({
+        sessionId: "sess-1",
+        pid: 1234,
+        state: "active",
+        model: "opus",
+        cwd: "/tmp",
+        worktree: "wt-1",
+      });
+
+      const session = db.getSession("sess-1");
+      expect(session).not.toBeNull();
+      expect(session?.sessionId).toBe("sess-1");
+      expect(session?.pid).toBe(1234);
+      expect(session?.state).toBe("active");
+      expect(session?.model).toBe("opus");
+      expect(session?.cwd).toBe("/tmp");
+      expect(session?.worktree).toBe("wt-1");
+      expect(session?.totalCost).toBe(0);
+      expect(session?.totalTokens).toBe(0);
+      expect(session?.spawnedAt).toBeTruthy();
+      expect(session?.endedAt).toBeNull();
+      db.close();
+    });
+
+    test("upsertSession with minimal fields", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-min" });
+
+      const session = db.getSession("sess-min");
+      expect(session?.state).toBe("connecting");
+      expect(session?.pid).toBeNull();
+      expect(session?.model).toBeNull();
+      expect(session?.cwd).toBeNull();
+      expect(session?.worktree).toBeNull();
+      db.close();
+    });
+
+    test("upsertSession updates existing session without overwriting unset fields", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-u", pid: 100, model: "opus", cwd: "/a" });
+      db.upsertSession({ sessionId: "sess-u", state: "active", model: "sonnet" });
+
+      const session = db.getSession("sess-u");
+      expect(session?.pid).toBe(100); // preserved
+      expect(session?.state).toBe("active"); // updated
+      expect(session?.model).toBe("sonnet"); // updated
+      expect(session?.cwd).toBe("/a"); // preserved
+      db.close();
+    });
+
+    test("getSession returns null for unknown id", () => {
+      const db = createDb();
+      expect(db.getSession("nope")).toBeNull();
+      db.close();
+    });
+
+    test("updateSessionState changes state", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-s", state: "connecting" });
+      db.updateSessionState("sess-s", "active");
+
+      expect(db.getSession("sess-s")?.state).toBe("active");
+      db.close();
+    });
+
+    test("updateSessionCost sets cost and tokens", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-c" });
+      db.updateSessionCost("sess-c", 0.05, 1500);
+
+      const session = db.getSession("sess-c");
+      expect(session?.totalCost).toBe(0.05);
+      expect(session?.totalTokens).toBe(1500);
+      db.close();
+    });
+
+    test("endSession sets state and ended_at", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-e", state: "active" });
+      db.endSession("sess-e");
+
+      const session = db.getSession("sess-e");
+      expect(session?.state).toBe("ended");
+      expect(session?.endedAt).toBeTruthy();
+      db.close();
+    });
+
+    test("listSessions returns all sessions", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "s1", state: "active" });
+      db.upsertSession({ sessionId: "s2", state: "active" });
+      db.endSession("s2");
+
+      const all = db.listSessions();
+      expect(all).toHaveLength(2);
+      db.close();
+    });
+
+    test("listSessions active=true filters ended sessions", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "s1", state: "active" });
+      db.upsertSession({ sessionId: "s2", state: "active" });
+      db.endSession("s2");
+
+      const active = db.listSessions(true);
+      expect(active).toHaveLength(1);
+      expect(active[0].sessionId).toBe("s1");
+      db.close();
+    });
+
+    test("listSessions active=false returns only ended sessions", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "s1", state: "active" });
+      db.upsertSession({ sessionId: "s2", state: "active" });
+      db.endSession("s2");
+
+      const ended = db.listSessions(false);
+      expect(ended).toHaveLength(1);
+      expect(ended[0].sessionId).toBe("s2");
+      db.close();
+    });
+
+    test("listSessions orders by spawned_at DESC", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "old" });
+      // Backdate the first session
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run("UPDATE claude_sessions SET spawned_at = '2024-01-01 00:00:00' WHERE session_id = 'old'");
+      db.upsertSession({ sessionId: "new" });
+
+      const sessions = db.listSessions();
+      expect(sessions[0].sessionId).toBe("new");
+      expect(sessions[1].sessionId).toBe("old");
+      db.close();
+    });
+
+    test("pruneOldSessions deletes ended sessions older than threshold", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "old-ended" });
+      db.endSession("old-ended");
+      // Backdate ended_at to 60 days ago
+      const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run("UPDATE claude_sessions SET ended_at = ? WHERE session_id = 'old-ended'", [old]);
+
+      db.upsertSession({ sessionId: "recent-ended" });
+      db.endSession("recent-ended");
+
+      db.upsertSession({ sessionId: "still-active" });
+
+      const pruned = db.pruneOldSessions(30);
+      expect(pruned).toBe(1);
+      expect(db.getSession("old-ended")).toBeNull();
+      expect(db.getSession("recent-ended")).not.toBeNull();
+      expect(db.getSession("still-active")).not.toBeNull();
+      db.close();
+    });
+
+    test("pruneOldSessions never deletes active sessions", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "active" });
+      // Backdate spawned_at but don't end it
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run("UPDATE claude_sessions SET spawned_at = '2020-01-01 00:00:00' WHERE session_id = 'active'");
+
+      const pruned = db.pruneOldSessions(1);
+      expect(pruned).toBe(0);
+      expect(db.getSession("active")).not.toBeNull();
+      db.close();
+    });
+
+    test("pruneOldSessions defaults to 30 days", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "old" });
+      db.endSession("old");
+      const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db["db"].run("UPDATE claude_sessions SET ended_at = ? WHERE session_id = 'old'", [old]);
+
+      const pruned = db.pruneOldSessions();
+      expect(pruned).toBe(1);
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);

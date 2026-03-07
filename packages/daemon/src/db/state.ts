@@ -14,6 +14,19 @@ import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprot
 
 export type { UsageStat } from "@mcp-cli/core";
 
+export interface ClaudeSessionRow {
+  sessionId: string;
+  pid: number | null;
+  state: string;
+  model: string | null;
+  cwd: string | null;
+  worktree: string | null;
+  totalCost: number;
+  totalTokens: number;
+  spawnedAt: string;
+  endedAt: string | null;
+}
+
 export class StateDb {
   private db: Database;
   private logInsertCount = new Map<string, number>();
@@ -120,6 +133,19 @@ export class StateDb {
 
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
+
+      CREATE TABLE IF NOT EXISTS claude_sessions (
+        session_id   TEXT PRIMARY KEY,
+        pid          INTEGER,
+        state        TEXT NOT NULL DEFAULT 'connecting',
+        model        TEXT,
+        cwd          TEXT,
+        worktree     TEXT,
+        total_cost   REAL NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at     TEXT
+      );
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -628,7 +654,7 @@ export class StateDb {
 
   /** Delete read messages older than ttlMs. Called opportunistically. */
   pruneExpiredMail(ttlMs = options.MAIL_TTL_MS): number {
-    const cutoff = new Date(Date.now() - ttlMs).toISOString().replace("T", " ").slice(0, 19);
+    const cutoff = formatSqliteDatetime(Date.now() - ttlMs);
     const result = this.db.run("DELETE FROM mail WHERE read = 1 AND created_at < ?", [cutoff]);
     return result.changes;
   }
@@ -641,12 +667,90 @@ export class StateDb {
     }
   }
 
+  // -- Claude sessions --
+
+  upsertSession(session: {
+    sessionId: string;
+    pid?: number;
+    state?: string;
+    model?: string;
+    cwd?: string;
+    worktree?: string;
+  }): void {
+    this.db.run(
+      `INSERT INTO claude_sessions (session_id, pid, state, model, cwd, worktree)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         pid = COALESCE(excluded.pid, claude_sessions.pid),
+         state = COALESCE(excluded.state, claude_sessions.state),
+         model = COALESCE(excluded.model, claude_sessions.model),
+         cwd = COALESCE(excluded.cwd, claude_sessions.cwd),
+         worktree = COALESCE(excluded.worktree, claude_sessions.worktree)`,
+      [
+        session.sessionId,
+        session.pid ?? null,
+        session.state ?? "connecting",
+        session.model ?? null,
+        session.cwd ?? null,
+        session.worktree ?? null,
+      ],
+    );
+  }
+
+  updateSessionState(sessionId: string, state: string): void {
+    this.db.run("UPDATE claude_sessions SET state = ? WHERE session_id = ?", [state, sessionId]);
+  }
+
+  updateSessionCost(sessionId: string, cost: number, tokens: number): void {
+    this.db.run("UPDATE claude_sessions SET total_cost = ?, total_tokens = ? WHERE session_id = ?", [
+      cost,
+      tokens,
+      sessionId,
+    ]);
+  }
+
+  endSession(sessionId: string): void {
+    this.db.run("UPDATE claude_sessions SET state = 'ended', ended_at = datetime('now') WHERE session_id = ?", [
+      sessionId,
+    ]);
+  }
+
+  getSession(sessionId: string): ClaudeSessionRow | null {
+    const row = this.db
+      .query<RawSessionRow, [string]>(
+        "SELECT session_id, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM claude_sessions WHERE session_id = ?",
+      )
+      .get(sessionId);
+    return row ? toSessionRow(row) : null;
+  }
+
+  listSessions(active?: boolean): ClaudeSessionRow[] {
+    const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
+    return this.db
+      .query<RawSessionRow, []>(
+        `SELECT session_id, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM claude_sessions${where} ORDER BY spawned_at DESC`,
+      )
+      .all()
+      .map(toSessionRow);
+  }
+
+  pruneOldSessions(maxAgeDays = 30): number {
+    const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const result = this.db.run("DELETE FROM claude_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);
+    return result.changes;
+  }
+
   close(): void {
     this.db.close();
   }
 }
 
 // -- Helpers --
+
+/** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
+function formatSqliteDatetime(ms: number): string {
+  return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+}
 
 /** Parse JSON safely, returning fallback on corrupt/invalid data. */
 function safeJsonParse<T>(json: string, fallback: T): T {
@@ -655,6 +759,34 @@ function safeJsonParse<T>(json: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+interface RawSessionRow {
+  session_id: string;
+  pid: number | null;
+  state: string;
+  model: string | null;
+  cwd: string | null;
+  worktree: string | null;
+  total_cost: number;
+  total_tokens: number;
+  spawned_at: string;
+  ended_at: string | null;
+}
+
+function toSessionRow(row: RawSessionRow): ClaudeSessionRow {
+  return {
+    sessionId: row.session_id,
+    pid: row.pid,
+    state: row.state,
+    model: row.model,
+    cwd: row.cwd,
+    worktree: row.worktree,
+    totalCost: row.total_cost,
+    totalTokens: row.total_tokens,
+    spawnedAt: row.spawned_at,
+    endedAt: row.ended_at,
+  };
 }
 
 function toMailMessage(row: {

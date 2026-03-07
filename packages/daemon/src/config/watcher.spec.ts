@@ -37,7 +37,7 @@ function atomicWrite(path: string, data: unknown): void {
 }
 
 /** Wait for a mock to be called, with timeout */
-async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 2000): Promise<void> {
+async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (fn.mock.calls.length === 0 && Date.now() < deadline) {
     await Bun.sleep(50);

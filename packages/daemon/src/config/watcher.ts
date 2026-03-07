@@ -6,7 +6,7 @@
  */
 
 import { type FSWatcher, existsSync, watch } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
 import { configHash, loadConfig } from "./loader";
@@ -115,9 +115,15 @@ export class ConfigWatcher {
     const dir = dirname(filePath);
     if (!existsSync(dir)) return;
     try {
-      const basename = filePath.split("/").pop() ?? "";
+      const base = basename(filePath);
       const watcher = watch(dir, (_event, filename) => {
-        if (filename === basename) this.scheduleReload();
+        // Match the target file directly, or any temp file variant (e.g. foo.json.tmp)
+        // that editors create for atomic saves (write tmp → rename over target).
+        // On Linux, rename() may report the source filename instead of the target,
+        // and some kernels report null. The reload() hash check prevents false positives.
+        if (!filename || filename === base || filename.startsWith(base)) {
+          this.scheduleReload();
+        }
       });
       this.watchers.push(watcher);
     } catch {
