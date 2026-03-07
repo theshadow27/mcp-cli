@@ -1,27 +1,44 @@
 /**
  * `mcx config` commands — display resolved configuration and sources,
- * plus get/set for CLI options like trust-claude.
+ * plus get/set for CLI options like trust-claude, and server config inspection/modification.
  */
 
-import type { GetConfigResult } from "@mcp-cli/core";
-import { ipcCall, readCliConfig, writeCliConfig } from "@mcp-cli/core";
+import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
+import { ipcCall, isStdioConfig, readCliConfig, writeCliConfig } from "@mcp-cli/core";
 import { c, printError } from "../output";
+import { readConfigFile, writeConfigFile } from "./config-file";
 
-export async function cmdConfig(args: string[]): Promise<void> {
+// -- Dependency injection for testability --
+
+export interface ConfigDeps {
+  getConfig: () => Promise<GetConfigResult>;
+  readConfig: (path: string) => McpConfigFile;
+  writeConfig: (path: string, config: McpConfigFile) => void;
+}
+
+const defaultDeps: ConfigDeps = {
+  getConfig: () => ipcCall("getConfig") as Promise<GetConfigResult>,
+  readConfig: readConfigFile,
+  writeConfig: writeConfigFile,
+};
+
+// -- Entry point --
+
+export async function cmdConfig(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
   const sub = args[0] ?? "show";
 
   switch (sub) {
     case "show":
-      await configShow();
+      await configShow(deps);
       break;
     case "sources":
-      await configSources();
+      await configSources(deps);
       break;
     case "set":
-      configSet(args.slice(1));
+      await configSetDispatch(args.slice(1), deps);
       break;
     case "get":
-      configGet(args.slice(1));
+      await configGetDispatch(args.slice(1), deps);
       break;
     default:
       printError(`Unknown config subcommand: ${sub}. Use "show", "sources", "set", or "get".`);
@@ -29,8 +46,8 @@ export async function cmdConfig(args: string[]): Promise<void> {
   }
 }
 
-async function configShow(): Promise<void> {
-  const config = (await ipcCall("getConfig")) as GetConfigResult;
+async function configShow(deps: ConfigDeps): Promise<void> {
+  const config = await deps.getConfig();
   const entries = Object.entries(config.servers);
 
   if (entries.length === 0) {
@@ -48,8 +65,8 @@ async function configShow(): Promise<void> {
   console.log(`\n${entries.length} server(s) from ${config.sources.length} source(s)`);
 }
 
-async function configSources(): Promise<void> {
-  const config = (await ipcCall("getConfig")) as GetConfigResult;
+async function configSources(deps: ConfigDeps): Promise<void> {
+  const config = await deps.getConfig();
 
   if (config.sources.length === 0) {
     console.error("No config sources found.");
@@ -62,21 +79,61 @@ async function configSources(): Promise<void> {
   }
 }
 
+// -- CLI option keys --
+
 const VALID_KEYS = ["trust-claude"] as const;
 type ConfigKey = (typeof VALID_KEYS)[number];
 
-/** Map CLI key names (kebab-case) to CliConfig property names (camelCase). */
 const KEY_MAP: Record<ConfigKey, "trustClaude"> = {
   "trust-claude": "trustClaude",
 };
 
-function configSet(args: string[]): void {
+/** Check if a key is a known CLI option (vs a server name). */
+export function isCliOptionKey(key: string): boolean {
+  return VALID_KEYS.includes(key as ConfigKey);
+}
+
+// -- Dispatch: CLI option vs server config --
+
+export async function configGetDispatch(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const key = args.find((a) => !a.startsWith("-"));
+  if (!key) {
+    printError("Usage: mcx config get <key|server> [--show-secrets] [--json]");
+    process.exit(1);
+  }
+
+  if (isCliOptionKey(key)) {
+    configGetCliOption(args);
+    return;
+  }
+
+  await configGetServer(args, deps);
+}
+
+export async function configSetDispatch(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const [first, second] = args;
+  if (!first) {
+    printError("Usage: mcx config set <key> <value>\n       mcx config set <server> env <KEY>:<VALUE>");
+    process.exit(1);
+  }
+
+  if (second === "env") {
+    await configSetServerEnv(args, deps);
+    return;
+  }
+
+  configSetCliOption(args);
+}
+
+// -- CLI option get/set --
+
+function configSetCliOption(args: string[]): void {
   const [key, value] = args;
   if (!key || value === undefined) {
     printError("Usage: mcx config set <key> <value>");
     process.exit(1);
   }
-  if (!VALID_KEYS.includes(key as ConfigKey)) {
+  if (!isCliOptionKey(key)) {
     printError(`Unknown config key: ${key}. Valid keys: ${VALID_KEYS.join(", ")}`);
     process.exit(1);
   }
@@ -87,17 +144,175 @@ function configSet(args: string[]): void {
   console.log(`${key} = ${config[prop]}`);
 }
 
-function configGet(args: string[]): void {
+function configGetCliOption(args: string[]): void {
   const key = args[0];
   if (!key) {
     printError("Usage: mcx config get <key>");
     process.exit(1);
   }
-  if (!VALID_KEYS.includes(key as ConfigKey)) {
+  if (!isCliOptionKey(key)) {
     printError(`Unknown config key: ${key}. Valid keys: ${VALID_KEYS.join(", ")}`);
     process.exit(1);
   }
   const prop = KEY_MAP[key as ConfigKey];
   const config = readCliConfig();
   console.log(String(config[prop] ?? false));
+}
+
+// -- Server config get/set --
+
+export async function configGetServer(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const showSecrets = args.includes("--show-secrets");
+  const json = args.includes("--json") || args.includes("-j");
+  const name = args.find((a) => !a.startsWith("-"));
+
+  if (!name) {
+    printError("Usage: mcx config get <server> [--show-secrets] [--json]");
+    process.exit(1);
+  }
+
+  const result = await deps.getConfig();
+  const serverMeta = result.servers[name];
+  if (!serverMeta) {
+    printError(`Server "${name}" not found`);
+    process.exit(1);
+  }
+
+  const fileConfig = deps.readConfig(serverMeta.source);
+  const serverConfig = fileConfig.mcpServers?.[name];
+
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          name,
+          transport: serverMeta.transport,
+          source: serverMeta.source,
+          scope: serverMeta.scope,
+          config: serverConfig ? maskConfig(serverConfig, showSecrets) : null,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  console.log(`${c.cyan}${name}${c.reset} ${c.dim}(${serverMeta.transport})${c.reset}`);
+
+  if (serverConfig) {
+    printServerConfigDetails(serverConfig, showSecrets);
+  }
+
+  console.log(`  ${c.bold}source${c.reset}: ${serverMeta.source} ${c.dim}(${serverMeta.scope})${c.reset}`);
+}
+
+export function printServerConfigDetails(config: ServerConfig, showSecrets: boolean): void {
+  if (isStdioConfig(config)) {
+    const cmdLine = [config.command, ...(config.args ?? [])].join(" ");
+    console.log(`  ${c.bold}command${c.reset}: ${cmdLine}`);
+    if (config.cwd) {
+      console.log(`  ${c.bold}cwd${c.reset}: ${config.cwd}`);
+    }
+    if (config.env && Object.keys(config.env).length > 0) {
+      console.log(`  ${c.bold}env${c.reset}:`);
+      for (const [k, v] of Object.entries(config.env)) {
+        console.log(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
+      }
+    }
+  } else {
+    console.log(`  ${c.bold}url${c.reset}: ${config.url}`);
+    if (config.headers && Object.keys(config.headers).length > 0) {
+      console.log(`  ${c.bold}headers${c.reset}:`);
+      for (const [k, v] of Object.entries(config.headers)) {
+        console.log(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
+      }
+    }
+  }
+}
+
+/** Parse KEY:VALUE string. Returns null on invalid format. */
+export function parseEnvKeyValue(input: string): { key: string; value: string } | null {
+  const colonIdx = input.indexOf(":");
+  if (colonIdx < 1) return null;
+  return { key: input.slice(0, colonIdx), value: input.slice(colonIdx + 1) };
+}
+
+export async function configSetServerEnv(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const serverName = args[0];
+  const keyValue = args[2];
+
+  if (!serverName || !keyValue) {
+    printError("Usage: mcx config set <server> env <KEY>:<VALUE>");
+    process.exit(1);
+  }
+
+  const parsed = parseEnvKeyValue(keyValue);
+  if (!parsed) {
+    printError("Invalid format. Use <KEY>:<VALUE> (e.g. API_KEY:sk-xxx)");
+    process.exit(1);
+  }
+
+  const { key, value } = parsed;
+
+  const result = await deps.getConfig();
+  const serverMeta = result.servers[serverName];
+  if (!serverMeta) {
+    printError(`Server "${serverName}" not found`);
+    process.exit(1);
+  }
+
+  const fileConfig = deps.readConfig(serverMeta.source);
+  const serverConfig = fileConfig.mcpServers?.[serverName];
+  if (!serverConfig) {
+    printError(`Server "${serverName}" not found in ${serverMeta.source}`);
+    process.exit(1);
+  }
+
+  if (!isStdioConfig(serverConfig)) {
+    printError(
+      `Server "${serverName}" uses ${serverConfig.type} transport. Environment variables are only supported for stdio servers.`,
+    );
+    process.exit(1);
+  }
+
+  serverConfig.env = serverConfig.env ?? {};
+  serverConfig.env[key] = value;
+  deps.writeConfig(serverMeta.source, fileConfig);
+
+  console.log(`Set ${key} on ${serverName}`);
+}
+
+// -- Masking --
+
+/**
+ * Mask a sensitive value for display.
+ * Preserves ${VAR} env references as-is (they're not secrets).
+ */
+export function maskValue(value: string): string {
+  if (/^\$\{[^}]+\}$/.test(value)) return value;
+  if (value.length <= 8) return "****";
+  return `${value.slice(0, 4)}****${value.slice(-3)}`;
+}
+
+/** Return a config object with sensitive values masked (for JSON output). */
+export function maskConfig(config: ServerConfig, showSecrets: boolean): ServerConfig {
+  if (showSecrets) return config;
+
+  if (isStdioConfig(config)) {
+    if (!config.env) return config;
+    const maskedEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(config.env)) {
+      maskedEnv[k] = maskValue(v);
+    }
+    return { ...config, env: maskedEnv };
+  }
+
+  const httpConfig = config as { headers?: Record<string, string> };
+  if (!httpConfig.headers) return config;
+  const maskedHeaders: Record<string, string> = {};
+  for (const [k, v] of Object.entries(httpConfig.headers)) {
+    maskedHeaders[k] = maskValue(v);
+  }
+  return { ...config, headers: maskedHeaders };
 }

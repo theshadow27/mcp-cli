@@ -483,6 +483,8 @@ Usage:
   mcx config sources                  Show config file sources
   mcx config set <key> <value>        Set a CLI option (e.g. trust-claude)
   mcx config get <key>                Get a CLI option value
+  mcx config get <server>             Inspect a server's config (env, args, url)
+  mcx config set <srv> env <K>:<V>    Set an env var on a stdio server
   mcx status                          Daemon status
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
   mcx mail -H                        List message headers
