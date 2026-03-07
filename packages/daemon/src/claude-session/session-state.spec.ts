@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
-import { type SessionEvent, SessionState, _resetRequestId } from "./session-state";
+import { describe, expect, test } from "bun:test";
+import { type RequestIdGenerator, type SessionEvent, SessionState } from "./session-state";
 
 // ── Test fixtures ──
 
@@ -83,8 +83,13 @@ const CAN_USE_TOOL_2 = {
 
 // ── Helpers ──
 
+function testIdGenerator(): RequestIdGenerator {
+  let id = 1;
+  return () => `mcpd-${id++}`;
+}
+
 function initSession(): SessionState {
-  const session = new SessionState("sess-1");
+  const session = new SessionState("sess-1", testIdGenerator());
   session.handleMessage(SYSTEM_INIT);
   return session;
 }
@@ -98,7 +103,6 @@ function activeSession(): SessionState {
 // ── Tests ──
 
 describe("SessionState", () => {
-  beforeEach(() => _resetRequestId());
 
   // -- Construction --
 
@@ -336,6 +340,16 @@ describe("SessionState", () => {
       expect(parsed.type).toBe("control_request");
       expect(parsed.request.subtype).toBe("interrupt");
       expect(parsed.request_id).toBe("mcpd-1");
+    });
+
+    test("uses default id generator when none injected", () => {
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      const msg = session.interrupt();
+      const parsed = JSON.parse(msg);
+
+      expect(parsed.request_id).toMatch(/^mcpd-\d+$/);
     });
 
     test("throws on ended session", () => {

@@ -37,17 +37,26 @@ export type SessionEvent =
 
 export type OutboundMessage = string;
 
+// ── Request ID generation ──
+
+export type RequestIdGenerator = () => string;
+
+function createDefaultIdGenerator(): RequestIdGenerator {
+  let nextId = 1;
+  return () => `mcpd-${nextId++}`;
+}
+
+// ── Ignored message types ──
+
+const IGNORED_TYPES: ReadonlySet<string> = new Set([
+  "keep_alive",
+  "stream_event",
+  "tool_progress",
+  "tool_use_summary",
+  "auth_status",
+]);
+
 // ── Session state machine ──
-
-let nextRequestId = 1;
-function genRequestId(): string {
-  return `mcpd-${nextRequestId++}`;
-}
-
-/** Reset the request ID counter (for tests). */
-export function _resetRequestId(): void {
-  nextRequestId = 1;
-}
 
 export class SessionState {
   readonly sessionId: string;
@@ -58,10 +67,12 @@ export class SessionState {
   tokens = 0;
   numTurns = 0;
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
+  private readonly genRequestId: RequestIdGenerator;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
     this.sessionId = sessionId;
     this.state = "connecting";
+    this.genRequestId = genRequestId ?? createDefaultIdGenerator();
   }
 
   /**
@@ -69,36 +80,13 @@ export class SessionState {
    * Returns zero or more events for observers.
    */
   handleMessage(msg: NdjsonMessage): SessionEvent[] {
-    // Ignore keep_alive, stream_event, tool_progress, tool_use_summary, auth_status, system/status
-    if (
-      msg.type === "keep_alive" ||
-      msg.type === "stream_event" ||
-      msg.type === "tool_progress" ||
-      msg.type === "tool_use_summary" ||
-      msg.type === "auth_status"
-    ) {
-      return [];
-    }
+    if (IGNORED_TYPES.has(msg.type)) return [];
+    if (msg.type === "system" && msg.subtype === "status") return [];
 
-    if (msg.type === "system" && msg.subtype === "status") {
-      return [];
-    }
-
-    if (msg.type === "system" && msg.subtype === "init") {
-      return this.handleInit(msg);
-    }
-
-    if (msg.type === "assistant") {
-      return this.handleAssistant(msg);
-    }
-
-    if (msg.type === "result") {
-      return this.handleResult(msg);
-    }
-
-    if (msg.type === "control_request") {
-      return this.handleControlRequest(msg);
-    }
+    if (msg.type === "system" && msg.subtype === "init") return this.handleInit(msg);
+    if (msg.type === "assistant") return this.handleAssistant(msg);
+    if (msg.type === "result") return this.handleResult(msg);
+    if (msg.type === "control_request") return this.handleControlRequest(msg);
 
     return [];
   }
@@ -142,7 +130,7 @@ export class SessionState {
     if (this.state === "ended") {
       throw new Error("Cannot interrupt ended session");
     }
-    return interruptRequest(genRequestId());
+    return interruptRequest(this.genRequestId());
   }
 
   /** Mark the session as ended (e.g., WebSocket closed). */
@@ -183,24 +171,15 @@ export class SessionState {
   }
 
   private handleResult(msg: NdjsonMessage): SessionEvent[] {
-    // Try success first, fall back to error
     const successResult = ResultSuccess.safeParse(msg);
     if (successResult.success) {
       const r = successResult.data;
+      const resultTokens = r.usage.input_tokens + r.usage.output_tokens;
       this.cost += r.total_cost_usd;
       this.numTurns += r.num_turns;
-      const usage = r.usage;
-      this.tokens += usage.input_tokens + usage.output_tokens;
+      this.tokens += resultTokens;
       this.state = "idle";
-      return [
-        {
-          type: "session:result",
-          cost: r.total_cost_usd,
-          tokens: usage.input_tokens + usage.output_tokens,
-          numTurns: r.num_turns,
-          result: r.result,
-        },
-      ];
+      return [{ type: "session:result", cost: r.total_cost_usd, tokens: resultTokens, numTurns: r.num_turns, result: r.result }];
     }
 
     const errorResult = ResultError.safeParse(msg);
@@ -209,16 +188,9 @@ export class SessionState {
       this.cost += r.total_cost_usd;
       this.numTurns += r.num_turns;
       this.state = "idle";
-      return [
-        {
-          type: "session:error",
-          errors: r.errors,
-          cost: r.total_cost_usd,
-        },
-      ];
+      return [{ type: "session:error", errors: r.errors, cost: r.total_cost_usd }];
     }
 
-    // Unknown result shape — ignore
     return [];
   }
 
