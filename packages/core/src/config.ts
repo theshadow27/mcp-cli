@@ -55,6 +55,8 @@ export interface McpConfigFile {
 /** mcp-cli config file (~/.mcp-cli/config.json) */
 export interface CliConfig {
   trustClaude?: boolean;
+  /** Preferred terminal emulator for `mcx tty open` (e.g. ghostty, iterm, tmux) */
+  terminal?: string;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

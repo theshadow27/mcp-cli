@@ -31,6 +31,7 @@ import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun, parseRunArgs } from "./commands/run";
 import { cmdServe } from "./commands/serve";
+import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -181,6 +182,10 @@ async function main(): Promise<void> {
 
       case "completions":
         await cmdCompletions(args.slice(1));
+        break;
+
+      case "tty":
+        await cmdTty(args.slice(1));
         break;
 
       case "serve":
@@ -498,6 +503,9 @@ Usage:
   mcx mail --wait --for=<name>       Wait for mail to specific recipient
   mcx logs <server> [-f] [--lines N]  View server stderr output
   mcx typegen                         Generate TypeScript types for alias scripts
+  mcx tty open <command>               Open command in new terminal tab
+  mcx tty open --window <command>      Open command in new terminal window
+  mcx tty open --headless <command>    Run command as background process
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
