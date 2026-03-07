@@ -111,6 +111,71 @@ describe("ClaudeServer", () => {
     expect(content[0].text).toContain("Unknown session");
   });
 
+  test("worker db:upsert event persists session to SQLite", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Call the private handleWorkerEvent directly to test DB routing
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s1", pid: 999, state: "active", model: "claude-sonnet-4-6", cwd: "/tmp" } });
+
+    const row = db.getSession("s1");
+    expect(row).not.toBeNull();
+    expect(row!.pid).toBe(999);
+    expect(row!.state).toBe("active");
+    expect(row!.model).toBe("claude-sonnet-4-6");
+  });
+
+  test("worker db:state event updates session state", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s2", state: "connecting" } });
+    handle({ type: "db:state", sessionId: "s2", state: "active" });
+
+    const row = db.getSession("s2");
+    expect(row!.state).toBe("active");
+  });
+
+  test("worker db:cost event updates cost and tokens", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s3", state: "active" } });
+    handle({ type: "db:cost", sessionId: "s3", cost: 0.05, tokens: 1500 });
+
+    const row = db.getSession("s3");
+    expect(row!.totalCost).toBe(0.05);
+    expect(row!.totalTokens).toBe(1500);
+  });
+
+  test("worker db:end event marks session as ended", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s4", state: "active" } });
+    handle({ type: "db:end", sessionId: "s4" });
+
+    const row = db.getSession("s4");
+    expect(row!.state).toBe("ended");
+    expect(row!.endedAt).not.toBeNull();
+  });
+
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);

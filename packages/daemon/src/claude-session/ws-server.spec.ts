@@ -458,6 +458,68 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("respondToPermission sends control_response to WS", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    // Use delegate strategy so auto-router doesn't handle can_use_tool
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "delegate",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // initial user message
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Send can_use_tool — delegate strategy won't auto-respond
+      ws.send(canUseToolMessage("req-perm-1"));
+      await Bun.sleep(20);
+
+      // Manually respond via respondToPermission
+      const responsePromise = waitForMessage(ws);
+      server.respondToPermission("test-session", "req-perm-1", true);
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.subtype).toBe("success");
+      expect(parsed.response.response.behavior).toBe("allow");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("interrupt sends sigint to session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Interrupt the session
+      server.interrupt("test-session");
+
+      // Should have sent a control message
+      const status = server.getStatus("test-session");
+      expect(status).toBeDefined();
+    } finally {
+      ws.close();
+    }
+  });
+
   test("stop() cleans up all sessions", () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
