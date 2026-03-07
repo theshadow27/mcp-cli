@@ -793,4 +793,70 @@ describe("IpcServer HTTP transport", () => {
     const json = (await res.json()) as IpcResponse;
     expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
   });
+
+  // -- Error context preservation --
+
+  test("error response includes stack trace from thrown Error", async () => {
+    socketPath = tmpSocket();
+    const failPool = {
+      ...mockPool(),
+      callTool: async () => {
+        throw new Error("tool failed");
+      },
+    };
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "st1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+    const json = (await res.json()) as IpcResponse;
+
+    expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
+    expect(json.error?.message).toBe("tool failed");
+    expect(json.error?.stack).toBeString();
+    expect(json.error?.stack).toContain("tool failed");
+  });
+
+  test("error response includes data when error has data property", async () => {
+    socketPath = tmpSocket();
+    const failPool = {
+      ...mockPool(),
+      callTool: async () => {
+        const err = new Error("enriched failure");
+        (err as unknown as { data: unknown }).data = { detail: "extra context" };
+        throw err;
+      },
+    };
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "st2", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+    const json = (await res.json()) as IpcResponse;
+
+    expect(json.error?.message).toBe("enriched failure");
+    expect(json.error?.data).toEqual({ detail: "extra context" });
+  });
+
+  test("error response omits stack for non-Error throws", async () => {
+    socketPath = tmpSocket();
+    const failPool = {
+      ...mockPool(),
+      callTool: async () => {
+        throw "string error";
+      },
+    };
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "st3", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+    const json = (await res.json()) as IpcResponse;
+
+    expect(json.error?.message).toBe("string error");
+    expect(json.error?.stack).toBeUndefined();
+  });
 });

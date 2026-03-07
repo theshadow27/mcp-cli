@@ -19,8 +19,26 @@ import {
   options,
 } from "./constants";
 import { ensureStateDir } from "./fs";
-import type { IpcMethod, IpcRequest, IpcResponse } from "./ipc";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse } from "./ipc";
 import { nextId } from "./ipc";
+
+/**
+ * Structured error thrown by ipcCall() when the daemon returns an error response.
+ * Preserves the error code, data, and remote stack trace from the daemon.
+ */
+export class IpcCallError extends Error {
+  readonly code: number;
+  readonly data: unknown;
+  readonly remoteStack: string | undefined;
+
+  constructor(err: IpcError) {
+    super(err.message);
+    this.name = "IpcCallError";
+    this.code = err.code;
+    this.data = err.data;
+    this.remoteStack = err.stack;
+  }
+}
 
 /** Base URL for IPC requests over the Unix domain socket. */
 const IPC_RPC_URL = "http://localhost/rpc";
@@ -36,7 +54,7 @@ export async function ipcCall(method: IpcMethod, params?: unknown): Promise<unkn
   const response = await sendRequest(request);
 
   if (response.error) {
-    throw new Error(`[${response.error.code}] ${response.error.message}`);
+    throw new IpcCallError(response.error);
   }
   return response.result;
 }

@@ -15,7 +15,7 @@
  */
 
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { VERSION, isDaemonRunning } from "@mcp-cli/core";
+import { IpcCallError, VERSION, isDaemonRunning } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
@@ -229,6 +229,10 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     printError(err instanceof Error ? err.message : String(err));
+    if (process.env.MCX_DEBUG === "1" && err instanceof IpcCallError && err.remoteStack) {
+      console.error("\nRemote stack trace:");
+      console.error(err.remoteStack);
+    }
     process.exit(1);
   }
 }
