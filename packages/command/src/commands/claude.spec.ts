@@ -916,6 +916,27 @@ describe("mcx claude wait", () => {
       console.log = origLog;
     }
   });
+
+  test("prints session list on timeout fallback", async () => {
+    // When the daemon falls back to session list on timeout, the result is a session list
+    const callTool = mock(async () => toolResult(SESSION_LIST));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--timeout", "1000"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
+      // Output should contain the session list JSON
+      const output = (logSpy.mock.calls[0] as string[])[0];
+      const parsed = JSON.parse(output);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[0].sessionId).toBe(SESSION_LIST[0].sessionId);
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── lifecycle ──

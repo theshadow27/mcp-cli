@@ -204,10 +204,19 @@ async function handleWait(
   const sessionId = (args.sessionId as string | undefined) ?? null;
   const timeoutMs = (args.timeout as number) ?? 300_000;
 
-  const event = await server.waitForEvent(sessionId, timeoutMs);
-  return {
-    content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
-  };
+  try {
+    const event = await server.waitForEvent(sessionId, timeoutMs);
+    return {
+      content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("Timeout waiting for session event")) {
+      // On timeout, fall back to session list instead of erroring
+      return handleSessionList(server);
+    }
+    throw err;
+  }
 }
 
 // ── Session event → DB message forwarding ──
