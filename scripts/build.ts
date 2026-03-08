@@ -22,7 +22,8 @@ console.log(`Protocol hash: ${protocolHash}`);
 // Patches jq-web's Emscripten loader at build time:
 // 1. Inlines the WASM binary via Module.wasmBinary (no __dirname file lookup)
 // 2. Fixes the CJS double-export that breaks Bun's __commonJS wrapper
-const wasmBytes = readFileSync(resolve("node_modules/jq-web/jq.wasm"));
+const jqWasmPath = resolve(require.resolve("jq-web"), "..", "jq.wasm");
+const wasmBytes = readFileSync(jqWasmPath);
 const wasmBase64 = Buffer.from(wasmBytes).toString("base64");
 console.log(`jq-web WASM: ${(wasmBytes.length / 1024).toFixed(0)}KB inlined`);
 
