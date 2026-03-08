@@ -89,6 +89,23 @@ mcx shutdown                        # stop the daemon
 mcx logs <server> [-f]              # view server stderr output
 ```
 
+### Claude Sessions
+
+Spawn and manage headless Claude Code sessions:
+
+```bash
+mcx claude spawn --task "describe the work"   # start a session (non-blocking)
+mcx claude spawn -w --task "work in isolation" # start in a git worktree
+mcx claude ls                                  # list active sessions
+mcx claude send <session> <message>            # send follow-up prompt
+mcx claude wait [session]                      # block until session event
+mcx claude log <session> [--last N]            # view session transcript
+mcx claude interrupt <session>                 # interrupt current turn
+mcx claude bye <session>                       # end session (cleans up worktree)
+```
+
+Session IDs support prefix matching (like git SHAs). Use `--wait` on `spawn` or `send` to block until Claude produces a result. Use `--json` on `ls` or `log` for machine-readable output.
+
 ### Aliases
 
 Save multi-step workflows as TypeScript scripts:
