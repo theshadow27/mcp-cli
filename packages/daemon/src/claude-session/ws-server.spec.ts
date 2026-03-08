@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn } from "./ws-server";
-import { ClaudeWsServer } from "./ws-server";
+import { ClaudeWsServer, WaitTimeoutError } from "./ws-server";
 
 // ── Mock spawn ──
 
@@ -617,7 +617,9 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("test-session", { prompt: "Hello" });
     server.spawnClaude("test-session");
 
-    await expect(server.waitForEvent("test-session", 100)).rejects.toThrow("Timeout");
+    const err = await server.waitForEvent("test-session", 100).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WaitTimeoutError);
+    expect((err as Error).message).toContain("Timeout");
   });
 
   test("waitForEvent rejects for unknown session", async () => {
