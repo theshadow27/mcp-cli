@@ -248,7 +248,7 @@ packages/
 ```
 
 - **Runtime:** [Bun](https://bun.sh) (build, test, compile, SQLite)
-- **Single prod dep:** `@modelcontextprotocol/sdk`
+- **Prod dependencies:** `@modelcontextprotocol/sdk`, `zod` (v4)
 - **Transports:** stdio, SSE, Streamable HTTP
 - **State:** `~/.mcp-cli/` — SQLite db, aliases, PID file, Unix socket
 
