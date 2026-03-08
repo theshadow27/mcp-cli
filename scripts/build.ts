@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
@@ -22,7 +22,8 @@ console.log(`Protocol hash: ${protocolHash}`);
 // Patches jq-web's Emscripten loader at build time:
 // 1. Inlines the WASM binary via Module.wasmBinary (no __dirname file lookup)
 // 2. Fixes the CJS double-export that breaks Bun's __commonJS wrapper
-const wasmBytes = readFileSync(resolve("node_modules/jq-web/jq.wasm"));
+const jqWasmPath = resolve(require.resolve("jq-web", { paths: [resolve("packages/command")] }), "..", "jq.wasm");
+const wasmBytes = readFileSync(jqWasmPath);
 const wasmBase64 = Buffer.from(wasmBytes).toString("base64");
 console.log(`jq-web WASM: ${(wasmBytes.length / 1024).toFixed(0)}KB inlined`);
 
@@ -98,57 +99,50 @@ const devtoolsStubPlugin: BunPlugin = {
 
 await $`mkdir -p dist`;
 
-async function buildMcx(outfile: string, target?: string): Promise<void> {
+interface BinaryBuildConfig {
+  entrypoint: string;
+  bundleName: string;
+  label: string;
+  plugins: BunPlugin[];
+}
+
+const mcxConfig: BinaryBuildConfig = {
+  entrypoint: "packages/command/src/index.ts",
+  bundleName: "index",
+  label: "mcx",
+  plugins: [jqWasmPlugin],
+};
+
+const mcpctlConfig: BinaryBuildConfig = {
+  entrypoint: "packages/control/src/index.tsx",
+  bundleName: "mcpctl-bundle",
+  label: "mcpctl",
+  plugins: [devtoolsStubPlugin],
+};
+
+async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: string): Promise<void> {
   const result = await Bun.build({
-    entrypoints: [resolve("packages/command/src/index.ts")],
+    entrypoints: [resolve(config.entrypoint)],
     outdir: resolve("dist"),
-    naming: "[name].[ext]",
+    naming: `${config.bundleName}.[ext]`,
     minify: true,
     target: (target as "bun") ?? "bun",
-    plugins: [jqWasmPlugin],
+    plugins: config.plugins,
     define: { __PROTOCOL_HASH__: JSON.stringify(protocolHash) },
   });
   if (!result.success) {
-    console.error("mcx build failed:");
+    console.error(`${config.label} build failed:`);
     for (const msg of result.logs) console.error(msg);
     process.exit(1);
   }
   // Bun.build doesn't support --compile, so compile the bundle
-  const bundlePath = resolve("dist/index.js");
+  const bundlePath = resolve(`dist/${config.bundleName}.js`);
   if (target) {
     await $`bun build --compile --minify --target=${target} ${bundlePath} --outfile ${outfile}`;
   } else {
     await $`bun build --compile --minify ${bundlePath} --outfile ${outfile}`;
   }
   // Clean up intermediate bundle
-  const { unlinkSync } = await import("node:fs");
-  try {
-    unlinkSync(bundlePath);
-  } catch {}
-}
-
-async function buildMcpctl(outfile: string, target?: string): Promise<void> {
-  const result = await Bun.build({
-    entrypoints: [resolve("packages/control/src/index.tsx")],
-    outdir: resolve("dist"),
-    naming: "mcpctl-bundle.[ext]",
-    minify: true,
-    target: (target as "bun") ?? "bun",
-    plugins: [devtoolsStubPlugin],
-    define: { __PROTOCOL_HASH__: JSON.stringify(protocolHash) },
-  });
-  if (!result.success) {
-    console.error("mcpctl build failed:");
-    for (const msg of result.logs) console.error(msg);
-    process.exit(1);
-  }
-  const bundlePath = resolve("dist/mcpctl-bundle.js");
-  if (target) {
-    await $`bun build --compile --minify --target=${target} ${bundlePath} --outfile ${outfile}`;
-  } else {
-    await $`bun build --compile --minify ${bundlePath} --outfile ${outfile}`;
-  }
-  const { unlinkSync } = await import("node:fs");
   try {
     unlinkSync(bundlePath);
   } catch {}
@@ -168,8 +162,8 @@ if (releaseMode) {
     console.log(`Building for ${suffix}...`);
     await Promise.all([
       $`bun build --compile --minify ${defineFlag} --target=${target} packages/daemon/src/index.ts --outfile dist/mcpd-${suffix}`,
-      buildMcx(`dist/mcx-${suffix}`, target),
-      buildMcpctl(`dist/mcpctl-${suffix}`, target),
+      buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
+      buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
   }
 
@@ -178,8 +172,8 @@ if (releaseMode) {
   // Dev build: current platform, simple names
   await Promise.all([
     $`bun build --compile --minify ${defineFlag} packages/daemon/src/index.ts --outfile dist/mcpd`,
-    buildMcx("dist/mcx"),
-    buildMcpctl("dist/mcpctl"),
+    buildBinary(mcxConfig, "dist/mcx"),
+    buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
   console.log("Built: dist/mcpd, dist/mcx, dist/mcpctl");
 }
