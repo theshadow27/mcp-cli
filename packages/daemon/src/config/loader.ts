@@ -11,14 +11,15 @@
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { McpConfigFile, ResolvedConfig, ResolvedServer, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
-import { options, projectConfigPath } from "@mcp-cli/core";
-import { expandEnvVarsDeep } from "@mcp-cli/core";
-
-interface ConfigSource {
-  file: string;
-  scope: "user" | "project" | "local" | "mcp-cli";
-}
+import type {
+  ConfigSource,
+  McpConfigFile,
+  ResolvedConfig,
+  ResolvedServer,
+  ServerConfig,
+  ServerConfigMap,
+} from "@mcp-cli/core";
+import { expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
 
 /**
  * Load and merge all config sources for the given working directory.

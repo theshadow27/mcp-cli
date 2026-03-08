@@ -104,12 +104,7 @@ export function validateAliasName(name: string): void {
  */
 export function safeAliasPath(name: string): string {
   validateAliasName(name);
-  const resolved = join(options.ALIASES_DIR, `${name}.ts`);
-  // Defense-in-depth: verify resolved path is inside ALIASES_DIR
-  if (!resolved.startsWith(`${options.ALIASES_DIR}/`)) {
-    throw new Error(`Alias path "${resolved}" escapes aliases directory`);
-  }
-  return resolved;
+  return join(options.ALIASES_DIR, `${name}.ts`);
 }
 
 /** Project-level MCP config filename */

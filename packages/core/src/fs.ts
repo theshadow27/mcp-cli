@@ -44,13 +44,12 @@ export function auditRuntimePermissions(): void {
  */
 export function findFileUpward(filename: string, startDir: string): string | null {
   let dir = resolve(startDir);
-  const root = dirname(dir) === dir ? dir : "/";
 
   while (true) {
     const candidate = join(dir, filename);
     if (existsSync(candidate)) return candidate;
     const parent = dirname(dir);
-    if (parent === dir || dir === root) return null;
+    if (parent === dir) return null;
     dir = parent;
   }
 }
