@@ -114,6 +114,20 @@ After pushing, report back with:
 - What tests were added
 - The PR URL
 
+## Issue discipline
+
+**Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. Every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
+
+**Every problem gets an issue.** If you notice something wrong, missing, or improvable — file it with `gh issue create`. "Not a blocker" is not a reason to skip filing. Issues are how the team tracks work. Unfiled problems are invisible problems.
+
+File issues for:
+- A flag or command you tried that didn't work or isn't supported
+- Flaky tests (even if they pass on retry)
+- Edge cases you notice but that are out of scope for the current issue
+- DX papercuts (confusing errors, missing flags, bad defaults)
+- Bugs in adjacent code discovered while reading
+- Missing documentation or misleading help text
+
 ## Rules
 
 - Read before you write. Understand existing code before modifying it.
@@ -123,3 +137,4 @@ After pushing, report back with:
 - If the issue is too large for a single pass, propose breaking it down and implement only the first piece.
 - Keep the implementation minimal and focused — match what the issue asks for, nothing more.
 - Always verify (typecheck + lint + test) before committing.
+- File issues for every problem you encounter, even if unrelated to the current task.

@@ -146,6 +146,21 @@ For each "remaining work" item from the issue, create a new GitHub issue using `
 
 This ensures no planned work is lost when the parent issue is closed.
 
+## Issue discipline
+
+**Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. Every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
+
+**Every problem gets an issue.** If you notice something wrong, missing, or improvable during QA — file it with `gh issue create`. "Not a blocker" is not a reason to skip filing. Issues are how the team tracks work. Unfiled problems are invisible problems.
+
+File issues for:
+- Test gaps you notice but don't have time to fill
+- Flaky tests (even if they pass on retry)
+- Edge cases the implementation missed
+- Performance concerns spotted during code review
+- DX papercuts (confusing errors, missing flags, bad defaults)
+- Bugs in adjacent code discovered while reading
+- CI infrastructure issues
+
 ## Rules
 
 - Be factual. Every claim needs a file path or test result as evidence.
@@ -155,3 +170,4 @@ This ensures no planned work is lost when the parent issue is closed.
 - Run typecheck AND tests — both must pass.
 - Check CI status on PRs — do NOT merge with failing CI. Fix failures first.
 - Process ONE issue per invocation.
+- File issues for every problem you encounter, even if unrelated to the current task.

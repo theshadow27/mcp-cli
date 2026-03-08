@@ -1,0 +1,127 @@
+# Run Issue
+
+Orchestrate the full lifecycle of a GitHub issue: implement, simplify, QA, merge.
+
+## Input
+
+Issue number(s) provided as argument (e.g., `/run-issue 12` or `/run-issue 12 34 56`). Parse from: $ARGUMENTS
+
+## Prerequisites
+
+- `mcx claude` commands available (daemon running or auto-starts)
+- Issue must NOT have the `needs-clarification` label
+
+## Picking issues
+
+When selecting issues from the backlog:
+
+```bash
+gh issue list --state open --label "!needs-clarification"
+```
+
+Never pick up issues labeled `needs-clarification` — these are waiting on human input.
+
+## Pipeline
+
+For each issue N:
+
+### 1. Implement
+
+```bash
+mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash
+```
+
+Save the returned `sessionId`. Monitor with `mcx claude ls` until idle.
+
+### 2. Clear + Simplify
+
+```bash
+mcx claude send <sessionId> "/clear"
+mcx claude send <sessionId> "/simplify"
+```
+
+Wait until idle. Simplify reviews the changes for quality, pushes any fixes.
+
+### 3. Clear + QA
+
+```bash
+mcx claude send <sessionId> "/clear"
+```
+
+Find the PR number:
+```bash
+gh pr list --head <branch> --json number
+```
+
+Then:
+```bash
+mcx claude send <sessionId> "/qa N (PR <pr-number>, already checked out)"
+```
+
+Wait until idle. QA verifies the implementation and merges if everything passes.
+
+### 4. Clean up
+
+```bash
+mcx claude bye <sessionId>
+git worktree remove <worktree-path>
+```
+
+Always clean up — even on failure.
+
+## Monitoring
+
+Use `mcx claude ls` to check progress across all sessions. Sessions show state (active/idle), cost, and token usage.
+
+**Never sleep waiting for sessions.** While sessions are running, do useful work:
+- Spawn more issues from the backlog
+- File new issues for problems discovered during monitoring
+- Refine issue descriptions, add context, update specs
+- Review PRs from completed sessions
+- Clean up merged sessions and worktrees
+
+The orchestrator's job is to keep the pipeline saturated, not to watch progress bars.
+
+## Issue discipline
+
+**Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. That means every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
+
+**Every problem gets an issue.** If you notice something wrong, missing, or improvable during any phase — file it immediately. "Not a blocker" is not a reason to skip filing. Issues are how the team tracks and prioritizes work. Unfiled problems are invisible problems.
+
+Examples of things that must be filed:
+- A flag or command you tried that didn't work or isn't supported
+- Test gaps discovered during QA
+- Flaky tests (even if they pass on retry)
+- Edge cases the implementation missed
+- Performance concerns
+- DX papercuts (confusing errors, missing flags, bad defaults)
+- Bugs in adjacent code discovered while reading
+- Missing documentation or misleading help text
+
+## Failure handling
+
+When QA does not merge the PR:
+
+1. **Label the issue** `needs-clarification`:
+   ```bash
+   gh issue edit N --add-label "needs-clarification"
+   ```
+
+2. **Comment on the PR** with:
+   - What went wrong (CI failure, misaligned requirements, test issues, etc.)
+   - Branch name
+   - PR number
+   - Session ID (so work can be resumed or referenced)
+   - Worktree path (if still exists)
+
+3. **Report to user** — include issue number, PR number, and reason.
+
+4. **Do not retry automatically** — `needs-clarification` issues require human judgment before re-attempting.
+
+A human clears the label after resolving the issue, making it eligible for pickup again.
+
+## Running multiple issues
+
+Issues with no dependencies can run in parallel. Spawn all implementations first, then clear+simplify+QA each as they complete. Do not wait for one to finish before starting the next.
+
+Maximum recommended concurrency: 4-6 sessions (cost and rate limit considerations).
