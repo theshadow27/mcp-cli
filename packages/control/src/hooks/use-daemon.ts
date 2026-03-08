@@ -31,7 +31,7 @@ export function useDaemon(intervalMs = 2500): UseDaemonResult {
           const mismatch = checkProtocolVersion(result.protocolVersion);
           if (mismatch) {
             console.error(mismatch);
-            process.exit(1);
+            process.exit(2);
           }
           setStatus(result);
           setError(null);
