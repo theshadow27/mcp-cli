@@ -30,10 +30,10 @@ export function parseScope<T extends string>(val: string, allowed: readonly T[])
  * Throws if the value doesn't contain an '='.
  */
 export function parseEnvVar(val: string): [string, string] {
-  if (!val || !val.includes("=")) {
+  const eqIndex = val?.indexOf("=") ?? -1;
+  if (eqIndex < 0) {
     throw new Error(`Invalid --env value "${val}": expected KEY=VALUE`);
   }
-  const eqIndex = val.indexOf("=");
   return [val.slice(0, eqIndex), val.slice(eqIndex + 1)];
 }
 

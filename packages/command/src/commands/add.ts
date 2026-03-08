@@ -8,7 +8,7 @@
 import type { ServerConfig } from "@mcp-cli/core";
 import { printError } from "../output";
 import { parseEnvVar, parseScope } from "../parse";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
+import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 // -- Arg parsing --
 
@@ -72,7 +72,7 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
       const colonIndex = val.indexOf(":");
       headers[val.slice(0, colonIndex).trim()] = val.slice(colonIndex + 1).trim();
     } else if (arg === "--scope" || arg === "-s") {
-      scope = parseScope(flagArgs[++i], ["user", "project", "local"] as const);
+      scope = parseScope(flagArgs[++i], CONFIG_SCOPES);
     } else if (arg === "--client-id") {
       clientId = flagArgs[++i];
       if (!clientId) throw new Error("--client-id requires a value");
@@ -180,7 +180,7 @@ export async function cmdAddJson(args: string[]): Promise<void> {
   let scope: ConfigScope = "user";
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--scope" || rest[i] === "-s") {
-      scope = parseScope(rest[++i], ["user", "project", "local"] as const);
+      scope = parseScope(rest[++i], CONFIG_SCOPES);
     }
   }
 

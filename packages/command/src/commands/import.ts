@@ -19,7 +19,7 @@ import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core
 import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
 import { printError } from "../output";
 import { parseScope } from "../parse";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
+import { CONFIG_SCOPES_NO_LOCAL, type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 /** Shape of ~/.claude.json relevant to server config */
 export interface ClaudeConfig {
@@ -83,7 +83,7 @@ export async function cmdImport(args: string[]): Promise<void> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      scope = parseScope(args[++i], ["user", "project"] as const);
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
     } else if (arg === "--claude" || arg === "-c") {
       claude = true;
     } else if (arg === "--all") {

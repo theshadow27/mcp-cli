@@ -20,7 +20,7 @@ import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
 import { parseScope } from "../parse";
-import { readConfigFile } from "./config-file";
+import { CONFIG_SCOPES_NO_LOCAL, readConfigFile } from "./config-file";
 
 type ExportScope = "user" | "project";
 
@@ -33,7 +33,7 @@ export async function cmdExport(args: string[]): Promise<void> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      scope = parseScope(args[++i], ["user", "project"] as const);
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
     } else if (arg === "--server") {
       const val = args[++i];
       if (!val) throw new Error("--server requires a name");

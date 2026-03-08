@@ -6,7 +6,7 @@
 
 import { printError } from "../output";
 import { parseScope } from "../parse";
-import { type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
+import { CONFIG_SCOPES, type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
 
 /**
  * Parse `mcx remove` arguments.
@@ -20,7 +20,7 @@ export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigSc
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      scope = parseScope(args[++i], ["user", "project", "local"] as const);
+      scope = parseScope(args[++i], CONFIG_SCOPES);
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
     } else {

@@ -12,6 +12,12 @@ import { options, projectConfigPath } from "@mcp-cli/core";
 
 export type ConfigScope = "user" | "project" | "local";
 
+/** All valid config scopes. */
+export const CONFIG_SCOPES = ["user", "project", "local"] as const;
+
+/** Config scopes excluding "local" (for import/export which don't support it). */
+export const CONFIG_SCOPES_NO_LOCAL = ["user", "project"] as const;
+
 /** Resolve config file path from scope. "local" is an alias for "user". */
 export function resolveConfigPath(scope: ConfigScope): string {
   if (scope === "project") {

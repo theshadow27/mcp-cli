@@ -9,7 +9,7 @@ import { printError } from "../output";
 import { extractJsonFlag, parseEnvVar, parseScope } from "../parse";
 import { searchRegistry } from "../registry/client";
 import { buildConfigFromSelection, selectTransport } from "../registry/transport";
-import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
+import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 export interface ParsedInstallArgs {
   slug: string;
@@ -36,7 +36,7 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
       name = rest[++i];
       if (!name) throw new Error("--as requires a name");
     } else if (arg === "--scope" || arg === "-s") {
-      scope = parseScope(rest[++i], ["user", "project", "local"] as const);
+      scope = parseScope(rest[++i], CONFIG_SCOPES);
     } else if (arg === "--env" || arg === "-e") {
       const [key, value] = parseEnvVar(rest[++i]);
       env[key] = value;
