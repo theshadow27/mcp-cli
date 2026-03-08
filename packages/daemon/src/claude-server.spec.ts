@@ -340,4 +340,28 @@ describe("ClaudeServer", () => {
 
     expect(restartCount).toBe(1);
   });
+
+  test("stop() prevents auto-restart on subsequent crash", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+    await server.stop();
+
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("post-stop crash");
+
+    // Should not restart after explicit stop
+    expect(server.port).toBeNull();
+    expect(restartedCalled).toBe(false);
+    server = undefined; // prevent double stop
+  });
 });

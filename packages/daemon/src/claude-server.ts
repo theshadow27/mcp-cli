@@ -72,6 +72,7 @@ export class ClaudeServer {
   private wsPort: number | null = null;
   private readonly activeSessions = new Set<string>();
   private restartInProgress = false;
+  private stopped = false;
 
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
@@ -82,6 +83,7 @@ export class ClaudeServer {
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
+    this.stopped = false;
     const worker = new Worker(join(import.meta.dir, "claude-session-worker.ts"));
     this.worker = worker;
 
@@ -128,8 +130,9 @@ export class ClaudeServer {
     return { client: this.client, transport: this.transport };
   }
 
-  /** Stop the worker and clean up. */
+  /** Stop the worker and clean up. Prevents auto-restart after crash. */
   async stop(): Promise<void> {
+    this.stopped = true;
     try {
       await this.client?.close();
     } catch {
@@ -157,17 +160,21 @@ export class ClaudeServer {
 
   /** Attach post-startup error listener to detect worker crashes. */
   private attachCrashDetection(worker: Worker): void {
-    worker.addEventListener("error", (event: ErrorEvent | Event) => {
-      // Only handle if this is still our active worker
-      if (this.worker !== worker) return;
-      const msg = event instanceof ErrorEvent ? event.message : "unknown error";
-      this.handleWorkerCrash(`worker error: ${msg}`);
-    });
+    worker.addEventListener(
+      "error",
+      (event: ErrorEvent | Event) => {
+        // Only handle if this is still our active worker
+        if (this.worker !== worker) return;
+        const msg = event instanceof ErrorEvent ? event.message : "unknown error";
+        this.handleWorkerCrash(`worker error: ${msg}`);
+      },
+      { once: true },
+    );
   }
 
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
   private async handleWorkerCrash(reason: string): Promise<void> {
-    if (this.restartInProgress) return;
+    if (this.restartInProgress || this.stopped) return;
     this.restartInProgress = true;
 
     console.error(`[claude-server] Worker crash detected: ${reason}`);
