@@ -149,7 +149,11 @@ async function ensureDaemon(): Promise<void> {
 
     await startDaemon();
   } catch (err) {
-    lastStartFailureAt = Date.now();
+    // Only cooldown on actual start failures, not protocol mismatches
+    // (daemon is running fine, just wrong version).
+    if (!(err instanceof ProtocolMismatchError)) {
+      lastStartFailureAt = Date.now();
+    }
     throw err;
   } finally {
     if (lockFd !== null) closeSync(lockFd);

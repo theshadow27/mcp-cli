@@ -250,10 +250,4 @@ describe("DaemonStartCooldownError", () => {
     expect(err.message).toContain("8s"); // Math.ceil(7500/1000)
     expect(err.message).toContain("cooldown");
   });
-
-  it("_resetStartCooldown clears the cooldown state", () => {
-    // After reset, no cooldown error should be constructible from the module state.
-    // This test just verifies the reset function exists and doesn't throw.
-    _resetStartCooldown();
-  });
 });
