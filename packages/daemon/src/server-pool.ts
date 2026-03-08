@@ -458,12 +458,14 @@ export class ServerPool {
       await this.disconnect(name);
       await this.ensureConnected(name);
     } else {
-      // Restart all connected servers
+      // Restart all connected servers in parallel
       const connected = [...this.connections.entries()].filter(([, c]) => c.state === "connected");
-      for (const [serverName] of connected) {
-        await this.disconnect(serverName);
-        await this.ensureConnected(serverName);
-      }
+      await Promise.allSettled(
+        connected.map(async ([serverName]) => {
+          await this.disconnect(serverName);
+          await this.ensureConnected(serverName);
+        }),
+      );
     }
   }
 

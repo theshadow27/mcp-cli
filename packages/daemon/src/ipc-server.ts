@@ -275,8 +275,9 @@ export class IpcServer {
 
     this.handlers.set("getConfig", async () => {
       const servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }> = {};
+      const statusMap = new Map(this.pool.listServers().map((s) => [s.name, s]));
       for (const [name, resolved] of this.config.servers) {
-        const status = this.pool.listServers().find((s) => s.name === name);
+        const status = statusMap.get(name);
         servers[name] = {
           transport: status?.transport ?? "unknown",
           source: resolved.source.file,

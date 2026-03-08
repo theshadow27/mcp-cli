@@ -102,8 +102,8 @@ describe("daemon-log file", () => {
     // Use a tiny maxBytes to trigger rotation quickly
     installDaemonLogFile({ path: logPath, backupPath, maxBytes: 100 });
 
-    // Write enough to exceed 100 bytes
-    for (let i = 0; i < 10; i++) {
+    // Write enough lines to exceed 100 bytes and trigger the amortized rotation check
+    for (let i = 0; i < 70; i++) {
       console.error(`rotation-line-${i}-${"x".repeat(20)}`);
     }
 

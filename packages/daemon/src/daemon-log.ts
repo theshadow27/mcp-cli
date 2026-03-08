@@ -20,6 +20,8 @@ let logFd: number | null = null;
 let logPath: string = options.DAEMON_LOG_PATH;
 let logBackupPath: string = options.DAEMON_LOG_BACKUP_PATH;
 let logMaxBytes: number = DAEMON_LOG_MAX_BYTES;
+const LOG_ROTATION_CHECK_INTERVAL = 64;
+let logWriteCount = 0;
 
 /** Intercept console.error to capture daemon logs. Call once at startup. */
 export function installDaemonLogCapture(): void {
@@ -72,7 +74,10 @@ export function getDaemonLogLines(limit?: number): StderrLine[] {
 function writeToLogFile(line: string): void {
   if (logFd === null) return;
   try {
-    rotateIfNeeded();
+    if (++logWriteCount >= LOG_ROTATION_CHECK_INTERVAL) {
+      logWriteCount = 0;
+      rotateIfNeeded();
+    }
     const entry = `${new Date().toISOString()} ${line}\n`;
     appendFileSync(logFd, entry);
   } catch {
