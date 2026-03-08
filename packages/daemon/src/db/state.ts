@@ -8,7 +8,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { type MailMessage, type ToolInfo, type UsageStat, hardenFile, options } from "@mcp-cli/core";
+import { type AliasType, type MailMessage, type ToolInfo, type UsageStat, hardenFile, options } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
@@ -421,7 +421,7 @@ export class StateDb {
     description: string;
     filePath: string;
     updatedAt: number;
-    aliasType: "freeform" | "defineAlias";
+    aliasType: AliasType;
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
   }> {
@@ -446,15 +446,13 @@ export class StateDb {
         description: row.description ?? "",
         filePath: row.file_path,
         updatedAt: row.updated_at,
-        aliasType: row.alias_type as "freeform" | "defineAlias",
+        aliasType: row.alias_type as AliasType,
         ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
         ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
       }));
   }
 
-  getAlias(
-    name: string,
-  ): { name: string; description: string; filePath: string; aliasType: "freeform" | "defineAlias" } | undefined {
+  getAlias(name: string): { name: string; description: string; filePath: string; aliasType: AliasType } | undefined {
     const row = this.db
       .query<{ name: string; description: string | null; file_path: string; alias_type: string }, [string]>(
         "SELECT name, description, file_path, alias_type FROM aliases WHERE name = ?",
@@ -465,7 +463,7 @@ export class StateDb {
       name: row.name,
       description: row.description ?? "",
       filePath: row.file_path,
-      aliasType: row.alias_type as "freeform" | "defineAlias",
+      aliasType: row.alias_type as AliasType,
     };
   }
 
@@ -473,7 +471,7 @@ export class StateDb {
     name: string,
     filePath: string,
     description?: string,
-    aliasType: "freeform" | "defineAlias" = "freeform",
+    aliasType: AliasType = "freeform",
     inputSchemaJson?: string,
     outputSchemaJson?: string,
   ): void {

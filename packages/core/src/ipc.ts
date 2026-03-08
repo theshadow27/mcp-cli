@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod/v4";
+import type { AliasType } from "./alias";
 
 // -- Methods --
 
@@ -55,13 +56,7 @@ export interface IpcError {
   stack?: string;
 }
 
-// -- Param types per method --
-
-export interface CallToolParams {
-  server: string;
-  tool: string;
-  arguments: Record<string, unknown>;
-}
+// -- Param schemas per method --
 
 export const CallToolParamsSchema = z.object({
   server: z.string(),
@@ -69,58 +64,27 @@ export const CallToolParamsSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
-export interface ListToolsParams {
-  server?: string;
-  format?: "compact" | "full";
-}
-
 export const ListToolsParamsSchema = z.object({
   server: z.string().optional(),
   format: z.enum(["compact", "full"]).optional(),
 });
-
-export interface GetToolInfoParams {
-  server: string;
-  tool: string;
-}
 
 export const GetToolInfoParamsSchema = z.object({
   server: z.string(),
   tool: z.string(),
 });
 
-export interface GrepToolsParams {
-  pattern: string;
-}
-
 export const GrepToolsParamsSchema = z.object({
   pattern: z.string(),
 });
-
-export interface TriggerAuthParams {
-  server: string;
-}
 
 export const TriggerAuthParamsSchema = z.object({
   server: z.string(),
 });
 
-export interface RestartServerParams {
-  server?: string; // if omitted, restart all
-}
-
 export const RestartServerParamsSchema = z.object({
   server: z.string().optional(),
 });
-
-export interface SaveAliasParams {
-  name: string;
-  script: string;
-  description?: string;
-  aliasType?: "freeform" | "defineAlias";
-  inputSchema?: Record<string, unknown>;
-  outputSchema?: Record<string, unknown>;
-}
 
 export const SaveAliasParamsSchema = z.object({
   name: z.string(),
@@ -131,27 +95,13 @@ export const SaveAliasParamsSchema = z.object({
   outputSchema: z.record(z.string(), z.unknown()).optional(),
 });
 
-export interface DeleteAliasParams {
-  name: string;
-}
-
 export const DeleteAliasParamsSchema = z.object({
   name: z.string(),
 });
 
-export interface GetAliasParams {
-  name: string;
-}
-
 export const GetAliasParamsSchema = z.object({
   name: z.string(),
 });
-
-export interface GetLogsParams {
-  server: string;
-  limit?: number;
-  since?: number;
-}
 
 export const GetLogsParamsSchema = z.object({
   server: z.string(),
@@ -164,7 +114,7 @@ export interface AliasInfo {
   description: string;
   filePath: string;
   updatedAt: number;
-  aliasType: "freeform" | "defineAlias";
+  aliasType: AliasType;
   inputSchemaJson?: Record<string, unknown>;
   outputSchemaJson?: Record<string, unknown>;
 }
@@ -183,11 +133,6 @@ export interface LogEntry {
 export interface GetLogsResult {
   server: string;
   lines: LogEntry[];
-}
-
-export interface GetDaemonLogsParams {
-  limit?: number;
-  since?: number;
 }
 
 export const GetDaemonLogsParamsSchema = z.object({
@@ -262,14 +207,6 @@ export interface MailMessage {
   createdAt: string;
 }
 
-export interface SendMailParams {
-  sender: string;
-  recipient: string;
-  subject?: string;
-  body?: string;
-  replyTo?: number;
-}
-
 export const SendMailParamsSchema = z.object({
   sender: z.string(),
   recipient: z.string(),
@@ -278,34 +215,16 @@ export const SendMailParamsSchema = z.object({
   replyTo: z.number().optional(),
 });
 
-export interface ReadMailParams {
-  recipient?: string;
-  unreadOnly?: boolean;
-  limit?: number;
-}
-
 export const ReadMailParamsSchema = z.object({
   recipient: z.string().optional(),
   unreadOnly: z.boolean().optional(),
   limit: z.number().optional(),
 });
 
-export interface WaitForMailParams {
-  recipient?: string;
-  timeout?: number;
-}
-
 export const WaitForMailParamsSchema = z.object({
   recipient: z.string().optional(),
   timeout: z.number().optional(),
 });
-
-export interface ReplyToMailParams {
-  id: number;
-  sender: string;
-  body: string;
-  subject?: string;
-}
 
 export const ReplyToMailParamsSchema = z.object({
   id: z.number(),
@@ -313,10 +232,6 @@ export const ReplyToMailParamsSchema = z.object({
   body: z.string(),
   subject: z.string().optional(),
 });
-
-export interface MarkReadParams {
-  id: number;
-}
 
 export const MarkReadParamsSchema = z.object({
   id: z.number(),
