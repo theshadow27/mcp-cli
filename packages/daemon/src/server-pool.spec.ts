@@ -577,17 +577,20 @@ describe("isTransientCallError", () => {
 
 // -- callTool auto-retry --
 
-/** Create a ConnectFn that returns a mock client with the given callTool behavior. */
-function mockConnectFn(overrides?: Parameters<typeof makeMockClient>[0]): {
+/** Create a mock ConnectFn. Returns the connectFn and the transport for lifecycle testing. */
+function mockConnectFn(
+  overrides?: Parameters<typeof makeMockClient>[0],
+  transport?: ReturnType<typeof makeMockTransport>,
+): {
   connectFn: ConnectFn;
   transport: ReturnType<typeof makeMockTransport>;
 } {
-  const transport = makeMockTransport();
+  const t = transport ?? makeMockTransport();
   const client = makeMockClient(overrides);
   const connectFn = mock(() =>
-    Promise.resolve({ client: client as unknown as Client, transport: transport as unknown as Transport }),
+    Promise.resolve({ client: client as unknown as Client, transport: t as unknown as Transport }),
   );
-  return { connectFn, transport };
+  return { connectFn, transport: t };
 }
 
 describe("ServerPool.callTool auto-retry", () => {
@@ -686,20 +689,9 @@ describe("ServerPool.callTool auto-retry", () => {
 describe("transport lifecycle handlers", () => {
   test("transport onclose resets connection state to disconnected", async () => {
     const transport = makeMockTransport();
-    const { connectFn } = mockConnectFn();
-    // Override connectFn to return our specific transport so we can trigger onclose
-    const pool = new ServerPool(
-      makeConfig({ test: { command: "echo" } }),
-      undefined,
-      mock(() =>
-        Promise.resolve({
-          client: makeMockClient() as unknown as Client,
-          transport: transport as unknown as Transport,
-        }),
-      ),
-    );
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
-    // Trigger connection via public API
     await pool.listTools("test");
     expect(pool.listServers()[0].state).toBe("connected");
 
@@ -711,16 +703,8 @@ describe("transport lifecycle handlers", () => {
 
   test("transport onerror resets connection state and records lastError", async () => {
     const transport = makeMockTransport();
-    const pool = new ServerPool(
-      makeConfig({ test: { command: "echo" } }),
-      undefined,
-      mock(() =>
-        Promise.resolve({
-          client: makeMockClient() as unknown as Client,
-          transport: transport as unknown as Transport,
-        }),
-      ),
-    );
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     await pool.listTools("test");
 
@@ -734,16 +718,8 @@ describe("transport lifecycle handlers", () => {
 
   test("transport onclose is a no-op if already disconnected", async () => {
     const transport = makeMockTransport();
-    const pool = new ServerPool(
-      makeConfig({ test: { command: "echo" } }),
-      undefined,
-      mock(() =>
-        Promise.resolve({
-          client: makeMockClient() as unknown as Client,
-          transport: transport as unknown as Transport,
-        }),
-      ),
-    );
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     // Connect then disconnect
     await pool.listTools("test");
