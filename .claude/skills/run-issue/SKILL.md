@@ -46,6 +46,8 @@ mcx claude send <sessionId> "/simplify"
 
 Wait until idle. Simplify reviews the changes for quality, pushes any fixes.
 
+**Skip simplify for documentation-only issues** (README, CLAUDE.md, etc.) — go straight from implement to QA.
+
 ### 3. Clear + QA
 
 ```bash
@@ -68,10 +70,17 @@ Wait until idle. QA verifies the implementation and merges if everything passes.
 
 ```bash
 mcx claude bye <sessionId>
-git worktree remove <worktree-path>
 ```
 
-Always clean up — even on failure.
+Before removing a worktree, check for uncommitted work:
+```bash
+git -C <worktree-path> status --porcelain
+```
+
+- If clean (empty output): `git worktree remove <worktree-path>`
+- If dirty: investigate the reason - you can ask the agent or just read the files - before you remove. There may be uncommitted changes worth preserving.
+
+Always clean up sessions — but protect worktrees with uncommitted work.
 
 ## Monitoring
 
@@ -90,10 +99,10 @@ The orchestrator's job is to keep the pipeline saturated, not to watch progress 
 
 ## Documentation Hygiene
 
-After every batch of merged PRs (5+), spawn a documentation review session:
+After every batch of merged PRs (5-10), spawn a documentation review session:
 
 ```bash
-mcx claude spawn --worktree -t "Review README.md, CLAUDE.md, and any other docs for inconsistencies with recent changes. Check: outdated file paths, missing new commands/features, stale architecture descriptions, incorrect examples. File issues for each inconsistency found, then fix them." --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --worktree -t "Review README.md, CLAUDE.md, and any other docs for inconsistencies with recent changes (PR#s). Check: outdated file paths, missing new commands/features, stale architecture descriptions, incorrect examples, or undocumented features. File issues for each inconsistency found, then fix them, open a PR, and notify the orchistrator to run QA" --allow Read Glob Grep Write Edit Bash
 ```
 
 Docs are part of the product. If a new command was added but not documented, or an old pattern was removed but still referenced, that's a bug.
@@ -110,7 +119,7 @@ This catches integration issues early — before multiple sessions build on top 
 
 ## Issue discipline
 
-**Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. That means every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
+**Claude is the user of this project.** mcx is built by Claude, for Claude. Except for occasionally on `mcpctl`, there are no human users filing bug reports. That means every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered. The quality of code, documentation, and organization directly benefit future Claude sessions.
 
 **Every problem gets an issue.** If you notice something wrong, missing, or improvable during any phase — file it immediately. "Not a blocker" is not a reason to skip filing. Issues are how the team tracks and prioritizes work. Unfiled problems are invisible problems.
 
@@ -148,6 +157,10 @@ A human clears the label after resolving the issue, making it eligible for picku
 
 ## Running multiple issues
 
-Issues with no dependencies can run in parallel. Spawn all implementations first, then clear+simplify+QA each as they complete. Do not wait for one to finish before starting the next.
+You must read each issue body before launching it. Issues with no dependencies can run in parallel. Spawn all implementations first, then clear+simplify+QA each as they complete. Do not wait for one to finish before starting the next.
+
+In case of very large stories, break them into smaller issues first. Run them in dependency order until the original feature is complete. 
 
 Maximum recommended concurrency: 4-6 sessions (cost and rate limit considerations).
+
+Your goal: Clear the backlog of mechanical work and easy calls, so the user can focus on design and concept decisions. 
