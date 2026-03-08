@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { PROTOCOL_VERSION } from "@mcp-cli/core";
 import { extractToolText } from "../hooks/ipc-tool-helpers";
+import { checkProtocolVersion } from "../hooks/protocol-check";
 import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
@@ -312,5 +314,23 @@ describe("extractToolText", () => {
 
   it("returns null for result without content", () => {
     expect(extractToolText({})).toBeNull();
+  });
+});
+
+describe("checkProtocolVersion", () => {
+  it("returns null when versions match", () => {
+    expect(checkProtocolVersion(PROTOCOL_VERSION)).toBeNull();
+  });
+
+  it("returns null when daemon version is undefined", () => {
+    expect(checkProtocolVersion(undefined)).toBeNull();
+  });
+
+  it("returns error message when versions differ", () => {
+    const msg = checkProtocolVersion("old-hash-abc123");
+    expect(msg).toContain("Protocol version mismatch");
+    expect(msg).toContain("old-hash-abc123");
+    expect(msg).toContain(PROTOCOL_VERSION);
+    expect(msg).toContain("mcx daemon restart");
   });
 });
