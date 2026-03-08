@@ -8,27 +8,26 @@
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { IpcMethod } from "@mcp-cli/core";
 import {
   DAEMON_BINARY_NAME,
   DAEMON_DEV_SCRIPT,
   DAEMON_READY_SIGNAL,
   DAEMON_START_COOLDOWN_MS,
   DAEMON_START_TIMEOUT_MS,
+  DaemonStartCooldownError,
   PID_MAX_AGE_MS,
   PING_TIMEOUT_MS,
   PROTOCOL_VERSION,
-  options,
-} from "@mcp-cli/core";
-import {
-  DaemonStartCooldownError,
   ProtocolMismatchError,
   ipcCall as coreIpcCall,
+  ensureStateDir,
+  findFileUpward,
+  nextId,
+  options,
   pingDaemon,
   rawFetch,
 } from "@mcp-cli/core";
-import { ensureStateDir } from "@mcp-cli/core";
-import type { IpcMethod } from "@mcp-cli/core";
-import { nextId } from "@mcp-cli/core";
 
 /** Timestamp of the last failed daemon start attempt (0 = no recent failure) */
 let lastStartFailureAt = 0;
@@ -167,8 +166,6 @@ export async function stopDaemon(): Promise<void> {
  * 6. Daemon responds to IPC ping
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  if (!existsSync(options.PID_PATH)) return false;
-
   let data: { pid: number; startedAt: number; protocolVersion?: string };
   try {
     data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
@@ -229,14 +226,8 @@ export function resolveDaemonCommand(): string[] {
   if (existsSync(siblingBinary)) return [siblingBinary];
 
   // Dev mode: walk up from this file to find workspace root, then resolve daemon script
-  let dir = import.meta.dir;
-  for (let i = 0; i < 10; i++) {
-    const candidate = join(dir, DAEMON_DEV_SCRIPT);
-    if (existsSync(candidate)) return ["bun", "run", candidate];
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+  const devScript = findFileUpward(DAEMON_DEV_SCRIPT, import.meta.dir);
+  if (devScript) return ["bun", "run", devScript];
 
   // Fallback: assume mcpd is on PATH
   return [DAEMON_BINARY_NAME];
@@ -249,7 +240,6 @@ async function startDaemon(): Promise<void> {
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env },
   });
 
   // Drain stderr in parallel to prevent pipe buffer deadlock (64KB limit).

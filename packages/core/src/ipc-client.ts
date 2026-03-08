@@ -66,7 +66,7 @@ const IPC_RPC_URL = "http://localhost/rpc";
  * Low-level fetch to the daemon Unix socket.
  * Deduplicates the shared headers/URL/socket config used by sendRequest, pingDaemon, and stopDaemon.
  */
-export function rawFetch(body: unknown, timeoutMs: number): Promise<Response> {
+export function rawFetch(body: { id: string; method: string; params?: unknown }, timeoutMs: number): Promise<Response> {
   return fetch(IPC_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -91,7 +91,7 @@ export async function ipcCall(method: IpcMethod, params?: unknown, opts?: { time
 }
 
 /** Send a request via HTTP-over-Unix-socket and return the response */
-export async function sendRequest(request: IpcRequest, timeoutMs?: number): Promise<IpcResponse> {
+async function sendRequest(request: IpcRequest, timeoutMs?: number): Promise<IpcResponse> {
   const res = await rawFetch(request, timeoutMs ?? IPC_REQUEST_TIMEOUT_MS);
 
   if (!res.ok) {
