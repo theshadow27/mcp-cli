@@ -223,7 +223,13 @@ mcpctl                              # interactive dashboard
 # or: bun run packages/control/src/index.tsx
 ```
 
-Navigate servers, view tool counts, trigger restarts, see connection states.
+Tab bar with 5 views — navigate with Tab/Shift+Tab or press 1-5 to jump directly:
+
+1. **Servers** — server list, tool counts, connection states, restarts
+2. **Logs** — daemon and per-server log viewer
+3. **Claude** — Claude Code session list with transcript viewing
+4. **Mail** — message system (coming soon)
+5. **Stats** — usage statistics (coming soon)
 
 ## Claude Code Integration
 
