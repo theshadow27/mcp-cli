@@ -35,46 +35,47 @@ export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeS
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const poll = useCallback(async () => {
-    try {
-      const result = await ipcCall("callTool", {
-        server: "_claude",
-        tool: "claude_session_list",
-        arguments: {},
-      });
-
-      const text = extractToolText(result);
-      if (text) {
-        setSessions(JSON.parse(text) as ClaudeSession[]);
-      } else {
-        setSessions([]);
-      }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (!enabled) return;
 
     let cancelled = false;
 
-    async function doPoll() {
+    async function poll() {
       if (cancelled) return;
-      await poll();
+      try {
+        const result = await ipcCall("callTool", {
+          server: "_claude",
+          tool: "claude_session_list",
+          arguments: {},
+        });
+
+        if (cancelled) return;
+
+        const text = extractToolText(result);
+        if (text) {
+          setSessions(JSON.parse(text) as ClaudeSession[]);
+        } else {
+          setSessions([]);
+        }
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
     }
 
-    doPoll();
-    const id = setInterval(doPoll, intervalMs);
+    poll();
+    const id = setInterval(poll, intervalMs);
 
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [intervalMs, poll, enabled]);
+  }, [intervalMs, enabled]);
 
   return { sessions, loading, error };
 }
