@@ -249,7 +249,6 @@ export class IpcServer {
         if (result === "AUTHORIZED") {
           // Already authorized (tokens were valid) — restart server to reconnect
           await this.pool.restart(server);
-          callback.stop();
           return { ok: true, message: "Already authorized" };
         }
 
@@ -263,9 +262,8 @@ export class IpcServer {
         await this.pool.restart(server);
 
         return { ok: true, message: "Authenticated successfully" };
-      } catch (err) {
+      } finally {
         callback.stop();
-        throw err;
       }
     });
 
