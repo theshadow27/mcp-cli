@@ -10,7 +10,7 @@ export const CLAUDE_TOOLS = [
     name: "claude_prompt",
     description:
       "Start a new Claude Code session with a prompt, or send a follow-up prompt to an existing session. " +
-      "Blocks until Claude produces a result or times out.",
+      "Returns the session ID immediately by default. Set wait=true to block until Claude produces a result.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -29,6 +29,7 @@ export const CLAUDE_TOOLS = [
         },
         worktree: { type: "string", description: "Git worktree name for isolation" },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
+        wait: { type: "boolean", description: "Block until result (default: false)" },
       },
       required: ["prompt"],
     },

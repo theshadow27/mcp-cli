@@ -130,7 +130,15 @@ async function handlePrompt(
     });
   }
 
-  // Wait for result
+  const shouldWait = (args.wait as boolean) ?? false;
+
+  if (!shouldWait) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ sessionId }) }],
+    };
+  }
+
+  // Block until result
   const result = await server.waitForResult(sessionId, timeoutMs);
   return {
     content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

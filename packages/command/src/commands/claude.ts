@@ -30,12 +30,12 @@ export interface ClaudeDeps {
   exit: (code: number) => never;
 }
 
-/** Default IPC timeout for claude_prompt (5 min + buffer). Other tools use default 60s. */
+/** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
 const PROMPT_IPC_TIMEOUT_MS = 330_000;
 
 const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
-    const timeoutMs = tool === "claude_prompt" ? PROMPT_IPC_TIMEOUT_MS : undefined;
+    const timeoutMs = tool === "claude_prompt" && args.wait ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: "_claude", tool, arguments: args }, { timeoutMs });
   },
   printError: defaultPrintError,
@@ -89,6 +89,7 @@ export interface SpawnArgs {
   allow: string[];
   cwd: string | undefined;
   timeout: number | undefined;
+  wait: boolean;
   error: string | undefined;
 }
 
@@ -98,6 +99,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let resume: string | undefined;
   let cwd: string | undefined;
   let timeout: number | undefined;
+  let wait = false;
   const allow: string[] = [];
   let error: string | undefined;
 
@@ -135,13 +137,15 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
         timeout = Number(val);
         if (Number.isNaN(timeout)) error = "--timeout must be a number";
       }
+    } else if (arg === "--wait") {
+      wait = true;
     } else if (!arg.startsWith("-")) {
       // Positional arg treated as task if no --task provided
       if (!task) task = arg;
     }
   }
 
-  return { task, worktree, resume, allow, cwd, timeout, error };
+  return { task, worktree, resume, allow, cwd, timeout, wait, error };
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
@@ -165,6 +169,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
+  if (parsed.wait) toolArgs.wait = true;
 
   const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
@@ -209,16 +214,29 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
-  const message = args.slice(1).join(" ").trim();
+  let wait = false;
+  const rest: string[] = [];
+  for (const arg of args) {
+    if (arg === "--wait") {
+      wait = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  const sessionPrefix = rest[0];
+  const message = rest.slice(1).join(" ").trim();
 
   if (!sessionPrefix || !message) {
-    d.printError("Usage: mcx claude send <session-id> <message>");
+    d.printError("Usage: mcx claude send [--wait] <session-id> <message>");
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
-  const result = await d.callTool("claude_prompt", { sessionId, prompt: message });
+  const toolArgs: Record<string, unknown> = { sessionId, prompt: message };
+  if (wait) toolArgs.wait = true;
+
+  const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
 }
 
@@ -380,21 +398,25 @@ function printClaudeUsage(): void {
   console.log(`mcx claude — manage Claude Code sessions
 
 Usage:
-  mcx claude spawn --task "description"    Start a new Claude session
+  mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude ls                            List active sessions
-  mcx claude send <session> <message>      Send follow-up prompt
+  mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude
+  --wait                      Block until Claude produces a result
   --worktree, -w [name]       Git worktree isolation (auto-generates name if omitted)
   --resume <id>               Resume a previous session
   --allow <tools...>          Pre-approved tool patterns (e.g. Read Glob "Bash(git *)")
   --cwd <path>                Working directory for Claude
-  --timeout <ms>              Max wait time (default: 300000)
+  --timeout <ms>              Max wait time (default: 300000, only with --wait)
+
+Send options:
+  --wait                      Block until Claude produces a result
 
 Session IDs support prefix matching (like git SHAs).`);
 }
