@@ -40,6 +40,24 @@ export class IpcCallError extends Error {
   }
 }
 
+/**
+ * Thrown when the CLI and daemon have incompatible protocol versions.
+ * The user must explicitly restart the daemon to resolve this.
+ */
+export class ProtocolMismatchError extends Error {
+  readonly daemonVersion: string;
+  readonly cliVersion: string;
+
+  constructor(daemonVersion: string, cliVersion: string) {
+    super(
+      `Protocol version mismatch — daemon is running ${daemonVersion}, CLI expects ${cliVersion}.\n\nThe daemon was started from a different build. Active sessions will be\nlost if the daemon is restarted.\n\n  To restart anyway:  mcx daemon restart\n  If developing:      bun build && mcx daemon restart`,
+    );
+    this.name = "ProtocolMismatchError";
+    this.daemonVersion = daemonVersion;
+    this.cliVersion = cliVersion;
+  }
+}
+
 /** Base URL for IPC requests over the Unix domain socket. */
 const IPC_RPC_URL = "http://localhost/rpc";
 
@@ -81,15 +99,8 @@ async function sendRequest(request: IpcRequest, timeoutMs?: number): Promise<Ipc
  * Uses an exclusive lock file to prevent concurrent startups (race condition).
  */
 async function ensureDaemon(): Promise<void> {
-  mismatchWarned = false;
-
+  // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
   if (await isDaemonRunning()) return;
-
-  // If the daemon is alive but has the wrong protocol version, shut it down first
-  if (versionMismatchPid !== null) {
-    await stopDaemon();
-    versionMismatchPid = null;
-  }
 
   // Try to acquire exclusive lock
   let lockFd: number | null = null;
@@ -106,21 +117,7 @@ async function ensureDaemon(): Promise<void> {
     // Double-check after acquiring lock (daemon may have started between our check and lock)
     if (await isDaemonRunning()) return;
 
-    // Re-check mismatch after lock (another CLI may not have restarted yet)
-    if (versionMismatchPid !== null) {
-      await stopDaemon();
-      versionMismatchPid = null;
-    }
-
     await startDaemon();
-
-    // After starting, verify the new daemon's version matches.
-    // If not, the daemon binary and CLI binary are from different builds.
-    if (!(await isDaemonRunning()) && versionMismatchPid !== null) {
-      throw new Error(
-        `Protocol version mismatch persists after restart (daemon: ${versionMismatchPid}, cli: ${PROTOCOL_VERSION}). Rebuild with: bun run build`,
-      );
-    }
   } finally {
     if (lockFd !== null) closeSync(lockFd);
     try {
@@ -180,14 +177,8 @@ export function isProcessMcpd(pid: number): boolean {
   }
 }
 
-/** Set when isDaemonRunning detects a version-mismatched daemon that needs to be stopped */
-let versionMismatchPid: number | null = null;
-
-/** Suppresses repeated mismatch warnings within a single ensureDaemon cycle */
-let mismatchWarned = false;
-
 /** Send shutdown command to a running daemon and clean up stale files */
-async function stopDaemon(): Promise<void> {
+export async function stopDaemon(): Promise<void> {
   verifiedMcpdPid = null;
   try {
     await fetch(IPC_RPC_URL, {
@@ -228,8 +219,6 @@ function pingDaemon(): Promise<boolean> {
  * 6. Daemon responds to IPC ping
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  versionMismatchPid = null;
-
   if (!existsSync(options.PID_PATH)) return false;
 
   let data: { pid: number; startedAt: number; protocolVersion?: string };
@@ -260,16 +249,10 @@ export async function isDaemonRunning(): Promise<boolean> {
     return false;
   }
 
-  // Protocol version mismatch — daemon is alive but wrong version
+  // Protocol version mismatch — daemon is alive but wrong version.
+  // Fail-fast: never auto-restart, as that orphans active sessions.
   if (data.protocolVersion !== PROTOCOL_VERSION) {
-    if (!mismatchWarned) {
-      console.error(
-        `[mcx] Protocol version mismatch (daemon: ${data.protocolVersion ?? "unknown"}, cli: ${PROTOCOL_VERSION}). Restarting daemon...`,
-      );
-      mismatchWarned = true;
-    }
-    versionMismatchPid = data.pid;
-    return false;
+    throw new ProtocolMismatchError(data.protocolVersion ?? "unknown", PROTOCOL_VERSION);
   }
 
   // Socket must exist (but don't clean PID — daemon might be initializing)
