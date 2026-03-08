@@ -17,6 +17,16 @@ import { PermissionRouter } from "./permission-router";
 import type { SessionEvent, SessionStateEnum } from "./session-state";
 import { SessionState } from "./session-state";
 
+// ── Errors ──
+
+/** Thrown when waitForEvent() or waitForResult() times out. */
+export class WaitTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WaitTimeoutError";
+  }
+}
+
 // ── Types ──
 
 export interface SessionConfig {
@@ -369,7 +379,7 @@ export class ClaudeWsServer {
         timer: setTimeout(() => {
           const idx = this.eventWaiters.indexOf(waiter);
           if (idx >= 0) this.eventWaiters.splice(idx, 1);
-          reject(new Error(`Timeout waiting for session event after ${timeoutMs}ms`));
+          reject(new WaitTimeoutError(`Timeout waiting for session event after ${timeoutMs}ms`));
         }, timeoutMs),
       };
 

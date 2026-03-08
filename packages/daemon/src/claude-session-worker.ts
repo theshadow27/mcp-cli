@@ -19,7 +19,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import { ClaudeWsServer } from "./claude-session/ws-server";
+import { ClaudeWsServer, WaitTimeoutError } from "./claude-session/ws-server";
 import { WorkerServerTransport } from "./worker-transport";
 
 // ── Control messages ──
@@ -204,10 +204,18 @@ async function handleWait(
   const sessionId = (args.sessionId as string | undefined) ?? null;
   const timeoutMs = (args.timeout as number) ?? 300_000;
 
-  const event = await server.waitForEvent(sessionId, timeoutMs);
-  return {
-    content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
-  };
+  try {
+    const event = await server.waitForEvent(sessionId, timeoutMs);
+    return {
+      content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
+    };
+  } catch (err) {
+    if (err instanceof WaitTimeoutError) {
+      // On timeout, fall back to session list instead of erroring
+      return handleSessionList(server);
+    }
+    throw err;
+  }
 }
 
 // ── Session event → DB message forwarding ──
