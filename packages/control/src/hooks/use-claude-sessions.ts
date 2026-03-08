@@ -1,5 +1,5 @@
 import { ipcCall } from "@mcp-cli/core";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
 // Mirror the daemon's SessionInfo shape (from claude-session/ws-server.ts)
