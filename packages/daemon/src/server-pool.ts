@@ -45,16 +45,28 @@ interface ServerConnection {
   virtual?: boolean;
 }
 
+/**
+ * Factory that creates and connects a client+transport pair for a server.
+ * Tests inject a mock implementation to avoid real MCP connections.
+ */
+export type ConnectFn = (
+  name: string,
+  config: ServerConfig,
+  authProvider?: OAuthClientProvider,
+) => Promise<{ client: Client; transport: Transport }>;
+
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
   private reconnecting = new Map<string, Promise<void>>();
   private config: ResolvedConfig;
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
+  private connectFn: ConnectFn;
 
-  constructor(config: ResolvedConfig, db?: StateDb) {
+  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn) {
     this.config = config;
     this.db = db ?? null;
+    this.connectFn = connectFn ?? defaultConnect;
     // Pre-populate connection entries (disconnected, with cached tools if available)
     for (const [name, resolved] of config.servers) {
       const cachedTools = new Map<string, ToolInfo>();
@@ -183,15 +195,9 @@ export class ServerPool {
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const transport = createTransport(config, authProvider);
-          const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
-
-          // Attach stderr capture before connect so early output isn't lost
-          this.attachStderrCapture(name, transport, conn);
-
           // Connect with timeout to prevent permanent hang on unresponsive servers
-          await Promise.race([
-            client.connect(transport),
+          const { client, transport } = await Promise.race([
+            this.connectFn(name, config, authProvider),
             new Promise<never>((_, reject) =>
               setTimeout(
                 () => reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
@@ -199,6 +205,9 @@ export class ServerPool {
               ),
             ),
           ]);
+
+          // Attach stderr capture (Node streams buffer in paused mode, so no data is lost)
+          this.attachStderrCapture(name, transport, conn);
 
           conn.client = client;
           conn.transport = transport;
@@ -637,6 +646,17 @@ export function isTransientCallError(err: unknown): boolean {
 }
 
 // -- Transport factories --
+
+async function defaultConnect(
+  name: string,
+  config: ServerConfig,
+  authProvider?: OAuthClientProvider,
+): Promise<{ client: Client; transport: Transport }> {
+  const transport = createTransport(config, authProvider);
+  const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+  await client.connect(transport);
+  return { client, transport };
+}
 
 function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
   if (isStdioConfig(config)) {
