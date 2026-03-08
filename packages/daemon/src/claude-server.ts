@@ -71,6 +71,14 @@ export class ClaudeServer {
   private db: StateDb;
   private wsPort: number | null = null;
   private readonly activeSessions = new Set<string>();
+  private restartInProgress = false;
+  private stopped = false;
+  private readonly crashTimestamps: number[] = [];
+  private static readonly MAX_CRASHES = 3;
+  private static readonly CRASH_WINDOW_MS = 60_000;
+
+  /** Called after a successful auto-restart with the new client and transport. */
+  onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
 
   constructor(db: StateDb) {
     this.db = db;
@@ -78,6 +86,7 @@ export class ClaudeServer {
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
+    this.stopped = false;
     const worker = new Worker(join(import.meta.dir, "claude-session-worker.ts"));
     this.worker = worker;
 
@@ -118,11 +127,15 @@ export class ClaudeServer {
       transportHandler?.call(worker, event);
     };
 
+    // Attach post-startup crash detection
+    this.attachCrashDetection(worker);
+
     return { client: this.client, transport: this.transport };
   }
 
-  /** Stop the worker and clean up. */
+  /** Stop the worker and clean up. Prevents auto-restart after crash. */
   async stop(): Promise<void> {
+    this.stopped = true;
     try {
       await this.client?.close();
     } catch {
@@ -144,6 +157,72 @@ export class ClaudeServer {
   /** True if any WebSocket sessions are active (not yet ended). */
   hasActiveSessions(): boolean {
     return this.activeSessions.size > 0;
+  }
+
+  // ── Crash detection ──
+
+  /** Attach post-startup error listener to detect worker crashes. */
+  private attachCrashDetection(worker: Worker): void {
+    worker.addEventListener(
+      "error",
+      (event: ErrorEvent | Event) => {
+        // Only handle if this is still our active worker
+        if (this.worker !== worker) return;
+        const msg = event instanceof ErrorEvent ? event.message : "unknown error";
+        this.handleWorkerCrash(`worker error: ${msg}`);
+      },
+      { once: true },
+    );
+  }
+
+  /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
+  private async handleWorkerCrash(reason: string): Promise<void> {
+    if (this.restartInProgress || this.stopped) return;
+    this.restartInProgress = true;
+
+    console.error(`[claude-server] Worker crash detected: ${reason}`);
+
+    // Mark all tracked sessions as ended in SQLite
+    for (const sessionId of this.activeSessions) {
+      console.error(`[claude-server] Ending orphaned session: ${sessionId}`);
+      this.db.endSession(sessionId);
+    }
+    this.activeSessions.clear();
+
+    // Clear stale references (don't terminate — worker is already dead)
+    this.worker = null;
+    this.transport = null;
+    this.client = null;
+    this.wsPort = null;
+
+    // Rate-limit restarts to prevent crash loops
+    const now = Date.now();
+    this.crashTimestamps.push(now);
+    // Trim timestamps outside the window
+    while (this.crashTimestamps.length > 0 && (this.crashTimestamps[0] ?? 0) <= now - ClaudeServer.CRASH_WINDOW_MS) {
+      this.crashTimestamps.shift();
+    }
+    if (this.crashTimestamps.length > ClaudeServer.MAX_CRASHES) {
+      console.error(
+        `[claude-server] ${this.crashTimestamps.length} crashes in ${ClaudeServer.CRASH_WINDOW_MS / 1000}s — giving up auto-restart`,
+      );
+      this.stopped = true;
+      this.restartInProgress = false;
+      return;
+    }
+
+    // Auto-restart
+    try {
+      console.error("[claude-server] Restarting worker...");
+      const { client, transport } = await this.start();
+      console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+      this.onRestarted?.(client, transport);
+    } catch (err) {
+      console.error(`[claude-server] Failed to restart worker: ${err}`);
+      this.stopped = true;
+    } finally {
+      this.restartInProgress = false;
+    }
   }
 
   // ── DB event handling ──
