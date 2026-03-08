@@ -66,6 +66,7 @@ mcx ls                              # list servers and their status
 mcx ls <server>                     # list tools on a server
 mcx info <server> <tool>            # show tool schema (TypeScript notation)
 mcx grep <pattern>                  # search tools across all servers
+mcx search <query>                  # search local tools, then registry
 ```
 
 ### Calling Tools
@@ -75,7 +76,23 @@ mcx call <server> <tool> [json]     # call a tool with inline JSON
 mcx call <server> <tool> @file.json # load args from a file
 echo '{"query":"test"}' | mcx call <server> <tool>  # pipe from stdin
 mcx <server> <tool> [json]          # shorthand (skip "call")
+mcx call <server> <tool> --jq '.field'  # apply jq filter to output
+mcx call <server> <tool> --full     # bypass output size protection
 ```
+
+### Server Management
+
+```bash
+mcx add --transport stdio <name> -- <cmd> [args]  # add stdio server
+mcx add --transport http <name> <url>              # add HTTP server
+mcx add --transport http <name> <url> \
+  --client-id ID --client-secret SECRET            # add with OAuth
+mcx add-json <name> '{"type":"http","url":"..."}'  # add from raw JSON
+mcx remove <name>                   # remove a server
+mcx get <name>                      # inspect server config and status
+```
+
+Options for `add`: `--env KEY=VALUE` (repeatable), `--header "Name: Value"` (HTTP/SSE), `--scope {user|project}`, `--callback-port PORT`.
 
 ### Auth & Management
 
@@ -83,10 +100,36 @@ mcx <server> <tool> [json]          # shorthand (skip "call")
 mcx auth <server>                   # trigger OAuth flow (opens browser)
 mcx config show                     # show resolved config + sources
 mcx config sources                  # list config file locations
+mcx config get <key>                # get CLI option or server config
+mcx config set <key> <value>        # set CLI option or server env var
 mcx status                          # daemon PID, uptime, server states
 mcx restart [server]                # reconnect server(s)
-mcx shutdown                        # stop the daemon
+mcx daemon restart                  # restart daemon (kills sessions)
+mcx daemon shutdown                 # stop the daemon
 mcx logs <server> [-f]              # view server stderr output
+mcx logs --daemon [-f]              # view daemon log file
+```
+
+### Registry
+
+```bash
+mcx install <slug>                  # install server from MCP registry
+mcx install <slug> --as <name>      # install with custom name
+mcx install <slug> --env KEY=VALUE  # install with env vars
+mcx registry search <query>         # search registry
+mcx registry list                   # list all registry servers
+```
+
+### Import / Export
+
+```bash
+mcx import                          # auto-find .mcp.json in parent dirs
+mcx import /path/to/config.json     # import from specific file
+mcx import --claude                 # import from Claude Code config
+mcx import --claude --all           # import all Claude Code projects
+mcx export                          # export to stdout
+mcx export .mcp.json                # export to file
+mcx export --server <name>          # export specific server(s)
 ```
 
 ### Claude Sessions
@@ -140,6 +183,38 @@ Alias scripts get a virtual `mcp-cli` module with:
 - `args` — parsed `--key value` pairs from the CLI
 - `file(path)` — read a file as string
 - `json(path)` — read and parse a JSON file
+
+### Mail
+
+Inter-session messaging for coordinating between Claude sessions:
+
+```bash
+echo "body" | mcx mail -s "subject" <recipient>  # send a message
+mcx mail -H                         # list message headers
+mcx mail -H -u <user>               # list messages for a user
+mcx mail --wait --for=<recipient>    # block until message arrives
+```
+
+### Terminal
+
+```bash
+mcx tty open "<command>"             # run command in new terminal tab
+mcx tty open --window "<command>"    # run in new window
+mcx tty open --headless "<command>"  # run as background process
+mcx config set terminal <name>       # set preferred terminal
+```
+
+Supports: iTerm, Kitty, tmux, WezTerm, Ghostty, Terminal.app. Auto-detects from `$TERM_PROGRAM`.
+
+### Utilities
+
+```bash
+mcx serve                           # run mcx as stdio MCP server
+mcx typegen                         # generate TypeScript types for aliases
+mcx completions {bash|zsh|fish}     # generate shell completions
+```
+
+`mcx serve` exposes tools as an MCP server for use in `.mcp.json`. Set `MCP_TOOLS="server/tool,alias"` to curate which tools are exposed.
 
 ### TUI
 
