@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { PROTOCOL_VERSION } from "./constants";
-import { IpcCallError, isDaemonRunning } from "./ipc-client";
+import { IpcCallError, ProtocolMismatchError, isDaemonRunning } from "./ipc-client";
 
 /**
  * Tests for ensureDaemon startup lock and stderr handling.
@@ -183,6 +183,20 @@ describe("protocol version mismatch detection", () => {
 
     const result = await isDaemonRunning();
     expect(result).toBe(false);
+  });
+});
+
+describe("ProtocolMismatchError", () => {
+  it("includes both versions and actionable instructions", () => {
+    const err = new ProtocolMismatchError("abc123", "def456");
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("ProtocolMismatchError");
+    expect(err.daemonVersion).toBe("abc123");
+    expect(err.cliVersion).toBe("def456");
+    expect(err.message).toContain("abc123");
+    expect(err.message).toContain("def456");
+    expect(err.message).toContain("mcx daemon restart");
+    expect(err.message).toContain("bun build");
   });
 });
 

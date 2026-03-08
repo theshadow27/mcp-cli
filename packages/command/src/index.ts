@@ -15,7 +15,7 @@
  */
 
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { IpcCallError, VERSION, isDaemonRunning } from "@mcp-cli/core";
+import { IpcCallError, ProtocolMismatchError, VERSION, isDaemonRunning, stopDaemon } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
@@ -201,6 +201,10 @@ async function main(): Promise<void> {
         await cmdRestart(args.slice(1));
         break;
 
+      case "daemon":
+        await cmdDaemon(args.slice(1));
+        break;
+
       case "shutdown":
         await ipcCall("shutdown");
         console.error("Daemon shut down.");
@@ -238,6 +242,10 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
+    if (err instanceof ProtocolMismatchError) {
+      printError(err.message);
+      process.exit(2);
+    }
     printError(err instanceof Error ? err.message : String(err));
     if (process.env.MCX_DEBUG === "1" && err instanceof IpcCallError && err.remoteStack) {
       console.error("\nRemote stack trace:");
@@ -417,6 +425,25 @@ async function cmdAuth(args: string[]): Promise<void> {
   console.error(result.message);
 }
 
+async function cmdDaemon(args: string[]): Promise<void> {
+  const sub = args[0];
+  if (sub === "restart") {
+    // Directly stop — does not go through ensureDaemon (avoids ProtocolMismatchError)
+    console.error("Stopping daemon...");
+    await stopDaemon();
+    // Next ipcCall auto-starts a fresh daemon with current code
+    await ipcCall("ping");
+    console.error("Daemon restarted.");
+  } else if (sub === "shutdown" || sub === "stop") {
+    // Direct stop — no ensureDaemon needed
+    await stopDaemon();
+    console.error("Daemon shut down.");
+  } else {
+    printError("Usage: mcx daemon restart|shutdown");
+    process.exit(1);
+  }
+}
+
 async function cmdRestart(args: string[]): Promise<void> {
   const server = args[0];
   await ipcCall("restartServer", server ? { server } : {});
@@ -519,7 +546,9 @@ Usage:
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
-  mcx shutdown                        Stop the daemon
+  mcx daemon restart                  Restart the daemon (kills sessions)
+  mcx daemon shutdown                 Stop the daemon
+  mcx shutdown                        Stop the daemon (legacy)
 
 Aliases:
   mcx alias ls                        List saved aliases
