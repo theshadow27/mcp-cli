@@ -84,4 +84,17 @@ export const CLAUDE_TOOLS = [
       required: ["sessionId"],
     },
   },
+  {
+    name: "claude_wait",
+    description:
+      "Block until a session event occurs (result, error, or permission request). " +
+      "If sessionId is provided, waits for that session only. Otherwise waits for any session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
+        timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
+      },
+    },
+  },
 ] as const;
