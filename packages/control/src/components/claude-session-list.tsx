@@ -1,10 +1,10 @@
+import type { SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { ClaudeSession, SessionStateEnum } from "../hooks/use-claude-sessions.js";
 import { ClaudeSessionDetail } from "./claude-session-detail.js";
 
 interface ClaudeSessionListProps {
-  sessions: ClaudeSession[];
+  sessions: SessionInfo[];
   selectedIndex: number;
   expandedSession: string | null;
   loading: boolean;

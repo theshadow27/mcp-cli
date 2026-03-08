@@ -45,8 +45,6 @@ export interface TranscriptEntry {
   message: NdjsonMessage;
 }
 
-export type { PendingPermissionInfo, SessionInfo } from "@mcp-cli/core";
-
 export interface SessionDetail extends SessionInfo {
   pendingPermissionIds: string[];
   pid: number | null;

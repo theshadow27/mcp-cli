@@ -20,8 +20,6 @@ import {
   userMessage,
 } from "./ndjson";
 
-export type { SessionStateEnum } from "@mcp-cli/core";
-
 // ── Events emitted by handleMessage ──
 
 export type SessionEvent =

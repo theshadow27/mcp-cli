@@ -1,20 +1,16 @@
 import { ipcCall } from "@mcp-cli/core";
-import type { SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import type { SessionInfo } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
-export type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
-
-export type ClaudeSession = SessionInfo;
-
 interface UseClaudeSessionsResult {
-  sessions: ClaudeSession[];
+  sessions: SessionInfo[];
   loading: boolean;
   error: string | null;
 }
 
 export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeSessionsResult {
-  const [sessions, setSessions] = useState<ClaudeSession[]>([]);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +32,7 @@ export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeS
 
         const text = extractToolText(result);
         if (text) {
-          setSessions(JSON.parse(text) as ClaudeSession[]);
+          setSessions(JSON.parse(text) as SessionInfo[]);
         } else {
           setSessions([]);
         }
