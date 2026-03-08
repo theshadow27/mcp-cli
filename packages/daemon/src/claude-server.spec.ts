@@ -181,6 +181,69 @@ describe("ClaudeServer", () => {
     expect(row?.endedAt).not.toBeNull();
   });
 
+  test("hasActiveSessions() returns false initially", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
+  test("hasActiveSessions() returns true after db:upsert, false after db:end", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s-active", state: "connecting" } });
+
+    expect(server.hasActiveSessions()).toBe(true);
+
+    handle({ type: "db:end", sessionId: "s-active" });
+
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
+  test("hasActiveSessions() tracks multiple sessions independently", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s1", state: "connecting" } });
+    handle({ type: "db:upsert", session: { sessionId: "s2", state: "connecting" } });
+
+    expect(server.hasActiveSessions()).toBe(true);
+
+    handle({ type: "db:end", sessionId: "s1" });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    handle({ type: "db:end", sessionId: "s2" });
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
+  test("stop() clears active sessions", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s-stop", state: "connecting" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    await server.stop();
+    expect(server.hasActiveSessions()).toBe(false);
+    server = undefined; // prevent double stop
+  });
+
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);

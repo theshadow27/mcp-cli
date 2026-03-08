@@ -156,6 +156,11 @@ export class ClaudeWsServer {
     return this.server?.port ?? 0;
   }
 
+  /** Number of active (not yet ended) sessions. */
+  get sessionCount(): number {
+    return this.sessions.size;
+  }
+
   /**
    * Prepare a session for an incoming Claude CLI connection.
    * Call this before spawning the Claude process.

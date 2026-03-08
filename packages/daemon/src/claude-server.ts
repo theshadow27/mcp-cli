@@ -70,6 +70,7 @@ export class ClaudeServer {
   private client: Client | null = null;
   private db: StateDb;
   private wsPort: number | null = null;
+  private readonly activeSessions = new Set<string>();
 
   constructor(db: StateDb) {
     this.db = db;
@@ -132,11 +133,17 @@ export class ClaudeServer {
     this.transport = null;
     this.client = null;
     this.wsPort = null;
+    this.activeSessions.clear();
   }
 
   /** Get the WebSocket server port (available after start). */
   get port(): number | null {
     return this.wsPort;
+  }
+
+  /** True if any WebSocket sessions are active (not yet ended). */
+  hasActiveSessions(): boolean {
+    return this.activeSessions.size > 0;
   }
 
   // ── DB event handling ──
@@ -147,6 +154,7 @@ export class ClaudeServer {
         // Already handled during start(), ignore subsequent
         break;
       case "db:upsert":
+        this.activeSessions.add(event.session.sessionId);
         this.db.upsertSession(event.session);
         break;
       case "db:state":
@@ -156,6 +164,7 @@ export class ClaudeServer {
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
         break;
       case "db:end":
+        this.activeSessions.delete(event.sessionId);
         this.db.endSession(event.sessionId);
         break;
     }
