@@ -38,4 +38,8 @@ describe("extractJsonFlag", () => {
       rest: ["atlassian"],
     });
   });
+
+  test("extracts --json flag", () => {
+    expect(extractJsonFlag(["atlassian", "--json"])).toEqual({ json: true, rest: ["atlassian"] });
+  });
 });

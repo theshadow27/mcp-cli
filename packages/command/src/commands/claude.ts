@@ -7,7 +7,7 @@
 
 import { ipcCall } from "@mcp-cli/core";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
-import { extractJsonFlag } from "../parse";
+import { extractFullFlag, extractJsonFlag } from "../parse";
 
 // ── Types ──
 
@@ -281,26 +281,23 @@ export interface LogArgs {
 }
 
 export function parseLogArgs(args: string[]): LogArgs {
+  const { json, rest: r1 } = extractJsonFlag(args);
+  const { full, rest: r2 } = extractFullFlag(r1);
+
   let sessionPrefix: string | undefined;
   let last = 20;
-  let json = false;
-  let full = false;
   let error: string | undefined;
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+  for (let i = 0; i < r2.length; i++) {
+    const arg = r2[i];
     if (arg === "--last" || arg === "-n") {
-      const val = args[++i];
+      const val = r2[++i];
       if (!val) {
         error = "--last requires a number";
       } else {
         last = Number(val);
         if (Number.isNaN(last)) error = "--last must be a number";
       }
-    } else if (arg === "--json" || arg === "-j") {
-      json = true;
-    } else if (arg === "--full") {
-      full = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
@@ -339,6 +336,8 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
+  const truncate = (s: string) => (parsed.full || s.length <= 200 ? s : `${s.slice(0, 200)}…`);
+
   for (const entry of entries) {
     const time = new Date(entry.timestamp).toLocaleTimeString();
     const dir = entry.direction === "outbound" ? `${c.green}→${c.reset}` : `${c.cyan}←${c.reset}`;
@@ -354,22 +353,12 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
     } else if (type === "assistant" && entry.message.message) {
       const msg = entry.message.message as { content?: string };
       if (msg.content) {
-        const content = parsed.full
-          ? msg.content
-          : msg.content.length > 200
-            ? `${msg.content.slice(0, 200)}…`
-            : msg.content;
-        console.log(`  ${content}`);
+        console.log(`  ${truncate(msg.content)}`);
       }
     } else if (type === "result") {
       const res = entry.message as { result?: string };
       if (res.result) {
-        const content = parsed.full
-          ? res.result
-          : res.result.length > 200
-            ? `${res.result.slice(0, 200)}…`
-            : res.result;
-        console.log(`  ${c.dim}${content}${c.reset}`);
+        console.log(`  ${c.dim}${truncate(res.result)}${c.reset}`);
       }
     }
   }
