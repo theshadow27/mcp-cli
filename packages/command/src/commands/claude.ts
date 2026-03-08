@@ -481,7 +481,7 @@ Spawn options:
   --wait                      Block until Claude produces a result
   --worktree, -w [name]       Git worktree isolation (auto-generates name if omitted)
   --resume <id>               Resume a previous session
-  --allow <tools...>          Pre-approved tool patterns (e.g. Read Glob "Bash(git *)")
+  --allow <tools...>          Pre-approved tool patterns (default: Read Glob Grep Write Edit)
   --cwd <path>                Working directory for Claude
   --timeout <ms>              Max wait time (default: 300000, only with --wait)
 

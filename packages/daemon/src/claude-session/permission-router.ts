@@ -61,6 +61,14 @@ function matchesPattern(pattern: string, toolName: string, input: Record<string,
   return false;
 }
 
+// ── Defaults ──
+
+/**
+ * Safe tools allowed by default when no explicit --allow is provided.
+ * Permits file read/write but blocks shell execution and network access.
+ */
+export const DEFAULT_SAFE_TOOLS: readonly string[] = Object.freeze(["Read", "Glob", "Grep", "Write", "Edit"]);
+
 // ── Router ──
 
 export class PermissionRouter {

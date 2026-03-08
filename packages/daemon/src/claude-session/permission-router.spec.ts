@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type CanUseToolRequest,
+  DEFAULT_SAFE_TOOLS,
   type PermissionDecision,
   PermissionRouter,
   type PermissionRule,
@@ -196,6 +197,42 @@ describe("PermissionRouter — delegate", () => {
     const decision = await router.evaluate(makeRequest("Bash", { command: "git push" }));
     expect(decision.allow).toBe(true);
     expect(decision.updatedPermissions).toEqual([{ tool: "Bash(git *)", action: "allow" }]);
+  });
+});
+
+// ── DEFAULT_SAFE_TOOLS ──
+
+describe("DEFAULT_SAFE_TOOLS", () => {
+  test("contains expected safe tools", () => {
+    expect(DEFAULT_SAFE_TOOLS).toContain("Read");
+    expect(DEFAULT_SAFE_TOOLS).toContain("Glob");
+    expect(DEFAULT_SAFE_TOOLS).toContain("Grep");
+    expect(DEFAULT_SAFE_TOOLS).toContain("Write");
+    expect(DEFAULT_SAFE_TOOLS).toContain("Edit");
+  });
+
+  test("does not contain dangerous tools", () => {
+    expect(DEFAULT_SAFE_TOOLS).not.toContain("Bash");
+    expect(DEFAULT_SAFE_TOOLS).not.toContain("WebFetch");
+    expect(DEFAULT_SAFE_TOOLS).not.toContain("WebSearch");
+  });
+
+  test("is frozen", () => {
+    expect(Object.isFrozen(DEFAULT_SAFE_TOOLS)).toBe(true);
+  });
+
+  test("creates a working rules router", async () => {
+    const rules = DEFAULT_SAFE_TOOLS.map((tool) => ({ tool, action: "allow" as const }));
+    const router = new PermissionRouter("rules", rules);
+
+    // Safe tools allowed
+    expect((await router.evaluate(makeRequest("Read"))).allow).toBe(true);
+    expect((await router.evaluate(makeRequest("Edit"))).allow).toBe(true);
+    expect((await router.evaluate(makeRequest("Write"))).allow).toBe(true);
+
+    // Dangerous tools denied
+    expect((await router.evaluate(makeRequest("Bash", { command: "rm -rf /" }))).allow).toBe(false);
+    expect((await router.evaluate(makeRequest("WebFetch"))).allow).toBe(false);
   });
 });
 

@@ -5,6 +5,8 @@
  * and the main thread (tool cache for ServerPool).
  */
 
+import { DEFAULT_SAFE_TOOLS } from "./permission-router";
+
 export const CLAUDE_TOOLS = [
   {
     name: "claude_prompt",
@@ -20,7 +22,7 @@ export const CLAUDE_TOOLS = [
         permissionMode: {
           type: "string",
           enum: ["auto", "rules"],
-          description: "Permission handling strategy (default: auto)",
+          description: `Permission handling strategy (default: "rules" with safe tools: ${DEFAULT_SAFE_TOOLS.join(", ")})`,
         },
         allowedTools: {
           type: "array",
