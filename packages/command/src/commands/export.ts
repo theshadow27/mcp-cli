@@ -19,7 +19,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
-import { readConfigFile } from "./config-file";
+import { parseScope } from "../parse";
+import { CONFIG_SCOPES_NO_LOCAL, readConfigFile } from "./config-file";
 
 type ExportScope = "user" | "project";
 
@@ -32,11 +33,7 @@ export async function cmdExport(args: string[]): Promise<void> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      const val = args[++i];
-      if (val !== "user" && val !== "project") {
-        throw new Error(`Invalid scope "${val}": must be user or project`);
-      }
-      scope = val;
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
     } else if (arg === "--server") {
       const val = args[++i];
       if (!val) throw new Error("--server requires a name");

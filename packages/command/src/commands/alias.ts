@@ -9,6 +9,7 @@ import type { AliasDetail, AliasInfo, IpcMethod } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read";
 import { printAliasDebug, printAliasList, printError } from "../output";
+import { readStdin } from "../parse";
 
 export interface AliasDeps {
   ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
@@ -29,7 +30,7 @@ export interface AliasDeps {
 const defaultDeps: AliasDeps = {
   ipcCall,
   readFileWithLimit,
-  readStdin: defaultReadStdin,
+  readStdin,
   printError,
   printAliasList,
   printAliasDebug,
@@ -231,15 +232,6 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       break;
     }
   }
-}
-
-/** Read all of stdin as text */
-async function defaultReadStdin(): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf-8").trim();
 }
 
 /** Print help text with defineAlias usage examples */

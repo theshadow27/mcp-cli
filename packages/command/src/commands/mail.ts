@@ -22,6 +22,7 @@
 import type { IpcMethod, MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output";
+import { readStdin } from "../parse";
 
 const MAIL_HELP = `mcx mail — interagent message queue
 
@@ -78,13 +79,7 @@ const defaultDeps: MailDeps = {
   printError,
   writeStdout: (msg) => process.stdout.write(msg),
   writeStderr: (msg) => process.stderr.write(msg),
-  readStdin: async () => {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of process.stdin) {
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks).toString("utf-8").trim();
-  },
+  readStdin,
   isTTY: !!process.stdin.isTTY,
   defaultSender: defaultSenderName(),
   exit: (code) => process.exit(code),
