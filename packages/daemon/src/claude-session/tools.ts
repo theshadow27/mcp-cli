@@ -30,7 +30,10 @@ export const CLAUDE_TOOLS = [
           description: "Tool patterns to auto-approve (e.g. 'Read', 'Bash(git *)')",
         },
         worktree: { type: "string", description: "Git worktree name for isolation" },
-        model: { type: "string", description: "Model ID to use (e.g. claude-opus-4-6, claude-sonnet-4-6)" },
+        model: {
+          type: "string",
+          description: "Model to use: shortname (opus, sonnet, haiku) or full ID (e.g. claude-opus-4-6)",
+        },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
         wait: { type: "boolean", description: "Block until result (default: false)" },
       },
