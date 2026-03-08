@@ -6,6 +6,7 @@
  * for the WS server / virtual-server layer to observe.
  */
 
+import type { SessionStateEnum } from "@mcp-cli/core";
 import type { Assistant as AssistantMsg, CanUseTool as CanUseToolMsg, NdjsonMessage } from "./ndjson";
 import {
   Assistant as AssistantSchema,
@@ -19,9 +20,7 @@ import {
   userMessage,
 } from "./ndjson";
 
-// ── State enum ──
-
-export type SessionStateEnum = "connecting" | "init" | "active" | "waiting_permission" | "result" | "idle" | "ended";
+export type { SessionStateEnum } from "@mcp-cli/core";
 
 // ── Events emitted by handleMessage ──
 

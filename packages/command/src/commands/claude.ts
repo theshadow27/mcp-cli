@@ -10,19 +10,7 @@ import { ipcCall } from "@mcp-cli/core";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJsonFlag } from "../parse";
 
-// ── Types ──
-
-interface SessionInfo {
-  sessionId: string;
-  state: string;
-  model: string | null;
-  cwd: string | null;
-  cost: number;
-  tokens: number;
-  numTurns: number;
-  pendingPermissions: number;
-  worktree: string | null;
-}
+import type { SessionInfo } from "@mcp-cli/core";
 
 // ── Dependency injection ──
 

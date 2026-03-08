@@ -1,28 +1,11 @@
 import { ipcCall } from "@mcp-cli/core";
+import type { SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
-// Mirror the daemon's SessionInfo shape (from claude-session/ws-server.ts)
-export type SessionStateEnum = "connecting" | "init" | "active" | "waiting_permission" | "result" | "idle" | "ended";
+export type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 
-export interface PendingPermissionInfo {
-  requestId: string;
-  toolName: string;
-  inputSummary: string;
-}
-
-export interface ClaudeSession {
-  sessionId: string;
-  state: SessionStateEnum;
-  model: string | null;
-  cwd: string | null;
-  cost: number;
-  tokens: number;
-  numTurns: number;
-  pendingPermissions: number;
-  pendingPermissionDetails: PendingPermissionInfo[];
-  worktree: string | null;
-}
+export type ClaudeSession = SessionInfo;
 
 interface UseClaudeSessionsResult {
   sessions: ClaudeSession[];
