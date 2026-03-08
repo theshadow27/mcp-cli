@@ -5,6 +5,7 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
+import { join } from "node:path";
 import { ipcCall } from "@mcp-cli/core";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJsonFlag } from "../parse";
@@ -30,6 +31,8 @@ export interface ClaudeDeps {
   printError: (msg: string) => void;
   exit: (code: number) => never;
   getDiffStats: (worktreePath: string) => Promise<string | null>;
+  /** Run a command and return stdout + exit code. Used for git operations in `bye`. */
+  exec: (cmd: string[]) => { stdout: string; exitCode: number };
 }
 
 /** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
@@ -80,6 +83,10 @@ const defaultDeps: ClaudeDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
+  exec: (cmd) => {
+    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+    return { stdout: result.stdout.toString().trim(), exitCode: result.exitCode };
+  },
 };
 
 // ── Entry point ──
@@ -305,7 +312,68 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
   const result = await d.callTool("claude_bye", { sessionId });
+
+  // Extract worktree info from bye response
+  const byeResult = parseByeResult(result);
   console.log(formatToolResult(result));
+
+  if (byeResult.worktree && byeResult.cwd) {
+    cleanupWorktree(byeResult.worktree, byeResult.cwd, d);
+  }
+}
+
+interface ByeResult {
+  worktree: string | null;
+  cwd: string | null;
+}
+
+function parseByeResult(result: unknown): ByeResult {
+  const r = result as { content?: Array<{ text?: string }> };
+  const text = r?.content?.[0]?.text;
+  if (!text) return { worktree: null, cwd: null };
+  try {
+    return JSON.parse(text) as ByeResult;
+  } catch {
+    return { worktree: null, cwd: null };
+  }
+}
+
+/** Clean up a worktree after session ends: remove if clean, warn if dirty. */
+function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
+  const expectedParent = join(cwd, ".claude", "worktrees");
+  const worktreePath = join(expectedParent, worktree);
+
+  // Guard against path traversal (worktree name comes from daemon response)
+  if (!worktreePath.startsWith(`${expectedParent}/`)) return;
+
+  // Check for uncommitted changes in the worktree
+  const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
+  if (statusExit !== 0) return; // worktree gone, not a git repo, or git unavailable
+
+  if (status === "") {
+    // Clean — remove the worktree
+    const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", worktreePath]);
+    if (removeExit === 0) {
+      d.printError(`Removed worktree: ${worktreePath}`);
+    } else {
+      d.printError(`Failed to remove worktree: ${worktreePath}`);
+    }
+  } else {
+    // Dirty — warn the user
+    const lines = status.split("\n").filter((l) => l !== "");
+    const modified = lines.filter((l) => l[0] === "M" || l[1] === "M").length;
+    const untracked = lines.filter((l) => l.startsWith("??")).length;
+
+    const parts: string[] = [];
+    if (modified > 0) parts.push(`${modified} modified`);
+    if (untracked > 0) parts.push(`${untracked} untracked`);
+    const other = lines.length - modified - untracked;
+    if (other > 0) parts.push(`${other} other`);
+
+    d.printError("Warning: worktree has uncommitted changes, not removing:");
+    d.printError(`  ${worktreePath}`);
+    d.printError(`  ${parts.join(", ")}`);
+  }
 }
 
 async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {

@@ -287,11 +287,13 @@ export class ClaudeWsServer {
     this.sendToWs(session, outbound);
   }
 
-  /** Gracefully end a session: close WS, stop process, clean up. */
-  bye(sessionId: string): void {
+  /** Gracefully end a session: close WS, stop process, clean up. Returns worktree info. */
+  bye(sessionId: string): { worktree: string | null; cwd: string | null } {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`No session with id ${sessionId}`);
+    const info = { worktree: session.worktree, cwd: session.config.cwd ?? null };
     this.terminateSession(sessionId, session, "Session ended by user");
+    return info;
   }
 
   /** List all sessions. */
