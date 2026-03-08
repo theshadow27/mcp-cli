@@ -50,6 +50,11 @@ export function App() {
     });
   }, [filteredLogLines.length, filterText]);
 
+  // Clamp claudeSelectedIndex when sessions list shrinks
+  useEffect(() => {
+    setClaudeSelectedIndex((i) => Math.min(i, Math.max(0, sessions.length - 1)));
+  }, [sessions.length]);
+
   // Auto-clear success/error auth status after 5 seconds
   useEffect(() => {
     if (authStatus && authStatus.state !== "pending") {
