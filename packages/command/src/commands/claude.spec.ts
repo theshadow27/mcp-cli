@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ClaudeDeps } from "./claude";
-import { cmdClaude, parseLogArgs, parseSpawnArgs, parseWaitArgs, resolveSessionId } from "./claude";
+import { cmdClaude, parseDiffShortstat, parseLogArgs, parseSpawnArgs, parseWaitArgs, resolveSessionId } from "./claude";
 
 // ── Helpers ──
 
@@ -17,6 +17,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     exit: mock((code: number) => {
       throw new ExitError(code);
     }) as ClaudeDeps["exit"],
+    getDiffStats: mock(async () => null),
     ...overrides,
   };
 }
@@ -35,6 +36,7 @@ const SESSION_LIST = [
     tokens: 1000,
     numTurns: 3,
     pendingPermissions: 0,
+    worktree: null,
   },
   {
     sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
@@ -45,8 +47,30 @@ const SESSION_LIST = [
     tokens: 500,
     numTurns: 1,
     pendingPermissions: 0,
+    worktree: null,
   },
 ];
+
+// ── parseDiffShortstat ──
+
+describe("parseDiffShortstat", () => {
+  test("parses full shortstat output", () => {
+    expect(parseDiffShortstat(" 4 files changed, 142 insertions(+), 38 deletions(-)\n")).toBe("+142/-38 (4f)");
+  });
+
+  test("parses insertions only", () => {
+    expect(parseDiffShortstat(" 2 files changed, 50 insertions(+)\n")).toBe("+50/-0 (2f)");
+  });
+
+  test("parses deletions only", () => {
+    expect(parseDiffShortstat(" 1 file changed, 10 deletions(-)\n")).toBe("+0/-10 (1f)");
+  });
+
+  test("returns null for empty output", () => {
+    expect(parseDiffShortstat("")).toBeNull();
+    expect(parseDiffShortstat("  \n")).toBeNull();
+  });
+});
 
 // ── parseSpawnArgs ──
 
@@ -247,6 +271,7 @@ describe("resolveSessionId", () => {
         tokens: 0,
         numTurns: 0,
         pendingPermissions: 0,
+        worktree: null,
       },
       {
         sessionId: "abc22222",
@@ -257,6 +282,7 @@ describe("resolveSessionId", () => {
         tokens: 0,
         numTurns: 0,
         pendingPermissions: 0,
+        worktree: null,
       },
     ];
     const deps = makeDeps({
@@ -477,6 +503,80 @@ describe("mcx claude ls", () => {
       expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
     } finally {
       console.error = origErr;
+    }
+  });
+
+  test("shows DIFF column when sessions have worktrees", async () => {
+    const sessionsWithWorktree = [
+      { ...SESSION_LIST[0], worktree: "/tmp/wt1" },
+      { ...SESSION_LIST[1], worktree: "/tmp/wt2" },
+    ];
+    const getDiffStats = mock(async (path: string) => {
+      if (path === "/tmp/wt1") return "+142/-38 (4f)";
+      if (path === "/tmp/wt2") return "+89/-12 (3f)";
+      return null;
+    });
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getDiffStats,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("DIFF");
+      const row1 = (logSpy.mock.calls[1] as string[])[0];
+      expect(row1).toContain("+142/-38 (4f)");
+      const row2 = (logSpy.mock.calls[2] as string[])[0];
+      expect(row2).toContain("+89/-12 (3f)");
+      expect(getDiffStats).toHaveBeenCalledTimes(2);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("hides DIFF column when no sessions have worktrees", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).not.toContain("DIFF");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows dash for worktree sessions with no changes", async () => {
+    const sessionsWithWorktree = [{ ...SESSION_LIST[0], worktree: "/tmp/wt1" }, { ...SESSION_LIST[1] }];
+    const getDiffStats = mock(async (path: string) => {
+      if (path === "/tmp/wt1") return "+10/-5 (2f)";
+      return null;
+    });
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getDiffStats,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("DIFF");
+      const row1 = (logSpy.mock.calls[1] as string[])[0];
+      expect(row1).toContain("+10/-5 (2f)");
+    } finally {
+      console.log = origLog;
     }
   });
 });
@@ -953,6 +1053,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
       tokens: number;
       numTurns: number;
       pendingPermissions: number;
+      worktree: string | null;
     }> = [];
     const transcript: Array<{
       timestamp: number;
@@ -975,6 +1076,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
               tokens: 500,
               numTurns: 1,
               pendingPermissions: 0,
+              worktree: null,
             });
             transcript.push({
               timestamp: Date.now(),

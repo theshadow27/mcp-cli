@@ -53,6 +53,7 @@ export interface SessionInfo {
   tokens: number;
   numTurns: number;
   pendingPermissions: number;
+  worktree: string | null;
 }
 
 export interface SessionDetail extends SessionInfo {
@@ -535,6 +536,7 @@ export class ClaudeWsServer {
       tokens: s.state.tokens,
       numTurns: s.state.numTurns,
       pendingPermissions: s.state.pendingPermissions.size,
+      worktree: s.config.worktree ?? null,
     };
   }
 
