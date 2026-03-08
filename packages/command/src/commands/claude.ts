@@ -275,12 +275,16 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
 export interface LogArgs {
   sessionPrefix: string | undefined;
   last: number;
+  json: boolean;
+  full: boolean;
   error: string | undefined;
 }
 
 export function parseLogArgs(args: string[]): LogArgs {
   let sessionPrefix: string | undefined;
   let last = 20;
+  let json = false;
+  let full = false;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -293,12 +297,16 @@ export function parseLogArgs(args: string[]): LogArgs {
         last = Number(val);
         if (Number.isNaN(last)) error = "--last must be a number";
       }
+    } else if (arg === "--json" || arg === "-j") {
+      json = true;
+    } else if (arg === "--full") {
+      full = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, last, error };
+  return { sessionPrefix, last, json, full, error };
 }
 
 async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
@@ -317,6 +325,11 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   const sessionId = await resolveSessionId(parsed.sessionPrefix, d);
   const result = await d.callTool("claude_transcript", { sessionId, limit: parsed.last });
   const text = formatToolResult(result);
+
+  if (parsed.json) {
+    console.log(text);
+    return;
+  }
 
   let entries: Array<{ timestamp: number; direction: string; message: { type: string; [k: string]: unknown } }>;
   try {
@@ -341,14 +354,22 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
     } else if (type === "assistant" && entry.message.message) {
       const msg = entry.message.message as { content?: string };
       if (msg.content) {
-        const preview = msg.content.length > 200 ? `${msg.content.slice(0, 200)}…` : msg.content;
-        console.log(`  ${preview}`);
+        const content = parsed.full
+          ? msg.content
+          : msg.content.length > 200
+            ? `${msg.content.slice(0, 200)}…`
+            : msg.content;
+        console.log(`  ${content}`);
       }
     } else if (type === "result") {
       const res = entry.message as { result?: string };
       if (res.result) {
-        const preview = res.result.length > 200 ? `${res.result.slice(0, 200)}…` : res.result;
-        console.log(`  ${c.dim}${preview}${c.reset}`);
+        const content = parsed.full
+          ? res.result
+          : res.result.length > 200
+            ? `${res.result.slice(0, 200)}…`
+            : res.result;
+        console.log(`  ${c.dim}${content}${c.reset}`);
       }
     }
   }
@@ -463,6 +484,8 @@ Usage:
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
+  mcx claude log <session> --json          Raw JSON transcript output
+  mcx claude log <session> --full          Full output (no truncation)
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude
