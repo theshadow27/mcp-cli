@@ -75,7 +75,7 @@ Always clean up — even on failure.
 
 Use `mcx claude ls` to check progress across all sessions. Sessions show state (active/idle), cost, and token usage.
 
-**Poll smartly.** Check `mcx claude ls` with ~10 second delays between polls. Don't tight-loop (burns context), don't over-sleep (wastes time). Every 5-10 polls, run `gh issue list --state open` to check for new issues filed by sessions — review them for coherence with project vision and spawn or refine as needed. Between polls, do useful work:
+**Poll smartly.** Check `mcx claude ls` with ~30 second delays between polls. Don't tight-loop (burns context), don't over-sleep (wastes time). Every 5-10 polls, run `gh issue list --state open` to check for new issues filed by sessions — review them for coherence with project vision and spawn or refine as needed. Between polls, do useful work:
 - Spawn more issues from the backlog
 - File new issues for problems discovered during monitoring
 - Refine issue descriptions, add context, update specs
