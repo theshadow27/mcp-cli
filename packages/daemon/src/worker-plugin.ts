@@ -34,7 +34,7 @@ export interface McpPluginOptions {
   json: (path: string) => Promise<unknown>;
 }
 
-/** Build the exports object for the "mcp-cli" virtual module. */
+/** @internal Build the exports object for the "mcp-cli" virtual module. Exported for testing. */
 export function buildMcpExports(opts: Pick<McpPluginOptions, "onDefine" | "file" | "json">) {
   return {
     defineAlias: (defOrFactory: AliasDefinition | ((ctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
@@ -54,5 +54,13 @@ export function buildMcpExports(opts: Pick<McpPluginOptions, "onDefine" | "file"
 
 /** Register the "mcp-cli" virtual module with defineAlias capture. */
 export function registerMcpPlugin(opts: McpPluginOptions): void {
-  plugin({ name: opts.name, setup: (b) => b.module("mcp-cli", () => ({ exports: buildMcpExports(opts), loader: "object" })) });
+  plugin({
+    name: opts.name,
+    setup(builder) {
+      builder.module("mcp-cli", () => ({
+        exports: buildMcpExports(opts),
+        loader: "object",
+      }));
+    },
+  });
 }

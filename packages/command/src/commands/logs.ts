@@ -112,7 +112,8 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
 
   if (!follow) return;
 
-  await followLogs("getLogs", { server: serverName }, serverName, result.lines, d);
+  const since = result.lines.at(-1)?.timestamp;
+  await followLogs("getLogs", { server: serverName }, serverName, since, d);
 }
 
 async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
@@ -143,7 +144,8 @@ async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
     printLogLine("mcpd", entry.timestamp, entry.line, d);
   }
 
-  await followLogs("getDaemonLogs", {}, "mcpd", result.lines, d);
+  const since = result.lines.at(-1)?.timestamp;
+  await followLogs("getDaemonLogs", {}, "mcpd", since, d);
 }
 
 /** Shared follow-mode polling with adaptive backoff. */
@@ -151,10 +153,10 @@ export async function followLogs(
   method: IpcMethod,
   baseParams: Record<string, unknown>,
   label: string,
-  initialLines: Array<{ timestamp: number }>,
+  since: number | undefined,
   d: LogsDeps,
 ): Promise<void> {
-  let lastTimestamp = initialLines.length > 0 ? initialLines[initialLines.length - 1].timestamp : Date.now();
+  let lastTimestamp = since ?? Date.now();
   let delay = POLL_MIN_MS;
 
   const poll = async () => {

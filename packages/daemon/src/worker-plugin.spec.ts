@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDefinition } from "@mcp-cli/core";
-import { buildMcpExports, stubProxy } from "./worker-plugin";
+import { buildMcpExports, registerMcpPlugin, stubProxy } from "./worker-plugin";
 
 describe("stubProxy", () => {
   test("returns undefined for any server.tool() call", async () => {
@@ -49,9 +49,7 @@ describe("buildMcpExports", () => {
       return { name: "from-factory", description: "d", fn: () => "ok" };
     });
 
-    expect(onDefine).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "from-factory" }),
-    );
+    expect(onDefine).toHaveBeenCalledWith(expect.objectContaining({ name: "from-factory" }));
   });
 
   test("exports include z, mcp, args, file, and json", () => {
@@ -68,5 +66,18 @@ describe("buildMcpExports", () => {
     expect(exports.args).toEqual({});
     expect(exports.file).toBe(file);
     expect(exports.json).toBe(json);
+  });
+});
+
+describe("registerMcpPlugin", () => {
+  test("registers a bun plugin without throwing", () => {
+    expect(() =>
+      registerMcpPlugin({
+        name: "mcp-cli-test",
+        onDefine: () => {},
+        file: () => Promise.resolve(""),
+        json: () => Promise.resolve(null),
+      }),
+    ).not.toThrow();
   });
 });
