@@ -125,6 +125,9 @@ export const DAEMON_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** IPC connect timeout when auto-starting daemon (ms) */
 export const DAEMON_START_TIMEOUT_MS = 5_000;
 
+/** Cooldown after a failed daemon start attempt (ms) — prevents unbounded spawn loops */
+export const DAEMON_START_COOLDOWN_MS = 10_000;
+
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
 

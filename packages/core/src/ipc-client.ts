@@ -11,6 +11,7 @@ import {
   DAEMON_BINARY_NAME,
   DAEMON_DEV_SCRIPT,
   DAEMON_READY_SIGNAL,
+  DAEMON_START_COOLDOWN_MS,
   DAEMON_START_TIMEOUT_MS,
   IPC_REQUEST_TIMEOUT_MS,
   PID_MAX_AGE_MS,
@@ -58,6 +59,28 @@ export class ProtocolMismatchError extends Error {
   }
 }
 
+/**
+ * Thrown when ensureDaemon is called during the cooldown period after a failed start.
+ * Prevents unbounded daemon spawn loops (e.g. mcpctl polling every 2.5s).
+ */
+export class DaemonStartCooldownError extends Error {
+  readonly remainingMs: number;
+
+  constructor(remainingMs: number) {
+    super(`Daemon start on cooldown — last attempt failed. Retrying in ${Math.ceil(remainingMs / 1000)}s.`);
+    this.name = "DaemonStartCooldownError";
+    this.remainingMs = remainingMs;
+  }
+}
+
+/** Timestamp of the last failed daemon start attempt (0 = no recent failure) */
+let lastStartFailureAt = 0;
+
+/** Reset the start cooldown — exported for testing only */
+export function _resetStartCooldown(): void {
+  lastStartFailureAt = 0;
+}
+
 /** Base URL for IPC requests over the Unix domain socket. */
 const IPC_RPC_URL = "http://localhost/rpc";
 
@@ -102,6 +125,13 @@ async function ensureDaemon(): Promise<void> {
   // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
   if (await isDaemonRunning()) return;
 
+  // Cooldown guard: if we recently failed to start, don't try again immediately.
+  // Prevents unbounded spawn loops when the daemon binary is broken.
+  const elapsed = Date.now() - lastStartFailureAt;
+  if (lastStartFailureAt > 0 && elapsed < DAEMON_START_COOLDOWN_MS) {
+    throw new DaemonStartCooldownError(DAEMON_START_COOLDOWN_MS - elapsed);
+  }
+
   // Try to acquire exclusive lock
   let lockFd: number | null = null;
   try {
@@ -118,6 +148,9 @@ async function ensureDaemon(): Promise<void> {
     if (await isDaemonRunning()) return;
 
     await startDaemon();
+  } catch (err) {
+    lastStartFailureAt = Date.now();
+    throw err;
   } finally {
     if (lockFd !== null) closeSync(lockFd);
     try {
