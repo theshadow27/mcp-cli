@@ -248,7 +248,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     sessions.map((s) => (s.worktree ? d.getDiffStats(s.worktree) : Promise.resolve(null))),
   );
 
-  const hasAnyDiff = diffStats.some((d) => d !== null);
+  const hasAnyDiff = diffStats.some((stat) => stat !== null);
 
   // Table output
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
