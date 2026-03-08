@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { extractToolText } from "../hooks/ipc-tool-helpers";
 import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
@@ -292,5 +293,24 @@ describe("summarizeEntry", () => {
       message: { type: "system" },
     };
     expect(summarizeEntry(entry)).toBe("[system]");
+  });
+});
+
+describe("extractToolText", () => {
+  it("extracts text from valid callTool result", () => {
+    const result = { content: [{ type: "text", text: '{"key":"value"}' }] };
+    expect(extractToolText(result)).toBe('{"key":"value"}');
+  });
+
+  it("returns null for empty content", () => {
+    expect(extractToolText({ content: [] })).toBeNull();
+  });
+
+  it("returns null for undefined result", () => {
+    expect(extractToolText(undefined)).toBeNull();
+  });
+
+  it("returns null for result without content", () => {
+    expect(extractToolText({})).toBeNull();
   });
 });
