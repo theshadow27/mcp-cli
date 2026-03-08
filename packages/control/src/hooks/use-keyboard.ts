@@ -2,6 +2,7 @@ import type { ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
+import type { ClaudeSession } from "./use-claude-sessions";
 import { type LogSource, buildLogSources } from "./use-logs";
 
 export const ALL_TABS = ["servers", "logs", "claude", "mail", "stats"] as const;
@@ -42,6 +43,11 @@ interface UseKeyboardOptions {
   setFilterMode: (mode: boolean) => void;
   filterText: string;
   setFilterText: (fn: string | ((prev: string) => string)) => void;
+  claudeSessions: ClaudeSession[];
+  claudeSelectedIndex: number;
+  setClaudeSelectedIndex: (fn: (i: number) => number) => void;
+  expandedSession: string | null;
+  setExpandedSession: (id: string | null) => void;
 }
 
 export function useKeyboard({
@@ -64,6 +70,11 @@ export function useKeyboard({
   setFilterMode,
   filterText,
   setFilterText,
+  claudeSessions,
+  claudeSelectedIndex,
+  setClaudeSelectedIndex,
+  expandedSession,
+  setExpandedSession,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
 
@@ -166,6 +177,44 @@ export function useKeyboard({
         const nextIdx = (currentIdx + 1) % sources.length;
         setLogSource(sources[nextIdx]);
         setLogScrollOffset(() => 0);
+        return;
+      }
+
+      return;
+    }
+
+    // -- Claude view --
+    if (view === "claude") {
+      // Navigate sessions
+      if (key.upArrow || input === "k") {
+        setClaudeSelectedIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setClaudeSelectedIndex((i) => Math.min(claudeSessions.length - 1, i + 1));
+        return;
+      }
+
+      // Toggle transcript detail
+      if (key.return) {
+        const session = claudeSessions[claudeSelectedIndex];
+        if (session) {
+          setExpandedSession(expandedSession === session.sessionId ? null : session.sessionId);
+        }
+        return;
+      }
+
+      // End session
+      if (input === "x") {
+        const session = claudeSessions[claudeSelectedIndex];
+        if (session) {
+          ipcCall("callTool", {
+            server: "_claude",
+            tool: "claude_bye",
+            arguments: { sessionId: session.sessionId },
+          }).catch(() => {});
+          setExpandedSession(null);
+        }
         return;
       }
 
