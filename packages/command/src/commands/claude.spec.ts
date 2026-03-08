@@ -178,6 +178,17 @@ describe("parseLogArgs", () => {
     expect(result.sessionPrefix).toBe("abc123");
   });
 
+  test("parses -f shorthand for --full", () => {
+    const result = parseLogArgs(["abc123", "-f"]);
+    expect(result.full).toBe(true);
+  });
+
+  test("parses --format json (delegated to extractJsonFlag)", () => {
+    const result = parseLogArgs(["abc123", "--format", "json"]);
+    expect(result.json).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
   test("defaults json and full to false", () => {
     const result = parseLogArgs(["abc123"]);
     expect(result.json).toBe(false);
@@ -750,6 +761,34 @@ describe("mcx claude log", () => {
       // Find the content line (second log call: first is header, second is content)
       const allOutput = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
       expect(allOutput).toContain(longContent);
+      expect(allOutput).not.toContain("…");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows full content for result-type messages with --full", async () => {
+    const longResult = "r".repeat(500);
+    const transcript = [
+      {
+        timestamp: 1700000000000,
+        direction: "inbound",
+        message: { type: "result", result: longResult },
+      },
+    ];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult(transcript);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc", "--full"], deps);
+      const allOutput = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
+      expect(allOutput).toContain(longResult);
       expect(allOutput).not.toContain("…");
     } finally {
       console.log = origLog;
