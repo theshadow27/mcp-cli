@@ -64,7 +64,23 @@ export function Footer({ view, filterMode, filterText }: FooterProps) {
     );
   }
 
-  // Stub tabs (claude, mail, stats)
+  if (view === "claude") {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          {tabHints}
+          <Text dimColor>j/k</Text> navigate{"  "}
+          <Text dimColor>enter</Text> transcript{"  "}
+          <Text dimColor>x</Text> end session{"  "}
+          <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>s</Text> shutdown
+        </Text>
+      </Box>
+    );
+  }
+
+  // Stub tabs (mail, stats)
   return (
     <Box marginTop={1}>
       <Text>

@@ -32,6 +32,8 @@ const EXCLUSIONS: Record<string, string> = {
   "control/src/components/header.tsx": "TUI component, needs integration test",
   "control/src/components/server-detail.tsx": "TUI component, needs integration test",
   "control/src/hooks/use-keyboard.ts": "TUI hook, needs integration test",
+  "control/src/components/claude-session-detail.tsx": "TUI component, needs integration test",
+  "control/src/components/claude-session-list.tsx": "TUI component, needs integration test",
   "control/src/hooks/use-logs.ts": "TUI hook, needs integration test",
   "control/src/components/utils.spec.ts": "Test file (not source)",
 

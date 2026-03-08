@@ -2,6 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
+import type { TranscriptEntry } from "./claude-session-detail";
+import { summarizeEntry } from "./claude-session-detail";
+import { formatCost, formatTokens, shortCwd, shortId } from "./claude-session-list";
 import { formatUptime } from "./header";
 import { formatRelativeTime } from "./server-detail";
 
@@ -171,5 +174,123 @@ describe("formatRelativeTime", () => {
   it("formats days ago", () => {
     const now = Date.now();
     expect(formatRelativeTime(now - 172_800_000)).toBe("2d ago");
+  });
+});
+
+describe("formatCost", () => {
+  it("formats zero cost", () => {
+    expect(formatCost(0)).toBe("$0.0000");
+  });
+
+  it("formats fractional cost", () => {
+    expect(formatCost(0.1234)).toBe("$0.1234");
+    expect(formatCost(1.5)).toBe("$1.5000");
+  });
+});
+
+describe("formatTokens", () => {
+  it("formats small numbers as-is", () => {
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(999)).toBe("999");
+  });
+
+  it("formats thousands with k suffix", () => {
+    expect(formatTokens(1000)).toBe("1.0k");
+    expect(formatTokens(15_500)).toBe("15.5k");
+  });
+
+  it("formats millions with M suffix", () => {
+    expect(formatTokens(1_000_000)).toBe("1.0M");
+    expect(formatTokens(2_500_000)).toBe("2.5M");
+  });
+});
+
+describe("shortId", () => {
+  it("returns first 8 characters", () => {
+    expect(shortId("abcdefghijklmnop")).toBe("abcdefgh");
+  });
+
+  it("handles short strings", () => {
+    expect(shortId("abc")).toBe("abc");
+  });
+});
+
+describe("shortCwd", () => {
+  it("returns empty string for null", () => {
+    expect(shortCwd(null)).toBe("");
+  });
+
+  it("replaces HOME with ~", () => {
+    const home = process.env.HOME ?? "";
+    if (home) {
+      expect(shortCwd(`${home}/projects/test`)).toBe("~/projects/test");
+    }
+  });
+
+  it("truncates long paths", () => {
+    expect(shortCwd("/very/long/path/that/exceeds/thirty/characters/easily").length).toBeLessThanOrEqual(30);
+  });
+});
+
+describe("summarizeEntry", () => {
+  it("summarizes assistant text message", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Hello world" }],
+        },
+      },
+    };
+    expect(summarizeEntry(entry)).toBe("Hello world");
+  });
+
+  it("summarizes assistant tool use", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Read" }],
+        },
+      },
+    };
+    expect(summarizeEntry(entry)).toBe("[tool: Read]");
+  });
+
+  it("summarizes result entries", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "inbound",
+      message: { type: "result", result: "Done!" },
+    };
+    expect(summarizeEntry(entry)).toBe("Done!");
+  });
+
+  it("truncates long text", () => {
+    const longText = "a".repeat(200);
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: { content: [{ type: "text", text: longText }] },
+      },
+    };
+    const result = summarizeEntry(entry);
+    expect(result.length).toBeLessThanOrEqual(120);
+    expect(result.endsWith("...")).toBe(true);
+  });
+
+  it("handles unknown types", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "inbound",
+      message: { type: "system" },
+    };
+    expect(summarizeEntry(entry)).toBe("[system]");
   });
 });

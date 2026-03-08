@@ -1,12 +1,14 @@
 import { Box, Text } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
+import { ClaudeSessionList } from "./components/claude-session-list.js";
 import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
 import { TabBar } from "./components/tab-bar.js";
+import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
@@ -24,8 +26,11 @@ export function App() {
   const [logScrollOffset, setLogScrollOffset] = useState(0);
   const [filterText, setFilterText] = useState("");
   const [filterMode, setFilterMode] = useState(false);
+  const [claudeSelectedIndex, setClaudeSelectedIndex] = useState(0);
+  const [expandedSession, setExpandedSession] = useState<string | null>(null);
 
   const servers = status?.servers ?? [];
+  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500);
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
@@ -75,6 +80,11 @@ export function App() {
     setFilterMode,
     filterText,
     setFilterText,
+    claudeSessions: sessions,
+    claudeSelectedIndex,
+    setClaudeSelectedIndex,
+    expandedSession,
+    setExpandedSession,
   });
 
   if (loading && !status) return <Loading />;
@@ -104,6 +114,14 @@ export function App() {
           height={LOG_VIEW_HEIGHT}
           filterText={filterText}
           totalCount={logLines.length}
+        />
+      ) : view === "claude" ? (
+        <ClaudeSessionList
+          sessions={sessions}
+          selectedIndex={claudeSelectedIndex}
+          expandedSession={expandedSession}
+          loading={claudeLoading}
+          error={claudeError}
         />
       ) : (
         <Box marginTop={1}>
