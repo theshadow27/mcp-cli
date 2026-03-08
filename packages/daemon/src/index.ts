@@ -86,6 +86,13 @@ async function main(): Promise<void> {
     console.error(`[mcpd] Failed to start Claude session server: ${err}`);
   }
 
+  // Re-register _claude virtual server after crash recovery
+  claudeServer.onRestarted = (client, transport) => {
+    const claudeTools = buildClaudeToolCache();
+    pool.registerVirtualServer("_claude", client, transport, claudeTools);
+    console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
+  };
+
   // Idle timeout management with in-flight request tracking
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
   let idleTimer: Timer | null = null;

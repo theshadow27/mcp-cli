@@ -71,6 +71,10 @@ export class ClaudeServer {
   private db: StateDb;
   private wsPort: number | null = null;
   private readonly activeSessions = new Set<string>();
+  private restartInProgress = false;
+
+  /** Called after a successful auto-restart with the new client and transport. */
+  onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
 
   constructor(db: StateDb) {
     this.db = db;
@@ -118,6 +122,9 @@ export class ClaudeServer {
       transportHandler?.call(worker, event);
     };
 
+    // Attach post-startup crash detection
+    this.attachCrashDetection(worker);
+
     return { client: this.client, transport: this.transport };
   }
 
@@ -144,6 +151,51 @@ export class ClaudeServer {
   /** True if any WebSocket sessions are active (not yet ended). */
   hasActiveSessions(): boolean {
     return this.activeSessions.size > 0;
+  }
+
+  // ── Crash detection ──
+
+  /** Attach post-startup error listener to detect worker crashes. */
+  private attachCrashDetection(worker: Worker): void {
+    worker.addEventListener("error", (event: ErrorEvent | Event) => {
+      // Only handle if this is still our active worker
+      if (this.worker !== worker) return;
+      const msg = event instanceof ErrorEvent ? event.message : "unknown error";
+      this.handleWorkerCrash(`worker error: ${msg}`);
+    });
+  }
+
+  /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
+  private async handleWorkerCrash(reason: string): Promise<void> {
+    if (this.restartInProgress) return;
+    this.restartInProgress = true;
+
+    console.error(`[claude-server] Worker crash detected: ${reason}`);
+
+    // Mark all tracked sessions as ended in SQLite
+    for (const sessionId of this.activeSessions) {
+      console.error(`[claude-server] Ending orphaned session: ${sessionId}`);
+      this.db.endSession(sessionId);
+    }
+    this.activeSessions.clear();
+
+    // Clear stale references (don't terminate — worker is already dead)
+    this.worker = null;
+    this.transport = null;
+    this.client = null;
+    this.wsPort = null;
+
+    // Auto-restart
+    try {
+      console.error("[claude-server] Restarting worker...");
+      const { client, transport } = await this.start();
+      console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+      this.onRestarted?.(client, transport);
+    } catch (err) {
+      console.error(`[claude-server] Failed to restart worker: ${err}`);
+    } finally {
+      this.restartInProgress = false;
+    }
   }
 
   // ── DB event handling ──

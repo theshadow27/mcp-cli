@@ -261,4 +261,83 @@ describe("ClaudeServer", () => {
     expect(server.port).toBeNull();
     server = undefined; // prevent double stop
   });
+
+  // ── Crash recovery ──
+
+  test("handleWorkerCrash ends all active sessions in SQLite", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "crash-1", state: "active" } });
+    handle({ type: "db:upsert", session: { sessionId: "crash-2", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // Trigger crash handler directly
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    // Both sessions should be marked as ended
+    const row1 = db.getSession("crash-1");
+    expect(row1?.state).toBe("ended");
+    expect(row1?.endedAt).not.toBeNull();
+
+    const row2 = db.getSession("crash-2");
+    expect(row2?.state).toBe("ended");
+    expect(row2?.endedAt).not.toBeNull();
+
+    // Active sessions cleared
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
+  test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+    const originalPort = server.port;
+
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    // Worker should be restarted with a new port
+    expect(server.port).toBeGreaterThan(0);
+    expect(server.port).not.toBe(originalPort);
+    expect(restartedCalled).toBe(true);
+  });
+
+  test("handleWorkerCrash debounces concurrent crashes", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    // Fire two crashes concurrently — only one should restart
+    await Promise.all([crash("crash A"), crash("crash B")]);
+
+    expect(restartCount).toBe(1);
+  });
 });
