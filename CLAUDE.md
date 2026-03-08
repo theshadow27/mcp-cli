@@ -58,26 +58,50 @@ packages/
 
 ```
 packages/core/src/
-  ipc.ts          IPC protocol types (IpcRequest, IpcResponse, IpcMethod)
-  alias.ts        AliasDefinition<I,O>, AliasContext, sentinel detection
-  config.ts       Server config types and schemas
-  constants.ts    Paths, defaults
-  env.ts          ${VAR} and ${VAR:-default} expansion
+  index.ts          Barrel export
+  ipc.ts            IPC protocol types (IpcRequest, IpcResponse, IpcMethod)
+  ipc-client.ts     IPC client, daemon auto-start, ProtocolMismatchError
+  alias.ts          AliasDefinition<I,O>, AliasContext, sentinel detection
+  config.ts         Server config types and schemas
+  cli-config.ts     ~/.mcp-cli/config.json read/write helpers
+  constants.ts      Paths, defaults
+  env.ts            ${VAR} and ${VAR:-default} expansion
+  fs.ts             File system utilities (ensureDir, permissions)
+  schema-display.ts JSON Schema → compact TypeScript notation
 
 packages/daemon/src/
-  index.ts        Entry point
-  daemon.ts       Main daemon loop
-  server-pool.ts  Multiplexed server connection management
-  alias-worker.ts Bun Worker for extracting defineAlias metadata
-  transports/     Stdio, HTTP, SSE transport wrappers
-  auth/           OAuth, Keychain, token management
-  config/         Config file loading and merging
-  db/             SQLite state database
+  index.ts                  Entry point
+  ipc-server.ts             HTTP-over-Unix-socket IPC server (main loop)
+  server-pool.ts            Multiplexed server connection management
+  claude-server.ts          Virtual MCP server for Claude Code sessions
+  claude-session-worker.ts  Worker hosting Claude session WS + MCP server
+  alias-server.ts           Virtual MCP server exposing aliases as tools
+  alias-server-worker.ts    Worker hosting alias MCP server
+  alias-worker.ts           Worker for extracting defineAlias metadata
+  worker-plugin.ts          Shared boilerplate for alias worker threads
+  worker-transport.ts       MCP Transport adapters for Worker postMessage
+  daemon-log.ts             Ring-buffer log capture (monkey-patches console)
+  stderr-buffer.ts          Per-server circular ring buffer for stderr
+  claude-session/           Claude Code session management
+    session-state.ts        Session state machine
+    ws-server.ts            WebSocket server for SDK sessions
+    permission-router.ts    Permission routing for can_use_tool requests
+    ndjson.ts               NDJSON parser/serializer for WS protocol
+    tools.ts                Shared tool definitions for _claude server
+  auth/                     OAuth, Keychain, token management
+  config/                   Config file loading and watching
+  db/                       SQLite state database
 
 packages/command/src/
   index.ts        Entry point, arg dispatch
-  alias-runner.ts Bun virtual module registration + Proxy + import() execution
-  commands/       call, ls, info, grep, run, alias, note, status, auth, config
-  ipc/            Socket client, auto-start daemon
-  output/         Formatting, schema display
+  alias-runner.ts Virtual module registration + Proxy + import() execution
+  output.ts       Output formatting (JSON to stdout, errors to stderr)
+  file-read.ts    Safe file reading with size limits
+  parse.ts        Stdin reading and input parsing
+  commands/       call, ls, run, alias, mail, status, auth, config, claude,
+                  serve, tty, install, completions, typegen, logs,
+                  registry-cmd, export, import, add, remove, get, config-file
+  jq/             jq filtering support
+  registry/       Registry client (transport + API)
+  tty/            Terminal detection and adapters (iTerm, Kitty, etc.)
 ```
