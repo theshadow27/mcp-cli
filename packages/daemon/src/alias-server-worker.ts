@@ -12,11 +12,11 @@
  */
 
 import { readFile } from "node:fs/promises";
-import type { AliasDefinition, McpProxy } from "@mcp-cli/core";
+import type { AliasDefinition } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { plugin } from "bun";
 import { z } from "zod/v4";
+import { registerMcpPlugin, stubProxy } from "./worker-plugin";
 import { WorkerServerTransport } from "./worker-transport";
 
 /** Serializable tool definition passed from the main thread */
@@ -53,42 +53,14 @@ function getCaptured(): AliasDefinition | null {
   return _captured;
 }
 
-/** Stub MCP proxy — alias tool calls within the worker are not yet supported */
-const stubProxy: McpProxy = new Proxy({} as McpProxy, {
-  get() {
-    return new Proxy(
-      {},
-      {
-        get() {
-          return () => Promise.resolve(undefined);
-        },
-      },
-    );
-  },
-});
-
 // Register virtual module for alias script imports
-plugin({
+registerMcpPlugin({
   name: "mcp-cli-alias-server",
-  setup(builder) {
-    builder.module("mcp-cli", () => ({
-      exports: {
-        defineAlias: (defOrFactory: AliasDefinition | ((ctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
-          if (typeof defOrFactory === "function") {
-            _captured = defOrFactory({ mcp: stubProxy, z });
-          } else {
-            _captured = defOrFactory;
-          }
-        },
-        z,
-        mcp: stubProxy,
-        args: {},
-        file: (path: string) => readFile(path, "utf-8"),
-        json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
-      },
-      loader: "object",
-    }));
+  onDefine: (def) => {
+    _captured = def;
   },
+  file: (path: string) => readFile(path, "utf-8"),
+  json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
 });
 
 // -- Server setup --

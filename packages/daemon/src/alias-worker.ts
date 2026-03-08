@@ -10,9 +10,9 @@
  *   Worker posts: { name, description, inputSchema?, outputSchema? } | { error: string }
  */
 
-import type { AliasDefinition, McpProxy } from "@mcp-cli/core";
-import { plugin } from "bun";
+import type { AliasDefinition } from "@mcp-cli/core";
 import { z } from "zod/v4";
+import { registerMcpPlugin } from "./worker-plugin";
 
 // Module-level capture slot. See alias-runner.ts for CFA note.
 let _captured: AliasDefinition | null = null;
@@ -20,42 +20,14 @@ function getCaptured(): AliasDefinition | null {
   return _captured;
 }
 
-// Stub MCP proxy — not connected, just satisfies the type
-const stubProxy: McpProxy = new Proxy({} as McpProxy, {
-  get() {
-    return new Proxy(
-      {},
-      {
-        get() {
-          return () => Promise.resolve(undefined);
-        },
-      },
-    );
-  },
-});
-
 // Register virtual module with defineAlias capture
-plugin({
+registerMcpPlugin({
   name: "mcp-cli-alias-worker",
-  setup(builder) {
-    builder.module("mcp-cli", () => ({
-      exports: {
-        defineAlias: (defOrFactory: AliasDefinition | ((ctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
-          if (typeof defOrFactory === "function") {
-            _captured = defOrFactory({ mcp: stubProxy, z });
-          } else {
-            _captured = defOrFactory;
-          }
-        },
-        z,
-        mcp: stubProxy,
-        args: {},
-        file: () => Promise.resolve(""),
-        json: () => Promise.resolve(null),
-      },
-      loader: "object",
-    }));
+  onDefine: (def) => {
+    _captured = def;
   },
+  file: () => Promise.resolve(""),
+  json: () => Promise.resolve(null),
 });
 
 declare const self: Worker;

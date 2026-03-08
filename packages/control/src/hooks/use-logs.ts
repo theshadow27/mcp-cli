@@ -50,27 +50,15 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
 
     async function poll() {
       try {
-        let fetched: LogEntry[];
-
-        if (source.type === "daemon") {
-          const params: Record<string, unknown> = {};
-          if (isFirst) {
-            params.limit = INITIAL_LIMIT;
-          } else if (sinceRef.current !== undefined) {
-            params.since = sinceRef.current;
-          }
-          const result = (await ipcCall("getDaemonLogs", params)) as GetDaemonLogsResult;
-          fetched = result.lines;
-        } else {
-          const params: Record<string, unknown> = { server: source.name };
-          if (isFirst) {
-            params.limit = INITIAL_LIMIT;
-          } else if (sinceRef.current !== undefined) {
-            params.since = sinceRef.current;
-          }
-          const result = (await ipcCall("getLogs", params)) as GetLogsResult;
-          fetched = result.lines;
+        const method = source.type === "daemon" ? "getDaemonLogs" : "getLogs";
+        const params: Record<string, unknown> = source.type === "server" ? { server: source.name } : {};
+        if (isFirst) {
+          params.limit = INITIAL_LIMIT;
+        } else if (sinceRef.current !== undefined) {
+          params.since = sinceRef.current;
         }
+        const result = (await ipcCall(method, params)) as GetDaemonLogsResult | GetLogsResult;
+        const fetched: LogEntry[] = result.lines;
 
         if (cancelled) return;
 

@@ -112,36 +112,7 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
 
   if (!follow) return;
 
-  // Follow mode: poll with adaptive backoff
-  let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
-  let delay = POLL_MIN_MS;
-
-  const poll = async () => {
-    try {
-      const update = (await d.ipcCall("getLogs", { server: serverName, since: lastTimestamp })) as GetLogsResult;
-      if (update.lines.length > 0) {
-        for (const entry of update.lines) {
-          printLogLine(serverName, entry.timestamp, entry.line, d);
-          lastTimestamp = entry.timestamp;
-        }
-        delay = POLL_MIN_MS; // Reset backoff on data
-      } else {
-        delay = Math.min(delay * 2, POLL_MAX_MS); // Exponential backoff on idle
-      }
-    } catch {
-      delay = Math.min(delay * 2, POLL_MAX_MS);
-    }
-    timeout = d.schedule(poll, delay);
-  };
-
-  let timeout = d.schedule(poll, delay);
-  d.onSigint(() => {
-    d.cancelSchedule(timeout);
-    d.exit(0);
-  });
-
-  // Keep process alive
-  await d.keepAlive();
+  await followLogs("getLogs", { server: serverName }, serverName, result.lines, d);
 }
 
 async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
@@ -172,15 +143,28 @@ async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
     printLogLine("mcpd", entry.timestamp, entry.line, d);
   }
 
-  let lastTimestamp = result.lines.length > 0 ? result.lines[result.lines.length - 1].timestamp : Date.now();
+  await followLogs("getDaemonLogs", {}, "mcpd", result.lines, d);
+}
+
+/** Shared follow-mode polling with adaptive backoff. */
+export async function followLogs(
+  method: IpcMethod,
+  baseParams: Record<string, unknown>,
+  label: string,
+  initialLines: Array<{ timestamp: number }>,
+  d: LogsDeps,
+): Promise<void> {
+  let lastTimestamp = initialLines.length > 0 ? initialLines[initialLines.length - 1].timestamp : Date.now();
   let delay = POLL_MIN_MS;
 
   const poll = async () => {
     try {
-      const update = (await d.ipcCall("getDaemonLogs", { since: lastTimestamp })) as GetDaemonLogsResult;
+      const update = (await d.ipcCall(method, { ...baseParams, since: lastTimestamp })) as {
+        lines: Array<{ timestamp: number; line: string }>;
+      };
       if (update.lines.length > 0) {
         for (const entry of update.lines) {
-          printLogLine("mcpd", entry.timestamp, entry.line, d);
+          printLogLine(label, entry.timestamp, entry.line, d);
           lastTimestamp = entry.timestamp;
         }
         delay = POLL_MIN_MS;
