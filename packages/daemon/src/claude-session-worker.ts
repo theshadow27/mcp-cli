@@ -16,7 +16,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
+import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer } from "./claude-session/ws-server";
@@ -96,12 +96,12 @@ async function handlePrompt(
   } else {
     // New session
     sessionId = crypto.randomUUID();
-    const permissionMode = (args.permissionMode as PermissionStrategy) ?? "auto";
+    const permissionMode = (args.permissionMode as PermissionStrategy) ?? "rules";
     const allowedTools = (args.allowedTools as string[]) ?? undefined;
-    const rules: PermissionRule[] | undefined =
-      permissionMode === "rules" && allowedTools
-        ? allowedTools.map((tool) => ({ tool, action: "allow" as const }))
-        : undefined;
+    const effectiveTools = permissionMode === "rules" ? (allowedTools ?? DEFAULT_SAFE_TOOLS) : undefined;
+    const rules: PermissionRule[] | undefined = effectiveTools
+      ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
+      : undefined;
 
     server.prepareSession(sessionId, {
       prompt,
