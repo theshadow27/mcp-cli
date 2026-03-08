@@ -423,6 +423,34 @@ export function parseLogArgs(args: string[]): LogArgs {
   return { sessionPrefix, last, json, full, error };
 }
 
+/** Extract a readable summary from a Claude API content field (string or content block array). */
+function extractContentSummary(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      parts.push(block);
+    } else if (block && typeof block === "object") {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        parts.push(b.text);
+      } else if (b.type === "tool_use" && typeof b.name === "string") {
+        parts.push(`[tool_use: ${b.name}]`);
+      } else if (b.type === "tool_result") {
+        const rc = b.content;
+        if (typeof rc === "string") {
+          parts.push(rc);
+        } else {
+          parts.push("[tool_result]");
+        }
+      }
+    }
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
 async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   const parsed = parseLogArgs(args);
 
@@ -462,15 +490,11 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
     console.log(`${c.dim}${time}${c.reset} ${dir} ${c.bold}${type}${c.reset}`);
 
     // Show content for user/assistant messages
-    if (type === "user" && entry.message.message) {
-      const msg = entry.message.message as { content?: string };
-      if (msg.content) {
-        console.log(`  ${msg.content}`);
-      }
-    } else if (type === "assistant" && entry.message.message) {
-      const msg = entry.message.message as { content?: string };
-      if (msg.content) {
-        console.log(`  ${truncate(msg.content)}`);
+    if ((type === "user" || type === "assistant") && entry.message.message) {
+      const msg = entry.message.message as { content?: unknown };
+      const summary = extractContentSummary(msg.content);
+      if (summary) {
+        console.log(`  ${type === "assistant" ? truncate(summary) : summary}`);
       }
     } else if (type === "result") {
       const res = entry.message as { result?: string };
