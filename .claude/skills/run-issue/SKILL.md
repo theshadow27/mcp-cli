@@ -7,6 +7,8 @@ description: Run the full dev pipeline for a GitHub issue — spawn a Claude in 
 
 Orchestrate the full lifecycle of a GitHub issue: implement, simplify, QA, merge.
 
+You are also dog-fooding this project; if you find a bug or unexpected behavior in **any** functionality while performing this work, that is a P1 issue that should be written up and addressed ASAP. 
+
 ## Prerequisites
 
 - `mcx claude` commands available (daemon running or auto-starts)

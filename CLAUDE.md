@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-MCP CLI — call MCP server tools from the command line with zero context overhead.
+MCP CLI — Model Context Preservation - call MCP server tools from the command line with zero context overhead, delegate to other Claude Code instances, and monitor operations. 
 
 ## Quick Reference
 
@@ -105,3 +105,19 @@ packages/command/src/
   registry/       Registry client (transport + API)
   tty/            Terminal detection and adapters (iTerm, Kitty, etc.)
 ```
+
+**Claude is the user of this project.** mcx is built by Claude, for Claude. Except for occasionally on `mcpctl`, there are no human users filing bug reports. That means every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered. The quality of code, documentation, and organization directly benefit future Claude sessions.
+
+**Every problem gets an issue.** If you notice something wrong, missing, or improvable during any phase — file it immediately. "Not a blocker" is not a reason to skip filing. Issues are how the team tracks and prioritizes work. Unfiled problems are invisible problems.
+
+Examples of things that must be filed:
+- A flag or command you tried that didn't work or isn't supported
+- Test gaps discovered during QA
+- Flaky tests (even if they pass on retry)
+- Edge cases the implementation missed
+- Performance concerns
+- DX papercuts (confusing errors, missing flags, bad defaults)
+- Bugs in adjacent code discovered while reading
+- Missing documentation or misleading help text
+
+Usability issues (daemon bugs, connection, etc) are P1 and take priority over all other work.
