@@ -74,6 +74,8 @@ const _originalOptions = {
   LOG_PRUNE_INTERVAL: 100,
   /** How many mail operations between TTL prune passes */
   MAIL_PRUNE_INTERVAL: 50,
+  /** How many log writes between rotation size checks (amortized statSync) */
+  LOG_ROTATION_CHECK_INTERVAL: 64,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {

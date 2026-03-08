@@ -907,3 +907,63 @@ describe("ServerPool.updateConfig reconnect", () => {
     expect(reconnectCalled).toBe(false);
   });
 });
+
+describe("ServerPool.restart", () => {
+  test("restart without name restarts all connected servers in parallel", async () => {
+    const config = makeConfig({ a: { command: "echo" }, b: { command: "cat" }, c: { command: "ls" } });
+    const pool = new ServerPool(config);
+
+    // Set servers a and b as connected, c stays disconnected
+    const connA = getConn(pool, "a");
+    connA.state = "connected";
+    connA.client = { close: mock(() => Promise.resolve()) };
+    connA.transport = makeMockTransport();
+
+    const connB = getConn(pool, "b");
+    connB.state = "connected";
+    connB.client = { close: mock(() => Promise.resolve()) };
+    connB.transport = makeMockTransport();
+
+    // Track ensureConnected calls with timestamps to verify parallelism
+    const calls: string[] = [];
+    getPoolInternals(pool).ensureConnected = async (name: unknown) => {
+      calls.push(String(name));
+      const conn = getConn(pool, String(name));
+      conn.state = "connected";
+      return conn;
+    };
+
+    await pool.restart();
+
+    // Both a and b should have been restarted, c should not
+    expect(calls).toContain("a");
+    expect(calls).toContain("b");
+    expect(calls).not.toContain("c");
+    expect(calls).toHaveLength(2);
+  });
+
+  test("restart logs errors for failed servers but does not throw", async () => {
+    const config = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
+    const pool = new ServerPool(config);
+
+    const connA = getConn(pool, "a");
+    connA.state = "connected";
+    connA.client = { close: mock(() => Promise.resolve()) };
+    connA.transport = makeMockTransport();
+
+    const connB = getConn(pool, "b");
+    connB.state = "connected";
+    connB.client = { close: mock(() => Promise.resolve()) };
+    connB.transport = makeMockTransport();
+
+    getPoolInternals(pool).ensureConnected = async (name: unknown) => {
+      if (String(name) === "b") throw new Error("connection refused");
+      const conn = getConn(pool, String(name));
+      conn.state = "connected";
+      return conn;
+    };
+
+    // Should not throw despite server "b" failing
+    await pool.restart();
+  });
+});

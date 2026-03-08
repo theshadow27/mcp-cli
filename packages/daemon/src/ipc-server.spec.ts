@@ -859,4 +859,40 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error?.message).toBe("string error");
     expect(json.error?.stack).toBeUndefined();
   });
+
+  test("getConfig returns server info with correct transport and toolCount", async () => {
+    const configWithServers = {
+      servers: new Map([
+        ["alpha", { name: "alpha", config: { command: "echo" }, source: { file: "/a.json", scope: "user" } }],
+        ["beta", { name: "beta", config: { command: "cat" }, source: { file: "/b.json", scope: "project" } }],
+      ]),
+      sources: [{ file: "/a.json", scope: "user" }],
+    } as never;
+
+    const poolWithServers = {
+      ...mockPool(),
+      listServers: () => [
+        { name: "alpha", transport: "stdio", toolCount: 5 },
+        { name: "beta", transport: "http", toolCount: 3 },
+      ],
+    };
+
+    socketPath = tmpSocket();
+    server = new IpcServer(poolWithServers as never, configWithServers, mockDb(), null, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "gc1", method: "getConfig" });
+    const json = (await res.json()) as IpcResponse;
+
+    expect(json.error).toBeUndefined();
+    const result = json.result as Record<string, unknown>;
+    const servers = result.servers as Record<
+      string,
+      { transport: string; toolCount: number; source: string; scope: string }
+    >;
+    expect(servers.alpha).toEqual({ transport: "stdio", source: "/a.json", scope: "user", toolCount: 5 });
+    expect(servers.beta).toEqual({ transport: "http", source: "/b.json", scope: "project", toolCount: 3 });
+  });
 });
