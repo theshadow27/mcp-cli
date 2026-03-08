@@ -35,7 +35,11 @@ For each issue N:
 mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash
 ```
 
-For simple bug fixes or small tasks, use `--model sonnet` (when available, see #251). Use Opus for complex features.
+**Model selection** (now available via `--model`):
+- `--model sonnet`: simple bug fixes, small tasks, documentation, QA
+- `--model opus` (default): complex features, simplify passes
+
+For sessions that span multiple phases (implement → simplify → QA), you can switch models mid-session by sending `/model sonnet` or `/model opus` before the next phase.
 
 Save the returned `sessionId`. Monitor with `mcx claude ls` until idle.
 
