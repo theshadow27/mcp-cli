@@ -24,3 +24,16 @@ export function makeMockTransport() {
     onerror: undefined as ((err: Error) => void) | undefined,
   };
 }
+
+/** Build a mock MCP Client with optional overrides for specific methods. */
+export function makeMockClient(overrides?: {
+  callTool?: (...args: unknown[]) => Promise<unknown>;
+  listTools?: () => Promise<{ tools: unknown[] }>;
+  close?: () => Promise<void>;
+}) {
+  return {
+    callTool: overrides?.callTool ?? mock(() => Promise.resolve({ content: [] })),
+    listTools: overrides?.listTools ?? mock(() => Promise.resolve({ tools: [] })),
+    close: overrides?.close ?? mock(() => Promise.resolve()),
+  };
+}

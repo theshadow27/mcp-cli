@@ -1,14 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   BASE_ENV_ALLOWLIST,
+  type ConnectFn,
   ServerPool,
   buildChildEnv,
   isRetryableError,
   isTransientCallError,
   wrapTransportError,
 } from "./server-pool";
-import { makeConfig, makeMockTransport } from "./test-helpers";
+import { makeConfig, makeMockClient, makeMockTransport } from "./test-helpers";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
@@ -574,49 +577,27 @@ describe("isTransientCallError", () => {
 
 // -- callTool auto-retry --
 
-/** Type-safe accessor for private ServerPool internals used in tests. */
-interface PoolInternals {
-  connections: Map<string, Record<string, unknown>>;
-  ensureConnected: (...args: unknown[]) => Promise<unknown>;
-}
-
-function getPoolInternals(pool: ServerPool): PoolInternals {
-  return pool as unknown as PoolInternals;
-}
-
-function getConn(pool: ServerPool, name: string): Record<string, unknown> {
-  const conn = getPoolInternals(pool).connections.get(name);
-  if (!conn) throw new Error(`Connection "${name}" not found in pool`);
-  return conn;
+/** Create a mock ConnectFn. Returns the connectFn and the transport for lifecycle testing. */
+function mockConnectFn(
+  overrides?: Parameters<typeof makeMockClient>[0],
+  transport?: ReturnType<typeof makeMockTransport>,
+): {
+  connectFn: ConnectFn;
+  transport: ReturnType<typeof makeMockTransport>;
+} {
+  const t = transport ?? makeMockTransport();
+  const client = makeMockClient(overrides);
+  const connectFn = mock(() =>
+    Promise.resolve({ client: client as unknown as Client, transport: t as unknown as Transport }),
+  );
+  return { connectFn, transport: t };
 }
 
 describe("ServerPool.callTool auto-retry", () => {
-  /**
-   * Helper to create a ServerPool with a fake connection injected.
-   * We bypass ensureConnected() by directly setting the connection state to "connected"
-   * and injecting a mock client.
-   */
-  function setupPoolWithMockClient(callToolFn: (...args: unknown[]) => Promise<unknown>) {
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    conn.state = "connected";
-    conn.lastUsed = Date.now();
-    conn.client = {
-      callTool: callToolFn,
-      close: mock(() => Promise.resolve()),
-      listTools: mock(() => Promise.resolve({ tools: [] })),
-      connect: mock(() => Promise.resolve()),
-    };
-    conn.transport = makeMockTransport();
-
-    return { pool, conn };
-  }
-
   test("successful call does not trigger retry logic", async () => {
     const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
-    const { pool } = setupPoolWithMockClient(callToolMock);
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     const result = await pool.callTool("test", "my-tool", { arg: 1 });
 
@@ -626,7 +607,8 @@ describe("ServerPool.callTool auto-retry", () => {
 
   test("non-transient error surfaces immediately without retry", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("HTTP 401 Unauthorized")));
-    const { pool } = setupPoolWithMockClient(callToolMock);
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("401 Unauthorized");
     // Should only be called once — no retry
@@ -643,82 +625,26 @@ describe("ServerPool.callTool auto-retry", () => {
       return Promise.resolve({ content: [{ text: "retried-ok" }] });
     });
 
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    const mockClient = {
-      callTool: callToolMock,
-      close: mock(() => Promise.resolve()),
-      listTools: mock(() => Promise.resolve({ tools: [] })),
-      connect: mock(() => Promise.resolve()),
-    };
-
-    conn.state = "connected";
-    conn.lastUsed = Date.now();
-    conn.client = mockClient;
-    conn.transport = makeMockTransport();
-
-    // Mock ensureConnected: after disconnect, the pool calls ensureConnected which will
-    // try to create a real transport. We need to intercept that. We'll replace the
-    // private method with a mock that re-injects our mock client.
-    let ensureConnectedCallCount = 0;
-    getPoolInternals(pool).ensureConnected = async (..._args: unknown[]) => {
-      ensureConnectedCallCount++;
-      if (ensureConnectedCallCount === 1) {
-        // First call — return the connection as-is (before the callTool failure)
-        return conn;
-      }
-      // Second call (after disconnect + reconnect) — re-inject mock client
-      conn.state = "connected";
-      conn.client = mockClient;
-      conn.lastUsed = Date.now();
-      return conn;
-    };
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     const result = await pool.callTool("test", "my-tool", { x: 42 });
 
     expect(result).toEqual({ content: [{ text: "retried-ok" }] });
-    // callTool was called twice: once failed, once succeeded
     expect(callToolMock).toHaveBeenCalledTimes(2);
-    // ensureConnected was called twice: initial + reconnect
-    expect(ensureConnectedCallCount).toBe(2);
+    // connectFn called twice: initial connect + reconnect after transient error
+    expect(connectFn).toHaveBeenCalledTimes(2);
   });
 
   test("only one retry attempt — second transient error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("Connection closed")));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    const mockClient = {
-      callTool: callToolMock,
-      close: mock(() => Promise.resolve()),
-      listTools: mock(() => Promise.resolve({ tools: [] })),
-      connect: mock(() => Promise.resolve()),
-    };
-
-    conn.state = "connected";
-    conn.lastUsed = Date.now();
-    conn.client = mockClient;
-    conn.transport = makeMockTransport();
-
-    // Mock ensureConnected to re-inject mock client on reconnect
-    let ensureConnectedCallCount = 0;
-    getPoolInternals(pool).ensureConnected = async () => {
-      ensureConnectedCallCount++;
-      conn.state = "connected";
-      conn.client = mockClient;
-      conn.lastUsed = Date.now();
-      return conn;
-    };
-
-    // Both calls fail — the retry should also throw, not loop infinitely
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("Connection closed");
     // callTool was called exactly twice: initial + one retry
     expect(callToolMock).toHaveBeenCalledTimes(2);
-    expect(ensureConnectedCallCount).toBe(2);
+    expect(connectFn).toHaveBeenCalledTimes(2);
   });
 
   test("ECONNRESET during call triggers auto-retry", async () => {
@@ -731,28 +657,8 @@ describe("ServerPool.callTool auto-retry", () => {
       return Promise.resolve({ content: [{ text: "recovered" }] });
     });
 
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    const mockClient = {
-      callTool: callToolMock,
-      close: mock(() => Promise.resolve()),
-      listTools: mock(() => Promise.resolve({ tools: [] })),
-      connect: mock(() => Promise.resolve()),
-    };
-
-    conn.state = "connected";
-    conn.lastUsed = Date.now();
-    conn.client = mockClient;
-    conn.transport = makeMockTransport();
-
-    getPoolInternals(pool).ensureConnected = async () => {
-      conn.state = "connected";
-      conn.client = mockClient;
-      conn.lastUsed = Date.now();
-      return conn;
-    };
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     const result = await pool.callTool("test", "my-tool", {});
     expect(result).toEqual({ content: [{ text: "recovered" }] });
@@ -761,7 +667,8 @@ describe("ServerPool.callTool auto-retry", () => {
 
   test("permission denied error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("permission denied for resource")));
-    const { pool } = setupPoolWithMockClient(callToolMock);
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("permission denied");
     expect(callToolMock).toHaveBeenCalledTimes(1);
@@ -769,7 +676,8 @@ describe("ServerPool.callTool auto-retry", () => {
 
   test("'not found' error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("Tool not found on server")));
-    const { pool } = setupPoolWithMockClient(callToolMock);
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("not found");
     expect(callToolMock).toHaveBeenCalledTimes(1);
@@ -779,75 +687,49 @@ describe("ServerPool.callTool auto-retry", () => {
 // -- Transport lifecycle (crash detection) --
 
 describe("transport lifecycle handlers", () => {
-  test("transport onclose resets connection state to disconnected", () => {
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    conn.state = "connected";
-    conn.client = { close: mock(() => Promise.resolve()) };
-
+  test("transport onclose resets connection state to disconnected", async () => {
     const transport = makeMockTransport();
-    conn.transport = transport;
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
-    // Simulate what attachTransportLifecycle does by calling it via the pool internals
-    // We access the private method through type-casting
-    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
-    poolAny.attachTransportLifecycle("test", transport, conn);
+    await pool.listTools("test");
+    expect(pool.listServers()[0].state).toBe("connected");
 
-    // Verify transport handlers were attached
-    expect(transport.onclose).toBeDefined();
-    expect(transport.onerror).toBeDefined();
+    // Fire onclose — attachTransportLifecycle sets this during ensureConnected
+    transport.onclose?.();
 
-    // Fire onclose
-    (transport as unknown as { onclose: () => void }).onclose();
-
-    expect(conn.state).toBe("disconnected");
-    expect(conn.client).toBeNull();
-    expect(conn.transport).toBeNull();
+    expect(pool.listServers()[0].state).toBe("disconnected");
   });
 
-  test("transport onerror resets connection state and records lastError", () => {
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    conn.state = "connected";
-    conn.client = { close: mock(() => Promise.resolve()) };
-
+  test("transport onerror resets connection state and records lastError", async () => {
     const transport = makeMockTransport();
-    conn.transport = transport;
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
-    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
-    poolAny.attachTransportLifecycle("test", transport, conn);
+    await pool.listTools("test");
 
     // Fire onerror
-    (transport as unknown as { onerror: (err: Error) => void }).onerror(new Error("server crashed"));
+    transport.onerror?.(new Error("server crashed"));
 
-    expect(conn.state).toBe("disconnected");
-    expect(conn.client).toBeNull();
-    expect(conn.transport).toBeNull();
-    expect(conn.lastError).toBe("server crashed");
+    const server = pool.listServers()[0];
+    expect(server.state).toBe("disconnected");
+    expect(server.lastError).toBe("server crashed");
   });
 
-  test("transport onclose is a no-op if already disconnected", () => {
-    const config = makeConfig({ test: { command: "echo" } });
-    const pool = new ServerPool(config);
-
-    const conn = getConn(pool, "test");
-    conn.state = "disconnected";
-    conn.client = null;
-
+  test("transport onclose is a no-op if already disconnected", async () => {
     const transport = makeMockTransport();
-    conn.transport = null;
+    const { connectFn } = mockConnectFn(undefined, transport);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
 
-    const poolAny = pool as unknown as { attachTransportLifecycle: (name: string, t: unknown, c: unknown) => void };
-    poolAny.attachTransportLifecycle("test", transport, conn);
+    // Connect then disconnect
+    await pool.listTools("test");
+    await pool.disconnect("test");
+    expect(pool.listServers()[0].state).toBe("disconnected");
 
-    // Fire onclose when already disconnected — should be a no-op
-    (transport as unknown as { onclose: () => void }).onclose();
+    // Fire onclose after already disconnected — should be a no-op
+    transport.onclose?.();
 
-    expect(conn.state).toBe("disconnected");
+    expect(pool.listServers()[0].state).toBe("disconnected");
   });
 });
 
@@ -855,115 +737,102 @@ describe("transport lifecycle handlers", () => {
 
 describe("ServerPool.updateConfig reconnect", () => {
   test("config change on connected server triggers disconnect + reconnect", async () => {
-    const config = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(config);
+    let connectCount = 0;
+    const connectFn: ConnectFn = mock(() => {
+      connectCount++;
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
 
-    const conn = getConn(pool, "a");
-    conn.state = "connected";
-    conn.client = {
-      close: mock(() => Promise.resolve()),
-      listTools: mock(() => Promise.resolve({ tools: [] })),
-      connect: mock(() => Promise.resolve()),
-    };
-    conn.transport = makeMockTransport();
+    // Connect server "a" via public API
+    await pool.listTools("a");
+    expect(connectCount).toBe(1);
 
-    // Track ensureConnected calls
-    let reconnectCalled = false;
-    getPoolInternals(pool).ensureConnected = async () => {
-      reconnectCalled = true;
-      conn.state = "connected";
-      return conn;
-    };
-
+    // Change config for "a"
     const updated = makeConfig({ a: { command: "cat" } });
     pool.updateConfig(updated);
 
     // Wait for the async disconnect → reconnect chain
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(reconnectCalled).toBe(true);
+    expect(connectCount).toBe(2);
   });
 
   test("config change on disconnected server does not trigger reconnect", async () => {
-    const config = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(config);
+    let connectCount = 0;
+    const connectFn: ConnectFn = mock(() => {
+      connectCount++;
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
 
-    // Server is disconnected
-    const conn = getConn(pool, "a");
-    expect(conn.state).toBe("disconnected");
-
-    let reconnectCalled = false;
-    getPoolInternals(pool).ensureConnected = async () => {
-      reconnectCalled = true;
-      return conn;
-    };
+    // Server is disconnected — don't connect it
+    expect(pool.listServers()[0].state).toBe("disconnected");
 
     const updated = makeConfig({ a: { command: "cat" } });
     pool.updateConfig(updated);
 
     await new Promise((r) => setTimeout(r, 50));
 
-    // Should NOT reconnect because the server wasn't connected
-    expect(reconnectCalled).toBe(false);
+    // Should NOT have connected because the server wasn't connected before config change
+    expect(connectCount).toBe(0);
   });
 });
 
 describe("ServerPool.restart", () => {
   test("restart without name restarts all connected servers in parallel", async () => {
-    const config = makeConfig({ a: { command: "echo" }, b: { command: "cat" }, c: { command: "ls" } });
-    const pool = new ServerPool(config);
+    const connectCalls: string[] = [];
+    const connectFn: ConnectFn = mock((name: string) => {
+      connectCalls.push(name);
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(
+      makeConfig({ a: { command: "echo" }, b: { command: "cat" }, c: { command: "ls" } }),
+      undefined,
+      connectFn,
+    );
 
-    // Set servers a and b as connected, c stays disconnected
-    const connA = getConn(pool, "a");
-    connA.state = "connected";
-    connA.client = { close: mock(() => Promise.resolve()) };
-    connA.transport = makeMockTransport();
-
-    const connB = getConn(pool, "b");
-    connB.state = "connected";
-    connB.client = { close: mock(() => Promise.resolve()) };
-    connB.transport = makeMockTransport();
-
-    // Track ensureConnected calls with timestamps to verify parallelism
-    const calls: string[] = [];
-    getPoolInternals(pool).ensureConnected = async (name: unknown) => {
-      calls.push(String(name));
-      const conn = getConn(pool, String(name));
-      conn.state = "connected";
-      return conn;
-    };
+    // Connect a and b, leave c disconnected
+    await pool.listTools("a");
+    await pool.listTools("b");
+    connectCalls.length = 0;
 
     await pool.restart();
 
     // Both a and b should have been restarted, c should not
-    expect(calls).toContain("a");
-    expect(calls).toContain("b");
-    expect(calls).not.toContain("c");
-    expect(calls).toHaveLength(2);
+    expect(connectCalls).toContain("a");
+    expect(connectCalls).toContain("b");
+    expect(connectCalls).not.toContain("c");
+    expect(connectCalls).toHaveLength(2);
   });
 
   test("restart logs errors for failed servers but does not throw", async () => {
-    const config = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
-    const pool = new ServerPool(config);
+    let firstConnect = true;
+    const connectFn: ConnectFn = mock((name: string) => {
+      // On reconnect (after restart), fail for server "b"
+      if (!firstConnect && name === "b") return Promise.reject(new Error("connection refused"));
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" }, b: { command: "cat" } }), undefined, connectFn);
 
-    const connA = getConn(pool, "a");
-    connA.state = "connected";
-    connA.client = { close: mock(() => Promise.resolve()) };
-    connA.transport = makeMockTransport();
+    // Connect both servers
+    await pool.listTools("a");
+    await pool.listTools("b");
+    firstConnect = false;
 
-    const connB = getConn(pool, "b");
-    connB.state = "connected";
-    connB.client = { close: mock(() => Promise.resolve()) };
-    connB.transport = makeMockTransport();
-
-    getPoolInternals(pool).ensureConnected = async (name: unknown) => {
-      if (String(name) === "b") throw new Error("connection refused");
-      const conn = getConn(pool, String(name));
-      conn.state = "connected";
-      return conn;
-    };
-
-    // Should not throw despite server "b" failing
+    // Should not throw despite server "b" failing on restart
     await pool.restart();
   });
 });
