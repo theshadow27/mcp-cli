@@ -341,6 +341,34 @@ describe("ClaudeServer", () => {
     expect(restartCount).toBe(1);
   });
 
+  test("handleWorkerCrash gives up after too many crashes in window", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    // Crash MAX_CRASHES times (3) — all should succeed
+    for (let i = 0; i < 3; i++) {
+      await crash(`crash ${i}`);
+    }
+    expect(restartCount).toBe(3);
+
+    // 4th crash should be rate-limited — no restart
+    await crash("crash 3");
+    expect(restartCount).toBe(3);
+    expect(server.port).toBeNull();
+  });
+
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);

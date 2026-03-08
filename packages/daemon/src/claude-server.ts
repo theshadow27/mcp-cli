@@ -73,6 +73,9 @@ export class ClaudeServer {
   private readonly activeSessions = new Set<string>();
   private restartInProgress = false;
   private stopped = false;
+  private readonly crashTimestamps: number[] = [];
+  private static readonly MAX_CRASHES = 3;
+  private static readonly CRASH_WINDOW_MS = 60_000;
 
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
@@ -192,6 +195,22 @@ export class ClaudeServer {
     this.client = null;
     this.wsPort = null;
 
+    // Rate-limit restarts to prevent crash loops
+    const now = Date.now();
+    this.crashTimestamps.push(now);
+    // Trim timestamps outside the window
+    while (this.crashTimestamps.length > 0 && (this.crashTimestamps[0] ?? 0) <= now - ClaudeServer.CRASH_WINDOW_MS) {
+      this.crashTimestamps.shift();
+    }
+    if (this.crashTimestamps.length > ClaudeServer.MAX_CRASHES) {
+      console.error(
+        `[claude-server] ${this.crashTimestamps.length} crashes in ${ClaudeServer.CRASH_WINDOW_MS / 1000}s — giving up auto-restart`,
+      );
+      this.stopped = true;
+      this.restartInProgress = false;
+      return;
+    }
+
     // Auto-restart
     try {
       console.error("[claude-server] Restarting worker...");
@@ -200,6 +219,7 @@ export class ClaudeServer {
       this.onRestarted?.(client, transport);
     } catch (err) {
       console.error(`[claude-server] Failed to restart worker: ${err}`);
+      this.stopped = true;
     } finally {
       this.restartInProgress = false;
     }
