@@ -67,6 +67,8 @@ async function handleToolCall(
         return handleBye(server, args);
       case "claude_transcript":
         return handleTranscript(server, args);
+      case "claude_wait":
+        return await handleWait(server, args);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -190,6 +192,22 @@ function handleTranscript(
   const limit = (args.limit as number) ?? 50;
   const transcript = server.getTranscript(args.sessionId as string, limit);
   return { content: [{ type: "text", text: JSON.stringify(transcript, null, 2) }] };
+}
+
+async function handleWait(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): Promise<{
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+}> {
+  const sessionId = (args.sessionId as string | undefined) ?? null;
+  const timeoutMs = (args.timeout as number) ?? 300_000;
+
+  const event = await server.waitForEvent(sessionId, timeoutMs);
+  return {
+    content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
+  };
 }
 
 // ── Session event → DB message forwarding ──

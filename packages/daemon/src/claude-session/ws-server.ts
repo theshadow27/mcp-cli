@@ -73,6 +73,26 @@ interface ResultWaiter {
   timer: Timer;
 }
 
+/** Event returned by waitForEvent(). */
+export interface SessionWaitEvent {
+  sessionId: string;
+  event: string;
+  cost?: number;
+  tokens?: number;
+  numTurns?: number;
+  result?: string;
+  errors?: string[];
+  requestId?: string;
+  toolName?: string;
+}
+
+interface EventWaiter {
+  sessionId: string | null; // null = any session
+  resolve: (e: SessionWaitEvent) => void;
+  reject: (e: Error) => void;
+  timer: Timer;
+}
+
 interface WsSession {
   state: SessionState;
   router: PermissionRouter;
@@ -99,6 +119,7 @@ const WS_OPEN = 1;
 export class ClaudeWsServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private readonly sessions = new Map<string, WsSession>();
+  private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
 
   /** Called when session events occur (for DB updates). */
@@ -317,6 +338,45 @@ export class ClaudeWsServer {
     });
   }
 
+  /**
+   * Wait for the next interesting session event (result, error, or permission_request).
+   * If sessionId is provided, waits for that session only. Otherwise waits for any session.
+   */
+  waitForEvent(sessionId: string | null, timeoutMs: number): Promise<SessionWaitEvent> {
+    if (sessionId) {
+      const session = this.sessions.get(sessionId);
+      if (!session) return Promise.reject(new Error(`Unknown session: ${sessionId}`));
+      if (session.state.state === "ended") {
+        return Promise.reject(new Error("Session already ended"));
+      }
+    }
+
+    if (!sessionId && this.sessions.size === 0) {
+      return Promise.reject(new Error("No active sessions"));
+    }
+
+    return new Promise<SessionWaitEvent>((resolve, reject) => {
+      const waiter: EventWaiter = {
+        sessionId,
+        resolve: (e) => {
+          clearTimeout(waiter.timer);
+          resolve(e);
+        },
+        reject: (e) => {
+          clearTimeout(waiter.timer);
+          reject(e);
+        },
+        timer: setTimeout(() => {
+          const idx = this.eventWaiters.indexOf(waiter);
+          if (idx >= 0) this.eventWaiters.splice(idx, 1);
+          reject(new Error(`Timeout waiting for session event after ${timeoutMs}ms`));
+        }, timeoutMs),
+      };
+
+      this.eventWaiters.push(waiter);
+    });
+  }
+
   // ── WebSocket handlers ──
 
   private handleOpen(ws: ServerWebSocket<WsData>): void {
@@ -382,11 +442,25 @@ export class ClaudeWsServer {
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
     switch (event.type) {
       case "session:permission_request":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:permission_request",
+          requestId: event.requestId,
+          toolName: event.request.tool_name,
+        });
         this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
           console.error(`[_claude] Permission evaluation failed for session ${sessionId}: ${err}`);
         });
         break;
       case "session:result":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:result",
+          cost: event.cost,
+          tokens: event.tokens,
+          numTurns: event.numTurns,
+          result: event.result,
+        });
         this.resolveWaiters(session, {
           sessionId,
           success: true,
@@ -397,6 +471,12 @@ export class ClaudeWsServer {
         });
         break;
       case "session:error":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:error",
+          cost: event.cost,
+          errors: event.errors,
+        });
         this.resolveWaiters(session, {
           sessionId,
           success: false,
@@ -468,6 +548,19 @@ export class ClaudeWsServer {
     session.resultWaiters.length = 0;
   }
 
+  private resolveEventWaiters(sessionId: string, event: SessionWaitEvent): void {
+    const remaining: EventWaiter[] = [];
+    for (const waiter of this.eventWaiters) {
+      if (waiter.sessionId === null || waiter.sessionId === sessionId) {
+        waiter.resolve(event);
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.eventWaiters.length = 0;
+    this.eventWaiters.push(...remaining);
+  }
+
   /**
    * Single cleanup path: end state machine, drain waiters, clear timers,
    * close WS, kill process, remove from sessions map.
@@ -479,11 +572,23 @@ export class ClaudeWsServer {
       this.onSessionEvent?.(sessionId, event);
     }
 
-    // Reject pending waiters
+    // Reject pending result waiters
     for (const waiter of session.resultWaiters) {
       waiter.reject(new Error(errorMessage));
     }
     session.resultWaiters.length = 0;
+
+    // Reject event waiters targeting this session
+    const remainingEventWaiters: EventWaiter[] = [];
+    for (const waiter of this.eventWaiters) {
+      if (waiter.sessionId === sessionId) {
+        waiter.reject(new Error(errorMessage));
+      } else {
+        remainingEventWaiters.push(waiter);
+      }
+    }
+    this.eventWaiters.length = 0;
+    this.eventWaiters.push(...remainingEventWaiters);
 
     // Clear keep-alive timer
     if (session.keepAliveTimer) {

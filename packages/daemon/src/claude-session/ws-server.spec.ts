@@ -520,6 +520,138 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("waitForEvent resolves on session:result", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Start waiting for event
+      const eventPromise = server.waitForEvent("test-session", 5000);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(assistantMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+
+      const event = await eventPromise;
+      expect(event.sessionId).toBe("test-session");
+      expect(event.event).toBe("session:result");
+      expect(event.cost).toBe(0.01);
+      expect(event.result).toBe("Done!");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent with null sessionId resolves on any session event", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Wait for any session event
+      const eventPromise = server.waitForEvent(null, 5000);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+
+      const event = await eventPromise;
+      expect(event.sessionId).toBe("test-session");
+      expect(event.event).toBe("session:result");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent resolves on permission_request (delegate mode)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "delegate",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const eventPromise = server.waitForEvent("test-session", 5000);
+      ws.send(canUseToolMessage("req-wait-1"));
+
+      const event = await eventPromise;
+      expect(event.sessionId).toBe("test-session");
+      expect(event.event).toBe("session:permission_request");
+      expect(event.requestId).toBe("req-wait-1");
+      expect(event.toolName).toBe("Bash");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent rejects on timeout", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    await expect(server.waitForEvent("test-session", 100)).rejects.toThrow("Timeout");
+  });
+
+  test("waitForEvent rejects for unknown session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    await expect(server.waitForEvent("nonexistent", 100)).rejects.toThrow("Unknown session");
+  });
+
+  test("waitForEvent rejects with no active sessions", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    await expect(server.waitForEvent(null, 100)).rejects.toThrow("No active sessions");
+  });
+
+  test("waitForEvent rejects when session terminates", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const eventPromise = server.waitForEvent("test-session", 5000);
+
+    // End the session
+    server.bye("test-session");
+
+    await expect(eventPromise).rejects.toThrow("Session ended by user");
+  });
+
   test("sessionCount tracks active sessions", () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

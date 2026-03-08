@@ -35,7 +35,8 @@ const PROMPT_IPC_TIMEOUT_MS = 330_000;
 
 const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
-    const timeoutMs = tool === "claude_prompt" && args.wait ? PROMPT_IPC_TIMEOUT_MS : undefined;
+    const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
+    const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: "_claude", tool, arguments: args }, { timeoutMs });
   },
   printError: defaultPrintError,
@@ -74,8 +75,13 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
     case "log":
       await claudeLog(args.slice(1), d);
       break;
+    case "wait":
+      await claudeWait(args.slice(1), d);
+      break;
     default:
-      d.printError(`Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", or "log".`);
+      d.printError(
+        `Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
+      );
       d.exit(1);
   }
 }
@@ -348,6 +354,57 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   }
 }
 
+export interface WaitArgs {
+  sessionPrefix: string | undefined;
+  timeout: number | undefined;
+  error: string | undefined;
+}
+
+export function parseWaitArgs(args: string[]): WaitArgs {
+  let sessionPrefix: string | undefined;
+  let timeout: number | undefined;
+  let error: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--timeout" || arg === "-t") {
+      const val = args[++i];
+      if (!val) {
+        error = "--timeout requires a value in ms";
+      } else {
+        timeout = Number(val);
+        if (Number.isNaN(timeout)) error = "--timeout must be a number";
+      }
+    } else if (!arg.startsWith("-")) {
+      sessionPrefix = arg;
+    }
+  }
+
+  return { sessionPrefix, timeout, error };
+}
+
+async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
+  const parsed = parseWaitArgs(args);
+
+  if (parsed.error) {
+    d.printError(parsed.error);
+    d.exit(1);
+  }
+
+  const toolArgs: Record<string, unknown> = {};
+
+  if (parsed.sessionPrefix) {
+    const sessionId = await resolveSessionId(parsed.sessionPrefix, d);
+    toolArgs.sessionId = sessionId;
+  }
+  if (parsed.timeout) {
+    toolArgs.timeout = parsed.timeout;
+  }
+
+  const result = await d.callTool("claude_wait", toolArgs);
+  console.log(formatToolResult(result));
+}
+
 // ── Helpers ──
 
 export async function resolveSessionId(prefix: string, d: ClaudeDeps): Promise<string> {
@@ -402,6 +459,7 @@ Usage:
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude ls                            List active sessions
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
+  mcx claude wait [session]                Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
@@ -417,6 +475,9 @@ Spawn options:
 
 Send options:
   --wait                      Block until Claude produces a result
+
+Wait options:
+  --timeout, -t <ms>          Max wait time (default: 300000)
 
 Session IDs support prefix matching (like git SHAs).`);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ClaudeDeps } from "./claude";
-import { cmdClaude, parseLogArgs, parseSpawnArgs, resolveSessionId } from "./claude";
+import { cmdClaude, parseLogArgs, parseSpawnArgs, parseWaitArgs, resolveSessionId } from "./claude";
 
 // ── Helpers ──
 
@@ -657,6 +657,95 @@ describe("mcx claude log", () => {
   test("errors when no session specified", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["log"], deps)).rejects.toThrow(ExitError);
+  });
+});
+
+// ── parseWaitArgs ──
+
+describe("parseWaitArgs", () => {
+  test("parses session prefix", () => {
+    const result = parseWaitArgs(["abc123"]);
+    expect(result.sessionPrefix).toBe("abc123");
+    expect(result.timeout).toBeUndefined();
+  });
+
+  test("parses --timeout flag", () => {
+    const result = parseWaitArgs(["abc123", "--timeout", "60000"]);
+    expect(result.sessionPrefix).toBe("abc123");
+    expect(result.timeout).toBe(60000);
+  });
+
+  test("parses -t shorthand", () => {
+    const result = parseWaitArgs(["-t", "5000"]);
+    expect(result.timeout).toBe(5000);
+  });
+
+  test("no args returns no session or timeout", () => {
+    const result = parseWaitArgs([]);
+    expect(result.sessionPrefix).toBeUndefined();
+    expect(result.timeout).toBeUndefined();
+    expect(result.error).toBeUndefined();
+  });
+
+  test("errors on non-numeric --timeout", () => {
+    const result = parseWaitArgs(["--timeout", "abc"]);
+    expect(result.error).toBe("--timeout must be a number");
+  });
+
+  test("errors on missing --timeout value", () => {
+    const result = parseWaitArgs(["--timeout"]);
+    expect(result.error).toBe("--timeout requires a value in ms");
+  });
+});
+
+// ── wait ──
+
+describe("mcx claude wait", () => {
+  test("calls claude_wait with no args (any session)", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc123", event: "session:result", cost: 0.05 }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["wait"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {});
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("resolves session prefix and passes sessionId", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ sessionId: "abc12345-1111-2222-3333-444444444444", event: "session:result" });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["wait", "abc"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes timeout when specified", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc", event: "session:result" }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["wait", "--timeout", "60000"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 60000 });
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 
