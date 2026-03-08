@@ -181,7 +181,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
         // Verifier is ephemeral, no need to explicitly clear
         break;
       case "discovery":
-        // Clear discovery state to force re-discovery
+        // No cached state to clear — discovery is fetched on demand
         break;
     }
   }

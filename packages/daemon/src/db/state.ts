@@ -642,7 +642,7 @@ export class StateDb {
       >(
         `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE ${where} ORDER BY created_at ASC LIMIT 1`,
       )
-      .all(...params)[0];
+      .get(...params);
     return row ? toMailMessage(row) : undefined;
   }
 
