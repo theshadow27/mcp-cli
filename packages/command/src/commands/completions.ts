@@ -41,6 +41,10 @@ export const SUBCOMMANDS = [
   "install",
   "registry",
   "completions",
+  "serve",
+  "mail",
+  "import",
+  "export",
   "help",
 ] as const;
 
