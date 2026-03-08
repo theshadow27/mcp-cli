@@ -58,7 +58,6 @@ export interface SessionInfo {
 
 export interface SessionDetail extends SessionInfo {
   pendingPermissionIds: string[];
-  worktree: string | null;
   pid: number | null;
 }
 
@@ -315,7 +314,6 @@ export class ClaudeWsServer {
     return {
       ...this.buildSessionInfo(sessionId, session),
       pendingPermissionIds: [...session.state.pendingPermissions.keys()],
-      worktree: session.worktree,
       pid: session.pid,
     };
   }
