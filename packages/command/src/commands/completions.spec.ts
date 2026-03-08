@@ -33,6 +33,10 @@ describe("SUBCOMMANDS", () => {
     "install",
     "registry",
     "completions",
+    "serve",
+    "mail",
+    "import",
+    "export",
     "help",
   ];
 
