@@ -15,7 +15,7 @@
  */
 
 import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
-import { IpcCallError, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
+import { IpcCallError, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
 import { cmdClaude } from "./commands/claude";
@@ -399,7 +399,9 @@ async function cmdGrep(args: string[]): Promise<void> {
 
 async function cmdStatus(args: string[] = []): Promise<void> {
   const { json } = extractJsonFlag(args);
-  const status = await ipcCall("status");
+  // Use a short timeout — status reads in-memory state and must return immediately.
+  // The default 60s IPC timeout would cause mcx status to hang if the daemon is slow.
+  const status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
 
   if (json) {
     console.log(JSON.stringify(status, null, 2));
