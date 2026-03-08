@@ -652,6 +652,30 @@ describe("ClaudeWsServer", () => {
     await expect(eventPromise).rejects.toThrow("Session ended by user");
   });
 
+  test("bye returns worktree info", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("wt-session", { prompt: "Hello", worktree: "claude-test1", cwd: "/repo" });
+    server.spawnClaude("wt-session");
+
+    const result = server.bye("wt-session");
+    expect(result).toEqual({ worktree: "claude-test1", cwd: "/repo" });
+  });
+
+  test("bye returns null worktree for non-worktree session", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("plain-session", { prompt: "Hello" });
+    server.spawnClaude("plain-session");
+
+    const result = server.bye("plain-session");
+    expect(result).toEqual({ worktree: null, cwd: null });
+  });
+
   test("sessionCount tracks active sessions", () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

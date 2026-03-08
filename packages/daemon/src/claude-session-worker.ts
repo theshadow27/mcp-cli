@@ -179,8 +179,8 @@ function handleBye(
 ): {
   content: Array<{ type: "text"; text: string }>;
 } {
-  server.bye(args.sessionId as string);
-  return { content: [{ type: "text", text: JSON.stringify({ ended: true }) }] };
+  const { worktree, cwd } = server.bye(args.sessionId as string);
+  return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd }) }] };
 }
 
 function handleTranscript(
