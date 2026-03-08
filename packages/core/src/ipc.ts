@@ -237,6 +237,84 @@ export const MarkReadParamsSchema = z.object({
   id: z.number(),
 });
 
+// -- Result types for methods without a named interface --
+
+export interface PingResult {
+  pong: true;
+  time: number;
+  protocolVersion: string;
+}
+
+export interface TriggerAuthResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface RestartServerResult {
+  ok: true;
+}
+
+export interface SaveAliasResult {
+  ok: true;
+  filePath: string;
+}
+
+export interface DeleteAliasResult {
+  ok: true;
+}
+
+export interface SendMailResult {
+  id: number;
+}
+
+export interface ReadMailResult {
+  messages: MailMessage[];
+}
+
+export interface WaitForMailResult {
+  message: MailMessage | null;
+}
+
+export interface ReplyToMailResult {
+  id: number;
+}
+
+export interface ReloadConfigResult {
+  ok: true;
+}
+
+export interface ShutdownResult {
+  ok: true;
+}
+
+// -- Method → Result type map --
+
+export interface IpcMethodResult {
+  ping: PingResult;
+  status: DaemonStatus;
+  listServers: ServerStatus[];
+  listTools: ToolInfo[];
+  getToolInfo: ToolInfo;
+  grepTools: ToolInfo[];
+  callTool: unknown;
+  triggerAuth: TriggerAuthResult;
+  restartServer: RestartServerResult;
+  getConfig: GetConfigResult;
+  shutdown: ShutdownResult;
+  listAliases: AliasInfo[];
+  getAlias: AliasDetail | null;
+  saveAlias: SaveAliasResult;
+  deleteAlias: DeleteAliasResult;
+  getLogs: GetLogsResult;
+  getDaemonLogs: GetDaemonLogsResult;
+  sendMail: SendMailResult;
+  readMail: ReadMailResult;
+  waitForMail: WaitForMailResult;
+  replyToMail: ReplyToMailResult;
+  markRead: Record<string, never>;
+  reloadConfig: ReloadConfigResult;
+}
+
 // -- Error codes --
 
 export const IPC_ERROR = {

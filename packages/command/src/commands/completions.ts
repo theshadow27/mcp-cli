@@ -6,7 +6,6 @@
  * 2. Dynamic helpers: `mcx completions --servers|--tools <server>|--aliases` → one name per line
  */
 
-import type { AliasInfo, ServerStatus, ToolInfo } from "@mcp-cli/core";
 import { ipcCall as realIpcCall, isDaemonRunning as realIsDaemonRunning } from "../daemon-lifecycle";
 import { printError } from "../output";
 
@@ -106,7 +105,7 @@ export async function cmdCompletions(args: string[], deps?: CompletionDeps): Pro
 async function printServers(deps: CompletionDeps): Promise<void> {
   try {
     if (!(await deps.isDaemonRunning())) return;
-    const servers = (await deps.ipcCall("listServers")) as ServerStatus[];
+    const servers = await deps.ipcCall("listServers");
     for (const s of servers) {
       console.log(s.name);
     }
@@ -119,7 +118,7 @@ async function printServers(deps: CompletionDeps): Promise<void> {
 async function printTools(server: string, deps: CompletionDeps): Promise<void> {
   try {
     if (!(await deps.isDaemonRunning())) return;
-    const tools = (await deps.ipcCall("listTools", { server })) as ToolInfo[];
+    const tools = await deps.ipcCall("listTools", { server });
     for (const t of tools) {
       console.log(t.name);
     }
@@ -132,7 +131,7 @@ async function printTools(server: string, deps: CompletionDeps): Promise<void> {
 async function printAliases(deps: CompletionDeps): Promise<void> {
   try {
     if (!(await deps.isDaemonRunning())) return;
-    const aliases = (await deps.ipcCall("listAliases")) as AliasInfo[];
+    const aliases = await deps.ipcCall("listAliases");
     for (const a of aliases) {
       console.log(a.name);
     }

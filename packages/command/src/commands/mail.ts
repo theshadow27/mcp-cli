@@ -19,7 +19,7 @@
  *   mcx mail --wait --for=<recipient>          Wait for specific recipient
  */
 
-import type { IpcMethod, MailMessage } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { printError } from "../output";
 import { readStdin } from "../parse";
@@ -62,7 +62,7 @@ export interface MailArgs {
 }
 
 export interface MailDeps {
-  ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
+  ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   printError: (msg: string) => void;
   writeStdout: (msg: string) => void;
   writeStderr: (msg: string) => void;

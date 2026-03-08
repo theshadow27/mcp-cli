@@ -34,7 +34,8 @@ interface ToolCallResult {
 }
 
 /** Dependency-injectable IPC caller for testing */
-export type IpcCaller = (method: IpcMethod, params?: unknown) => Promise<unknown>;
+import type { IpcMethodResult } from "@mcp-cli/core";
+export type IpcCaller = <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
 
 // -- MCP_TOOLS parsing --
 
@@ -132,7 +133,7 @@ const POLL_INTERVAL_MS = 5_000;
  * Uses sorted server/name pairs so the result is order-independent.
  */
 export async function computeToolsFingerprint(ipc: IpcCaller): Promise<string> {
-  const tools = (await ipc("listTools")) as ToolInfo[];
+  const tools = await ipc("listTools");
   const key = tools
     .map((t) => `${t.server}/${t.name}`)
     .sort()
@@ -221,9 +222,7 @@ export async function handleCallTool(
   // Meta-tool: find
   if (name === "find") {
     const q = args?.q as string | undefined;
-    const tools = q
-      ? ((await ipc("grepTools", { pattern: q })) as ToolInfo[])
-      : ((await ipc("listTools")) as ToolInfo[]);
+    const tools = q ? await ipc("grepTools", { pattern: q }) : await ipc("listTools");
     const lines = tools.map((t) => `${t.server}/${t.name} — ${t.description}`);
     return { content: [{ type: "text", text: lines.join("\n") || "No tools found." }] };
   }

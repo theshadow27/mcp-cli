@@ -13,7 +13,7 @@ import { printError } from "../output";
 const SCHEMA_OPTS = { maxDepth: 4, maxProps: 20 };
 
 export async function cmdTypegen(_args: string[]): Promise<void> {
-  const tools = (await ipcCall("listTools")) as ToolInfo[];
+  const tools = await ipcCall("listTools");
 
   if (tools.length === 0) {
     printError("No tools in cache. Run 'mcx ls <server>' first to populate the cache.");

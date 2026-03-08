@@ -4,7 +4,6 @@
  * Shows config details, source file, scope, and connection status.
  */
 
-import type { GetConfigResult, ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { c, printError } from "../output";
 import { extractJsonFlag } from "../parse";
@@ -18,8 +17,8 @@ export async function cmdGet(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const config = (await ipcCall("getConfig")) as GetConfigResult;
-  const servers = (await ipcCall("listServers")) as ServerStatus[];
+  const config = await ipcCall("getConfig");
+  const servers = await ipcCall("listServers");
 
   const serverConfig = config.servers[name];
   if (!serverConfig) {

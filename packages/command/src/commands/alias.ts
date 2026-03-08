@@ -5,14 +5,14 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AliasDetail, AliasInfo, IpcMethod } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read";
 import { printAliasDebug, printAliasList, printError } from "../output";
 import { readStdin } from "../parse";
 
 export interface AliasDeps {
-  ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
+  ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   readFileWithLimit: (path: string) => string;
   readStdin: () => Promise<string>;
   printError: (msg: string) => void;
@@ -75,7 +75,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
     case "ls":
     case "list": {
       const verbose = args.includes("--verbose") || args.includes("-v");
-      const aliases = (await d.ipcCall("listAliases")) as AliasInfo[];
+      const aliases = await d.ipcCall("listAliases");
       d.printAliasList(aliases, { verbose });
       break;
     }
@@ -163,7 +163,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
         d.exit(1);
       }
 
-      const alias = (await d.ipcCall("getAlias", { name })) as AliasDetail | null;
+      const alias = await d.ipcCall("getAlias", { name });
       if (!alias) {
         d.printError(`Alias "${name}" not found`);
         d.exit(1);
@@ -183,7 +183,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
         d.exit(1);
       }
 
-      const alias = (await d.ipcCall("getAlias", { name })) as AliasDetail | null;
+      const alias = await d.ipcCall("getAlias", { name });
       let filePath: string;
 
       if (alias) {
