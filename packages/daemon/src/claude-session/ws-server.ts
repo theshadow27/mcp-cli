@@ -53,11 +53,11 @@ export interface SessionInfo {
   tokens: number;
   numTurns: number;
   pendingPermissions: number;
+  worktree: string | null;
 }
 
 export interface SessionDetail extends SessionInfo {
   pendingPermissionIds: string[];
-  worktree: string | null;
   pid: number | null;
 }
 
@@ -316,7 +316,6 @@ export class ClaudeWsServer {
     return {
       ...this.buildSessionInfo(sessionId, session),
       pendingPermissionIds: [...session.state.pendingPermissions.keys()],
-      worktree: session.worktree,
       pid: session.pid,
     };
   }
@@ -537,6 +536,7 @@ export class ClaudeWsServer {
       tokens: s.state.tokens,
       numTurns: s.state.numTurns,
       pendingPermissions: s.state.pendingPermissions.size,
+      worktree: s.config.worktree ?? null,
     };
   }
 

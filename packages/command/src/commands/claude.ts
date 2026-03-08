@@ -21,6 +21,7 @@ interface SessionInfo {
   tokens: number;
   numTurns: number;
   pendingPermissions: number;
+  worktree: string | null;
 }
 
 // ── Dependency injection ──
@@ -29,12 +30,49 @@ export interface ClaudeDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   printError: (msg: string) => void;
   exit: (code: number) => never;
+  getDiffStats: (worktreePath: string) => Promise<string | null>;
   /** Run a command and return stdout + exit code. Used for git operations in `bye`. */
   exec: (cmd: string[]) => { stdout: string; exitCode: number };
 }
 
 /** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
 const PROMPT_IPC_TIMEOUT_MS = 330_000;
+
+/**
+ * Parse `git diff --shortstat` output into a compact diff summary.
+ * Returns e.g. `+142/-38 (4f)` or null if no changes / parse failure.
+ */
+export function parseDiffShortstat(output: string): string | null {
+  const trimmed = output.trim();
+  if (!trimmed) return null;
+
+  const filesMatch = trimmed.match(/(\d+)\s+file/);
+  const insertMatch = trimmed.match(/(\d+)\s+insertion/);
+  const deleteMatch = trimmed.match(/(\d+)\s+deletion/);
+
+  const files = filesMatch ? Number(filesMatch[1]) : 0;
+  const insertions = insertMatch ? Number(insertMatch[1]) : 0;
+  const deletions = deleteMatch ? Number(deleteMatch[1]) : 0;
+
+  if (files === 0 && insertions === 0 && deletions === 0) return null;
+
+  return `+${insertions}/-${deletions} (${files}f)`;
+}
+
+async function defaultGetDiffStats(worktreePath: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(["git", "diff", "--shortstat"], {
+      cwd: worktreePath,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    return parseDiffShortstat(output);
+  } catch {
+    return null;
+  }
+}
 
 const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
@@ -44,6 +82,7 @@ const defaultDeps: ClaudeDeps = {
   },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
+  getDiffStats: defaultGetDiffStats,
   exec: (cmd) => {
     const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
     return { stdout: result.stdout.toString().trim(), exitCode: result.exitCode };
@@ -211,18 +250,28 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
+  // Gather diff stats for worktree sessions in parallel
+  const diffStats = await Promise.all(
+    sessions.map((s) => (s.worktree ? d.getDiffStats(s.worktree) : Promise.resolve(null))),
+  );
+
+  const hasAnyDiff = diffStats.some((stat) => stat !== null);
+
   // Table output
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)} CWD`;
+  const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
+  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
-  for (const s of sessions) {
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
     const state = colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
+    const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens} ${c.dim}${cwd}${c.reset}`);
+    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff} ${c.dim}${cwd}${c.reset}`);
   }
 }
 
