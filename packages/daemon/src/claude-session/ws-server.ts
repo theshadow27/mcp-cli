@@ -36,6 +36,7 @@ export interface SessionConfig {
   allowedTools?: string[];
   worktree?: string;
   cwd?: string;
+  model?: string;
 }
 
 export interface TranscriptEntry {
@@ -255,6 +256,9 @@ export class ClaudeWsServer {
       "stream-json",
     ];
 
+    if (session.config.model) {
+      cmd.push("--model", session.config.model);
+    }
     if (session.config.allowedTools?.length) {
       cmd.push("--allowedTools", ...session.config.allowedTools);
     }

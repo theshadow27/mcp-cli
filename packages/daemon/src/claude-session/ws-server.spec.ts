@@ -153,6 +153,34 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastCmd).toContain("my-tree");
   });
 
+  test("spawnClaude passes --model flag when model is set in config", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("model-session", {
+      prompt: "Hello",
+      model: "claude-sonnet-4-6",
+    });
+    server.spawnClaude("model-session");
+
+    expect(ms.lastCmd).toContain("--model");
+    expect(ms.lastCmd).toContain("claude-sonnet-4-6");
+  });
+
+  test("spawnClaude omits --model flag when model is not set", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("no-model-session", {
+      prompt: "Hello",
+    });
+    server.spawnClaude("no-model-session");
+
+    expect(ms.lastCmd).not.toContain("--model");
+  });
+
   test("WS connect sends user message immediately on open", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

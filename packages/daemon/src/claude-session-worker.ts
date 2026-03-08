@@ -114,6 +114,7 @@ async function handlePrompt(
       permissionRules: rules,
       allowedTools,
       worktree: args.worktree as string | undefined,
+      model: args.model as string | undefined,
     });
 
     // Post DB upsert
