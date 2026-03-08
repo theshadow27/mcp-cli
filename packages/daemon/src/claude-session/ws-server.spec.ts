@@ -520,6 +520,26 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("sessionCount tracks active sessions", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    expect(server.sessionCount).toBe(0);
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    expect(server.sessionCount).toBe(1);
+
+    server.prepareSession("s2", { prompt: "World" });
+    expect(server.sessionCount).toBe(2);
+
+    server.bye("s1");
+    expect(server.sessionCount).toBe(1);
+
+    server.bye("s2");
+    expect(server.sessionCount).toBe(0);
+  });
+
   test("stop() cleans up all sessions", () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

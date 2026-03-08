@@ -99,6 +99,11 @@ async function main(): Promise<void> {
         resetIdleTimer();
         return;
       }
+      if (claudeServer.hasActiveSessions()) {
+        console.error("[mcpd] Idle timeout deferred: active WebSocket session(s)");
+        resetIdleTimer();
+        return;
+      }
       console.error("[mcpd] Idle timeout reached, shutting down");
       shutdown();
     }, idleTimeoutMs);
