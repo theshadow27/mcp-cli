@@ -67,6 +67,10 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
+// Ensure deps are installed (fast no-op when already present)
+const installProc = Bun.spawn(["bun", "install"], { stdout: "ignore", stderr: "ignore" });
+await installProc.exited;
+
 const proc = Bun.spawn(["bun", "test", "--coverage"], {
   stdout: "pipe",
   stderr: "pipe",
