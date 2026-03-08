@@ -2,23 +2,23 @@
 
 **MCP tools from the command line. Zero context overhead.**
 
-MCP servers like Atlassian inject ~12,000 tokens into every Claude Code conversation — every message, every subagent. The `gh` CLI costs 0 tokens when unused.
+Many MCP servers inject 15,000+ tokens of tool definitions into every Claude Code conversation — every message, every subagent. The `gh` CLI costs 0 tokens when unused.
 
 `mcp-cli` gives you the same MCP tools via Bash: discoverable, pipeable, composable, and invisible until needed.
 
 ```bash
-$ mcx atlassian search '{"query":"sprint planning"}' | jq '.results[].title'
+$ mcx my-server search '{"query":"sprint planning"}' | jq '.results[].title'
 "Q1 Sprint Planning"
 "Sprint Planning Template"
 "Sprint Planning Best Practices"
 
-$ mcx coralogix-server get_datetime '{}'
+$ mcx another-server get_datetime '{}'
 2026-03-02T21:48:22.122294+00:00
 
-$ mcx grep confluence
-  getConfluencePage                atlassian  Get a Confluence page by page ID
-  searchConfluenceUsingCql         atlassian  Search content with CQL
-  createConfluencePage             atlassian  Create Confluence page
+$ mcx grep page
+  getPage                my-server       Get a page by ID
+  searchPages            my-server       Search pages
+  createPage             my-server       Create a new page
   ...
   14 tool(s)
 ```
@@ -155,8 +155,7 @@ Save multi-step workflows as TypeScript scripts:
 
 ```bash
 mcx alias save sprint-board - <<'TS'
-const issues = await mcp.atlassian.searchJiraIssuesUsingJql({
-  cloudId: "abc-123",
+const issues = await mcp.projectTracker.searchIssues({
   jql: "sprint in openSprints() AND assignee = currentUser()",
   fields: ["summary", "status", "priority"]
 });
@@ -233,7 +232,7 @@ Tab bar with 5 views — navigate with Tab/Shift+Tab or press 1-5 to jump direct
 
 ## Claude Code Integration
 
-Add `mcp-cli` as a Claude Code skill to eliminate context bloat. Instead of injecting 31 Atlassian tool definitions (~12K tokens) into every conversation, Claude calls tools via `mcx` on demand — 0 tokens at rest.
+Add `mcp-cli` as a Claude Code skill to eliminate context bloat. Instead of injecting dozens of tool definitions (15K+ tokens) into every conversation, Claude calls tools via `mcx` on demand — 0 tokens at rest.
 
 See [`skill/SKILL.md`](skill/SKILL.md) for the skill definition.
 
