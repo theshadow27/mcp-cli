@@ -51,10 +51,8 @@ export function App() {
 
   // Clamp claudeSelectedIndex when sessions list shrinks
   useEffect(() => {
-    if (claudeSelectedIndex >= sessions.length && sessions.length > 0) {
-      setClaudeSelectedIndex(sessions.length - 1);
-    }
-  }, [sessions.length, claudeSelectedIndex]);
+    setClaudeSelectedIndex((i) => Math.min(i, Math.max(0, sessions.length - 1)));
+  }, [sessions.length]);
 
   // Auto-clear success/error auth status after 5 seconds
   useEffect(() => {
