@@ -9,7 +9,6 @@
  * Follows the same pattern as AliasServer (alias-server.ts).
  */
 
-import { join } from "node:path";
 import type { JsonSchema, ToolInfo } from "@mcp-cli/core";
 import { formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -105,7 +104,7 @@ export class ClaudeServer {
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     this.stopped = false;
-    const worker = new Worker(join(import.meta.dir, "claude-session-worker.ts"));
+    const worker = new Worker(new URL("./claude-session-worker.ts", import.meta.url));
     this.worker = worker;
 
     // Wait for the worker to report ready with its WS port
