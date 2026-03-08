@@ -16,14 +16,31 @@ mcx ls                                    # list servers + tool counts
 mcx ls <server>                           # list tools for a server
 mcx info <server> <tool>                  # TypeScript-notation schema
 mcx grep <pattern>                        # search tools across all servers
+mcx search <query>                        # search local tools, then registry
 
 # Invocation
 mcx call <server> <tool> '<json>'         # call a tool, JSON to stdout
-mcx call <server> <tool> '<json>' | jq .  # pretty-print result
+mcx call <server> <tool> '<json>' --jq '.field'  # client-side jq filter
+mcx call <server> <tool> '<json>' --full  # bypass output size protection
 
-# Management
+# Session Management
+mcx claude spawn --task "..."             # start a Claude Code session
+mcx claude ls                             # list active sessions
+mcx claude send <session> <msg>           # send follow-up prompt
+mcx claude bye <session>                  # end a session
+mcx claude log <session>                  # view session transcript
+mcx claude wait <session>                 # wait for session to idle
+mcx claude interrupt <session>            # interrupt a running session
+mcx mail -H                               # list inter-session message headers
+mcx mail -s "subject" <recipient>         # send message (body from stdin)
+
+# Server Management
 mcx status                                # daemon health + server status
 mcx restart [server]                      # reconnect server(s)
+mcx daemon restart                        # restart the daemon
+mcx daemon shutdown                       # stop the daemon
+mcx logs <server>                         # view server stderr output
+mcx install <server>                      # install server from registry
 mcx config show                           # resolved config
 ```
 
