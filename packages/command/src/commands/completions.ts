@@ -7,7 +7,7 @@
  */
 
 import type { AliasInfo, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { ipcCall as realIpcCall, isDaemonRunning as realIsDaemonRunning } from "@mcp-cli/core";
+import { ipcCall as realIpcCall, isDaemonRunning as realIsDaemonRunning } from "../daemon-lifecycle";
 import { printError } from "../output";
 
 export interface CompletionDeps {
