@@ -75,14 +75,14 @@ Always clean up — even on failure.
 
 Use `mcx claude ls` to check progress across all sessions. Sessions show state (active/idle), cost, and token usage.
 
-**Never sleep waiting for sessions.** While sessions are running, do useful work:
+**Poll smartly.** Check `mcx claude ls` with ~10 second delays between polls. Don't tight-loop (burns context), don't over-sleep (wastes time). Between polls, do useful work:
 - Spawn more issues from the backlog
 - File new issues for problems discovered during monitoring
 - Refine issue descriptions, add context, update specs
 - Review PRs from completed sessions
 - Clean up merged sessions and worktrees
 
-The orchestrator's job is to keep the pipeline saturated, not to watch progress bars.
+The orchestrator's job is to keep the pipeline saturated, not to watch progress bars. When there's genuinely nothing to do, report status and wait for the user.
 
 **Never implement directly.** The orchestrator must not write code, edit files, or fix bugs itself — always delegate to a spawned session. Direct implementation eats the orchestrator's context window and prevents it from managing the pipeline. If something needs fixing, spawn a session or file an issue.
 
