@@ -161,6 +161,40 @@ describe("parseLogArgs", () => {
     expect(result.last).toBe(10);
   });
 
+  test("parses --json flag", () => {
+    const result = parseLogArgs(["abc123", "--json"]);
+    expect(result.json).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
+  test("parses -j shorthand", () => {
+    const result = parseLogArgs(["abc123", "-j"]);
+    expect(result.json).toBe(true);
+  });
+
+  test("parses --full flag", () => {
+    const result = parseLogArgs(["abc123", "--full"]);
+    expect(result.full).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
+  test("parses -f shorthand for --full", () => {
+    const result = parseLogArgs(["abc123", "-f"]);
+    expect(result.full).toBe(true);
+  });
+
+  test("parses --format json (delegated to extractJsonFlag)", () => {
+    const result = parseLogArgs(["abc123", "--format", "json"]);
+    expect(result.json).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
+  test("defaults json and full to false", () => {
+    const result = parseLogArgs(["abc123"]);
+    expect(result.json).toBe(false);
+    expect(result.full).toBe(false);
+  });
+
   test("errors on non-numeric --last", () => {
     const result = parseLogArgs(["abc123", "--last", "abc"]);
     expect(result.error).toBe("--last must be a number");
@@ -652,6 +686,141 @@ describe("mcx claude log", () => {
       sessionId: "abc12345-1111-2222-3333-444444444444",
       limit: 5,
     });
+  });
+
+  test("outputs raw JSON with --json flag", async () => {
+    const transcript = [
+      {
+        timestamp: 1700000000000,
+        direction: "outbound",
+        message: { type: "user", message: { role: "user", content: "hello" } },
+      },
+    ];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult(transcript);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc", "--json"], deps);
+      // Should output the raw JSON string, not formatted
+      expect(logSpy.mock.calls.length).toBe(1);
+      const output = (logSpy.mock.calls[0] as string[])[0];
+      const parsed = JSON.parse(output);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].message.type).toBe("user");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("outputs raw JSON with -j shorthand", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult([]);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc", "-j"], deps);
+      expect(logSpy.mock.calls.length).toBe(1);
+      const parsed = JSON.parse((logSpy.mock.calls[0] as string[])[0]);
+      expect(parsed).toEqual([]);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows full content with --full flag (no truncation)", async () => {
+    const longContent = "x".repeat(500);
+    const transcript = [
+      {
+        timestamp: 1700000000000,
+        direction: "inbound",
+        message: { type: "assistant", message: { role: "assistant", content: longContent } },
+      },
+    ];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult(transcript);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc", "--full"], deps);
+      // Find the content line (second log call: first is header, second is content)
+      const allOutput = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
+      expect(allOutput).toContain(longContent);
+      expect(allOutput).not.toContain("…");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows full content for result-type messages with --full", async () => {
+    const longResult = "r".repeat(500);
+    const transcript = [
+      {
+        timestamp: 1700000000000,
+        direction: "inbound",
+        message: { type: "result", result: longResult },
+      },
+    ];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult(transcript);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc", "--full"], deps);
+      const allOutput = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
+      expect(allOutput).toContain(longResult);
+      expect(allOutput).not.toContain("…");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("truncates content without --full flag", async () => {
+    const longContent = "x".repeat(500);
+    const transcript = [
+      {
+        timestamp: 1700000000000,
+        direction: "inbound",
+        message: { type: "assistant", message: { role: "assistant", content: longContent } },
+      },
+    ];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult(transcript);
+    });
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["log", "abc"], deps);
+      const allOutput = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
+      expect(allOutput).toContain("…");
+      expect(allOutput).not.toContain(longContent);
+    } finally {
+      console.log = origLog;
+    }
   });
 
   test("errors when no session specified", async () => {

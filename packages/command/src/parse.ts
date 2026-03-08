@@ -17,7 +17,7 @@ export function extractJsonFlag(args: string[]): { json: boolean; rest: string[]
   let json = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "-j") {
+    if (args[i] === "-j" || args[i] === "--json") {
       json = true;
     } else if (args[i] === "--format") {
       if (args[i + 1] === "json") {
