@@ -577,3 +577,144 @@ describe("mcx claude log", () => {
     await expect(cmdClaude(["log"], deps)).rejects.toThrow(ExitError);
   });
 });
+
+// ── lifecycle ──
+
+describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
+  test("exercises full session lifecycle with stateful mock", async () => {
+    // Stateful mock: tracks sessions and transcript across calls
+    const sessions: Array<{
+      sessionId: string;
+      state: string;
+      model: string;
+      cwd: string;
+      cost: number;
+      tokens: number;
+      numTurns: number;
+      pendingPermissions: number;
+    }> = [];
+    const transcript: Array<{
+      timestamp: number;
+      direction: string;
+      message: { type: string; message?: { role: string; content: string } };
+    }> = [];
+
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, args: Record<string, unknown>) => {
+      switch (tool) {
+        case "claude_prompt": {
+          if (!args.sessionId) {
+            // spawn — create a new session
+            const sessionId = "lifecycle-1111-2222-3333-444444444444";
+            sessions.push({
+              sessionId,
+              state: "active",
+              model: "opus-4",
+              cwd: "/tmp",
+              cost: 0.01,
+              tokens: 500,
+              numTurns: 1,
+              pendingPermissions: 0,
+            });
+            transcript.push({
+              timestamp: Date.now(),
+              direction: "outbound",
+              message: { type: "user", message: { role: "user", content: args.prompt as string } },
+            });
+            transcript.push({
+              timestamp: Date.now() + 1,
+              direction: "inbound",
+              message: { type: "assistant", message: { role: "assistant", content: "Done." } },
+            });
+            return toolResult({ sessionId, success: true, cost: 0.01 });
+          }
+          // send — follow-up on existing session
+          const s = sessions.find((sess) => sess.sessionId === args.sessionId);
+          if (s) {
+            s.numTurns++;
+            s.tokens += 200;
+            s.cost += 0.005;
+          }
+          transcript.push({
+            timestamp: Date.now() + 10,
+            direction: "outbound",
+            message: { type: "user", message: { role: "user", content: args.prompt as string } },
+          });
+          transcript.push({
+            timestamp: Date.now() + 11,
+            direction: "inbound",
+            message: { type: "assistant", message: { role: "assistant", content: "Follow-up done." } },
+          });
+          return toolResult({ success: true, cost: 0.005 });
+        }
+        case "claude_session_list":
+          return toolResult(sessions);
+        case "claude_transcript":
+          return toolResult(transcript.slice(-(args.limit as number)));
+        case "claude_bye": {
+          const idx = sessions.findIndex((sess) => sess.sessionId === args.sessionId);
+          if (idx >= 0) sessions[idx].state = "ended";
+          return toolResult({ ended: true });
+        }
+        default:
+          return toolResult({ error: `unknown tool: ${tool}` });
+      }
+    });
+
+    const deps = makeDeps({ callTool });
+
+    // Capture console.log / console.error output
+    const logSpy = mock(() => {});
+    const errSpy = mock(() => {});
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = logSpy;
+    console.error = errSpy;
+
+    try {
+      // 1. Spawn
+      await cmdClaude(["spawn", "--task", "lifecycle test"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "lifecycle test" });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].state).toBe("active");
+
+      // 2. List — verify the new session appears
+      logSpy.mockClear();
+      await cmdClaude(["ls"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_session_list", {});
+      // Header row + 1 session row
+      expect(logSpy.mock.calls.length).toBe(2);
+      const row = (logSpy.mock.calls[1] as string[])[0];
+      expect(row).toContain("lifecycl"); // first 8 chars of session ID
+
+      // 3. Send a follow-up
+      logSpy.mockClear();
+      await cmdClaude(["send", "lifecycle", "follow up message"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        sessionId: "lifecycle-1111-2222-3333-444444444444",
+        prompt: "follow up message",
+      });
+      expect(sessions[0].numTurns).toBe(2);
+
+      // 4. View transcript
+      logSpy.mockClear();
+      await cmdClaude(["log", "lifecycle"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_transcript", {
+        sessionId: "lifecycle-1111-2222-3333-444444444444",
+        limit: 20,
+      });
+      // Should print formatted entries (at least 4 transcript entries)
+      expect(logSpy.mock.calls.length).toBeGreaterThanOrEqual(4);
+
+      // 5. Bye — end the session
+      logSpy.mockClear();
+      await cmdClaude(["bye", "lifecycle"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_bye", {
+        sessionId: "lifecycle-1111-2222-3333-444444444444",
+      });
+      expect(sessions[0].state).toBe("ended");
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+  });
+});
