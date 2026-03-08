@@ -204,6 +204,34 @@ export function useKeyboard({
         return;
       }
 
+      // Approve pending permission
+      if (input === "a") {
+        const session = claudeSessions[claudeSelectedIndex];
+        if (session?.pendingPermissionDetails?.length) {
+          const perm = session.pendingPermissionDetails[0];
+          ipcCall("callTool", {
+            server: "_claude",
+            tool: "claude_approve",
+            arguments: { sessionId: session.sessionId, requestId: perm.requestId },
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      // Deny pending permission
+      if (input === "d") {
+        const session = claudeSessions[claudeSelectedIndex];
+        if (session?.pendingPermissionDetails?.length) {
+          const perm = session.pendingPermissionDetails[0];
+          ipcCall("callTool", {
+            server: "_claude",
+            tool: "claude_deny",
+            arguments: { sessionId: session.sessionId, requestId: perm.requestId },
+          }).catch(() => {});
+        }
+        return;
+      }
+
       // End session
       if (input === "x") {
         const session = claudeSessions[claudeSelectedIndex];

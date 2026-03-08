@@ -69,6 +69,10 @@ async function handleToolCall(
         return handleTranscript(server, args);
       case "claude_wait":
         return await handleWait(server, args);
+      case "claude_approve":
+        return handleApprove(server, args);
+      case "claude_deny":
+        return handleDeny(server, args);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -192,6 +196,27 @@ function handleTranscript(
   const limit = (args.limit as number) ?? 50;
   const transcript = server.getTranscript(args.sessionId as string, limit);
   return { content: [{ type: "text", text: JSON.stringify(transcript, null, 2) }] };
+}
+
+function handleApprove(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  server.respondToPermission(args.sessionId as string, args.requestId as string, true);
+  return { content: [{ type: "text", text: JSON.stringify({ approved: true }) }] };
+}
+
+function handleDeny(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const message = (args.message as string) ?? "Denied by user via mcpctl";
+  server.respondToPermission(args.sessionId as string, args.requestId as string, false, message);
+  return { content: [{ type: "text", text: JSON.stringify({ denied: true }) }] };
 }
 
 async function handleWait(

@@ -121,6 +121,22 @@ export function ClaudeSessionList({
                 </Text>
               )}
             </Text>
+            {selected && session.pendingPermissionDetails?.length > 0 && (
+              <Box flexDirection="column" marginLeft={4}>
+                {session.pendingPermissionDetails.map((perm) => (
+                  <Text key={perm.requestId} color="yellow">
+                    {"└─ "}
+                    <Text bold>{perm.toolName}</Text>
+                    {perm.inputSummary ? <Text dimColor>({perm.inputSummary})</Text> : null}
+                    {" — "}
+                    <Text color="green">[a]</Text>
+                    <Text>pprove </Text>
+                    <Text color="red">[d]</Text>
+                    <Text>eny</Text>
+                  </Text>
+                ))}
+              </Box>
+            )}
             {expanded && <ClaudeSessionDetail sessionId={session.sessionId} />}
           </Box>
         );

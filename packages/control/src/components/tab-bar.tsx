@@ -4,18 +4,20 @@ import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
 
 interface TabBarProps {
   activeTab: View;
+  pendingPermissionCount?: number;
 }
 
 function capitalize(s: string): string {
   return s[0].toUpperCase() + s.slice(1);
 }
 
-export function TabBar({ activeTab }: TabBarProps) {
+export function TabBar({ activeTab, pendingPermissionCount = 0 }: TabBarProps) {
   return (
     <Box marginBottom={1}>
       <Text>
         {ALL_TABS.map((tab, i) => {
-          const label = ` ${i + 1}:${capitalize(tab)} `;
+          const badge = tab === "claude" && pendingPermissionCount > 0 ? ` (${pendingPermissionCount})` : "";
+          const label = ` ${i + 1}:${capitalize(tab)}${badge} `;
           const isActive = tab === activeTab;
           const sep = i < ALL_TABS.length - 1 ? "│" : "";
 
@@ -25,6 +27,8 @@ export function TabBar({ activeTab }: TabBarProps) {
                 <Text bold color="cyan" inverse>
                   {label}
                 </Text>
+              ) : tab === "claude" && pendingPermissionCount > 0 ? (
+                <Text color="red">{label}</Text>
               ) : (
                 <Text dimColor>{label}</Text>
               )}

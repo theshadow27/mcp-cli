@@ -30,7 +30,8 @@ export function App() {
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
 
   const servers = status?.servers ?? [];
-  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500, view === "claude");
+  // Always poll sessions (even off-tab) so the tab badge shows pending permission count
+  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500);
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
@@ -94,7 +95,7 @@ export function App() {
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} />
-      <TabBar activeTab={view} />
+      <TabBar activeTab={view} pendingPermissionCount={sessions.reduce((n, s) => n + s.pendingPermissions, 0)} />
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}

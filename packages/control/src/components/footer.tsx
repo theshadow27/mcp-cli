@@ -71,6 +71,8 @@ export function Footer({ view, filterMode, filterText }: FooterProps) {
           {tabHints}
           <Text dimColor>j/k</Text> navigate{"  "}
           <Text dimColor>enter</Text> transcript{"  "}
+          <Text dimColor>a</Text> approve{"  "}
+          <Text dimColor>d</Text> deny{"  "}
           <Text dimColor>x</Text> end session{"  "}
           <Text dimColor>esc</Text> back{"  "}
           <Text dimColor>q</Text> quit{"  "}

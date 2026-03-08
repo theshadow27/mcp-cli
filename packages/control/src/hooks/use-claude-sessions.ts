@@ -5,6 +5,12 @@ import { extractToolText } from "./ipc-tool-helpers.js";
 // Mirror the daemon's SessionInfo shape (from claude-session/ws-server.ts)
 export type SessionStateEnum = "connecting" | "init" | "active" | "waiting_permission" | "result" | "idle" | "ended";
 
+export interface PendingPermissionInfo {
+  requestId: string;
+  toolName: string;
+  inputSummary: string;
+}
+
 export interface ClaudeSession {
   sessionId: string;
   state: SessionStateEnum;
@@ -14,6 +20,7 @@ export interface ClaudeSession {
   tokens: number;
   numTurns: number;
   pendingPermissions: number;
+  pendingPermissionDetails: PendingPermissionInfo[];
   worktree: string | null;
 }
 
