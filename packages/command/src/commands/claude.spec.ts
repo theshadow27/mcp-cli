@@ -1,14 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
+import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import { cmdClaude, parseDiffShortstat, parseLogArgs, parseSpawnArgs, parseWaitArgs, resolveSessionId } from "./claude";
 
 // ── Helpers ──
-
-class ExitError extends Error {
-  constructor(public code: number) {
-    super(`process.exit(${code})`);
-  }
-}
 
 function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
   return {
