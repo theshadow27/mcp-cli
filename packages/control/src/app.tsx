@@ -30,7 +30,8 @@ export function App() {
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
 
   const servers = status?.servers ?? [];
-  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500, view === "claude");
+  // Poll faster on claude tab, slower off-tab (badge still updates)
+  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(view === "claude" ? 2500 : 10_000);
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
@@ -90,11 +91,12 @@ export function App() {
   if (loading && !status) return <Loading />;
 
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
+  const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
 
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} />
-      <TabBar activeTab={view} />
+      <TabBar activeTab={view} pendingPermissionCount={pendingPermissionCount} />
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn } from "./ws-server";
-import { ClaudeWsServer, WaitTimeoutError } from "./ws-server";
+import { ClaudeWsServer, WaitTimeoutError, summarizeInput } from "./ws-server";
 
 // ── Mock spawn ──
 
@@ -712,5 +712,94 @@ describe("ClaudeWsServer", () => {
     server = undefined; // prevent double stop in afterEach
 
     expect(ms.killed).toBe(true);
+  });
+
+  test("listSessions includes pendingPermissionDetails", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "delegate",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      ws.send(canUseToolMessage("req-detail-1"));
+      await Bun.sleep(20);
+
+      const sessions = server.listSessions();
+      const session = sessions.find((s) => s.sessionId === "test-session");
+      expect(session).toBeDefined();
+      expect(session?.pendingPermissions).toBe(1);
+      expect(session?.pendingPermissionDetails).toHaveLength(1);
+      expect(session?.pendingPermissionDetails[0].requestId).toBe("req-detail-1");
+      expect(session?.pendingPermissionDetails[0].toolName).toBe("Bash");
+      expect(session?.pendingPermissionDetails[0].inputSummary).toContain("command=");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("pendingPermissionDetails clears after respondToPermission", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "delegate",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      ws.send(canUseToolMessage("req-clear-1"));
+      await Bun.sleep(20);
+
+      // Approve it
+      server.respondToPermission("test-session", "req-clear-1", true);
+      await Bun.sleep(20);
+
+      const sessions = server.listSessions();
+      const session = sessions.find((s) => s.sessionId === "test-session");
+      expect(session?.pendingPermissions).toBe(0);
+      expect(session?.pendingPermissionDetails).toHaveLength(0);
+    } finally {
+      ws.close();
+    }
+  });
+});
+
+// ── summarizeInput ──
+
+describe("summarizeInput", () => {
+  test("returns key=value for string input", () => {
+    expect(summarizeInput({ command: "echo hello" })).toBe("command=echo hello");
+  });
+
+  test("returns empty string for empty input", () => {
+    expect(summarizeInput({})).toBe("");
+  });
+
+  test("truncates long values to 80 chars", () => {
+    const longValue = "x".repeat(100);
+    const result = summarizeInput({ command: longValue });
+    expect(result.length).toBe(80);
+    expect(result.endsWith("...")).toBe(true);
+  });
+
+  test("JSON-stringifies non-string values", () => {
+    expect(summarizeInput({ count: 42 })).toBe("count=42");
   });
 });

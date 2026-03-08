@@ -44,6 +44,12 @@ export interface TranscriptEntry {
   message: NdjsonMessage;
 }
 
+export interface PendingPermissionInfo {
+  requestId: string;
+  toolName: string;
+  inputSummary: string;
+}
+
 export interface SessionInfo {
   sessionId: string;
   state: SessionStateEnum;
@@ -53,6 +59,7 @@ export interface SessionInfo {
   tokens: number;
   numTurns: number;
   pendingPermissions: number;
+  pendingPermissionDetails: PendingPermissionInfo[];
   worktree: string | null;
 }
 
@@ -123,6 +130,16 @@ interface WsData {
 const MAX_TRANSCRIPT = 100;
 const KEEP_ALIVE_MS = 30_000;
 const WS_OPEN = 1;
+
+/** Summarize tool input to a short display string (max 80 chars). */
+export function summarizeInput(input: Record<string, unknown>): string {
+  const first = Object.entries(input)[0];
+  if (!first) return "";
+  const [key, value] = first;
+  const str = typeof value === "string" ? value : JSON.stringify(value);
+  const display = `${key}=${str}`;
+  return display.length > 80 ? `${display.slice(0, 77)}...` : display;
+}
 
 // ── Server ──
 
@@ -527,6 +544,14 @@ export class ClaudeWsServer {
   }
 
   private buildSessionInfo(sessionId: string, s: WsSession): SessionInfo {
+    const details: PendingPermissionInfo[] = [];
+    for (const [reqId, req] of s.state.pendingPermissions) {
+      details.push({
+        requestId: reqId,
+        toolName: req.tool_name,
+        inputSummary: summarizeInput(req.input),
+      });
+    }
     return {
       sessionId,
       state: s.state.state,
@@ -536,6 +561,7 @@ export class ClaudeWsServer {
       tokens: s.state.tokens,
       numTurns: s.state.numTurns,
       pendingPermissions: s.state.pendingPermissions.size,
+      pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
     };
   }

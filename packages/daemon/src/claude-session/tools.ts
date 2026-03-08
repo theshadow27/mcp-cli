@@ -99,4 +99,29 @@ export const CLAUDE_TOOLS = [
       },
     },
   },
+  {
+    name: "claude_approve",
+    description: "Approve a pending permission request for a Claude Code session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID containing the permission request" },
+        requestId: { type: "string", description: "Permission request ID to approve" },
+      },
+      required: ["sessionId", "requestId"],
+    },
+  },
+  {
+    name: "claude_deny",
+    description: "Deny a pending permission request for a Claude Code session.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID containing the permission request" },
+        requestId: { type: "string", description: "Permission request ID to deny" },
+        message: { type: "string", description: "Denial reason (default: 'Denied by user via mcpctl')" },
+      },
+      required: ["sessionId", "requestId"],
+    },
+  },
 ] as const;

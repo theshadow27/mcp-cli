@@ -185,6 +185,8 @@ export function useKeyboard({
 
     // -- Claude view --
     if (view === "claude") {
+      const selectedSession = claudeSessions[claudeSelectedIndex];
+
       // Navigate sessions
       if (key.upArrow || input === "k") {
         setClaudeSelectedIndex((i) => Math.max(0, i - 1));
@@ -197,21 +199,32 @@ export function useKeyboard({
 
       // Toggle transcript detail
       if (key.return) {
-        const session = claudeSessions[claudeSelectedIndex];
-        if (session) {
-          setExpandedSession(expandedSession === session.sessionId ? null : session.sessionId);
+        if (selectedSession) {
+          setExpandedSession(expandedSession === selectedSession.sessionId ? null : selectedSession.sessionId);
+        }
+        return;
+      }
+
+      // Approve / deny pending permission
+      if (input === "a" || input === "d") {
+        const perm = selectedSession?.pendingPermissionDetails?.[0];
+        if (perm) {
+          ipcCall("callTool", {
+            server: "_claude",
+            tool: input === "a" ? "claude_approve" : "claude_deny",
+            arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
+          }).catch(() => {});
         }
         return;
       }
 
       // End session
       if (input === "x") {
-        const session = claudeSessions[claudeSelectedIndex];
-        if (session) {
+        if (selectedSession) {
           ipcCall("callTool", {
             server: "_claude",
             tool: "claude_bye",
-            arguments: { sessionId: session.sessionId },
+            arguments: { sessionId: selectedSession.sessionId },
           }).catch(() => {});
           setExpandedSession(null);
         }
