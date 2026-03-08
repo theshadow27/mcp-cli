@@ -14,6 +14,7 @@
  *   { type: "db:end", sessionId }
  */
 
+import { resolveModelName } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -114,6 +115,7 @@ async function handlePrompt(
       permissionRules: rules,
       allowedTools,
       worktree: args.worktree as string | undefined,
+      model: args.model ? resolveModelName(args.model as string) : undefined,
     });
 
     // Post DB upsert

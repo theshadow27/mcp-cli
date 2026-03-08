@@ -6,7 +6,7 @@
  */
 
 import { join } from "node:path";
-import { ipcCall } from "@mcp-cli/core";
+import { ipcCall, resolveModelName } from "@mcp-cli/core";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJsonFlag } from "../parse";
 
@@ -134,6 +134,9 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
 
 // ── Subcommands ──
 
+// Re-export for tests
+export { MODEL_SHORTNAMES, resolveModelName } from "@mcp-cli/core";
+
 export interface SpawnArgs {
   task: string | undefined;
   worktree: string | undefined;
@@ -141,6 +144,7 @@ export interface SpawnArgs {
   allow: string[];
   cwd: string | undefined;
   timeout: number | undefined;
+  model: string | undefined;
   wait: boolean;
   error: string | undefined;
 }
@@ -151,6 +155,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let resume: string | undefined;
   let cwd: string | undefined;
   let timeout: number | undefined;
+  let model: string | undefined;
   let wait = false;
   const allow: string[] = [];
   let error: string | undefined;
@@ -189,6 +194,13 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
         timeout = Number(val);
         if (Number.isNaN(timeout)) error = "--timeout must be a number";
       }
+    } else if (arg === "--model" || arg === "-m") {
+      const val = args[++i];
+      if (!val) {
+        error = "--model requires a value";
+      } else {
+        model = resolveModelName(val);
+      }
     } else if (arg === "--wait") {
       wait = true;
     } else if (!arg.startsWith("-")) {
@@ -197,7 +209,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
     }
   }
 
-  return { task, worktree, resume, allow, cwd, timeout, wait, error };
+  return { task, worktree, resume, allow, cwd, timeout, model, wait, error };
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
@@ -221,6 +233,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
+  if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
 
   const result = await d.callTool("claude_prompt", toolArgs);
@@ -620,6 +633,7 @@ Usage:
 Spawn options:
   --task, -t "description"    Task prompt for Claude
   --wait                      Block until Claude produces a result
+  --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID (default: opus)
   --worktree, -w [name]       Git worktree isolation (auto-generates name if omitted)
   --resume <id>               Resume a previous session
   --allow <tools...>          Pre-approved tool patterns (default: Read Glob Grep Write Edit)
