@@ -14,7 +14,7 @@
  *   mcx status                                   # daemon status
  */
 
-import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
+import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
           printError("Usage: mcx search <query>");
           process.exit(1);
         }
-        const searchTools = (await ipcCall("grepTools", { pattern: searchPattern })) as ToolInfo[];
+        const searchTools = await ipcCall("grepTools", { pattern: searchPattern });
         if (searchTools.length > 0) {
           if (searchJson) {
             console.log(JSON.stringify(searchTools, null, 2));
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
         // Check if command matches an alias name → run it
         // Only check if daemon is already running to avoid 5s startup delay on typos
         if (!command.startsWith("-") && (await isDaemonRunning())) {
-          const alias = (await ipcCall("getAlias", { name: command })) as AliasDetail | null;
+          const alias = await ipcCall("getAlias", { name: command });
           if (alias) {
             const { runAlias } = await import("./alias-runner.js");
             const { jsonInput, cliArgs } = parseRunArgs(args.slice(1));
@@ -263,7 +263,7 @@ async function cmdLs(args: string[]): Promise<void> {
 
   if (serverName) {
     // List tools for a specific server
-    const tools = (await ipcCall("listTools", { server: serverName })) as ToolInfo[];
+    const tools = await ipcCall("listTools", { server: serverName });
     if (json) {
       console.log(JSON.stringify(tools, null, 2));
     } else {
@@ -271,7 +271,7 @@ async function cmdLs(args: string[]): Promise<void> {
     }
   } else {
     // List servers
-    const servers = (await ipcCall("listServers")) as ServerStatus[];
+    const servers = await ipcCall("listServers");
     if (json) {
       console.log(JSON.stringify(servers, null, 2));
     } else {
@@ -372,9 +372,7 @@ async function cmdInfo(args: string[]): Promise<void> {
   if (split && tool.includes("/")) {
     console.error(`Warning: tool name "${tool}" contains "/". Did you mean "${split[0]}/${tool.split("/")[0]}"?`);
   }
-  const info = (await ipcCall("getToolInfo", { server, tool })) as ToolInfo & {
-    inputSchema: Record<string, unknown>;
-  };
+  const info = await ipcCall("getToolInfo", { server, tool });
   if (json) {
     console.log(JSON.stringify(info, null, 2));
   } else {
@@ -391,7 +389,7 @@ async function cmdGrep(args: string[]): Promise<void> {
   }
 
   const pattern = rest.join(" ");
-  const tools = (await ipcCall("grepTools", { pattern })) as ToolInfo[];
+  const tools = await ipcCall("grepTools", { pattern });
   if (json) {
     console.log(JSON.stringify(tools, null, 2));
   } else {
@@ -401,7 +399,7 @@ async function cmdGrep(args: string[]): Promise<void> {
 
 async function cmdStatus(args: string[] = []): Promise<void> {
   const { json } = extractJsonFlag(args);
-  const status = (await ipcCall("status")) as DaemonStatus;
+  const status = await ipcCall("status");
 
   if (json) {
     console.log(JSON.stringify(status, null, 2));
@@ -421,7 +419,7 @@ async function cmdAuth(args: string[]): Promise<void> {
 
   const server = args[0];
   console.error(`Authenticating with ${server}...`);
-  const result = (await ipcCall("triggerAuth", { server })) as { ok: boolean; message: string };
+  const result = await ipcCall("triggerAuth", { server });
   console.error(result.message);
 }
 

@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import type { GetDaemonLogsResult, GetLogsResult, IpcMethod } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
 import { printError } from "../output";
 
@@ -22,7 +22,7 @@ export interface LogsArgs {
 }
 
 export interface LogsDeps {
-  ipcCall: (method: IpcMethod, params?: unknown) => Promise<unknown>;
+  ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   printError: (msg: string) => void;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   daemonLogPath: string;
@@ -104,7 +104,7 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
   const { follow, lines } = parsed;
 
   // Fetch initial batch
-  const result = (await d.ipcCall("getLogs", { server: serverName, limit: lines })) as GetLogsResult;
+  const result = await d.ipcCall("getLogs", { server: serverName, limit: lines });
 
   for (const entry of result.lines) {
     printLogLine(serverName, entry.timestamp, entry.line, d);
@@ -138,7 +138,7 @@ async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
   }
 
   // Follow mode: use IPC getDaemonLogs with adaptive backoff
-  const result = (await d.ipcCall("getDaemonLogs", { limit: lines })) as GetDaemonLogsResult;
+  const result = await d.ipcCall("getDaemonLogs", { limit: lines });
 
   for (const entry of result.lines) {
     printLogLine("mcpd", entry.timestamp, entry.line, d);

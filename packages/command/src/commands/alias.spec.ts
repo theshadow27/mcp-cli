@@ -8,7 +8,7 @@ import { DEFINE_ALIAS_SKELETON, cmdAlias, extractDefinitionName, extractDescript
 
 function makeDeps(overrides?: Partial<AliasDeps>): Partial<AliasDeps> {
   return {
-    ipcCall: mock(() => Promise.resolve(undefined)),
+    ipcCall: mock(() => Promise.resolve(undefined)) as AliasDeps["ipcCall"] as AliasDeps["ipcCall"],
     readFileWithLimit: mock(() => "file-content"),
     readStdin: mock(() => Promise.resolve("stdin-content")),
     printError: mock(() => {}),
@@ -117,7 +117,7 @@ describe("cmdAlias ls", () => {
       { name: "greet", description: "Say hi", filePath: "/a.ts", updatedAt: 1, aliasType: "freeform" },
     ];
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve(aliases)),
+      ipcCall: mock(() => Promise.resolve(aliases)) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["ls"], deps);
@@ -127,19 +127,19 @@ describe("cmdAlias ls", () => {
   });
 
   test("list is an alias for ls", async () => {
-    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) });
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) as AliasDeps["ipcCall"] });
     await cmdAlias(["list"], deps);
     expect(deps.ipcCall).toHaveBeenCalledWith("listAliases");
   });
 
   test("passes verbose flag with -v", async () => {
-    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) });
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) as AliasDeps["ipcCall"] });
     await cmdAlias(["ls", "-v"], deps);
     expect(deps.printAliasList).toHaveBeenCalledWith([], { verbose: true });
   });
 
   test("passes verbose flag with --verbose", async () => {
-    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) });
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) as AliasDeps["ipcCall"] });
     await cmdAlias(["ls", "--verbose"], deps);
     expect(deps.printAliasList).toHaveBeenCalledWith([], { verbose: true });
   });
@@ -150,7 +150,7 @@ describe("cmdAlias ls", () => {
 describe("cmdAlias save (standard)", () => {
   test("saves inline script", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "my-alias", "console.log('hi')"], deps);
@@ -165,7 +165,7 @@ describe("cmdAlias save (standard)", () => {
 
   test("joins multiple inline args", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "my-alias", "const", "x", "=", "1"], deps);
@@ -180,7 +180,7 @@ describe("cmdAlias save (standard)", () => {
   test("reads from file with @ prefix", async () => {
     const deps = makeDeps({
       readFileWithLimit: mock(() => "// description: from file\nfile content"),
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "my-alias", "@script.ts"], deps);
@@ -196,7 +196,7 @@ describe("cmdAlias save (standard)", () => {
   test("reads from stdin when source is -", async () => {
     const deps = makeDeps({
       readStdin: mock(() => Promise.resolve("stdin script")),
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "my-alias", "-"], deps);
@@ -212,7 +212,7 @@ describe("cmdAlias save (standard)", () => {
   test("reads from stdin when no source provided", async () => {
     const deps = makeDeps({
       readStdin: mock(() => Promise.resolve("stdin script")),
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "my-alias"], deps);
@@ -239,7 +239,7 @@ describe("cmdAlias save (standard)", () => {
 describe("cmdAlias save -c", () => {
   test("saves wrapped defineAlias with -c and positional name", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "greet", "-c", '{ name: "greet", fn: () => "hi" }'], deps);
@@ -252,7 +252,7 @@ describe("cmdAlias save -c", () => {
 
   test("extracts name from code body when no positional name", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "-c", '{ name: "auto-name", fn: () => {} }'], deps);
@@ -263,7 +263,7 @@ describe("cmdAlias save -c", () => {
 
   test("--code is alias for -c", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })),
+      ipcCall: mock(() => Promise.resolve({ ok: true, filePath: "/a.ts" })) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["save", "--code", '{ name: "test", fn: () => {} }'], deps);
@@ -299,7 +299,7 @@ describe("cmdAlias show", () => {
 
   test("prints alias script", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve(fakeAlias)),
+      ipcCall: mock(() => Promise.resolve(fakeAlias)) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["show", "greet"], deps);
@@ -310,7 +310,7 @@ describe("cmdAlias show", () => {
 
   test("calls printAliasDebug with --debug", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve(fakeAlias)),
+      ipcCall: mock(() => Promise.resolve(fakeAlias)) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["show", "greet", "--debug"], deps);
@@ -321,7 +321,7 @@ describe("cmdAlias show", () => {
 
   test("--debug flag can come before name", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve(fakeAlias)),
+      ipcCall: mock(() => Promise.resolve(fakeAlias)) as AliasDeps["ipcCall"],
     });
 
     await cmdAlias(["show", "--debug", "greet"], deps);
@@ -338,7 +338,7 @@ describe("cmdAlias show", () => {
 
   test("exits when alias not found", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve(null)),
+      ipcCall: mock(() => Promise.resolve(null)) as AliasDeps["ipcCall"],
     });
 
     await expect(cmdAlias(["show", "missing"], deps)).rejects.toThrow(ExitError);

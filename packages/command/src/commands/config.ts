@@ -17,7 +17,7 @@ export interface ConfigDeps {
 }
 
 const defaultDeps: ConfigDeps = {
-  getConfig: () => ipcCall("getConfig") as Promise<GetConfigResult>,
+  getConfig: () => ipcCall("getConfig"),
   readConfig: readConfigFile,
   writeConfig: writeConfigFile,
 };

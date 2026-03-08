@@ -6,7 +6,7 @@
  */
 
 import { IPC_REQUEST_TIMEOUT_MS, PING_TIMEOUT_MS, options } from "./constants";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse } from "./ipc";
+import type { IpcError, IpcMethod, IpcMethodResult, IpcRequest, IpcResponse } from "./ipc";
 import { nextId } from "./ipc";
 
 /**
@@ -80,14 +80,18 @@ export function rawFetch(body: { id: string; method: string; params?: unknown },
  * Send a single request to the daemon and return the response.
  * Does NOT auto-start the daemon — callers must ensure it is running.
  */
-export async function ipcCall(method: IpcMethod, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown> {
+export async function ipcCall<M extends IpcMethod>(
+  method: M,
+  params?: unknown,
+  opts?: { timeoutMs?: number },
+): Promise<IpcMethodResult[M]> {
   const request: IpcRequest = { id: nextId(), method, params };
   const response = await sendRequest(request, opts?.timeoutMs);
 
   if (response.error) {
     throw new IpcCallError(response.error);
   }
-  return response.result;
+  return response.result as IpcMethodResult[M];
 }
 
 /** Send a request via HTTP-over-Unix-socket and return the response */

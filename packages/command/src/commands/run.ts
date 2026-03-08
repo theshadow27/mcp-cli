@@ -6,7 +6,6 @@
  * --key value pairs are passed as CLI args (available in ctx.args).
  */
 
-import type { AliasDetail } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { runAlias } from "../alias-runner";
 import { printError } from "../output";
@@ -20,7 +19,7 @@ export async function cmdRun(args: string[]): Promise<void> {
 
   const { jsonInput, cliArgs } = parseRunArgs(args.slice(1));
 
-  const aliasInfo = (await ipcCall("getAlias", { name: aliasName })) as AliasDetail | null;
+  const aliasInfo = await ipcCall("getAlias", { name: aliasName });
   if (!aliasInfo) {
     printError(`Alias "${aliasName}" not found`);
     process.exit(1);

@@ -133,7 +133,7 @@ describe("checkRecursionGuard", () => {
 // -- handleListTools --
 
 describe("handleListTools", () => {
-  const mockIpc: IpcCaller = async (method: IpcMethod, params?: unknown) => {
+  const mockIpc = (async (method: IpcMethod, params?: unknown) => {
     if (method === "getToolInfo") {
       const p = params as { server: string; tool: string };
       return {
@@ -144,7 +144,7 @@ describe("handleListTools", () => {
       };
     }
     return null;
-  };
+  }) as IpcCaller;
 
   test("returns find and call meta-tools when no curated tools", async () => {
     const result = await handleListTools([], mockIpc);
@@ -165,9 +165,9 @@ describe("handleListTools", () => {
   });
 
   test("handles schema fetch failure gracefully", async () => {
-    const failIpc: IpcCaller = async (_method: IpcMethod) => {
+    const failIpc = (async (_method: IpcMethod) => {
       throw new Error("Connection refused");
-    };
+    }) as IpcCaller;
     const curated: CuratedTool[] = [{ name: "broken", server: "bad", tool: "broken" }];
     const result = await handleListTools(curated, failIpc);
     expect(result.tools).toHaveLength(3);
@@ -179,7 +179,7 @@ describe("handleListTools", () => {
 // -- handleCallTool --
 
 describe("handleCallTool", () => {
-  const mockIpc: IpcCaller = async (method: IpcMethod, params?: unknown) => {
+  const mockIpc = (async (method: IpcMethod, params?: unknown) => {
     if (method === "listTools") {
       return [
         { name: "search", server: "atlassian", description: "Search stuff" },
@@ -197,7 +197,7 @@ describe("handleCallTool", () => {
       };
     }
     return null;
-  };
+  }) as IpcCaller;
 
   const curated: CuratedTool[] = [{ name: "search", server: "atlassian", tool: "search" }];
 
@@ -214,7 +214,7 @@ describe("handleCallTool", () => {
   });
 
   test("find returns message when no tools found", async () => {
-    const emptyIpc: IpcCaller = async (_method: IpcMethod) => [];
+    const emptyIpc = (async (_method: IpcMethod) => []) as IpcCaller;
     const result = await handleCallTool("find", { q: "nonexistent" }, [], emptyIpc);
     expect(result.content[0].text).toBe("No tools found.");
   });
@@ -238,10 +238,10 @@ describe("handleCallTool", () => {
 
   test("call defaults input to empty object when omitted", async () => {
     let captured: Record<string, unknown> | undefined;
-    const capturingIpc: IpcCaller = async (_method: IpcMethod, params?: unknown) => {
+    const capturingIpc = (async (_method: IpcMethod, params?: unknown) => {
       captured = params as Record<string, unknown>;
       return { content: [{ type: "text", text: "ok" }] };
-    };
+    }) as IpcCaller;
     await handleCallTool("call", { tool: "s/t" }, [], capturingIpc);
     expect((captured as Record<string, unknown>).arguments).toEqual({});
   });
@@ -259,10 +259,10 @@ describe("handleCallTool", () => {
 
   test("curated tool passes arguments through", async () => {
     let captured: Record<string, unknown> | undefined;
-    const capturingIpc: IpcCaller = async (_method: IpcMethod, params?: unknown) => {
+    const capturingIpc = (async (_method: IpcMethod, params?: unknown) => {
       captured = params as Record<string, unknown>;
       return { content: [{ type: "text", text: "ok" }] };
-    };
+    }) as IpcCaller;
     await handleCallTool("search", { query: "test" }, curated, capturingIpc);
     expect((captured as Record<string, unknown>).arguments).toEqual({ query: "test" });
     expect((captured as Record<string, unknown>).server).toBe("atlassian");
@@ -288,10 +288,10 @@ describe("meta-tool definitions", () => {
 
 describe("computeToolsFingerprint", () => {
   test("returns consistent hash for same tool list", async () => {
-    const ipc: IpcCaller = async () => [
+    const ipc = (async () => [
       { name: "search", server: "atlassian", description: "Search" },
       { name: "echo", server: "test", description: "Echo" },
-    ];
+    ]) as IpcCaller;
     const a = await computeToolsFingerprint(ipc);
     const b = await computeToolsFingerprint(ipc);
     expect(a).toBe(b);
@@ -299,23 +299,23 @@ describe("computeToolsFingerprint", () => {
   });
 
   test("returns same hash regardless of order", async () => {
-    const ipcA: IpcCaller = async () => [
+    const ipcA = (async () => [
       { name: "search", server: "atlassian", description: "Search" },
       { name: "echo", server: "test", description: "Echo" },
-    ];
-    const ipcB: IpcCaller = async () => [
+    ]) as IpcCaller;
+    const ipcB = (async () => [
       { name: "echo", server: "test", description: "Echo" },
       { name: "search", server: "atlassian", description: "Search" },
-    ];
+    ]) as IpcCaller;
     expect(await computeToolsFingerprint(ipcA)).toBe(await computeToolsFingerprint(ipcB));
   });
 
   test("returns different hash when tools change", async () => {
-    const ipcBefore: IpcCaller = async () => [{ name: "search", server: "atlassian", description: "Search" }];
-    const ipcAfter: IpcCaller = async () => [
+    const ipcBefore = (async () => [{ name: "search", server: "atlassian", description: "Search" }]) as IpcCaller;
+    const ipcAfter = (async () => [
       { name: "search", server: "atlassian", description: "Search" },
       { name: "echo", server: "test", description: "Echo" },
-    ];
+    ]) as IpcCaller;
     const before = await computeToolsFingerprint(ipcBefore);
     const after = await computeToolsFingerprint(ipcAfter);
     expect(before).not.toBe(after);
@@ -335,7 +335,7 @@ describe("startToolListPoller", () => {
         { name: "echo", server: "test", description: "Echo" },
       ],
     ];
-    const ipc: IpcCaller = async () => tools[Math.min(callCount++, tools.length - 1)];
+    const ipc = (async () => tools[Math.min(callCount++, tools.length - 1)]) as IpcCaller;
 
     const notifications: string[] = [];
     const notifier: ToolListNotifier = {
@@ -353,7 +353,7 @@ describe("startToolListPoller", () => {
   });
 
   test("does not notify when tool list is unchanged", async () => {
-    const ipc: IpcCaller = async () => [{ name: "search", server: "atlassian", description: "Search" }];
+    const ipc = (async () => [{ name: "search", server: "atlassian", description: "Search" }]) as IpcCaller;
 
     const notifications: string[] = [];
     const notifier: ToolListNotifier = {
@@ -371,11 +371,11 @@ describe("startToolListPoller", () => {
 
   test("handles IPC errors gracefully without crashing", async () => {
     let callCount = 0;
-    const ipc: IpcCaller = async () => {
+    const ipc = (async () => {
       callCount++;
       if (callCount === 2) throw new Error("daemon unreachable");
       return [{ name: "search", server: "atlassian", description: "Search" }];
-    };
+    }) as IpcCaller;
 
     const notifier: ToolListNotifier = {
       notification: async () => {},
@@ -391,10 +391,10 @@ describe("startToolListPoller", () => {
 
   test("cleanup function stops polling", async () => {
     let callCount = 0;
-    const ipc: IpcCaller = async () => {
+    const ipc = (async () => {
       callCount++;
       return [];
-    };
+    }) as IpcCaller;
 
     const notifier: ToolListNotifier = {
       notification: async () => {},

@@ -7,7 +7,7 @@ import { cmdLogs, pad2, pad3, parseLogsArgs, printLogLine } from "./logs";
 
 function makeDeps(overrides?: Partial<LogsDeps>): Partial<LogsDeps> {
   return {
-    ipcCall: mock(() => Promise.resolve({ lines: [] })),
+    ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
     printError: mock(() => {}),
     readFileSync: mock(() => ""),
     daemonLogPath: "/tmp/test-mcpd.log",
@@ -197,7 +197,7 @@ describe("cmdLogs server (no follow)", () => {
             { timestamp: new Date(2024, 0, 1, 10, 0, 1, 0).getTime(), line: "second" },
           ],
         }),
-      ),
+      ) as LogsDeps["ipcCall"],
       writeStderr: (msg: string) => output.push(msg),
     });
 
@@ -211,7 +211,7 @@ describe("cmdLogs server (no follow)", () => {
 
   test("respects --lines option", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
     });
 
     await cmdLogs(["myserver", "--lines", "10"], deps);
@@ -222,7 +222,7 @@ describe("cmdLogs server (no follow)", () => {
   test("handles empty log lines", async () => {
     const output: string[] = [];
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
       writeStderr: (msg: string) => output.push(msg),
     });
 
@@ -236,7 +236,7 @@ describe("cmdLogs server (no follow)", () => {
 describe("cmdLogs server (follow)", () => {
   test("starts polling after initial fetch", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
     });
 
     await cmdLogs(["myserver", "-f"], deps);
@@ -252,7 +252,7 @@ describe("cmdLogs server (follow)", () => {
         Promise.resolve({
           lines: [{ timestamp: Date.now(), line: "initial" }],
         }),
-      ),
+      ) as LogsDeps["ipcCall"],
       writeStderr: (msg: string) => output.push(msg),
     });
 
@@ -270,7 +270,7 @@ describe("cmdLogs server (follow)", () => {
     const deps = makeDeps({
       ipcCall: mock()
         .mockResolvedValueOnce({ lines: [{ timestamp: ts, line: "initial" }] }) // initial fetch
-        .mockResolvedValueOnce({ lines: [{ timestamp: ts + 1000, line: "polled" }] }), // poll
+        .mockResolvedValueOnce({ lines: [{ timestamp: ts + 1000, line: "polled" }] }) as LogsDeps["ipcCall"], // poll
       writeStderr: (msg: string) => output.push(msg),
       schedule: mock((fn: () => void) => {
         scheduledFns.push(fn);
@@ -293,7 +293,7 @@ describe("cmdLogs server (follow)", () => {
     const scheduledDelays: number[] = [];
 
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
       schedule: mock((fn: () => void, ms: number) => {
         scheduledFns.push(fn);
         scheduledDelays.push(ms);
@@ -317,7 +317,7 @@ describe("cmdLogs server (follow)", () => {
     const deps = makeDeps({
       ipcCall: mock()
         .mockResolvedValueOnce({ lines: [] }) // initial fetch
-        .mockRejectedValueOnce(new Error("connection lost")), // poll error
+        .mockRejectedValueOnce(new Error("connection lost")) as LogsDeps["ipcCall"], // poll error
       schedule: mock((fn: () => void, ms: number) => {
         scheduledFns.push(fn);
         scheduledDelays.push(ms);
@@ -337,7 +337,7 @@ describe("cmdLogs server (follow)", () => {
     let sigintHandler: (() => void) | undefined;
 
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
       onSigint: mock((fn: () => void) => {
         sigintHandler = fn;
       }),
@@ -408,7 +408,7 @@ describe("cmdLogs --daemon (follow)", () => {
         Promise.resolve({
           lines: [{ timestamp: Date.now(), line: "daemon line" }],
         }),
-      ),
+      ) as LogsDeps["ipcCall"],
       writeStderr: (msg: string) => output.push(msg),
     });
 
@@ -423,7 +423,7 @@ describe("cmdLogs --daemon (follow)", () => {
 
   test("respects --lines with --daemon -f", async () => {
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
     });
 
     await cmdLogs(["--daemon", "-f", "--lines", "20"], deps);
@@ -438,7 +438,9 @@ describe("cmdLogs --daemon (follow)", () => {
     const deps = makeDeps({
       ipcCall: mock()
         .mockResolvedValueOnce({ lines: [{ timestamp: ts, line: "init" }] })
-        .mockResolvedValueOnce({ lines: [{ timestamp: ts + 1000, line: "polled-daemon" }] }),
+        .mockResolvedValueOnce({
+          lines: [{ timestamp: ts + 1000, line: "polled-daemon" }],
+        }) as unknown as LogsDeps["ipcCall"],
       writeStderr: (msg: string) => output.push(msg),
       schedule: mock((fn: () => void) => {
         scheduledFns.push(fn);
@@ -458,7 +460,7 @@ describe("cmdLogs --daemon (follow)", () => {
     const scheduledDelays: number[] = [];
 
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
       schedule: mock((fn: () => void, ms: number) => {
         scheduledFns.push(fn);
         scheduledDelays.push(ms);
@@ -478,7 +480,9 @@ describe("cmdLogs --daemon (follow)", () => {
     const scheduledDelays: number[] = [];
 
     const deps = makeDeps({
-      ipcCall: mock().mockResolvedValueOnce({ lines: [] }).mockRejectedValueOnce(new Error("ipc error")),
+      ipcCall: mock()
+        .mockResolvedValueOnce({ lines: [] })
+        .mockRejectedValueOnce(new Error("ipc error")) as unknown as LogsDeps["ipcCall"],
       schedule: mock((fn: () => void, ms: number) => {
         scheduledFns.push(fn);
         scheduledDelays.push(ms);
@@ -497,7 +501,7 @@ describe("cmdLogs --daemon (follow)", () => {
     let sigintHandler: (() => void) | undefined;
 
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })),
+      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
       onSigint: mock((fn: () => void) => {
         sigintHandler = fn;
       }),

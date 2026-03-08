@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { CompletionDeps } from "./completions";
 import {
   ALIAS_SUBCOMMANDS,
   CONFIG_SUBCOMMANDS,
@@ -159,7 +160,7 @@ describe("daemon guard", () => {
   test("completion helpers do not call ipcCall when daemon is not running", async () => {
     const ipcCallMock = mock(() => Promise.resolve([]));
     const isDaemonRunningMock = mock(() => Promise.resolve(false));
-    const deps = { ipcCall: ipcCallMock, isDaemonRunning: isDaemonRunningMock };
+    const deps = { ipcCall: ipcCallMock as CompletionDeps["ipcCall"], isDaemonRunning: isDaemonRunningMock };
 
     // --servers
     await cmdCompletions(["--servers"], deps);

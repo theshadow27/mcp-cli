@@ -25,7 +25,7 @@ export function useDaemon(intervalMs = 2500): UseDaemonResult {
 
     async function poll() {
       try {
-        const result = (await ipcCall("status")) as DaemonStatus;
+        const result = await ipcCall("status");
         if (!cancelled) {
           setStatus(result);
           setError(null);

@@ -13,7 +13,7 @@ interface TestState {
 function testDeps(overrides?: Partial<MailDeps>): MailDeps & { state: TestState } {
   const state: TestState = { stdout: "", stderr: "", errors: [], exitCode: undefined };
   const deps: MailDeps = {
-    ipcCall: async () => ({}),
+    ipcCall: (async () => ({})) as MailDeps["ipcCall"],
     printError: (msg: string) => state.errors.push(msg),
     writeStdout: (msg: string) => {
       state.stdout += msg;
@@ -142,10 +142,10 @@ describe("cmdMail", () => {
     const d = testDeps({
       isTTY: false,
       readStdin: async () => "stuck on type error",
-      ipcCall: async (method: IpcMethod, params?: unknown) => {
+      ipcCall: (async (method: IpcMethod, params?: unknown) => {
         ipcParams = params;
         return { id: 1 };
-      },
+      }) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-s", "stuck", "manager"], d);
@@ -163,10 +163,10 @@ describe("cmdMail", () => {
     const d = testDeps({
       isTTY: false,
       readStdin: async () => "body",
-      ipcCall: async (_method: IpcMethod, params?: unknown) => {
+      ipcCall: (async (_method: IpcMethod, params?: unknown) => {
         ipcParams = params;
         return { id: 1 };
-      },
+      }) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["--from=wt-262", "-s", "done", "manager"], d);
@@ -185,10 +185,10 @@ describe("cmdMail", () => {
       createdAt: "2025-01-01 00:00:00",
     };
     const d = testDeps({
-      ipcCall: async (method: IpcMethod) => {
+      ipcCall: (async (method: IpcMethod) => {
         if (method === "readMail") return { messages: [msg] };
         return {};
-      },
+      }) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-H"], d);
@@ -199,7 +199,7 @@ describe("cmdMail", () => {
 
   test("read mode shows no mail message", async () => {
     const d = testDeps({
-      ipcCall: async () => ({ messages: [] }),
+      ipcCall: (async () => ({ messages: [] })) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-H"], d);
@@ -211,13 +211,13 @@ describe("cmdMail", () => {
     const d = testDeps({
       isTTY: false,
       readStdin: async () => "looks good",
-      ipcCall: async (method: IpcMethod, params?: unknown) => {
+      ipcCall: (async (method: IpcMethod, params?: unknown) => {
         if (method === "replyToMail") {
           ipcParams = params;
           return { id: 2 };
         }
         return {};
-      },
+      }) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-r", "1", "-s", "approved"], d);
@@ -252,7 +252,7 @@ describe("cmdMail", () => {
       createdAt: "2025-01-01 00:00:00",
     };
     const d = testDeps({
-      ipcCall: async () => ({ message: msg }),
+      ipcCall: (async () => ({ message: msg })) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["--wait", "--for=wt-262", "--timeout=5"], d);
@@ -266,10 +266,10 @@ describe("cmdMail", () => {
     const start = Date.now();
     const d = testDeps({
       now: () => start + callCount * 31_000, // Each call advances 31s past the 30s server timeout
-      ipcCall: async () => {
+      ipcCall: (async () => {
         callCount++;
         return { message: null };
-      },
+      }) as MailDeps["ipcCall"],
     });
 
     await expect(cmdMail(["--wait", "--timeout=5"], d)).rejects.toThrow("exit(1)");
