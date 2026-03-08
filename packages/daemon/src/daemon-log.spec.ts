@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { options } from "@mcp-cli/core";
 import { closeDaemonLogFile, getDaemonLogLines, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 
 // installDaemonLogCapture is a one-time singleton, so install once for all tests.
@@ -103,7 +104,7 @@ describe("daemon-log file", () => {
     installDaemonLogFile({ path: logPath, backupPath, maxBytes: 100 });
 
     // Write enough lines to exceed 100 bytes and trigger the amortized rotation check
-    for (let i = 0; i < 70; i++) {
+    for (let i = 0; i < options.LOG_ROTATION_CHECK_INTERVAL + 10; i++) {
       console.error(`rotation-line-${i}-${"x".repeat(20)}`);
     }
 

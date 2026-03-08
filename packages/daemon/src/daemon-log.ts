@@ -20,7 +20,6 @@ let logFd: number | null = null;
 let logPath: string = options.DAEMON_LOG_PATH;
 let logBackupPath: string = options.DAEMON_LOG_BACKUP_PATH;
 let logMaxBytes: number = DAEMON_LOG_MAX_BYTES;
-const LOG_ROTATION_CHECK_INTERVAL = 64;
 let logWriteCount = 0;
 
 /** Intercept console.error to capture daemon logs. Call once at startup. */
@@ -51,6 +50,7 @@ export function installDaemonLogFile(opts?: {
   if (opts?.path) logPath = opts.path;
   if (opts?.backupPath) logBackupPath = opts.backupPath;
   if (opts?.maxBytes !== undefined) logMaxBytes = opts.maxBytes;
+  logWriteCount = 0;
   logFd = openSync(logPath, "a");
 }
 
@@ -74,7 +74,7 @@ export function getDaemonLogLines(limit?: number): StderrLine[] {
 function writeToLogFile(line: string): void {
   if (logFd === null) return;
   try {
-    if (++logWriteCount >= LOG_ROTATION_CHECK_INTERVAL) {
+    if (++logWriteCount >= options.LOG_ROTATION_CHECK_INTERVAL) {
       logWriteCount = 0;
       rotateIfNeeded();
     }

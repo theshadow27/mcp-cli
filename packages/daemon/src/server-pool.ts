@@ -460,12 +460,17 @@ export class ServerPool {
     } else {
       // Restart all connected servers in parallel
       const connected = [...this.connections.entries()].filter(([, c]) => c.state === "connected");
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         connected.map(async ([serverName]) => {
           await this.disconnect(serverName);
           await this.ensureConnected(serverName);
         }),
       );
+      for (const [i, result] of results.entries()) {
+        if (result.status === "rejected") {
+          console.error(`[pool] Failed to restart "${connected[i][0]}": ${result.reason}`);
+        }
+      }
     }
   }
 
