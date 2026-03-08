@@ -1,22 +1,12 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ConfigSource, McpConfigFile, ResolvedConfig, ResolvedServer, ServerConfig } from "@mcp-cli/core";
+import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
 import { projectConfigPath } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
+import { makeConfig } from "../test-helpers";
 import { configHash } from "./loader";
 import { type ConfigChangeEvent, ConfigWatcher } from "./watcher";
-
-const testSource: ConfigSource = { file: "/test", scope: "user" };
-
-/** Build a minimal ResolvedConfig for testing. */
-function makeConfig(servers: Record<string, { command: string }>): ResolvedConfig {
-  const map = new Map<string, ResolvedServer>();
-  for (const [name, config] of Object.entries(servers)) {
-    map.set(name, { name, config, source: testSource });
-  }
-  return { servers: map, sources: [] };
-}
 
 /** Build an McpConfigFile from server entries */
 function mcpConfig(servers: Record<string, ServerConfig>): McpConfigFile {

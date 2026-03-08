@@ -1,14 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
+import { ExitError } from "../test-helpers";
 import type { LogsDeps } from "./logs";
 import { cmdLogs, pad2, pad3, parseLogsArgs, printLogLine } from "./logs";
 
 /* ── helpers ─────────────────────────────────────────────────────── */
-
-class ExitError extends Error {
-  constructor(public code: number) {
-    super(`process.exit(${code})`);
-  }
-}
 
 function makeDeps(overrides?: Partial<LogsDeps>): Partial<LogsDeps> {
   return {

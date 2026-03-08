@@ -1,12 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type {
-  ConfigSource,
-  HttpServerConfig,
-  ResolvedConfig,
-  ResolvedServer,
-  SseServerConfig,
-  StdioServerConfig,
-} from "@mcp-cli/core";
+import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import {
   BASE_ENV_ALLOWLIST,
   ServerPool,
@@ -15,21 +8,11 @@ import {
   isTransientCallError,
   wrapTransportError,
 } from "./server-pool";
+import { makeConfig, makeMockTransport } from "./test-helpers";
 
 const stdio: StdioServerConfig = { command: "npx", args: ["-y", "my-server"] };
 const http: HttpServerConfig = { type: "http", url: "https://example.com/mcp" };
 const sse: SseServerConfig = { type: "sse", url: "https://sse.example.com/events" };
-
-const testSource: ConfigSource = { file: "/test", scope: "user" };
-
-/** Build a minimal ResolvedConfig for testing. */
-function makeConfig(servers: Record<string, StdioServerConfig>): ResolvedConfig {
-  const map = new Map<string, ResolvedServer>();
-  for (const [name, config] of Object.entries(servers)) {
-    map.set(name, { name, config, source: testSource });
-  }
-  return { servers: map, sources: [] };
-}
 
 function errWithCode(message: string, code: string): Error {
   const e = new Error(message);
@@ -605,16 +588,6 @@ function getConn(pool: ServerPool, name: string): Record<string, unknown> {
   const conn = getPoolInternals(pool).connections.get(name);
   if (!conn) throw new Error(`Connection "${name}" not found in pool`);
   return conn;
-}
-
-function makeMockTransport() {
-  return {
-    close: mock(() => Promise.resolve()),
-    start: mock(() => Promise.resolve()),
-    send: mock(() => Promise.resolve()),
-    onclose: undefined as (() => void) | undefined,
-    onerror: undefined as ((err: Error) => void) | undefined,
-  };
 }
 
 describe("ServerPool.callTool auto-retry", () => {

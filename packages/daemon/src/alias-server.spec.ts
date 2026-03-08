@@ -1,31 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ConfigSource, ResolvedConfig, ResolvedServer, StdioServerConfig } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { ALIAS_SERVER_NAME, AliasServer, buildAliasToolCache } from "./alias-server";
 import { StateDb } from "./db/state";
 import { ServerPool } from "./server-pool";
-
-const testSource: ConfigSource = { file: "/test", scope: "user" };
-
-function makeConfig(servers: Record<string, StdioServerConfig>): ResolvedConfig {
-  const map = new Map<string, ResolvedServer>();
-  for (const [name, config] of Object.entries(servers)) {
-    map.set(name, { name, config, source: testSource });
-  }
-  return { servers: map, sources: [] };
-}
-
-function makeMockTransport() {
-  return {
-    close: mock(() => Promise.resolve()),
-    start: mock(() => Promise.resolve()),
-    send: mock(() => Promise.resolve()),
-    onclose: undefined as (() => void) | undefined,
-    onerror: undefined as ((err: Error) => void) | undefined,
-  };
-}
+import { makeConfig, makeMockTransport } from "./test-helpers";
 
 function makeMockClient() {
   return {
