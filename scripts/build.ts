@@ -4,6 +4,9 @@ import { resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
 
+// Ensure deps are installed (fast no-op when already present)
+await $`bun install`.quiet();
+
 const TARGETS = ["bun-darwin-arm64", "bun-darwin-x64", "bun-linux-x64", "bun-linux-arm64"] as const;
 
 const args = process.argv.slice(2);
