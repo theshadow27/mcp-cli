@@ -10,7 +10,7 @@ export interface AuthStatus {
 
 interface AuthBannerProps {
   servers: ServerStatus[];
-  authStatus?: AuthStatus | null;
+  authStatus: AuthStatus | null;
 }
 
 export function isAuthError(error?: string): boolean {

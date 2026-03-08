@@ -4,6 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type LogSource = { type: "daemon" } | { type: "server"; name: string };
 
+/** Build the ordered list of log sources: daemon + one per server. */
+export function buildLogSources(servers: ServerStatus[]): LogSource[] {
+  return [{ type: "daemon" }, ...servers.map((s) => ({ type: "server" as const, name: s.name }))];
+}
+
 /** Case-insensitive substring filter for log entries. */
 export function filterLogLines(lines: LogEntry[], filterText: string): LogEntry[] {
   if (!filterText) return lines;
@@ -19,7 +24,6 @@ interface UseLogsResult {
   lines: LogEntry[];
   source: LogSource;
   setSource: (source: LogSource) => void;
-  clear: () => void;
 }
 
 export function useLogs(servers: ServerStatus[]): UseLogsResult {
@@ -95,5 +99,5 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
     };
   }, [source]);
 
-  return { lines, source, setSource, clear };
+  return { lines, source, setSource };
 }
