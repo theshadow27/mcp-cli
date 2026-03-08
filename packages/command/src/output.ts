@@ -5,7 +5,7 @@
  */
 
 import { type JsonSchema, formatAliasSignature, jsonSchemaToTs } from "@mcp-cli/core";
-import type { AliasDetail } from "@mcp-cli/core";
+import type { AliasDetail, AliasType } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client";
 
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -162,7 +162,7 @@ export function printAliasList(
     description: string;
     filePath: string;
     updatedAt: number;
-    aliasType?: "freeform" | "defineAlias";
+    aliasType?: AliasType;
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
   }>,
