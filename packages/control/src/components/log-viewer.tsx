@@ -1,7 +1,7 @@
 import type { LogEntry, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { LogSource } from "../hooks/use-logs.js";
+import { type LogSource, buildLogSources } from "../hooks/use-logs.js";
 
 interface LogViewerProps {
   lines: LogEntry[];
@@ -27,8 +27,7 @@ function formatTime(ts: number): string {
 }
 
 export function LogViewer({ lines, source, servers, scrollOffset, height, filterText, totalCount }: LogViewerProps) {
-  // Build source tabs
-  const sources: LogSource[] = [{ type: "daemon" }, ...servers.map((s) => ({ type: "server" as const, name: s.name }))];
+  const sources = buildLogSources(servers);
 
   const currentLabel = sourceLabel(source);
 

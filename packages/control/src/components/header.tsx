@@ -52,26 +52,39 @@ export function Header({ status, error }: HeaderProps) {
 
       <Text>
         <Text dimColor>Servers: </Text>
-        {connected > 0 && <Text color="green">{connected} connected</Text>}
-        {connecting > 0 && (
-          <Text>
-            {connected > 0 && <Text dimColor>, </Text>}
-            <Text color="yellow">{connecting} connecting</Text>
-          </Text>
+        {servers.length === 0 ? (
+          <Text dimColor>none</Text>
+        ) : (
+          [
+            connected > 0 && (
+              <Text key="connected" color="green">
+                {connected} connected
+              </Text>
+            ),
+            connecting > 0 && (
+              <Text key="connecting" color="yellow">
+                {connecting} connecting
+              </Text>
+            ),
+            errored > 0 && (
+              <Text key="errored" color="red">
+                {errored} error
+              </Text>
+            ),
+            disconnected > 0 && (
+              <Text key="disconnected" dimColor>
+                {disconnected} disconnected
+              </Text>
+            ),
+          ]
+            .filter(Boolean)
+            .map((el, i, arr) => (
+              <React.Fragment key={(el as React.ReactElement).key}>
+                {i > 0 && <Text dimColor>, </Text>}
+                {el}
+              </React.Fragment>
+            ))
         )}
-        {errored > 0 && (
-          <Text>
-            {(connected > 0 || connecting > 0) && <Text dimColor>, </Text>}
-            <Text color="red">{errored} error</Text>
-          </Text>
-        )}
-        {disconnected > 0 && (
-          <Text>
-            {(connected > 0 || connecting > 0 || errored > 0) && <Text dimColor>, </Text>}
-            <Text dimColor>{disconnected} disconnected</Text>
-          </Text>
-        )}
-        {servers.length === 0 && <Text dimColor>none</Text>}
       </Text>
 
       {totalCalls > 0 && (

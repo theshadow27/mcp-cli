@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { filterLogLines } from "../hooks/use-logs";
+import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
 import { formatUptime } from "./header";
 import { formatRelativeTime } from "./server-detail";
@@ -100,6 +100,21 @@ describe("filterLogLines", () => {
     const result = filterLogLines(lines, "Cache");
     expect(result).toHaveLength(1);
     expect(result[0].line).toBe("DEBUG: cache miss");
+  });
+});
+
+describe("buildLogSources", () => {
+  it("returns daemon-only when no servers", () => {
+    expect(buildLogSources([])).toEqual([{ type: "daemon" }]);
+  });
+
+  it("returns daemon + one entry per server", () => {
+    const servers = [
+      { name: "a", state: "connected" },
+      { name: "b", state: "error" },
+    ] as import("@mcp-cli/core").ServerStatus[];
+    const result = buildLogSources(servers);
+    expect(result).toEqual([{ type: "daemon" }, { type: "server", name: "a" }, { type: "server", name: "b" }]);
   });
 });
 

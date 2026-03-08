@@ -3,12 +3,12 @@ import React from "react";
 import type { View } from "../hooks/use-keyboard.js";
 
 interface FooterProps {
-  view?: View;
-  filterMode?: boolean;
-  filterText?: string;
+  view: View;
+  filterMode: boolean;
+  filterText: string;
 }
 
-export function Footer({ view = "servers", filterMode, filterText }: FooterProps) {
+export function Footer({ view, filterMode, filterText }: FooterProps) {
   if (filterMode) {
     return (
       <Box marginTop={1}>

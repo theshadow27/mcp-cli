@@ -2,7 +2,7 @@ import type { ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
-import type { LogSource } from "./use-logs";
+import { type LogSource, buildLogSources } from "./use-logs";
 
 export type View = "servers" | "logs";
 
@@ -116,10 +116,7 @@ export function useKeyboard({
 
       // Cycle log source
       if (key.tab) {
-        const sources: LogSource[] = [
-          { type: "daemon" },
-          ...servers.map((s) => ({ type: "server" as const, name: s.name })),
-        ];
+        const sources = buildLogSources(servers);
         const currentIdx = sources.findIndex((s) => {
           if (s.type === "daemon" && logSource.type === "daemon") return true;
           if (s.type === "server" && logSource.type === "server" && s.name === logSource.name) return true;
