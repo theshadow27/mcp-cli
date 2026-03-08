@@ -251,6 +251,13 @@ export class ClaudeWsServer {
     this.sendToWs(session, outbound);
   }
 
+  /** Gracefully end a session: close WS, stop process, clean up. */
+  bye(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`No session with id ${sessionId}`);
+    this.terminateSession(sessionId, session, "Session ended by user");
+  }
+
   /** List all sessions. */
   listSessions(): SessionInfo[] {
     return [...this.sessions.entries()].map(([sessionId, s]) => this.buildSessionInfo(sessionId, s));
@@ -506,8 +513,14 @@ function defaultSpawn(
   cmd: string[],
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
 ): { pid: number; exited: Promise<number>; kill: (signal?: number) => void } {
+  // Strip CLAUDECODE env var so the spawned claude process doesn't think
+  // it's a nested session and refuse to start.
+  const env = { ...process.env };
+  env.CLAUDECODE = undefined;
+
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
+    env,
     stdout: opts.stdout === "ignore" ? null : "pipe",
     stderr: opts.stderr === "ignore" ? null : "pipe",
     stdin: opts.stdin === "ignore" ? null : "pipe",

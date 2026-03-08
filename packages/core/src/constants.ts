@@ -133,19 +133,25 @@ export const DAEMON_START_TIMEOUT_MS = 5_000;
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
 
-/** Daemon health-check ping timeout (ms) */
-export const PING_TIMEOUT_MS = 2_000;
+/** Daemon health-check ping timeout (ms) — must tolerate brief event loop stalls */
+export const PING_TIMEOUT_MS = 5_000;
 
 /** Max PID file age before treating as stale (ms) — 7 days */
 export const PID_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Connection retry defaults */
-export const CONNECT_MAX_RETRIES = 3;
+/**
+ * Connection retry defaults.
+ *
+ * Budget must fit inside IPC_REQUEST_TIMEOUT_MS (60s):
+ *   worst case = (MAX_RETRIES + 1) × CONNECT_TIMEOUT + sum(backoff delays)
+ *             = 3 × 15s + 1s + 2s = 48s < 60s
+ */
+export const CONNECT_MAX_RETRIES = 2;
 export const CONNECT_INITIAL_DELAY_MS = 1_000;
 export const CONNECT_MAX_DELAY_MS = 15_000;
 
 /** MCP server connect timeout (ms) — how long to wait for client.connect() */
-export const CONNECT_TIMEOUT_MS = 30_000;
+export const CONNECT_TIMEOUT_MS = 15_000;
 
 /** Max daemon log file size before rotation (5 MB) */
 export const DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024;

@@ -47,11 +47,11 @@ const IPC_RPC_URL = "http://localhost/rpc";
  * Send a single request to the daemon and return the response.
  * Auto-starts the daemon if it's not running.
  */
-export async function ipcCall(method: IpcMethod, params?: unknown): Promise<unknown> {
+export async function ipcCall(method: IpcMethod, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown> {
   await ensureDaemon();
 
   const request: IpcRequest = { id: nextId(), method, params };
-  const response = await sendRequest(request);
+  const response = await sendRequest(request, opts?.timeoutMs);
 
   if (response.error) {
     throw new IpcCallError(response.error);
@@ -60,13 +60,13 @@ export async function ipcCall(method: IpcMethod, params?: unknown): Promise<unkn
 }
 
 /** Send a request via HTTP-over-Unix-socket and return the response */
-async function sendRequest(request: IpcRequest): Promise<IpcResponse> {
+async function sendRequest(request: IpcRequest, timeoutMs?: number): Promise<IpcResponse> {
   const res = await fetch(IPC_RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
     unix: options.SOCKET_PATH,
-    signal: AbortSignal.timeout(IPC_REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs ?? IPC_REQUEST_TIMEOUT_MS),
   } as RequestInit);
 
   if (!res.ok) {
