@@ -9,7 +9,15 @@ interface UseClaudeSessionsResult {
   error: string | null;
 }
 
-export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeSessionsResult {
+export interface UseClaudeSessionsOptions {
+  intervalMs?: number;
+  enabled?: boolean;
+  /** Override ipcCall for testing (dependency injection). */
+  ipcCallFn?: typeof ipcCall;
+}
+
+export function useClaudeSessions(opts: UseClaudeSessionsOptions = {}): UseClaudeSessionsResult {
+  const { intervalMs = 2500, enabled = true, ipcCallFn = ipcCall } = opts;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +30,7 @@ export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeS
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCall("callTool", {
+        const result = await ipcCallFn("callTool", {
           server: "_claude",
           tool: "claude_session_list",
           arguments: {},
@@ -54,7 +62,7 @@ export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeS
       cancelled = true;
       clearInterval(id);
     };
-  }, [intervalMs, enabled]);
+  }, [intervalMs, enabled, ipcCallFn]);
 
   return { sessions, loading, error };
 }

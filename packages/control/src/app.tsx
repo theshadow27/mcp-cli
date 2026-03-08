@@ -31,7 +31,11 @@ export function App() {
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
-  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(view === "claude" ? 2500 : 10_000);
+  const {
+    sessions,
+    loading: claudeLoading,
+    error: claudeError,
+  } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
