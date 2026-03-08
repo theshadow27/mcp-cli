@@ -86,6 +86,16 @@ The orchestrator's job is to keep the pipeline saturated, not to watch progress 
 
 **Never implement directly.** The orchestrator must not write code, edit files, or fix bugs itself — always delegate to a spawned session. Direct implementation eats the orchestrator's context window and prevents it from managing the pipeline. If something needs fixing, spawn a session or file an issue.
 
+## Periodic Review
+
+For large feature blocks (3+ related issues), periodically spawn a review session to assess overall coherence:
+
+```bash
+mcx claude spawn --worktree -t "Review the recent PRs for [feature area]. Check for: architectural consistency across PRs, missed integration points, duplicated patterns, and anything that looks like it's heading down a wrong path. File issues for any problems found." --allow Read Glob Grep Bash
+```
+
+This catches integration issues early — before multiple sessions build on top of a flawed foundation. Launch a review after every 3-4 issues in the same feature area merge, or whenever a session's cost exceeds $15 (sign of complexity/struggle).
+
 ## Issue discipline
 
 **Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. That means every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
