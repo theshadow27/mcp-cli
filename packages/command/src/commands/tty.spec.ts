@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliConfig } from "@mcp-cli/core";
+import { ExitError } from "../test-helpers";
 import type { TerminalAdapter } from "../tty/adapter";
 import { TERMINAL_NAMES, getAdapter } from "../tty/adapter";
 import { GhosttyAdapter } from "../tty/adapters/ghostty";
@@ -16,14 +17,6 @@ import { spawnHeadless } from "../tty/headless";
 import type { SpawnFn } from "../tty/spawn";
 import type { TtyDeps } from "./tty";
 import { cmdTty, parseTtyOpenArgs, ttyOpen } from "./tty";
-
-// -- ExitError for testing process.exit --
-
-class ExitError extends Error {
-  constructor(public code: number) {
-    super(`process.exit(${code})`);
-  }
-}
 
 // -- Helpers --
 

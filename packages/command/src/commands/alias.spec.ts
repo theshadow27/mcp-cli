@@ -1,15 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
+import { ExitError } from "../test-helpers";
 import type { AliasDeps } from "./alias";
 import { DEFINE_ALIAS_SKELETON, cmdAlias, extractDefinitionName, extractDescription, wrapDefineAlias } from "./alias";
 
 /* ── helpers ─────────────────────────────────────────────────────── */
-
-class ExitError extends Error {
-  constructor(public code: number) {
-    super(`process.exit(${code})`);
-  }
-}
 
 function makeDeps(overrides?: Partial<AliasDeps>): Partial<AliasDeps> {
   return {
