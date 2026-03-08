@@ -33,6 +33,8 @@ For each issue N:
 mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash
 ```
 
+For simple bug fixes or small tasks, use `--model sonnet` (when available, see #251). Use Opus for complex features.
+
 Save the returned `sessionId`. Monitor with `mcx claude ls` until idle.
 
 ### 2. Clear + Simplify
