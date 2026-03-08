@@ -1,15 +1,12 @@
 import { ipcCall } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useEffect, useState } from "react";
+import { extractToolText } from "../hooks/ipc-tool-helpers.js";
 
 export interface TranscriptEntry {
   timestamp: number;
   direction: "inbound" | "outbound";
   message: Record<string, unknown>;
-}
-
-interface CallToolResult {
-  content?: Array<{ type: string; text: string }>;
 }
 
 interface ClaudeSessionDetailProps {
@@ -63,15 +60,15 @@ export function ClaudeSessionDetail({ sessionId }: ClaudeSessionDetailProps) {
 
     async function fetch() {
       try {
-        const result = (await ipcCall("callTool", {
+        const result = await ipcCall("callTool", {
           server: "_claude",
           tool: "claude_transcript",
           arguments: { sessionId, limit: MAX_ENTRIES },
-        })) as CallToolResult;
+        });
 
         if (cancelled) return;
 
-        const text = result?.content?.[0]?.text;
+        const text = extractToolText(result);
         if (text) {
           setEntries(JSON.parse(text) as TranscriptEntry[]);
         }

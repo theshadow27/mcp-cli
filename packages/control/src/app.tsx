@@ -30,7 +30,7 @@ export function App() {
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
 
   const servers = status?.servers ?? [];
-  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500);
+  const { sessions, loading: claudeLoading, error: claudeError } = useClaudeSessions(2500, view === "claude");
   const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);

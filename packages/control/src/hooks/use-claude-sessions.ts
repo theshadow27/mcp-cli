@@ -1,5 +1,6 @@
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useState } from "react";
+import { extractToolText } from "./ipc-tool-helpers.js";
 
 // Mirror the daemon's SessionInfo shape (from claude-session/ws-server.ts)
 export type SessionStateEnum = "connecting" | "init" | "active" | "waiting_permission" | "result" | "idle" | "ended";
@@ -22,27 +23,22 @@ interface UseClaudeSessionsResult {
   error: string | null;
 }
 
-interface CallToolResult {
-  content?: Array<{ type: string; text: string }>;
-}
-
-export function useClaudeSessions(intervalMs = 2500): UseClaudeSessionsResult {
+export function useClaudeSessions(intervalMs = 2500, enabled = true): UseClaudeSessionsResult {
   const [sessions, setSessions] = useState<ClaudeSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const poll = useCallback(async () => {
     try {
-      const result = (await ipcCall("callTool", {
+      const result = await ipcCall("callTool", {
         server: "_claude",
         tool: "claude_session_list",
         arguments: {},
-      })) as CallToolResult;
+      });
 
-      const text = result?.content?.[0]?.text;
+      const text = extractToolText(result);
       if (text) {
-        const parsed = JSON.parse(text) as ClaudeSession[];
-        setSessions(parsed);
+        setSessions(JSON.parse(text) as ClaudeSession[]);
       } else {
         setSessions([]);
       }
@@ -55,6 +51,8 @@ export function useClaudeSessions(intervalMs = 2500): UseClaudeSessionsResult {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
+
     let cancelled = false;
 
     async function doPoll() {
@@ -69,7 +67,7 @@ export function useClaudeSessions(intervalMs = 2500): UseClaudeSessionsResult {
       cancelled = true;
       clearInterval(id);
     };
-  }, [intervalMs, poll]);
+  }, [intervalMs, poll, enabled]);
 
   return { sessions, loading, error };
 }
