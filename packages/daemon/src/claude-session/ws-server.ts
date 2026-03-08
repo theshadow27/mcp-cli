@@ -9,12 +9,13 @@
  * Waiting for `system/init` first causes deadlock.
  */
 
+import type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
 import { PermissionRouter } from "./permission-router";
-import type { SessionEvent, SessionStateEnum } from "./session-state";
+import type { SessionEvent } from "./session-state";
 import { SessionState } from "./session-state";
 
 // ── Errors ──
@@ -43,25 +44,6 @@ export interface TranscriptEntry {
   timestamp: number;
   direction: "inbound" | "outbound";
   message: NdjsonMessage;
-}
-
-export interface PendingPermissionInfo {
-  requestId: string;
-  toolName: string;
-  inputSummary: string;
-}
-
-export interface SessionInfo {
-  sessionId: string;
-  state: SessionStateEnum;
-  model: string | null;
-  cwd: string | null;
-  cost: number;
-  tokens: number;
-  numTurns: number;
-  pendingPermissions: number;
-  pendingPermissionDetails: PendingPermissionInfo[];
-  worktree: string | null;
 }
 
 export interface SessionDetail extends SessionInfo {

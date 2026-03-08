@@ -1,8 +1,7 @@
-import type { ServerStatus } from "@mcp-cli/core";
+import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
-import type { ClaudeSession } from "./use-claude-sessions";
 import { type LogSource, buildLogSources } from "./use-logs";
 
 export const ALL_TABS = ["servers", "logs", "claude", "mail", "stats"] as const;
@@ -43,7 +42,7 @@ interface UseKeyboardOptions {
   setFilterMode: (mode: boolean) => void;
   filterText: string;
   setFilterText: (fn: string | ((prev: string) => string)) => void;
-  claudeSessions: ClaudeSession[];
+  claudeSessions: SessionInfo[];
   claudeSelectedIndex: number;
   setClaudeSelectedIndex: (fn: (i: number) => number) => void;
   expandedSession: string | null;
