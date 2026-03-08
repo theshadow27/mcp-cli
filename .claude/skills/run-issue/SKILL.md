@@ -86,6 +86,16 @@ The orchestrator's job is to keep the pipeline saturated, not to watch progress 
 
 **Never implement directly.** The orchestrator must not write code, edit files, or fix bugs itself — always delegate to a spawned session. Direct implementation eats the orchestrator's context window and prevents it from managing the pipeline. If something needs fixing, spawn a session or file an issue.
 
+## Documentation Hygiene
+
+After every batch of merged PRs (5+), spawn a documentation review session:
+
+```bash
+mcx claude spawn --worktree -t "Review README.md, CLAUDE.md, and any other docs for inconsistencies with recent changes. Check: outdated file paths, missing new commands/features, stale architecture descriptions, incorrect examples. File issues for each inconsistency found, then fix them." --allow Read Glob Grep Write Edit Bash
+```
+
+Docs are part of the product. If a new command was added but not documented, or an old pattern was removed but still referenced, that's a bug.
+
 ## Periodic Review
 
 For large feature blocks (3+ related issues), periodically spawn a review session to assess overall coherence:
