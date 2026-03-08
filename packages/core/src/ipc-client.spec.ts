@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { PROTOCOL_VERSION } from "./constants";
-import { IpcCallError, ProtocolMismatchError, isDaemonRunning } from "./ipc-client";
+import {
+  DaemonStartCooldownError,
+  IpcCallError,
+  ProtocolMismatchError,
+  _resetStartCooldown,
+  isDaemonRunning,
+} from "./ipc-client";
 
 /**
  * Tests for ensureDaemon startup lock and stderr handling.
@@ -228,5 +234,20 @@ describe("IpcCallError", () => {
     expect(err.code).toBe(-32603);
     expect(err.data).toBeUndefined();
     expect(err.remoteStack).toBeUndefined();
+  });
+});
+
+describe("DaemonStartCooldownError", () => {
+  afterEach(() => {
+    _resetStartCooldown();
+  });
+
+  it("includes remaining time and descriptive message", () => {
+    const err = new DaemonStartCooldownError(7500);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("DaemonStartCooldownError");
+    expect(err.remainingMs).toBe(7500);
+    expect(err.message).toContain("8s"); // Math.ceil(7500/1000)
+    expect(err.message).toContain("cooldown");
   });
 });
