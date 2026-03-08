@@ -49,6 +49,13 @@ export function App() {
     });
   }, [filteredLogLines.length, filterText]);
 
+  // Clamp claudeSelectedIndex when sessions list shrinks
+  useEffect(() => {
+    if (claudeSelectedIndex >= sessions.length && sessions.length > 0) {
+      setClaudeSelectedIndex(sessions.length - 1);
+    }
+  }, [sessions.length, claudeSelectedIndex]);
+
   // Auto-clear success/error auth status after 5 seconds
   useEffect(() => {
     if (authStatus && authStatus.state !== "pending") {
