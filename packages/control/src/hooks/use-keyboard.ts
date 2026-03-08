@@ -4,7 +4,23 @@ import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
 import { type LogSource, buildLogSources } from "./use-logs";
 
-export type View = "servers" | "logs";
+export const ALL_TABS = ["servers", "logs", "claude", "mail", "stats"] as const;
+
+export type View = (typeof ALL_TABS)[number];
+
+export function nextTab(current: View): View {
+  const idx = ALL_TABS.indexOf(current);
+  return ALL_TABS[(idx + 1) % ALL_TABS.length];
+}
+
+export function prevTab(current: View): View {
+  const idx = ALL_TABS.indexOf(current);
+  return ALL_TABS[(idx - 1 + ALL_TABS.length) % ALL_TABS.length];
+}
+
+export function tabByNumber(n: number): View | undefined {
+  return ALL_TABS[n - 1];
+}
 
 interface UseKeyboardOptions {
   servers: ServerStatus[];
@@ -87,15 +103,40 @@ export function useKeyboard({
       return;
     }
 
-    // -- Logs view --
-    if (view === "logs") {
-      // Back to servers
-      if (input === "l" || key.escape) {
+    // Global: Tab / Shift+Tab cycle tabs
+    if (key.tab) {
+      setView(key.shift ? prevTab(view) : nextTab(view));
+      return;
+    }
+
+    // Global: number keys 1-5 jump to tab
+    const tabNum = Number(input);
+    if (tabNum >= 1 && tabNum <= ALL_TABS.length) {
+      const target = tabByNumber(tabNum);
+      if (target) setView(target);
+      return;
+    }
+
+    // Global: `l` toggles to/from logs (backwards compat)
+    if (input === "l") {
+      if (view === "logs") {
         setFilterText("");
         setView("servers");
-        return;
+      } else {
+        setView("logs");
       }
+      return;
+    }
 
+    // Esc: go back to servers from any non-servers tab
+    if (key.escape && view !== "servers") {
+      if (view === "logs") setFilterText("");
+      setView("servers");
+      return;
+    }
+
+    // -- Logs view --
+    if (view === "logs") {
       // Enter filter mode
       if (input === "f" || input === "/") {
         setFilterMode(true);
@@ -114,12 +155,12 @@ export function useKeyboard({
         return;
       }
 
-      // Cycle log source
-      if (key.tab) {
+      // Cycle log source (t key, since Tab now cycles tabs)
+      if (input === "t") {
         const sources = buildLogSources(servers);
-        const currentIdx = sources.findIndex((s) => {
-          if (s.type === "daemon" && logSource.type === "daemon") return true;
-          if (s.type === "server" && logSource.type === "server" && s.name === logSource.name) return true;
+        const currentIdx = sources.findIndex((src) => {
+          if (src.type === "daemon" && logSource.type === "daemon") return true;
+          if (src.type === "server" && logSource.type === "server" && src.name === logSource.name) return true;
           return false;
         });
         const nextIdx = (currentIdx + 1) % sources.length;
@@ -132,12 +173,7 @@ export function useKeyboard({
     }
 
     // -- Servers view --
-
-    // Toggle to logs view
-    if (input === "l") {
-      setView("logs");
-      return;
-    }
+    if (view !== "servers") return;
 
     // Navigation
     if (key.upArrow || input === "k") {

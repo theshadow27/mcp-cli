@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
 import { formatUptime } from "./header";
@@ -115,6 +116,37 @@ describe("buildLogSources", () => {
     ] as import("@mcp-cli/core").ServerStatus[];
     const result = buildLogSources(servers);
     expect(result).toEqual([{ type: "daemon" }, { type: "server", name: "a" }, { type: "server", name: "b" }]);
+  });
+});
+
+describe("tab navigation", () => {
+  it("ALL_TABS has 5 entries in correct order", () => {
+    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "mail", "stats"]);
+  });
+
+  it("nextTab cycles forward", () => {
+    expect(nextTab("servers")).toBe("logs");
+    expect(nextTab("logs")).toBe("claude");
+    expect(nextTab("stats")).toBe("servers"); // wraps around
+  });
+
+  it("prevTab cycles backward", () => {
+    expect(prevTab("servers")).toBe("stats"); // wraps around
+    expect(prevTab("logs")).toBe("servers");
+    expect(prevTab("claude")).toBe("logs");
+  });
+
+  it("tabByNumber maps 1-5 to tabs", () => {
+    expect(tabByNumber(1)).toBe("servers");
+    expect(tabByNumber(2)).toBe("logs");
+    expect(tabByNumber(3)).toBe("claude");
+    expect(tabByNumber(4)).toBe("mail");
+    expect(tabByNumber(5)).toBe("stats");
+  });
+
+  it("tabByNumber returns undefined for out-of-range", () => {
+    expect(tabByNumber(0)).toBeUndefined();
+    expect(tabByNumber(6)).toBeUndefined();
   });
 });
 

@@ -1,4 +1,4 @@
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { Footer } from "./components/footer.js";
@@ -6,6 +6,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
+import { TabBar } from "./components/tab-bar.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
@@ -83,6 +84,7 @@ export function App() {
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} />
+      <TabBar activeTab={view} />
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
@@ -93,7 +95,7 @@ export function App() {
             usageStats={status?.usageStats ?? []}
           />
         </>
-      ) : (
+      ) : view === "logs" ? (
         <LogViewer
           lines={filteredLogLines}
           source={logSource}
@@ -103,6 +105,10 @@ export function App() {
           filterText={filterText}
           totalCount={logLines.length}
         />
+      ) : (
+        <Box marginTop={1}>
+          <Text dimColor>Coming soon — see #181</Text>
+        </Box>
       )}
       <Footer view={view} filterMode={filterMode} filterText={filterText} />
     </Box>
