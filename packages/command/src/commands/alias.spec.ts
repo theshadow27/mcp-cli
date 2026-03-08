@@ -8,7 +8,7 @@ import { DEFINE_ALIAS_SKELETON, cmdAlias, extractDefinitionName, extractDescript
 
 function makeDeps(overrides?: Partial<AliasDeps>): Partial<AliasDeps> {
   return {
-    ipcCall: mock(() => Promise.resolve(undefined)) as AliasDeps["ipcCall"] as AliasDeps["ipcCall"],
+    ipcCall: mock(() => Promise.resolve(undefined)) as AliasDeps["ipcCall"],
     readFileWithLimit: mock(() => "file-content"),
     readStdin: mock(() => Promise.resolve("stdin-content")),
     printError: mock(() => {}),

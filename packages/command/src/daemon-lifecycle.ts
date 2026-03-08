@@ -8,7 +8,7 @@
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { IpcMethod } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import {
   DAEMON_BINARY_NAME,
   DAEMON_DEV_SCRIPT,
@@ -41,7 +41,11 @@ export function _resetStartCooldown(): void {
  * Send a single request to the daemon, auto-starting it if needed.
  * Wraps core's ipcCall with ensureDaemon for CLI use.
  */
-export async function ipcCall(method: IpcMethod, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown> {
+export async function ipcCall<M extends IpcMethod>(
+  method: M,
+  params?: unknown,
+  opts?: { timeoutMs?: number },
+): Promise<IpcMethodResult[M]> {
   await ensureDaemon();
   return coreIpcCall(method, params, opts);
 }
