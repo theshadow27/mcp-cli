@@ -1,6 +1,7 @@
 import type { DaemonStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useState } from "react";
+import { checkProtocolVersion } from "./protocol-check";
 
 interface UseDaemonResult {
   status: DaemonStatus | null;
@@ -27,6 +28,11 @@ export function useDaemon(intervalMs = 2500): UseDaemonResult {
       try {
         const result = await ipcCall("status");
         if (!cancelled) {
+          const mismatch = checkProtocolVersion(result.protocolVersion);
+          if (mismatch) {
+            console.error(mismatch);
+            process.exit(1);
+          }
           setStatus(result);
           setError(null);
           setLoading(false);
