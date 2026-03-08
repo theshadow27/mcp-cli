@@ -1,14 +1,16 @@
+---
+name: run-issue
+description: Run the full dev pipeline for a GitHub issue — spawn a Claude in a worktree, implement, simplify, QA, and clean up. Use when the user says "run issue N", "implement and QA N", or "work on N end-to-end".
+---
+
 # Run Issue
 
 Orchestrate the full lifecycle of a GitHub issue: implement, simplify, QA, merge.
 
-## Input
-
-Issue number(s) provided as argument (e.g., `/run-issue 12` or `/run-issue 12 34 56`). Parse from: $ARGUMENTS
-
 ## Prerequisites
 
 - `mcx claude` commands available (daemon running or auto-starts)
+- Issue number provided as argument
 - Issue must NOT have the `needs-clarification` label
 
 ## Picking issues
@@ -81,6 +83,8 @@ Use `mcx claude ls` to check progress across all sessions. Sessions show state (
 - Clean up merged sessions and worktrees
 
 The orchestrator's job is to keep the pipeline saturated, not to watch progress bars.
+
+**Never implement directly.** The orchestrator must not write code, edit files, or fix bugs itself — always delegate to a spawned session. Direct implementation eats the orchestrator's context window and prevents it from managing the pipeline. If something needs fixing, spawn a session or file an issue.
 
 ## Issue discipline
 

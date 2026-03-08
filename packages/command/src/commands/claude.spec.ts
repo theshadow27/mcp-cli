@@ -1,6 +1,14 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ClaudeDeps } from "./claude";
-import { cmdClaude, parseDiffShortstat, parseLogArgs, parseSpawnArgs, parseWaitArgs, resolveSessionId } from "./claude";
+import {
+  cmdClaude,
+  extractContentSummary,
+  parseDiffShortstat,
+  parseLogArgs,
+  parseSpawnArgs,
+  parseWaitArgs,
+  resolveSessionId,
+} from "./claude";
 
 // ── Helpers ──
 
@@ -1344,5 +1352,51 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
       console.log = origLog;
       console.error = origErr;
     }
+  });
+});
+
+// ── extractContentSummary ──
+
+describe("extractContentSummary", () => {
+  test("returns plain string as-is", () => {
+    expect(extractContentSummary("hello")).toBe("hello");
+  });
+
+  test("extracts text from text content blocks", () => {
+    const content = [{ type: "text", text: "Hello world" }];
+    expect(extractContentSummary(content)).toBe("Hello world");
+  });
+
+  test("summarizes tool_use blocks", () => {
+    const content = [{ type: "tool_use", name: "Read", id: "123", input: {} }];
+    expect(extractContentSummary(content)).toBe("[tool_use: Read]");
+  });
+
+  test("handles tool_result with string content", () => {
+    const content = [{ type: "tool_result", tool_use_id: "123", content: "file contents here" }];
+    expect(extractContentSummary(content)).toBe("file contents here");
+  });
+
+  test("handles tool_result with non-string content", () => {
+    const content = [{ type: "tool_result", tool_use_id: "123", content: [{ type: "text", text: "x" }] }];
+    expect(extractContentSummary(content)).toBe("[tool_result]");
+  });
+
+  test("joins multiple blocks", () => {
+    const content = [
+      { type: "text", text: "Let me read that." },
+      { type: "tool_use", name: "Read", id: "1", input: {} },
+    ];
+    expect(extractContentSummary(content)).toBe("Let me read that. [tool_use: Read]");
+  });
+
+  test("returns null for non-array non-string", () => {
+    expect(extractContentSummary(42)).toBeNull();
+    expect(extractContentSummary(null)).toBeNull();
+    expect(extractContentSummary(undefined)).toBeNull();
+  });
+
+  test("returns null for empty array", () => {
+    expect(extractContentSummary([])).toBeNull();
   });
 });

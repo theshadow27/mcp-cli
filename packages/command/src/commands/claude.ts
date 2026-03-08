@@ -424,7 +424,7 @@ export function parseLogArgs(args: string[]): LogArgs {
 }
 
 /** Extract a readable summary from a Claude API content field (string or content block array). */
-function extractContentSummary(content: unknown): string | null {
+export function extractContentSummary(content: unknown): string | null {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
 
