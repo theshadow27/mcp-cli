@@ -15,8 +15,7 @@
  */
 
 import type { AliasDetail, DaemonStatus, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { IpcCallError, ProtocolMismatchError, VERSION, isDaemonRunning, stopDaemon } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { IpcCallError, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
 import { cmdClaude } from "./commands/claude";
@@ -34,6 +33,7 @@ import { cmdRun, parseRunArgs } from "./commands/run";
 import { cmdServe } from "./commands/serve";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
+import { ipcCall, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {

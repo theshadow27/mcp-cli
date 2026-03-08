@@ -38,7 +38,8 @@ const EXCLUSIONS: Record<string, string> = {
   "control/src/components/utils.spec.ts": "Test file (not source)",
 
   // Integration-heavy paths — require running daemon to exercise
-  "core/src/ipc-client.ts": "Daemon startup/IPC requires integration test (#51)",
+  "core/src/ipc-client.ts": "IPC transport requires running daemon (#51)",
+  "command/src/daemon-lifecycle.ts": "Daemon startup/lifecycle requires integration test (#51)",
   "core/src/cli-config.ts": "Reads ~/.claude.json, integration-only",
 
   // Command dispatch — CLI entry point, tested via integration
