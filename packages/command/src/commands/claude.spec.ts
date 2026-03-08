@@ -129,6 +129,17 @@ describe("parseSpawnArgs", () => {
     // --allow stops collecting when it hits --task (a flag), so allow is empty
     expect(result.error).toBe("--allow requires at least one tool pattern");
   });
+
+  test("parses --wait flag", () => {
+    const result = parseSpawnArgs(["--task", "fix bug", "--wait"]);
+    expect(result.wait).toBe(true);
+    expect(result.task).toBe("fix bug");
+  });
+
+  test("wait defaults to false", () => {
+    const result = parseSpawnArgs(["--task", "fix bug"]);
+    expect(result.wait).toBe(false);
+  });
 });
 
 // ── parseLogArgs ──
@@ -328,6 +339,35 @@ describe("mcx claude spawn", () => {
     }
   });
 
+  test("passes wait flag when --wait is set", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc", success: true }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "fix", "--wait"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "fix", wait: true });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("does not pass wait flag by default", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc" }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "fix"], deps);
+      const callArgs = (callTool.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+      expect(callArgs.wait).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("errors when no task and no resume", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["spawn"], deps)).rejects.toThrow(ExitError);
@@ -442,6 +482,48 @@ describe("mcx claude send", () => {
   test("errors when no message", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["send", "abc"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("passes wait flag when --wait is set", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ success: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["send", "--wait", "abc", "do something"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+        prompt: "do something",
+        wait: true,
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("does not pass wait flag by default", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ sessionId: "abc12345-1111-2222-3333-444444444444" });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["send", "abc", "do something"], deps);
+      const promptCall = (callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>).find(
+        (c) => c[0] === "claude_prompt",
+      );
+      expect(promptCall).toBeDefined();
+      expect(promptCall?.[1].wait).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 
