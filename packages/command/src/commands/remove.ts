@@ -5,6 +5,7 @@
  */
 
 import { printError } from "../output";
+import { parseScope } from "../parse";
 import { type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
 
 /**
@@ -19,11 +20,7 @@ export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigSc
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      const val = args[++i];
-      if (val !== "user" && val !== "project" && val !== "local") {
-        throw new Error(`Invalid scope "${val}": must be user, project, or local`);
-      }
-      scope = val;
+      scope = parseScope(args[++i], ["user", "project", "local"] as const);
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
     } else {

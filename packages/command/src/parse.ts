@@ -1,3 +1,42 @@
+/** Read all of stdin as a trimmed UTF-8 string. */
+export async function readStdin(): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
+/** Read stdin and parse as JSON. Returns {} on empty input. */
+export async function readStdinJson(): Promise<Record<string, unknown>> {
+  const text = await readStdin();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+/**
+ * Validate a --scope / -s flag value against a list of allowed scopes.
+ * Throws if the value is not in the allowed list.
+ */
+export function parseScope<T extends string>(val: string, allowed: readonly T[]): T {
+  if (!(allowed as readonly string[]).includes(val)) {
+    throw new Error(`Invalid scope "${val}": must be ${allowed.join(", ")}`);
+  }
+  return val as T;
+}
+
+/**
+ * Parse a KEY=VALUE string (for --env flags).
+ * Throws if the value doesn't contain an '='.
+ */
+export function parseEnvVar(val: string): [string, string] {
+  if (!val || !val.includes("=")) {
+    throw new Error(`Invalid --env value "${val}": expected KEY=VALUE`);
+  }
+  const eqIndex = val.indexOf("=");
+  return [val.slice(0, eqIndex), val.slice(eqIndex + 1)];
+}
+
 /**
  * Split "server/tool" slash notation into [server, tool].
  * Returns null if the input doesn't contain a slash or is malformed.

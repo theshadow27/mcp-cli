@@ -16,6 +16,7 @@ import type { IpcMethod, ToolInfo } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { splitServerTool } from "../parse";
 
 // -- Types --
 
@@ -53,23 +54,23 @@ export function parseMcpTools(env: string | undefined): CuratedTool[] {
     const entry = raw.trim();
     if (!entry) continue;
 
-    const slashIdx = entry.indexOf("/");
+    const split = splitServerTool(entry);
     let server: string;
     let tool: string;
     let name: string;
 
-    if (slashIdx >= 0) {
-      server = entry.slice(0, slashIdx);
-      tool = entry.slice(slashIdx + 1);
+    if (split) {
+      [server, tool] = split;
       name = tool;
-    } else {
+    } else if (!entry.includes("/")) {
       // Alias — resolve as _aliases/<name>
       server = "_aliases";
       tool = entry;
       name = entry;
+    } else {
+      // Malformed slash entry (e.g. "/tool" or "server/") — skip
+      continue;
     }
-
-    if (!server || !tool) continue;
 
     const existing = seen.get(name);
     if (existing) {
@@ -236,15 +237,14 @@ export async function handleCallTool(
         content: [{ type: "text", text: "Missing required 'tool' argument (format: server/tool)" }],
       };
     }
-    const slashIdx = toolPath.indexOf("/");
-    if (slashIdx < 0) {
+    const split = splitServerTool(toolPath);
+    if (!split) {
       return {
         isError: true,
         content: [{ type: "text", text: `Invalid tool path "${toolPath}". Use "server/tool" format.` }],
       };
     }
-    const server = toolPath.slice(0, slashIdx);
-    const tool = toolPath.slice(slashIdx + 1);
+    const [server, tool] = split;
     const input = (args?.input as Record<string, unknown>) ?? {};
     return (await ipc("callTool", { server, tool, arguments: input })) as ToolCallResult;
   }

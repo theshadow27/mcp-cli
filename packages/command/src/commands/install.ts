@@ -6,7 +6,7 @@
  */
 
 import { printError } from "../output";
-import { extractJsonFlag } from "../parse";
+import { extractJsonFlag, parseEnvVar, parseScope } from "../parse";
 import { searchRegistry } from "../registry/client";
 import { buildConfigFromSelection, selectTransport } from "../registry/transport";
 import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
@@ -36,18 +36,10 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
       name = rest[++i];
       if (!name) throw new Error("--as requires a name");
     } else if (arg === "--scope" || arg === "-s") {
-      const val = rest[++i];
-      if (val !== "user" && val !== "project" && val !== "local") {
-        throw new Error(`Invalid scope "${val}": must be user, project, or local`);
-      }
-      scope = val;
+      scope = parseScope(rest[++i], ["user", "project", "local"] as const);
     } else if (arg === "--env" || arg === "-e") {
-      const val = rest[++i];
-      if (!val || !val.includes("=")) {
-        throw new Error(`Invalid --env value "${val}": expected KEY=VALUE`);
-      }
-      const eqIndex = val.indexOf("=");
-      env[val.slice(0, eqIndex)] = val.slice(eqIndex + 1);
+      const [key, value] = parseEnvVar(rest[++i]);
+      env[key] = value;
     } else if (arg === "--no-cache") {
       noCache = true;
     } else if (!arg.startsWith("-")) {

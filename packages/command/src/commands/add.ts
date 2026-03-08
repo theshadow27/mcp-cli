@@ -7,6 +7,7 @@
 
 import type { ServerConfig } from "@mcp-cli/core";
 import { printError } from "../output";
+import { parseEnvVar, parseScope } from "../parse";
 import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 // -- Arg parsing --
@@ -61,12 +62,8 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
       }
       transport = val;
     } else if (arg === "--env" || arg === "-e") {
-      const val = flagArgs[++i];
-      if (!val || !val.includes("=")) {
-        throw new Error(`Invalid --env value "${val}": expected KEY=VALUE`);
-      }
-      const eqIndex = val.indexOf("=");
-      env[val.slice(0, eqIndex)] = val.slice(eqIndex + 1);
+      const [key, value] = parseEnvVar(flagArgs[++i]);
+      env[key] = value;
     } else if (arg === "--header") {
       const val = flagArgs[++i];
       if (!val || !val.includes(":")) {
@@ -75,11 +72,7 @@ export function parseAddArgs(args: string[]): ParsedAddArgs {
       const colonIndex = val.indexOf(":");
       headers[val.slice(0, colonIndex).trim()] = val.slice(colonIndex + 1).trim();
     } else if (arg === "--scope" || arg === "-s") {
-      const val = flagArgs[++i];
-      if (val !== "user" && val !== "project" && val !== "local") {
-        throw new Error(`Invalid scope "${val}": must be user, project, or local`);
-      }
-      scope = val;
+      scope = parseScope(flagArgs[++i], ["user", "project", "local"] as const);
     } else if (arg === "--client-id") {
       clientId = flagArgs[++i];
       if (!clientId) throw new Error("--client-id requires a value");
@@ -187,11 +180,7 @@ export async function cmdAddJson(args: string[]): Promise<void> {
   let scope: ConfigScope = "user";
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--scope" || rest[i] === "-s") {
-      const val = rest[++i];
-      if (val !== "user" && val !== "project" && val !== "local") {
-        throw new Error(`Invalid scope "${val}": must be user, project, or local`);
-      }
-      scope = val;
+      scope = parseScope(rest[++i], ["user", "project", "local"] as const);
     }
   }
 

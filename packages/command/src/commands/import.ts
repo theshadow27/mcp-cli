@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
 import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
 import { printError } from "../output";
+import { parseScope } from "../parse";
 import { type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
 
 /** Shape of ~/.claude.json relevant to server config */
@@ -82,11 +83,7 @@ export async function cmdImport(args: string[]): Promise<void> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
-      const val = args[++i];
-      if (val !== "user" && val !== "project") {
-        throw new Error(`Invalid scope "${val}": must be user or project`);
-      }
-      scope = val;
+      scope = parseScope(args[++i], ["user", "project"] as const);
     } else if (arg === "--claude" || arg === "-c") {
       claude = true;
     } else if (arg === "--all") {

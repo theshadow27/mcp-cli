@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractFullFlag, extractJqFlag, splitServerTool } from "./parse";
+import { extractFullFlag, extractJqFlag, parseEnvVar, parseScope, splitServerTool } from "./parse";
 
 describe("splitServerTool", () => {
   test("splits server/tool into tuple", () => {
@@ -28,6 +28,49 @@ describe("splitServerTool", () => {
 
   test("handles hyphenated names", () => {
     expect(splitServerTool("my-server/my-tool")).toEqual(["my-server", "my-tool"]);
+  });
+});
+
+describe("parseScope", () => {
+  test("returns valid scope value", () => {
+    expect(parseScope("user", ["user", "project", "local"])).toBe("user");
+    expect(parseScope("project", ["user", "project", "local"])).toBe("project");
+    expect(parseScope("local", ["user", "project", "local"])).toBe("local");
+  });
+
+  test("works with restricted scope list", () => {
+    expect(parseScope("user", ["user", "project"])).toBe("user");
+    expect(parseScope("project", ["user", "project"])).toBe("project");
+  });
+
+  test("throws on invalid scope", () => {
+    expect(() => parseScope("local", ["user", "project"])).toThrow('Invalid scope "local": must be user, project');
+  });
+
+  test("throws on empty string", () => {
+    expect(() => parseScope("", ["user", "project"])).toThrow("Invalid scope");
+  });
+});
+
+describe("parseEnvVar", () => {
+  test("splits KEY=VALUE", () => {
+    expect(parseEnvVar("API_KEY=abc123")).toEqual(["API_KEY", "abc123"]);
+  });
+
+  test("splits on first equals only", () => {
+    expect(parseEnvVar("KEY=val=ue")).toEqual(["KEY", "val=ue"]);
+  });
+
+  test("handles empty value", () => {
+    expect(parseEnvVar("KEY=")).toEqual(["KEY", ""]);
+  });
+
+  test("throws on missing equals", () => {
+    expect(() => parseEnvVar("NOEQUALS")).toThrow('Invalid --env value "NOEQUALS": expected KEY=VALUE');
+  });
+
+  test("throws on empty string", () => {
+    expect(() => parseEnvVar("")).toThrow("Invalid --env value");
   });
 });
 

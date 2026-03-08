@@ -45,7 +45,7 @@ import {
   printToolList,
   printToolResult,
 } from "./output";
-import { extractFullFlag, extractJqFlag, extractJsonFlag, splitServerTool } from "./parse";
+import { extractFullFlag, extractJqFlag, extractJsonFlag, readStdinJson, splitServerTool } from "./parse";
 import { searchRegistry } from "./registry/client";
 
 async function main(): Promise<void> {
@@ -479,17 +479,6 @@ async function parseToolArgs(input: string): Promise<Record<string, unknown>> {
   } catch {
     throw new Error(`Invalid JSON argument: ${input}`);
   }
-}
-
-/** Read JSON from stdin (piped input) */
-async function readStdinJson(): Promise<Record<string, unknown>> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  const text = Buffer.concat(chunks).toString("utf-8").trim();
-  if (!text) return {};
-  return JSON.parse(text);
 }
 
 // -- Help --
