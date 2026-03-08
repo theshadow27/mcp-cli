@@ -2,12 +2,14 @@ import { describe, expect, mock, test } from "bun:test";
 import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import {
+  MODEL_SHORTNAMES,
   cmdClaude,
   extractContentSummary,
   parseDiffShortstat,
   parseLogArgs,
   parseSpawnArgs,
   parseWaitArgs,
+  resolveModelName,
   resolveSessionId,
 } from "./claude";
 
@@ -167,6 +169,57 @@ describe("parseSpawnArgs", () => {
   test("wait defaults to false", () => {
     const result = parseSpawnArgs(["--task", "fix bug"]);
     expect(result.wait).toBe(false);
+  });
+
+  test("parses --model with shortname", () => {
+    const result = parseSpawnArgs(["--model", "sonnet", "--task", "x"]);
+    expect(result.model).toBe("claude-sonnet-4-6");
+  });
+
+  test("parses -m shorthand", () => {
+    const result = parseSpawnArgs(["-m", "haiku", "-t", "x"]);
+    expect(result.model).toBe("claude-haiku-4-5-20251001");
+  });
+
+  test("passes through full model ID", () => {
+    const result = parseSpawnArgs(["--model", "claude-opus-4-6", "--task", "x"]);
+    expect(result.model).toBe("claude-opus-4-6");
+  });
+
+  test("model defaults to undefined", () => {
+    const result = parseSpawnArgs(["--task", "x"]);
+    expect(result.model).toBeUndefined();
+  });
+
+  test("errors on missing --model value", () => {
+    const result = parseSpawnArgs(["--model"]);
+    expect(result.error).toBe("--model requires a value");
+  });
+});
+
+// ── resolveModelName ──
+
+describe("resolveModelName", () => {
+  test("resolves opus shortname", () => {
+    expect(resolveModelName("opus")).toBe("claude-opus-4-6");
+  });
+
+  test("resolves sonnet shortname", () => {
+    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4-6");
+  });
+
+  test("resolves haiku shortname", () => {
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4-5-20251001");
+  });
+
+  test("is case-insensitive", () => {
+    expect(resolveModelName("Opus")).toBe("claude-opus-4-6");
+    expect(resolveModelName("SONNET")).toBe("claude-sonnet-4-6");
+  });
+
+  test("passes through unknown model IDs", () => {
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4-6");
+    expect(resolveModelName("some-custom-model")).toBe("some-custom-model");
   });
 });
 
@@ -427,6 +480,23 @@ describe("mcx claude spawn", () => {
       await cmdClaude(["spawn", "--task", "fix"], deps);
       const callArgs = (callTool.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
       expect(callArgs.wait).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes model to callTool when --model is specified", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc" }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "fix", "--model", "sonnet"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        prompt: "fix",
+        model: "claude-sonnet-4-6",
+      });
     } finally {
       console.log = origLog;
     }
