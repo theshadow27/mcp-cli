@@ -6,13 +6,14 @@ import { StateDb } from "./db/state";
 // ── buildClaudeToolCache ──
 
 describe("buildClaudeToolCache", () => {
-  test("returns all 5 claude tools", () => {
+  test("returns all 6 claude tools", () => {
     const tools = buildClaudeToolCache();
-    expect(tools.size).toBe(5);
+    expect(tools.size).toBe(6);
     expect(tools.has("claude_prompt")).toBe(true);
     expect(tools.has("claude_session_list")).toBe(true);
     expect(tools.has("claude_session_status")).toBe(true);
     expect(tools.has("claude_interrupt")).toBe(true);
+    expect(tools.has("claude_bye")).toBe(true);
     expect(tools.has("claude_transcript")).toBe(true);
   });
 
@@ -61,9 +62,10 @@ describe("ClaudeServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools.length).toBe(5);
+    expect(tools.length).toBe(6);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "claude_bye",
       "claude_interrupt",
       "claude_prompt",
       "claude_session_list",

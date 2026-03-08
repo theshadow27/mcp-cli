@@ -63,6 +63,8 @@ async function handleToolCall(
         return handleSessionStatus(server, args);
       case "claude_interrupt":
         return handleInterrupt(server, args);
+      case "claude_bye":
+        return handleBye(server, args);
       case "claude_transcript":
         return handleTranscript(server, args);
       default:
@@ -159,6 +161,16 @@ function handleInterrupt(
 } {
   server.interrupt(args.sessionId as string);
   return { content: [{ type: "text", text: JSON.stringify({ interrupted: true }) }] };
+}
+
+function handleBye(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  server.bye(args.sessionId as string);
+  return { content: [{ type: "text", text: JSON.stringify({ ended: true }) }] };
 }
 
 function handleTranscript(

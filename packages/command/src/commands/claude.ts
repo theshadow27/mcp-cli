@@ -30,8 +30,14 @@ export interface ClaudeDeps {
   exit: (code: number) => never;
 }
 
+/** Default IPC timeout for claude_prompt (5 min + buffer). Other tools use default 60s. */
+const PROMPT_IPC_TIMEOUT_MS = 330_000;
+
 const defaultDeps: ClaudeDeps = {
-  callTool: (tool, args) => ipcCall("callTool", { server: "_claude", tool, arguments: args }),
+  callTool: (tool, args) => {
+    const timeoutMs = tool === "claude_prompt" ? PROMPT_IPC_TIMEOUT_MS : undefined;
+    return ipcCall("callTool", { server: "_claude", tool, arguments: args }, { timeoutMs });
+  },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
 };
@@ -58,14 +64,18 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
     case "send":
       await claudeSend(args.slice(1), d);
       break;
-    case "kill":
-      await claudeKill(args.slice(1), d);
+    case "bye":
+    case "quit":
+      await claudeBye(args.slice(1), d);
+      break;
+    case "interrupt":
+      await claudeInterrupt(args.slice(1), d);
       break;
     case "log":
       await claudeLog(args.slice(1), d);
       break;
     default:
-      d.printError(`Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "kill", or "log".`);
+      d.printError(`Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", or "log".`);
       d.exit(1);
   }
 }
@@ -212,11 +222,24 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 }
 
-async function claudeKill(args: string[], d: ClaudeDeps): Promise<void> {
+async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   const sessionPrefix = args[0];
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude kill <session-id>");
+    d.printError("Usage: mcx claude bye <session-id>");
+    d.exit(1);
+  }
+
+  const sessionId = await resolveSessionId(sessionPrefix, d);
+  const result = await d.callTool("claude_bye", { sessionId });
+  console.log(formatToolResult(result));
+}
+
+async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
+  const sessionPrefix = args[0];
+
+  if (!sessionPrefix) {
+    d.printError("Usage: mcx claude interrupt <session-id>");
     d.exit(1);
   }
 
@@ -361,7 +384,8 @@ Usage:
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude ls                            List active sessions
   mcx claude send <session> <message>      Send follow-up prompt
-  mcx claude kill <session>                Interrupt a session
+  mcx claude bye <session>                 End session and stop process
+  mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
 
 Spawn options:

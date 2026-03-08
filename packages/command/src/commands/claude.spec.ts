@@ -445,9 +445,56 @@ describe("mcx claude send", () => {
   });
 });
 
-// ── kill ──
+// ── bye ──
 
-describe("mcx claude kill", () => {
+describe("mcx claude bye", () => {
+  test("ends resolved session", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["bye", "def"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_bye", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("accepts 'quit' alias", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["quit", "abc"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_bye", {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("errors when no session specified", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["bye"], deps)).rejects.toThrow(ExitError);
+  });
+});
+
+// ── interrupt ──
+
+describe("mcx claude interrupt", () => {
   test("interrupts resolved session", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
@@ -458,7 +505,7 @@ describe("mcx claude kill", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["kill", "def"], deps);
+      await cmdClaude(["interrupt", "def"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_interrupt", {
         sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
       });
@@ -469,7 +516,7 @@ describe("mcx claude kill", () => {
 
   test("errors when no session specified", async () => {
     const deps = makeDeps();
-    await expect(cmdClaude(["kill"], deps)).rejects.toThrow(ExitError);
+    await expect(cmdClaude(["interrupt"], deps)).rejects.toThrow(ExitError);
   });
 });
 

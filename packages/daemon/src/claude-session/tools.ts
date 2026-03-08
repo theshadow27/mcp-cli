@@ -61,6 +61,17 @@ export const CLAUDE_TOOLS = [
     },
   },
   {
+    name: "claude_bye",
+    description: "Gracefully end a Claude Code session: close the WebSocket, stop the process, clean up.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "Session ID to end" },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
     name: "claude_transcript",
     description: "Get recent transcript entries from a Claude Code session.",
     inputSchema: {
