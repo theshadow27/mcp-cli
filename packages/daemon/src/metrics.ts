@@ -28,6 +28,8 @@ export interface Histogram {
 }
 
 export interface MetricsSnapshot {
+  daemonId?: string;
+  startedAt?: number;
   collectedAt: number;
   counters: Array<{ name: string; labels: Labels; value: number }>;
   gauges: Array<{ name: string; labels: Labels; value: number }>;

@@ -95,7 +95,10 @@ export class ClaudeServer {
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
 
-  constructor(db: StateDb) {
+  constructor(
+    db: StateDb,
+    private daemonId?: string,
+  ) {
     this.db = db;
   }
 
@@ -120,7 +123,7 @@ export class ClaudeServer {
         reject(new Error(`Claude session worker error: ${msg}`));
       };
       // Send init to start the worker
-      worker.postMessage({ type: "init" });
+      worker.postMessage({ type: "init", daemonId: this.daemonId });
     });
 
     // Now set up MCP transport

@@ -150,6 +150,91 @@ describe("StateDb", () => {
       expect(stats).toHaveLength(3);
       db.close();
     });
+
+    test("recordUsage with traceContext stores daemon_id, trace_id, parent_id", () => {
+      const db = createDb();
+      db.recordUsage("s1", "t1", 100, true, undefined, {
+        daemonId: "aabbccdd11223344",
+        traceId: "00112233445566778899aabbccddeeff",
+        parentId: "1122334455667788",
+      });
+
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const row = db["db"]
+        .query<{ daemon_id: string | null; trace_id: string | null; parent_id: string | null }, []>(
+          "SELECT daemon_id, trace_id, parent_id FROM usage_stats ORDER BY id DESC LIMIT 1",
+        )
+        .get();
+      expect(row?.daemon_id).toBe("aabbccdd11223344");
+      expect(row?.trace_id).toBe("00112233445566778899aabbccddeeff");
+      expect(row?.parent_id).toBe("1122334455667788");
+      db.close();
+    });
+
+    test("recordUsage without traceContext stores NULLs (backward compat)", () => {
+      const db = createDb();
+      db.recordUsage("s1", "t1", 50, true);
+
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const row = db["db"]
+        .query<{ daemon_id: string | null; trace_id: string | null; parent_id: string | null }, []>(
+          "SELECT daemon_id, trace_id, parent_id FROM usage_stats ORDER BY id DESC LIMIT 1",
+        )
+        .get();
+      expect(row?.daemon_id).toBeNull();
+      expect(row?.trace_id).toBeNull();
+      expect(row?.parent_id).toBeNull();
+      db.close();
+    });
+
+    test("pruneUsageStats keeps newest rows and deletes oldest", () => {
+      const db = createDb();
+      for (let i = 0; i < 150; i++) {
+        db.recordUsage("s1", `t${i}`, 10, true);
+      }
+
+      const deleted = db.pruneUsageStats(100);
+      expect(deleted).toBe(50);
+
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const count = db["db"].query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM usage_stats").get();
+      expect(count?.cnt).toBe(100);
+      db.close();
+    });
+
+    test("amortized prune fires at USAGE_PRUNE_INTERVAL", () => {
+      const orig = options.USAGE_PRUNE_INTERVAL;
+      const origMax = options.USAGE_STATS_MAX_ROWS;
+      options.USAGE_PRUNE_INTERVAL = 10;
+      options.USAGE_STATS_MAX_ROWS = 5;
+      try {
+        const db = createDb();
+        // Insert 10 rows to trigger amortized prune (interval=10, max=5)
+        for (let i = 0; i < 10; i++) {
+          db.recordUsage("s1", `t${i}`, 10, true);
+        }
+        // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+        const count = db["db"].query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM usage_stats").get();
+        expect(count?.cnt).toBe(5);
+        db.close();
+      } finally {
+        options.USAGE_PRUNE_INTERVAL = orig;
+        options.USAGE_STATS_MAX_ROWS = origMax;
+      }
+    });
+
+    test("getUsageStats works with trace columns present", () => {
+      const db = createDb();
+      db.recordUsage("s1", "t1", 100, true, undefined, { daemonId: "abc" });
+      db.recordUsage("s1", "t1", 200, false, "err");
+
+      const stats = db.getUsageStats();
+      expect(stats).toHaveLength(1);
+      expect(stats[0].callCount).toBe(2);
+      expect(stats[0].successCount).toBe(1);
+      expect(stats[0].errorCount).toBe(1);
+      db.close();
+    });
   });
 
   describe("daemon state", () => {

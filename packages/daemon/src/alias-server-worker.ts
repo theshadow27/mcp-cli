@@ -12,7 +12,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import type { AliasDefinition } from "@mcp-cli/core";
+import { type AliasDefinition, generateSpanId } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v4";
@@ -32,6 +32,7 @@ export interface AliasToolDef {
 interface InitMessage {
   type: "init";
   aliases: AliasToolDef[];
+  daemonId?: string;
 }
 
 interface RefreshMessage {
@@ -46,6 +47,10 @@ function isControlMessage(data: unknown): data is ControlMessage {
 }
 
 // -- Alias execution infrastructure --
+
+// Trace context — set on init, stable for worker lifetime
+let _daemonId: string | undefined;
+let _workerId: string | undefined;
 
 let _captured: AliasDefinition | null = null;
 // Getter defeats CFA narrowing — _captured is mutated by dynamic import() side effects
@@ -179,6 +184,8 @@ async function executeAlias(aliasDef: AliasToolDef, args: Record<string, unknown
 self.onmessage = async (event: MessageEvent) => {
   const data = event.data;
   if (isControlMessage(data) && data.type === "init") {
+    _daemonId = data.daemonId;
+    _workerId = generateSpanId();
     await startServer(data.aliases);
   }
 };

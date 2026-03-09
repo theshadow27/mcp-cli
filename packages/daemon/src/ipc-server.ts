@@ -6,7 +6,7 @@
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig } from "@mcp-cli/core";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig, Traceparent } from "@mcp-cli/core";
 import {
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
@@ -29,6 +29,7 @@ import {
   hardenFile,
   isDefineAlias,
   options,
+  parseTraceparent,
   safeAliasPath,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -53,6 +54,9 @@ export class IpcServer {
 
   private onReloadConfig: (() => Promise<void>) | null = null;
   private aliasServer: AliasServer | null = null;
+  private daemonId: string;
+  private startedAt: number;
+  private currentTraceparent: Traceparent | undefined;
 
   constructor(
     private pool: ServerPool,
@@ -60,12 +64,16 @@ export class IpcServer {
     private db: StateDb,
     aliasServer: AliasServer | null,
     options: {
+      daemonId: string;
+      startedAt: number;
       onActivity: () => void;
       onRequestComplete?: () => void;
       onShutdown?: () => void;
       onReloadConfig?: () => Promise<void>;
     },
   ) {
+    this.daemonId = options.daemonId;
+    this.startedAt = options.startedAt;
     this.onActivity = options.onActivity;
     this.onRequestComplete = options.onRequestComplete ?? (() => {});
     this.onShutdown = options.onShutdown ?? (() => process.exit(0));
@@ -165,6 +173,9 @@ export class IpcServer {
       });
     }
 
+    // Capture trace context for the duration of this request
+    this.currentTraceparent = request.traceparent ? (parseTraceparent(request.traceparent) ?? undefined) : undefined;
+
     const labels = { method: request.method };
     metrics.counter("mcpd_ipc_requests_total", labels).inc();
     const stopTimer = metrics.histogram("mcpd_ipc_request_duration_ms", labels).startTimer();
@@ -176,6 +187,7 @@ export class IpcServer {
       metrics.counter("mcpd_ipc_errors_total", labels).inc();
       throw err;
     } finally {
+      this.currentTraceparent = undefined;
       stopTimer();
     }
   }
@@ -230,17 +242,30 @@ export class IpcServer {
     this.handlers.set("callTool", async (params) => {
       const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
       const toolLabels = { server, tool };
+      const tp = this.currentTraceparent;
+      const traceContext = {
+        daemonId: this.daemonId,
+        traceId: tp?.traceId,
+        parentId: tp?.parentId,
+      };
       const start = Date.now();
       try {
         const result = await this.pool.callTool(server, tool, args);
         const durationMs = Date.now() - start;
-        this.db.recordUsage(server, tool, durationMs, true);
+        this.db.recordUsage(server, tool, durationMs, true, undefined, traceContext);
         metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
         metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
         return result;
       } catch (err) {
         const durationMs = Date.now() - start;
-        this.db.recordUsage(server, tool, durationMs, false, err instanceof Error ? err.message : String(err));
+        this.db.recordUsage(
+          server,
+          tool,
+          durationMs,
+          false,
+          err instanceof Error ? err.message : String(err),
+          traceContext,
+        );
         metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
         metrics.counter("mcpd_tool_errors_total", toolLabels).inc();
         metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
@@ -490,7 +515,7 @@ export class IpcServer {
     });
 
     this.handlers.set("getMetrics", async () => {
-      return metrics.toJSON();
+      return { ...metrics.toJSON(), daemonId: this.daemonId, startedAt: this.startedAt };
     });
 
     this.handlers.set("shutdown", async () => {

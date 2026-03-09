@@ -14,7 +14,7 @@
  *   { type: "db:end", sessionId }
  */
 
-import { resolveModelName } from "@mcp-cli/core";
+import { generateSpanId, resolveModelName } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -27,6 +27,7 @@ import { WorkerServerTransport } from "./worker-transport";
 
 interface InitMessage {
   type: "init";
+  daemonId?: string;
 }
 
 type ControlMessage = InitMessage;
@@ -42,6 +43,10 @@ declare const self: Worker;
 let wsServer: ClaudeWsServer | null = null;
 let mcpServer: Server | null = null;
 let transport: WorkerServerTransport | null = null;
+
+// Trace context — set on init, stable for worker lifetime
+let daemonId: string | undefined;
+let workerId: string | undefined;
 
 // ── Tool handlers ──
 
@@ -322,6 +327,8 @@ async function startServer(): Promise<void> {
 self.onmessage = async (event: MessageEvent) => {
   const data = event.data;
   if (isControlMessage(data) && data.type === "init") {
+    daemonId = data.daemonId;
+    workerId = generateSpanId();
     await startServer();
   }
 };

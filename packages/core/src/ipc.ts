@@ -42,6 +42,8 @@ export interface IpcRequest {
   id: string;
   method: IpcMethod;
   params?: unknown;
+  /** W3C traceparent header for request correlation. */
+  traceparent?: string;
 }
 
 export interface IpcResponse {
@@ -289,6 +291,10 @@ export interface ShutdownResult {
 }
 
 export interface MetricsSnapshot {
+  /** Daemon instance ID (stable for daemon lifetime). */
+  daemonId?: string;
+  /** Daemon startup timestamp (ms since epoch). */
+  startedAt?: number;
   collectedAt: number;
   counters: Array<{ name: string; labels: Record<string, string>; value: number }>;
   gauges: Array<{ name: string; labels: Record<string, string>; value: number }>;
