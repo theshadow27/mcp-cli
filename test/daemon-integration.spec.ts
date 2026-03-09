@@ -48,6 +48,26 @@ describe("P1: Daemon lifecycle", () => {
     daemon = undefined;
   });
 
+  test("shutdown via IPC logs reason in stderr", async () => {
+    daemon = await startTestDaemon({});
+    await rpc(daemon.socketPath, "shutdown");
+    await daemon.proc.exited;
+
+    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    expect(stderr).toContain("Shutting down (IPC shutdown request)");
+    daemon = undefined;
+  });
+
+  test("shutdown via SIGTERM logs reason in stderr", async () => {
+    daemon = await startTestDaemon({});
+    daemon.proc.kill("SIGTERM");
+    await daemon.proc.exited;
+
+    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    expect(stderr).toContain("Shutting down (SIGTERM)");
+    daemon = undefined;
+  });
+
   test("idle timeout fires and process exits", async () => {
     daemon = await startTestDaemon({}, { idleTimeout: 1_000 });
 
