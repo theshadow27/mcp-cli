@@ -14,7 +14,7 @@
  */
 
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
@@ -33,6 +33,65 @@ import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
 import { ServerPool } from "./server-pool";
+
+/** Remove worktrees from ended sessions that are clean and have no active session. */
+function pruneOrphanedWorktrees(db: StateDb): void {
+  try {
+    const activeSessions = db.listSessions(true);
+    const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
+
+    const endedSessions = db.listSessions(false);
+    let pruned = 0;
+
+    for (const session of endedSessions) {
+      if (!session.worktree || !session.cwd) continue;
+      if (activeWorktrees.has(session.worktree)) continue;
+
+      const worktreePath = join(session.cwd, ".claude", "worktrees", session.worktree);
+      if (!existsSync(worktreePath)) continue;
+
+      // Check if clean
+      const statusResult = Bun.spawnSync(["git", "-C", worktreePath, "status", "--porcelain"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (statusResult.exitCode !== 0 || statusResult.stdout.toString().trim() !== "") continue;
+
+      // Capture branch before removal
+      const branchResult = Bun.spawnSync(["git", "-C", worktreePath, "branch", "--show-current"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const branch = branchResult.exitCode === 0 ? branchResult.stdout.toString().trim() : null;
+
+      // Remove worktree
+      const removeResult = Bun.spawnSync(["git", "-C", session.cwd, "worktree", "remove", worktreePath], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (removeResult.exitCode === 0) {
+        pruned++;
+        console.error(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
+        // Delete merged branch
+        if (branch) {
+          const branchDelete = Bun.spawnSync(["git", "-C", session.cwd, "branch", "-d", branch], {
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          if (branchDelete.exitCode === 0) {
+            console.error(`[mcpd] Deleted branch: ${branch} (merged)`);
+          }
+        }
+      }
+    }
+
+    if (pruned > 0) {
+      console.error(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
+    }
+  } catch (err) {
+    console.error(`[mcpd] Worktree prune failed: ${err}`);
+  }
+}
 
 async function main(): Promise<void> {
   // Capture daemon logs before anything else
@@ -183,6 +242,9 @@ async function main(): Promise<void> {
 
   // Signal readiness to parent
   console.log(DAEMON_READY_SIGNAL);
+
+  // Prune orphaned worktrees after ready signal (non-blocking)
+  pruneOrphanedWorktrees(db);
 
   type ShutdownReason =
     | "SIGTERM"
