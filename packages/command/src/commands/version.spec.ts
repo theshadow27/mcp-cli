@@ -18,7 +18,6 @@ function mockDaemonStatus(overrides?: Partial<DaemonStatus>): DaemonStatus {
 const mockDeps = {
   buildVersion: "0.1.0-20260308",
   protocolVersion: "a3f2b1c9d0e1",
-  exit: (() => {}) as never,
 };
 
 async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string[]; stderr: string[] }> {

@@ -16,6 +16,7 @@
 
 import type { DaemonStatus, IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { BUILD_VERSION, PING_TIMEOUT_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
+import { ipcCall } from "../daemon-lifecycle";
 
 export interface VersionDeps {
   ipcCall: <M extends IpcMethod>(
@@ -25,17 +26,12 @@ export interface VersionDeps {
   ) => Promise<IpcMethodResult[M]>;
   buildVersion: string;
   protocolVersion: string;
-  exit: (code: number) => never;
 }
 
 const defaultDeps: VersionDeps = {
-  ipcCall: async (method, params, opts) => {
-    const { ipcCall: coreIpc } = await import("../daemon-lifecycle.js");
-    return coreIpc(method, params, opts) as never;
-  },
+  ipcCall,
   buildVersion: BUILD_VERSION,
   protocolVersion: PROTOCOL_VERSION,
-  exit: (code) => process.exit(code),
 };
 
 export async function cmdVersion(args: string[], deps?: Partial<VersionDeps>): Promise<void> {
