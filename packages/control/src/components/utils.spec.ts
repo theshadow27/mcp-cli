@@ -10,6 +10,7 @@ import { summarizeEntry } from "./claude-session-detail";
 import { formatCost, formatTokens, shortCwd, shortId } from "./claude-session-list";
 import { formatUptime } from "./header";
 import { formatRelativeTime } from "./server-detail";
+import { buildBadges } from "./tab-bar";
 
 describe("formatUptime", () => {
   it("formats seconds only", () => {
@@ -153,6 +154,36 @@ describe("tab navigation", () => {
   it("tabByNumber returns undefined for out-of-range", () => {
     expect(tabByNumber(0)).toBeUndefined();
     expect(tabByNumber(6)).toBeUndefined();
+  });
+});
+
+describe("buildBadges", () => {
+  it("returns empty when all counts are zero", () => {
+    const badges = buildBadges({ sessionCount: 0, pendingPermissionCount: 0, errorServerCount: 0 });
+    expect(badges).toEqual({});
+  });
+
+  it("shows claude session count without color when no pending permissions", () => {
+    const badges = buildBadges({ sessionCount: 3, pendingPermissionCount: 0, errorServerCount: 0 });
+    expect(badges.claude).toEqual({ count: 3 });
+    expect(badges.servers).toBeUndefined();
+  });
+
+  it("shows claude badge in red when pending permissions exist", () => {
+    const badges = buildBadges({ sessionCount: 2, pendingPermissionCount: 1, errorServerCount: 0 });
+    expect(badges.claude).toEqual({ count: 2, color: "red" });
+  });
+
+  it("shows servers badge in red when errors exist", () => {
+    const badges = buildBadges({ sessionCount: 0, pendingPermissionCount: 0, errorServerCount: 2 });
+    expect(badges.servers).toEqual({ count: 2, color: "red" });
+    expect(badges.claude).toBeUndefined();
+  });
+
+  it("shows both badges when both have counts", () => {
+    const badges = buildBadges({ sessionCount: 5, pendingPermissionCount: 3, errorServerCount: 1 });
+    expect(badges.claude).toEqual({ count: 5, color: "red" });
+    expect(badges.servers).toEqual({ count: 1, color: "red" });
   });
 });
 

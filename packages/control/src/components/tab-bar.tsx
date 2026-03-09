@@ -16,6 +16,23 @@ function capitalize(s: string): string {
   return s[0].toUpperCase() + s.slice(1);
 }
 
+/** Build badge map from session/server counts for the tab bar. */
+export function buildBadges(opts: {
+  sessionCount: number;
+  pendingPermissionCount: number;
+  errorServerCount: number;
+}): Partial<Record<View, TabBadge>> {
+  const badges: Partial<Record<View, TabBadge>> = {};
+  if (opts.sessionCount > 0) {
+    badges.claude =
+      opts.pendingPermissionCount > 0 ? { count: opts.sessionCount, color: "red" } : { count: opts.sessionCount };
+  }
+  if (opts.errorServerCount > 0) {
+    badges.servers = { count: opts.errorServerCount, color: "red" };
+  }
+  return badges;
+}
+
 const NO_BADGES: Partial<Record<View, TabBadge>> = {};
 
 export function TabBar({ activeTab, badges = NO_BADGES }: TabBarProps) {

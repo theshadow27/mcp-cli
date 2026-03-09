@@ -7,7 +7,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
-import { type TabBadge, TabBar } from "./components/tab-bar.js";
+import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
@@ -102,14 +102,7 @@ export function App() {
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
   const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
   const errorServerCount = servers.filter((s) => s.state === "error").length;
-
-  const badges: Partial<Record<View, TabBadge>> = {};
-  if (sessions.length > 0) {
-    badges.claude = pendingPermissionCount > 0 ? { count: sessions.length, color: "red" } : { count: sessions.length };
-  }
-  if (errorServerCount > 0) {
-    badges.servers = { count: errorServerCount, color: "red" };
-  }
+  const badges = buildBadges({ sessionCount: sessions.length, pendingPermissionCount, errorServerCount });
 
   return (
     <Box flexDirection="column" padding={1}>
