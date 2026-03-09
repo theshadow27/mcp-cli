@@ -8,7 +8,16 @@
  */
 
 import { Database } from "bun:sqlite";
-import { type AliasType, type MailMessage, type ToolInfo, type UsageStat, hardenFile, options } from "@mcp-cli/core";
+import {
+  type AliasType,
+  type MailMessage,
+  type Span,
+  type SpanRow,
+  type ToolInfo,
+  type UsageStat,
+  hardenFile,
+  options,
+} from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
@@ -183,6 +192,29 @@ export class StateDb {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id)");
+
+    // -- Spans table (export buffer) --
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS spans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trace_id TEXT NOT NULL,
+        span_id TEXT NOT NULL,
+        parent_span_id TEXT,
+        trace_flags TEXT NOT NULL DEFAULT '01',
+        name TEXT NOT NULL,
+        start_time_ms INTEGER NOT NULL,
+        end_time_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'UNSET',
+        attributes_json TEXT,
+        events_json TEXT,
+        daemon_id TEXT,
+        exported_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
+    `);
   }
 
   // -- Tool cache --
@@ -791,6 +823,110 @@ export class StateDb {
   pruneOldSessions(maxAgeDays = 30): number {
     const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const result = this.db.run("DELETE FROM claude_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);
+    return result.changes;
+  }
+
+  // -- Spans (export buffer) --
+
+  private spanInsertCount = 0;
+
+  recordSpan(span: Span, daemonId?: string): void {
+    this.db.run(
+      `INSERT INTO spans (trace_id, span_id, parent_span_id, trace_flags, name,
+        start_time_ms, end_time_ms, duration_ms, status, attributes_json, events_json, daemon_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        span.traceId,
+        span.spanId,
+        span.parentSpanId ?? null,
+        span.traceFlags,
+        span.name,
+        span.startTimeMs,
+        span.endTimeMs,
+        span.durationMs,
+        span.status,
+        Object.keys(span.attributes).length > 0 ? JSON.stringify(span.attributes) : null,
+        span.events.length > 0 ? JSON.stringify(span.events) : null,
+        daemonId ?? null,
+      ],
+    );
+    if (++this.spanInsertCount >= options.USAGE_PRUNE_INTERVAL) {
+      this.spanInsertCount = 0;
+      // Auto-prune exported spans older than 1 hour
+      this.pruneSpans(Date.now() - 3600_000);
+    }
+  }
+
+  getSpans(opts?: { since?: number; limit?: number; unexported?: boolean }): SpanRow[] {
+    const conditions: string[] = [];
+    const params: (number | null)[] = [];
+
+    if (opts?.since !== undefined) {
+      conditions.push("start_time_ms >= ?");
+      params.push(opts.since);
+    }
+    if (opts?.unexported) {
+      conditions.push("exported_at IS NULL");
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = opts?.limit ?? 1000;
+
+    const allParams = [...params, limit];
+    const rows = this.db
+      .prepare<
+        {
+          id: number;
+          trace_id: string;
+          span_id: string;
+          parent_span_id: string | null;
+          trace_flags: string;
+          name: string;
+          start_time_ms: number;
+          end_time_ms: number;
+          duration_ms: number;
+          status: string;
+          attributes_json: string | null;
+          events_json: string | null;
+          daemon_id: string | null;
+          exported_at: number | null;
+        },
+        number[]
+      >(`SELECT * FROM spans ${where} ORDER BY start_time_ms DESC LIMIT ?`)
+      .all(...(allParams as number[]));
+
+    return rows.map((row) => ({
+      id: row.id,
+      traceId: row.trace_id,
+      spanId: row.span_id,
+      parentSpanId: row.parent_span_id,
+      traceFlags: row.trace_flags,
+      name: row.name,
+      startTimeMs: row.start_time_ms,
+      endTimeMs: row.end_time_ms,
+      durationMs: row.duration_ms,
+      status: row.status,
+      attributes: row.attributes_json ? safeJsonParse(row.attributes_json, {}) : {},
+      events: row.events_json ? safeJsonParse(row.events_json, []) : [],
+      daemonId: row.daemon_id,
+      exportedAt: row.exported_at,
+    }));
+  }
+
+  markSpansExported(ids: number[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    const now = Date.now();
+    this.db.run(`UPDATE spans SET exported_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  }
+
+  pruneSpans(beforeMs?: number): number {
+    if (beforeMs !== undefined) {
+      const result = this.db.run("DELETE FROM spans WHERE exported_at IS NOT NULL AND exported_at < ?", [beforeMs]);
+      return result.changes;
+    }
+    // Default: prune all exported spans
+    const result = this.db.run("DELETE FROM spans WHERE exported_at IS NOT NULL");
     return result.changes;
   }
 

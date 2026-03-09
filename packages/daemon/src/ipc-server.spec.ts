@@ -34,7 +34,11 @@ function mockPool() {
 function mockDb(overrides?: Partial<Record<string, unknown>>) {
   return {
     recordUsage: () => {},
+    recordSpan: () => {},
     getUsageStats: () => [],
+    getSpans: () => [],
+    markSpansExported: () => {},
+    pruneSpans: () => 0,
     listAliases: () => [],
     getAlias: () => null,
     saveAlias: () => {},
@@ -1038,12 +1042,12 @@ describe("IpcServer HTTP transport", () => {
     expect(servers.beta).toEqual({ transport: "http", source: "/b.json", scope: "project", toolCount: 3 });
   });
 
-  test("callTool propagates traceparent to recordUsage", async () => {
+  test("callTool creates child span with inherited traceId", async () => {
     socketPath = tmpSocket();
-    const calls: unknown[] = [];
+    const spans: unknown[] = [];
     const db = mockDb({
-      recordUsage: (...args: unknown[]) => {
-        calls.push(args);
+      recordSpan: (span: unknown) => {
+        spans.push(span);
       },
     });
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
@@ -1057,21 +1061,32 @@ describe("IpcServer HTTP transport", () => {
       traceparent,
     });
 
-    expect(calls).toHaveLength(1);
-    const [, , , , , traceContext] = calls[0] as [string, string, number, boolean, string | undefined, unknown];
-    expect(traceContext).toEqual({
-      daemonId: TEST_DAEMON_ID,
-      traceId: "0123456789abcdef0123456789abcdef",
-      parentId: "fedcba9876543210",
-    });
+    // Two spans recorded: IPC dispatch span + tool call span
+    expect(spans).toHaveLength(2);
+    const toolSpan = spans[0] as { traceId: string; parentSpanId: string; name: string; status: string };
+    const ipcSpan = spans[1] as { traceId: string; parentSpanId: string; name: string; spanId: string };
+
+    // Both inherit the caller's traceId
+    expect(toolSpan.traceId).toBe("0123456789abcdef0123456789abcdef");
+    expect(ipcSpan.traceId).toBe("0123456789abcdef0123456789abcdef");
+
+    // Tool span is child of IPC span
+    expect(toolSpan.parentSpanId).toBe(ipcSpan.spanId);
+
+    // IPC span is child of the caller's spanId
+    expect(ipcSpan.parentSpanId).toBe("fedcba9876543210");
+
+    expect(toolSpan.name).toBe("tool.s.t");
+    expect(toolSpan.status).toBe("OK");
+    expect(ipcSpan.name).toBe("ipc.callTool");
   });
 
-  test("callTool without traceparent records daemonId only", async () => {
+  test("callTool without traceparent creates root span", async () => {
     socketPath = tmpSocket();
-    const calls: unknown[] = [];
+    const spans: unknown[] = [];
     const db = mockDb({
-      recordUsage: (...args: unknown[]) => {
-        calls.push(args);
+      recordSpan: (span: unknown) => {
+        spans.push(span);
       },
     });
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
@@ -1083,13 +1098,67 @@ describe("IpcServer HTTP transport", () => {
       params: { server: "s", tool: "t", arguments: {} },
     });
 
-    expect(calls).toHaveLength(1);
-    const [, , , , , traceContext] = calls[0] as [string, string, number, boolean, string | undefined, unknown];
-    expect(traceContext).toEqual({
-      daemonId: TEST_DAEMON_ID,
-      traceId: undefined,
-      parentId: undefined,
+    expect(spans).toHaveLength(2);
+    const ipcSpan = spans[1] as { traceId: string; parentSpanId?: string };
+    // Root span — no parent
+    expect(ipcSpan.parentSpanId).toBeUndefined();
+    // Has a valid traceId
+    expect(ipcSpan.traceId).toHaveLength(32);
+  });
+
+  test("concurrent callTool requests get independent spans", async () => {
+    socketPath = tmpSocket();
+    const spans: Array<{ traceId: string; name: string }> = [];
+    const db = mockDb({
+      recordSpan: (span: { traceId: string; name: string }) => {
+        spans.push(span);
+      },
     });
+    // Make callTool take some time to expose race conditions
+    const pool = {
+      ...mockPool(),
+      callTool: async () => {
+        await Bun.sleep(10);
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(pool as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const tp1 = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11-1111111111111111-01";
+    const tp2 = "00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22-2222222222222222-01";
+
+    // Fire two concurrent requests with different traceparents
+    const [r1, r2] = await Promise.all([
+      rpc("/rpc", {
+        id: "c1",
+        method: "callTool",
+        params: { server: "s", tool: "t", arguments: {} },
+        traceparent: tp1,
+      }),
+      rpc("/rpc", {
+        id: "c2",
+        method: "callTool",
+        params: { server: "s", tool: "t", arguments: {} },
+        traceparent: tp2,
+      }),
+    ]);
+
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+
+    // Should have 4 spans (2 IPC + 2 tool)
+    expect(spans).toHaveLength(4);
+
+    // Extract tool spans by name
+    const toolSpans = spans.filter((s) => s.name === "tool.s.t");
+    expect(toolSpans).toHaveLength(2);
+
+    // Each tool span should have the correct traceId from its request (no cross-contamination)
+    const traceIds = new Set(toolSpans.map((s) => s.traceId));
+    expect(traceIds.size).toBe(2);
+    expect(traceIds.has("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11")).toBe(true);
+    expect(traceIds.has("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22")).toBe(true);
   });
 
   test("getMetrics includes daemonId and startedAt", async () => {
