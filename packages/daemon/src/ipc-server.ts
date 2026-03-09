@@ -199,8 +199,12 @@ export class IpcServer {
       metrics.counter("mcpd_ipc_errors_total", labels).inc();
       throw err;
     } finally {
-      this.db.recordSpan(span.end(), this.daemonId);
       stopTimer();
+      try {
+        this.db.recordSpan(span.end(), this.daemonId);
+      } catch (e) {
+        console.error("[ipc] Failed to record span:", e);
+      }
     }
   }
 
@@ -549,8 +553,8 @@ export class IpcServer {
 
     this.handlers.set("markSpansExported", async (params, _ctx) => {
       const { ids } = MarkSpansExportedParamsSchema.parse(params);
-      this.db.markSpansExported(ids);
-      return { marked: ids.length };
+      const marked = this.db.markSpansExported(ids);
+      return { marked };
     });
 
     this.handlers.set("pruneSpans", async (params, _ctx) => {

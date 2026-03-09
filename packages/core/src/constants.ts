@@ -80,6 +80,10 @@ const _originalOptions = {
   USAGE_STATS_MAX_ROWS: 10_000,
   /** How many usage inserts between prune passes (amortized O(1)) */
   USAGE_PRUNE_INTERVAL: 100,
+  /** How many span inserts between prune passes */
+  SPAN_PRUNE_INTERVAL: 100,
+  /** Max span rows before pruning oldest entries (regardless of export status) */
+  SPANS_MAX_ROWS: 50_000,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {

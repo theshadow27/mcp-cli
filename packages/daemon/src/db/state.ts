@@ -850,16 +850,18 @@ export class StateDb {
         daemonId ?? null,
       ],
     );
-    if (++this.spanInsertCount >= options.USAGE_PRUNE_INTERVAL) {
+    if (++this.spanInsertCount >= options.SPAN_PRUNE_INTERVAL) {
       this.spanInsertCount = 0;
       // Auto-prune exported spans older than 1 hour
       this.pruneSpans(Date.now() - 3600_000);
+      // Hard cap: prune oldest rows regardless of export status
+      this.pruneSpansByRowCount();
     }
   }
 
   getSpans(opts?: { since?: number; limit?: number; unexported?: boolean }): SpanRow[] {
     const conditions: string[] = [];
-    const params: (number | null)[] = [];
+    const params: number[] = [];
 
     if (opts?.since !== undefined) {
       conditions.push("start_time_ms >= ?");
@@ -892,8 +894,13 @@ export class StateDb {
           exported_at: number | null;
         },
         number[]
-      >(`SELECT * FROM spans ${where} ORDER BY start_time_ms DESC LIMIT ?`)
-      .all(...(allParams as number[]));
+      >(
+        `SELECT id, trace_id, span_id, parent_span_id, trace_flags, name,
+          start_time_ms, end_time_ms, duration_ms, status, attributes_json,
+          events_json, daemon_id, exported_at
+         FROM spans ${where} ORDER BY start_time_ms DESC LIMIT ?`,
+      )
+      .all(...allParams);
 
     return rows.map((row) => ({
       id: row.id,
@@ -913,11 +920,12 @@ export class StateDb {
     }));
   }
 
-  markSpansExported(ids: number[]): void {
-    if (ids.length === 0) return;
+  markSpansExported(ids: number[]): number {
+    if (ids.length === 0) return 0;
     const placeholders = ids.map(() => "?").join(",");
     const now = Date.now();
-    this.db.run(`UPDATE spans SET exported_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+    const result = this.db.run(`UPDATE spans SET exported_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+    return result.changes;
   }
 
   pruneSpans(beforeMs?: number): number {
@@ -927,6 +935,17 @@ export class StateDb {
     }
     // Default: prune all exported spans
     const result = this.db.run("DELETE FROM spans WHERE exported_at IS NOT NULL");
+    return result.changes;
+  }
+
+  /** Hard cap: delete oldest span rows regardless of export status. */
+  pruneSpansByRowCount(maxRows: number = options.SPANS_MAX_ROWS): number {
+    const result = this.db.run(
+      `DELETE FROM spans WHERE id NOT IN (
+        SELECT id FROM spans ORDER BY start_time_ms DESC, id DESC LIMIT ?
+      )`,
+      [maxRows],
+    );
     return result.changes;
   }
 

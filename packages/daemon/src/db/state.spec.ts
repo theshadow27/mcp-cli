@@ -1145,6 +1145,249 @@ describe("StateDb", () => {
     });
   });
 
+  describe("spans", () => {
+    function makeSpan(overrides?: Partial<import("@mcp-cli/core").Span>): import("@mcp-cli/core").Span {
+      return {
+        traceId: "a".repeat(32),
+        spanId: "b".repeat(16),
+        parentSpanId: undefined,
+        traceFlags: "01",
+        name: "ipc.callTool",
+        startTimeMs: 1700000000000,
+        endTimeMs: 1700000000050,
+        durationMs: 50,
+        status: "OK",
+        attributes: {},
+        events: [],
+        ...overrides,
+      };
+    }
+
+    test("recordSpan and getSpans round-trip", () => {
+      const db = createDb();
+      const span = makeSpan();
+      db.recordSpan(span, "daemon-1");
+
+      const rows = db.getSpans();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].traceId).toBe("a".repeat(32));
+      expect(rows[0].spanId).toBe("b".repeat(16));
+      expect(rows[0].parentSpanId).toBeNull();
+      expect(rows[0].traceFlags).toBe("01");
+      expect(rows[0].name).toBe("ipc.callTool");
+      expect(rows[0].startTimeMs).toBe(1700000000000);
+      expect(rows[0].endTimeMs).toBe(1700000000050);
+      expect(rows[0].durationMs).toBe(50);
+      expect(rows[0].status).toBe("OK");
+      expect(rows[0].attributes).toEqual({});
+      expect(rows[0].events).toEqual([]);
+      expect(rows[0].daemonId).toBe("daemon-1");
+      expect(rows[0].exportedAt).toBeNull();
+      db.close();
+    });
+
+    test("recordSpan stores attributes and events as JSON", () => {
+      const db = createDb();
+      db.recordSpan(
+        makeSpan({
+          attributes: { server: "atlas", tool: "search", count: 5 },
+          events: [{ name: "start", timeMs: 1700000000010, attributes: { step: 1 } }],
+        }),
+        "d1",
+      );
+
+      const rows = db.getSpans();
+      expect(rows[0].attributes).toEqual({ server: "atlas", tool: "search", count: 5 });
+      expect(rows[0].events).toHaveLength(1);
+      expect(rows[0].events[0].name).toBe("start");
+      expect(rows[0].events[0].attributes).toEqual({ step: 1 });
+      db.close();
+    });
+
+    test("recordSpan stores parentSpanId", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ parentSpanId: "c".repeat(16) }));
+
+      const rows = db.getSpans();
+      expect(rows[0].parentSpanId).toBe("c".repeat(16));
+      db.close();
+    });
+
+    test("getSpans respects limit", () => {
+      const db = createDb();
+      for (let i = 0; i < 5; i++) {
+        db.recordSpan(makeSpan({ spanId: `span${i}`.padEnd(16, "0") }));
+      }
+
+      const rows = db.getSpans({ limit: 3 });
+      expect(rows).toHaveLength(3);
+      db.close();
+    });
+
+    test("getSpans filters by since", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ startTimeMs: 1000 }));
+      db.recordSpan(makeSpan({ startTimeMs: 2000 }));
+      db.recordSpan(makeSpan({ startTimeMs: 3000 }));
+
+      const rows = db.getSpans({ since: 2000 });
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.startTimeMs >= 2000)).toBe(true);
+      db.close();
+    });
+
+    test("getSpans filters unexported only", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ spanId: "exported00000000" }));
+      db.recordSpan(makeSpan({ spanId: "unexported000000" }));
+
+      // Mark first as exported
+      const all = db.getSpans();
+      const exportedId = all.find((r) => r.spanId === "exported00000000")?.id ?? -1;
+      db.markSpansExported([exportedId]);
+
+      const unexported = db.getSpans({ unexported: true });
+      expect(unexported).toHaveLength(1);
+      expect(unexported[0].spanId).toBe("unexported000000");
+      db.close();
+    });
+
+    test("getSpans orders by start_time_ms DESC", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ startTimeMs: 1000 }));
+      db.recordSpan(makeSpan({ startTimeMs: 3000 }));
+      db.recordSpan(makeSpan({ startTimeMs: 2000 }));
+
+      const rows = db.getSpans();
+      expect(rows[0].startTimeMs).toBe(3000);
+      expect(rows[1].startTimeMs).toBe(2000);
+      expect(rows[2].startTimeMs).toBe(1000);
+      db.close();
+    });
+
+    test("markSpansExported sets exported_at and returns actual count", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ spanId: "s1".padEnd(16, "0") }));
+      db.recordSpan(makeSpan({ spanId: "s2".padEnd(16, "0") }));
+
+      const all = db.getSpans();
+      const marked = db.markSpansExported([all[0].id]);
+      expect(marked).toBe(1);
+
+      const updated = db.getSpans();
+      const exportedRow = updated.find((r) => r.id === all[0].id);
+      expect(exportedRow?.exportedAt).toBeGreaterThan(0);
+      db.close();
+    });
+
+    test("markSpansExported returns 0 for nonexistent ids", () => {
+      const db = createDb();
+      const marked = db.markSpansExported([99999]);
+      expect(marked).toBe(0);
+      db.close();
+    });
+
+    test("markSpansExported with empty array returns 0", () => {
+      const db = createDb();
+      const marked = db.markSpansExported([]);
+      expect(marked).toBe(0);
+      db.close();
+    });
+
+    test("pruneSpans deletes exported spans before timestamp", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ spanId: "keep0000".padEnd(16, "0") }));
+      db.recordSpan(makeSpan({ spanId: "prune000".padEnd(16, "0") }));
+
+      const all = db.getSpans();
+      db.markSpansExported(all.map((r) => r.id));
+
+      // Prune with future timestamp — should delete all exported
+      const pruned = db.pruneSpans(Date.now() + 10000);
+      expect(pruned).toBe(2);
+      expect(db.getSpans()).toHaveLength(0);
+      db.close();
+    });
+
+    test("pruneSpans without timestamp deletes all exported", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan({ spanId: "exported".padEnd(16, "0") }));
+      db.recordSpan(makeSpan({ spanId: "unexportd".padEnd(16, "0").slice(0, 16) }));
+
+      const all = db.getSpans();
+      db.markSpansExported([all[0].id]);
+
+      const pruned = db.pruneSpans();
+      expect(pruned).toBe(1);
+      expect(db.getSpans()).toHaveLength(1);
+      db.close();
+    });
+
+    test("pruneSpans does not delete unexported spans", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan());
+
+      const pruned = db.pruneSpans(Date.now() + 10000);
+      expect(pruned).toBe(0);
+      expect(db.getSpans()).toHaveLength(1);
+      db.close();
+    });
+
+    test("pruneSpansByRowCount enforces hard cap", () => {
+      const db = createDb();
+      for (let i = 0; i < 10; i++) {
+        db.recordSpan(makeSpan({ startTimeMs: 1000 + i, spanId: `s${i}`.padEnd(16, "0") }));
+      }
+
+      const pruned = db.pruneSpansByRowCount(5);
+      expect(pruned).toBe(5);
+
+      const remaining = db.getSpans();
+      expect(remaining).toHaveLength(5);
+      // Should keep the 5 most recent (highest start_time_ms)
+      expect(remaining[0].startTimeMs).toBe(1009);
+      expect(remaining[4].startTimeMs).toBe(1005);
+      db.close();
+    });
+
+    test("pruneSpansByRowCount no-ops when under limit", () => {
+      const db = createDb();
+      db.recordSpan(makeSpan());
+
+      const pruned = db.pruneSpansByRowCount(100);
+      expect(pruned).toBe(0);
+      db.close();
+    });
+
+    test("auto-prune fires after SPAN_PRUNE_INTERVAL inserts", () => {
+      const saved = options.SPAN_PRUNE_INTERVAL;
+      options.SPAN_PRUNE_INTERVAL = 5;
+      try {
+        const db = createDb();
+        // Insert an exported span that should be prunable
+        db.recordSpan(makeSpan({ spanId: "old0".padEnd(16, "0") }));
+        const all = db.getSpans();
+        db.markSpansExported([all[0].id]);
+        // Backdate exported_at to 2 hours ago
+        // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+        db["db"].run("UPDATE spans SET exported_at = ? WHERE id = ?", [Date.now() - 7200_000, all[0].id]);
+
+        // 4 more inserts (total 5 including the first) should trigger prune
+        for (let i = 1; i < 5; i++) {
+          db.recordSpan(makeSpan({ spanId: `new${i}`.padEnd(16, "0") }));
+        }
+
+        // The exported span older than 1hr should be pruned
+        const remaining = db.getSpans();
+        expect(remaining.find((r) => r.spanId === "old0".padEnd(16, "0"))).toBeUndefined();
+        expect(remaining.length).toBe(4);
+        db.close();
+      } finally {
+        options.SPAN_PRUNE_INTERVAL = saved;
+      }
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);
