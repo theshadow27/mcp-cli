@@ -70,7 +70,8 @@ async function defaultGetDiffStats(worktreePath: string): Promise<string | null>
 
 export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus | null> {
   try {
-    const branchProc = Bun.spawn(["git", "-C", worktreePath, "branch", "--show-current"], {
+    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
+      cwd: worktreePath,
       stdout: "pipe",
       stderr: "ignore",
     });
