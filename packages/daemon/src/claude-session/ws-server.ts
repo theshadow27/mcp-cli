@@ -94,8 +94,7 @@ export interface WaitResult {
 }
 
 interface BufferedEvent {
-  seq: number;
-  event: SessionWaitEvent;
+  event: SessionWaitEvent & { seq: number };
   ts: number;
 }
 
@@ -390,20 +389,8 @@ export class ClaudeWsServer {
    * If sessionId is provided, waits for that session only. Otherwise waits for any session.
    */
   waitForEvent(sessionId: string | null, timeoutMs: number): Promise<SessionWaitEvent> {
-    if (sessionId) {
-      const session = this.sessions.get(sessionId);
-      if (!session) return Promise.reject(new Error(`Unknown session: ${sessionId}`));
-      if (session.state.state === "ended") {
-        return Promise.reject(new Error("Session already ended"));
-      }
-      if (session.state.state === "disconnected") {
-        return Promise.reject(new Error("Session is disconnected"));
-      }
-    }
-
-    if (!sessionId && this.sessions.size === 0) {
-      return Promise.reject(new Error("No active sessions"));
-    }
+    const err = this.validateWaitTarget(sessionId);
+    if (err) return Promise.reject(err);
 
     return new Promise<SessionWaitEvent>((resolve, reject) => {
       const waiter: EventWaiter = {
@@ -432,20 +419,8 @@ export class ClaudeWsServer {
    * On timeout, returns `{ seq: currentSeq, events: [] }` instead of throwing.
    */
   waitForEventsSince(sessionId: string | null, afterSeq: number, timeoutMs: number): Promise<WaitResult> {
-    if (sessionId) {
-      const session = this.sessions.get(sessionId);
-      if (!session) return Promise.reject(new Error(`Unknown session: ${sessionId}`));
-      if (session.state.state === "ended") {
-        return Promise.reject(new Error("Session already ended"));
-      }
-      if (session.state.state === "disconnected") {
-        return Promise.reject(new Error("Session is disconnected"));
-      }
-    }
-
-    if (!sessionId && this.sessions.size === 0) {
-      return Promise.reject(new Error("No active sessions"));
-    }
+    const err = this.validateWaitTarget(sessionId);
+    if (err) return Promise.reject(err);
 
     // Check buffer for events after afterSeq
     const buffered = this.getBufferedEventsAfter(sessionId, afterSeq);
@@ -639,29 +614,42 @@ export class ClaudeWsServer {
 
   // ── Helpers ──
 
+  /** Validate that a wait target (sessionId or any-session) is valid. Returns null if OK, Error otherwise. */
+  private validateWaitTarget(sessionId: string | null): Error | null {
+    if (sessionId) {
+      const session = this.sessions.get(sessionId);
+      if (!session) return new Error(`Unknown session: ${sessionId}`);
+      if (session.state.state === "ended") return new Error("Session already ended");
+      if (session.state.state === "disconnected") return new Error("Session is disconnected");
+    }
+    if (!sessionId && this.sessions.size === 0) {
+      return new Error("No active sessions");
+    }
+    return null;
+  }
+
   /** Buffer an event with a monotonic sequence number. Returns the assigned seq. */
   private bufferEvent(event: SessionWaitEvent): number {
     const seq = ++this.eventSeq;
-    const tagged = { ...event, seq };
-    this.eventBuffer.push({ seq, event: tagged, ts: Date.now() });
+    const tagged = { ...event, seq } as SessionWaitEvent & { seq: number };
+    this.eventBuffer.push({ event: tagged, ts: Date.now() });
     this.trimEventBuffer();
     return seq;
   }
 
   private trimEventBuffer(): void {
     const cutoff = Date.now() - EVENT_BUFFER_TTL_MS;
-    while (this.eventBuffer.length > MAX_EVENT_BUFFER) {
-      this.eventBuffer.shift();
+    let dropCount = Math.max(0, this.eventBuffer.length - MAX_EVENT_BUFFER);
+    while (dropCount < this.eventBuffer.length && this.eventBuffer[dropCount].ts < cutoff) {
+      dropCount++;
     }
-    while (this.eventBuffer.length > 0 && this.eventBuffer[0].ts < cutoff) {
-      this.eventBuffer.shift();
-    }
+    if (dropCount > 0) this.eventBuffer.splice(0, dropCount);
   }
 
   private getBufferedEventsAfter(sessionId: string | null, afterSeq: number): SessionWaitEvent[] {
     const events: SessionWaitEvent[] = [];
     for (const entry of this.eventBuffer) {
-      if (entry.seq <= afterSeq) continue;
+      if (entry.event.seq <= afterSeq) continue;
       if (sessionId !== null && entry.event.sessionId !== sessionId) continue;
       events.push(entry.event);
     }
