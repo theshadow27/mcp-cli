@@ -58,6 +58,12 @@ export async function ensureDaemon(): Promise<void> {
   // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
   if (await isDaemonRunning()) return;
 
+  // Daemon is alive but its IPC socket isn't ready yet — wait for it, don't spawn a second one.
+  if (isDaemonInitializing()) {
+    await waitForDaemon();
+    return;
+  }
+
   // Cooldown guard: if we recently failed to start, don't try again immediately.
   // Prevents unbounded spawn loops when the daemon binary is broken.
   const elapsed = Date.now() - lastStartFailureAt;
@@ -158,6 +164,41 @@ export async function stopDaemon(): Promise<void> {
     // Daemon may already be unreachable — fall through to clean up
   }
   cleanStaleFiles();
+}
+
+/**
+ * Check if a daemon process is alive but still initializing (socket not yet ready).
+ *
+ * Returns true when:
+ * - PID file exists and is parseable with a fresh startedAt
+ * - Process at that PID is alive
+ * - Process is actually mcpd (not a recycled PID)
+ * - Socket file does NOT yet exist (daemon is still booting)
+ *
+ * Used by ensureDaemon() to wait for an in-progress startup rather than spawn a second daemon.
+ */
+export function isDaemonInitializing(): boolean {
+  let data: { pid: number; startedAt: number };
+  try {
+    data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
+  } catch {
+    return false;
+  }
+
+  if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
+    return false;
+  }
+
+  try {
+    process.kill(data.pid, 0);
+  } catch {
+    return false;
+  }
+
+  if (!isProcessMcpd(data.pid)) return false;
+
+  // Socket absent means daemon is still booting
+  return !existsSync(options.SOCKET_PATH);
 }
 
 /**
