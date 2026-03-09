@@ -9,8 +9,6 @@ import type { MetricsSnapshot } from "@mcp-cli/core";
 
 // -- Public types --
 
-export type { MetricsSnapshot };
-
 export type Labels = Record<string, string>;
 
 export interface Counter {
