@@ -120,6 +120,31 @@ describe("startSpan", () => {
     expect(span.parentSpanId).toBeUndefined();
   });
 
+  test("calls onFallback when traceparent is invalid", () => {
+    let called = 0;
+    startSpan("test.fallback_cb", "garbage", () => {
+      called++;
+    });
+    expect(called).toBe(1);
+  });
+
+  test("does not call onFallback when traceparent is valid", () => {
+    let called = 0;
+    const tp = formatTraceparent(generateTraceId(), generateSpanId());
+    startSpan("test.no_fallback", tp, () => {
+      called++;
+    });
+    expect(called).toBe(0);
+  });
+
+  test("does not call onFallback when traceparent is absent", () => {
+    let called = 0;
+    startSpan("test.no_parent", undefined, () => {
+      called++;
+    });
+    expect(called).toBe(0);
+  });
+
   test("preserves trace flags from parent", () => {
     const tp = formatTraceparent(generateTraceId(), generateSpanId(), "00");
     const span = startSpan("test.flags", tp);
