@@ -809,6 +809,162 @@ describe("ServerPool.updateConfig reconnect", () => {
   });
 });
 
+// -- Pending virtual servers --
+
+describe("ServerPool.registerPendingVirtualServer", () => {
+  test("callTool awaits pending server before proceeding", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn);
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    // Start callTool — it should block on the pending promise
+    const callPromise = pool.callTool("_test", "my-tool", { x: 1 });
+
+    // Register the virtual server and resolve the promise
+    const client = makeMockClient({ callTool: callToolMock });
+    const transport = makeMockTransport();
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport);
+    resolve();
+
+    const result = await callPromise;
+    expect(result).toEqual({ content: [{ text: "ok" }] });
+  });
+
+  test("listServers shows pending servers as connecting", () => {
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
+
+    pool.registerPendingVirtualServer("_test", new Promise(() => {}));
+
+    const servers = pool.listServers();
+    const pending = servers.find((s) => s.name === "_test");
+    expect(pending).toBeDefined();
+    expect(pending?.state).toBe("connecting");
+    expect(pending?.transport).toBe("virtual");
+  });
+
+  test("listServers does not duplicate once registered", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    const client = makeMockClient();
+    const transport = makeMockTransport();
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport);
+    resolve();
+    await startPromise;
+
+    const servers = pool.listServers();
+    const matching = servers.filter((s) => s.name === "_test");
+    expect(matching).toHaveLength(1);
+    expect(matching[0].state).toBe("connected");
+  });
+
+  test("listTools awaits all pending servers", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    const toolMap = new Map([
+      ["my-tool", { name: "my-tool", server: "_test", description: "test", inputSchema: {}, signature: "my-tool()" }],
+    ]);
+    const client = makeMockClient();
+    const transport = makeMockTransport();
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport, toolMap);
+
+    // Resolve the pending promise so listTools can proceed
+    resolve();
+
+    const tools = await pool.listTools();
+    expect(tools.some((t) => t.name === "my-tool")).toBe(true);
+  });
+
+  test("listTools(serverName) awaits pending server before checking connections", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    const toolMap = new Map([
+      ["my-tool", { name: "my-tool", server: "_test", description: "test", inputSchema: {}, signature: "my-tool()" }],
+    ]);
+    const client = makeMockClient();
+    const transport = makeMockTransport();
+
+    // Start listTools for specific server — should block on pending
+    const toolsPromise = pool.listTools("_test");
+
+    // Register server and resolve
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport, toolMap);
+    resolve();
+
+    const tools = await toolsPromise;
+    expect(tools.some((t) => t.name === "my-tool")).toBe(true);
+  });
+
+  test("awaitPendingServers resolves when all pending servers settle", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+    resolve();
+
+    // Should not hang
+    await pool.awaitPendingServers();
+  });
+
+  test("callTool throws 'not found' after pending server fails to start", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    // Register a pending server whose startup fails (the IIFE catches and resolves)
+    pool.registerPendingVirtualServer(
+      "_broken",
+      (async () => {
+        throw new Error("worker crash");
+      })(),
+    );
+
+    // Wait for the pending promise to settle
+    await pool.awaitPendingServers();
+
+    // Now callTool should throw "not found" since the server never registered
+    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow('Server "_broken" not found');
+  });
+
+  test("failed pending server does not block other operations", async () => {
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
+    const { connectFn } = mockConnectFn();
+    const poolWithConnect = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
+
+    // Register a pending server that fails
+    poolWithConnect.registerPendingVirtualServer("_broken", Promise.reject(new Error("worker crash")));
+
+    // listServers should still work
+    const servers = poolWithConnect.listServers();
+    expect(servers.some((s) => s.name === "a")).toBe(true);
+  });
+});
+
 describe("ServerPool.restart", () => {
   test("restart without name restarts all connected servers in parallel", async () => {
     const connectCalls: string[] = [];
