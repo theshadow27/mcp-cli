@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { MCP_TOOL_TIMEOUT_MS } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -603,6 +604,29 @@ describe("ServerPool.callTool auto-retry", () => {
 
     expect(result).toEqual({ content: [{ text: "ok" }] });
     expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("forwards default MCP_TOOL_TIMEOUT_MS to client.callTool options", async () => {
+    const callToolMock = mock((...args: unknown[]) => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+
+    await pool.callTool("test", "my-tool", {});
+
+    // Third argument to callTool should contain { timeout: MCP_TOOL_TIMEOUT_MS }
+    const opts = callToolMock.mock.calls[0][2] as { timeout?: number };
+    expect(opts).toEqual({ timeout: MCP_TOOL_TIMEOUT_MS });
+  });
+
+  test("forwards custom timeoutMs to client.callTool options", async () => {
+    const callToolMock = mock((...args: unknown[]) => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+
+    await pool.callTool("test", "my-tool", {}, 30_000);
+
+    const opts = callToolMock.mock.calls[0][2] as { timeout?: number };
+    expect(opts).toEqual({ timeout: 30_000 });
   });
 
   test("non-transient error surfaces immediately without retry", async () => {

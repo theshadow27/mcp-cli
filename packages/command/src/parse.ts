@@ -93,6 +93,44 @@ export function extractFullFlag(args: string[]): { full: boolean; rest: string[]
 }
 
 /**
+ * Extract --timeout <seconds> flag from args.
+ * Returns the timeout in milliseconds (or undefined) and the remaining args.
+ */
+export function extractTimeoutFlag(args: string[]): { timeoutMs: number | undefined; rest: string[] } {
+  const rest: string[] = [];
+  let timeoutMs: number | undefined;
+
+  const parseSeconds = (s: string): number | undefined => {
+    const val = Number(s);
+    return !Number.isNaN(val) && val > 0 ? val * 1000 : undefined;
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--timeout" && i + 1 < args.length) {
+      const ms = parseSeconds(args[i + 1]);
+      if (ms !== undefined) {
+        timeoutMs = ms;
+        i++;
+      } else {
+        rest.push(arg);
+      }
+    } else if (arg.startsWith("--timeout=")) {
+      const ms = parseSeconds(arg.slice("--timeout=".length));
+      if (ms !== undefined) {
+        timeoutMs = ms;
+      } else {
+        rest.push(arg);
+      }
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { timeoutMs, rest };
+}
+
+/**
  * Extract --jq '<filter>' flag from args.
  * Returns the jq filter string (or undefined) and the remaining args.
  */

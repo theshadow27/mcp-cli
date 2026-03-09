@@ -108,7 +108,7 @@ async function main(): Promise<void> {
         return;
       }
       console.error("[mcpd] Idle timeout reached, shutting down");
-      shutdown();
+      shutdown("idle timeout");
     }, idleTimeoutMs);
   }
 
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
       inFlightCount = Math.max(0, inFlightCount - 1);
       resetIdleTimer();
     },
-    onShutdown: () => shutdown(),
+    onShutdown: () => shutdown("IPC shutdown request"),
     onReloadConfig: () => watcher.forceReload(),
   });
   ipcServer.start();
@@ -195,19 +195,34 @@ async function main(): Promise<void> {
     })(),
   );
 
-  // Graceful shutdown
-  async function shutdown(): Promise<void> {
-    console.error("[mcpd] Shutting down...");
-    clearInterval(metricsInterval);
-    watcher.stop();
-    ipcServer.stop();
-    // Wait for any in-progress virtual server startups before stopping them
-    await pool.awaitPendingServers();
-    await claudeServer.stop();
-    await aliasServer.stop();
-    await pool.closeAll();
-    db.close();
-    closeDaemonLogFile();
+  type ShutdownReason =
+    | "SIGTERM"
+    | "SIGINT"
+    | "idle timeout"
+    | "IPC shutdown request"
+    | "uncaught exception"
+    | "unhandled rejection";
+
+  // Graceful shutdown — re-entrant safe
+  let isShuttingDown = false;
+  async function shutdown(reason?: ShutdownReason): Promise<void> {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.error(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
+    try {
+      clearInterval(metricsInterval);
+      watcher.stop();
+      ipcServer.stop();
+      // Wait for any in-progress virtual server startups before stopping them
+      await pool.awaitPendingServers();
+      await claudeServer.stop();
+      await aliasServer.stop();
+      await pool.closeAll();
+      db.close();
+      closeDaemonLogFile();
+    } catch (cleanupErr) {
+      console.error("[mcpd] Error during shutdown cleanup:", cleanupErr);
+    }
     try {
       unlinkSync(options.PID_PATH);
     } catch {
@@ -216,8 +231,17 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
+  process.on("uncaughtException", (err) => {
+    console.error("[mcpd] Uncaught exception:", err);
+    shutdown("uncaught exception").catch(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (rejection) => {
+    console.error("[mcpd] Unhandled rejection:", rejection);
+    shutdown("unhandled rejection").catch(() => process.exit(1));
+  });
 }
 
 main().catch((err) => {

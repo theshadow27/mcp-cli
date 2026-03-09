@@ -19,6 +19,7 @@ import {
   CONNECT_MAX_DELAY_MS,
   CONNECT_MAX_RETRIES,
   CONNECT_TIMEOUT_MS,
+  MCP_TOOL_TIMEOUT_MS,
   getTransportType,
   isHttpConfig,
   isSseConfig,
@@ -453,12 +454,17 @@ export class ServerPool {
   }
 
   /** Call a tool on a server. Auto-retries once on transient errors (connection lost, timeout). */
-  async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs: number = MCP_TOOL_TIMEOUT_MS,
+  ): Promise<unknown> {
     const conn = await this.ensureConnected(serverName);
     if (!conn.client) throw new Error(`Not connected to "${serverName}"`);
 
     try {
-      const result = await conn.client.callTool({ name: toolName, arguments: args });
+      const result = await conn.client.callTool({ name: toolName, arguments: args }, undefined, { timeout: timeoutMs });
       conn.lastUsed = Date.now();
       return result;
     } catch (err) {
@@ -474,7 +480,9 @@ export class ServerPool {
       const reconnected = await this.ensureConnected(serverName);
       if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
 
-      const result = await reconnected.client.callTool({ name: toolName, arguments: args });
+      const result = await reconnected.client.callTool({ name: toolName, arguments: args }, undefined, {
+        timeout: timeoutMs,
+      });
       reconnected.lastUsed = Date.now();
       return result;
     }

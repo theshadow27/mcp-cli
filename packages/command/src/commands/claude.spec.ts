@@ -1,9 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import {
   MODEL_SHORTNAMES,
   cmdClaude,
+  defaultGetPrStatus,
   extractContentSummary,
   parseDiffShortstat,
   parseLogArgs,
@@ -23,6 +25,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
       throw new ExitError(code);
     }) as ClaudeDeps["exit"],
     getDiffStats: mock(async () => null),
+    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", exitCode: 0 })),
     ...overrides,
   };
@@ -279,6 +282,56 @@ describe("parseLogArgs", () => {
   test("errors on non-numeric --last", () => {
     const result = parseLogArgs(["abc123", "--last", "abc"]);
     expect(result.error).toBe("--last must be a number");
+  });
+
+  test("parses --jq flag", () => {
+    const result = parseLogArgs(["abc123", "--json", "--jq", ".[-1].message.type"]);
+    expect(result.jq).toBe(".[-1].message.type");
+    expect(result.json).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
+  test("defaults jq to undefined", () => {
+    const result = parseLogArgs(["abc123"]);
+    expect(result.jq).toBeUndefined();
+  });
+
+  test("parses --jq with complex filter", () => {
+    const result = parseLogArgs(["abc123", "--json", "--jq", '[.[] | select(.direction=="inbound")]']);
+    expect(result.jq).toBe('[.[] | select(.direction=="inbound")]');
+  });
+});
+
+// ── claudeLog --jq runtime ──
+
+describe("cmdClaude log --json --jq", () => {
+  afterEach(() => {
+    _resetJqStateForTesting();
+  });
+
+  test("prints error and exits when jq is unavailable", async () => {
+    _resetJqStateForTesting("test: WASM not loaded");
+    const transcript = [{ timestamp: 1000, direction: "inbound", message: { type: "user" } }];
+    const deps = makeDeps({
+      callTool: mock(async (tool) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult(transcript);
+      }),
+    });
+    await expect(cmdClaude(["log", "--json", "--jq", ".[-1]", "abc"], deps)).rejects.toBeInstanceOf(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("jq-web unavailable"));
+  });
+
+  test("prints error and exits when transcript is not valid JSON", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        // Return non-JSON text
+        return { content: [{ type: "text", text: "not json" }] };
+      }),
+    });
+    await expect(cmdClaude(["log", "--json", "--jq", ".", "abc"], deps)).rejects.toBeInstanceOf(ExitError);
+    expect(deps.printError).toHaveBeenCalled();
   });
 });
 
@@ -652,6 +705,86 @@ describe("mcx claude ls", () => {
     } finally {
       console.log = origLog;
     }
+  });
+
+  test("shows PR column with --pr flag", async () => {
+    const sessionsWithWorktree = [
+      { ...SESSION_LIST[0], worktree: "/tmp/wt1" },
+      { ...SESSION_LIST[1], worktree: "/tmp/wt2" },
+    ];
+    const getPrStatus = mock(async (path: string) => {
+      if (path === "/tmp/wt1") return { number: 263, state: "open" };
+      return null;
+    });
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--pr"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("PR");
+      const row1 = (logSpy.mock.calls[1] as string[])[0];
+      expect(row1).toContain("#263 open");
+      const row2 = (logSpy.mock.calls[2] as string[])[0];
+      expect(row2).toContain("—");
+      expect(getPrStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("does not show PR column without --pr flag", async () => {
+    const sessionsWithWorktree = [{ ...SESSION_LIST[0], worktree: "/tmp/wt1" }];
+    const getPrStatus = mock(async () => ({ number: 263, state: "open" }));
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).not.toContain("PR");
+      expect(getPrStatus).not.toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("hides PR column when all PRs are null", async () => {
+    const sessionsWithWorktree = [{ ...SESSION_LIST[0], worktree: "/tmp/wt1" }];
+    const getPrStatus = mock(async () => null);
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--pr"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).not.toContain("PR");
+    } finally {
+      console.log = origLog;
+    }
+  });
+});
+
+// ── defaultGetPrStatus ──
+
+describe("defaultGetPrStatus", () => {
+  test("is exported and is a function", () => {
+    expect(typeof defaultGetPrStatus).toBe("function");
   });
 });
 

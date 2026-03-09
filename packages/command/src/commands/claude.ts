@@ -7,18 +7,25 @@
 
 import { join } from "node:path";
 import { ipcCall, resolveModelName } from "@mcp-cli/core";
+import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
-import { extractFullFlag, extractJsonFlag } from "../parse";
+import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import type { SessionInfo } from "@mcp-cli/core";
 
 // ── Dependency injection ──
+
+export interface PrStatus {
+  number: number;
+  state: string;
+}
 
 export interface ClaudeDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   printError: (msg: string) => void;
   exit: (code: number) => never;
   getDiffStats: (worktreePath: string) => Promise<string | null>;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Run a command and return stdout + exit code. Used for git operations in `bye`. */
   exec: (cmd: string[]) => { stdout: string; exitCode: number };
 }
@@ -62,6 +69,33 @@ async function defaultGetDiffStats(worktreePath: string): Promise<string | null>
   }
 }
 
+export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus | null> {
+  try {
+    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
+      cwd: worktreePath,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const branch = (await new Response(branchProc.stdout).text()).trim();
+    await branchProc.exited;
+    if (!branch) return null;
+
+    const prProc = Bun.spawn(["gh", "pr", "list", "--head", branch, "--json", "number,state", "--limit", "1"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const prOutput = (await new Response(prProc.stdout).text()).trim();
+    await prProc.exited;
+
+    const prs = JSON.parse(prOutput) as Array<{ number: number; state: string }>;
+    if (!Array.isArray(prs) || prs.length === 0) return null;
+    const pr = prs[0];
+    return { number: pr.number, state: pr.state.toLowerCase() };
+  } catch {
+    return null;
+  }
+}
+
 const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
@@ -71,6 +105,7 @@ const defaultDeps: ClaudeDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
+  getPrStatus: defaultGetPrStatus,
   exec: (cmd) => {
     const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
     return { stdout: result.stdout.toString().trim(), exitCode: result.exitCode };
@@ -230,6 +265,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
 async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
+  const showPr = args.includes("--pr");
   const result = await d.callTool("claude_session_list", {});
   const text = formatToolResult(result);
 
@@ -251,16 +287,21 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
-  // Gather diff stats for worktree sessions in parallel
-  const diffStats = await Promise.all(
-    sessions.map((s) => (s.worktree ? d.getDiffStats(s.worktree) : Promise.resolve(null))),
-  );
+  // Gather diff stats and (optionally) PR status for worktree sessions in parallel
+  const [diffStats, prStatuses] = await Promise.all([
+    Promise.all(sessions.map((s) => (s.worktree ? d.getDiffStats(s.worktree) : Promise.resolve(null)))),
+    showPr
+      ? Promise.all(sessions.map((s) => (s.worktree ? d.getPrStatus(s.worktree) : Promise.resolve(null))))
+      : Promise.resolve(sessions.map(() => null)),
+  ]);
 
   const hasAnyDiff = diffStats.some((stat) => stat !== null);
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
 
   // Table output
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader} CWD`;
+  const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
+  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
   for (let i = 0; i < sessions.length; i++) {
@@ -271,9 +312,15 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
     const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
+    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff} ${c.dim}${cwd}${c.reset}`);
+    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`);
   }
+}
+
+function formatPrStatus(pr: PrStatus | null): string {
+  if (!pr) return "—";
+  return `#${pr.number} ${pr.state}`;
 }
 
 async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
@@ -395,21 +442,23 @@ export interface LogArgs {
   last: number;
   json: boolean;
   full: boolean;
+  jq: string | undefined;
   error: string | undefined;
 }
 
 export function parseLogArgs(args: string[]): LogArgs {
   const { json, rest: r1 } = extractJsonFlag(args);
   const { full, rest: r2 } = extractFullFlag(r1);
+  const { jq, rest: r3 } = extractJqFlag(r2);
 
   let sessionPrefix: string | undefined;
   let last = 20;
   let error: string | undefined;
 
-  for (let i = 0; i < r2.length; i++) {
-    const arg = r2[i];
+  for (let i = 0; i < r3.length; i++) {
+    const arg = r3[i];
     if (arg === "--last" || arg === "-n") {
-      const val = r2[++i];
+      const val = r3[++i];
       if (!val) {
         error = "--last requires a number";
       } else {
@@ -421,7 +470,7 @@ export function parseLogArgs(args: string[]): LogArgs {
     }
   }
 
-  return { sessionPrefix, last, json, full, error };
+  return { sessionPrefix, last, json, full, jq, error };
 }
 
 /** Extract a readable summary from a Claude API content field (string or content block array). */
@@ -470,6 +519,17 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   const text = formatToolResult(result);
 
   if (parsed.json) {
+    if (parsed.jq) {
+      try {
+        const data = JSON.parse(text);
+        const filtered = await applyJqFilter(data, parsed.jq);
+        console.log(JSON.stringify(filtered, null, 2));
+      } catch (err) {
+        d.printError(err instanceof Error ? err.message : String(err));
+        d.exit(1);
+      }
+      return;
+    }
     console.log(text);
     return;
   }
@@ -610,13 +670,14 @@ function printClaudeUsage(): void {
 Usage:
   mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
   mcx claude spawn "description"           Shorthand (positional task)
-  mcx claude ls                            List active sessions
+  mcx claude ls [--pr]                     List active sessions (--pr shows PR number/status)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session]                Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
   mcx claude log <session> --json          Raw JSON transcript output
+  mcx claude log <session> --json --jq '.' Apply jq filter to JSON output
   mcx claude log <session> --full          Full output (no truncation)
 
 Spawn options:

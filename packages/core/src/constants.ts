@@ -14,6 +14,14 @@ declare const __PROTOCOL_HASH__: string;
 export const PROTOCOL_VERSION: string =
   typeof __PROTOCOL_HASH__ !== "undefined" ? __PROTOCOL_HASH__ : computeDevProtocolHash();
 
+/**
+ * Build version — VERSION with a build suffix.
+ * Compiled binaries: injected at build time as "yyyyMMdd" → e.g. "0.1.0-20260308".
+ * Dev mode (bun dev:mcx): falls back to "0.1.0-dev".
+ */
+declare const __BUILD_DATE__: string;
+export const BUILD_VERSION: string = `${VERSION}-${typeof __BUILD_DATE__ !== "undefined" ? __BUILD_DATE__ : "dev"}`;
+
 function computeDevProtocolHash(): string {
   try {
     const content = readFileSync(join(import.meta.dir, "ipc.ts"), "utf-8");
@@ -140,6 +148,9 @@ export const DAEMON_START_COOLDOWN_MS = 10_000;
 
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
+
+/** MCP SDK tool call timeout (ms) — overrides SDK's 60s default for long-running tools */
+export const MCP_TOOL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 /** Daemon health-check ping timeout (ms) — must tolerate brief event loop stalls */
 export const PING_TIMEOUT_MS = 5_000;
