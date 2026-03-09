@@ -273,6 +273,9 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
       self.postMessage({ type: "db:cost", sessionId, cost: event.cost, tokens: 0 });
       self.postMessage({ type: "db:state", sessionId, state: "idle" });
       break;
+    case "session:disconnected":
+      self.postMessage({ type: "db:disconnected", sessionId, reason: event.reason });
+      break;
     case "session:ended":
       self.postMessage({ type: "db:end", sessionId });
       break;

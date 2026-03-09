@@ -128,7 +128,7 @@ async function main(): Promise<void> {
         return;
       }
       if (claudeServer.hasActiveSessions()) {
-        console.error("[mcpd] Idle timeout deferred: active WebSocket session(s)");
+        console.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
         return;
       }

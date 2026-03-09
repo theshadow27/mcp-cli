@@ -465,7 +465,7 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("process exit resolves waiters with error", async () => {
+  test("process exit marks session as disconnected but does not terminate", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -473,17 +473,232 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("test-session", { prompt: "Hello" });
     server.spawnClaude("test-session");
 
-    const resultPromise = server.waitForResult("test-session", 5000);
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
 
     // Simulate process exit
     ms.exitResolve(0);
+    await Bun.sleep(50);
 
+    // Session should still exist (not terminated) but be disconnected
+    const sessions = server.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].state).toBe("disconnected");
+    expect(sessions[0].spawnAlive).toBe(false);
+  });
+
+  test("WS close marks session as disconnected and rejects result waiters", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    await Bun.sleep(20);
+
+    // Start waiting for result, then close WS
+    const resultPromise = server.waitForResult("test-session", 5000).catch((e: unknown) => e);
+    ws.close();
+    await Bun.sleep(50);
+
+    // Result waiter should be rejected
+    const err = await resultPromise;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("WebSocket disconnected");
+
+    // Session should be disconnected but still exist
+    const sessions = server.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].state).toBe("disconnected");
+
+    // Should have emitted session:disconnected event
+    const disconnectEvent = events.find((e) => e.type === "session:disconnected");
+    expect(disconnectEvent).toBeDefined();
+  });
+
+  test("process exit while WS still open marks session as disconnected", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    const ws = await connectMockClaude(port, "test-session");
     try {
-      await resultPromise;
-      expect.unreachable("Should have thrown");
-    } catch (err) {
-      expect((err as Error).message).toContain("exited before producing a result");
+      await waitForMessage(ws);
+
+      // Spawn exits while WS is still connected
+      ms.exitResolve(0);
+      await Bun.sleep(50);
+
+      const sessions = server.listSessions();
+      expect(sessions.length).toBe(1);
+      expect(sessions[0].state).toBe("disconnected");
+      expect(sessions[0].spawnAlive).toBe(false);
+      expect(sessions[0].wsConnected).toBe(true);
+
+      const disconnectEvent = events.find((e) => e.type === "session:disconnected");
+      expect(disconnectEvent).toBeDefined();
+    } finally {
+      ws.close();
     }
+  });
+
+  test("WS close then process exit fires disconnect event only once", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+
+    // WS closes first, then process exits
+    ws.close();
+    await Bun.sleep(50);
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    // Only one disconnect event (idempotent)
+    const disconnectEvents = events.filter((e) => e.type === "session:disconnected");
+    expect(disconnectEvents.length).toBe(1);
+  });
+
+  test("sendPrompt on disconnected session throws", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Disconnect via process exit
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    expect(() => server?.sendPrompt("test-session", "follow up")).toThrow("Cannot send prompt to disconnected session");
+  });
+
+  test("interrupt on disconnected session throws", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    expect(() => server?.interrupt("test-session")).toThrow("Cannot interrupt disconnected session");
+  });
+
+  test("waitForResult on already-disconnected session rejects immediately", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
+  });
+
+  test("waitForEvent on already-disconnected session rejects immediately", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    await expect(server.waitForEvent("test-session", 5000)).rejects.toThrow("Session is disconnected");
+  });
+
+  test("bye on disconnected session cleans up properly", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello", worktree: "my-tree" });
+    server.spawnClaude("test-session");
+
+    ms.exitResolve(0);
+    await Bun.sleep(50);
+
+    const result = server.bye("test-session");
+    expect(result).toEqual({ worktree: "my-tree", cwd: null });
+    expect(server.sessionCount).toBe(0);
+  });
+
+  test("WS reconnect after disconnect transitions back to connecting", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Connect, then disconnect
+    const ws1 = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws1);
+    ws1.close();
+    await Bun.sleep(50);
+
+    expect(server.listSessions()[0].state).toBe("disconnected");
+
+    // Reconnect
+    const ws2 = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws2);
+
+      // Should transition back from disconnected
+      const sessions = server.listSessions();
+      expect(sessions[0].wsConnected).toBe(true);
+      // State should be connecting (or init/active after receiving messages)
+      expect(sessions[0].state).not.toBe("disconnected");
+    } finally {
+      ws2.close();
+    }
+  });
+
+  test("terminateSession sets spawnAlive to false", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // spawnAlive should be true after spawn
+    expect(server.listSessions()[0].spawnAlive).toBe(true);
+
+    // bye calls terminateSession
+    server.bye("test-session");
+    // Session is removed, so we just verify it didn't throw
+    expect(server.sessionCount).toBe(0);
   });
 
   test("respondToPermission sends control_response to WS", async () => {

@@ -28,6 +28,7 @@ export type SessionEvent =
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
+  | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" };
 
 // ── Outbound message (string ready to send over WS) ──
@@ -93,6 +94,9 @@ export class SessionState {
     if (this.state === "waiting_permission") {
       throw new Error("Cannot send prompt while waiting for permission approval");
     }
+    if (this.state === "disconnected") {
+      throw new Error("Cannot send prompt to disconnected session");
+    }
     if (this.state === "ended") {
       throw new Error("Cannot send prompt to ended session");
     }
@@ -124,13 +128,30 @@ export class SessionState {
 
   /** Build an interrupt control request. */
   interrupt(): OutboundMessage {
+    if (this.state === "disconnected") {
+      throw new Error("Cannot interrupt disconnected session");
+    }
     if (this.state === "ended") {
       throw new Error("Cannot interrupt ended session");
     }
     return interruptRequest(this.genRequestId());
   }
 
-  /** Mark the session as ended (e.g., WebSocket closed). */
+  /** Mark the session as disconnected (WS dropped or spawn exited, but not bye'd). */
+  disconnect(reason: string): SessionEvent[] {
+    if (this.state === "ended" || this.state === "disconnected") return [];
+    this.state = "disconnected";
+    this.pendingPermissions.clear();
+    return [{ type: "session:disconnected", reason }];
+  }
+
+  /** Transition from disconnected back to connecting (WS reconnected after sleep/wake). */
+  reconnect(): void {
+    if (this.state !== "disconnected") return;
+    this.state = "connecting";
+  }
+
+  /** Mark the session as ended (explicit bye or server shutdown). */
   end(): SessionEvent[] {
     if (this.state === "ended") return [];
     this.state = "ended";

@@ -20,6 +20,8 @@ function session(id: string): SessionInfo {
     pendingPermissions: 0,
     pendingPermissionDetails: [],
     worktree: null,
+    wsConnected: true,
+    spawnAlive: true,
   };
 }
 

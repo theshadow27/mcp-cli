@@ -3,7 +3,15 @@
  * Single source of truth for Claude Code session state representation.
  */
 
-export type SessionStateEnum = "connecting" | "init" | "active" | "waiting_permission" | "result" | "idle" | "ended";
+export type SessionStateEnum =
+  | "connecting"
+  | "init"
+  | "active"
+  | "waiting_permission"
+  | "result"
+  | "idle"
+  | "disconnected"
+  | "ended";
 
 export interface PendingPermissionInfo {
   requestId: string;
@@ -22,4 +30,8 @@ export interface SessionInfo {
   pendingPermissions: number;
   pendingPermissionDetails: PendingPermissionInfo[];
   worktree: string | null;
+  /** Whether the WebSocket transport is currently connected. */
+  wsConnected: boolean;
+  /** Whether the spawned Claude CLI process is still alive. */
+  spawnAlive: boolean;
 }

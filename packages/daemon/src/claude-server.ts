@@ -47,6 +47,12 @@ interface DbCost {
   tokens: number;
 }
 
+interface DbDisconnected {
+  type: "db:disconnected";
+  sessionId: string;
+  reason: string;
+}
+
 interface DbEnd {
   type: "db:end";
   sessionId: string;
@@ -71,7 +77,7 @@ interface ReadyMessage {
   port: number;
 }
 
-type WorkerEvent = DbUpsert | DbState | DbCost | DbEnd | DbMetric | DbHistogram | ReadyMessage;
+type WorkerEvent = DbUpsert | DbState | DbCost | DbDisconnected | DbEnd | DbMetric | DbHistogram | ReadyMessage;
 
 function isWorkerEvent(data: unknown): data is WorkerEvent {
   return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
@@ -262,6 +268,11 @@ export class ClaudeServer {
       case "db:cost":
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
         metrics.counter("mcpd_session_cost_usd").inc(event.cost);
+        break;
+      case "db:disconnected":
+        // Session lost transport but was NOT bye'd — keep in activeSessions
+        console.error(`[claude-server] Session ${event.sessionId} disconnected: ${event.reason}`);
+        this.db.updateSessionState(event.sessionId, "disconnected");
         break;
       case "db:end":
         this.activeSessions.delete(event.sessionId);
