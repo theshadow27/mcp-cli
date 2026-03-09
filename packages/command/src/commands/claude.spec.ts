@@ -280,6 +280,23 @@ describe("parseLogArgs", () => {
     const result = parseLogArgs(["abc123", "--last", "abc"]);
     expect(result.error).toBe("--last must be a number");
   });
+
+  test("parses --jq flag", () => {
+    const result = parseLogArgs(["abc123", "--json", "--jq", ".[-1].message.type"]);
+    expect(result.jq).toBe(".[-1].message.type");
+    expect(result.json).toBe(true);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
+  test("defaults jq to undefined", () => {
+    const result = parseLogArgs(["abc123"]);
+    expect(result.jq).toBeUndefined();
+  });
+
+  test("parses --jq with complex filter", () => {
+    const result = parseLogArgs(["abc123", "--json", "--jq", '[.[] | select(.direction=="inbound")]']);
+    expect(result.jq).toBe('[.[] | select(.direction=="inbound")]');
+  });
 });
 
 // ── resolveSessionId ──

@@ -7,8 +7,9 @@
 
 import { join } from "node:path";
 import { ipcCall, resolveModelName } from "@mcp-cli/core";
+import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
-import { extractFullFlag, extractJsonFlag } from "../parse";
+import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import type { SessionInfo } from "@mcp-cli/core";
 
@@ -395,21 +396,23 @@ export interface LogArgs {
   last: number;
   json: boolean;
   full: boolean;
+  jq: string | undefined;
   error: string | undefined;
 }
 
 export function parseLogArgs(args: string[]): LogArgs {
   const { json, rest: r1 } = extractJsonFlag(args);
   const { full, rest: r2 } = extractFullFlag(r1);
+  const { jq, rest: r3 } = extractJqFlag(r2);
 
   let sessionPrefix: string | undefined;
   let last = 20;
   let error: string | undefined;
 
-  for (let i = 0; i < r2.length; i++) {
-    const arg = r2[i];
+  for (let i = 0; i < r3.length; i++) {
+    const arg = r3[i];
     if (arg === "--last" || arg === "-n") {
-      const val = r2[++i];
+      const val = r3[++i];
       if (!val) {
         error = "--last requires a number";
       } else {
@@ -421,7 +424,7 @@ export function parseLogArgs(args: string[]): LogArgs {
     }
   }
 
-  return { sessionPrefix, last, json, full, error };
+  return { sessionPrefix, last, json, full, jq, error };
 }
 
 /** Extract a readable summary from a Claude API content field (string or content block array). */
@@ -470,6 +473,17 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   const text = formatToolResult(result);
 
   if (parsed.json) {
+    if (parsed.jq) {
+      try {
+        const data = JSON.parse(text);
+        const filtered = await applyJqFilter(data, parsed.jq);
+        console.log(JSON.stringify(filtered, null, 2));
+      } catch (err) {
+        d.printError(err instanceof Error ? err.message : String(err));
+        d.exit(1);
+      }
+      return;
+    }
     console.log(text);
     return;
   }
@@ -617,6 +631,7 @@ Usage:
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
   mcx claude log <session> --json          Raw JSON transcript output
+  mcx claude log <session> --json --jq '.' Apply jq filter to JSON output
   mcx claude log <session> --full          Full output (no truncation)
 
 Spawn options:
