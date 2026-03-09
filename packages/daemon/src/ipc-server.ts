@@ -43,6 +43,7 @@ import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import type { ServerPool } from "./server-pool";
+import { workerPath } from "./worker-path";
 
 /** Per-request context passed to every handler (fixes race condition on shared state). */
 export interface RequestContext {
@@ -581,7 +582,7 @@ interface AliasMetadata {
 /** Extract metadata from a defineAlias script using a Bun Worker */
 function extractAliasMetadata(aliasPath: string): Promise<AliasMetadata> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./alias-worker.ts", import.meta.url));
+    const worker = new Worker(workerPath("alias-worker.ts"));
     const timeout = setTimeout(() => {
       worker.terminate();
       reject(new Error("Alias metadata extraction timed out"));

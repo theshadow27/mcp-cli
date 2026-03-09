@@ -10,6 +10,7 @@ import { formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AliasToolDef } from "./alias-server-worker";
 import type { StateDb } from "./db/state";
+import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
 
 export const ALIAS_SERVER_NAME = "_aliases";
@@ -31,7 +32,7 @@ export class AliasServer {
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     const aliases = this.buildAliasDefs();
 
-    this.worker = new Worker(new URL("./alias-server-worker.ts", import.meta.url));
+    this.worker = new Worker(workerPath("alias-server-worker.ts"));
     this.transport = new WorkerClientTransport(this.worker);
     this.client = new Client({ name: `mcp-cli/${ALIAS_SERVER_NAME}`, version: "0.1.0" });
 
