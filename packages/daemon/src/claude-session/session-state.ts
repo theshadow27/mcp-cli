@@ -28,6 +28,7 @@ export type SessionEvent =
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
+  | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" };
 
 // ── Outbound message (string ready to send over WS) ──
@@ -130,7 +131,15 @@ export class SessionState {
     return interruptRequest(this.genRequestId());
   }
 
-  /** Mark the session as ended (e.g., WebSocket closed). */
+  /** Mark the session as disconnected (WS dropped or spawn exited, but not bye'd). */
+  disconnect(reason: string): SessionEvent[] {
+    if (this.state === "ended" || this.state === "disconnected") return [];
+    this.state = "disconnected";
+    this.pendingPermissions.clear();
+    return [{ type: "session:disconnected", reason }];
+  }
+
+  /** Mark the session as ended (explicit bye or server shutdown). */
   end(): SessionEvent[] {
     if (this.state === "ended") return [];
     this.state = "ended";

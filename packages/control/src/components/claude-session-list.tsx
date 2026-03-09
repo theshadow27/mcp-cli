@@ -18,6 +18,7 @@ const stateColor: Record<SessionStateEnum, string> = {
   idle: "white",
   waiting_permission: "red",
   result: "cyan",
+  disconnected: "red",
   ended: "gray",
 };
 
@@ -28,6 +29,7 @@ const stateLabel: Record<SessionStateEnum, string> = {
   idle: "idle",
   waiting_permission: "permission",
   result: "result",
+  disconnected: "disconnected",
   ended: "ended",
 };
 

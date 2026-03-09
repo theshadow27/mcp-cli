@@ -465,7 +465,7 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("process exit resolves waiters with error", async () => {
+  test("process exit marks session as disconnected but does not terminate", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -473,17 +473,18 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("test-session", { prompt: "Hello" });
     server.spawnClaude("test-session");
 
-    const resultPromise = server.waitForResult("test-session", 5000);
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
 
     // Simulate process exit
     ms.exitResolve(0);
+    await Bun.sleep(50);
 
-    try {
-      await resultPromise;
-      expect.unreachable("Should have thrown");
-    } catch (err) {
-      expect((err as Error).message).toContain("exited before producing a result");
-    }
+    // Session should still exist (not terminated) but be disconnected
+    const sessions = server.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].state).toBe("disconnected");
+    expect(sessions[0].spawnAlive).toBe(false);
   });
 
   test("respondToPermission sends control_response to WS", async () => {

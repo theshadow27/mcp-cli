@@ -101,6 +101,7 @@ interface WsSession {
   config: SessionConfig;
   pid: number | null;
   proc: { kill: (signal?: number) => void; exited: Promise<number> } | null;
+  spawnAlive: boolean;
   worktree: string | null;
   resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
@@ -208,6 +209,7 @@ export class ClaudeWsServer {
       config,
       pid: null,
       proc: null,
+      spawnAlive: false,
       worktree: config.worktree ?? null,
       resultWaiters: [],
       keepAliveTimer: null,
@@ -257,12 +259,20 @@ export class ClaudeWsServer {
 
     session.pid = proc.pid;
     session.proc = proc;
+    session.spawnAlive = true;
 
-    // Watch for process exit
+    // Watch for process exit — mark spawn as dead but don't terminate the session
     proc.exited.then(() => {
-      // Guard against double-cleanup (WS close may have already cleaned up)
+      session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      this.terminateSession(sessionId, session, "Claude process exited before producing a result");
+      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
+      // If WS is also gone, move to disconnected state
+      if (!session.ws) {
+        const events = session.state.disconnect("spawn exited");
+        for (const event of events) {
+          this.onSessionEvent?.(sessionId, event);
+        }
+      }
     });
 
     return proc.pid;
@@ -448,7 +458,31 @@ export class ClaudeWsServer {
     if (!session) return;
 
     session.ws = null;
-    this.terminateSession(sessionId, session, "WebSocket closed before result");
+
+    // Clear keep-alive timer (no WS to ping)
+    if (session.keepAliveTimer) {
+      clearInterval(session.keepAliveTimer);
+      session.keepAliveTimer = null;
+    }
+
+    // If already ended (bye was called), nothing more to do
+    if (session.state.state === "ended") return;
+
+    console.error(
+      `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
+    );
+
+    // Move to disconnected state — session is NOT terminated
+    const events = session.state.disconnect("WebSocket closed");
+    for (const event of events) {
+      this.onSessionEvent?.(sessionId, event);
+    }
+
+    // Reject pending result waiters — they can't get results without WS
+    for (const waiter of session.resultWaiters) {
+      waiter.reject(new Error("WebSocket disconnected"));
+    }
+    session.resultWaiters.length = 0;
   }
 
   // ── Event handling ──
@@ -549,6 +583,8 @@ export class ClaudeWsServer {
       pendingPermissions: s.state.pendingPermissions.size,
       pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
+      wsConnected: s.ws !== null,
+      spawnAlive: s.spawnAlive,
     };
   }
 
