@@ -2,18 +2,25 @@
 
 These rules apply to all `*.spec.ts` files. Follow them to prevent intermittent CI failures.
 
+## Existing Test Helpers
+
+Before writing new helpers, check what already exists:
+- `test/harness.ts` — `startTestDaemon`, `rpc`, `createTestDir`, `echoServerConfig` for integration tests
+- `test/test-options.ts` — `testOptions` with temp dir setup and `Symbol.dispose` cleanup
+- `packages/daemon/src/test-helpers.ts` — `makeConfig`, `makeMockTransport`, `makeMockClient`
+
 ## Core Rules
 
 1. **Never use `setTimeout` for waiting** — await the condition directly
 2. **Never hardcode ports** — use `port: 0` for OS-assigned ports
-3. **Never set test timeouts** — Bun has built-in timeouts already
+3. **Prefer Bun's default test timeout** — only override when a test genuinely needs longer (e.g., integration tests with polling)
 
 ## Subprocess Spawning
 
-Use `await using` for automatic cleanup:
+Prefer `await using` for automatic cleanup:
 
 ```ts
-await using proc = Bun.spawn({ cmd: [bunExe(), ...], env: bunEnv });
+await using proc = Bun.spawn({ cmd: ["bun", ...], env: process.env });
 ```
 
 Always collect all outputs simultaneously:
@@ -27,8 +34,6 @@ const [stdout, stderr, exitCode] = await Promise.all([
 ```
 
 Assert `stdout`/`stderr` **before** `exitCode` — gives better error messages on failure.
-
-Use `Promise.withResolvers()` instead of manual callback wrappers.
 
 ## Waiting for Readiness
 
@@ -44,7 +49,7 @@ async function waitForUnixSocket(path: string, timeout = 60_000) {
       Bun.connect({
         unix: path,
         socket: {
-          data: (socket) => { resolve(undefined); socket.end(); },
+          open: (socket) => { resolve(undefined); socket.end(); },
           error: (_, e) => resolve(e),
           connectError: (_, e) => resolve(e),
         },
@@ -57,7 +62,7 @@ async function waitForUnixSocket(path: string, timeout = 60_000) {
 }
 ```
 
-For TCP, use the existing `waitForPort()` helper pattern. The key principle: try the condition, sleep only on failure, retry until a deadline.
+For TCP, follow the same polling pattern. The key principle: try the condition, sleep only on failure, retry until a deadline. See `test/harness.ts` for a working example (`startTestDaemon` polls the daemon socket with ping RPCs).
 
 | Anti-pattern | Correct |
 |---|---|
@@ -84,6 +89,8 @@ async function waitForCall(fn: Mock, timeoutMs = 5000): Promise<void> {
 
 This pattern also works for asserting state changes, event emissions, or any condition that resolves asynchronously.
 
+**Exception:** A standalone sleep is acceptable when asserting that something does NOT happen within a time window (negative assertions). For example, testing that a debounced callback does not fire prematurely.
+
 ## Summary
 
-Every `Bun.sleep` or `setTimeout` in a test is a potential flake. If you must sleep, it should be inside a retry/poll loop with a deadline — never as "wait and hope". The only acceptable standalone sleep is a short backoff between retry attempts.
+Every `Bun.sleep` or `setTimeout` in a test is a potential flake. If you must sleep, it should be inside a retry/poll loop with a deadline — never as "wait and hope". The two acceptable standalone sleeps are: short backoff between retry attempts, and negative assertions (verifying something does NOT happen).
