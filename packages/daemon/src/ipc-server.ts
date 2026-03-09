@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig } from "@mcp-cli/core";
 import {
+  BUILD_VERSION,
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
   GetAliasParamsSchema,
@@ -236,6 +237,7 @@ export class IpcServer {
         pid: process.pid,
         uptime: process.uptime(),
         protocolVersion: PROTOCOL_VERSION,
+        daemonVersion: BUILD_VERSION,
         servers,
         dbPath: options.DB_PATH,
         usageStats,
