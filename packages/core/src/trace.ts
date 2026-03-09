@@ -56,6 +56,7 @@ export interface Span {
   traceId: string;
   spanId: string;
   parentSpanId?: string;
+  traceFlags: string;
 }
 
 /**
@@ -65,18 +66,28 @@ export interface Span {
 export function createSpan(parentTraceparent?: string): Span {
   const spanId = generateSpanId();
   if (!parentTraceparent) {
-    return { traceId: generateTraceId(), spanId };
+    return { traceId: generateTraceId(), spanId, traceFlags: TRACE_FLAGS_SAMPLED };
   }
   const parsed = parseTraceparent(parentTraceparent);
   if (!parsed) {
-    return { traceId: generateTraceId(), spanId };
+    return { traceId: generateTraceId(), spanId, traceFlags: TRACE_FLAGS_SAMPLED };
   }
-  return { traceId: parsed.traceId, spanId, parentSpanId: parsed.parentId };
+  return { traceId: parsed.traceId, spanId, parentSpanId: parsed.parentId, traceFlags: parsed.flags };
+}
+
+/** Create a child span from an existing Span (avoids string round-trip). */
+export function childSpan(parent: Span): Span {
+  return {
+    traceId: parent.traceId,
+    spanId: generateSpanId(),
+    parentSpanId: parent.spanId,
+    traceFlags: parent.traceFlags,
+  };
 }
 
 /** Format a Span as a W3C traceparent string for downstream propagation. */
 export function spanToTraceparent(span: Span): string {
-  return formatTraceparent(span.traceId, span.spanId);
+  return formatTraceparent(span.traceId, span.spanId, span.traceFlags);
 }
 
 function toHex(bytes: Uint8Array): string {

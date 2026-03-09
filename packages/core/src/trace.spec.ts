@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   TRACE_FLAGS_SAMPLED,
   TRACE_VERSION,
+  childSpan,
   createSpan,
   formatTraceparent,
   generateSpanId,
@@ -92,11 +93,12 @@ describe("parseTraceparent", () => {
 });
 
 describe("createSpan", () => {
-  test("no parent creates root span", () => {
+  test("no parent creates root span with sampled flag", () => {
     const span = createSpan();
     expect(span.traceId).toHaveLength(32);
     expect(span.spanId).toHaveLength(16);
     expect(span.parentSpanId).toBeUndefined();
+    expect(span.traceFlags).toBe(TRACE_FLAGS_SAMPLED);
   });
 
   test("valid parent creates child span with same traceId", () => {
@@ -109,6 +111,16 @@ describe("createSpan", () => {
     expect(span.spanId).toHaveLength(16);
     expect(span.spanId).not.toBe(parentSpanId);
     expect(span.parentSpanId).toBe(parentSpanId);
+    expect(span.traceFlags).toBe(TRACE_FLAGS_SAMPLED);
+  });
+
+  test("preserves parent traceFlags", () => {
+    const traceId = generateTraceId();
+    const parentSpanId = generateSpanId();
+    const tp = formatTraceparent(traceId, parentSpanId, "00");
+
+    const span = createSpan(tp);
+    expect(span.traceFlags).toBe("00");
   });
 
   test("invalid parent creates root span", () => {
@@ -125,10 +137,12 @@ describe("createSpan", () => {
 });
 
 describe("spanToTraceparent", () => {
-  test("formats as W3C traceparent", () => {
-    const span = { traceId: "a".repeat(32), spanId: "b".repeat(16) };
-    const tp = spanToTraceparent(span);
-    expect(tp).toBe(`00-${"a".repeat(32)}-${"b".repeat(16)}-01`);
+  test("formats as W3C traceparent preserving flags", () => {
+    const span = { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: "01" };
+    expect(spanToTraceparent(span)).toBe(`00-${"a".repeat(32)}-${"b".repeat(16)}-01`);
+
+    const unsampled = { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: "00" };
+    expect(spanToTraceparent(unsampled)).toEndWith("-00");
   });
 
   test("round-trips through createSpan", () => {
@@ -147,6 +161,36 @@ describe("spanToTraceparent", () => {
     const leaf = createSpan(spanToTraceparent(mid));
 
     expect(mid.traceId).toBe(root.traceId);
+    expect(leaf.traceId).toBe(root.traceId);
+    expect(leaf.parentSpanId).toBe(mid.spanId);
+    expect(mid.parentSpanId).toBe(root.spanId);
+  });
+});
+
+describe("childSpan", () => {
+  test("creates child with same traceId and flags", () => {
+    const parent = createSpan();
+    const child = childSpan(parent);
+
+    expect(child.traceId).toBe(parent.traceId);
+    expect(child.parentSpanId).toBe(parent.spanId);
+    expect(child.spanId).not.toBe(parent.spanId);
+    expect(child.traceFlags).toBe(parent.traceFlags);
+  });
+
+  test("propagates non-sampled flags", () => {
+    const tp = formatTraceparent(generateTraceId(), generateSpanId(), "00");
+    const parent = createSpan(tp);
+    const child = childSpan(parent);
+
+    expect(child.traceFlags).toBe("00");
+  });
+
+  test("multi-hop chain via childSpan", () => {
+    const root = createSpan();
+    const mid = childSpan(root);
+    const leaf = childSpan(mid);
+
     expect(leaf.traceId).toBe(root.traceId);
     expect(leaf.parentSpanId).toBe(mid.spanId);
     expect(mid.parentSpanId).toBe(root.spanId);
