@@ -19,6 +19,7 @@ const hasher = new Bun.CryptoHasher("sha256");
 hasher.update(ipcSource);
 const protocolHash = hasher.digest("hex").slice(0, 12);
 const defineFlag = `--define=__PROTOCOL_HASH__="${protocolHash}"`;
+const compiledFlag = "--define=__COMPILED__=true";
 console.log(`Protocol hash: ${protocolHash}`);
 
 // ── jq-web build plugin ──
@@ -102,6 +103,13 @@ const devtoolsStubPlugin: BunPlugin = {
 
 await $`mkdir -p dist`;
 
+// mcpd worker entrypoints — must be listed explicitly for bun build --compile
+const daemonWorkers = [
+  "packages/daemon/src/alias-server-worker.ts",
+  "packages/daemon/src/alias-worker.ts",
+  "packages/daemon/src/claude-session-worker.ts",
+];
+
 interface BinaryBuildConfig {
   entrypoint: string;
   bundleName: string;
@@ -164,7 +172,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} --target=${target} packages/daemon/src/index.ts --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} --target=${target} packages/daemon/src/index.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -174,7 +182,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} packages/daemon/src/index.ts --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} packages/daemon/src/index.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);

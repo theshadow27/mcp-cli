@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
+import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
 
 export const CLAUDE_SERVER_NAME = "_claude";
@@ -104,7 +105,7 @@ export class ClaudeServer {
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     this.stopped = false;
-    const worker = new Worker(new URL("./claude-session-worker.ts", import.meta.url));
+    const worker = new Worker(workerPath("claude-session-worker.ts"));
     this.worker = worker;
 
     // Wait for the worker to report ready with its WS port
