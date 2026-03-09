@@ -35,7 +35,7 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
-import { ipcCall, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import { ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
@@ -427,6 +427,26 @@ async function cmdGrep(args: string[]): Promise<void> {
 
 async function cmdStatus(args: string[] = []): Promise<void> {
   const { json } = extractJsonFlag(args);
+
+  // Check daemon state without auto-starting — status should report, not spawn.
+  const running = await isDaemonRunning();
+  if (!running) {
+    if (isDaemonInitializing()) {
+      if (json) {
+        console.log(JSON.stringify({ state: "starting" }));
+      } else {
+        console.error("Daemon is starting...");
+      }
+      return;
+    }
+    if (json) {
+      console.log(JSON.stringify({ state: "stopped" }));
+    } else {
+      console.error("Daemon is not running. Start it with: mcx daemon start");
+    }
+    return;
+  }
+
   // Use a short timeout — status reads in-memory state and must return immediately.
   // The default 60s IPC timeout would cause mcx status to hang if the daemon is slow.
   const status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
