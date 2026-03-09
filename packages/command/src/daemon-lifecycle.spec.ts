@@ -5,7 +5,13 @@ import { dirname, join } from "node:path";
 import { PID_MAX_AGE_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { DaemonStartCooldownError } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { _resetStartCooldown, isDaemonRunning, isProcessMcpd, resolveDaemonCommand } from "./daemon-lifecycle";
+import {
+  _resetStartCooldown,
+  isDaemonInitializing,
+  isDaemonRunning,
+  isProcessMcpd,
+  resolveDaemonCommand,
+} from "./daemon-lifecycle";
 
 // -- isProcessMcpd --
 
@@ -116,6 +122,59 @@ describe("isDaemonRunning", () => {
 
     const result = await isDaemonRunning();
     expect(result).toBe(false);
+  });
+});
+
+// -- isDaemonInitializing --
+
+describe("isDaemonInitializing", () => {
+  test("returns false when no PID file exists", () => {
+    using opts = testOptions();
+    expect(isDaemonInitializing()).toBe(false);
+  });
+
+  test("returns false for invalid JSON in PID file", () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, "not valid json{{{");
+    expect(isDaemonInitializing()).toBe(false);
+  });
+
+  test("returns false when PID file is too old", () => {
+    using opts = testOptions();
+    const data = { pid: process.pid, startedAt: Date.now() - PID_MAX_AGE_MS - 1000 };
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
+    expect(isDaemonInitializing()).toBe(false);
+  });
+
+  test("returns false when process does not exist", () => {
+    using opts = testOptions();
+    const data = { pid: 4294967, startedAt: Date.now() };
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
+    expect(isDaemonInitializing()).toBe(false);
+  });
+
+  test("returns false when process is not mcpd", () => {
+    using opts = testOptions();
+    const data = { pid: process.pid, startedAt: Date.now() };
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
+    // process.pid is bun test runner, not mcpd
+    expect(isDaemonInitializing()).toBe(false);
+  });
+
+  test("returns false when socket already exists (daemon is ready, not initializing)", () => {
+    using opts = testOptions();
+    const data = { pid: process.pid, startedAt: Date.now() };
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify(data));
+    // Create the socket file to simulate a ready daemon
+    writeFileSync(opts.SOCKET_PATH, "");
+    // isProcessMcpd will fail first (test process isn't mcpd), but even if it passes
+    // the socket file existing means it's not "initializing"
+    expect(isDaemonInitializing()).toBe(false);
   });
 });
 

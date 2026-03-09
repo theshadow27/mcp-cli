@@ -58,6 +58,12 @@ export async function ensureDaemon(): Promise<void> {
   // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
   if (await isDaemonRunning()) return;
 
+  // Daemon is alive but its IPC socket isn't ready yet — wait for it, don't spawn a second one.
+  if (isDaemonInitializing()) {
+    await waitForDaemon();
+    return;
+  }
+
   // Cooldown guard: if we recently failed to start, don't try again immediately.
   // Prevents unbounded spawn loops when the daemon binary is broken.
   const elapsed = Date.now() - lastStartFailureAt;
@@ -161,6 +167,48 @@ export async function stopDaemon(): Promise<void> {
 }
 
 /**
+ * Parse PID file and verify the daemon process is live (fresh, alive, is mcpd).
+ * Returns the parsed data on success, null on any failure.
+ * Does NOT clean up stale files — callers decide based on context.
+ */
+function readLivePidData(): { pid: number; startedAt: number; protocolVersion?: string } | null {
+  let data: { pid: number; startedAt: number; protocolVersion?: string };
+  try {
+    data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
+
+  if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
+    return null;
+  }
+
+  try {
+    process.kill(data.pid, 0);
+  } catch {
+    return null;
+  }
+
+  if (!isProcessMcpd(data.pid)) return null;
+
+  return data;
+}
+
+/**
+ * Check if a daemon process is alive but still initializing (socket not yet ready).
+ *
+ * Returns true when the daemon is alive (valid PID, process is mcpd) but its socket
+ * does not exist yet. Used by ensureDaemon() to wait for an in-progress startup
+ * rather than spawn a second daemon.
+ */
+export function isDaemonInitializing(): boolean {
+  const data = readLivePidData();
+  if (!data) return false;
+  // Socket absent means daemon is still booting
+  return !existsSync(options.SOCKET_PATH);
+}
+
+/**
  * Layered daemon liveness check:
  * 1. PID file exists and is parseable
  * 2. startedAt is not unreasonably old
@@ -170,30 +218,8 @@ export async function stopDaemon(): Promise<void> {
  * 6. Daemon responds to IPC ping
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  let data: { pid: number; startedAt: number; protocolVersion?: string };
-  try {
-    data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
-  } catch {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Reject unreasonably old PID files
-  if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Check if process is alive
-  try {
-    process.kill(data.pid, 0);
-  } catch {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Verify the process is actually mcpd (not a recycled PID)
-  if (!isProcessMcpd(data.pid)) {
+  const data = readLivePidData();
+  if (!data) {
     cleanStaleFiles();
     return false;
   }

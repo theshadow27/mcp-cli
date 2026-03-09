@@ -130,34 +130,9 @@ async function main(): Promise<void> {
   // Create server pool
   const pool = new ServerPool(config, db);
 
-  // Start virtual alias server
+  // Create virtual servers (started lazily after IPC socket is ready)
   const aliasServer = new AliasServer(db, daemonId);
-  try {
-    const { client, transport } = await aliasServer.start();
-    const cachedTools = buildAliasToolCache(db);
-    pool.registerVirtualServer("_aliases", client, transport, cachedTools);
-    console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
-  } catch (err) {
-    console.error(`[mcpd] Failed to start alias server: ${err}`);
-  }
-
-  // Start virtual Claude session server
   const claudeServer = new ClaudeServer(db, daemonId);
-  try {
-    const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
-    const claudeTools = buildClaudeToolCache();
-    pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
-    console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
-  } catch (err) {
-    console.error(`[mcpd] Failed to start Claude session server: ${err}`);
-  }
-
-  // Re-register _claude virtual server after crash recovery
-  claudeServer.onRestarted = (client, transport) => {
-    const claudeTools = buildClaudeToolCache();
-    pool.registerVirtualServer("_claude", client, transport, claudeTools);
-    console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
-  };
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -240,11 +215,47 @@ async function main(): Promise<void> {
   // Start idle timer
   resetIdleTimer();
 
-  // Signal readiness to parent
+  // Signal readiness to parent (IPC socket is open, commands can connect now)
   console.log(DAEMON_READY_SIGNAL);
 
   // Prune orphaned worktrees after ready signal (non-blocking)
   pruneOrphanedWorktrees(db);
+
+  // Boot virtual servers in the background — commands that need them will await
+  pool.registerPendingVirtualServer(
+    "_aliases",
+    (async () => {
+      try {
+        const { client, transport } = await aliasServer.start();
+        const cachedTools = buildAliasToolCache(db);
+        pool.registerVirtualServer("_aliases", client, transport, cachedTools);
+        console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
+      } catch (err) {
+        console.error(`[mcpd] Failed to start alias server: ${err}`);
+      }
+    })(),
+  );
+
+  pool.registerPendingVirtualServer(
+    "_claude",
+    (async () => {
+      try {
+        const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
+        const claudeTools = buildClaudeToolCache();
+        pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
+        console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
+      } catch (err) {
+        console.error(`[mcpd] Failed to start Claude session server: ${err}`);
+      }
+
+      // Re-register _claude virtual server after crash recovery
+      claudeServer.onRestarted = (client, transport) => {
+        const claudeTools = buildClaudeToolCache();
+        pool.registerVirtualServer("_claude", client, transport, claudeTools);
+        console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
+      };
+    })(),
+  );
 
   type ShutdownReason =
     | "SIGTERM"
@@ -264,6 +275,8 @@ async function main(): Promise<void> {
       clearInterval(metricsInterval);
       watcher.stop();
       ipcServer.stop();
+      // Wait for any in-progress virtual server startups before stopping them
+      await pool.awaitPendingServers();
       await claudeServer.stop();
       await aliasServer.stop();
       await pool.closeAll();

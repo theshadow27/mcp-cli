@@ -59,6 +59,7 @@ export type ConnectFn = (
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
   private reconnecting = new Map<string, Promise<void>>();
+  private pendingServers = new Map<string, Promise<void>>();
   private config: ResolvedConfig;
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
@@ -109,6 +110,27 @@ export class ServerPool {
       lastUsed: Date.now(),
       virtual: true,
     });
+  }
+
+  /**
+   * Register a virtual server that is still starting up.
+   * The promise resolves when the server is ready and registered via registerVirtualServer().
+   * Commands that need this server will await the promise; others proceed immediately.
+   */
+  registerPendingVirtualServer(name: string, startPromise: Promise<void>): void {
+    const tracked = startPromise
+      .catch((err) => {
+        console.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
+      })
+      .finally(() => this.pendingServers.delete(name));
+    this.pendingServers.set(name, tracked);
+  }
+
+  /** Wait for all pending virtual server startups to settle (resolve or reject). */
+  async awaitPendingServers(): Promise<void> {
+    if (this.pendingServers.size > 0) {
+      await Promise.allSettled([...this.pendingServers.values()]);
+    }
   }
 
   /** Update config (e.g., after file change). Returns names of changed/added/removed servers. */
@@ -169,6 +191,10 @@ export class ServerPool {
 
   /** Get or establish connection to a server */
   private async ensureConnected(name: string): Promise<ServerConnection> {
+    // Wait for pending virtual server startup if not yet registered
+    const pending = this.pendingServers.get(name);
+    if (pending) await pending;
+
     const conn = this.connections.get(name);
     if (!conn) throw new Error(`Server "${name}" not found`);
 
@@ -338,12 +364,12 @@ export class ServerPool {
 
   /** List all configured servers with status */
   listServers(): ServerStatus[] {
-    return [...this.connections.values()].map((conn) => {
+    const servers: ServerStatus[] = [...this.connections.values()].map((conn) => {
       const recent = this.stderrBuffer.getLines(conn.name, 3);
       const recentStderr = recent.length > 0 ? recent.map((l) => l.line) : undefined;
       return {
         name: conn.name,
-        transport: conn.virtual ? "virtual" : getTransportType(conn.resolved.config),
+        transport: conn.virtual ? ("virtual" as const) : getTransportType(conn.resolved.config),
         state: conn.state,
         toolCount: conn.tools.size,
         lastUsed: conn.lastUsed || undefined,
@@ -352,11 +378,30 @@ export class ServerPool {
         recentStderr,
       };
     });
+
+    // Include pending virtual servers that haven't registered yet
+    for (const name of this.pendingServers.keys()) {
+      if (!this.connections.has(name)) {
+        servers.push({
+          name,
+          transport: "virtual",
+          state: "connecting",
+          toolCount: 0,
+          source: "built-in",
+        });
+      }
+    }
+
+    return servers;
   }
 
   /** List tools for a specific server. Returns cached tools if available, connects only if no cache. */
   async listTools(serverName?: string): Promise<ToolInfo[]> {
     if (serverName) {
+      // Wait for pending virtual server startup before checking connections
+      const pending = this.pendingServers.get(serverName);
+      if (pending) await pending;
+
       const conn = this.connections.get(serverName);
       if (!conn) throw new Error(`Server "${serverName}" not found`);
 
@@ -367,6 +412,9 @@ export class ServerPool {
       const connected = await this.ensureConnected(serverName);
       return [...connected.tools.values()];
     }
+
+    // Wait for any pending virtual servers before listing all tools
+    await this.awaitPendingServers();
 
     // List all — return cached tools, connect only servers with no cache
     const results: ToolInfo[] = [];
