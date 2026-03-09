@@ -201,6 +201,8 @@ async function main(): Promise<void> {
     clearInterval(metricsInterval);
     watcher.stop();
     ipcServer.stop();
+    // Wait for any in-progress virtual server startups before stopping them
+    await pool.awaitPendingServers();
     await claudeServer.stop();
     await aliasServer.stop();
     await pool.closeAll();

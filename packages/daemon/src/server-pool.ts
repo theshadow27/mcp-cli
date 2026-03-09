@@ -125,6 +125,13 @@ export class ServerPool {
     this.pendingServers.set(name, tracked);
   }
 
+  /** Wait for all pending virtual server startups to settle (resolve or reject). */
+  async awaitPendingServers(): Promise<void> {
+    if (this.pendingServers.size > 0) {
+      await Promise.allSettled([...this.pendingServers.values()]);
+    }
+  }
+
   /** Update config (e.g., after file change). Returns names of changed/added/removed servers. */
   updateConfig(config: ResolvedConfig): { added: string[]; removed: string[]; changed: string[] } {
     this.config = config;
@@ -390,6 +397,10 @@ export class ServerPool {
   /** List tools for a specific server. Returns cached tools if available, connects only if no cache. */
   async listTools(serverName?: string): Promise<ToolInfo[]> {
     if (serverName) {
+      // Wait for pending virtual server startup before checking connections
+      const pending = this.pendingServers.get(serverName);
+      if (pending) await pending;
+
       const conn = this.connections.get(serverName);
       if (!conn) throw new Error(`Server "${serverName}" not found`);
 
@@ -402,9 +413,7 @@ export class ServerPool {
     }
 
     // Wait for any pending virtual servers before listing all tools
-    if (this.pendingServers.size > 0) {
-      await Promise.allSettled([...this.pendingServers.values()]);
-    }
+    await this.awaitPendingServers();
 
     // List all — return cached tools, connect only servers with no cache
     const results: ToolInfo[] = [];

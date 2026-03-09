@@ -869,6 +869,46 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     expect(tools.some((t) => t.name === "my-tool")).toBe(true);
   });
 
+  test("listTools(serverName) awaits pending server before checking connections", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    const toolMap = new Map([
+      ["my-tool", { name: "my-tool", server: "_test", description: "test", inputSchema: {}, signature: "my-tool()" }],
+    ]);
+    const client = makeMockClient();
+    const transport = makeMockTransport();
+
+    // Start listTools for specific server — should block on pending
+    const toolsPromise = pool.listTools("_test");
+
+    // Register server and resolve
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport, toolMap);
+    resolve();
+
+    const tools = await toolsPromise;
+    expect(tools.some((t) => t.name === "my-tool")).toBe(true);
+  });
+
+  test("awaitPendingServers resolves when all pending servers settle", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+    resolve();
+
+    // Should not hang
+    await pool.awaitPendingServers();
+  });
+
   test("failed pending server does not block other operations", async () => {
     const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
     const { connectFn } = mockConnectFn();
