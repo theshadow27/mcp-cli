@@ -909,6 +909,24 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     await pool.awaitPendingServers();
   });
 
+  test("callTool throws 'not found' after pending server fails to start", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    // Register a pending server whose startup fails (the IIFE catches and resolves)
+    pool.registerPendingVirtualServer(
+      "_broken",
+      (async () => {
+        throw new Error("worker crash");
+      })(),
+    );
+
+    // Wait for the pending promise to settle
+    await pool.awaitPendingServers();
+
+    // Now callTool should throw "not found" since the server never registered
+    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow('Server "_broken" not found');
+  });
+
   test("failed pending server does not block other operations", async () => {
     const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
     const { connectFn } = mockConnectFn();
