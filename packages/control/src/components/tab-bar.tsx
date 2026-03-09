@@ -2,22 +2,29 @@ import { Box, Text } from "ink";
 import React from "react";
 import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
 
+export interface TabBadge {
+  count: number;
+  color?: "red" | "yellow";
+}
+
 interface TabBarProps {
   activeTab: View;
-  pendingPermissionCount?: number;
+  badges?: Partial<Record<View, TabBadge>>;
 }
 
 function capitalize(s: string): string {
   return s[0].toUpperCase() + s.slice(1);
 }
 
-export function TabBar({ activeTab, pendingPermissionCount = 0 }: TabBarProps) {
+export function TabBar({ activeTab, badges = {} }: TabBarProps) {
   return (
     <Box marginBottom={1}>
       <Text>
         {ALL_TABS.map((tab, i) => {
-          const badge = tab === "claude" && pendingPermissionCount > 0 ? ` (${pendingPermissionCount})` : "";
-          const label = ` ${i + 1}:${capitalize(tab)}${badge} `;
+          const badge = badges[tab];
+          const badgeText = badge && badge.count > 0 ? ` (${badge.count})` : "";
+          const attentionColor = badge?.color;
+          const label = ` ${i + 1}:${capitalize(tab)}${badgeText} `;
           const isActive = tab === activeTab;
           const sep = i < ALL_TABS.length - 1 ? "│" : "";
 
@@ -27,8 +34,8 @@ export function TabBar({ activeTab, pendingPermissionCount = 0 }: TabBarProps) {
                 <Text bold color="cyan" inverse>
                   {label}
                 </Text>
-              ) : tab === "claude" && pendingPermissionCount > 0 ? (
-                <Text color="red">{label}</Text>
+              ) : attentionColor ? (
+                <Text color={attentionColor}>{label}</Text>
               ) : (
                 <Text dimColor>{label}</Text>
               )}

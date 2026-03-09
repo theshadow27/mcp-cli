@@ -7,7 +7,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
-import { TabBar } from "./components/tab-bar.js";
+import { type TabBadge, TabBar } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
@@ -101,11 +101,20 @@ export function App() {
 
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
   const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
+  const errorServerCount = servers.filter((s) => s.state === "error").length;
+
+  const badges: Partial<Record<View, TabBadge>> = {};
+  if (sessions.length > 0) {
+    badges.claude = { count: sessions.length, color: pendingPermissionCount > 0 ? "red" : undefined };
+  }
+  if (errorServerCount > 0) {
+    badges.servers = { count: errorServerCount, color: "red" };
+  }
 
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} />
-      <TabBar activeTab={view} pendingPermissionCount={pendingPermissionCount} />
+      <TabBar activeTab={view} badges={badges} />
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
