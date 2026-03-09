@@ -6,6 +6,7 @@ import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { installDaemonLogCapture } from "./daemon-log";
 import { IpcServer } from "./ipc-server";
+import { metrics } from "./metrics";
 
 // Install daemon log capture so getDaemonLogs handler works
 installDaemonLogCapture();
@@ -858,6 +859,114 @@ describe("IpcServer HTTP transport", () => {
 
     expect(json.error?.message).toBe("string error");
     expect(json.error?.stack).toBeUndefined();
+  });
+
+  // -- Metrics tests --
+
+  test("GET /metrics returns prometheus text format", async () => {
+    startServer();
+
+    // Make a ping call first to generate some metrics
+    await rpc("/rpc", { id: "m1", method: "ping" });
+
+    const res = await fetch("http://localhost/metrics", {
+      method: "GET",
+      unix: socketPath,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+
+    const text = await res.text();
+    // Should have IPC request metrics from the ping call
+    expect(text).toContain("mcpd_ipc_requests_total");
+    expect(text).toContain("mcpd_ipc_request_duration_ms");
+  });
+
+  test("getMetrics returns structured JSON snapshot", async () => {
+    startServer();
+
+    // Generate some metrics via a ping
+    await rpc("/rpc", { id: "gm0", method: "ping" });
+
+    const res = await rpc("/rpc", { id: "gm1", method: "getMetrics" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+
+    const snap = json.result as {
+      collectedAt: number;
+      counters: Array<{ name: string; labels: Record<string, string>; value: number }>;
+      gauges: Array<{ name: string; labels: Record<string, string>; value: number }>;
+      histograms: Array<{ name: string; labels: Record<string, string>; count: number; sum: number }>;
+    };
+
+    expect(snap.collectedAt).toBeGreaterThan(0);
+    expect(Array.isArray(snap.counters)).toBe(true);
+    expect(Array.isArray(snap.gauges)).toBe(true);
+    expect(Array.isArray(snap.histograms)).toBe(true);
+
+    // Should have ping-related IPC metrics
+    const pingCounter = snap.counters.find((c) => c.name === "mcpd_ipc_requests_total" && c.labels.method === "ping");
+    expect(pingCounter).toBeDefined();
+    expect(pingCounter?.value).toBeGreaterThanOrEqual(1);
+  });
+
+  test("callTool records tool metrics", async () => {
+    metrics.reset();
+    startServer();
+
+    // Call a tool
+    await rpc("/rpc", { id: "tm1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    const res = await rpc("/rpc", { id: "tm2", method: "getMetrics" });
+    const json = (await res.json()) as IpcResponse;
+    const snap = json.result as {
+      counters: Array<{ name: string; labels: Record<string, string>; value: number }>;
+      histograms: Array<{ name: string; labels: Record<string, string>; count: number }>;
+    };
+
+    const toolCounter = snap.counters.find(
+      (c) => c.name === "mcpd_tool_calls_total" && c.labels.server === "s" && c.labels.tool === "t",
+    );
+    expect(toolCounter).toBeDefined();
+    expect(toolCounter?.value).toBe(1);
+
+    const toolHistogram = snap.histograms.find(
+      (h) => h.name === "mcpd_tool_call_duration_ms" && h.labels.server === "s" && h.labels.tool === "t",
+    );
+    expect(toolHistogram).toBeDefined();
+    expect(toolHistogram?.count).toBe(1);
+  });
+
+  test("failed callTool records error metrics", async () => {
+    metrics.reset();
+    socketPath = tmpSocket();
+    const failPool = {
+      ...mockPool(),
+      callTool: async () => {
+        throw new Error("tool failed");
+      },
+    };
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
+      onActivity: () => {},
+    });
+    server.start(socketPath);
+
+    await rpc("/rpc", { id: "em1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    const res = await rpc("/rpc", { id: "em2", method: "getMetrics" });
+    const json = (await res.json()) as IpcResponse;
+    const snap = json.result as {
+      counters: Array<{ name: string; labels: Record<string, string>; value: number }>;
+    };
+
+    const errorCounter = snap.counters.find(
+      (c) => c.name === "mcpd_tool_errors_total" && c.labels.server === "s" && c.labels.tool === "t",
+    );
+    expect(errorCounter).toBeDefined();
+    expect(errorCounter?.value).toBe(1);
   });
 
   test("getConfig returns server info with correct transport and toolCount", async () => {

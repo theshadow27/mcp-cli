@@ -33,7 +33,8 @@ export type IpcMethod =
   | "waitForMail"
   | "replyToMail"
   | "markRead"
-  | "reloadConfig";
+  | "reloadConfig"
+  | "getMetrics";
 
 // -- Request/Response --
 
@@ -287,6 +288,19 @@ export interface ShutdownResult {
   ok: true;
 }
 
+export interface MetricsSnapshot {
+  collectedAt: number;
+  counters: Array<{ name: string; labels: Record<string, string>; value: number }>;
+  gauges: Array<{ name: string; labels: Record<string, string>; value: number }>;
+  histograms: Array<{
+    name: string;
+    labels: Record<string, string>;
+    count: number;
+    sum: number;
+    buckets: Array<{ le: number; count: number }>;
+  }>;
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -313,6 +327,7 @@ export interface IpcMethodResult {
   replyToMail: ReplyToMailResult;
   markRead: Record<string, never>;
   reloadConfig: ReloadConfigResult;
+  getMetrics: MetricsSnapshot;
 }
 
 // -- Error codes --

@@ -14,7 +14,7 @@
  *   mcx status                                   # daemon status
  */
 
-import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
+import type { DaemonStatus, MetricsSnapshot, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
@@ -135,6 +135,10 @@ async function main(): Promise<void> {
 
       case "status":
         await cmdStatus(args.slice(1));
+        break;
+
+      case "metrics":
+        await cmdMetrics(args.slice(1));
         break;
 
       case "config":
@@ -413,6 +417,55 @@ async function cmdStatus(args: string[] = []): Promise<void> {
   }
 }
 
+async function cmdMetrics(args: string[] = []): Promise<void> {
+  const { json } = extractJsonFlag(args);
+  const snap = await ipcCall("getMetrics", undefined, { timeoutMs: PING_TIMEOUT_MS });
+
+  if (json) {
+    console.log(JSON.stringify(snap, null, 2));
+    return;
+  }
+
+  // Human-readable summary
+  if (snap.gauges.length > 0) {
+    console.log("Gauges:");
+    for (const g of snap.gauges) {
+      const labels = formatMetricLabels(g.labels);
+      console.log(`  ${g.name}${labels} = ${g.value}`);
+    }
+    console.log();
+  }
+
+  if (snap.counters.length > 0) {
+    console.log("Counters:");
+    for (const c of snap.counters) {
+      const labels = formatMetricLabels(c.labels);
+      console.log(`  ${c.name}${labels} = ${c.value}`);
+    }
+    console.log();
+  }
+
+  if (snap.histograms.length > 0) {
+    console.log("Histograms:");
+    for (const h of snap.histograms) {
+      const labels = formatMetricLabels(h.labels);
+      const avg = h.count > 0 ? (h.sum / h.count).toFixed(1) : "0";
+      console.log(`  ${h.name}${labels}  count=${h.count} sum=${h.sum.toFixed(1)}ms avg=${avg}ms`);
+    }
+    console.log();
+  }
+
+  if (snap.counters.length === 0 && snap.gauges.length === 0 && snap.histograms.length === 0) {
+    console.log("No metrics collected yet.");
+  }
+}
+
+function formatMetricLabels(labels: Record<string, string>): string {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) return "";
+  return `{${entries.map(([k, v]) => `${k}="${v}"`).join(",")}}`;
+}
+
 async function cmdAuth(args: string[]): Promise<void> {
   if (args.length < 1) {
     printError("Usage: mcx auth <server>");
@@ -516,6 +569,8 @@ Usage:
   mcx config get <server>             Inspect a server's config (env, args, url)
   mcx config set <srv> env <K>:<V>    Set an env var on a stdio server
   mcx status                          Daemon status
+  mcx metrics                         Show daemon metrics (Prometheus-style)
+  mcx metrics -j                      Metrics as JSON
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
   mcx mail -H                        List message headers
   mcx mail -u <user>                 Read a user's mailbox

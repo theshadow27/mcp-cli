@@ -30,6 +30,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
+import { metrics } from "./metrics";
 import { ServerPool } from "./server-pool";
 
 async function main(): Promise<void> {
@@ -92,6 +93,20 @@ async function main(): Promise<void> {
     pool.registerVirtualServer("_claude", client, transport, claudeTools);
     console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
   };
+
+  // Register uptime and server metrics
+  const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
+  const serversTotal = metrics.gauge("mcpd_servers_total");
+  const serversConnected = metrics.gauge("mcpd_servers_connected");
+  serversTotal.set(config.servers.size);
+
+  // Update uptime and server gauges periodically
+  const metricsInterval = setInterval(() => {
+    uptimeGauge.set(Math.round(process.uptime()));
+    const servers = pool.listServers();
+    serversTotal.set(servers.length);
+    serversConnected.set(servers.filter((s) => s.state === "connected").length);
+  }, 5_000);
 
   // Idle timeout management with in-flight request tracking
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
@@ -163,6 +178,7 @@ async function main(): Promise<void> {
   // Graceful shutdown
   async function shutdown(): Promise<void> {
     console.error("[mcpd] Shutting down...");
+    clearInterval(metricsInterval);
     watcher.stop();
     ipcServer.stop();
     await claudeServer.stop();

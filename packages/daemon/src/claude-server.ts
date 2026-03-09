@@ -15,6 +15,7 @@ import { formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
+import { metrics } from "./metrics";
 import { WorkerClientTransport } from "./worker-transport";
 
 export const CLAUDE_SERVER_NAME = "_claude";
@@ -51,12 +52,26 @@ interface DbEnd {
   sessionId: string;
 }
 
+interface DbMetric {
+  type: "metrics:inc";
+  name: string;
+  labels?: Record<string, string>;
+  value?: number;
+}
+
+interface DbHistogram {
+  type: "metrics:observe";
+  name: string;
+  labels?: Record<string, string>;
+  value: number;
+}
+
 interface ReadyMessage {
   type: "ready";
   port: number;
 }
 
-type WorkerEvent = DbUpsert | DbState | DbCost | DbEnd | ReadyMessage;
+type WorkerEvent = DbUpsert | DbState | DbCost | DbEnd | DbMetric | DbHistogram | ReadyMessage;
 
 function isWorkerEvent(data: unknown): data is WorkerEvent {
   return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
@@ -235,16 +250,26 @@ export class ClaudeServer {
       case "db:upsert":
         this.activeSessions.add(event.session.sessionId);
         this.db.upsertSession(event.session);
+        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        metrics.counter("mcpd_sessions_total").inc();
         break;
       case "db:state":
         this.db.updateSessionState(event.sessionId, event.state);
         break;
       case "db:cost":
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
+        metrics.counter("mcpd_session_cost_usd").inc(event.cost);
         break;
       case "db:end":
         this.activeSessions.delete(event.sessionId);
         this.db.endSession(event.sessionId);
+        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        break;
+      case "metrics:inc":
+        metrics.counter(event.name, event.labels).inc(event.value ?? 1);
+        break;
+      case "metrics:observe":
+        metrics.histogram(event.name, event.labels).observe(event.value);
         break;
     }
   }
