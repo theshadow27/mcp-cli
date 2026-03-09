@@ -69,6 +69,7 @@ export const CallToolParamsSchema = z.object({
   server: z.string(),
   tool: z.string(),
   arguments: z.record(z.string(), z.unknown()).optional().default({}),
+  timeoutMs: z.number().optional(),
 });
 
 export const ListToolsParamsSchema = z.object({

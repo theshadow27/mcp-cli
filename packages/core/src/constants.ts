@@ -149,6 +149,9 @@ export const DAEMON_START_COOLDOWN_MS = 10_000;
 /** IPC request timeout (ms) — generous for slow stdio servers like npx mcp-remote */
 export const IPC_REQUEST_TIMEOUT_MS = 60_000;
 
+/** MCP SDK tool call timeout (ms) — overrides SDK's 60s default for long-running tools */
+export const MCP_TOOL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
 /** Daemon health-check ping timeout (ms) — must tolerate brief event loop stalls */
 export const PING_TIMEOUT_MS = 5_000;
 

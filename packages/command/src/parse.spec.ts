@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractFullFlag, extractJqFlag, parseEnvVar, parseScope, splitServerTool } from "./parse";
+import { extractFullFlag, extractJqFlag, extractTimeoutFlag, parseEnvVar, parseScope, splitServerTool } from "./parse";
 
 describe("splitServerTool", () => {
   test("splits server/tool into tuple", () => {
@@ -139,6 +139,43 @@ describe("extractJqFlag", () => {
     expect(extractJqFlag(["server", "tool", "--jq", ".[] | {id, name}"])).toEqual({
       jq: ".[] | {id, name}",
       rest: ["server", "tool"],
+    });
+  });
+});
+
+describe("extractTimeoutFlag", () => {
+  test("extracts --timeout <seconds> and converts to ms", () => {
+    expect(extractTimeoutFlag(["--timeout", "30", "server", "tool"])).toEqual({
+      timeoutMs: 30_000,
+      rest: ["server", "tool"],
+    });
+  });
+
+  test("extracts --timeout=<seconds> form", () => {
+    expect(extractTimeoutFlag(["server", "--timeout=120", "tool"])).toEqual({
+      timeoutMs: 120_000,
+      rest: ["server", "tool"],
+    });
+  });
+
+  test("returns undefined timeoutMs when flag absent", () => {
+    expect(extractTimeoutFlag(["server", "tool"])).toEqual({
+      timeoutMs: undefined,
+      rest: ["server", "tool"],
+    });
+  });
+
+  test("ignores --timeout with non-numeric value", () => {
+    expect(extractTimeoutFlag(["--timeout", "abc"])).toEqual({
+      timeoutMs: undefined,
+      rest: ["--timeout", "abc"],
+    });
+  });
+
+  test("ignores --timeout with zero value", () => {
+    expect(extractTimeoutFlag(["--timeout", "0"])).toEqual({
+      timeoutMs: undefined,
+      rest: ["--timeout", "0"],
     });
   });
 });
