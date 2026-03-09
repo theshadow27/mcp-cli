@@ -182,7 +182,9 @@ export class IpcServer {
     }
 
     // Create a per-request span (child of caller's traceparent, or root)
-    const span = startSpan(`ipc.${request.method}`, request.traceparent);
+    const span = startSpan(`ipc.${request.method}`, request.traceparent, () =>
+      metrics.counter("mcpd_trace_fallback_root_total").inc(),
+    );
     span.setAttribute("ipc.method", request.method);
     const ctx: RequestContext = { span };
 
