@@ -1729,7 +1729,8 @@ describe("mcx claude worktrees", () => {
   test("lists worktrees with session status", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") {
-        return toolResult([{ ...SESSION_LIST[0], worktree: "/repo/.claude/worktrees/claude-active" }]);
+        // SessionInfo.worktree is a bare name (not a full path)
+        return toolResult([{ ...SESSION_LIST[0], worktree: "claude-active" }]);
       }
       return toolResult({});
     });
@@ -1769,6 +1770,8 @@ describe("mcx claude worktrees", () => {
       const output = (logSpy.mock.calls as string[][]).map((c) => c[0]).join("\n");
       expect(output).toContain("claude-active");
       expect(output).toContain("claude-orphan");
+      // Verify session status is shown correctly
+      expect(output).toContain("active"); // session column for claude-active
     } finally {
       console.log = origLog;
     }
@@ -1809,6 +1812,53 @@ describe("mcx claude worktrees", () => {
       expect(errOutput).toContain("Removed worktree:");
       expect(errOutput).toContain("Deleted branch: feat/orphan (merged)");
       expect(errOutput).toContain("Pruned 1 worktree.");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prune skips worktrees with active sessions", async () => {
+    const cwd = process.cwd();
+    // Session with bare worktree name matching "claude-active"
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") {
+        return toolResult([{ ...SESSION_LIST[0], worktree: "claude-active" }]);
+      }
+      return toolResult({});
+    });
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("list") && cmd.includes("--porcelain")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc123",
+            "branch refs/heads/main",
+            "",
+            `worktree ${cwd}/.claude/worktrees/claude-active`,
+            "HEAD def456",
+            "branch refs/heads/feat/active",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["worktrees", "--prune"], deps);
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Nothing to prune.");
+      // Should NOT call git worktree remove
+      const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
+        (c[0] as string[]).includes("remove"),
+      );
+      expect(removeCalls.length).toBe(0);
     } finally {
       console.log = origLog;
     }
