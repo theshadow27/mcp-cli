@@ -5,7 +5,11 @@
  * Serializes to Prometheus text exposition format or JSON for IPC consumption.
  */
 
+import type { MetricsSnapshot } from "@mcp-cli/core";
+
 // -- Public types --
+
+export type { MetricsSnapshot };
 
 export type Labels = Record<string, string>;
 
@@ -25,21 +29,6 @@ export interface Histogram {
   observe(value: number): void;
   /** Start a timer; call the returned function to observe elapsed ms. */
   startTimer(): () => number;
-}
-
-export interface MetricsSnapshot {
-  daemonId?: string;
-  startedAt?: number;
-  collectedAt: number;
-  counters: Array<{ name: string; labels: Labels; value: number }>;
-  gauges: Array<{ name: string; labels: Labels; value: number }>;
-  histograms: Array<{
-    name: string;
-    labels: Labels;
-    count: number;
-    sum: number;
-    buckets: Array<{ le: number; count: number }>;
-  }>;
 }
 
 // -- Internal types --
