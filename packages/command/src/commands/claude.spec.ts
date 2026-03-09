@@ -1337,6 +1337,29 @@ describe("parseWaitArgs", () => {
     const result = parseWaitArgs(["--timeout"]);
     expect(result.error).toBe("--timeout requires a value in ms");
   });
+
+  test("parses --after flag", () => {
+    const result = parseWaitArgs(["--after", "42"]);
+    expect(result.afterSeq).toBe(42);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --after with session and timeout", () => {
+    const result = parseWaitArgs(["abc123", "--after", "10", "--timeout", "5000"]);
+    expect(result.sessionPrefix).toBe("abc123");
+    expect(result.afterSeq).toBe(10);
+    expect(result.timeout).toBe(5000);
+  });
+
+  test("errors on non-numeric --after", () => {
+    const result = parseWaitArgs(["--after", "abc"]);
+    expect(result.error).toBe("--after must be a number");
+  });
+
+  test("errors on missing --after value", () => {
+    const result = parseWaitArgs(["--after"]);
+    expect(result.error).toBe("--after requires a sequence number");
+  });
 });
 
 // ── wait ──

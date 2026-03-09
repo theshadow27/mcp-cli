@@ -75,6 +75,7 @@ interface ResultWaiter {
 
 /** Event returned by waitForEvent(). */
 export interface SessionWaitEvent {
+  seq?: number;
   sessionId: string;
   event: string;
   cost?: number;
@@ -84,6 +85,18 @@ export interface SessionWaitEvent {
   errors?: string[];
   requestId?: string;
   toolName?: string;
+}
+
+/** Result from cursor-based waitForEventsSince(). */
+export interface WaitResult {
+  seq: number;
+  events: SessionWaitEvent[];
+}
+
+interface BufferedEvent {
+  seq: number;
+  event: SessionWaitEvent;
+  ts: number;
 }
 
 interface EventWaiter {
@@ -114,6 +127,8 @@ interface WsData {
 const MAX_TRANSCRIPT = 100;
 const KEEP_ALIVE_MS = 30_000;
 const WS_OPEN = 1;
+const MAX_EVENT_BUFFER = 1000;
+const EVENT_BUFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /** Summarize tool input to a short display string (max 80 chars). */
 export function summarizeInput(input: Record<string, unknown>): string {
@@ -132,12 +147,19 @@ export class ClaudeWsServer {
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
+  private eventSeq = 0;
+  private readonly eventBuffer: BufferedEvent[] = [];
 
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
   constructor(deps?: { spawn?: SpawnFn }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
+  }
+
+  /** Current event sequence number (monotonically increasing). */
+  get currentSeq(): number {
+    return this.eventSeq;
   }
 
   /** Start the WebSocket server. Returns the assigned port. */
@@ -405,6 +427,56 @@ export class ClaudeWsServer {
     });
   }
 
+  /**
+   * Cursor-based event wait: return buffered events after `afterSeq`, or block until one arrives.
+   * On timeout, returns `{ seq: currentSeq, events: [] }` instead of throwing.
+   */
+  waitForEventsSince(sessionId: string | null, afterSeq: number, timeoutMs: number): Promise<WaitResult> {
+    if (sessionId) {
+      const session = this.sessions.get(sessionId);
+      if (!session) return Promise.reject(new Error(`Unknown session: ${sessionId}`));
+      if (session.state.state === "ended") {
+        return Promise.reject(new Error("Session already ended"));
+      }
+      if (session.state.state === "disconnected") {
+        return Promise.reject(new Error("Session is disconnected"));
+      }
+    }
+
+    if (!sessionId && this.sessions.size === 0) {
+      return Promise.reject(new Error("No active sessions"));
+    }
+
+    // Check buffer for events after afterSeq
+    const buffered = this.getBufferedEventsAfter(sessionId, afterSeq);
+    if (buffered.length > 0) {
+      return Promise.resolve({ seq: this.eventSeq, events: buffered });
+    }
+
+    // Block until next matching event
+    return new Promise<WaitResult>((resolve, reject) => {
+      const waiter: EventWaiter = {
+        sessionId,
+        resolve: (e) => {
+          clearTimeout(waiter.timer);
+          resolve({ seq: this.eventSeq, events: [e] });
+        },
+        reject: (e) => {
+          clearTimeout(waiter.timer);
+          reject(e);
+        },
+        timer: setTimeout(() => {
+          const idx = this.eventWaiters.indexOf(waiter);
+          if (idx >= 0) this.eventWaiters.splice(idx, 1);
+          // On timeout with cursor, return empty events (not an error)
+          resolve({ seq: this.eventSeq, events: [] });
+        }, timeoutMs),
+      };
+
+      this.eventWaiters.push(waiter);
+    });
+  }
+
   // ── WebSocket handlers ──
 
   private handleOpen(ws: ServerWebSocket<WsData>): void {
@@ -567,6 +639,35 @@ export class ClaudeWsServer {
 
   // ── Helpers ──
 
+  /** Buffer an event with a monotonic sequence number. Returns the assigned seq. */
+  private bufferEvent(event: SessionWaitEvent): number {
+    const seq = ++this.eventSeq;
+    const tagged = { ...event, seq };
+    this.eventBuffer.push({ seq, event: tagged, ts: Date.now() });
+    this.trimEventBuffer();
+    return seq;
+  }
+
+  private trimEventBuffer(): void {
+    const cutoff = Date.now() - EVENT_BUFFER_TTL_MS;
+    while (this.eventBuffer.length > MAX_EVENT_BUFFER) {
+      this.eventBuffer.shift();
+    }
+    while (this.eventBuffer.length > 0 && this.eventBuffer[0].ts < cutoff) {
+      this.eventBuffer.shift();
+    }
+  }
+
+  private getBufferedEventsAfter(sessionId: string | null, afterSeq: number): SessionWaitEvent[] {
+    const events: SessionWaitEvent[] = [];
+    for (const entry of this.eventBuffer) {
+      if (entry.seq <= afterSeq) continue;
+      if (sessionId !== null && entry.event.sessionId !== sessionId) continue;
+      events.push(entry.event);
+    }
+    return events;
+  }
+
   private getSession(sessionId: string): WsSession {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
@@ -619,10 +720,15 @@ export class ClaudeWsServer {
   }
 
   private resolveEventWaiters(sessionId: string, event: SessionWaitEvent): void {
+    // Buffer the event with a sequence number (before resolving waiters)
+    this.bufferEvent(event);
+
     const remaining: EventWaiter[] = [];
     for (const waiter of this.eventWaiters) {
       if (waiter.sessionId === null || waiter.sessionId === sessionId) {
-        waiter.resolve(event);
+        // Resolve with the buffered (seq-tagged) version
+        const latest = this.eventBuffer[this.eventBuffer.length - 1];
+        waiter.resolve(latest.event);
       } else {
         remaining.push(waiter);
       }

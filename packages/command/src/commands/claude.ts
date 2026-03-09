@@ -584,12 +584,14 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
 export interface WaitArgs {
   sessionPrefix: string | undefined;
   timeout: number | undefined;
+  afterSeq: number | undefined;
   error: string | undefined;
 }
 
 export function parseWaitArgs(args: string[]): WaitArgs {
   let sessionPrefix: string | undefined;
   let timeout: number | undefined;
+  let afterSeq: number | undefined;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -602,12 +604,20 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         timeout = Number(val);
         if (Number.isNaN(timeout)) error = "--timeout must be a number";
       }
+    } else if (arg === "--after") {
+      const val = args[++i];
+      if (!val) {
+        error = "--after requires a sequence number";
+      } else {
+        afterSeq = Number(val);
+        if (Number.isNaN(afterSeq)) error = "--after must be a number";
+      }
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, timeout, error };
+  return { sessionPrefix, timeout, afterSeq, error };
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -626,6 +636,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   }
   if (parsed.timeout) {
     toolArgs.timeout = parsed.timeout;
+  }
+  if (parsed.afterSeq !== undefined) {
+    toolArgs.afterSeq = parsed.afterSeq;
   }
 
   const result = await d.callTool("claude_wait", toolArgs);
@@ -820,6 +833,7 @@ Send options:
   --wait                      Block until Claude produces a result
 
 Wait options:
+  --after <seq>               Sequence cursor for race-free polling (from previous response)
   --timeout, -t <ms>          Max wait time (default: 300000)
 
 Session IDs support prefix matching (like git SHAs).`);
