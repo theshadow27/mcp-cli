@@ -167,36 +167,43 @@ export async function stopDaemon(): Promise<void> {
 }
 
 /**
- * Check if a daemon process is alive but still initializing (socket not yet ready).
- *
- * Returns true when:
- * - PID file exists and is parseable with a fresh startedAt
- * - Process at that PID is alive
- * - Process is actually mcpd (not a recycled PID)
- * - Socket file does NOT yet exist (daemon is still booting)
- *
- * Used by ensureDaemon() to wait for an in-progress startup rather than spawn a second daemon.
+ * Parse PID file and verify the daemon process is live (fresh, alive, is mcpd).
+ * Returns the parsed data on success, null on any failure.
+ * Does NOT clean up stale files — callers decide based on context.
  */
-export function isDaemonInitializing(): boolean {
-  let data: { pid: number; startedAt: number };
+function readLivePidData(): { pid: number; startedAt: number; protocolVersion?: string } | null {
+  let data: { pid: number; startedAt: number; protocolVersion?: string };
   try {
     data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
   } catch {
-    return false;
+    return null;
   }
 
   if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
-    return false;
+    return null;
   }
 
   try {
     process.kill(data.pid, 0);
   } catch {
-    return false;
+    return null;
   }
 
-  if (!isProcessMcpd(data.pid)) return false;
+  if (!isProcessMcpd(data.pid)) return null;
 
+  return data;
+}
+
+/**
+ * Check if a daemon process is alive but still initializing (socket not yet ready).
+ *
+ * Returns true when the daemon is alive (valid PID, process is mcpd) but its socket
+ * does not exist yet. Used by ensureDaemon() to wait for an in-progress startup
+ * rather than spawn a second daemon.
+ */
+export function isDaemonInitializing(): boolean {
+  const data = readLivePidData();
+  if (!data) return false;
   // Socket absent means daemon is still booting
   return !existsSync(options.SOCKET_PATH);
 }
@@ -211,30 +218,8 @@ export function isDaemonInitializing(): boolean {
  * 6. Daemon responds to IPC ping
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  let data: { pid: number; startedAt: number; protocolVersion?: string };
-  try {
-    data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
-  } catch {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Reject unreasonably old PID files
-  if (typeof data.startedAt !== "number" || Date.now() - data.startedAt > PID_MAX_AGE_MS) {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Check if process is alive
-  try {
-    process.kill(data.pid, 0);
-  } catch {
-    cleanStaleFiles();
-    return false;
-  }
-
-  // Verify the process is actually mcpd (not a recycled PID)
-  if (!isProcessMcpd(data.pid)) {
+  const data = readLivePidData();
+  if (!data) {
     cleanStaleFiles();
     return false;
   }
