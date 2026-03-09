@@ -4,6 +4,7 @@ import type { ClaudeDeps } from "./claude";
 import {
   MODEL_SHORTNAMES,
   cmdClaude,
+  defaultGetPrStatus,
   extractContentSummary,
   parseDiffShortstat,
   parseLogArgs,
@@ -23,6 +24,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
       throw new ExitError(code);
     }) as ClaudeDeps["exit"],
     getDiffStats: mock(async () => null),
+    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", exitCode: 0 })),
     ...overrides,
   };
@@ -652,6 +654,86 @@ describe("mcx claude ls", () => {
     } finally {
       console.log = origLog;
     }
+  });
+
+  test("shows PR column with --pr flag", async () => {
+    const sessionsWithWorktree = [
+      { ...SESSION_LIST[0], worktree: "/tmp/wt1" },
+      { ...SESSION_LIST[1], worktree: "/tmp/wt2" },
+    ];
+    const getPrStatus = mock(async (path: string) => {
+      if (path === "/tmp/wt1") return { number: 263, state: "open" };
+      return null;
+    });
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--pr"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("PR");
+      const row1 = (logSpy.mock.calls[1] as string[])[0];
+      expect(row1).toContain("#263 open");
+      const row2 = (logSpy.mock.calls[2] as string[])[0];
+      expect(row2).toContain("—");
+      expect(getPrStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("does not show PR column without --pr flag", async () => {
+    const sessionsWithWorktree = [{ ...SESSION_LIST[0], worktree: "/tmp/wt1" }];
+    const getPrStatus = mock(async () => ({ number: 263, state: "open" }));
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).not.toContain("PR");
+      expect(getPrStatus).not.toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("hides PR column when all PRs are null", async () => {
+    const sessionsWithWorktree = [{ ...SESSION_LIST[0], worktree: "/tmp/wt1" }];
+    const getPrStatus = mock(async () => null);
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWorktree)),
+      getPrStatus,
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--pr"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).not.toContain("PR");
+    } finally {
+      console.log = origLog;
+    }
+  });
+});
+
+// ── defaultGetPrStatus ──
+
+describe("defaultGetPrStatus", () => {
+  test("is exported and is a function", () => {
+    expect(typeof defaultGetPrStatus).toBe("function");
   });
 });
 
