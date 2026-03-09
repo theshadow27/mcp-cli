@@ -21,7 +21,10 @@ export class AliasServer {
   private client: Client | null = null;
   private db: StateDb;
 
-  constructor(db: StateDb) {
+  constructor(
+    db: StateDb,
+    private daemonId?: string,
+  ) {
     this.db = db;
   }
 
@@ -34,7 +37,7 @@ export class AliasServer {
     this.client = new Client({ name: `mcp-cli/${ALIAS_SERVER_NAME}`, version: "0.1.0" });
 
     // Send init control message before MCP handshake
-    this.worker.postMessage({ type: "init", aliases });
+    this.worker.postMessage({ type: "init", aliases, daemonId: this.daemonId });
 
     // Connect client (triggers MCP initialize handshake over the transport)
     await this.client.connect(this.transport);

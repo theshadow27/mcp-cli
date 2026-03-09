@@ -164,6 +164,25 @@ export class StateDb {
     } catch {
       /* column already exists */
     }
+
+    // -- Trace context columns on usage_stats --
+    try {
+      this.db.exec("ALTER TABLE usage_stats ADD COLUMN daemon_id TEXT");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE usage_stats ADD COLUMN trace_id TEXT");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE usage_stats ADD COLUMN parent_id TEXT");
+    } catch {
+      /* column already exists */
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id)");
   }
 
   // -- Tool cache --
@@ -216,11 +235,48 @@ export class StateDb {
 
   // -- Usage stats --
 
-  recordUsage(server: string, tool: string, durationMs: number, success: boolean, error?: string): void {
+  private usageInsertCount = 0;
+
+  recordUsage(
+    server: string,
+    tool: string,
+    durationMs: number,
+    success: boolean,
+    error?: string,
+    traceContext?: { daemonId?: string; traceId?: string; parentId?: string },
+  ): void {
     this.db.run(
-      "INSERT INTO usage_stats (server_name, tool_name, duration_ms, success, error_message) VALUES (?, ?, ?, ?, ?)",
-      [server, tool, durationMs, success ? 1 : 0, error ?? null],
+      `INSERT INTO usage_stats (server_name, tool_name, duration_ms, success, error_message, daemon_id, trace_id, parent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        server,
+        tool,
+        durationMs,
+        success ? 1 : 0,
+        error ?? null,
+        traceContext?.daemonId ?? null,
+        traceContext?.traceId ?? null,
+        traceContext?.parentId ?? null,
+      ],
     );
+    this.maybeRunUsagePrune();
+  }
+
+  private maybeRunUsagePrune(): void {
+    if (++this.usageInsertCount >= options.USAGE_PRUNE_INTERVAL) {
+      this.usageInsertCount = 0;
+      this.pruneUsageStats();
+    }
+  }
+
+  pruneUsageStats(maxRows: number = options.USAGE_STATS_MAX_ROWS): number {
+    const result = this.db.run(
+      `DELETE FROM usage_stats WHERE id NOT IN (
+        SELECT id FROM usage_stats ORDER BY called_at DESC, id DESC LIMIT ?
+      )`,
+      [maxRows],
+    );
+    return result.changes;
   }
 
   getUsageStats(): UsageStat[] {

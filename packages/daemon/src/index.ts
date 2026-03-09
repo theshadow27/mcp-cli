@@ -21,6 +21,7 @@ import {
   PROTOCOL_VERSION,
   auditRuntimePermissions,
   ensureStateDir,
+  generateSpanId,
   options,
 } from "@mcp-cli/core";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
@@ -46,11 +47,16 @@ async function main(): Promise<void> {
   const serverNames = [...config.servers.keys()];
   console.error(`[mcpd] Loaded config: ${serverNames.length} servers (${serverNames.join(", ")})`);
 
+  // Generate daemon instance ID for trace context (stable for daemon lifetime)
+  const daemonId = generateSpanId();
+
   // Write PID file
+  const startedAt = Date.now();
   const pidData = {
     pid: process.pid,
+    daemonId,
     configHash: configHash(config),
-    startedAt: Date.now(),
+    startedAt,
     protocolVersion: PROTOCOL_VERSION,
   };
   writeFileSync(options.PID_PATH, JSON.stringify(pidData));
@@ -66,7 +72,7 @@ async function main(): Promise<void> {
   const pool = new ServerPool(config, db);
 
   // Start virtual alias server
-  const aliasServer = new AliasServer(db);
+  const aliasServer = new AliasServer(db, daemonId);
   try {
     const { client, transport } = await aliasServer.start();
     const cachedTools = buildAliasToolCache(db);
@@ -77,7 +83,7 @@ async function main(): Promise<void> {
   }
 
   // Start virtual Claude session server
-  const claudeServer = new ClaudeServer(db);
+  const claudeServer = new ClaudeServer(db, daemonId);
   try {
     const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
     const claudeTools = buildClaudeToolCache();
@@ -146,8 +152,9 @@ async function main(): Promise<void> {
     // Update PID file with new hash
     const updatedPid = {
       pid: process.pid,
+      daemonId,
       configHash: event.hash,
-      startedAt: pidData.startedAt,
+      startedAt,
       protocolVersion: PROTOCOL_VERSION,
     };
     writeFileSync(options.PID_PATH, JSON.stringify(updatedPid));
@@ -156,6 +163,8 @@ async function main(): Promise<void> {
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
+    daemonId,
+    startedAt,
     onActivity: () => {
       inFlightCount++;
       resetIdleTimer();

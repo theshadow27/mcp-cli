@@ -76,6 +76,10 @@ const _originalOptions = {
   MAIL_PRUNE_INTERVAL: 50,
   /** How many log writes between rotation size checks (amortized statSync) */
   LOG_ROTATION_CHECK_INTERVAL: 64,
+  /** Max usage_stats rows before pruning oldest entries */
+  USAGE_STATS_MAX_ROWS: 10_000,
+  /** How many usage inserts between prune passes (amortized O(1)) */
+  USAGE_PRUNE_INTERVAL: 100,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {

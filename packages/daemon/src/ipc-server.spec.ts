@@ -52,6 +52,19 @@ function mockConfig() {
   } as never;
 }
 
+const TEST_DAEMON_ID = "aabbccddee112233";
+const TEST_STARTED_AT = 1700000000000;
+
+/** Merge trace defaults into IpcServer options */
+function opts(overrides?: {
+  onActivity?: () => void;
+  onRequestComplete?: () => void;
+  onShutdown?: () => void;
+  onReloadConfig?: () => Promise<void>;
+}) {
+  return { daemonId: TEST_DAEMON_ID, startedAt: TEST_STARTED_AT, onActivity: () => {}, ...overrides };
+}
+
 describe("IpcServer HTTP transport", () => {
   let server: IpcServer | undefined;
   let socketPath: string;
@@ -68,9 +81,7 @@ describe("IpcServer HTTP transport", () => {
 
   function startServer(): void {
     socketPath = tmpSocket();
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
   }
 
@@ -254,12 +265,17 @@ describe("IpcServer HTTP transport", () => {
   test("shutdown calls onShutdown callback instead of process.exit", async () => {
     socketPath = tmpSocket();
     let shutdownCalled = false;
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onShutdown: () => {
-        shutdownCalled = true;
-      },
-    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+      }),
+    );
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "sd1", method: "shutdown" });
@@ -277,12 +293,17 @@ describe("IpcServer HTTP transport", () => {
   test("shutdown returns ok response before invoking callback", async () => {
     socketPath = tmpSocket();
     let callbackTime = 0;
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onShutdown: () => {
-        callbackTime = Date.now();
-      },
-    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          callbackTime = Date.now();
+        },
+      }),
+    );
     server.start(socketPath);
 
     const responseTime = Date.now();
@@ -308,12 +329,17 @@ describe("IpcServer HTTP transport", () => {
         { name: "srv2", state: "connected" as const, tools: ["tool-b"] },
       ],
     };
-    server = new IpcServer(poolWithConnections as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onShutdown: () => {
-        closeAllCalled = true;
-      },
-    });
+    server = new IpcServer(
+      poolWithConnections as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          closeAllCalled = true;
+        },
+      }),
+    );
     server.start(socketPath);
 
     // Verify servers are listed (simulating active connections)
@@ -386,9 +412,7 @@ describe("IpcServer HTTP transport", () => {
         },
       ],
     });
-    server = new IpcServer(pool as never, mockConfig(), db, null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(pool as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "us2", method: "status" });
@@ -424,12 +448,17 @@ describe("IpcServer HTTP transport", () => {
   test("onRequestComplete fires after each dispatched request", async () => {
     socketPath = tmpSocket();
     let completions = 0;
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onRequestComplete: () => {
-        completions++;
-      },
-    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onRequestComplete: () => {
+          completions++;
+        },
+      }),
+    );
     server.start(socketPath);
 
     await rpc("/rpc", { id: "rc1", method: "ping" });
@@ -441,12 +470,17 @@ describe("IpcServer HTTP transport", () => {
   test("onRequestComplete fires even on parse errors", async () => {
     socketPath = tmpSocket();
     let completions = 0;
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onRequestComplete: () => {
-        completions++;
-      },
-    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onRequestComplete: () => {
+          completions++;
+        },
+      }),
+    );
     server.start(socketPath);
 
     await fetch("http://localhost/rpc", {
@@ -468,12 +502,17 @@ describe("IpcServer HTTP transport", () => {
         throw new Error("tool failed");
       },
     };
-    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-      onRequestComplete: () => {
-        completions++;
-      },
-    });
+    server = new IpcServer(
+      failPool as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onRequestComplete: () => {
+          completions++;
+        },
+      }),
+    );
     server.start(socketPath);
 
     await rpc("/rpc", { id: "rc3", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
@@ -493,14 +532,20 @@ describe("IpcServer HTTP transport", () => {
           gate.resolve = () => resolve({ content: [] });
         }),
     };
-    server = new IpcServer(slowPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {
-        activities++;
-      },
-      onRequestComplete: () => {
-        completions++;
-      },
-    });
+    server = new IpcServer(
+      slowPool as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onActivity: () => {
+          activities++;
+        },
+        onRequestComplete: () => {
+          completions++;
+        },
+      }),
+    );
     server.start(socketPath);
 
     // Start a long-running tool call (don't await)
@@ -528,9 +573,7 @@ describe("IpcServer HTTP transport", () => {
       getServerUrl: (name: string) => (name === "myserver" ? "https://example.com" : null),
       getDb: () => null,
     });
-    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "auth2", method: "triggerAuth", params: { server: "myserver" } });
@@ -613,7 +656,7 @@ describe("IpcServer HTTP transport", () => {
     const db = mockDb({
       insertMail: (_s: string, _r: string, _subj?: string, _body?: string, _rt?: number) => 42,
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", {
@@ -653,7 +696,7 @@ describe("IpcServer HTTP transport", () => {
       },
     ];
     const db = mockDb({ readMail: () => messages });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "m3", method: "readMail", params: { recipient: "manager" } });
@@ -665,7 +708,7 @@ describe("IpcServer HTTP transport", () => {
   test("readMail with no params returns all messages", async () => {
     socketPath = tmpSocket();
     const db = mockDb({ readMail: () => [] });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "m4", method: "readMail" });
@@ -690,7 +733,7 @@ describe("IpcServer HTTP transport", () => {
       getNextUnread: () => msg,
       markMailRead: () => {},
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "m5", method: "waitForMail", params: { recipient: "mgr", timeout: 1 } });
@@ -704,7 +747,7 @@ describe("IpcServer HTTP transport", () => {
     const db = mockDb({
       getNextUnread: () => undefined,
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "m6", method: "waitForMail", params: { timeout: 1 } });
@@ -733,7 +776,7 @@ describe("IpcServer HTTP transport", () => {
         return 11;
       },
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", {
@@ -756,7 +799,7 @@ describe("IpcServer HTTP transport", () => {
     const db = mockDb({
       getMailById: () => undefined,
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", {
@@ -777,7 +820,7 @@ describe("IpcServer HTTP transport", () => {
         markedId = id;
       },
     });
-    server = new IpcServer(mockPool() as never, mockConfig(), db, null, { onActivity: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "m9", method: "markRead", params: { id: 7 } });
@@ -805,9 +848,7 @@ describe("IpcServer HTTP transport", () => {
         throw new Error("tool failed");
       },
     };
-    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "st1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
@@ -829,9 +870,7 @@ describe("IpcServer HTTP transport", () => {
         throw err;
       },
     };
-    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "st2", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
@@ -849,9 +888,7 @@ describe("IpcServer HTTP transport", () => {
         throw "string error";
       },
     };
-    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "st3", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
@@ -949,9 +986,7 @@ describe("IpcServer HTTP transport", () => {
         throw new Error("tool failed");
       },
     };
-    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(failPool as never, mockConfig(), mockDb(), null, opts());
     server.start(socketPath);
 
     await rpc("/rpc", { id: "em1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
@@ -987,9 +1022,7 @@ describe("IpcServer HTTP transport", () => {
     };
 
     socketPath = tmpSocket();
-    server = new IpcServer(poolWithServers as never, configWithServers, mockDb(), null, {
-      onActivity: () => {},
-    });
+    server = new IpcServer(poolWithServers as never, configWithServers, mockDb(), null, opts());
     server.start(socketPath);
 
     const res = await rpc("/rpc", { id: "gc1", method: "getConfig" });
@@ -1003,5 +1036,73 @@ describe("IpcServer HTTP transport", () => {
     >;
     expect(servers.alpha).toEqual({ transport: "stdio", source: "/a.json", scope: "user", toolCount: 5 });
     expect(servers.beta).toEqual({ transport: "http", source: "/b.json", scope: "project", toolCount: 3 });
+  });
+
+  test("callTool propagates traceparent to recordUsage", async () => {
+    socketPath = tmpSocket();
+    const calls: unknown[] = [];
+    const db = mockDb({
+      recordUsage: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const traceparent = "00-0123456789abcdef0123456789abcdef-fedcba9876543210-01";
+    await rpc("/rpc", {
+      id: "tp1",
+      method: "callTool",
+      params: { server: "s", tool: "t", arguments: {} },
+      traceparent,
+    });
+
+    expect(calls).toHaveLength(1);
+    const [, , , , , traceContext] = calls[0] as [string, string, number, boolean, string | undefined, unknown];
+    expect(traceContext).toEqual({
+      daemonId: TEST_DAEMON_ID,
+      traceId: "0123456789abcdef0123456789abcdef",
+      parentId: "fedcba9876543210",
+    });
+  });
+
+  test("callTool without traceparent records daemonId only", async () => {
+    socketPath = tmpSocket();
+    const calls: unknown[] = [];
+    const db = mockDb({
+      recordUsage: (...args: unknown[]) => {
+        calls.push(args);
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    await rpc("/rpc", {
+      id: "tp2",
+      method: "callTool",
+      params: { server: "s", tool: "t", arguments: {} },
+    });
+
+    expect(calls).toHaveLength(1);
+    const [, , , , , traceContext] = calls[0] as [string, string, number, boolean, string | undefined, unknown];
+    expect(traceContext).toEqual({
+      daemonId: TEST_DAEMON_ID,
+      traceId: undefined,
+      parentId: undefined,
+    });
+  });
+
+  test("getMetrics includes daemonId and startedAt", async () => {
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "gm1", method: "getMetrics" });
+    const json = (await res.json()) as IpcResponse;
+    const snap = json.result as { daemonId?: string; startedAt?: number; collectedAt: number };
+
+    expect(snap.daemonId).toBe(TEST_DAEMON_ID);
+    expect(snap.startedAt).toBe(TEST_STARTED_AT);
+    expect(snap.collectedAt).toBeGreaterThan(0);
   });
 });
