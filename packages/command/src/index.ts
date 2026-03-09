@@ -14,7 +14,7 @@
  *   mcx status                                   # daemon status
  */
 
-import type { DaemonStatus, MetricsSnapshot, ServerStatus } from "@mcp-cli/core";
+import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
