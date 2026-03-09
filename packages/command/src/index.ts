@@ -34,6 +34,7 @@ import { cmdServe } from "./commands/serve";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
+import { cmdVersion } from "./commands/version";
 import { ipcCall, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -132,6 +133,10 @@ async function main(): Promise<void> {
 
       case "registry":
         await cmdRegistryDispatch(args.slice(1));
+        break;
+
+      case "version":
+        await cmdVersion(args.slice(1));
         break;
 
       case "status":
@@ -573,6 +578,7 @@ Usage:
   mcx config get <key>                Get a CLI option value
   mcx config get <server>             Inspect a server's config (env, args, url)
   mcx config set <srv> env <K>:<V>    Set an env var on a stdio server
+  mcx version                         Show CLI, daemon, and protocol versions
   mcx status                          Daemon status
   mcx metrics                         Show daemon metrics (Prometheus-style)
   mcx metrics -j                      Metrics as JSON

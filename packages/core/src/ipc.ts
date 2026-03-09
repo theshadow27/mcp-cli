@@ -191,6 +191,7 @@ export interface DaemonStatus {
   pid: number;
   uptime: number;
   protocolVersion: string;
+  daemonVersion?: string;
   servers: ServerStatus[];
   dbPath: string;
   usageStats: UsageStat[];
