@@ -32,6 +32,7 @@ import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } fro
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
+import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
 async function main(): Promise<void> {
@@ -64,6 +65,12 @@ async function main(): Promise<void> {
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
   console.error(`[mcpd] Database: ${options.DB_PATH}`);
+
+  // Reap any claude processes orphaned by a previous unclean daemon exit
+  const reaped = reapOrphanedSessions(db);
+  if (reaped > 0) {
+    console.error(`[mcpd] Reaped ${reaped} orphaned claude process(es) from previous run`);
+  }
 
   // Warn if runtime state permissions have been loosened
   auditRuntimePermissions();
