@@ -53,6 +53,7 @@ packages/
 - Keep binaries lean — fast startup matters (<50ms for `mcx call`)
 - JSON output to stdout, errors/status to stderr
 - **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
+- **Flaky test prevention**: see `test/CLAUDE.md` for required patterns. Never use `setTimeout` for waiting, never hardcode ports, always poll with deadlines instead of fixed delays.
 
 ## Project Structure
 
