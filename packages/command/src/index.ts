@@ -31,6 +31,7 @@ import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun, parseRunArgs } from "./commands/run";
 import { cmdServe } from "./commands/serve";
+import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { ipcCall, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
@@ -175,6 +176,10 @@ async function main(): Promise<void> {
 
       case "logs":
         await cmdLogs(args.slice(1));
+        break;
+
+      case "spans":
+        await cmdSpans(args.slice(1));
         break;
 
       case "mail":

@@ -6,19 +6,22 @@
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig, Traceparent } from "@mcp-cli/core";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig } from "@mcp-cli/core";
 import {
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
   GetAliasParamsSchema,
   GetDaemonLogsParamsSchema,
   GetLogsParamsSchema,
+  GetSpansParamsSchema,
   GetToolInfoParamsSchema,
   GrepToolsParamsSchema,
   IPC_ERROR,
   ListToolsParamsSchema,
   MarkReadParamsSchema,
+  MarkSpansExportedParamsSchema,
   PROTOCOL_VERSION,
+  PruneSpansParamsSchema,
   ReadMailParamsSchema,
   ReplyToMailParamsSchema,
   RestartServerParamsSchema,
@@ -29,8 +32,8 @@ import {
   hardenFile,
   isDefineAlias,
   options,
-  parseTraceparent,
   safeAliasPath,
+  startSpan,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
@@ -42,7 +45,12 @@ import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import type { ServerPool } from "./server-pool";
 
-type RequestHandler = (params: unknown) => Promise<unknown>;
+/** Per-request context passed to every handler (fixes race condition on shared state). */
+export interface RequestContext {
+  span: LiveSpan;
+}
+
+type RequestHandler = (params: unknown, ctx: RequestContext) => Promise<unknown>;
 
 export class IpcServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
@@ -56,7 +64,6 @@ export class IpcServer {
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
-  private currentTraceparent: Traceparent | undefined;
 
   constructor(
     private pool: ServerPool,
@@ -173,31 +180,44 @@ export class IpcServer {
       });
     }
 
-    // Capture trace context for the duration of this request
-    this.currentTraceparent = request.traceparent ? (parseTraceparent(request.traceparent) ?? undefined) : undefined;
+    // Create a per-request span (child of caller's traceparent, or root)
+    const span = startSpan(`ipc.${request.method}`, request.traceparent);
+    span.setAttribute("ipc.method", request.method);
+    const ctx: RequestContext = { span };
 
     const labels = { method: request.method };
     metrics.counter("mcpd_ipc_requests_total", labels).inc();
     const stopTimer = metrics.histogram("mcpd_ipc_request_duration_ms", labels).startTimer();
 
     try {
-      const result = await handler(request.params);
+      const result = await handler(request.params, ctx);
+      span.setStatus("OK");
       return result;
     } catch (err) {
+      span.setStatus("ERROR");
+      span.setAttribute("error.message", err instanceof Error ? err.message : String(err));
       metrics.counter("mcpd_ipc_errors_total", labels).inc();
       throw err;
     } finally {
-      this.currentTraceparent = undefined;
       stopTimer();
+      try {
+        this.db.recordSpan(span.end(), this.daemonId);
+      } catch (e) {
+        console.error("[ipc] Failed to record span:", e);
+      }
     }
   }
 
   // -- Handler registration --
 
   private registerHandlers(): void {
-    this.handlers.set("ping", async () => ({ pong: true, time: Date.now(), protocolVersion: PROTOCOL_VERSION }));
+    this.handlers.set("ping", async (_params, _ctx) => ({
+      pong: true,
+      time: Date.now(),
+      protocolVersion: PROTOCOL_VERSION,
+    }));
 
-    this.handlers.set("status", async () => {
+    this.handlers.set("status", async (_params, _ctx) => {
       const servers = this.pool.listServers();
       const usageStats = this.db.getUsageStats();
 
@@ -222,58 +242,64 @@ export class IpcServer {
       };
     });
 
-    this.handlers.set("listServers", async () => this.pool.listServers());
+    this.handlers.set("listServers", async (_params, _ctx) => this.pool.listServers());
 
-    this.handlers.set("listTools", async (params) => {
+    this.handlers.set("listTools", async (params, _ctx) => {
       const { server } = ListToolsParamsSchema.parse(params ?? {});
       return this.pool.listTools(server);
     });
 
-    this.handlers.set("getToolInfo", async (params) => {
+    this.handlers.set("getToolInfo", async (params, _ctx) => {
       const { server, tool } = GetToolInfoParamsSchema.parse(params);
       return this.pool.getToolInfo(server, tool);
     });
 
-    this.handlers.set("grepTools", async (params) => {
+    this.handlers.set("grepTools", async (params, _ctx) => {
       const { pattern } = GrepToolsParamsSchema.parse(params);
       return this.pool.grepTools(pattern);
     });
 
-    this.handlers.set("callTool", async (params) => {
+    this.handlers.set("callTool", async (params, ctx) => {
       const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
+      const toolSpan = ctx.span.child(`tool.${server}.${tool}`);
+      toolSpan.setAttribute("tool.server", server);
+      toolSpan.setAttribute("tool.name", tool);
       const toolLabels = { server, tool };
-      const tp = this.currentTraceparent;
-      const traceContext = {
-        daemonId: this.daemonId,
-        traceId: tp?.traceId,
-        parentId: tp?.parentId,
-      };
-      const start = Date.now();
       try {
         const result = await this.pool.callTool(server, tool, args);
-        const durationMs = Date.now() - start;
-        this.db.recordUsage(server, tool, durationMs, true, undefined, traceContext);
+        toolSpan.setStatus("OK");
+        const finished = toolSpan.end();
+        // Dual-write: usage_stats (Phase 1 compat) + spans table
+        this.db.recordUsage(server, tool, finished.durationMs, true, undefined, {
+          daemonId: this.daemonId,
+          traceId: finished.traceId,
+          parentId: finished.parentSpanId,
+        });
+        this.db.recordSpan(finished, this.daemonId);
         metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
-        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
+        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(finished.durationMs);
         return result;
       } catch (err) {
-        const durationMs = Date.now() - start;
+        toolSpan.setStatus("ERROR");
+        toolSpan.setAttribute("error.message", err instanceof Error ? err.message : String(err));
+        const finished = toolSpan.end();
         this.db.recordUsage(
           server,
           tool,
-          durationMs,
+          finished.durationMs,
           false,
           err instanceof Error ? err.message : String(err),
-          traceContext,
+          { daemonId: this.daemonId, traceId: finished.traceId, parentId: finished.parentSpanId },
         );
+        this.db.recordSpan(finished, this.daemonId);
         metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
         metrics.counter("mcpd_tool_errors_total", toolLabels).inc();
-        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
+        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(finished.durationMs);
         throw err;
       }
     });
 
-    this.handlers.set("triggerAuth", async (params) => {
+    this.handlers.set("triggerAuth", async (params, _ctx) => {
       const { server } = TriggerAuthParamsSchema.parse(params);
       const serverUrl = this.pool.getServerUrl(server);
       if (!serverUrl) {
@@ -322,13 +348,13 @@ export class IpcServer {
       }
     });
 
-    this.handlers.set("restartServer", async (params) => {
+    this.handlers.set("restartServer", async (params, _ctx) => {
       const { server } = RestartServerParamsSchema.parse(params ?? {});
       await this.pool.restart(server);
       return { ok: true };
     });
 
-    this.handlers.set("getConfig", async () => {
+    this.handlers.set("getConfig", async (_params, _ctx) => {
       const servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }> = {};
       const statusMap = new Map(this.pool.listServers().map((s) => [s.name, s]));
       for (const [name, resolved] of this.config.servers) {
@@ -346,11 +372,11 @@ export class IpcServer {
       };
     });
 
-    this.handlers.set("listAliases", async () => {
+    this.handlers.set("listAliases", async (_params, _ctx) => {
       return this.db.listAliases();
     });
 
-    this.handlers.set("getAlias", async (params) => {
+    this.handlers.set("getAlias", async (params, _ctx) => {
       const { name } = GetAliasParamsSchema.parse(params);
       const alias = this.db.getAlias(name);
       if (!alias) return null;
@@ -362,7 +388,7 @@ export class IpcServer {
       }
     });
 
-    this.handlers.set("saveAlias", async (params) => {
+    this.handlers.set("saveAlias", async (params, _ctx) => {
       const { name, script, description } = SaveAliasParamsSchema.parse(params);
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
@@ -408,7 +434,7 @@ export class IpcServer {
       return { ok: true, filePath };
     });
 
-    this.handlers.set("deleteAlias", async (params) => {
+    this.handlers.set("deleteAlias", async (params, _ctx) => {
       const { name } = DeleteAliasParamsSchema.parse(params);
       const alias = this.db.getAlias(name);
       if (alias) {
@@ -424,7 +450,7 @@ export class IpcServer {
       return { ok: true };
     });
 
-    this.handlers.set("getLogs", async (params) => {
+    this.handlers.set("getLogs", async (params, _ctx) => {
       const { server, limit, since } = GetLogsParamsSchema.parse(params);
 
       // Fast path: in-memory ring buffer (no since filter)
@@ -444,7 +470,7 @@ export class IpcServer {
       };
     });
 
-    this.handlers.set("getDaemonLogs", async (params) => {
+    this.handlers.set("getDaemonLogs", async (params, _ctx) => {
       const { limit, since } = GetDaemonLogsParamsSchema.parse(params ?? {});
       let lines = getDaemonLogLines(limit).map((l) => ({
         timestamp: l.timestamp,
@@ -458,19 +484,19 @@ export class IpcServer {
 
     // -- Mail handlers --
 
-    this.handlers.set("sendMail", async (params) => {
+    this.handlers.set("sendMail", async (params, _ctx) => {
       const { sender, recipient, subject, body, replyTo } = SendMailParamsSchema.parse(params);
       const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
       return { id };
     });
 
-    this.handlers.set("readMail", async (params) => {
+    this.handlers.set("readMail", async (params, _ctx) => {
       const { recipient, unreadOnly, limit } = ReadMailParamsSchema.parse(params ?? {});
       const messages = this.db.readMail(recipient, unreadOnly, limit);
       return { messages };
     });
 
-    this.handlers.set("waitForMail", async (params) => {
+    this.handlers.set("waitForMail", async (params, _ctx) => {
       const { recipient, timeout } = WaitForMailParamsSchema.parse(params ?? {});
       // Server-side timeout capped at 30s to stay under IPC client's 60s timeout
       const maxWait = Math.min((timeout ?? 30) * 1000, 30_000);
@@ -487,7 +513,7 @@ export class IpcServer {
       return { message: null };
     });
 
-    this.handlers.set("replyToMail", async (params) => {
+    this.handlers.set("replyToMail", async (params, _ctx) => {
       const { id, sender, body, subject } = ReplyToMailParamsSchema.parse(params);
       const original = this.db.getMailById(id);
       if (!original) {
@@ -500,13 +526,13 @@ export class IpcServer {
       return { id: newId };
     });
 
-    this.handlers.set("markRead", async (params) => {
+    this.handlers.set("markRead", async (params, _ctx) => {
       const { id } = MarkReadParamsSchema.parse(params);
       this.db.markMailRead(id);
       return {};
     });
 
-    this.handlers.set("reloadConfig", async () => {
+    this.handlers.set("reloadConfig", async (_params, _ctx) => {
       if (!this.onReloadConfig) {
         throw Object.assign(new Error("Config reload not available"), { code: IPC_ERROR.INTERNAL_ERROR });
       }
@@ -514,11 +540,29 @@ export class IpcServer {
       return { ok: true };
     });
 
-    this.handlers.set("getMetrics", async () => {
+    this.handlers.set("getMetrics", async (_params, _ctx) => {
       return { ...metrics.toJSON(), daemonId: this.daemonId, startedAt: this.startedAt };
     });
 
-    this.handlers.set("shutdown", async () => {
+    // -- Span handlers --
+
+    this.handlers.set("getSpans", async (params, _ctx) => {
+      const { since, limit, unexported } = GetSpansParamsSchema.parse(params ?? {});
+      return { spans: this.db.getSpans({ since, limit, unexported }) };
+    });
+
+    this.handlers.set("markSpansExported", async (params, _ctx) => {
+      const { ids } = MarkSpansExportedParamsSchema.parse(params);
+      const marked = this.db.markSpansExported(ids);
+      return { marked };
+    });
+
+    this.handlers.set("pruneSpans", async (params, _ctx) => {
+      const { before } = PruneSpansParamsSchema.parse(params ?? {});
+      return { pruned: this.db.pruneSpans(before) };
+    });
+
+    this.handlers.set("shutdown", async (_params, _ctx) => {
       // Schedule graceful shutdown after response is sent
       setTimeout(() => this.onShutdown(), 100);
       return { ok: true };

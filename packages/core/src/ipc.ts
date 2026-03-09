@@ -7,6 +7,7 @@
 
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
+import type { SpanEvent } from "./trace";
 
 // -- Methods --
 
@@ -34,7 +35,10 @@ export type IpcMethod =
   | "replyToMail"
   | "markRead"
   | "reloadConfig"
-  | "getMetrics";
+  | "getMetrics"
+  | "getSpans"
+  | "markSpansExported"
+  | "pruneSpans";
 
 // -- Request/Response --
 
@@ -240,6 +244,22 @@ export const MarkReadParamsSchema = z.object({
   id: z.number(),
 });
 
+// -- Span schemas --
+
+export const GetSpansParamsSchema = z.object({
+  since: z.number().optional(),
+  limit: z.number().optional(),
+  unexported: z.boolean().optional(),
+});
+
+export const MarkSpansExportedParamsSchema = z.object({
+  ids: z.array(z.number()),
+});
+
+export const PruneSpansParamsSchema = z.object({
+  before: z.number().optional(),
+});
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -307,6 +327,37 @@ export interface MetricsSnapshot {
   }>;
 }
 
+// -- Span types --
+
+export interface SpanRow {
+  id: number;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  traceFlags: string;
+  name: string;
+  startTimeMs: number;
+  endTimeMs: number;
+  durationMs: number;
+  status: string;
+  attributes: Record<string, string | number | boolean>;
+  events: SpanEvent[];
+  daemonId: string | null;
+  exportedAt: number | null;
+}
+
+export interface GetSpansResult {
+  spans: SpanRow[];
+}
+
+export interface MarkSpansExportedResult {
+  marked: number;
+}
+
+export interface PruneSpansResult {
+  pruned: number;
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -334,6 +385,9 @@ export interface IpcMethodResult {
   markRead: Record<string, never>;
   reloadConfig: ReloadConfigResult;
   getMetrics: MetricsSnapshot;
+  getSpans: GetSpansResult;
+  markSpansExported: MarkSpansExportedResult;
+  pruneSpans: PruneSpansResult;
 }
 
 // -- Error codes --
