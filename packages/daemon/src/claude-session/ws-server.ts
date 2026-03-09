@@ -38,6 +38,7 @@ export interface SessionConfig {
   worktree?: string;
   cwd?: string;
   model?: string;
+  traceparent?: string;
 }
 
 export interface TranscriptEntry {
@@ -64,7 +65,13 @@ export interface SessionResult {
 /** Dependency-injectable process spawner for testing. */
 export type SpawnFn = (
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ) => { pid: number; exited: Promise<number>; kill: (signal?: number) => void };
 
 interface ResultWaiter {
@@ -248,11 +255,17 @@ export class ClaudeWsServer {
       cmd.push("--worktree", session.config.worktree);
     }
 
+    const spawnEnv: Record<string, string | undefined> = {};
+    if (session.config.traceparent) {
+      spawnEnv.TRACEPARENT = session.config.traceparent;
+    }
+
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
+      env: spawnEnv,
     });
 
     session.pid = proc.pid;
@@ -645,11 +658,17 @@ export class ClaudeWsServer {
 
 function defaultSpawn(
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ): { pid: number; exited: Promise<number>; kill: (signal?: number) => void } {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
-  const env = { ...process.env };
+  const env = { ...process.env, ...opts.env };
   env.CLAUDECODE = undefined;
 
   const proc = Bun.spawn(cmd, {

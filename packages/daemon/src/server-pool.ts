@@ -569,6 +569,7 @@ export const BASE_ENV_ALLOWLIST: ReadonlyArray<string> = [
   "XDG_RUNTIME_DIR",
   "DISPLAY",
   "WAYLAND_DISPLAY",
+  "TRACEPARENT",
 ];
 
 /**

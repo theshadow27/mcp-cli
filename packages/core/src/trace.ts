@@ -51,6 +51,34 @@ export function parseTraceparent(header: string): Traceparent | null {
   return { version, traceId, parentId, flags };
 }
 
+/** A span in a W3C-compatible trace. */
+export interface Span {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+}
+
+/**
+ * Create a child span from an incoming traceparent string, or a root span if
+ * the input is absent or invalid.
+ */
+export function createSpan(parentTraceparent?: string): Span {
+  const spanId = generateSpanId();
+  if (!parentTraceparent) {
+    return { traceId: generateTraceId(), spanId };
+  }
+  const parsed = parseTraceparent(parentTraceparent);
+  if (!parsed) {
+    return { traceId: generateTraceId(), spanId };
+  }
+  return { traceId: parsed.traceId, spanId, parentSpanId: parsed.parentId };
+}
+
+/** Format a Span as a W3C traceparent string for downstream propagation. */
+export function spanToTraceparent(span: Span): string {
+  return formatTraceparent(span.traceId, span.spanId);
+}
+
 function toHex(bytes: Uint8Array): string {
   let hex = "";
   for (let i = 0; i < bytes.length; i++) {

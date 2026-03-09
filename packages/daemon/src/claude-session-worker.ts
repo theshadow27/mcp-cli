@@ -14,7 +14,7 @@
  *   { type: "db:end", sessionId }
  */
 
-import { generateSpanId, resolveModelName } from "@mcp-cli/core";
+import { createSpan, generateSpanId, resolveModelName, spanToTraceparent } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -47,6 +47,7 @@ let transport: WorkerServerTransport | null = null;
 // Trace context — set on init, stable for worker lifetime
 let daemonId: string | undefined;
 let workerId: string | undefined;
+let workerTraceparent: string | undefined;
 
 // ── Tool handlers ──
 
@@ -113,6 +114,9 @@ async function handlePrompt(
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
 
+    // Create a child span for this session, parented to the worker's lifetime span
+    const sessionSpan = createSpan(workerTraceparent);
+
     server.prepareSession(sessionId, {
       prompt,
       cwd: args.cwd as string | undefined,
@@ -121,6 +125,7 @@ async function handlePrompt(
       allowedTools,
       worktree: args.worktree as string | undefined,
       model: args.model ? resolveModelName(args.model as string) : undefined,
+      traceparent: spanToTraceparent(sessionSpan),
     });
 
     // Post DB upsert
@@ -329,6 +334,8 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     daemonId = data.daemonId;
     workerId = generateSpanId();
+    const workerSpan = createSpan(); // root span for this worker's lifetime
+    workerTraceparent = spanToTraceparent(workerSpan);
     await startServer();
   }
 };

@@ -8,7 +8,7 @@
 import { IPC_REQUEST_TIMEOUT_MS, PING_TIMEOUT_MS, options } from "./constants";
 import type { IpcError, IpcMethod, IpcMethodResult, IpcRequest, IpcResponse } from "./ipc";
 import { nextId } from "./ipc";
-import { formatTraceparent, generateSpanId, generateTraceId } from "./trace";
+import { createSpan, spanToTraceparent } from "./trace";
 
 /**
  * Structured error thrown by ipcCall() when the daemon returns an error response.
@@ -90,7 +90,7 @@ export async function ipcCall<M extends IpcMethod>(
     id: nextId(),
     method,
     params,
-    traceparent: formatTraceparent(generateTraceId(), generateSpanId()),
+    traceparent: spanToTraceparent(createSpan()),
   };
   const response = await sendRequest(request, opts?.timeoutMs);
 

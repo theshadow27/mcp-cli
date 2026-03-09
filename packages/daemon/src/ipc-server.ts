@@ -6,7 +6,7 @@
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig, Traceparent } from "@mcp-cli/core";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse, ResolvedConfig, Span } from "@mcp-cli/core";
 import {
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
@@ -26,10 +26,10 @@ import {
   SendMailParamsSchema,
   TriggerAuthParamsSchema,
   WaitForMailParamsSchema,
+  createSpan,
   hardenFile,
   isDefineAlias,
   options,
-  parseTraceparent,
   safeAliasPath,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -56,7 +56,7 @@ export class IpcServer {
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
-  private currentTraceparent: Traceparent | undefined;
+  private currentSpan: Span | undefined;
 
   constructor(
     private pool: ServerPool,
@@ -173,8 +173,8 @@ export class IpcServer {
       });
     }
 
-    // Capture trace context for the duration of this request
-    this.currentTraceparent = request.traceparent ? (parseTraceparent(request.traceparent) ?? undefined) : undefined;
+    // Create a daemon span as a child of the caller's span
+    this.currentSpan = createSpan(request.traceparent);
 
     const labels = { method: request.method };
     metrics.counter("mcpd_ipc_requests_total", labels).inc();
@@ -187,7 +187,7 @@ export class IpcServer {
       metrics.counter("mcpd_ipc_errors_total", labels).inc();
       throw err;
     } finally {
-      this.currentTraceparent = undefined;
+      this.currentSpan = undefined;
       stopTimer();
     }
   }
@@ -242,11 +242,11 @@ export class IpcServer {
     this.handlers.set("callTool", async (params) => {
       const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
       const toolLabels = { server, tool };
-      const tp = this.currentTraceparent;
+      const span = this.currentSpan;
       const traceContext = {
         daemonId: this.daemonId,
-        traceId: tp?.traceId,
-        parentId: tp?.parentId,
+        traceId: span?.traceId,
+        parentId: span?.parentSpanId,
       };
       const start = Date.now();
       try {

@@ -1085,11 +1085,11 @@ describe("IpcServer HTTP transport", () => {
 
     expect(calls).toHaveLength(1);
     const [, , , , , traceContext] = calls[0] as [string, string, number, boolean, string | undefined, unknown];
-    expect(traceContext).toEqual({
-      daemonId: TEST_DAEMON_ID,
-      traceId: undefined,
-      parentId: undefined,
-    });
+    // Without an incoming traceparent, the daemon creates a root span (new traceId, no parent)
+    const ctx = traceContext as { daemonId: string; traceId: string; parentId: string | undefined };
+    expect(ctx.daemonId).toBe(TEST_DAEMON_ID);
+    expect(ctx.traceId).toHaveLength(32);
+    expect(ctx.parentId).toBeUndefined();
   });
 
   test("getMetrics includes daemonId and startedAt", async () => {

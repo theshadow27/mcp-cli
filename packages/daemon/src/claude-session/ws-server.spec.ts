@@ -11,11 +11,13 @@ function mockSpawn(): {
   exitResolve: (code: number) => void;
   killed: boolean;
   lastCmd: string[];
+  lastOpts: Record<string, unknown>;
 } {
   let exitResolve: (code: number) => void = () => {};
   const state = {
-    spawn: ((cmd: string[]) => {
+    spawn: ((cmd: string[], opts: Record<string, unknown>) => {
       state.lastCmd = cmd;
+      state.lastOpts = opts;
       return {
         pid: 12345,
         exited: new Promise<number>((r) => {
@@ -29,6 +31,7 @@ function mockSpawn(): {
     exitResolve: (code: number) => exitResolve(code),
     killed: false,
     lastCmd: [] as string[],
+    lastOpts: {} as Record<string, unknown>,
   };
   return state;
 }
@@ -179,6 +182,36 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("no-model-session");
 
     expect(ms.lastCmd).not.toContain("--model");
+  });
+
+  test("spawnClaude passes TRACEPARENT env when config has traceparent", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    const tp = "00-0123456789abcdef0123456789abcdef-fedcba9876543210-01";
+    server.prepareSession("tp-session", {
+      prompt: "Hello",
+      traceparent: tp,
+    });
+    server.spawnClaude("tp-session");
+
+    const env = ms.lastOpts.env as Record<string, string | undefined>;
+    expect(env.TRACEPARENT).toBe(tp);
+  });
+
+  test("spawnClaude omits TRACEPARENT when config has no traceparent", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("no-tp-session", {
+      prompt: "Hello",
+    });
+    server.spawnClaude("no-tp-session");
+
+    const env = ms.lastOpts.env as Record<string, string | undefined>;
+    expect(env.TRACEPARENT).toBeUndefined();
   });
 
   test("WS connect sends user message immediately on open", async () => {
