@@ -38,6 +38,7 @@ import { startCallbackServer } from "./auth/callback-server";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
+import { metrics } from "./metrics";
 import type { ServerPool } from "./server-pool";
 
 type RequestHandler = (params: unknown) => Promise<unknown>;
@@ -91,11 +92,19 @@ export class IpcServer {
     this.server = Bun.serve({
       unix: socketPath,
       async fetch(req) {
+        const url = new URL(req.url);
+
+        // GET /metrics — Prometheus text exposition format
+        if (url.pathname === "/metrics" && req.method === "GET") {
+          return new Response(metrics.toPrometheusText(), {
+            headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+          });
+        }
+
         if (req.method !== "POST") {
           return new Response("Method Not Allowed", { status: 405 });
         }
 
-        const url = new URL(req.url);
         if (url.pathname !== "/rpc") {
           return new Response("Not Found", { status: 404 });
         }
@@ -155,7 +164,20 @@ export class IpcServer {
         code: IPC_ERROR.METHOD_NOT_FOUND,
       });
     }
-    return handler(request.params);
+
+    const labels = { method: request.method };
+    metrics.counter("mcpd_ipc_requests_total", labels).inc();
+    const stopTimer = metrics.histogram("mcpd_ipc_request_duration_ms", labels).startTimer();
+
+    try {
+      const result = await handler(request.params);
+      return result;
+    } catch (err) {
+      metrics.counter("mcpd_ipc_errors_total", labels).inc();
+      throw err;
+    } finally {
+      stopTimer();
+    }
   }
 
   // -- Handler registration --
@@ -207,13 +229,21 @@ export class IpcServer {
 
     this.handlers.set("callTool", async (params) => {
       const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
+      const toolLabels = { server, tool };
       const start = Date.now();
       try {
         const result = await this.pool.callTool(server, tool, args);
-        this.db.recordUsage(server, tool, Date.now() - start, true);
+        const durationMs = Date.now() - start;
+        this.db.recordUsage(server, tool, durationMs, true);
+        metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
+        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
         return result;
       } catch (err) {
-        this.db.recordUsage(server, tool, Date.now() - start, false, err instanceof Error ? err.message : String(err));
+        const durationMs = Date.now() - start;
+        this.db.recordUsage(server, tool, durationMs, false, err instanceof Error ? err.message : String(err));
+        metrics.counter("mcpd_tool_calls_total", toolLabels).inc();
+        metrics.counter("mcpd_tool_errors_total", toolLabels).inc();
+        metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(durationMs);
         throw err;
       }
     });
@@ -457,6 +487,10 @@ export class IpcServer {
       }
       await this.onReloadConfig();
       return { ok: true };
+    });
+
+    this.handlers.set("getMetrics", async () => {
+      return metrics.toJSON();
     });
 
     this.handlers.set("shutdown", async () => {
