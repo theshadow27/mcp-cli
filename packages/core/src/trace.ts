@@ -117,7 +117,7 @@ export function startSpan(name: string, parentTraceparent?: string, onFallback?:
       parentSpanId = parsed.parentId;
       traceFlags = parsed.flags;
     } else {
-      console.debug("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
+      console.error("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
       onFallback?.();
       traceId = generateTraceId();
     }

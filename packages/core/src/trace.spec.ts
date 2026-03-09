@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   TRACE_FLAGS_SAMPLED,
   TRACE_VERSION,
@@ -121,28 +121,22 @@ describe("startSpan", () => {
   });
 
   test("calls onFallback when traceparent is invalid", () => {
-    let called = 0;
-    startSpan("test.fallback_cb", "garbage", () => {
-      called++;
-    });
-    expect(called).toBe(1);
+    const onFallback = mock();
+    startSpan("test.fallback_cb", "garbage", onFallback);
+    expect(onFallback).toHaveBeenCalledTimes(1);
   });
 
   test("does not call onFallback when traceparent is valid", () => {
-    let called = 0;
+    const onFallback = mock();
     const tp = formatTraceparent(generateTraceId(), generateSpanId());
-    startSpan("test.no_fallback", tp, () => {
-      called++;
-    });
-    expect(called).toBe(0);
+    startSpan("test.no_fallback", tp, onFallback);
+    expect(onFallback).toHaveBeenCalledTimes(0);
   });
 
   test("does not call onFallback when traceparent is absent", () => {
-    let called = 0;
-    startSpan("test.no_parent", undefined, () => {
-      called++;
-    });
-    expect(called).toBe(0);
+    const onFallback = mock();
+    startSpan("test.no_parent", undefined, onFallback);
+    expect(onFallback).toHaveBeenCalledTimes(0);
   });
 
   test("preserves trace flags from parent", () => {
