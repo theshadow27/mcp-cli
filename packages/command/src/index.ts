@@ -15,7 +15,7 @@
  */
 
 import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
-import { IpcCallError, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
+import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
 import { cmdClaude } from "./commands/claude";
@@ -47,7 +47,14 @@ import {
   printToolList,
   printToolResult,
 } from "./output";
-import { extractFullFlag, extractJqFlag, extractJsonFlag, readStdinJson, splitServerTool } from "./parse";
+import {
+  extractFullFlag,
+  extractJqFlag,
+  extractJsonFlag,
+  extractTimeoutFlag,
+  readStdinJson,
+  splitServerTool,
+} from "./parse";
 import { searchRegistry } from "./registry/client";
 
 async function main(): Promise<void> {
@@ -295,16 +302,17 @@ async function cmdLs(args: string[]): Promise<void> {
 }
 
 async function cmdCall(args: string[]): Promise<void> {
-  // Extract --full/-f and --jq flags before parsing positional args
+  // Extract --full/-f, --jq, and --timeout flags before parsing positional args
   const { full, rest: afterFull } = extractFullFlag(args);
   const { jq: jqFilter, rest: afterJq } = extractJqFlag(afterFull);
+  const { timeoutMs, rest: afterTimeout } = extractTimeoutFlag(afterJq);
 
   // Support slash notation: "server/tool" → ["server", "tool"]
-  const split = afterJq.length >= 1 ? splitServerTool(afterJq[0]) : null;
-  const resolved = split ? [...split, ...afterJq.slice(1)] : afterJq;
+  const split = afterTimeout.length >= 1 ? splitServerTool(afterTimeout[0]) : null;
+  const resolved = split ? [...split, ...afterTimeout.slice(1)] : afterTimeout;
 
   if (resolved.length < 2) {
-    printError("Usage: mcx call <server> <tool> [json|@file] [--jq '<filter>'] [--full]");
+    printError("Usage: mcx call <server> <tool> [json|@file] [--jq '<filter>'] [--full] [--timeout <seconds>]");
     process.exit(1);
   }
 
@@ -317,7 +325,13 @@ async function cmdCall(args: string[]): Promise<void> {
   const inputArg = rest.join(" ").trim();
   const toolArgs = await parseToolArgs(inputArg);
 
-  const result = await ipcCall("callTool", { server, tool, arguments: toolArgs });
+  // IPC layer timeout must exceed the MCP SDK timeout; default to MCP_TOOL_TIMEOUT_MS + 5s buffer
+  const toolTimeoutMs = timeoutMs ?? MCP_TOOL_TIMEOUT_MS;
+  const result = await ipcCall(
+    "callTool",
+    { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs },
+    { timeoutMs: toolTimeoutMs + 5_000 },
+  );
 
   // Explicit --jq filter: apply client-side regardless of size/env
   if (jqFilter) {
@@ -553,7 +567,7 @@ Usage:
   mcx ls                              List configured servers
   mcx ls <server>                     List tools for a server
   mcx tools <server>                  Alias for ls <server>
-  mcx call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin)
+  mcx call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin); --timeout <s> overrides 10m default
   mcx call <server/tool> [json]       Slash notation
   mcx <server> <tool> [json]          Shorthand for call
   mcx <server/tool> [json]            Shorthand with slash notation

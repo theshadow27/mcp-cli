@@ -262,13 +262,13 @@ export class IpcServer {
     });
 
     this.handlers.set("callTool", async (params, ctx) => {
-      const { server, tool, arguments: args } = CallToolParamsSchema.parse(params);
+      const { server, tool, arguments: args, timeoutMs } = CallToolParamsSchema.parse(params);
       const toolSpan = ctx.span.child(`tool.${server}.${tool}`);
       toolSpan.setAttribute("tool.server", server);
       toolSpan.setAttribute("tool.name", tool);
       const toolLabels = { server, tool };
       try {
-        const result = await this.pool.callTool(server, tool, args);
+        const result = await this.pool.callTool(server, tool, args, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
         // Dual-write: usage_stats (Phase 1 compat) + spans table
