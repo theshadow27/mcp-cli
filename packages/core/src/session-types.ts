@@ -31,7 +31,7 @@ export interface SessionInfo {
   pendingPermissionDetails: PendingPermissionInfo[];
   worktree: string | null;
   /** Whether the WebSocket transport is currently connected. */
-  wsConnected?: boolean;
+  wsConnected: boolean;
   /** Whether the spawned Claude CLI process is still alive. */
-  spawnAlive?: boolean;
+  spawnAlive: boolean;
 }

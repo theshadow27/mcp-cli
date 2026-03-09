@@ -266,12 +266,10 @@ export class ClaudeWsServer {
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
       console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
-      // If WS is also gone, move to disconnected state
-      if (!session.ws) {
-        const events = session.state.disconnect("spawn exited");
-        for (const event of events) {
-          this.onSessionEvent?.(sessionId, event);
-        }
+      // Move to disconnected state regardless of WS — spawn is gone
+      const events = session.state.disconnect("spawn exited");
+      for (const event of events) {
+        this.onSessionEvent?.(sessionId, event);
       }
     });
 
@@ -340,6 +338,9 @@ export class ClaudeWsServer {
     if (session.state.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
     }
+    if (session.state.state === "disconnected") {
+      return Promise.reject(new Error("Session is disconnected"));
+    }
 
     return new Promise<SessionResult>((resolve, reject) => {
       const waiter: ResultWaiter = {
@@ -372,6 +373,9 @@ export class ClaudeWsServer {
       if (!session) return Promise.reject(new Error(`Unknown session: ${sessionId}`));
       if (session.state.state === "ended") {
         return Promise.reject(new Error("Session already ended"));
+      }
+      if (session.state.state === "disconnected") {
+        return Promise.reject(new Error("Session is disconnected"));
       }
     }
 
@@ -412,6 +416,12 @@ export class ClaudeWsServer {
     }
 
     session.ws = ws;
+
+    // If reconnecting from disconnected state, transition back to connecting
+    if (session.state.state === "disconnected") {
+      console.error(`[_claude] WebSocket reconnected for session ${sessionId}`);
+      session.state.reconnect();
+    }
 
     // CRITICAL: Send the initial user message immediately.
     // The CLI will NOT send system/init until it receives a user message.
@@ -670,6 +680,7 @@ export class ClaudeWsServer {
         // already dead
       }
       session.proc = null;
+      session.spawnAlive = false;
     }
 
     // Remove from map

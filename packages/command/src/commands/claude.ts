@@ -593,7 +593,6 @@ function colorState(state: string): string {
     case "init":
       return `${c.yellow}${padded}${c.reset}`;
     case "waiting_permission":
-      return `${c.red}${padded}${c.reset}`;
     case "disconnected":
       return `${c.red}${padded}${c.reset}`;
     case "ended":
