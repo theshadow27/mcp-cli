@@ -5,7 +5,6 @@
  * WorkerClientTransport, and provides the client for injection into ServerPool.
  */
 
-import { join } from "node:path";
 import type { JsonSchema, ToolInfo } from "@mcp-cli/core";
 import { formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -32,7 +31,7 @@ export class AliasServer {
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     const aliases = this.buildAliasDefs();
 
-    this.worker = new Worker(join(import.meta.dir, "alias-server-worker.ts"));
+    this.worker = new Worker(new URL("./alias-server-worker.ts", import.meta.url));
     this.transport = new WorkerClientTransport(this.worker);
     this.client = new Client({ name: `mcp-cli/${ALIAS_SERVER_NAME}`, version: "0.1.0" });
 

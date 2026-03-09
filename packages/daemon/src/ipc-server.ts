@@ -5,7 +5,6 @@
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig } from "@mcp-cli/core";
 import {
   CallToolParamsSchema,
@@ -582,7 +581,7 @@ interface AliasMetadata {
 /** Extract metadata from a defineAlias script using a Bun Worker */
 function extractAliasMetadata(aliasPath: string): Promise<AliasMetadata> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(join(import.meta.dir, "alias-worker.ts"));
+    const worker = new Worker(new URL("./alias-worker.ts", import.meta.url));
     const timeout = setTimeout(() => {
       worker.terminate();
       reject(new Error("Alias metadata extraction timed out"));
