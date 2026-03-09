@@ -147,9 +147,13 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
     case "wait":
       await claudeWait(args.slice(1), d);
       break;
+    case "worktrees":
+    case "wt":
+      await claudeWorktrees(args.slice(1), d);
+      break;
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -399,10 +403,21 @@ function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
   if (statusExit !== 0) return; // worktree gone, not a git repo, or git unavailable
 
   if (status === "") {
+    // Capture branch name before removing worktree (removal deletes the .git link)
+    const { stdout: branch } = d.exec(["git", "-C", worktreePath, "branch", "--show-current"]);
+
     // Clean — remove the worktree
     const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", worktreePath]);
     if (removeExit === 0) {
       d.printError(`Removed worktree: ${worktreePath}`);
+      // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
+      if (branch) {
+        const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", branch]);
+        if (branchExit === 0) {
+          d.printError(`Deleted branch: ${branch} (merged)`);
+        }
+        // If -d fails the branch is unmerged — silently keep it
+      }
     } else {
       d.printError(`Failed to remove worktree: ${worktreePath}`);
     }
@@ -617,6 +632,115 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 }
 
+/** Parse `git worktree list --porcelain` output into structured entries. */
+export function parseWorktreeList(output: string): Array<{ path: string; branch: string | null }> {
+  const entries: Array<{ path: string; branch: string | null }> = [];
+  let currentPath: string | null = null;
+  let currentBranch: string | null = null;
+
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (currentPath) entries.push({ path: currentPath, branch: currentBranch });
+      currentPath = line.slice("worktree ".length);
+      currentBranch = null;
+    } else if (line.startsWith("branch refs/heads/")) {
+      currentBranch = line.slice("branch refs/heads/".length);
+    }
+  }
+  if (currentPath) entries.push({ path: currentPath, branch: currentBranch });
+  return entries;
+}
+
+async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
+  const prune = args.includes("--prune");
+  const cwd = process.cwd();
+  const worktreeParent = join(cwd, ".claude", "worktrees");
+
+  // Get all git worktrees
+  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
+  if (wtExit !== 0) {
+    d.printError("Failed to list git worktrees (not a git repo?)");
+    d.exit(1);
+  }
+
+  const allWorktrees = parseWorktreeList(wtOutput);
+  // Filter to mcx-created worktrees under .claude/worktrees/
+  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
+
+  if (mcxWorktrees.length === 0 && !prune) {
+    d.printError("No mcx worktrees found.");
+    return;
+  }
+
+  // Get active sessions to cross-reference
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool("claude_session_list", {});
+    const text = formatToolResult(result);
+    const sessions = JSON.parse(text) as SessionInfo[];
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch {
+    // Daemon may not be running — continue without session info
+  }
+
+  if (prune) {
+    let pruned = 0;
+    for (const wt of mcxWorktrees) {
+      const wtName = wt.path.slice(`${worktreeParent}/`.length);
+      // Skip worktrees with active sessions
+      if (sessionWorktrees.has(wtName)) continue;
+
+      // Check if clean
+      const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
+      if (statusExit !== 0 || status !== "") continue; // gone or dirty — skip
+
+      // Remove worktree
+      const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
+      if (removeExit === 0) {
+        d.printError(`Removed worktree: ${wt.path}`);
+        pruned++;
+        // Delete merged branch
+        if (wt.branch) {
+          const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
+          if (branchExit === 0) {
+            d.printError(`Deleted branch: ${wt.branch} (merged)`);
+          }
+        }
+      }
+    }
+    if (pruned === 0) {
+      d.printError("Nothing to prune.");
+    } else {
+      d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+    }
+    return;
+  }
+
+  // List mode — display table
+  const header = `${"WORKTREE".padEnd(28)} ${"BRANCH".padEnd(32)} ${"STATUS".padEnd(10)} SESSION`;
+  console.log(`${c.dim}${header}${c.reset}`);
+
+  for (const wt of mcxWorktrees) {
+    const wtName = wt.path.slice(`${worktreeParent}/`.length);
+    const branch = (wt.branch ?? "—").padEnd(32);
+    const hasSession = sessionWorktrees.has(wtName);
+
+    // Check dirty/clean
+    const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
+    let wtStatus: string;
+    if (statusExit !== 0) {
+      wtStatus = `${c.red}${"gone".padEnd(10)}${c.reset}`;
+    } else if (status === "") {
+      wtStatus = `${c.green}${"clean".padEnd(10)}${c.reset}`;
+    } else {
+      wtStatus = `${c.yellow}${"dirty".padEnd(10)}${c.reset}`;
+    }
+
+    const session = hasSession ? `${c.green}active${c.reset}` : `${c.dim}—${c.reset}`;
+    console.log(`${c.cyan}${wtName.padEnd(28)}${c.reset} ${branch} ${wtStatus} ${session}`);
+  }
+}
+
 // ── Helpers ──
 
 export async function resolveSessionId(prefix: string, d: ClaudeDeps): Promise<string> {
@@ -679,6 +803,8 @@ Usage:
   mcx claude log <session> --json          Raw JSON transcript output
   mcx claude log <session> --json --jq '.' Apply jq filter to JSON output
   mcx claude log <session> --full          Full output (no truncation)
+  mcx claude worktrees                     List mcx-created worktrees
+  mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude
