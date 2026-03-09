@@ -16,7 +16,9 @@ function capitalize(s: string): string {
   return s[0].toUpperCase() + s.slice(1);
 }
 
-export function TabBar({ activeTab, badges = {} }: TabBarProps) {
+const NO_BADGES: Partial<Record<View, TabBadge>> = {};
+
+export function TabBar({ activeTab, badges = NO_BADGES }: TabBarProps) {
   return (
     <Box marginBottom={1}>
       <Text>

@@ -105,7 +105,7 @@ export function App() {
 
   const badges: Partial<Record<View, TabBadge>> = {};
   if (sessions.length > 0) {
-    badges.claude = { count: sessions.length, color: pendingPermissionCount > 0 ? "red" : undefined };
+    badges.claude = pendingPermissionCount > 0 ? { count: sessions.length, color: "red" } : { count: sessions.length };
   }
   if (errorServerCount > 0) {
     badges.servers = { count: errorServerCount, color: "red" };
