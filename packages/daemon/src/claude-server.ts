@@ -331,9 +331,17 @@ export class ClaudeServer {
     // to the new WS server (new port, new worker instance).
     const orphanedSessions = new Set(this.activeSessions);
 
-    // Clean up event handlers on the dead worker to release closure references
+    // Close MCP client to reject pending promises (matches stop() pattern)
+    try {
+      await this.client?.close();
+    } catch {
+      // ignore close errors — worker may already be dead
+    }
+
+    // Clean up event handlers and terminate the dead worker to release resources
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);
+      this.worker.terminate();
     }
     this.worker = null;
     this.transport = null;
@@ -353,6 +361,10 @@ export class ClaudeServer {
       );
       this.stopped = true;
       this.restartInProgress = false;
+      this.activeSessions.clear();
+      this.sessionPids.clear();
+      this.sessionAddedAt.clear();
+      metrics.gauge("mcpd_active_sessions").set(0);
       metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
       return;
     }
@@ -408,6 +420,10 @@ export class ClaudeServer {
         `[claude-server] All ${backoffs.length + 1} restart attempts failed (last: ${lastErr}) — giving up`,
       );
       this.stopped = true;
+      this.activeSessions.clear();
+      this.sessionPids.clear();
+      this.sessionAddedAt.clear();
+      metrics.gauge("mcpd_active_sessions").set(0);
     } finally {
       this.restartInProgress = false;
     }
