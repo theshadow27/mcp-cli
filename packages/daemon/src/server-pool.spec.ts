@@ -976,9 +976,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     expect(pool.hasPendingServers()).toBe(true);
 
     resolve();
-    await startPromise;
-    // Allow the .finally() cleanup to run
-    await Promise.resolve();
+    await pool.awaitPendingServers();
 
     expect(pool.hasPendingServers()).toBe(false);
   });
