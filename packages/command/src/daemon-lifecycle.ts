@@ -7,7 +7,6 @@
  */
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import {
   DAEMON_BINARY_NAME,
@@ -21,8 +20,8 @@ import {
   PROTOCOL_VERSION,
   ProtocolMismatchError,
   ipcCall as coreIpcCall,
+  resolveDaemonCommand as coreResolveDaemonCommand,
   ensureStateDir,
-  findFileUpward,
   nextId,
   options,
   pingDaemon,
@@ -243,24 +242,9 @@ export async function isDaemonRunning(): Promise<boolean> {
   return true;
 }
 
-/**
- * Resolve the command to launch the daemon.
- *
- * 1. Compiled mode: look for `mcpd` binary next to the current executable.
- * 2. Dev mode: walk up from this file to find the workspace root, then resolve the daemon script.
- * 3. Fallback: assume `mcpd` is on PATH.
- */
+/** Resolve the command to launch the daemon — delegates to core. */
 export function resolveDaemonCommand(): string[] {
-  // Compiled mode: mcpd binary next to current executable
-  const siblingBinary = join(dirname(process.execPath), DAEMON_BINARY_NAME);
-  if (existsSync(siblingBinary)) return [siblingBinary];
-
-  // Dev mode: walk up from this file to find workspace root, then resolve daemon script
-  const devScript = findFileUpward(DAEMON_DEV_SCRIPT, import.meta.dir);
-  if (devScript) return ["bun", "run", devScript];
-
-  // Fallback: assume mcpd is on PATH
-  return [DAEMON_BINARY_NAME];
+  return coreResolveDaemonCommand(import.meta.dir);
 }
 
 /** Spawn the daemon as a detached background process */
