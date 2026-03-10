@@ -193,30 +193,49 @@ export class ClaudeServer {
       worker.postMessage({ type: "init", daemonId: this.daemonId });
     });
 
-    // Now set up MCP transport
-    this.transport = new WorkerClientTransport(this.worker);
-    this.client = new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" });
+    // Set up MCP transport and connect — if anything throws, terminate the worker
+    // to prevent leaked threads (#471, #453).
+    try {
+      this.transport = new WorkerClientTransport(this.worker);
+      this.client = new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" });
 
-    // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage)
-    await this.client.connect(this.transport);
+      // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage).
+      // Race with a timeout to prevent indefinite hangs on broken handshakes (#454).
+      await Promise.race([
+        this.client.connect(this.transport),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000)),
+      ]);
 
-    // After transport.start(), wrap worker.onmessage to intercept DB event messages
-    const transportHandler = worker.onmessage;
-    worker.onmessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (isWorkerEvent(data)) {
-        this.handleWorkerEvent(data);
-        return;
+      // After transport.start(), wrap worker.onmessage to intercept DB event messages
+      const transportHandler = worker.onmessage;
+      worker.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (isWorkerEvent(data)) {
+          this.handleWorkerEvent(data);
+          return;
+        }
+        // Forward MCP JSON-RPC messages to the transport
+        transportHandler?.call(worker, event);
+      };
+
+      // Clear stale startup error handler before attaching crash detection
+      worker.onerror = null;
+
+      // Attach post-startup crash detection
+      this.attachCrashDetection(worker);
+    } catch (err) {
+      // Clean up the worker to prevent leaked threads
+      try {
+        worker.terminate();
+      } catch {
+        /* worker may already be dead */
       }
-      // Forward MCP JSON-RPC messages to the transport
-      transportHandler?.call(worker, event);
-    };
-
-    // Clear stale startup error handler before attaching crash detection
-    worker.onerror = null;
-
-    // Attach post-startup crash detection
-    this.attachCrashDetection(worker);
+      this.worker = null;
+      this.transport = null;
+      this.client = null;
+      this.wsPort = null;
+      throw err;
+    }
 
     return { client: this.client, transport: this.transport };
   }

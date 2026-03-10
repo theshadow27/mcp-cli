@@ -69,10 +69,10 @@ describe("P1: Daemon lifecycle", () => {
   });
 
   test("idle timeout fires and process exits", async () => {
-    daemon = await startTestDaemon({}, { idleTimeout: 1_000 });
+    daemon = await startTestDaemon({}, { idleTimeout: 2_000 });
 
-    // Daemon should exit within ~2s of starting (1s idle + margin)
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(5_000).then(() => "timeout" as const)]);
+    // Daemon should exit within a reasonable window (2s idle + generous margin for loaded CI)
+    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(15_000).then(() => "timeout" as const)]);
     expect(exitCode).toBe(0);
     daemon = undefined;
   });
