@@ -106,10 +106,10 @@ export function ClaudeSessionDetail({ sessionId }: ClaudeSessionDetailProps) {
 
   return (
     <Box flexDirection="column" marginLeft={4}>
-      {entries.map((entry) => {
+      {entries.map((entry, i) => {
         const arrow = entry.direction === "outbound" ? "→" : "←";
         const color = entry.direction === "outbound" ? "cyan" : "white";
-        const key = `${entry.timestamp}-${entry.direction}`;
+        const key = `${entry.timestamp}-${entry.direction}-${i}`;
         return (
           <Text key={key} wrap="truncate">
             <Text dimColor>{arrow}</Text> <Text color={color}>{summarizeEntry(entry)}</Text>
