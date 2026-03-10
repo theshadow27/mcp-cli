@@ -21,6 +21,7 @@ import { cmdAlias } from "./commands/alias";
 import { cmdClaude } from "./commands/claude";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
+import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
 import { cmdGet } from "./commands/get";
 import { cmdImport } from "./commands/import";
@@ -154,6 +155,10 @@ async function main(): Promise<void> {
 
       case "metrics":
         await cmdMetrics(args.slice(1));
+        break;
+
+      case "dump":
+        await cmdDump(args.slice(1));
         break;
 
       case "config":
@@ -659,6 +664,9 @@ Usage:
   mcx status                          Daemon status
   mcx metrics                         Show daemon metrics (Prometheus-style)
   mcx metrics -j                      Metrics as JSON
+  mcx dump                            Snapshot daemon state for bug reports
+  mcx dump --stdout                   Dump JSON to stdout
+  mcx dump --include-transcripts      Include session transcripts
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
   mcx mail -H                        List message headers
   mcx mail -u <user>                 Read a user's mailbox
