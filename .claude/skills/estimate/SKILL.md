@@ -51,6 +51,7 @@ Everything else is low scrutiny.
 - `embed.ts` — text embeddings for PR similarity (research; not used in triage)
 - `validate.ts` — method comparison (proves triage > prediction)
 - `validate-triage.ts` — validates triage rules against historical data
+- `db.ts` — shared SQLite database helpers (used by backfill, validate, triage)
 
 ## Data
 
