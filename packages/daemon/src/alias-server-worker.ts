@@ -16,6 +16,7 @@ import { type AliasDefinition, generateSpanId } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v4";
+import { createIsControlMessage } from "./worker-control-message";
 import { registerMcpPlugin, stubProxy } from "./worker-plugin";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -43,16 +44,7 @@ interface RefreshMessage {
 type ControlMessage = InitMessage | RefreshMessage;
 
 const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "refresh"]);
-
-function isControlMessage(data: unknown): data is ControlMessage {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "type" in data &&
-    typeof (data as Record<string, unknown>).type === "string" &&
-    CONTROL_MESSAGE_TYPES.has((data as Record<string, unknown>).type as string)
-  );
-}
+const isControlMessage = createIsControlMessage<ControlMessage>(CONTROL_MESSAGE_TYPES);
 
 // -- Alias execution infrastructure --
 

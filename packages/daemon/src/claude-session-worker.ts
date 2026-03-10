@@ -21,6 +21,7 @@ import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer, type WaitResult, WaitTimeoutError } from "./claude-session/ws-server";
+import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
 // ── Control messages ──
@@ -37,16 +38,7 @@ interface ToolsChangedMessage {
 type ControlMessage = InitMessage | ToolsChangedMessage;
 
 const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "tools_changed"]);
-
-function isControlMessage(data: unknown): data is ControlMessage {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "type" in data &&
-    typeof (data as Record<string, unknown>).type === "string" &&
-    CONTROL_MESSAGE_TYPES.has((data as Record<string, unknown>).type as string)
-  );
-}
+const isControlMessage = createIsControlMessage<ControlMessage>(CONTROL_MESSAGE_TYPES);
 
 // ── Worker globals ──
 
