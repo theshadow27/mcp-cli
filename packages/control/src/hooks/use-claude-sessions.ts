@@ -55,12 +55,20 @@ export function useClaudeSessions(opts: UseClaudeSessionsOptions = {}): UseClaud
       }
     }
 
-    poll();
-    const id = setInterval(poll, intervalMs);
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    async function scheduleNext() {
+      await poll();
+      if (!cancelled) {
+        timerId = setTimeout(scheduleNext, intervalMs);
+      }
+    }
+
+    scheduleNext();
 
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (timerId !== undefined) clearTimeout(timerId);
     };
   }, [intervalMs, enabled, ipcCallFn]);
 
