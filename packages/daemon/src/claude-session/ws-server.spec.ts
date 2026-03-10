@@ -705,6 +705,65 @@ describe("ClaudeWsServer", () => {
     expect(server.sessionCount).toBe(0);
   });
 
+  test("killAndAwaitProc escalates to SIGKILL when SIGTERM times out", async () => {
+    const killSignals: (number | undefined)[] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const stubbornSpawn: SpawnFn = () => ({
+      pid: 99999,
+      exited: new Promise<number>((r) => {
+        exitResolve = r;
+      }),
+      kill: (signal?: number) => {
+        killSignals.push(signal);
+        if (signal === 9) exitResolve(137); // SIGKILL exits immediately
+        // SIGTERM is ignored — stubborn process
+      },
+    });
+
+    server = new ClaudeWsServer({ spawn: stubbornSpawn, killTimeoutMs: 50 });
+    server.start();
+    server.prepareSession("stubborn", { prompt: "Hello" });
+    server.spawnClaude("stubborn");
+
+    await server.bye("stubborn");
+
+    // SIGTERM was sent first (undefined = default signal), then SIGKILL after timeout
+    expect(killSignals).toContain(9);
+    expect(server.sessionCount).toBe(0);
+  });
+
+  test("clearSession skips concurrent clear (reentrancy guard)", async () => {
+    let exitResolve: (code: number) => void = () => {};
+    let spawnCount = 0;
+    const slowSpawn: SpawnFn = () => {
+      spawnCount++;
+      return {
+        pid: spawnCount * 1000,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {
+          exitResolve(143);
+        },
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn: slowSpawn });
+    server.start();
+    server.prepareSession("double-clear", { prompt: "Hello" });
+    server.spawnClaude("double-clear"); // spawnCount = 1
+    const spawnAfterSetup = spawnCount;
+
+    // Fire two concurrent clears — second should be a no-op
+    const p1 = server.clearSession("double-clear");
+    const p2 = server.clearSession("double-clear");
+    await Promise.all([p1, p2]);
+
+    // Only one respawn should have happened (spawnAfterSetup + 1)
+    expect(spawnCount).toBe(spawnAfterSetup + 1);
+    expect(server.sessionCount).toBe(1);
+  });
+
   test("respondToPermission sends control_response to WS", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

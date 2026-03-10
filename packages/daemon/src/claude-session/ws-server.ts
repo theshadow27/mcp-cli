@@ -23,8 +23,10 @@ import { SessionState } from "./session-state";
 
 // ── Constants ──
 
-/** Maximum time (ms) to wait for a killed process to exit before giving up. */
+/** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
 const KILL_TIMEOUT_MS = 5_000;
+/** Time (ms) to wait after SIGKILL before giving up. */
+const KILL_SIGKILL_GRACE_MS = 2_000;
 
 // ── Errors ──
 
@@ -157,6 +159,7 @@ export class ClaudeWsServer {
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
+  private readonly killTimeoutMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -164,8 +167,9 @@ export class ClaudeWsServer {
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  constructor(deps?: { spawn?: SpawnFn }) {
+  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
+    this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -210,7 +214,7 @@ export class ClaudeWsServer {
       terminations.push(this.terminateSession(sessionId, session, "Server stopping"));
     }
     await Promise.allSettled(terminations);
-    this.sessions.clear();
+    // terminateSession removes each session from the map; nothing left to clear.
     this.server?.stop();
     this.server = null;
   }
@@ -317,7 +321,14 @@ export class ClaudeWsServer {
 
     // Intercept /clear — kill process and respawn for fresh context
     if (trimmed === "/clear") {
-      void this.clearSession(sessionId);
+      this.clearSession(sessionId).catch((err) => {
+        console.error(`[_claude] clearSession failed for ${sessionId}:`, err);
+        // Remove the stuck session so it doesn't remain in clearing=true permanently.
+        const stuck = this.sessions.get(sessionId);
+        if (stuck) {
+          this.terminateSession(sessionId, stuck, "clearSession failed").catch(console.error);
+        }
+      });
       return;
     }
 
@@ -349,8 +360,8 @@ export class ClaudeWsServer {
   }
 
   /**
-   * Kill a process and wait for it to exit (with timeout).
-   * Returns once the process has exited or the timeout expires.
+   * Kill a process and wait for it to exit, with SIGKILL escalation.
+   * Sends SIGTERM, waits up to killTimeoutMs, then escalates to SIGKILL if still alive.
    */
   private async killAndAwaitProc(proc: NonNullable<WsSession["proc"]>): Promise<void> {
     try {
@@ -359,15 +370,40 @@ export class ClaudeWsServer {
       // already dead
       return;
     }
-    await Promise.race([proc.exited, new Promise<void>((r) => setTimeout(r, KILL_TIMEOUT_MS))]);
+    let timeoutId: Timer | undefined;
+    const exited = proc.exited.then(() => "exited" as const);
+    const timedOut = new Promise<"timeout">((r) => {
+      timeoutId = setTimeout(() => r("timeout"), this.killTimeoutMs);
+    });
+    const result = await Promise.race([exited, timedOut]);
+    clearTimeout(timeoutId);
+    if (result === "timeout") {
+      console.error("[_claude] Process did not exit after SIGTERM — sending SIGKILL");
+      try {
+        proc.kill(9);
+      } catch {
+        // already dead
+        return;
+      }
+      let sigkillTimeoutId: Timer | undefined;
+      const sigkillTimeout = new Promise<void>((r) => {
+        sigkillTimeoutId = setTimeout(r, KILL_SIGKILL_GRACE_MS);
+      });
+      await Promise.race([proc.exited, sigkillTimeout]);
+      clearTimeout(sigkillTimeoutId);
+    }
   }
 
   /**
    * Clear a session by killing the claude process and respawning.
    * Gives a truly fresh context without losing the session entry.
+   * Idempotent — if a clear is already in progress, this is a no-op.
    */
   async clearSession(sessionId: string): Promise<void> {
     const session = this.getSession(sessionId);
+    // Reentrancy guard — if already clearing (e.g. rapid /clear), skip.
+    // The in-flight clear will respawn once the process exits.
+    if (session.clearing) return;
     session.clearing = true;
 
     // Reset state machine (preserves cumulative cost/tokens)
@@ -399,6 +435,10 @@ export class ClaudeWsServer {
       await this.killAndAwaitProc(dying);
     }
 
+    // Guard: if the session was terminated (bye/stop) during the kill await, bail out.
+    // terminateSession already cleaned everything up — don't respawn into a dead session.
+    if (!this.sessions.has(sessionId)) return;
+
     // Update config prompt to empty — next sendPrompt() will carry real work
     session.config.prompt = "";
 
@@ -425,7 +465,11 @@ export class ClaudeWsServer {
     }
   }
 
-  /** Gracefully end a session: close WS, stop process, clean up. Returns worktree info. */
+  /**
+   * Gracefully end a session: close WS, stop process, clean up. Returns worktree info.
+   * Awaits process exit (SIGTERM → SIGKILL escalation), so may take up to ~7s if the
+   * process is stuck. Callers that need a fast return should fire-and-forget this.
+   */
   async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null }> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`No session with id ${sessionId}`);
