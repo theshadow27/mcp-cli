@@ -49,6 +49,20 @@ function waitForMessage(ws: WebSocket): Promise<string> {
   });
 }
 
+// ── Poll helper ──
+
+/**
+ * Poll condition until it returns true or deadline passes.
+ * Never use a fixed sleep to wait for async side effects — poll instead.
+ */
+async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+}
+
 // ── Helpers ──
 
 function systemInitMessage(sessionId: string, model = "claude-sonnet-4-6"): string {
@@ -218,9 +232,9 @@ describe("ClaudeWsServer", () => {
       // Read initial user message
       await waitForMessage(ws);
 
-      // Send system/init
+      // Send system/init and poll until the event is emitted
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(50);
+      await pollUntil(() => events.some((e) => e.type === "session:init"));
 
       const initEvent = events.find((e) => e.type === "session:init");
       expect(initEvent).toBeDefined();
@@ -248,11 +262,10 @@ describe("ClaudeWsServer", () => {
       // Start waiting for result
       const resultPromise = server.waitForResult("test-session", 5000);
 
-      // Send system/init + assistant + result
+      // Send system/init + assistant + result — WS ordering is guaranteed,
+      // so no intermediate sleeps needed; resultPromise awaits completion.
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(assistantMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
 
       const result = await resultPromise;
@@ -279,10 +292,8 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws); // initial user message
 
-      ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
       // Set up message listener before sending can_use_tool
+      ws.send(systemInitMessage("test-session"));
       const responsePromise = waitForMessage(ws);
       ws.send(canUseToolMessage("req-1"));
 
@@ -312,8 +323,6 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
       const responsePromise = waitForMessage(ws);
       ws.send(canUseToolMessage("req-1")); // Bash tool — not in rules
 
@@ -366,10 +375,10 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
+      // Poll until transcript has both the outbound user msg and inbound system/init
+      await pollUntil(() => (server?.getTranscript("test-session")?.length ?? 0) >= 2);
 
       const transcript = server.getTranscript("test-session");
-      // Should have at least: outbound user message + inbound system/init
       expect(transcript.length).toBeGreaterThanOrEqual(2);
       expect(transcript[0].direction).toBe("outbound");
       expect(transcript[0].message.type).toBe("user");
@@ -391,10 +400,11 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     try {
       await waitForMessage(ws);
+      // Send both messages and poll until all are recorded in the transcript
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(assistantMessage("test-session"));
-      await Bun.sleep(20);
+      // outbound user + inbound system/init + inbound assistant = 3 entries
+      await pollUntil(() => (server?.getTranscript("test-session")?.length ?? 0) >= 3);
 
       const last1 = server.getTranscript("test-session", 1);
       expect(last1).toHaveLength(1);
@@ -444,13 +454,11 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws); // initial prompt
 
-      // system/init to move to init state
+      // Send init and result to move session to idle state
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
-      // Send result to move to idle
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(20);
+      // Poll until session is idle before calling sendPrompt
+      await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
 
       // Now send follow-up
       const followUpPromise = waitForMessage(ws);
@@ -476,9 +484,9 @@ describe("ClaudeWsServer", () => {
     const events: SessionEvent[] = [];
     server.onSessionEvent = (_id, event) => events.push(event);
 
-    // Simulate process exit
+    // Simulate process exit and poll until the state machine reflects it
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     // Session should still exist (not terminated) but be disconnected
     const sessions = server.listSessions();
@@ -501,14 +509,12 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws);
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(20);
 
-    // Start waiting for result, then close WS
+    // Start waiting for result, then close WS — resultPromise rejects on disconnect
     const resultPromise = server.waitForResult("test-session", 5000).catch((e: unknown) => e);
     ws.close();
-    await Bun.sleep(50);
 
-    // Result waiter should be rejected
+    // Result waiter should be rejected once disconnect is processed
     const err = await resultPromise;
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain("WebSocket disconnected");
@@ -538,9 +544,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
 
-      // Spawn exits while WS is still connected
+      // Spawn exits while WS is still connected; poll until state reflects it
       ms.exitResolve(0);
-      await Bun.sleep(50);
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
       const sessions = server.listSessions();
       expect(sessions.length).toBe(1);
@@ -569,11 +575,13 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws);
 
-    // WS closes first, then process exits
+    // WS closes first — poll until disconnect event is recorded
     ws.close();
-    await Bun.sleep(50);
+    await pollUntil(() => events.some((e) => e.type === "session:disconnected"));
+
+    // Process exits — poll until spawn is marked dead
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => !server?.listSessions()[0]?.spawnAlive);
 
     // Only one disconnect event (idempotent)
     const disconnectEvents = events.filter((e) => e.type === "session:disconnected");
@@ -590,7 +598,7 @@ describe("ClaudeWsServer", () => {
 
     // Disconnect via process exit
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     expect(() => server?.sendPrompt("test-session", "follow up")).toThrow("Cannot send prompt to disconnected session");
   });
@@ -604,7 +612,7 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("test-session");
 
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     expect(() => server?.interrupt("test-session")).toThrow("Cannot interrupt disconnected session");
   });
@@ -618,7 +626,7 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("test-session");
 
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
   });
@@ -632,7 +640,7 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("test-session");
 
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     await expect(server.waitForEvent("test-session", 5000)).rejects.toThrow("Session is disconnected");
   });
@@ -646,7 +654,7 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("test-session");
 
     ms.exitResolve(0);
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     const result = server.bye("test-session");
     expect(result).toEqual({ worktree: "my-tree", cwd: null });
@@ -665,7 +673,7 @@ describe("ClaudeWsServer", () => {
     const ws1 = await connectMockClaude(port, "test-session");
     await waitForMessage(ws1);
     ws1.close();
-    await Bun.sleep(50);
+    await pollUntil(() => server?.listSessions()[0]?.state === "disconnected");
 
     expect(server.listSessions()[0].state).toBe("disconnected");
 
@@ -717,12 +725,10 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws); // initial user message
 
+      // Send init then canUseTool; poll until the permission is pending
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
-      // Send can_use_tool — delegate strategy won't auto-respond
       ws.send(canUseToolMessage("req-perm-1"));
-      await Bun.sleep(20);
+      await pollUntil(() => server?.getStatus("test-session").pendingPermissionIds.includes("req-perm-1"));
 
       // Manually respond via respondToPermission
       const responsePromise = waitForMessage(ws);
@@ -750,7 +756,6 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
 
       // Interrupt the session
       server.interrupt("test-session");
@@ -775,13 +780,11 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
 
-      // Start waiting for event
+      // Start waiting for event, then send messages — WS ordering is guaranteed
       const eventPromise = server.waitForEvent("test-session", 5000);
 
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(assistantMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
 
       const event = await eventPromise;
@@ -810,7 +813,6 @@ describe("ClaudeWsServer", () => {
       const eventPromise = server.waitForEvent(null, 5000);
 
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
 
       const event = await eventPromise;
@@ -837,8 +839,6 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
 
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
       const eventPromise = server.waitForEvent("test-session", 5000);
       ws.send(canUseToolMessage("req-wait-1"));
 
@@ -971,11 +971,10 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     try {
       await waitForMessage(ws);
+      // Send both and poll until the permission appears
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
       ws.send(canUseToolMessage("req-detail-1"));
-      await Bun.sleep(20);
+      await pollUntil(() => server?.listSessions().some((s) => s.pendingPermissions === 1));
 
       const sessions = server.listSessions();
       const session = sessions.find((s) => s.sessionId === "test-session");
@@ -1004,15 +1003,13 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     try {
       await waitForMessage(ws);
+      // Send init + canUseTool and poll until permission is pending
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
-
       ws.send(canUseToolMessage("req-clear-1"));
-      await Bun.sleep(20);
+      await pollUntil(() => server?.listSessions().some((s) => s.pendingPermissions === 1));
 
-      // Approve it
+      // respondToPermission is synchronous — permission is cleared immediately
       server.respondToPermission("test-session", "req-clear-1", true);
-      await Bun.sleep(20);
 
       const sessions = server.listSessions();
       const session = sessions.find((s) => s.sessionId === "test-session");
@@ -1043,8 +1040,8 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
       const eventPromise = server.waitForEvent("test-session", 5000);
 
+      // WS ordering is guaranteed — eventPromise will wait for result
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
 
       const event = await eventPromise;
@@ -1067,10 +1064,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
 
+      // Send messages and wait for them to be buffered (waitForEventsSince will return them)
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(20);
 
       // Events have already fired — waitForEventsSince with afterSeq=0 should return immediately
       const result: WaitResult = await server.waitForEventsSince("test-session", 0, 5000);
@@ -1095,19 +1091,18 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
 
+      // Send first result and poll until currentSeq advances
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(20);
+      await pollUntil(() => (server?.currentSeq ?? 0) > 0);
 
       const currentSeq = server.currentSeq;
 
       // Wait with cursor at current — should block until new event
       const resultPromise = server.waitForEventsSince(null, currentSeq, 5000);
 
-      // Send another result to trigger a new event
+      // Send another result to trigger a new event — no sleep needed; resultPromise awaits it
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(20);
 
       const result: WaitResult = await resultPromise;
       expect(result.seq).toBeGreaterThan(currentSeq);
@@ -1144,10 +1139,10 @@ describe("ClaudeWsServer", () => {
     const ws1 = await connectMockClaude(port, "s1");
     try {
       await waitForMessage(ws1);
+      // Send messages and poll until currentSeq advances (result buffered)
       ws1.send(systemInitMessage("s1"));
-      await Bun.sleep(20);
       ws1.send(resultMessage("s1"));
-      await Bun.sleep(20);
+      await pollUntil(() => (server?.currentSeq ?? 0) > 0);
 
       const seqAfterS1 = server.currentSeq;
       expect(seqAfterS1).toBeGreaterThan(0);
@@ -1182,10 +1177,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
 
+      // WS ordering + waitForEventsSince timeout handles waiting
       ws.send(systemInitMessage("s1"));
-      await Bun.sleep(20);
       ws.send(resultMessage("s1"));
-      await Bun.sleep(20);
 
       const result: WaitResult = await server.waitForEventsSince(null, 0, 5000);
       expect(result.events.length).toBeGreaterThan(0);
