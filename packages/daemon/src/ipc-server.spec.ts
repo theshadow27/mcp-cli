@@ -16,13 +16,8 @@ function tmpSocket(): string {
   return join(tmpdir(), `mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
 }
 
-/** Poll until condition is true or deadline exceeded */
-async function pollUntil(condition: () => boolean, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(20);
-  }
-}
+// Shared poll helper — throws on timeout for visible test failures
+import { pollUntil } from "../../../test/harness";
 
 /** Minimal mock pool — only transport behavior is under test */
 function mockPool() {
