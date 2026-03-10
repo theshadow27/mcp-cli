@@ -34,4 +34,6 @@ export interface SessionInfo {
   wsConnected: boolean;
   /** Whether the spawned Claude CLI process is still alive. */
   spawnAlive: boolean;
+  /** Unix timestamp (ms) when this snapshot was taken. Consumers can use this to detect staleness. */
+  snapshotTs: number;
 }

@@ -884,6 +884,15 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:result");
       expect(event.cost).toBe(0.01);
       expect(event.result).toBe("Done!");
+      // session snapshot should be present with same fields as listSessions()
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(event.session?.state).toBe("idle");
+      expect(event.session?.model).toBe("claude-sonnet-4-6");
+      expect(event.session?.cwd).toBe("/test");
+      expect(event.session?.cost).toBe(0.01);
+      expect(typeof event.session?.wsConnected).toBe("boolean");
+      expect(typeof event.session?.spawnAlive).toBe("boolean");
     } finally {
       ws.close();
     }
@@ -980,6 +989,12 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:result");
       expect(event.cost).toBe(0.01);
       expect(event.numTurns).toBe(1);
+      // immediate events also include session snapshot
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(event.session?.state).toBe("idle");
+      expect(event.session?.cwd).toBe("/test");
+      expect(event.session?.model).toBe("claude-sonnet-4-6");
     } finally {
       ws.close();
     }
@@ -1037,6 +1052,10 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:permission_request");
       expect(event.requestId).toBe("req-perm-1");
       expect(event.toolName).toBe("Bash");
+      // session snapshot included for permission events too
+      expect(event.session).toBeDefined();
+      expect(event.session?.state).toBe("waiting_permission");
+      expect(event.session?.pendingPermissions).toBe(1);
     } finally {
       ws.close();
     }
@@ -1251,6 +1270,9 @@ describe("ClaudeWsServer", () => {
       expect(result.events.length).toBeGreaterThan(0);
       expect(result.events[0].event).toBe("session:result");
       expect(result.events[0].seq).toBeGreaterThan(0);
+      // buffered events carry session snapshot
+      expect(result.events[0].session).toBeDefined();
+      expect(result.events[0].session?.sessionId).toBe("test-session");
     } finally {
       ws.close();
     }
@@ -1377,6 +1399,110 @@ describe("ClaudeWsServer", () => {
     server.start();
 
     await expect(server.waitForEventsSince(null, 0, 100)).rejects.toThrow("No active sessions");
+  });
+
+  // ── session snapshot field on cleared/model_changed/disconnected events ──
+
+  test("waitForEvent session:cleared event includes session snapshot with snapshotTs", async () => {
+    const spawnCalls: string[][] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (cmd: string[]) => {
+      spawnCalls.push(cmd);
+      return {
+        pid: 12345 + spawnCalls.length,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {
+          exitResolve(143);
+        },
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    // Connect and send init but NOT result, so session stays in active/init state (not idle)
+    // This prevents findImmediateEvent from short-circuiting with session:result
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    await Bun.sleep(20);
+
+    const before = Date.now();
+    // waitForEvent blocks — session is not idle
+    const eventPromise = server.waitForEvent("test-session", 5000);
+    server.sendPrompt("test-session", "/clear");
+
+    const event = await eventPromise;
+    expect(event.event).toBe("session:cleared");
+    expect(event.session).toBeDefined();
+    expect(event.session?.sessionId).toBe("test-session");
+    expect(typeof event.session?.snapshotTs).toBe("number");
+    expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
+    ws.close();
+  });
+
+  test("waitForEvent session:model_changed event includes session snapshot with snapshotTs", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const before = Date.now();
+      const eventPromise = server.waitForEvent("test-session", 5000);
+      server.sendPrompt("test-session", "/model claude-opus-4-6");
+
+      const event = await eventPromise;
+      expect(event.event).toBe("session:model_changed");
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(typeof event.session?.snapshotTs).toBe("number");
+      expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent session:disconnected event includes session snapshot with snapshotTs", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const before = Date.now();
+      const eventPromise = server.waitForEvent("test-session", 5000);
+      // Trigger process exit — this routes through handleSessionEvent which calls resolveEventWaiters
+      ms.exitResolve(0);
+
+      const event = await eventPromise;
+      expect(event.event).toBe("session:disconnected");
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(typeof event.session?.snapshotTs).toBe("number");
+      expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
+    } finally {
+      ws.close();
+    }
   });
 
   // ── /clear and /model interception ──

@@ -106,6 +106,8 @@ export interface SessionWaitEvent {
   errors?: string[];
   requestId?: string;
   toolName?: string;
+  /** Full session snapshot at the time of the event (same fields as claude_session_list). */
+  session?: SessionInfo;
 }
 
 /** Result from cursor-based waitForEventsSince(). */
@@ -875,6 +877,7 @@ export class ClaudeWsServer {
           cost: session.state.cost,
           tokens: session.state.tokens,
           numTurns: session.state.numTurns,
+          session: this.buildSessionInfo(sid, session),
         };
       }
 
@@ -887,6 +890,7 @@ export class ClaudeWsServer {
           event: "session:permission_request",
           requestId,
           toolName: req.tool_name,
+          session: this.buildSessionInfo(sid, session),
         };
       }
     }
@@ -963,6 +967,7 @@ export class ClaudeWsServer {
       worktree: s.config.worktree ?? null,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,
+      snapshotTs: Date.now(),
     };
   }
 
@@ -998,6 +1003,15 @@ export class ClaudeWsServer {
   }
 
   private resolveEventWaiters(sessionId: string, event: SessionWaitEvent): void {
+    // Attach full session snapshot so consumers don't need a follow-up list call.
+    // IMPORTANT: event.session MUST be set here, before bufferEvent(), because
+    // bufferEvent() does a shallow spread ({ ...event, seq }) — if session is not
+    // yet on the event object, the buffered copy will be missing it too.
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      event.session = this.buildSessionInfo(sessionId, session);
+    }
+
     // Buffer the event with a sequence number (before resolving waiters)
     this.bufferEvent(event);
 
