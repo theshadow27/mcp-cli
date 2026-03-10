@@ -618,27 +618,24 @@ describe("ClaudeServer", () => {
 
   // ── isWorkerEvent routing ──
 
-  test("unknown message types are forwarded to MCP transport, not consumed as worker events", async () => {
+  test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
 
     const { client } = await server.start();
 
-    // Access the internal worker to send a message with an unknown type
-    const worker = (server as unknown as { worker: Worker | null }).worker;
-    expect(worker).not.toBeNull();
+    // Verify the routing decision: unknown types must NOT match isWorkerEvent
+    // so they fall through to the MCP transport handler instead of being consumed
+    expect(isWorkerEvent({ type: "unknown:something", data: "test" })).toBe(false);
+    expect(isWorkerEvent({ type: "init", daemonId: "d1" })).toBe(false);
+    expect(isWorkerEvent({ type: "tools_changed" })).toBe(false);
 
-    // Verify the MCP client is still functional after receiving an unknown message type
-    // (if it were consumed by isWorkerEvent, the transport would never see it)
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Known worker events must match
+    expect(isWorkerEvent({ type: "db:upsert", session: {} })).toBe(true);
+    expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
 
-    // A message with an unknown type should NOT match isWorkerEvent
-    // and should NOT affect server state (no sessions created/modified)
-    handle({ type: "unknown:something", data: "test" });
-    expect(server.hasActiveSessions()).toBe(false);
-
-    // MCP client should still work correctly
+    // MCP client should still work correctly after startup
     const { tools } = await client.listTools();
     expect(tools.length).toBe(9);
   });
