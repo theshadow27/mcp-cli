@@ -567,6 +567,57 @@ describe("ClaudeServer", () => {
     expect(stopped).toBe(true);
   });
 
+  test("handleWorkerCrash aborts retry loop when stop() is called during backoff", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let startCalled = false;
+    // Patch start() to track if it's called after stop()
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      startCalled = true;
+      throw new Error("should not reach here");
+    };
+
+    // Call stop() immediately — sets stopped = true
+    await server.stop();
+
+    // Now trigger crash handler (it would normally be blocked by stopped check,
+    // but we need to test the in-loop check, so reset the flags)
+    const srv = server as unknown as { stopped: boolean; restartInProgress: boolean };
+    srv.stopped = false;
+    srv.restartInProgress = false;
+
+    // Patch start to fail once, then set stopped during backoff sleep
+    let attempt = 0;
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      attempt++;
+      if (attempt === 1) {
+        // First attempt fails — triggers backoff sleep
+        // Schedule stop() to fire during the sleep
+        queueMicrotask(() => {
+          srv.stopped = true;
+        });
+        throw new Error("first attempt fails");
+      }
+      // Should never reach attempt 2
+      startCalled = true;
+      throw new Error("should not reach second attempt");
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test stop-during-backoff");
+
+    expect(attempt).toBe(1);
+    expect(startCalled).toBe(false);
+    expect(srv.stopped).toBe(true);
+    server = undefined; // prevent double stop — already stopped
+  });
+
   // ── Worker handler cleanup ──
 
   test("restart cleans up old worker message/error handlers to prevent closure leaks", async () => {
