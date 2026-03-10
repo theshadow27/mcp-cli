@@ -5,7 +5,7 @@
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig } from "@mcp-cli/core";
+import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig, ToolInfo } from "@mcp-cli/core";
 import {
   BUILD_VERSION,
   CallToolParamsSchema,
@@ -306,10 +306,38 @@ export class IpcServer {
     this.handlers.set("triggerAuth", async (params, _ctx) => {
       const { server } = TriggerAuthParamsSchema.parse(params);
       const serverUrl = this.pool.getServerUrl(server);
+
+      // Non-remote server — check for `auth` tool convention
       if (!serverUrl) {
-        throw Object.assign(new Error(`Server "${server}" not found or is not a remote (SSE/HTTP) server`), {
-          code: IPC_ERROR.SERVER_NOT_FOUND,
-        });
+        let tools: ToolInfo[];
+        try {
+          tools = await this.pool.listTools(server);
+        } catch {
+          tools = [];
+        }
+        const hasAuthTool = tools.some((t) => t.name === "auth");
+        if (!hasAuthTool) {
+          throw Object.assign(
+            new Error(`Server "${server}" not found or does not support auth (no OAuth endpoint and no "auth" tool)`),
+            { code: IPC_ERROR.SERVER_NOT_FOUND },
+          );
+        }
+
+        const result = (await this.pool.callTool(server, "auth", {})) as {
+          content?: Array<{ type?: string; text?: string }>;
+          isError?: boolean;
+        };
+        const text =
+          result.content
+            ?.filter((c) => c.type === "text")
+            .map((c) => c.text)
+            .join("\n") ?? "";
+        if (result.isError) {
+          throw Object.assign(new Error(text || "auth tool returned an error"), {
+            code: IPC_ERROR.INTERNAL_ERROR,
+          });
+        }
+        return { ok: true, message: text || "Authenticated via auth tool" };
       }
 
       const poolDb = this.pool.getDb();

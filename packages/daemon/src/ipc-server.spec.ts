@@ -593,6 +593,63 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error?.message).toContain("Database not available");
   });
 
+  test("triggerAuth calls auth tool on stdio server that exposes one", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined, // not a remote server
+      listTools: (name: string) =>
+        name === "myserver" ? [{ name: "auth", server: "myserver", description: "Authenticate", inputSchema: {} }] : [],
+      callTool: async (_server: string, tool: string) =>
+        tool === "auth"
+          ? { content: [{ type: "text", text: "SSO login completed" }], isError: false }
+          : { content: [] },
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth3", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth3");
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true, message: "SSO login completed" });
+  });
+
+  test("triggerAuth on stdio server without auth tool returns SERVER_NOT_FOUND", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined,
+      listTools: () => [{ name: "query", server: "myserver", description: "Query data", inputSchema: {} }],
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth4", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth4");
+    expect(json.error?.code).toBe(IPC_ERROR.SERVER_NOT_FOUND);
+    expect(json.error?.message).toContain("does not support auth");
+  });
+
+  test("triggerAuth returns error when auth tool reports isError", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined,
+      listTools: () => [{ name: "auth", server: "myserver", description: "Auth", inputSchema: {} }],
+      callTool: async () => ({
+        content: [{ type: "text", text: "SSO session expired, please retry" }],
+        isError: true,
+      }),
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth5", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth5");
+    expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
+    expect(json.error?.message).toContain("SSO session expired");
+  });
+
   // -- Parameter validation tests --
 
   test("callTool with missing server param returns INVALID_PARAMS", async () => {
