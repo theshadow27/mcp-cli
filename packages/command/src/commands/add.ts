@@ -152,7 +152,7 @@ export function buildServerConfig(parsed: ParsedAddArgs): ServerConfig {
 export async function cmdAdd(args: string[]): Promise<void> {
   if (args.length === 0) {
     printError(
-      'Usage: mcx add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--client-id ID] [--client-secret SECRET] [--callback-port PORT] [--scope {user|project}] <name> [<url> | -- <command> [args...]]',
+      'Usage: mcx add --transport {stdio|http|sse} [--env KEY=VALUE] [--header "Name: Value"] [--client-id ID] [--client-secret SECRET] [--callback-port PORT] [--scope {user|project|local}] <name> [<url> | -- <command> [args...]]',
     );
     process.exit(1);
   }

@@ -92,7 +92,7 @@ mcx remove <name>                   # remove a server
 mcx get <name>                      # inspect server config and status
 ```
 
-Options for `add`: `--env KEY=VALUE` (repeatable), `--header "Name: Value"` (HTTP/SSE), `--scope {user|project}`, `--callback-port PORT`.
+Options for `add`: `--env KEY=VALUE` (repeatable), `--header "Name: Value"` (HTTP/SSE), `--scope {user|project|local}`, `--callback-port PORT`.
 
 ### Auth & Management
 
