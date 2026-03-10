@@ -471,10 +471,17 @@ export class ClaudeWsServer {
   /**
    * Wait for the next interesting session event (result, error, or permission_request).
    * If sessionId is provided, waits for that session only. Otherwise waits for any session.
+   *
+   * If a matching session is already idle or has pending permissions, resolves immediately
+   * with a synthetic event instead of blocking until timeout.
    */
   waitForEvent(sessionId: string | null, timeoutMs: number): Promise<SessionWaitEvent> {
     const err = this.validateWaitTarget(sessionId);
     if (err) return Promise.reject(err);
+
+    // Check if any matching session already has an actionable state
+    const immediate = this.findImmediateEvent(sessionId);
+    if (immediate) return Promise.resolve(immediate);
 
     return new Promise<SessionWaitEvent>((resolve, reject) => {
       const waiter: EventWaiter = {
@@ -709,6 +716,40 @@ export class ClaudeWsServer {
   }
 
   // ── Helpers ──
+
+  /**
+   * Check if any matching session is already in a state that should resolve immediately.
+   * Returns a synthetic event for idle sessions (result already available) or sessions
+   * with pending permissions. Returns null if no immediate event is available.
+   */
+  private findImmediateEvent(sessionId: string | null): SessionWaitEvent | null {
+    for (const [sid, session] of this.sessions) {
+      if (sessionId !== null && sid !== sessionId) continue;
+
+      if (session.state.state === "idle") {
+        return {
+          sessionId: sid,
+          event: "session:result",
+          cost: session.state.cost,
+          tokens: session.state.tokens,
+          numTurns: session.state.numTurns,
+        };
+      }
+
+      if (session.state.state === "waiting_permission" && session.state.pendingPermissions.size > 0) {
+        const entry = session.state.pendingPermissions.entries().next().value;
+        if (!entry) continue;
+        const [requestId, req] = entry;
+        return {
+          sessionId: sid,
+          event: "session:permission_request",
+          requestId,
+          toolName: req.tool_name,
+        };
+      }
+    }
+    return null;
+  }
 
   /** Validate that a wait target (sessionId or any-session) is valid. Returns null if OK, Error otherwise. */
   private validateWaitTarget(sessionId: string | null): Error | null {

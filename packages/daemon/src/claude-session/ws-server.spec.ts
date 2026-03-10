@@ -856,6 +856,91 @@ describe("ClaudeWsServer", () => {
     expect((err as Error).message).toContain("Timeout");
   });
 
+  test("waitForEvent resolves immediately when session is already idle", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // consume initial user message
+
+      // Drive session to idle state
+      ws.send(systemInitMessage("test-session"));
+      ws.send(resultMessage("test-session"));
+      await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+      // waitForEvent should resolve immediately — session is already idle
+      const event = await server.waitForEvent("test-session", 1000);
+      expect(event.sessionId).toBe("test-session");
+      expect(event.event).toBe("session:result");
+      expect(event.cost).toBe(0.01);
+      expect(event.numTurns).toBe(1);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent resolves immediately when any session is idle (null filter)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.spawnClaude("s1");
+
+    const ws = await connectMockClaude(port, "s1");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("s1"));
+      ws.send(resultMessage("s1"));
+      await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "s1" && s.state === "idle"));
+
+      // null sessionId — should find idle s1 immediately
+      const event = await server.waitForEvent(null, 1000);
+      expect(event.sessionId).toBe("s1");
+      expect(event.event).toBe("session:result");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent resolves immediately when session has pending permission", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", {
+      prompt: "Hello",
+      permissionStrategy: "delegate",
+    });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("test-session"));
+      ws.send(canUseToolMessage("req-perm-1"));
+      await pollUntil(() =>
+        server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "waiting_permission"),
+      );
+
+      // waitForEvent should resolve immediately with the pending permission
+      const event = await server.waitForEvent("test-session", 1000);
+      expect(event.sessionId).toBe("test-session");
+      expect(event.event).toBe("session:permission_request");
+      expect(event.requestId).toBe("req-perm-1");
+      expect(event.toolName).toBe("Bash");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("waitForEvent rejects for unknown session", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });

@@ -99,12 +99,20 @@ export function useLogs(servers: ServerStatus[], opts: UseLogsOptions | boolean 
       }
     }
 
-    poll();
-    const id = setInterval(poll, POLL_INTERVAL_MS);
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    async function scheduleNext() {
+      await poll();
+      if (!cancelled) {
+        timerId = setTimeout(scheduleNext, POLL_INTERVAL_MS);
+      }
+    }
+
+    scheduleNext();
 
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (timerId !== undefined) clearTimeout(timerId);
     };
   }, [source, enabled, ipcCallFn]);
 

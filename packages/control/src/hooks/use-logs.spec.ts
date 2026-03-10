@@ -182,6 +182,25 @@ describe("useLogs", () => {
     expect(stateRef.current.lines[0].line).toBe("line-100");
   });
 
+  it("does not stack overlapping polls (setTimeout chain)", async () => {
+    let concurrency = 0;
+    let maxConcurrency = 0;
+    const ipcCallFn = async () => {
+      concurrency++;
+      maxConcurrency = Math.max(maxConcurrency, concurrency);
+      await new Promise((r) => setTimeout(r, 30));
+      concurrency--;
+      return { lines: [logEntry("log", Date.now())] };
+    };
+
+    mount({
+      ipcCallFn: ipcCallFn as UseLogsOptions["ipcCallFn"],
+    });
+
+    await flush(150);
+    expect(maxConcurrency).toBe(1);
+  });
+
   it("cleanup clears interval on unmount", async () => {
     let callCount = 0;
     const ipcCallFn = async () => {
@@ -216,13 +235,11 @@ describe("useLogs", () => {
       current: { lines: [], source: { type: "daemon" }, setSource: () => {} },
     };
 
-    // We need a custom harness that sets source to a server
     const ServerHarness: FC = () => {
       const result = useLogs(servers, {
         ipcCallFn: ipcCallFn as UseLogsOptions["ipcCallFn"],
       });
       stateRef.current = result;
-      // Set source to server on first render
       React.useEffect(() => {
         result.setSource({ type: "server", name: "my-server" });
       }, [result.setSource]);
