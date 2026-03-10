@@ -1442,7 +1442,7 @@ describe("ClaudeWsServer", () => {
     expect(event.session).toBeDefined();
     expect(event.session?.sessionId).toBe("test-session");
     expect(typeof event.session?.snapshotTs).toBe("number");
-    expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+    expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
     ws.close();
   });
 
@@ -1469,7 +1469,7 @@ describe("ClaudeWsServer", () => {
       expect(event.session).toBeDefined();
       expect(event.session?.sessionId).toBe("test-session");
       expect(typeof event.session?.snapshotTs).toBe("number");
-      expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+      expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
     } finally {
       ws.close();
     }
@@ -1499,7 +1499,7 @@ describe("ClaudeWsServer", () => {
       expect(event.session).toBeDefined();
       expect(event.session?.sessionId).toBe("test-session");
       expect(typeof event.session?.snapshotTs).toBe("number");
-      expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+      expect(event.session?.snapshotTs).toBeGreaterThanOrEqual(before);
     } finally {
       ws.close();
     }
