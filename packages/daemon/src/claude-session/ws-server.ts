@@ -48,6 +48,12 @@ export interface SessionConfig {
   worktree?: string;
   cwd?: string;
   model?: string;
+  /**
+   * Claude CLI session ID to resume (restores conversation history via --resume).
+   * Set to a specific UUID to resume that session, or "continue" to resume
+   * the most recent conversation in the cwd (via --continue).
+   */
+  resumeSessionId?: string;
 }
 
 export interface TranscriptEntry {
@@ -285,6 +291,13 @@ export class ClaudeWsServer {
     }
     if (session.config.worktree) {
       cmd.push("--worktree", session.config.worktree);
+    }
+    if (session.config.resumeSessionId) {
+      if (session.config.resumeSessionId === "continue") {
+        cmd.push("--continue");
+      } else {
+        cmd.push("--resume", session.config.resumeSessionId);
+      }
     }
 
     const proc = this.spawn(cmd, {

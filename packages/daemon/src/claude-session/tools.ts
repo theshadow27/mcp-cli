@@ -34,6 +34,13 @@ export const CLAUDE_TOOLS = [
           type: "string",
           description: "Model to use: shortname (opus, sonnet, haiku) or full ID (e.g. claude-opus-4-6)",
         },
+        resumeSessionId: {
+          type: "string",
+          description:
+            "Claude CLI session ID to resume (restores conversation history). " +
+            'Pass a UUID to resume that specific session (--resume <id>), or "continue" ' +
+            "to resume the most recent conversation in the cwd (--continue).",
+        },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
         wait: { type: "boolean", description: "Block until result (default: false)" },
       },

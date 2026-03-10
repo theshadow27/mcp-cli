@@ -125,6 +125,7 @@ async function handlePrompt(
       allowedTools,
       worktree: args.worktree as string | undefined,
       model: args.model ? resolveModelName(args.model as string) : undefined,
+      resumeSessionId: args.resumeSessionId as string | undefined,
     });
 
     // Post DB upsert
