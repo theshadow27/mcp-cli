@@ -22,6 +22,12 @@ export function tabByNumber(n: number): View | undefined {
   return ALL_TABS[n - 1];
 }
 
+/** Determine what Esc should do from a non-servers view. Returns the action. */
+export function escAction(view: View, expandedSession: string | null): "collapse-transcript" | "navigate-servers" {
+  if (view === "claude" && expandedSession) return "collapse-transcript";
+  return "navigate-servers";
+}
+
 export interface ServersNav {
   servers: ServerStatus[];
   selectedIndex: number;
@@ -152,8 +158,12 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
       return;
     }
 
-    // Esc: go back to servers from any non-servers tab
+    // Esc: collapse expanded state first, then go back to servers
     if (key.escape && view !== "servers") {
+      if (escAction(view, expandedSession) === "collapse-transcript") {
+        setExpandedSession(null);
+        return;
+      }
       if (view === "logs") setFilterText("");
       setView("servers");
       return;

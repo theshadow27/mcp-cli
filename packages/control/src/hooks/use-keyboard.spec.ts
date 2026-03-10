@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { ALL_TABS, type ClaudeNav, type LogsNav, type ServersNav, nextTab, prevTab, tabByNumber } from "./use-keyboard";
+import {
+  ALL_TABS,
+  type ClaudeNav,
+  type LogsNav,
+  type ServersNav,
+  escAction,
+  nextTab,
+  prevTab,
+  tabByNumber,
+} from "./use-keyboard";
 
 describe("nextTab", () => {
   test("cycles forward through all tabs", () => {
@@ -40,6 +49,28 @@ describe("tabByNumber", () => {
 describe("ALL_TABS", () => {
   test("contains exactly 5 tabs in expected order", () => {
     expect(ALL_TABS).toEqual(["servers", "logs", "claude", "mail", "stats"]);
+  });
+});
+
+describe("escAction", () => {
+  test("returns collapse-transcript when claude view has expanded session", () => {
+    expect(escAction("claude", "session-1")).toBe("collapse-transcript");
+  });
+
+  test("returns navigate-servers when claude view has no expanded session", () => {
+    expect(escAction("claude", null)).toBe("navigate-servers");
+  });
+
+  test("returns navigate-servers from logs view", () => {
+    expect(escAction("logs", null)).toBe("navigate-servers");
+  });
+
+  test("returns navigate-servers from mail view", () => {
+    expect(escAction("mail", null)).toBe("navigate-servers");
+  });
+
+  test("returns navigate-servers from stats view", () => {
+    expect(escAction("stats", null)).toBe("navigate-servers");
   });
 });
 
