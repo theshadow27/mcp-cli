@@ -1458,6 +1458,35 @@ describe("ClaudeWsServer", () => {
 
     ws.close();
   });
+
+  test("server survives WebSocket disconnect during active session", async () => {
+    const spawnState = mockSpawn();
+    const server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws); // consume initial user message
+
+    // Drive session to idle state
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+    // Abrupt client disconnect — simulates network issue
+    ws.close();
+    await pollUntil(() => !server.getStatus("test-session").wsConnected);
+
+    // Server survives: session transitions to disconnected, not crashed
+    expect(server.sessionCount).toBe(1);
+    expect(server.getStatus("test-session").state).toBe("disconnected");
+
+    // Resolve spawn exit so stop() doesn't hang
+    spawnState.exitResolve(0);
+    await server.stop();
+  });
 });
 
 // ── summarizeInput ──

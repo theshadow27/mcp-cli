@@ -582,13 +582,24 @@ export class ClaudeWsServer {
     // The CLI will NOT send system/init until it receives a user message.
     const prompt = session.config.prompt;
     const outbound = userMessage(prompt, sessionId);
-    ws.send(outbound);
+    try {
+      ws.send(outbound);
+    } catch (err) {
+      console.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+      session.ws = null;
+      return;
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
       if (session.ws?.readyState === WS_OPEN) {
-        session.ws.send(keepAlive());
+        try {
+          session.ws.send(keepAlive());
+        } catch (err) {
+          console.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
+          session.ws = null;
+        }
       }
     }, KEEP_ALIVE_MS);
   }
@@ -847,7 +858,12 @@ export class ClaudeWsServer {
 
   private sendToWs(session: WsSession, message: string): void {
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.send(message);
+      try {
+        session.ws.send(message);
+      } catch (err) {
+        console.error(`[_claude] WebSocket send failed: ${err}`);
+        session.ws = null;
+      }
     }
   }
 
