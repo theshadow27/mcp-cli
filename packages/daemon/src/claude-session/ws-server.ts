@@ -48,6 +48,12 @@ export interface SessionConfig {
   worktree?: string;
   cwd?: string;
   model?: string;
+  /**
+   * Claude CLI session ID to resume (restores conversation history via --resume).
+   * Set to a specific UUID to resume that session, or "continue" to resume
+   * the most recent conversation in the cwd (via --continue).
+   */
+  resumeSessionId?: string;
 }
 
 export interface TranscriptEntry {
@@ -75,7 +81,12 @@ export interface SessionResult {
 export type SpawnFn = (
   cmd: string[],
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
-) => { pid: number; exited: Promise<number>; kill: (signal?: number) => void };
+) => {
+  pid: number;
+  exited: Promise<number>;
+  kill: (signal?: number) => void;
+  stderr?: ReadableStream<Uint8Array> | null;
+};
 
 interface ResultWaiter {
   resolve: (r: SessionResult) => void;
@@ -286,11 +297,18 @@ export class ClaudeWsServer {
     if (session.config.worktree) {
       cmd.push("--worktree", session.config.worktree);
     }
+    if (session.config.resumeSessionId) {
+      if (session.config.resumeSessionId === "continue") {
+        cmd.push("--continue");
+      } else {
+        cmd.push("--resume", session.config.resumeSessionId);
+      }
+    }
 
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: "ignore",
-      stderr: "ignore",
+      stderr: "pipe",
       stdin: "ignore",
     });
 
@@ -299,12 +317,14 @@ export class ClaudeWsServer {
     session.spawnAlive = true;
 
     // Watch for process exit — mark spawn as dead but don't terminate the session
-    proc.exited.then(() => {
+    proc.exited.then(async () => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
+      const stderrText = proc.stderr ? (await new Response(proc.stderr).text()).trim() : "";
+      const suffix = stderrText ? `: ${stderrText}` : "";
+      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {

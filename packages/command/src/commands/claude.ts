@@ -274,7 +274,11 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
 export interface ResumeArgs {
   target: string | undefined;
+  /** Specific Claude CLI session ID to resume conversation history from. */
+  sessionId: string | undefined;
   all: boolean;
+  /** Skip conversation history restoration, use git-context prompt instead. */
+  fresh: boolean;
   allow: string[];
   model: string | undefined;
   wait: boolean;
@@ -283,18 +287,21 @@ export interface ResumeArgs {
 }
 
 export function parseResumeArgs(args: string[]): ResumeArgs {
-  let target: string | undefined;
   let all = false;
+  let fresh = false;
   let model: string | undefined;
   let wait = false;
   let timeout: number | undefined;
   let error: string | undefined;
   const allow: string[] = [];
+  const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--all") {
       all = true;
+    } else if (arg === "--fresh") {
+      fresh = true;
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i];
       if (!val) {
@@ -318,16 +325,22 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
         if (Number.isNaN(timeout)) error = "--timeout must be a number";
       }
     } else if (!arg.startsWith("-")) {
-      if (!target) target = arg;
+      positionals.push(arg);
     }
   }
 
-  if (!all && !target) {
+  // First positional is worktree target, second (if any) is session ID
+  const target = positionals[0];
+  const sessionId = positionals[1];
+
+  if (fresh && sessionId) {
+    error = "--fresh cannot be combined with an explicit session ID";
+  } else if (!all && !target) {
     error =
-      "Usage: mcx claude resume <worktree-path-or-branch> [--model M] [--allow tools...]\n       mcx claude resume --all";
+      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--model M] [--allow tools...]\n       mcx claude resume --all";
   }
 
-  return { target, all, allow, model, wait, timeout, error };
+  return { target, sessionId, all, fresh, allow, model, wait, timeout, error };
 }
 
 /** Extract issue number from branch name convention: feat/issue-N-slug, fix/issue-N-slug, etc. */
@@ -497,29 +510,38 @@ async function resumeWorktree(
     return;
   }
 
-  // Gather context
-  const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `main..${branch}`, "--"]);
-  const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
-
-  const issueNumber = extractIssueNumber(branch);
-
-  // Check for existing PR
-  let prInfo: string | null = null;
-  const prStatus = await d.getPrStatus(wt.path);
-  if (prStatus) {
-    prInfo = `#${prStatus.number} (${prStatus.state})`;
-  }
-
-  const prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
-
-  // Spawn a new session with cwd set to the worktree path (not --worktree, which would create a new one)
-  const toolArgs: Record<string, unknown> = { prompt, cwd: wt.path };
+  const toolArgs: Record<string, unknown> = { cwd: wt.path };
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.wait) toolArgs.wait = true;
 
-  d.printError(`Resuming session in ${wt.path} (branch: ${branch})`);
+  if (parsed.fresh) {
+    // --fresh: use git-context prompt (legacy behavior)
+    const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `main..${branch}`, "--"]);
+    const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
+
+    const issueNumber = extractIssueNumber(branch);
+
+    let prInfo: string | null = null;
+    const prStatus = await d.getPrStatus(wt.path);
+    if (prStatus) {
+      prInfo = `#${prStatus.number} (${prStatus.state})`;
+    }
+
+    toolArgs.prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [fresh — git context only]`);
+  } else {
+    // Default: restore conversation history via Claude CLI --resume flag
+    // If a specific session ID was provided, use it; otherwise bare --resume
+    // tells the CLI to pick the last session for this directory.
+    toolArgs.resumeSessionId = parsed.sessionId ?? "continue";
+    toolArgs.prompt =
+      "Your previous conversation history has just been restored via --continue/--resume. " +
+      "Please review the restored context and continue where you left off, picking up any in-progress work.";
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
+  }
+
   const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
 }
@@ -1064,7 +1086,9 @@ function printClaudeUsage(): void {
 Usage:
   mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
   mcx claude spawn "description"           Shorthand (positional task)
-  mcx claude resume <worktree-or-branch>   Resume work in an orphaned worktree
+  mcx claude resume <worktree-or-branch>   Resume with conversation history (--continue)
+  mcx claude resume <worktree> <session>   Resume specific session (--resume <id>)
+  mcx claude resume <worktree> --fresh     Resume with git-context prompt (no history)
   mcx claude resume --all                  Resume all orphaned worktrees
   mcx claude ls [--pr]                     List active sessions (--pr shows PR number/status)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
@@ -1089,6 +1113,7 @@ Spawn options:
   --timeout <ms>              Max wait time (default: 300000, only with --wait)
 
 Resume options:
+  --fresh                     Use git-context prompt instead of conversation history
   --all                       Resume all orphaned worktrees (batch mode)
   --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID
   --allow <tools...>          Pre-approved tool patterns
