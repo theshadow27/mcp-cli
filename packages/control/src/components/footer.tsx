@@ -6,9 +6,25 @@ interface FooterProps {
   view: View;
   filterMode: boolean;
   filterText: string;
+  denyReasonMode: boolean;
+  denyReasonText: string;
 }
 
-export function Footer({ view, filterMode, filterText }: FooterProps) {
+export function Footer({ view, filterMode, filterText, denyReasonMode, denyReasonText }: FooterProps) {
+  if (denyReasonMode) {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text color="red">deny reason:</Text> {denyReasonText}
+          <Text dimColor>█</Text>
+          {"  "}
+          <Text dimColor>enter</Text> deny{"  "}
+          <Text dimColor>esc</Text> cancel
+        </Text>
+      </Box>
+    );
+  }
+
   if (filterMode) {
     return (
       <Box marginTop={1}>
