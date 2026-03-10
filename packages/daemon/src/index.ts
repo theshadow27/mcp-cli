@@ -168,6 +168,11 @@ async function main(): Promise<void> {
         resetIdleTimer();
         return;
       }
+      if (pool.hasPendingServers()) {
+        console.error("[mcpd] Idle timeout deferred: virtual server(s) still starting");
+        resetIdleTimer();
+        return;
+      }
       if (claudeServer.hasActiveSessions()) {
         console.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
