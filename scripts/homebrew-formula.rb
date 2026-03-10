@@ -30,6 +30,8 @@ class McpCli < Formula
     bin.install "mcx"
     bin.install "mcpd"
     bin.install "mcpctl"
+    # Transitional symlink: mcp → mcx (deprecated name)
+    bin.install_symlink "mcx" => "mcp"
   end
 
   test do
