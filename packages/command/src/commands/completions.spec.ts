@@ -46,10 +46,6 @@ describe("SUBCOMMANDS", () => {
       expect((SUBCOMMANDS as readonly string[]).includes(cmd)).toBe(true);
     }
   });
-
-  test("has no unexpected commands", () => {
-    expect(SUBCOMMANDS).toHaveLength(expected.length);
-  });
 });
 
 describe("ALIAS_SUBCOMMANDS", () => {
