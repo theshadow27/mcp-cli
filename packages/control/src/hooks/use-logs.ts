@@ -26,7 +26,14 @@ interface UseLogsResult {
   setSource: (source: LogSource) => void;
 }
 
-export function useLogs(servers: ServerStatus[], enabled = true): UseLogsResult {
+export interface UseLogsOptions {
+  enabled?: boolean;
+  /** Override ipcCall for testing (dependency injection). */
+  ipcCallFn?: typeof ipcCall;
+}
+
+export function useLogs(servers: ServerStatus[], opts: UseLogsOptions | boolean = true): UseLogsResult {
+  const { enabled = true, ipcCallFn = ipcCall } = typeof opts === "boolean" ? { enabled: opts } : opts;
   const [source, setSourceRaw] = useState<LogSource>({ type: "daemon" });
   const [lines, setLines] = useState<LogEntry[]>([]);
   const sinceRef = useRef<number | undefined>(undefined);
@@ -61,7 +68,7 @@ export function useLogs(servers: ServerStatus[], enabled = true): UseLogsResult 
           } else if (sinceRef.current !== undefined) {
             params.since = sinceRef.current;
           }
-          const result = await ipcCall("getDaemonLogs", params);
+          const result = await ipcCallFn("getDaemonLogs", params);
           fetched = result.lines;
         } else {
           const params: Record<string, unknown> = { server: source.name };
@@ -70,7 +77,7 @@ export function useLogs(servers: ServerStatus[], enabled = true): UseLogsResult 
           } else if (sinceRef.current !== undefined) {
             params.since = sinceRef.current;
           }
-          const result = await ipcCall("getLogs", params);
+          const result = await ipcCallFn("getLogs", params);
           fetched = result.lines;
         }
 
@@ -99,7 +106,7 @@ export function useLogs(servers: ServerStatus[], enabled = true): UseLogsResult 
       cancelled = true;
       clearInterval(id);
     };
-  }, [source, enabled]);
+  }, [source, enabled, ipcCallFn]);
 
   return { lines, source, setSource };
 }
