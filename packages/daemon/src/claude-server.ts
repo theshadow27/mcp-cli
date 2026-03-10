@@ -92,8 +92,25 @@ interface ReadyMessage {
 
 type WorkerEvent = DbUpsert | DbState | DbCost | DbDisconnected | DbEnd | DbMetric | DbHistogram | ReadyMessage;
 
-function isWorkerEvent(data: unknown): data is WorkerEvent {
-  return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
+/** Explicit set of known worker event types — prevents ambiguous routing with MCP messages. */
+const WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<WorkerEvent["type"]>([
+  "ready",
+  "db:upsert",
+  "db:state",
+  "db:cost",
+  "db:disconnected",
+  "db:end",
+  "metrics:inc",
+  "metrics:observe",
+]);
+
+export function isWorkerEvent(data: unknown): data is WorkerEvent {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    WORKER_EVENT_TYPES.has((data as { type: string }).type)
+  );
 }
 
 // ── Server ──
