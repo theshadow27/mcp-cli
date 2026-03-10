@@ -49,6 +49,65 @@ describe("isCompoundCommand", () => {
   test("detects embedded newlines", () => {
     expect(isCompoundCommand("git status\nrm -rf /")).toBe(true);
   });
+
+  // ── Shell quoting: false-positive fixes ──
+
+  test("ignores operators inside double quotes", () => {
+    expect(isCompoundCommand('git commit -m "fix: a && b"')).toBe(false);
+    expect(isCompoundCommand('git commit -m "a || b"')).toBe(false);
+    expect(isCompoundCommand('echo "hello; world"')).toBe(false);
+    expect(isCompoundCommand('grep "pattern|other"')).toBe(false);
+  });
+
+  test("ignores operators inside single quotes", () => {
+    expect(isCompoundCommand("git commit -m 'fix: a && b'")).toBe(false);
+    expect(isCompoundCommand("grep 'a|b|c'")).toBe(false);
+    expect(isCompoundCommand("echo 'hello; world'")).toBe(false);
+  });
+
+  test("ignores substitution patterns inside single quotes", () => {
+    expect(isCompoundCommand("echo '$(whoami)'")).toBe(false);
+    expect(isCompoundCommand("echo '`whoami`'")).toBe(false);
+    expect(isCompoundCommand("echo '<(cmd)'")).toBe(false);
+  });
+
+  test("detects substitution patterns inside double quotes", () => {
+    // $() and backticks expand inside double quotes in real bash
+    expect(isCompoundCommand('echo "$(whoami)"')).toBe(true);
+    expect(isCompoundCommand('echo "`whoami`"')).toBe(true);
+  });
+
+  test("ignores process substitution inside double quotes", () => {
+    // <( and >( are operators, not expansions — literal inside double quotes
+    expect(isCompoundCommand('echo "<(cmd)"')).toBe(false);
+  });
+
+  test("backslash escapes outside quotes", () => {
+    // \; is an escaped semicolon, not an operator
+    expect(isCompoundCommand("echo hello\\; world")).toBe(false);
+    expect(isCompoundCommand("echo a\\&\\& b")).toBe(false);
+    expect(isCompoundCommand("echo \\$(cmd)")).toBe(false);
+    expect(isCompoundCommand("echo \\`cmd\\`")).toBe(false);
+  });
+
+  test("backslash escapes inside double quotes", () => {
+    expect(isCompoundCommand('echo "\\$(cmd)"')).toBe(false);
+    expect(isCompoundCommand('echo "\\`cmd\\`"')).toBe(false);
+  });
+
+  test("mixed quoted and unquoted segments", () => {
+    // Operator is outside the quotes
+    expect(isCompoundCommand('git commit -m "ok" && echo done')).toBe(true);
+    // Operator is inside the quotes
+    expect(isCompoundCommand('git commit -m "a && b" --amend')).toBe(false);
+  });
+
+  test("unclosed quotes treat rest as quoted", () => {
+    // Unclosed double quote — && is inside the quote
+    expect(isCompoundCommand('echo "a && b')).toBe(false);
+    // Unclosed single quote
+    expect(isCompoundCommand("echo 'a && b")).toBe(false);
+  });
 });
 
 describe("matchBashCommand", () => {
@@ -122,5 +181,17 @@ describe("matchBashCommand", () => {
 
   test("rejects newline injection on prefix match", () => {
     expect(matchBashCommand("git status\nrm -rf /", "git ")).toBe(false);
+  });
+
+  // ── Quoting-aware prefix matching ──
+
+  test("allows quoted operators in prefix match", () => {
+    expect(matchBashCommand('git commit -m "fix: a && b"', "git ")).toBe(true);
+    expect(matchBashCommand("git commit -m 'a || b'", "git ")).toBe(true);
+    expect(matchBashCommand('grep "pattern|other" file.txt', "grep ")).toBe(true);
+  });
+
+  test("rejects real operators after quoted segment", () => {
+    expect(matchBashCommand('git commit -m "ok" && rm -rf /', "git ")).toBe(false);
   });
 });
