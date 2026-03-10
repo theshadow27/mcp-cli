@@ -312,6 +312,7 @@ export class ClaudeServer {
     if (this.restartInProgress || this.stopped) return;
     this.restartInProgress = true;
 
+    metrics.counter("mcpd_worker_crashes_total").inc();
     console.error(`[claude-server] Worker crash detected: ${reason}`);
 
     // Mark tracked sessions as disconnected in SQLite — NOT ended.
@@ -348,6 +349,7 @@ export class ClaudeServer {
       );
       this.stopped = true;
       this.restartInProgress = false;
+      metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
       return;
     }
 
