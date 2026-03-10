@@ -76,6 +76,8 @@ const _originalOptions = {
   DAEMON_LOG_BACKUP_PATH: join(MCP_CLI_DIR, "mcpd.log.1"),
   /** Directory for headless process logs (`mcx tty open --headless`) */
   LOGS_DIR: join(MCP_CLI_DIR, "logs"),
+  /** Centralized test failure log (JSONL) — survives worktree cleanup */
+  TEST_FAILURES_LOG_PATH: join(MCP_CLI_DIR, "test-failures.log"),
   /** Mail TTL (ms) — read messages older than this are pruned (default 7 days) */
   MAIL_TTL_MS: 7 * 24 * 60 * 60 * 1000,
   /** How many log inserts between prune passes (amortized O(1)) */

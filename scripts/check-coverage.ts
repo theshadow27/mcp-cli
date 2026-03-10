@@ -68,10 +68,13 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
+import { logTestRun } from "./test-failure-log";
+
 // Ensure deps are installed (fast no-op when already present)
 const installProc = Bun.spawn(["bun", "install"], { stdout: "ignore", stderr: "ignore" });
 await installProc.exited;
 
+const testStart = Date.now();
 const proc = Bun.spawn(["bun", "test", "--coverage"], {
   stdout: "pipe",
   stderr: "pipe",
@@ -79,12 +82,14 @@ const proc = Bun.spawn(["bun", "test", "--coverage"], {
 
 const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
 const exitCode = await proc.exited;
+const testDuration = Date.now() - testStart;
 
 // Print original output so user sees test results + coverage table
 process.stdout.write(stdout);
 process.stderr.write(stderr);
 
 if (exitCode !== 0) {
+  logTestRun(stdout + stderr, exitCode, testDuration);
   process.exit(exitCode);
 }
 
