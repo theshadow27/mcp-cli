@@ -331,7 +331,13 @@ export class ClaudeWsServer {
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
-        this.handleSessionEvent(sessionId, session, event);
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          console.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
       }
       // Reject pending result waiters — they can't get results without a process
       for (const waiter of session.resultWaiters) {
@@ -438,7 +444,13 @@ export class ClaudeWsServer {
     const events = session.state.resetForClear();
     for (const event of events) {
       this.onSessionEvent?.(sessionId, event);
-      this.handleSessionEvent(sessionId, session, event);
+      try {
+        this.handleSessionEvent(sessionId, session, event);
+      } catch (err) {
+        console.error(
+          `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+        );
+      }
     }
 
     // Clear keep-alive timer
@@ -493,7 +505,13 @@ export class ClaudeWsServer {
     const events = session.state.setModel(model);
     for (const event of events) {
       this.onSessionEvent?.(sessionId, event);
-      this.handleSessionEvent(sessionId, session, event);
+      try {
+        this.handleSessionEvent(sessionId, session, event);
+      } catch (err) {
+        console.error(
+          `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+        );
+      }
     }
   }
 
@@ -749,8 +767,20 @@ export class ClaudeWsServer {
       const events = session.state.handleMessage(msg);
 
       for (const event of events) {
-        this.onSessionEvent?.(sessionId, event);
-        this.handleSessionEvent(sessionId, session, event);
+        try {
+          this.onSessionEvent?.(sessionId, event);
+        } catch (err) {
+          console.error(
+            `[_claude] onSessionEvent callback threw for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          console.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
       }
     }
   }
@@ -770,73 +800,112 @@ export class ClaudeWsServer {
   // ── Event handling ──
 
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
+    const logErr = (label: string, err: unknown) =>
+      console.error(
+        `[_claude] ${label} for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+      );
+
     switch (event.type) {
       case "session:init":
         // Capture Claude Code's own session ID for JSONL file lookup
         session.claudeSessionId = event.sessionId;
         break;
       case "session:permission_request":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:permission_request",
-          requestId: event.requestId,
-          toolName: event.request.tool_name,
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:permission_request",
+            requestId: event.requestId,
+            toolName: event.request.tool_name,
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
         this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
-          console.error(`[_claude] Permission evaluation failed for session ${sessionId}: ${err}`);
+          console.error(
+            `[_claude] Permission evaluation failed for session ${sessionId}: ${err instanceof Error ? err.stack : err}`,
+          );
         });
         break;
       case "session:result":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:result",
-          cost: event.cost,
-          tokens: event.tokens,
-          numTurns: event.numTurns,
-          result: event.result,
-        });
-        this.resolveWaiters(session, {
-          sessionId,
-          success: true,
-          result: event.result,
-          cost: event.cost,
-          tokens: event.tokens,
-          numTurns: event.numTurns,
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:result",
+            cost: event.cost,
+            tokens: event.tokens,
+            numTurns: event.numTurns,
+            result: event.result,
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        try {
+          this.resolveWaiters(session, {
+            sessionId,
+            success: true,
+            result: event.result,
+            cost: event.cost,
+            tokens: event.tokens,
+            numTurns: event.numTurns,
+          });
+        } catch (err) {
+          logErr("resolveWaiters failed", err);
+        }
         break;
       case "session:error":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:error",
-          cost: event.cost,
-          errors: event.errors,
-        });
-        this.resolveWaiters(session, {
-          sessionId,
-          success: false,
-          errors: event.errors,
-          cost: event.cost,
-          tokens: 0,
-          numTurns: 0,
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:error",
+            cost: event.cost,
+            errors: event.errors,
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        try {
+          this.resolveWaiters(session, {
+            sessionId,
+            success: false,
+            errors: event.errors,
+            cost: event.cost,
+            tokens: 0,
+            numTurns: 0,
+          });
+        } catch (err) {
+          logErr("resolveWaiters failed", err);
+        }
         break;
       case "session:cleared":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:cleared",
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:cleared",
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
         break;
       case "session:model_changed":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:model_changed",
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:model_changed",
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
         break;
       case "session:disconnected":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:disconnected",
-        });
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:disconnected",
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
         break;
     }
   }
