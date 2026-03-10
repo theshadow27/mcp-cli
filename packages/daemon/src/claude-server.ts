@@ -128,6 +128,8 @@ export class ClaudeServer {
   private restartInProgress = false;
   private stopped = false;
   private readonly crashTimestamps: number[] = [];
+  /** Stored reference to the crash error handler so it can be removed via removeEventListener. */
+  private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
   private static readonly MAX_CRASHES = 3;
   private static readonly CRASH_WINDOW_MS = 60_000;
   /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
@@ -224,7 +226,10 @@ export class ClaudeServer {
     } catch {
       // ignore close errors
     }
-    this.worker?.terminate();
+    if (this.worker) {
+      this.cleanupWorkerHandlers(this.worker);
+      this.worker.terminate();
+    }
     this.worker = null;
     this.transport = null;
     this.client = null;
@@ -280,14 +285,26 @@ export class ClaudeServer {
 
   // ── Crash detection ──
 
+  /** Remove event listeners and null handlers on the current worker to prevent closure leaks. */
+  private cleanupWorkerHandlers(worker: Worker): void {
+    if (this.crashErrorHandler) {
+      worker.removeEventListener("error", this.crashErrorHandler);
+      this.crashErrorHandler = null;
+    }
+    worker.onmessage = null;
+    worker.onerror = null;
+  }
+
   /** Attach post-startup error listener to detect worker crashes. */
   private attachCrashDetection(worker: Worker): void {
-    worker.addEventListener("error", (event: ErrorEvent | Event) => {
+    const handler = (event: ErrorEvent | Event) => {
       // Only handle if this is still our active worker
       if (this.worker !== worker) return;
       const msg = event instanceof ErrorEvent ? event.message : "unknown error";
       this.handleWorkerCrash(`worker error: ${msg}`);
-    });
+    };
+    this.crashErrorHandler = handler;
+    worker.addEventListener("error", handler);
   }
 
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
@@ -309,7 +326,10 @@ export class ClaudeServer {
     // to the new WS server (new port, new worker instance).
     const orphanedSessions = new Set(this.activeSessions);
 
-    // Clear stale references (don't terminate — worker is already dead)
+    // Clean up event handlers on the dead worker to release closure references
+    if (this.worker) {
+      this.cleanupWorkerHandlers(this.worker);
+    }
     this.worker = null;
     this.transport = null;
     this.client = null;

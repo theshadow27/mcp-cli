@@ -503,6 +503,55 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
+  // ── Worker handler cleanup ──
+
+  test("restart cleans up old worker message/error handlers to prevent closure leaks", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Grab reference to the old worker before crash
+    const oldWorker = (server as unknown as { worker: Worker | null }).worker;
+    expect(oldWorker).not.toBeNull();
+
+    // Verify old worker has handlers set
+    expect(oldWorker?.onmessage).not.toBeNull();
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash for cleanup");
+
+    // After restart, old worker's onmessage should be nulled (cleaned up)
+    expect(oldWorker?.onmessage).toBeNull();
+
+    // New worker should be different and have its own handlers
+    const newWorker = (server as unknown as { worker: Worker | null }).worker;
+    expect(newWorker).not.toBeNull();
+    expect(newWorker).not.toBe(oldWorker);
+    expect(newWorker?.onmessage).not.toBeNull();
+  });
+
+  test("stop() cleans up worker message/error handlers", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const worker = (server as unknown as { worker: Worker | null }).worker;
+    expect(worker).not.toBeNull();
+    expect(worker?.onmessage).not.toBeNull();
+
+    await server.stop();
+
+    // After stop, worker handlers should be cleaned up
+    expect(worker?.onmessage).toBeNull();
+    server = undefined; // prevent double stop
+  });
+
   // ── pruneDeadSessions ──
 
   test("pruneDeadSessions removes sessions with dead PIDs", async () => {
