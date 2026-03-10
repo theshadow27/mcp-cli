@@ -523,6 +523,27 @@ describe("ClaudeServer", () => {
     expect(metrics.counter("mcpd_worker_crashes_total").value()).toBe(before + 1);
   });
 
+  test("handleWorkerCrash increments counter even when stopped (crash not suppressed in metrics)", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Force stopped state so handleWorkerCrash early-returns
+    (server as unknown as { stopped: boolean }).stopped = true;
+
+    const before = metrics.counter("mcpd_worker_crashes_total").value();
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("crash while stopped");
+
+    // Counter should still increment — crashes are always counted
+    expect(metrics.counter("mcpd_worker_crashes_total").value()).toBe(before + 1);
+  });
+
   test("handleWorkerCrash sets mcpd_worker_crash_loop_stopped gauge when rate-limited", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
@@ -549,6 +570,19 @@ describe("ClaudeServer", () => {
     await crash("crash 3");
 
     expect(metrics.gauge("mcpd_worker_crash_loop_stopped").value()).toBe(1);
+  });
+
+  test("start() resets mcpd_worker_crash_loop_stopped gauge to 0", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    // Set gauge to 1 (simulating previous crash loop)
+    metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
+
+    await server.start();
+
+    expect(metrics.gauge("mcpd_worker_crash_loop_stopped").value()).toBe(0);
   });
 
   // ── Worker handler cleanup ──

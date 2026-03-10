@@ -151,6 +151,7 @@ export class ClaudeServer {
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     this.stopped = false;
+    metrics.gauge("mcpd_worker_crash_loop_stopped").set(0);
     const worker = new Worker(workerPath("claude-session-worker.ts"));
     this.worker = worker;
 
@@ -309,10 +310,10 @@ export class ClaudeServer {
 
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
   private async handleWorkerCrash(reason: string): Promise<void> {
+    metrics.counter("mcpd_worker_crashes_total").inc();
     if (this.restartInProgress || this.stopped) return;
     this.restartInProgress = true;
 
-    metrics.counter("mcpd_worker_crashes_total").inc();
     console.error(`[claude-server] Worker crash detected: ${reason}`);
 
     // Mark tracked sessions as disconnected in SQLite — NOT ended.
