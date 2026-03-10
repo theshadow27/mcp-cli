@@ -23,8 +23,9 @@ import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprot
 
 export type { UsageStat } from "@mcp-cli/core";
 
-export interface ClaudeSessionRow {
+export interface AgentSessionRow {
   sessionId: string;
+  provider: string;
   pid: number | null;
   state: string;
   model: string | null;
@@ -35,6 +36,9 @@ export interface ClaudeSessionRow {
   spawnedAt: string;
   endedAt: string | null;
 }
+
+/** @deprecated Use AgentSessionRow instead. */
+export type ClaudeSessionRow = AgentSessionRow;
 
 export class StateDb {
   private db: Database;
@@ -143,7 +147,7 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
-      CREATE TABLE IF NOT EXISTS claude_sessions (
+      CREATE TABLE IF NOT EXISTS agent_sessions (
         session_id   TEXT PRIMARY KEY,
         pid          INTEGER,
         state        TEXT NOT NULL DEFAULT 'connecting',
@@ -192,6 +196,34 @@ export class StateDb {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id)");
+
+    // -- Rename agent_sessions → agent_sessions, add provider column --
+    try {
+      this.db.exec("ALTER TABLE agent_sessions RENAME TO agent_sessions");
+    } catch {
+      /* already renamed or doesn't exist yet */
+    }
+    // If agent_sessions never existed, create agent_sessions directly
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        session_id   TEXT PRIMARY KEY,
+        provider     TEXT NOT NULL DEFAULT 'claude',
+        pid          INTEGER,
+        state        TEXT NOT NULL DEFAULT 'connecting',
+        model        TEXT,
+        cwd          TEXT,
+        worktree     TEXT,
+        total_cost   REAL NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at     TEXT
+      )
+    `);
+    try {
+      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
+    } catch {
+      /* column already exists (from rename or fresh creation) */
+    }
 
     // -- Spans table (export buffer) --
     this.db.exec(`
@@ -753,10 +785,11 @@ export class StateDb {
     }
   }
 
-  // -- Claude sessions --
+  // -- Agent sessions --
 
   upsertSession(session: {
     sessionId: string;
+    provider?: string;
     pid?: number;
     state?: string;
     model?: string;
@@ -764,16 +797,18 @@ export class StateDb {
     worktree?: string;
   }): void {
     this.db.run(
-      `INSERT INTO claude_sessions (session_id, pid, state, model, cwd, worktree)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, provider, pid, state, model, cwd, worktree)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
-         pid = COALESCE(excluded.pid, claude_sessions.pid),
-         state = COALESCE(excluded.state, claude_sessions.state),
-         model = COALESCE(excluded.model, claude_sessions.model),
-         cwd = COALESCE(excluded.cwd, claude_sessions.cwd),
-         worktree = COALESCE(excluded.worktree, claude_sessions.worktree)`,
+         provider = COALESCE(excluded.provider, agent_sessions.provider),
+         pid = COALESCE(excluded.pid, agent_sessions.pid),
+         state = COALESCE(excluded.state, agent_sessions.state),
+         model = COALESCE(excluded.model, agent_sessions.model),
+         cwd = COALESCE(excluded.cwd, agent_sessions.cwd),
+         worktree = COALESCE(excluded.worktree, agent_sessions.worktree)`,
       [
         session.sessionId,
+        session.provider ?? "claude",
         session.pid ?? null,
         session.state ?? "connecting",
         session.model ?? null,
@@ -784,11 +819,11 @@ export class StateDb {
   }
 
   updateSessionState(sessionId: string, state: string): void {
-    this.db.run("UPDATE claude_sessions SET state = ? WHERE session_id = ?", [state, sessionId]);
+    this.db.run("UPDATE agent_sessions SET state = ? WHERE session_id = ?", [state, sessionId]);
   }
 
   updateSessionCost(sessionId: string, cost: number, tokens: number): void {
-    this.db.run("UPDATE claude_sessions SET total_cost = ?, total_tokens = ? WHERE session_id = ?", [
+    this.db.run("UPDATE agent_sessions SET total_cost = ?, total_tokens = ? WHERE session_id = ?", [
       cost,
       tokens,
       sessionId,
@@ -796,25 +831,25 @@ export class StateDb {
   }
 
   endSession(sessionId: string): void {
-    this.db.run("UPDATE claude_sessions SET state = 'ended', ended_at = datetime('now') WHERE session_id = ?", [
+    this.db.run("UPDATE agent_sessions SET state = 'ended', ended_at = datetime('now') WHERE session_id = ?", [
       sessionId,
     ]);
   }
 
-  getSession(sessionId: string): ClaudeSessionRow | null {
+  getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM claude_sessions WHERE session_id = ?",
+        "SELECT session_id, provider, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
   }
 
-  listSessions(active?: boolean): ClaudeSessionRow[] {
+  listSessions(active?: boolean): AgentSessionRow[] {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM claude_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, provider, pid, state, model, cwd, worktree, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -822,7 +857,7 @@ export class StateDb {
 
   pruneOldSessions(maxAgeDays = 30): number {
     const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
-    const result = this.db.run("DELETE FROM claude_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);
+    const result = this.db.run("DELETE FROM agent_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);
     return result.changes;
   }
 
@@ -972,6 +1007,7 @@ function safeJsonParse<T>(json: string, fallback: T): T {
 
 interface RawSessionRow {
   session_id: string;
+  provider: string;
   pid: number | null;
   state: string;
   model: string | null;
@@ -983,9 +1019,10 @@ interface RawSessionRow {
   ended_at: string | null;
 }
 
-function toSessionRow(row: RawSessionRow): ClaudeSessionRow {
+function toSessionRow(row: RawSessionRow): AgentSessionRow {
   return {
     sessionId: row.session_id,
+    provider: row.provider,
     pid: row.pid,
     state: row.state,
     model: row.model,
