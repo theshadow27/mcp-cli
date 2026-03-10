@@ -116,6 +116,8 @@ describe("exported nav interfaces", () => {
       setSelectedIndex: () => {},
       expandedSession: null,
       setExpandedSession: () => {},
+      permissionIndex: 0,
+      setPermissionIndex: () => {},
       denyReasonMode: false,
       setDenyReasonMode: () => {},
       denyReasonText: "",
@@ -123,6 +125,7 @@ describe("exported nav interfaces", () => {
     };
     expect(nav.sessions).toBeArray();
     expect(nav.expandedSession).toBeNull();
+    expect(nav.permissionIndex).toBe(0);
     expect(nav.denyReasonMode).toBe(false);
     expect(nav.denyReasonText).toBe("");
   });
