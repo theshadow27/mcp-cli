@@ -86,9 +86,9 @@ packages/daemon/src/
   worker-transport.ts       MCP Transport adapters for Worker postMessage
   daemon-log.ts             Ring-buffer log capture (monkey-patches console)
   metrics.ts                Prometheus-style metrics collection (counters, gauges, histograms)
-  orphan-reaper.ts           Stale process cleanup on daemon startup
+  orphan-reaper.ts          Stale process cleanup on daemon startup
   stderr-buffer.ts          Per-server circular ring buffer for stderr
-  worker-path.ts             Worker file path resolution (dev vs compiled)
+  worker-path.ts            Worker file path resolution (dev vs compiled)
   claude-session/           Claude Code session management
     session-state.ts        Session state machine
     ws-server.ts            WebSocket server for SDK sessions
