@@ -29,6 +29,8 @@ export function App() {
   const [claudeSelectedIndex, setClaudeSelectedIndex] = useState(0);
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
   const [permissionIndex, setPermissionIndex] = useState(0);
+  const [denyReasonMode, setDenyReasonMode] = useState(false);
+  const [denyReasonText, setDenyReasonText] = useState("");
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -120,6 +122,10 @@ export function App() {
       setExpandedSession,
       permissionIndex,
       setPermissionIndex,
+      denyReasonMode,
+      setDenyReasonMode,
+      denyReasonText,
+      setDenyReasonText,
     },
   });
 
@@ -168,7 +174,13 @@ export function App() {
           <Text dimColor>Coming soon — see #181</Text>
         </Box>
       )}
-      <Footer view={view} filterMode={filterMode} filterText={filterText} />
+      <Footer
+        view={view}
+        filterMode={filterMode}
+        filterText={filterText}
+        denyReasonMode={denyReasonMode}
+        denyReasonText={denyReasonText}
+      />
     </Box>
   );
 }
