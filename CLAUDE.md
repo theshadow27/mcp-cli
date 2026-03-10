@@ -68,7 +68,10 @@ packages/core/src/
   constants.ts      Paths, defaults
   env.ts            ${VAR} and ${VAR:-default} expansion
   fs.ts             File system utilities (ensureDir, permissions)
+  model.ts          Model shortname → full model ID resolution
   schema-display.ts JSON Schema → compact TypeScript notation
+  session-types.ts  Shared session state types (daemon, command, control)
+  trace.ts          W3C Trace Context ID generation (trace-id, span-id)
 
 packages/daemon/src/
   index.ts                  Entry point
@@ -82,7 +85,10 @@ packages/daemon/src/
   worker-plugin.ts          Shared boilerplate for alias worker threads
   worker-transport.ts       MCP Transport adapters for Worker postMessage
   daemon-log.ts             Ring-buffer log capture (monkey-patches console)
+  metrics.ts                Prometheus-style metrics collection (counters, gauges, histograms)
+  orphan-reaper.ts           Stale process cleanup on daemon startup
   stderr-buffer.ts          Per-server circular ring buffer for stderr
+  worker-path.ts             Worker file path resolution (dev vs compiled)
   claude-session/           Claude Code session management
     session-state.ts        Session state machine
     ws-server.ts            WebSocket server for SDK sessions
@@ -100,8 +106,9 @@ packages/command/src/
   file-read.ts    Safe file reading with size limits
   parse.ts        Stdin reading and input parsing
   commands/       call, ls, run, alias, mail, status, auth, config, claude,
-                  serve, tty, install, completions, typegen, logs,
-                  registry-cmd, export, import, add, remove, get, config-file
+                  serve, tty, install, completions, typegen, logs, version,
+                  spans, registry-cmd, export, import, add, remove, get,
+                  config-file
   jq/             jq filtering support
   registry/       Registry client (transport + API)
   tty/            Terminal detection and adapters (iTerm, Kitty, etc.)
