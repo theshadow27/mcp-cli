@@ -36,8 +36,16 @@ interface ToolsChangedMessage {
 
 type ControlMessage = InitMessage | ToolsChangedMessage;
 
+const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "tools_changed"]);
+
 function isControlMessage(data: unknown): data is ControlMessage {
-  return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    typeof (data as Record<string, unknown>).type === "string" &&
+    CONTROL_MESSAGE_TYPES.has((data as Record<string, unknown>).type as string)
+  );
 }
 
 // ── Worker globals ──
