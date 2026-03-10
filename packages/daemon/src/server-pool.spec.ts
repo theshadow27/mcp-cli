@@ -947,8 +947,10 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     // Wait for the pending promise to settle
     await pool.awaitPendingServers();
 
-    // Now callTool should throw "not found" since the server never registered
-    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow('Server "_broken" not found');
+    // Now callTool should throw with the startup error since the server failed
+    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow(
+      'Virtual server "_broken" failed to start: worker crash',
+    );
   });
 
   test("failed pending server does not block other operations", async () => {
@@ -962,6 +964,33 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     // listServers should still work
     const servers = poolWithConnect.listServers();
     expect(servers.some((s) => s.name === "a")).toBe(true);
+  });
+
+  test("failed pending server shows error state in listServers", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    pool.registerPendingVirtualServer(
+      "_broken",
+      (async () => {
+        throw new Error("worker crash");
+      })(),
+    );
+
+    // While pending, should show as connecting
+    const before = pool.listServers();
+    const pending = before.find((s) => s.name === "_broken");
+    expect(pending).toBeDefined();
+    expect(pending?.state).toBe("connecting");
+
+    // After settling, should show as error with lastError
+    await pool.awaitPendingServers();
+
+    const after = pool.listServers();
+    const failed = after.find((s) => s.name === "_broken");
+    expect(failed).toBeDefined();
+    expect(failed?.state).toBe("error");
+    expect(failed?.lastError).toBe("worker crash");
+    expect(failed?.transport).toBe("virtual");
   });
 
   test("hasPendingServers returns true while server is starting, false after settled", async () => {
