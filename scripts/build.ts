@@ -124,14 +124,14 @@ interface BinaryBuildConfig {
 }
 
 const mcxConfig: BinaryBuildConfig = {
-  entrypoint: "packages/command/src/index.ts",
+  entrypoint: "packages/command/src/main.ts",
   bundleName: "index",
   label: "mcx",
   plugins: [jqWasmPlugin],
 };
 
 const mcpctlConfig: BinaryBuildConfig = {
-  entrypoint: "packages/control/src/index.tsx",
+  entrypoint: "packages/control/src/main.tsx",
   bundleName: "mcpctl-bundle",
   label: "mcpctl",
   plugins: [devtoolsStubPlugin],
@@ -178,7 +178,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} --target=${target} packages/daemon/src/index.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -188,7 +188,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} packages/daemon/src/index.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);

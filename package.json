@@ -11,9 +11,9 @@
     "lint:check": "bun install && bunx biome check .",
     "test": "bun install && bun test",
     "test:coverage": "bun scripts/check-coverage.ts",
-    "dev:daemon": "bun packages/daemon/src/index.ts",
-    "dev:mcx": "bun packages/command/src/index.ts",
-    "dev:mcpctl": "bun packages/control/src/index.tsx",
+    "dev:daemon": "bun packages/daemon/src/main.ts",
+    "dev:mcx": "bun packages/command/src/main.ts",
+    "dev:mcpctl": "bun packages/control/src/main.tsx",
     "prepare": "git config core.hooksPath .git-hooks"
   },
   "devDependencies": {

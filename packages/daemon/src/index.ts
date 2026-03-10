@@ -13,8 +13,7 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { unlinkSync, writeFileSync } from "node:fs";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
@@ -34,65 +33,6 @@ import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
-
-/** Remove worktrees from ended sessions that are clean and have no active session. */
-export function pruneOrphanedWorktrees(db: StateDb): void {
-  try {
-    const activeSessions = db.listSessions(true);
-    const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
-
-    const endedSessions = db.listSessions(false);
-    let pruned = 0;
-
-    for (const session of endedSessions) {
-      if (!session.worktree || !session.cwd) continue;
-      if (activeWorktrees.has(session.worktree)) continue;
-
-      const worktreePath = join(session.cwd, ".claude", "worktrees", session.worktree);
-      if (!existsSync(worktreePath)) continue;
-
-      // Check if clean
-      const statusResult = Bun.spawnSync(["git", "-C", worktreePath, "status", "--porcelain"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (statusResult.exitCode !== 0 || statusResult.stdout.toString().trim() !== "") continue;
-
-      // Capture branch before removal
-      const branchResult = Bun.spawnSync(["git", "-C", worktreePath, "branch", "--show-current"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const branch = branchResult.exitCode === 0 ? branchResult.stdout.toString().trim() : null;
-
-      // Remove worktree
-      const removeResult = Bun.spawnSync(["git", "-C", session.cwd, "worktree", "remove", worktreePath], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (removeResult.exitCode === 0) {
-        pruned++;
-        console.error(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
-        // Delete merged branch
-        if (branch) {
-          const branchDelete = Bun.spawnSync(["git", "-C", session.cwd, "branch", "-d", branch], {
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          if (branchDelete.exitCode === 0) {
-            console.error(`[mcpd] Deleted branch: ${branch} (merged)`);
-          }
-        }
-      }
-    }
-
-    if (pruned > 0) {
-      console.error(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
-    }
-  } catch (err) {
-    console.error(`[mcpd] Worktree prune failed: ${err}`);
-  }
-}
 
 export type ShutdownReason =
   | "SIGTERM"
@@ -117,8 +57,6 @@ export interface StartDaemonOptions {
   skipLogSetup?: boolean;
   /** Skip booting virtual servers (_aliases, _claude). */
   skipVirtualServers?: boolean;
-  /** Skip worktree pruning on startup. */
-  skipWorktreePrune?: boolean;
 }
 
 /**
@@ -262,11 +200,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Signal readiness to parent (IPC socket is open, commands can connect now)
   console.log(DAEMON_READY_SIGNAL);
 
-  // Prune orphaned worktrees after ready signal (non-blocking)
-  if (!opts?.skipWorktreePrune) {
-    pruneOrphanedWorktrees(db);
-  }
-
   // Boot virtual servers in the background — commands that need them will await
   if (!opts?.skipVirtualServers) {
     pool.registerPendingVirtualServer(
@@ -345,40 +278,4 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     ipcServer,
     watcher,
   };
-}
-
-// --- Entry point (only runs when executed directly, not when imported) ---
-
-async function main(): Promise<void> {
-  const handle = await startDaemon();
-
-  process.on("SIGTERM", () => {
-    handle.shutdown("SIGTERM").then(() => process.exit(0));
-  });
-  process.on("SIGINT", () => {
-    handle.shutdown("SIGINT").then(() => process.exit(0));
-  });
-
-  process.on("uncaughtException", (err) => {
-    console.error("[mcpd] Uncaught exception:", err);
-    handle
-      .shutdown("uncaught exception")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (rejection) => {
-    console.error("[mcpd] Unhandled rejection:", rejection);
-    handle
-      .shutdown("unhandled rejection")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
-  });
-}
-
-// Only run main() when executed directly (not when imported for testing)
-if (import.meta.main) {
-  main().catch((err) => {
-    console.error("[mcpd] Fatal:", err);
-    process.exit(1);
-  });
 }
