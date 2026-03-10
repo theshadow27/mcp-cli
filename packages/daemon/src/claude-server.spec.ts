@@ -470,10 +470,127 @@ describe("ClaudeServer", () => {
     }
     expect(restartCount).toBe(3);
 
+    // Add active sessions immediately before the exhaustion crash so the new
+    // db.endSession() loop in the exhaustion branch is actually exercised.
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "exhaust-1", state: "active" } });
+    handle({ type: "db:upsert", session: { sessionId: "exhaust-2", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
     // 4th crash should be rate-limited — no restart
     await crash("crash 3");
     expect(restartCount).toBe(3);
     expect(server.port).toBeNull();
+
+    // #463: activeSessions should be cleared on crash-loop exhaustion
+    expect(server.hasActiveSessions()).toBe(false);
+
+    // Sessions must be ended in SQLite — not left as zombie 'disconnected' rows
+    const row1 = db.getSession("exhaust-1");
+    expect(row1?.state).toBe("ended");
+    expect(row1?.endedAt).not.toBeNull();
+
+    const row2 = db.getSession("exhaust-2");
+    expect(row2?.state).toBe("ended");
+    expect(row2?.endedAt).not.toBeNull();
+  });
+
+  test("handleWorkerCrash terminates worker and closes client before nulling", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Grab references before crash and spy on terminate() and close()
+    const oldWorker = (server as unknown as { worker: Worker | null }).worker;
+    expect(oldWorker).not.toBeNull();
+
+    let terminateCalled = false;
+    const origTerminate = (oldWorker as Worker).terminate.bind(oldWorker);
+    (oldWorker as Worker).terminate = () => {
+      terminateCalled = true;
+      return origTerminate();
+    };
+
+    const oldClient = (server as unknown as { client: { close: () => Promise<void> } | null }).client;
+    expect(oldClient).not.toBeNull();
+
+    let closeCalled = false;
+    const origClose = (oldClient as { close: () => Promise<void> }).close.bind(oldClient);
+    (oldClient as { close: () => Promise<void> }).close = async () => {
+      closeCalled = true;
+      return origClose();
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test cleanup");
+
+    // worker.terminate() and client.close() must have been called
+    expect(terminateCalled).toBe(true);
+    expect(closeCalled).toBe(true);
+
+    // After restart, old worker handlers should be cleaned up
+    expect(oldWorker?.onmessage).toBeNull();
+    expect(oldWorker?.onerror).toBeNull();
+  });
+
+  test("crash-loop exhaustion clears activeSessions so idle timer can fire", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Add sessions before crash loop
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "loop-1", pid: process.pid, state: "active" } });
+    handle({ type: "db:upsert", session: { sessionId: "loop-2", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    // Exhaust crash budget (3 crashes) + 1 more to trigger exhaustion
+    for (let i = 0; i < 4; i++) {
+      await crash(`crash ${i}`);
+    }
+
+    // #463: sessions must be cleared so hasActiveSessions returns false
+    expect(server.hasActiveSessions()).toBe(false);
+    const stopped = (server as unknown as { stopped: boolean }).stopped;
+    expect(stopped).toBe(true);
+  });
+
+  test("retry exhaustion clears activeSessions when all restart attempts fail", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Add a session before crash
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "retry-1", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // Patch start() to always fail
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      throw new Error("permanent failure");
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test permanent crash");
+
+    // After all retries exhausted, sessions should be cleared
+    expect(server.hasActiveSessions()).toBe(false);
+    const stopped = (server as unknown as { stopped: boolean }).stopped;
+    expect(stopped).toBe(true);
   });
 
   test("worker error event triggers crash detection and survives after first error", async () => {
