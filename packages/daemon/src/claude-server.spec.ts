@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { StateDb } from "./db/state";
@@ -317,6 +318,31 @@ describe("ClaudeServer", () => {
     expect(server.port).toBeGreaterThan(0);
     expect(server.port).not.toBe(originalPort);
     expect(restartedCalled).toBe(true);
+  });
+
+  test("handleWorkerCrash emits tools/list_changed notification after restart", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let notificationReceived = false;
+    server.onRestarted = (client) => {
+      client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        notificationReceived = true;
+      });
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    // Give the async notification a moment to arrive
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(notificationReceived).toBe(true);
   });
 
   test("handleWorkerCrash debounces concurrent crashes", async () => {
