@@ -627,6 +627,43 @@ describe("ClaudeWsServer", () => {
     await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
   });
 
+  test("process exit rejects pending result waiters", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Register a result waiter BEFORE process exits
+    const resultPromise = server.waitForResult("test-session", 5000).catch((e: unknown) => e);
+
+    // Process exits — waiter should be rejected
+    ms.exitResolve(0);
+
+    const err = await resultPromise;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("Process exited");
+  });
+
+  test("process exit resolves pending event waiters with disconnect event", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Register an event waiter BEFORE process exits
+    const eventPromise = server.waitForEvent("test-session", 5000);
+
+    // Process exits — event waiter should resolve with a session event
+    ms.exitResolve(0);
+
+    const event = await eventPromise;
+    expect(event.sessionId).toBe("test-session");
+  });
+
   test("waitForEvent on already-disconnected session rejects immediately", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
