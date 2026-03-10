@@ -293,7 +293,7 @@ describe("IpcServer HTTP transport", () => {
     expect(json.id).toBe("sd1");
     expect(json.result).toEqual({ ok: true });
 
-    // onShutdown is called after a 100ms setTimeout
+    // onShutdown is called after the response is sent (drain mechanism)
     await pollUntil(() => shutdownCalled);
     expect(shutdownCalled).toBe(true);
   });
@@ -318,13 +318,67 @@ describe("IpcServer HTTP transport", () => {
     const res = await rpc("/rpc", { id: "sd2", method: "shutdown" });
     const json = (await res.json()) as IpcResponse;
 
-    // Response should arrive before the callback fires (100ms delay)
+    // Response should arrive before the callback fires (drain mechanism)
     expect(json.result).toEqual({ ok: true });
     expect(callbackTime === 0 || callbackTime >= responseTime).toBe(true);
 
     // Wait for callback to fire
     await pollUntil(() => callbackTime > 0);
     expect(callbackTime).toBeGreaterThan(0);
+  });
+
+  test("shutdown rejects new requests while draining", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    let handlerEntered: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    });
+    const slowPool = {
+      ...mockPool(),
+      callTool: async () => {
+        handlerEntered();
+        await Bun.sleep(200);
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(
+      slowPool as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+      }),
+    );
+    server.start(socketPath);
+
+    // Start a slow callTool request
+    const slowReq = rpc("/rpc", { id: "slow1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    // Wait for the slow handler to actually start executing
+    await handlerStarted;
+
+    // Trigger shutdown while the slow request is in-flight
+    const shutdownRes = await rpc("/rpc", { id: "sd-drain", method: "shutdown" });
+    const shutdownJson = (await shutdownRes.json()) as IpcResponse;
+    expect(shutdownJson.result).toEqual({ ok: true });
+
+    // New request should be rejected with 503 while draining
+    const rejectedRes = await rpc("/rpc", { id: "rejected1", method: "ping" });
+    expect(rejectedRes.status).toBe(503);
+    const rejectedJson = (await rejectedRes.json()) as IpcResponse;
+    expect(rejectedJson.error?.message).toBe("Server is shutting down");
+
+    // Wait for slow request to complete — shutdown should follow
+    const slowRes = await slowReq;
+    // The slow request may error due to server name not found, that's fine
+    expect(slowRes.status).toBe(200);
+
+    await pollUntil(() => shutdownCalled);
+    expect(shutdownCalled).toBe(true);
   });
 
   test("shutdown works when pool has active servers", async () => {
