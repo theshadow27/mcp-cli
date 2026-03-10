@@ -433,7 +433,16 @@ async function cmdStatus(args: string[] = []): Promise<void> {
 
   // --no-start: report state without spawning (original semantics).
   if (noStart) {
-    const running = await isDaemonRunning();
+    let running: boolean;
+    try {
+      running = await isDaemonRunning();
+    } catch (err) {
+      if (err instanceof ProtocolMismatchError) {
+        printProtocolMismatchStatus(err, json);
+        return;
+      }
+      throw err;
+    }
     if (!running) {
       if (isDaemonInitializing()) {
         if (json) {
@@ -455,7 +464,16 @@ async function cmdStatus(args: string[] = []): Promise<void> {
   // Auto-start daemon if not running — after a crash, `mcx status` is the first
   // thing users check, so it should bring the daemon back (#412).
   // ipcCall() wraps ensureDaemon(), so this handles auto-start + status in one call.
-  const status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  let status: DaemonStatus;
+  try {
+    status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  } catch (err) {
+    if (err instanceof ProtocolMismatchError) {
+      printProtocolMismatchStatus(err, json);
+      return;
+    }
+    throw err;
+  }
 
   if (json) {
     console.log(JSON.stringify(status, null, 2));
@@ -465,6 +483,25 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     console.log(`Database: ${status.dbPath}\n`);
     printServerList(status.servers);
   }
+}
+
+function printProtocolMismatchStatus(err: ProtocolMismatchError, json: boolean): void {
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          state: "protocol_mismatch",
+          daemonProtocol: err.daemonVersion,
+          cliProtocol: err.cliVersion,
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.error(err.message);
+  }
+  process.exitCode = 2;
 }
 
 async function cmdMetrics(args: string[] = []): Promise<void> {
@@ -683,4 +720,4 @@ Examples:
   mcx run get-time`);
 }
 
-main().then(() => process.exit(0));
+main().then(() => process.exit(process.exitCode ?? 0));

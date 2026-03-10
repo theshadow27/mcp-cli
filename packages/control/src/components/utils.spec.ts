@@ -359,7 +359,7 @@ describe("checkProtocolVersion", () => {
 
   it("returns error message when versions differ", () => {
     const msg = checkProtocolVersion("old-hash-abc123");
-    expect(msg).toContain("Protocol version mismatch");
+    expect(msg).toContain("Protocol mismatch");
     expect(msg).toContain("old-hash-abc123");
     expect(msg).toContain(PROTOCOL_VERSION);
     expect(msg).toContain("mcx daemon restart");

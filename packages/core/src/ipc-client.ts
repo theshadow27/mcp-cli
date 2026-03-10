@@ -37,9 +37,7 @@ export class ProtocolMismatchError extends Error {
   readonly cliVersion: string;
 
   constructor(daemonVersion: string, cliVersion: string) {
-    super(
-      `Protocol version mismatch — daemon is running ${daemonVersion}, CLI expects ${cliVersion}.\n\nThe daemon was started from a different build. Active sessions will be\nlost if the daemon is restarted.\n\n  To restart anyway:  mcx daemon restart\n  If developing:      bun build && mcx daemon restart`,
-    );
+    super(`Protocol mismatch: daemon ${daemonVersion}, CLI expects ${cliVersion}.\nRun: mcx daemon restart`);
     this.name = "ProtocolMismatchError";
     this.daemonVersion = daemonVersion;
     this.cliVersion = cliVersion;
