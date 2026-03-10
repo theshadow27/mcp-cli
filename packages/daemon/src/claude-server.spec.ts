@@ -1,8 +1,48 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
-import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache } from "./claude-server";
+import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
+
+// ── isWorkerEvent ──
+
+describe("isWorkerEvent", () => {
+  test("matches all known DB event types", () => {
+    expect(isWorkerEvent({ type: "db:upsert", session: {} })).toBe(true);
+    expect(isWorkerEvent({ type: "db:state", sessionId: "s1", state: "active" })).toBe(true);
+    expect(isWorkerEvent({ type: "db:cost", sessionId: "s1", cost: 0, tokens: 0 })).toBe(true);
+    expect(isWorkerEvent({ type: "db:disconnected", sessionId: "s1", reason: "x" })).toBe(true);
+    expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
+  });
+
+  test("matches metrics and ready event types", () => {
+    expect(isWorkerEvent({ type: "metrics:inc", name: "foo" })).toBe(true);
+    expect(isWorkerEvent({ type: "metrics:observe", name: "foo", value: 1 })).toBe(true);
+    expect(isWorkerEvent({ type: "ready", port: 3000 })).toBe(true);
+  });
+
+  test("rejects JSON-RPC messages (even though they have no matching type)", () => {
+    expect(isWorkerEvent({ jsonrpc: "2.0", method: "initialize", id: 1 })).toBe(false);
+  });
+
+  test("rejects messages with unknown type values", () => {
+    expect(isWorkerEvent({ type: "unknown" })).toBe(false);
+    expect(isWorkerEvent({ type: "custom:event" })).toBe(false);
+    expect(isWorkerEvent({ type: "" })).toBe(false);
+  });
+
+  test("rejects non-object values", () => {
+    expect(isWorkerEvent(null)).toBe(false);
+    expect(isWorkerEvent(undefined)).toBe(false);
+    expect(isWorkerEvent("string")).toBe(false);
+    expect(isWorkerEvent(42)).toBe(false);
+  });
+
+  test("rejects objects without type field", () => {
+    expect(isWorkerEvent({})).toBe(false);
+    expect(isWorkerEvent({ data: "foo" })).toBe(false);
+  });
+});
 
 // ── buildClaudeToolCache ──
 
@@ -574,6 +614,30 @@ describe("ClaudeServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
     const row = db.getSession("crash-alive");
     expect(row?.state).toBe("ended");
+  });
+
+  // ── isWorkerEvent routing ──
+
+  test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    const { client } = await server.start();
+
+    // Verify the routing decision: unknown types must NOT match isWorkerEvent
+    // so they fall through to the MCP transport handler instead of being consumed
+    expect(isWorkerEvent({ type: "unknown:something", data: "test" })).toBe(false);
+    expect(isWorkerEvent({ type: "init", daemonId: "d1" })).toBe(false);
+    expect(isWorkerEvent({ type: "tools_changed" })).toBe(false);
+
+    // Known worker events must match
+    expect(isWorkerEvent({ type: "db:upsert", session: {} })).toBe(true);
+    expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
+
+    // MCP client should still work correctly after startup
+    const { tools } = await client.listTools();
+    expect(tools.length).toBe(9);
   });
 
   // ── PID-less session TTL ──
