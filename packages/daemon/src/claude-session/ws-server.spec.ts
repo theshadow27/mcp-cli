@@ -1401,6 +1401,110 @@ describe("ClaudeWsServer", () => {
     await expect(server.waitForEventsSince(null, 0, 100)).rejects.toThrow("No active sessions");
   });
 
+  // ── session snapshot field on cleared/model_changed/disconnected events ──
+
+  test("waitForEvent session:cleared event includes session snapshot with snapshotTs", async () => {
+    const spawnCalls: string[][] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (cmd: string[]) => {
+      spawnCalls.push(cmd);
+      return {
+        pid: 12345 + spawnCalls.length,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {
+          exitResolve(143);
+        },
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    // Connect and send init but NOT result, so session stays in active/init state (not idle)
+    // This prevents findImmediateEvent from short-circuiting with session:result
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    await Bun.sleep(20);
+
+    const before = Date.now();
+    // waitForEvent blocks — session is not idle
+    const eventPromise = server.waitForEvent("test-session", 5000);
+    server.sendPrompt("test-session", "/clear");
+
+    const event = await eventPromise;
+    expect(event.event).toBe("session:cleared");
+    expect(event.session).toBeDefined();
+    expect(event.session?.sessionId).toBe("test-session");
+    expect(typeof event.session?.snapshotTs).toBe("number");
+    expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+    ws.close();
+  });
+
+  test("waitForEvent session:model_changed event includes session snapshot with snapshotTs", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const before = Date.now();
+      const eventPromise = server.waitForEvent("test-session", 5000);
+      server.sendPrompt("test-session", "/model claude-opus-4-6");
+
+      const event = await eventPromise;
+      expect(event.event).toBe("session:model_changed");
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(typeof event.session?.snapshotTs).toBe("number");
+      expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent session:disconnected event includes session snapshot with snapshotTs", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const before = Date.now();
+      const eventPromise = server.waitForEvent("test-session", 5000);
+      // Trigger process exit — this routes through handleSessionEvent which calls resolveEventWaiters
+      ms.exitResolve(0);
+
+      const event = await eventPromise;
+      expect(event.event).toBe("session:disconnected");
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(typeof event.session?.snapshotTs).toBe("number");
+      expect(event.session!.snapshotTs).toBeGreaterThanOrEqual(before);
+    } finally {
+      ws.close();
+    }
+  });
+
   // ── /clear and /model interception ──
 
   test("sendPrompt with /clear kills process and respawns", async () => {

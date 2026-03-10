@@ -22,6 +22,7 @@ function session(id: string): SessionInfo {
     worktree: null,
     wsConnected: true,
     spawnAlive: true,
+    snapshotTs: Date.now(),
   };
 }
 
