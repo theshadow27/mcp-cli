@@ -933,10 +933,9 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     await pool.awaitPendingServers();
   });
 
-  test("callTool throws 'not found' after pending server fails to start", async () => {
+  test("callTool throws startup error after pending server fails to start", async () => {
     const pool = new ServerPool(makeConfig({}));
 
-    // Register a pending server whose startup fails (the IIFE catches and resolves)
     pool.registerPendingVirtualServer(
       "_broken",
       (async () => {
@@ -947,8 +946,30 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     // Wait for the pending promise to settle
     await pool.awaitPendingServers();
 
-    // Now callTool should throw "not found" since the server never registered
-    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow('Server "_broken" not found');
+    // callTool should throw the startup error, not "not found"
+    await expect(pool.callTool("_broken", "tool", {})).rejects.toThrow(
+      'Virtual server "_broken" failed to start: worker crash',
+    );
+  });
+
+  test("listServers shows error state after pending server fails to start", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    pool.registerPendingVirtualServer(
+      "_broken",
+      (async () => {
+        throw new Error("worker crash");
+      })(),
+    );
+
+    await pool.awaitPendingServers();
+
+    const servers = pool.listServers();
+    const broken = servers.find((s) => s.name === "_broken");
+    expect(broken).toBeDefined();
+    expect(broken?.state).toBe("error");
+    expect(broken?.lastError).toBe("worker crash");
+    expect(broken?.transport).toBe("virtual");
   });
 
   test("failed pending server does not block other operations", async () => {

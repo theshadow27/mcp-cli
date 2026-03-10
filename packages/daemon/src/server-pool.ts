@@ -121,6 +121,21 @@ export class ServerPool {
     const tracked = startPromise
       .catch((err) => {
         console.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
+        // Create error placeholder so the server remains visible in listServers()
+        if (!this.connections.has(name)) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          this.connections.set(name, {
+            name,
+            resolved: { name, config: { command: "__virtual__" }, source: { file: "built-in", scope: "mcp-cli" } },
+            client: null,
+            transport: null,
+            tools: new Map(),
+            state: "error",
+            lastUsed: 0,
+            lastError: errorMsg,
+            virtual: true,
+          });
+        }
       })
       .finally(() => this.pendingServers.delete(name));
     this.pendingServers.set(name, tracked);
@@ -202,6 +217,11 @@ export class ServerPool {
 
     const conn = this.connections.get(name);
     if (!conn) throw new Error(`Server "${name}" not found`);
+
+    // Virtual servers in error state cannot be reconnected automatically
+    if (conn.virtual && conn.state === "error") {
+      throw new Error(`Virtual server "${name}" failed to start: ${conn.lastError ?? "unknown error"}`);
+    }
 
     if (conn.state === "connected" && conn.client) {
       conn.lastUsed = Date.now();
