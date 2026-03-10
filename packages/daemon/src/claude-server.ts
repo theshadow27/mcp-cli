@@ -158,6 +158,7 @@ export class ClaudeServer {
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
+    if (this.worker) throw new Error("start() called while worker is already running");
     this.stopped = false;
     metrics.gauge("mcpd_worker_crash_loop_stopped").set(0);
     const worker = new Worker(workerPath("claude-session-worker.ts"));
@@ -271,6 +272,9 @@ export class ClaudeServer {
     this.transport = null;
     this.client = null;
     this.wsPort = null;
+    for (const sessionId of this.activeSessions) {
+      this.db.endSession(sessionId);
+    }
     this.activeSessions.clear();
     this.sessionPids.clear();
     this.sessionAddedAt.clear();

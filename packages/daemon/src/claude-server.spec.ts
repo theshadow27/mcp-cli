@@ -990,6 +990,46 @@ describe("ClaudeServer", () => {
     server = undefined; // already cleaned up
   });
 
+  // ── Re-entrancy guard (#493) ──
+
+  test("start() throws if called while worker is already running", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    await expect(server.start()).rejects.toThrow("start() called while worker is already running");
+  });
+
+  // ── stop() ends sessions in DB (#495) ──
+
+  test("stop() calls db.endSession() for all active sessions", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "stop-end-1", pid: process.pid, state: "active" } });
+    handle({ type: "db:upsert", session: { sessionId: "stop-end-2", state: "idle" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    await server.stop();
+
+    // Both sessions should be ended in the DB
+    const row1 = db.getSession("stop-end-1");
+    expect(row1?.state).toBe("ended");
+    expect(row1?.endedAt).not.toBeNull();
+
+    const row2 = db.getSession("stop-end-2");
+    expect(row2?.state).toBe("ended");
+    expect(row2?.endedAt).not.toBeNull();
+
+    server = undefined; // prevent double stop
+  });
+
   // ── PID-less session TTL ──
 
   test("pruneDeadSessions prunes pid-less sessions after TTL expires", async () => {
