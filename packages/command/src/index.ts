@@ -623,15 +623,21 @@ Usage:
   mcx mail --wait [--timeout=N]      Block until a message arrives
   mcx mail --wait --for=<name>       Wait for mail to specific recipient
   mcx logs <server> [-f] [--lines N]  View server stderr output
+  mcx logs --daemon [-f] [--lines N]  View daemon log file
+  mcx spans [--trace-id ID]           View OpenTelemetry trace spans
   mcx typegen                         Generate TypeScript types for alias scripts
   mcx tty open <command>               Open command in new terminal tab
   mcx tty open --window <command>      Open command in new terminal window
   mcx tty open --headless <command>    Run command as background process
   mcx claude spawn --task "..."        Start a Claude Code session
+  mcx claude resume <worktree>         Reattach to an orphaned worktree session
   mcx claude ls                        List active Claude sessions
   mcx claude send <session> <msg>      Send follow-up prompt to session
-  mcx claude kill <session>            Interrupt a session
+  mcx claude interrupt <session>       Interrupt a session
+  mcx claude wait <session>            Block until a session completes
+  mcx claude bye <session>             End a session gracefully
   mcx claude log <session>             View session transcript
+  mcx claude worktrees                 List worktrees with session status
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
