@@ -309,7 +309,13 @@ export class ClaudeWsServer {
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
+        this.handleSessionEvent(sessionId, session, event);
       }
+      // Reject pending result waiters — they can't get results without a process
+      for (const waiter of session.resultWaiters) {
+        waiter.reject(new Error("Process exited"));
+      }
+      session.resultWaiters.length = 0;
     });
 
     return proc.pid;
@@ -802,6 +808,12 @@ export class ClaudeWsServer {
         this.resolveEventWaiters(sessionId, {
           sessionId,
           event: "session:model_changed",
+        });
+        break;
+      case "session:disconnected":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:disconnected",
         });
         break;
     }
