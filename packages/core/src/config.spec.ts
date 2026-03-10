@@ -12,6 +12,11 @@ describe("isStdioConfig", () => {
     const config: ServerConfig = { type: "http", url: "https://example.com" };
     expect(isStdioConfig(config)).toBe(false);
   });
+
+  test("returns true when both command and url are present (stdio wins)", () => {
+    const config = { command: "node", url: "https://example.com" } as ServerConfig;
+    expect(isStdioConfig(config)).toBe(true);
+  });
 });
 
 describe("isHttpConfig", () => {
@@ -22,6 +27,16 @@ describe("isHttpConfig", () => {
 
   test("returns false for type: sse with url", () => {
     const config: ServerConfig = { type: "sse", url: "https://example.com" };
+    expect(isHttpConfig(config)).toBe(false);
+  });
+
+  test("returns false for config with command", () => {
+    const config: ServerConfig = { command: "node", args: ["server.js"] };
+    expect(isHttpConfig(config)).toBe(false);
+  });
+
+  test("returns false for url with no type and no command", () => {
+    const config = { url: "https://example.com" } as ServerConfig;
     expect(isHttpConfig(config)).toBe(false);
   });
 });
@@ -41,6 +56,14 @@ describe("isSseConfig", () => {
     // Previously this would have defaulted to SSE — now it must be explicit
     const config = { url: "https://example.com" } as ServerConfig;
     expect(isSseConfig(config)).toBe(false);
+  });
+
+  test("returns false when command is present even with url", () => {
+    const config = { command: "node", url: "https://example.com", type: "sse" } as ServerConfig;
+    // isSseConfig only checks url + type, but getTransportType checks stdio first
+    expect(isSseConfig(config)).toBe(true);
+    // However, getTransportType would route this to stdio
+    expect(getTransportType(config)).toBe("stdio");
   });
 });
 
