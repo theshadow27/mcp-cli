@@ -5,13 +5,14 @@
  * On change, reloads config, compares hash, and invokes a callback with change details.
  */
 
-import { type FSWatcher, existsSync, watch } from "node:fs";
+import { type FSWatcher, existsSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
-import { configHash, loadConfig } from "./loader";
+import { configHash, loadConfig as defaultLoadConfig } from "./loader";
 
 const DEBOUNCE_MS = 300;
+const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 export interface ConfigChangeEvent {
   added: string[];
@@ -23,20 +24,36 @@ export interface ConfigChangeEvent {
 
 export type ConfigChangeCallback = (event: ConfigChangeEvent) => void;
 
+export interface ConfigWatcherOptions {
+  pollIntervalMs?: number;
+  loadConfig?: (cwd: string) => Promise<ResolvedConfig>;
+}
+
 export class ConfigWatcher {
   private watchers: FSWatcher[] = [];
   private debounceTimer: Timer | null = null;
+  private pollTimer: Timer | null = null;
+  private pollIntervalMs: number;
+  private loadConfigFn: (cwd: string) => Promise<ResolvedConfig>;
+  private lastMtimes: Map<string, number> = new Map();
   private currentHash: string;
   private previousServers: Map<string, ResolvedServer>;
   private cwd: string;
   private callback: ConfigChangeCallback;
   private stopped = false;
 
-  constructor(initialConfig: ResolvedConfig, callback: ConfigChangeCallback, cwd = process.cwd()) {
+  constructor(
+    initialConfig: ResolvedConfig,
+    callback: ConfigChangeCallback,
+    cwd = process.cwd(),
+    opts?: ConfigWatcherOptions,
+  ) {
     this.currentHash = configHash(initialConfig);
     this.previousServers = initialConfig.servers;
     this.callback = callback;
     this.cwd = cwd;
+    this.pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.loadConfigFn = opts?.loadConfig ?? defaultLoadConfig;
   }
 
   /** Compare two server maps and return the diff. */
@@ -68,10 +85,22 @@ export class ConfigWatcher {
 
   /** Start watching config files. */
   start(): void {
+    if (this.pollTimer) return;
     const paths = this.getWatchPaths();
     for (const filePath of paths) {
       this.watchFile(filePath);
     }
+
+    // Initialize mtimes and start polling fallback
+    for (const filePath of paths) {
+      try {
+        this.lastMtimes.set(filePath, statSync(filePath).mtimeMs);
+      } catch {
+        this.lastMtimes.set(filePath, 0);
+      }
+    }
+    this.pollTimer = setInterval(() => this.pollCheck(), this.pollIntervalMs);
+
     console.error(`[config-watcher] Watching ${paths.length} config paths`);
   }
 
@@ -81,6 +110,10 @@ export class ConfigWatcher {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
     for (const w of this.watchers) {
       w.close();
@@ -131,6 +164,33 @@ export class ConfigWatcher {
     }
   }
 
+  /** Poll watched paths for mtime changes as a fallback for unreliable fs.watch. */
+  private pollCheck(): void {
+    try {
+      if (this.stopped) return;
+      const paths = this.getWatchPaths();
+      let changed = false;
+      for (const filePath of paths) {
+        let mtime = 0;
+        try {
+          mtime = statSync(filePath).mtimeMs;
+        } catch {
+          // File doesn't exist — treat as mtime 0
+        }
+        const last = this.lastMtimes.get(filePath) ?? 0;
+        if (mtime !== last) {
+          this.lastMtimes.set(filePath, mtime);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.scheduleReload();
+      }
+    } catch (err) {
+      console.error(`[config-watcher] Poll check failed: ${err}`);
+    }
+  }
+
   /** Force an immediate config reload, bypassing debounce. */
   async forceReload(): Promise<void> {
     await this.reload();
@@ -154,7 +214,7 @@ export class ConfigWatcher {
   private async reload(): Promise<void> {
     if (this.stopped) return;
     try {
-      const config = await loadConfig(this.cwd);
+      const config = await this.loadConfigFn(this.cwd);
       const hash = configHash(config);
 
       if (hash === this.currentHash) return;
@@ -165,6 +225,16 @@ export class ConfigWatcher {
       this.previousServers = config.servers;
       console.error(`[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`);
       this.callback({ added, removed, changed, config, hash });
+
+      // Refresh mtimes so the polling fallback doesn't redundantly trigger
+      // for a change that fs.watch already handled.
+      for (const filePath of this.getWatchPaths()) {
+        try {
+          this.lastMtimes.set(filePath, statSync(filePath).mtimeMs);
+        } catch {
+          this.lastMtimes.set(filePath, 0);
+        }
+      }
     } catch (err) {
       console.error(`[config-watcher] Failed to reload config: ${err}`);
     }
