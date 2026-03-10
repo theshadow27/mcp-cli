@@ -16,6 +16,9 @@ function tmpSocket(): string {
   return join(tmpdir(), `mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
 }
 
+// Shared poll helper — throws on timeout for visible test failures
+import { pollUntil } from "../../../test/harness";
+
 /** Minimal mock pool — only transport behavior is under test */
 function mockPool() {
   return {
@@ -290,7 +293,7 @@ describe("IpcServer HTTP transport", () => {
     expect(json.result).toEqual({ ok: true });
 
     // onShutdown is called after a 100ms setTimeout
-    await Bun.sleep(150);
+    await pollUntil(() => shutdownCalled);
     expect(shutdownCalled).toBe(true);
   });
 
@@ -319,7 +322,7 @@ describe("IpcServer HTTP transport", () => {
     expect(callbackTime === 0 || callbackTime >= responseTime).toBe(true);
 
     // Wait for callback to fire
-    await Bun.sleep(150);
+    await pollUntil(() => callbackTime > 0);
     expect(callbackTime).toBeGreaterThan(0);
   });
 
@@ -356,7 +359,7 @@ describe("IpcServer HTTP transport", () => {
     const json = (await res.json()) as IpcResponse;
     expect(json.result).toEqual({ ok: true });
 
-    await Bun.sleep(150);
+    await pollUntil(() => closeAllCalled);
     expect(closeAllCalled).toBe(true);
   });
 

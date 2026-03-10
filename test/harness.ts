@@ -111,6 +111,19 @@ export async function startTestDaemon(
   };
 }
 
+/**
+ * Poll condition until it returns truthy or deadline passes.
+ * Never use a fixed sleep to wait for async side effects — poll instead.
+ * Throws with a descriptive message on timeout so test failures are visible.
+ */
+export async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+}
+
 /** Send an IPC RPC request directly to a daemon's Unix socket */
 export async function rpc(socketPath: string, method: string, params?: unknown): Promise<IpcResponse> {
   const res = await fetch("http://localhost/rpc", {

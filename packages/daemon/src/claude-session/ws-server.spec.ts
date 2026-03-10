@@ -51,17 +51,8 @@ function waitForMessage(ws: WebSocket): Promise<string> {
 
 // ── Poll helper ──
 
-/**
- * Poll condition until it returns true or deadline passes.
- * Never use a fixed sleep to wait for async side effects — poll instead.
- */
-async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(10);
-  }
-  if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
-}
+// Shared poll helper — throws on timeout for visible test failures
+import { pollUntil } from "../../../../test/harness";
 
 // ── Helpers ──
 
