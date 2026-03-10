@@ -9,6 +9,9 @@
  * Waiting for `system/init` first causes deadlock.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
@@ -118,6 +121,8 @@ interface WsSession {
   resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
   clearing: boolean;
+  /** Claude Code's own session ID (from system/init), used for JSONL file lookup. */
+  claudeSessionId: string | null;
 }
 
 interface WsData {
@@ -237,6 +242,7 @@ export class ClaudeWsServer {
       resultWaiters: [],
       keepAliveTimer: null,
       clearing: false,
+      claudeSessionId: null,
     });
   }
 
@@ -417,12 +423,23 @@ export class ClaudeWsServer {
     return [...this.sessions.entries()].map(([sessionId, s]) => this.buildSessionInfo(sessionId, s));
   }
 
-  /** Get transcript for a session. */
+  /** Get transcript for a session. Falls back to JSONL file when requesting more entries than the ring buffer holds. */
   getTranscript(sessionId: string, last?: number): TranscriptEntry[] {
     const session = this.getSession(sessionId);
-    if (last !== undefined && last > 0) {
-      return session.transcript.slice(-last);
+    const bufferHasEnough = last === undefined || last <= session.transcript.length;
+
+    if (bufferHasEnough) {
+      if (last !== undefined && last > 0) {
+        return session.transcript.slice(-last);
+      }
+      return [...session.transcript];
     }
+
+    // Fall back to JSONL file on disk
+    const entries = readJsonlTranscript(session.state.cwd, session.claudeSessionId, last);
+    if (entries) return entries;
+
+    // JSONL unavailable — return whatever the buffer has
     return [...session.transcript];
   }
 
@@ -637,6 +654,10 @@ export class ClaudeWsServer {
 
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
     switch (event.type) {
+      case "session:init":
+        // Capture Claude Code's own session ID for JSONL file lookup
+        session.claudeSessionId = event.sessionId;
+        break;
       case "session:permission_request":
         this.resolveEventWaiters(sessionId, {
           sessionId,
@@ -916,6 +937,63 @@ export class ClaudeWsServer {
 
     // Remove from map
     this.sessions.delete(sessionId);
+  }
+}
+
+// ── JSONL fallback ──
+
+/** Message types in Claude Code's JSONL files that map to transcript entries. */
+const JSONL_TRANSCRIPT_TYPES: ReadonlySet<string> = new Set(["user", "assistant", "result", "control_request"]);
+
+/**
+ * Resolve the path to Claude Code's JSONL conversation file.
+ * Path convention: ~/.claude/projects/<dash-encoded-cwd>/<claudeSessionId>.jsonl
+ */
+export function resolveJsonlPath(cwd: string, claudeSessionId: string): string {
+  const encoded = cwd.replace(/\//g, "-");
+  return join(homedir(), ".claude", "projects", encoded, `${claudeSessionId}.jsonl`);
+}
+
+/**
+ * Read transcript entries from a Claude Code JSONL file on disk.
+ * Returns the last `last` entries, or null if the file cannot be read.
+ */
+export function readJsonlTranscript(
+  cwd: string | null,
+  claudeSessionId: string | null,
+  last: number,
+): TranscriptEntry[] | null {
+  if (!cwd || !claudeSessionId) return null;
+
+  const filePath = resolveJsonlPath(cwd, claudeSessionId);
+  if (!existsSync(filePath)) return null;
+
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    const lines = content.split("\n").filter((l: string) => l.trim());
+    const entries: TranscriptEntry[] = [];
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (!obj.type || !JSONL_TRANSCRIPT_TYPES.has(obj.type as string)) continue;
+
+        const direction: "inbound" | "outbound" = obj.type === "user" ? "outbound" : "inbound";
+        const timestamp = typeof obj.timestamp === "string" ? new Date(obj.timestamp).getTime() : Date.now();
+
+        entries.push({
+          timestamp,
+          direction,
+          message: obj as NdjsonMessage,
+        });
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return entries.slice(-last);
+  } catch {
+    return null;
   }
 }
 
