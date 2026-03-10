@@ -88,8 +88,8 @@ gh pr checks <pr-number>
 ```
 
 - If CI is **failing**, investigate the failure logs with `gh run view <run-id> --log-failed`.
-- Fix any CI failures before proceeding — do NOT close issues or merge PRs with red CI.
-- If the failure is pre-existing (not caused by this PR), note it but still fix it before merging.
+- **NEVER merge with failing CI. No exceptions.** Not for "Bun bugs", not for "pre-existing failures", not for "flaky infrastructure". If you can't make CI green, flag it to the user and stop. Do not merge.
+- If the failure is pre-existing (not caused by this PR), fix it in the PR or report it and wait for instructions.
 
 ### Step 6: Comment, Close, and Merge
 
@@ -168,6 +168,6 @@ File issues for:
 - If something is genuinely broken or missing (not just "remaining work"), do NOT close. Instead, comment with findings and ask the user what to do.
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
-- Check CI status on PRs — do NOT merge with failing CI. Fix failures first.
+- **NEVER merge with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, stop and report. Do not rationalize bypassing CI.
 - Process ONE issue per invocation.
 - File issues for every problem you encounter, even if unrelated to the current task.
