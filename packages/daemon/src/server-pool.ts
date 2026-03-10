@@ -133,6 +133,11 @@ export class ServerPool {
     }
   }
 
+  /** Returns true if any virtual servers are still starting up. */
+  hasPendingServers(): boolean {
+    return this.pendingServers.size > 0;
+  }
+
   /** Update config (e.g., after file change). Returns names of changed/added/removed servers. */
   updateConfig(config: ResolvedConfig): { added: string[]; removed: string[]; changed: string[] } {
     this.config = config;

@@ -963,6 +963,47 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     const servers = poolWithConnect.listServers();
     expect(servers.some((s) => s.name === "a")).toBe(true);
   });
+
+  test("hasPendingServers returns true while server is starting, false after settled", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pool.registerPendingVirtualServer("_test", startPromise);
+
+    expect(pool.hasPendingServers()).toBe(true);
+
+    resolve();
+    await startPromise;
+    // Allow the .finally() cleanup to run
+    await Promise.resolve();
+
+    expect(pool.hasPendingServers()).toBe(false);
+  });
+
+  test("hasPendingServers returns false when pool has no pending servers", () => {
+    const pool = new ServerPool(makeConfig({}));
+    expect(pool.hasPendingServers()).toBe(false);
+  });
+
+  test("hasPendingServers returns false after failed pending server settles", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    pool.registerPendingVirtualServer(
+      "_broken",
+      (async () => {
+        throw new Error("startup failed");
+      })(),
+    );
+
+    expect(pool.hasPendingServers()).toBe(true);
+    await pool.awaitPendingServers();
+    await Promise.resolve();
+
+    expect(pool.hasPendingServers()).toBe(false);
+  });
 });
 
 describe("ServerPool.restart", () => {
