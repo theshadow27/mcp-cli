@@ -147,13 +147,16 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
     case "wait":
       await claudeWait(args.slice(1), d);
       break;
+    case "resume":
+      await claudeResume(args.slice(1), d);
+      break;
     case "worktrees":
     case "wt":
       await claudeWorktrees(args.slice(1), d);
       break;
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", or "worktrees".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -263,6 +266,260 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
 
+  const result = await d.callTool("claude_prompt", toolArgs);
+  console.log(formatToolResult(result));
+}
+
+// ── Resume ──
+
+export interface ResumeArgs {
+  target: string | undefined;
+  all: boolean;
+  allow: string[];
+  model: string | undefined;
+  wait: boolean;
+  timeout: number | undefined;
+  error: string | undefined;
+}
+
+export function parseResumeArgs(args: string[]): ResumeArgs {
+  let target: string | undefined;
+  let all = false;
+  let model: string | undefined;
+  let wait = false;
+  let timeout: number | undefined;
+  let error: string | undefined;
+  const allow: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--all") {
+      all = true;
+    } else if (arg === "--model" || arg === "-m") {
+      const val = args[++i];
+      if (!val) {
+        error = "--model requires a value";
+      } else {
+        model = resolveModelName(val);
+      }
+    } else if (arg === "--allow") {
+      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        allow.push(args[++i]);
+      }
+      if (allow.length === 0) error = "--allow requires at least one tool pattern";
+    } else if (arg === "--wait") {
+      wait = true;
+    } else if (arg === "--timeout") {
+      const val = args[++i];
+      if (!val) {
+        error = "--timeout requires a value in ms";
+      } else {
+        timeout = Number(val);
+        if (Number.isNaN(timeout)) error = "--timeout must be a number";
+      }
+    } else if (!arg.startsWith("-")) {
+      if (!target) target = arg;
+    }
+  }
+
+  if (!all && !target) {
+    error =
+      "Usage: mcx claude resume <worktree-path-or-branch> [--model M] [--allow tools...]\n       mcx claude resume --all";
+  }
+
+  return { target, all, allow, model, wait, timeout, error };
+}
+
+/** Extract issue number from branch name convention: feat/issue-N-slug, fix/issue-N-slug, etc. */
+export function extractIssueNumber(branch: string): number | null {
+  const match = branch.match(/issue-(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+/** Resolve a worktree target (path or branch name) to an actual worktree path. */
+export function resolveWorktree(
+  target: string,
+  worktrees: Array<{ path: string; branch: string | null }>,
+): { path: string; branch: string | null } | null {
+  // Direct path match
+  for (const wt of worktrees) {
+    if (wt.path === target) return wt;
+  }
+
+  // Match by worktree directory name (last path segment)
+  for (const wt of worktrees) {
+    const name = wt.path.split("/").pop();
+    if (name === target) return wt;
+  }
+
+  // Match by branch name
+  for (const wt of worktrees) {
+    if (wt.branch === target) return wt;
+  }
+
+  return null;
+}
+
+/** Build a context-rich resume prompt from git state. */
+export function buildResumePrompt(opts: {
+  branch: string;
+  issueNumber: number | null;
+  gitLog: string;
+  gitDiff: string;
+  prInfo: string | null;
+}): string {
+  const lines: string[] = [];
+  lines.push("You are resuming work in an existing worktree. Here is the context of what has already been done:");
+  lines.push("");
+  lines.push(`**Branch:** \`${opts.branch}\``);
+
+  if (opts.issueNumber) {
+    lines.push(`**Issue:** #${opts.issueNumber}`);
+  }
+
+  if (opts.prInfo) {
+    lines.push(`**PR:** ${opts.prInfo}`);
+  }
+
+  if (opts.gitLog.trim()) {
+    lines.push("");
+    lines.push("**Commits on this branch:**");
+    lines.push("```");
+    lines.push(opts.gitLog.trim());
+    lines.push("```");
+  }
+
+  if (opts.gitDiff.trim()) {
+    lines.push("");
+    lines.push("**Uncommitted changes:**");
+    lines.push("```");
+    lines.push(opts.gitDiff.trim());
+    lines.push("```");
+  }
+
+  lines.push("");
+  lines.push(
+    "Review the state above and continue where the previous session left off. If there are uncommitted changes, decide whether to commit or discard them. If there's a PR, check if it needs updates. If the work appears complete, verify it (typecheck, lint, test) and wrap up.",
+  );
+
+  return lines.join("\n");
+}
+
+async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
+  const parsed = parseResumeArgs(args);
+
+  if (parsed.error) {
+    d.printError(parsed.error);
+    d.exit(1);
+  }
+
+  const cwd = process.cwd();
+
+  // List all worktrees
+  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
+  if (wtExit !== 0) {
+    d.printError("Failed to list git worktrees (not a git repo?)");
+    d.exit(1);
+  }
+
+  const allWorktrees = parseWorktreeList(wtOutput);
+  const worktreeParent = join(cwd, ".claude", "worktrees");
+  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
+
+  // Get active sessions to find orphaned worktrees
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool("claude_session_list", {});
+    const text = formatToolResult(result);
+    const sessions = JSON.parse(text) as SessionInfo[];
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch {
+    // Daemon may not be running — all worktrees are orphaned
+  }
+
+  if (parsed.all) {
+    // Resume all orphaned worktrees
+    const orphaned = mcxWorktrees.filter((wt) => {
+      const wtName = wt.path.slice(`${worktreeParent}/`.length);
+      return !sessionWorktrees.has(wtName);
+    });
+
+    if (orphaned.length === 0) {
+      d.printError("No orphaned worktrees to resume.");
+      return;
+    }
+
+    d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
+
+    for (const wt of orphaned) {
+      await resumeWorktree(wt, parsed, d);
+    }
+    return;
+  }
+
+  // Single worktree resume
+  const target = parsed.target ?? "";
+  const resolved = resolveWorktree(target, mcxWorktrees);
+
+  if (!resolved) {
+    // Also try resolving against all worktrees (not just mcx ones)
+    const resolvedAll = resolveWorktree(target, allWorktrees);
+    if (resolvedAll) {
+      d.printError(`Worktree "${target}" exists but is not an mcx worktree (not under .claude/worktrees/).`);
+    } else {
+      d.printError(`No worktree matching "${target}". Use "mcx claude worktrees" to list available worktrees.`);
+    }
+    d.exit(1);
+  }
+
+  // Check if it already has an active session
+  const wtName = resolved.path.slice(`${worktreeParent}/`.length);
+  if (sessionWorktrees.has(wtName)) {
+    d.printError(`Worktree "${wtName}" already has an active session. Use "mcx claude send" to interact with it.`);
+    d.exit(1);
+  }
+
+  await resumeWorktree(resolved, parsed, d);
+}
+
+async function resumeWorktree(
+  wt: { path: string; branch: string | null },
+  parsed: ResumeArgs,
+  d: ClaudeDeps,
+): Promise<void> {
+  const branch = wt.branch ?? "unknown";
+
+  // Check if branch is already merged into main
+  const { stdout: mergedOutput } = d.exec(["git", "-C", wt.path, "branch", "--merged", "main"]);
+  const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+  if (mergedBranches.includes(branch)) {
+    d.printError(`Skipping "${branch}" — already merged into main. Use "mcx claude worktrees --prune" to clean up.`);
+    return;
+  }
+
+  // Gather context
+  const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `main..${branch}`, "--"]);
+  const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
+
+  const issueNumber = extractIssueNumber(branch);
+
+  // Check for existing PR
+  let prInfo: string | null = null;
+  const prStatus = await d.getPrStatus(wt.path);
+  if (prStatus) {
+    prInfo = `#${prStatus.number} (${prStatus.state})`;
+  }
+
+  const prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
+
+  // Spawn a new session with cwd set to the worktree path (not --worktree, which would create a new one)
+  const toolArgs: Record<string, unknown> = { prompt, cwd: wt.path };
+  if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.model) toolArgs.model = parsed.model;
+  if (parsed.timeout) toolArgs.timeout = parsed.timeout;
+  if (parsed.wait) toolArgs.wait = true;
+
+  d.printError(`Resuming session in ${wt.path} (branch: ${branch})`);
   const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
 }
@@ -807,6 +1064,8 @@ function printClaudeUsage(): void {
 Usage:
   mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
   mcx claude spawn "description"           Shorthand (positional task)
+  mcx claude resume <worktree-or-branch>   Resume work in an orphaned worktree
+  mcx claude resume --all                  Resume all orphaned worktrees
   mcx claude ls [--pr]                     List active sessions (--pr shows PR number/status)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session]                Block until a session event occurs
@@ -827,6 +1086,13 @@ Spawn options:
   --resume <id>               Resume a previous session
   --allow <tools...>          Pre-approved tool patterns (default: Read Glob Grep Write Edit)
   --cwd <path>                Working directory for Claude
+  --timeout <ms>              Max wait time (default: 300000, only with --wait)
+
+Resume options:
+  --all                       Resume all orphaned worktrees (batch mode)
+  --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID
+  --allow <tools...>          Pre-approved tool patterns
+  --wait                      Block until Claude produces a result
   --timeout <ms>              Max wait time (default: 300000, only with --wait)
 
 Send options:

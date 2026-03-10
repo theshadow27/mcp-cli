@@ -4,16 +4,20 @@ import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import {
   MODEL_SHORTNAMES,
+  buildResumePrompt,
   cmdClaude,
   defaultGetPrStatus,
   extractContentSummary,
+  extractIssueNumber,
   parseDiffShortstat,
   parseLogArgs,
+  parseResumeArgs,
   parseSpawnArgs,
   parseWaitArgs,
   parseWorktreeList,
   resolveModelName,
   resolveSessionId,
+  resolveWorktree,
 } from "./claude";
 
 // ── Helpers ──
@@ -1959,5 +1963,361 @@ describe("mcx claude worktrees", () => {
     await cmdClaude(["wt"], deps);
     const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
     expect(errOutput).toContain("No mcx worktrees found.");
+  });
+});
+
+// ── Resume ──
+
+describe("parseResumeArgs", () => {
+  test("parses target positional arg", () => {
+    const result = parseResumeArgs(["my-worktree"]);
+    expect(result.target).toBe("my-worktree");
+    expect(result.all).toBe(false);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --all flag", () => {
+    const result = parseResumeArgs(["--all"]);
+    expect(result.all).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --model flag", () => {
+    const result = parseResumeArgs(["my-wt", "--model", "sonnet"]);
+    expect(result.target).toBe("my-wt");
+    expect(result.model).toContain("sonnet");
+  });
+
+  test("parses --allow flag", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Read", "Write"]);
+    expect(result.allow).toEqual(["Read", "Write"]);
+  });
+
+  test("parses --wait flag", () => {
+    const result = parseResumeArgs(["my-wt", "--wait"]);
+    expect(result.wait).toBe(true);
+  });
+
+  test("parses --timeout flag", () => {
+    const result = parseResumeArgs(["my-wt", "--timeout", "60000"]);
+    expect(result.timeout).toBe(60000);
+  });
+
+  test("errors when no target and no --all", () => {
+    const result = parseResumeArgs([]);
+    expect(result.error).toBeDefined();
+  });
+
+  test("errors on --model without value", () => {
+    const result = parseResumeArgs(["my-wt", "--model"]);
+    expect(result.error).toBe("--model requires a value");
+  });
+
+  test("errors on --timeout without value", () => {
+    const result = parseResumeArgs(["my-wt", "--timeout"]);
+    expect(result.error).toBe("--timeout requires a value in ms");
+  });
+
+  test("errors on --allow without patterns", () => {
+    const result = parseResumeArgs(["my-wt", "--allow"]);
+    expect(result.error).toBe("--allow requires at least one tool pattern");
+  });
+});
+
+describe("extractIssueNumber", () => {
+  test("extracts from feat/issue-N-slug", () => {
+    expect(extractIssueNumber("feat/issue-262-claude-resume")).toBe(262);
+  });
+
+  test("extracts from fix/issue-N-slug", () => {
+    expect(extractIssueNumber("fix/issue-42-some-fix")).toBe(42);
+  });
+
+  test("returns null for non-matching branches", () => {
+    expect(extractIssueNumber("main")).toBeNull();
+    expect(extractIssueNumber("feature/add-auth")).toBeNull();
+  });
+
+  test("extracts issue number from middle of branch name", () => {
+    expect(extractIssueNumber("refactor/issue-100-cleanup")).toBe(100);
+  });
+});
+
+describe("resolveWorktree", () => {
+  const worktrees = [
+    { path: "/repo/.claude/worktrees/claude-abc123", branch: "feat/issue-1-foo" },
+    { path: "/repo/.claude/worktrees/claude-def456", branch: "fix/issue-2-bar" },
+  ];
+
+  test("resolves by full path", () => {
+    const result = resolveWorktree("/repo/.claude/worktrees/claude-abc123", worktrees);
+    expect(result).toEqual(worktrees[0]);
+  });
+
+  test("resolves by directory name", () => {
+    const result = resolveWorktree("claude-def456", worktrees);
+    expect(result).toEqual(worktrees[1]);
+  });
+
+  test("resolves by branch name", () => {
+    const result = resolveWorktree("feat/issue-1-foo", worktrees);
+    expect(result).toEqual(worktrees[0]);
+  });
+
+  test("returns null for no match", () => {
+    const result = resolveWorktree("nonexistent", worktrees);
+    expect(result).toBeNull();
+  });
+});
+
+describe("buildResumePrompt", () => {
+  test("includes branch name", () => {
+    const prompt = buildResumePrompt({
+      branch: "feat/issue-42-auth",
+      issueNumber: 42,
+      gitLog: "abc1234 add auth module",
+      gitDiff: "",
+      prInfo: null,
+    });
+    expect(prompt).toContain("`feat/issue-42-auth`");
+    expect(prompt).toContain("#42");
+    expect(prompt).toContain("abc1234 add auth module");
+  });
+
+  test("includes PR info when present", () => {
+    const prompt = buildResumePrompt({
+      branch: "feat/issue-1-foo",
+      issueNumber: 1,
+      gitLog: "",
+      gitDiff: "",
+      prInfo: "#99 (open)",
+    });
+    expect(prompt).toContain("#99 (open)");
+  });
+
+  test("includes uncommitted changes", () => {
+    const prompt = buildResumePrompt({
+      branch: "feat/issue-1-foo",
+      issueNumber: null,
+      gitLog: "",
+      gitDiff: " src/index.ts | 5 ++---",
+      prInfo: null,
+    });
+    expect(prompt).toContain("Uncommitted changes");
+    expect(prompt).toContain("src/index.ts");
+  });
+
+  test("omits empty sections", () => {
+    const prompt = buildResumePrompt({
+      branch: "feat/foo",
+      issueNumber: null,
+      gitLog: "",
+      gitDiff: "",
+      prInfo: null,
+    });
+    expect(prompt).not.toContain("Commits on this branch");
+    expect(prompt).not.toContain("Uncommitted changes");
+    expect(prompt).not.toContain("Issue:");
+    expect(prompt).not.toContain("PR:");
+  });
+});
+
+describe("cmdClaude resume", () => {
+  const cwd = process.cwd();
+  const worktreeParent = `${cwd}/.claude/worktrees`;
+
+  test("errors with no arguments", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["resume"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalled();
+  });
+
+  test("errors when worktree not found", async () => {
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const deps = makeDeps({ exec });
+    await expect(cmdClaude(["resume", "nonexistent"], deps)).rejects.toThrow(ExitError);
+    const errOutput = (deps.printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).toContain('No worktree matching "nonexistent"');
+  });
+
+  test("errors when worktree has active session", async () => {
+    const wtPath = `${worktreeParent}/claude-test123`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-1-test\n`,
+          exitCode: 0,
+        };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") {
+        return toolResult([{ sessionId: "s1", state: "active", worktree: "claude-test123" }]);
+      }
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await expect(cmdClaude(["resume", "claude-test123"], deps)).rejects.toThrow(ExitError);
+    const errOutput = (deps.printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).toContain("already has an active session");
+  });
+
+  test("skips already-merged branches", async () => {
+    const wtPath = `${worktreeParent}/claude-merged`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-5-done\n`,
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n  feat/issue-5-done\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      return toolResult({});
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ exec, callTool, printError });
+    await cmdClaude(["resume", "claude-merged"], deps);
+    const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).toContain("already merged into main");
+  });
+
+  test("spawns session with cwd set to worktree path", async () => {
+    const wtPath = `${worktreeParent}/claude-orphan`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n", exitCode: 0 };
+      }
+      if (cmd.includes("log")) {
+        return { stdout: "abc1234 add auth module\ndef5678 add tests", exitCode: 0 };
+      }
+      if (cmd.includes("diff")) {
+        return { stdout: " src/auth.ts | 3 ++-\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-session-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-orphan"], deps);
+
+    // Verify claude_prompt was called with correct cwd
+    const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
+    expect(promptCall).toBeDefined();
+    const promptArgs = promptCall?.[1] as Record<string, unknown>;
+    expect(promptArgs.cwd).toBe(wtPath);
+    expect(promptArgs.prompt).toContain("feat/issue-42-auth");
+    expect(promptArgs.prompt).toContain("#42");
+    expect(promptArgs.prompt).toContain("abc1234 add auth module");
+    expect(promptArgs.prompt).toContain("src/auth.ts");
+  });
+
+  test("--all resumes all orphaned worktrees", async () => {
+    const wt1 = `${worktreeParent}/claude-wt1`;
+    const wt2 = `${worktreeParent}/claude-wt2`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc",
+            "branch refs/heads/main",
+            "",
+            `worktree ${wt1}`,
+            "HEAD def",
+            "branch refs/heads/feat/issue-1-foo",
+            "",
+            `worktree ${wt2}`,
+            "HEAD ghi",
+            "branch refs/heads/feat/issue-2-bar",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "--all"], deps);
+
+    // Should have spawned 2 sessions
+    const promptCalls = callTool.mock.calls.filter((c: unknown[]) => c[0] === "claude_prompt");
+    expect(promptCalls.length).toBe(2);
+  });
+
+  test("--all reports when no orphaned worktrees found", async () => {
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      return toolResult({});
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ exec, callTool, printError });
+    await cmdClaude(["resume", "--all"], deps);
+    const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).toContain("No orphaned worktrees to resume");
+  });
+
+  test("passes --model and --allow to spawn", async () => {
+    const wtPath = `${worktreeParent}/claude-opts`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-1-test\n`,
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) return { stdout: "  main\n", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "s1", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-opts", "--model", "sonnet", "--allow", "Read", "Grep"], deps);
+
+    const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
+    const promptArgs = promptCall?.[1] as Record<string, unknown>;
+    expect(promptArgs.model).toContain("sonnet");
+    expect(promptArgs.allowedTools).toEqual(["Read", "Grep"]);
   });
 });
