@@ -82,6 +82,22 @@ describe("useLogs", () => {
     expect(maxConcurrency).toBe(1);
   });
 
+  it("does not poll when enabled is false", async () => {
+    let callCount = 0;
+    const ipcCallFn = async () => {
+      callCount++;
+      return { lines: [] };
+    };
+
+    mount({
+      enabled: false,
+      ipcCallFn: ipcCallFn as UseLogsOptions["ipcCallFn"],
+    });
+
+    await flush(50);
+    expect(callCount).toBe(0);
+  });
+
   it("cleanup stops polling on unmount", async () => {
     let callCount = 0;
     const ipcCallFn = async () => {

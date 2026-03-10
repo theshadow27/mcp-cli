@@ -27,12 +27,14 @@ interface UseLogsResult {
 }
 
 export interface UseLogsOptions {
+  /** Gate polling — when false, the effect is a no-op. Defaults to true. */
+  enabled?: boolean;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
 
 export function useLogs(servers: ServerStatus[], opts: UseLogsOptions = {}): UseLogsResult {
-  const { ipcCallFn = ipcCall } = opts;
+  const { enabled = true, ipcCallFn = ipcCall } = opts;
   const [source, setSourceRaw] = useState<LogSource>({ type: "daemon" });
   const [lines, setLines] = useState<LogEntry[]>([]);
   const sinceRef = useRef<number | undefined>(undefined);
@@ -51,6 +53,8 @@ export function useLogs(servers: ServerStatus[], opts: UseLogsOptions = {}): Use
   );
 
   useEffect(() => {
+    if (!enabled) return;
+
     let cancelled = false;
     let isFirst = true;
 
@@ -111,7 +115,7 @@ export function useLogs(servers: ServerStatus[], opts: UseLogsOptions = {}): Use
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [source, ipcCallFn]);
+  }, [source, enabled, ipcCallFn]);
 
   return { lines, source, setSource };
 }
