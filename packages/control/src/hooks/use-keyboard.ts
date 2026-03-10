@@ -4,7 +4,7 @@ import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
 import { type LogSource, buildLogSources } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "claude", "mail", "stats"] as const;
+export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
