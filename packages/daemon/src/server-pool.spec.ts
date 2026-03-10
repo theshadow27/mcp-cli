@@ -1002,6 +1002,46 @@ describe("ServerPool.registerPendingVirtualServer", () => {
 
     expect(pool.hasPendingServers()).toBe(false);
   });
+
+  test("hasPendingServers returns false after startup timeout elapses", async () => {
+    const pool = new ServerPool(makeConfig({}));
+
+    // Never-settling promise simulates a hung server startup
+    pool.registerPendingVirtualServer("_test", new Promise(() => {}), 1);
+
+    expect(pool.hasPendingServers()).toBe(true);
+    await pool.awaitPendingServers();
+
+    expect(pool.hasPendingServers()).toBe(false);
+  });
+
+  test("server registered after timeout is still usable", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn);
+
+    let resolve!: () => void;
+    const startPromise = new Promise<void>((r) => {
+      resolve = r;
+    });
+
+    // 1ms timeout — will fire before resolve() is called
+    pool.registerPendingVirtualServer("_test", startPromise, 1);
+
+    // Wait for timeout to clear the pending entry
+    await pool.awaitPendingServers();
+    expect(pool.hasPendingServers()).toBe(false);
+
+    // Even after timeout, the underlying startup can still succeed and register
+    const client = makeMockClient({ callTool: callToolMock });
+    const transport = makeMockTransport();
+    pool.registerVirtualServer("_test", client as unknown as Client, transport as unknown as Transport);
+    resolve();
+
+    // Server is now usable
+    const result = await pool.callTool("_test", "my-tool", {});
+    expect(result).toEqual({ content: [{ text: "ok" }] });
+  });
 });
 
 describe("ServerPool.restart", () => {
