@@ -107,12 +107,15 @@ When QA does not merge:
 
 ## Phase 4: Monitor and saturate
 
-Poll with `mcx claude ls` at ~30 second intervals. Between polls, do useful work:
+Use `mcx claude wait --timeout 30000` to block until a session event fires (or 30s elapses),
+then check status with `mcx claude ls`. Between wait cycles, do useful work:
 
 - Clean up merged sessions and worktrees
 - Spawn the next batch of issues as slots free up
 - File new issues for problems discovered during monitoring
 - Check `gh issue list --state open` periodically for new issues filed by sessions
+
+To wait on a specific session: `mcx claude wait <id> --timeout 30000`
 
 The goal is to keep 5 slots saturated. As sessions complete, backfill from the
 board. Stop when:
@@ -147,4 +150,4 @@ When the sprint is done (or the user stops it):
 - **Spawn fresh sessions per phase.** Don't reuse sessions across implement/review/QA.
 - **File every problem as an issue.** Unfiled problems are invisible problems.
 - **Never randomly kill the daemon.** File an issue if a kill seems required.
-- **Don't tight-loop polls.** Do useful work between checks.
+- **Use `mcx claude wait`, not sleep.** `wait --timeout` is event-driven and interruptible; `sleep` is not.
