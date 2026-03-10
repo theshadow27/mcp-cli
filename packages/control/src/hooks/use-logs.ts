@@ -111,7 +111,7 @@ export function useLogs(servers: ServerStatus[], opts: UseLogsOptions = {}): Use
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [source]);
+  }, [source, ipcCallFn]);
 
   return { lines, source, setSource };
 }
