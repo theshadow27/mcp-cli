@@ -10,7 +10,14 @@ interface UseDaemonResult {
   refresh: () => void;
 }
 
-export function useDaemon(intervalMs = 2500): UseDaemonResult {
+export interface UseDaemonOptions {
+  intervalMs?: number;
+  /** Override ipcCall for testing (dependency injection). */
+  ipcCallFn?: typeof ipcCall;
+}
+
+export function useDaemon(opts: UseDaemonOptions = {}): UseDaemonResult {
+  const { intervalMs = 2500, ipcCallFn = ipcCall } = opts;
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,7 +33,7 @@ export function useDaemon(intervalMs = 2500): UseDaemonResult {
 
     async function poll() {
       try {
-        const result = await ipcCall("status");
+        const result = await ipcCallFn("status");
         if (!cancelled) {
           const mismatch = checkProtocolVersion(result.protocolVersion);
           if (mismatch) {
@@ -60,7 +67,7 @@ export function useDaemon(intervalMs = 2500): UseDaemonResult {
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [intervalMs, tick]);
+  }, [intervalMs, ipcCallFn, tick]);
 
   return { status, error, loading, refresh };
 }

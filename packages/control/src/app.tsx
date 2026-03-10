@@ -17,7 +17,7 @@ import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 const LOG_VIEW_HEIGHT = 20;
 
 export function App() {
-  const { status, error, loading, refresh } = useDaemon(2500);
+  const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
