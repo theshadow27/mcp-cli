@@ -60,6 +60,8 @@ export class IpcServer {
   private onActivity: () => void;
   private onRequestComplete: () => void;
   private onShutdown: () => void;
+  private inflightCount = 0;
+  private draining = false;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
   private aliasServer: AliasServer | null = null;
@@ -104,6 +106,7 @@ export class IpcServer {
     const onActivity = this.onActivity;
     const onRequestComplete = this.onRequestComplete;
     const dispatch = this.dispatch.bind(this);
+    const self = this;
 
     this.server = Bun.serve({
       unix: socketPath,
@@ -125,6 +128,7 @@ export class IpcServer {
           return new Response("Not Found", { status: 404 });
         }
 
+        self.inflightCount++;
         onActivity();
 
         let request: IpcRequest;
@@ -132,11 +136,24 @@ export class IpcServer {
           request = await req.json();
         } catch {
           onRequestComplete();
+          self.inflightCount--;
+          self.checkDrain();
           const error: IpcResponse = {
             id: "unknown",
             error: { code: IPC_ERROR.PARSE_ERROR, message: "Invalid JSON" },
           };
           return Response.json(error, { status: 400 });
+        }
+
+        // Reject new requests while draining (except the shutdown request itself already dispatched)
+        if (self.draining && request.method !== "shutdown") {
+          self.inflightCount--;
+          self.checkDrain();
+          const error: IpcResponse = {
+            id: request.id,
+            error: { code: IPC_ERROR.INTERNAL_ERROR, message: "Server is shutting down" },
+          };
+          return Response.json(error, { status: 503 });
         }
 
         try {
@@ -151,6 +168,8 @@ export class IpcServer {
           return Response.json(response);
         } finally {
           onRequestComplete();
+          self.inflightCount--;
+          self.checkDrain();
         }
       },
     });
@@ -168,6 +187,14 @@ export class IpcServer {
       unlinkSync(this.socketPath);
     } catch {
       // already gone
+    }
+  }
+
+  /** If draining and no requests in flight, trigger shutdown on next tick (lets Bun flush responses) */
+  private checkDrain(): void {
+    if (this.draining && this.inflightCount === 0) {
+      // Defer to next event-loop turn so Bun can finish writing the HTTP response
+      setTimeout(() => this.onShutdown(), 0);
     }
   }
 
@@ -595,8 +622,8 @@ export class IpcServer {
     });
 
     this.handlers.set("shutdown", async (_params, _ctx) => {
-      // Schedule graceful shutdown after response is sent
-      setTimeout(() => this.onShutdown(), 100);
+      // Enter drain mode — onShutdown fires after all in-flight responses are sent
+      this.draining = true;
       return { ok: true };
     });
   }
