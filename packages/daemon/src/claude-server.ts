@@ -132,6 +132,8 @@ export class ClaudeServer {
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
   private static readonly MAX_CRASHES = 3;
   private static readonly CRASH_WINDOW_MS = 60_000;
+  /** Backoff delays (ms) for retrying start() during crash restart. */
+  private static readonly RESTART_BACKOFF_MS: readonly number[] = [100, 500, 2000];
   /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -354,30 +356,56 @@ export class ClaudeServer {
       return;
     }
 
-    // Auto-restart
+    // Auto-restart with backoff retries
+    const backoffs = ClaudeServer.RESTART_BACKOFF_MS;
+    let lastErr: unknown;
+
     try {
-      console.error("[claude-server] Restarting worker...");
-      const { client, transport } = await this.start();
-      console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+      for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+        if (attempt > 0) {
+          const delay = backoffs[attempt - 1] ?? backoffs.at(-1) ?? 2000;
+          console.error(`[claude-server] Retry ${attempt}/${backoffs.length} after ${delay}ms...`);
+          await Bun.sleep(delay);
+        }
 
-      // End sessions orphaned by the old worker — they can no longer reconnect
-      // to the new WS server (new port). Skip any already ended via db:end.
-      for (const sessionId of orphanedSessions) {
-        if (!this.activeSessions.has(sessionId)) continue;
-        console.error(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
-        this.activeSessions.delete(sessionId);
-        this.sessionPids.delete(sessionId);
-        this.sessionAddedAt.delete(sessionId);
-        this.db.endSession(sessionId);
+        // Respect stop() called during backoff sleep
+        if (this.stopped) {
+          console.error("[claude-server] Server stopped during restart backoff — aborting");
+          return;
+        }
+
+        try {
+          console.error("[claude-server] Restarting worker...");
+          const { client, transport } = await this.start();
+          console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+
+          // End sessions orphaned by the old worker — they can no longer reconnect
+          // to the new WS server (new port). Skip any already ended via db:end.
+          for (const sessionId of orphanedSessions) {
+            if (!this.activeSessions.has(sessionId)) continue;
+            console.error(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
+            this.activeSessions.delete(sessionId);
+            this.sessionPids.delete(sessionId);
+            this.sessionAddedAt.delete(sessionId);
+            this.db.endSession(sessionId);
+          }
+          metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+
+          // Notify connected MCP clients that the tool list may have changed
+          // (this.worker is set by start() but TS can't track cross-method mutation)
+          (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
+          this.onRestarted?.(client, transport);
+          return;
+        } catch (err) {
+          lastErr = err;
+          console.error(`[claude-server] Restart attempt ${attempt + 1} failed: ${err}`);
+        }
       }
-      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
 
-      // Notify connected MCP clients that the tool list may have changed
-      // (this.worker is set by start() but TS can't track cross-method mutation)
-      (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
-      this.onRestarted?.(client, transport);
-    } catch (err) {
-      console.error(`[claude-server] Failed to restart worker: ${err}`);
+      // All retries exhausted
+      console.error(
+        `[claude-server] All ${backoffs.length + 1} restart attempts failed (last: ${lastErr}) — giving up`,
+      );
       this.stopped = true;
     } finally {
       this.restartInProgress = false;

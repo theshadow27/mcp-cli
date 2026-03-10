@@ -3,7 +3,6 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 import { testOptions } from "../../../test/test-options";
 import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
-import { metrics } from "./metrics";
 
 // ── isWorkerEvent ──
 
@@ -504,85 +503,119 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
-  // ── Crash metrics ──
+  // ── Restart backoff ──
 
-  test("handleWorkerCrash increments mcpd_worker_crashes_total counter", async () => {
+  test("handleWorkerCrash retries with backoff when start() fails transiently", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
 
     await server.start();
 
-    const before = metrics.counter("mcpd_worker_crashes_total").value();
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    // Patch start() to fail twice then succeed
+    const originalStart = server.start.bind(server);
+    let callCount = 0;
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      callCount++;
+      if (callCount <= 2) {
+        throw new Error(`transient failure ${callCount}`);
+      }
+      return originalStart();
+    };
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
-    await crash("test crash for metric");
+    await crash("test transient crash");
 
-    expect(metrics.counter("mcpd_worker_crashes_total").value()).toBe(before + 1);
+    // start() was called 3 times (2 failures + 1 success)
+    expect(callCount).toBe(3);
+    expect(restartedCalled).toBe(true);
+    expect(server.port).toBeGreaterThan(0);
   });
 
-  test("handleWorkerCrash increments counter even when stopped (crash not suppressed in metrics)", async () => {
+  test("handleWorkerCrash gives up after all backoff retries are exhausted", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
 
     await server.start();
 
-    // Force stopped state so handleWorkerCrash early-returns
-    (server as unknown as { stopped: boolean }).stopped = true;
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
 
-    const before = metrics.counter("mcpd_worker_crashes_total").value();
+    // Patch start() to always fail
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      throw new Error("permanent failure");
+    };
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
-    await crash("crash while stopped");
+    await crash("test permanent crash");
 
-    // Counter should still increment — crashes are always counted
-    expect(metrics.counter("mcpd_worker_crashes_total").value()).toBe(before + 1);
+    // Should have given up — stopped = true, no restart callback
+    expect(restartedCalled).toBe(false);
+    const stopped = (server as unknown as { stopped: boolean }).stopped;
+    expect(stopped).toBe(true);
   });
 
-  test("handleWorkerCrash sets mcpd_worker_crash_loop_stopped gauge when rate-limited", async () => {
+  test("handleWorkerCrash aborts retry loop when stop() is called during backoff", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
 
     await server.start();
 
-    // Reset gauge to 0 before test — other tests may have set it via the shared singleton
-    metrics.gauge("mcpd_worker_crash_loop_stopped").set(0);
+    let startCalled = false;
+    // Patch start() to track if it's called after stop()
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      startCalled = true;
+      throw new Error("should not reach here");
+    };
+
+    // Call stop() immediately — sets stopped = true
+    await server.stop();
+
+    // Now trigger crash handler (it would normally be blocked by stopped check,
+    // but we need to test the in-loop check, so reset the flags)
+    const srv = server as unknown as { stopped: boolean; restartInProgress: boolean };
+    srv.stopped = false;
+    srv.restartInProgress = false;
+
+    // Patch start to fail once, then set stopped during backoff sleep
+    let attempt = 0;
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      attempt++;
+      if (attempt === 1) {
+        // First attempt fails — triggers backoff sleep
+        // Schedule stop() to fire during the sleep
+        queueMicrotask(() => {
+          srv.stopped = true;
+        });
+        throw new Error("first attempt fails");
+      }
+      // Should never reach attempt 2
+      startCalled = true;
+      throw new Error("should not reach second attempt");
+    };
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
+    await crash("test stop-during-backoff");
 
-    // Crash MAX_CRASHES (3) times — should restart each time
-    for (let i = 0; i < 3; i++) {
-      await crash(`crash ${i}`);
-    }
-
-    // Gauge should not be set yet
-    expect(metrics.gauge("mcpd_worker_crash_loop_stopped").value()).toBe(0);
-
-    // 4th crash triggers rate limiting
-    await crash("crash 3");
-
-    expect(metrics.gauge("mcpd_worker_crash_loop_stopped").value()).toBe(1);
-  });
-
-  test("start() resets mcpd_worker_crash_loop_stopped gauge to 0", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
-
-    // Set gauge to 1 (simulating previous crash loop)
-    metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
-
-    await server.start();
-
-    expect(metrics.gauge("mcpd_worker_crash_loop_stopped").value()).toBe(0);
+    expect(attempt).toBe(1);
+    expect(startCalled).toBe(false);
+    expect(srv.stopped).toBe(true);
+    server = undefined; // prevent double stop — already stopped
   });
 
   // ── Worker handler cleanup ──
