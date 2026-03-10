@@ -151,6 +151,9 @@ export class ClaudeServer {
       transportHandler?.call(worker, event);
     };
 
+    // Clear stale startup error handler before attaching crash detection
+    worker.onerror = null;
+
     // Attach post-startup crash detection
     this.attachCrashDetection(worker);
 

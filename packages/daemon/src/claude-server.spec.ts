@@ -398,6 +398,47 @@ describe("ClaudeServer", () => {
     expect(server.port).toBeNull();
   });
 
+  test("worker error event triggers crash detection and survives after first error", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Track restarts via the callback
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    // Access the internal worker to fire a real error event
+    const worker = (server as unknown as { worker: Worker | null }).worker;
+    expect(worker).not.toBeNull();
+
+    // Fire a real error event on the worker — this goes through addEventListener, not handleWorkerCrash directly
+    worker?.dispatchEvent(new ErrorEvent("error", { message: "simulated crash" }));
+
+    // handleWorkerCrash is async; poll for restart completion
+    const deadline = Date.now() + 10_000;
+    while (restartCount < 1 && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
+    expect(restartCount).toBe(1);
+
+    // Fire a second error event on the NEW worker to verify the listener persists across restarts
+    const worker2 = (server as unknown as { worker: Worker | null }).worker;
+    expect(worker2).not.toBeNull();
+    expect(worker2).not.toBe(worker); // should be a new worker
+
+    worker2?.dispatchEvent(new ErrorEvent("error", { message: "second crash" }));
+
+    const deadline2 = Date.now() + 10_000;
+    while (restartCount < 2 && Date.now() < deadline2) {
+      await Bun.sleep(50);
+    }
+    expect(restartCount).toBe(2);
+  });
+
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
