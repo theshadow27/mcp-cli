@@ -144,7 +144,7 @@ export function isProcessMcpd(pid: number): boolean {
   try {
     const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
     const output = result.stdout.toString().trim();
-    // Match compiled binary (mcpd) or dev script (daemon/src/index)
+    // Match compiled binary (mcpd) or dev script (daemon/src/main)
     const match = output.includes(DAEMON_BINARY_NAME) || output.includes(DAEMON_DEV_SCRIPT);
     if (match) verifiedMcpdPid = pid;
     return match;
