@@ -355,7 +355,7 @@ export class ServerPool {
       for (const line of lines) {
         if (line === "") continue;
         const entry = this.stderrBuffer.push(name, line);
-        process.stderr.write(`[${name}] ${line}\n`);
+        safeStderrWrite(`[${name}] ${line}\n`);
         this.db?.insertServerLog(name, line, entry.timestamp);
       }
     };
@@ -367,7 +367,7 @@ export class ServerPool {
       // Flush any remaining partial line
       if (partial) {
         const entry = this.stderrBuffer.push(name, partial);
-        process.stderr.write(`[${name}] ${partial}\n`);
+        safeStderrWrite(`[${name}] ${partial}\n`);
         this.db?.insertServerLog(name, partial, entry.timestamp);
         partial = "";
       }
@@ -606,6 +606,20 @@ export class ServerPool {
     return [...this.connections.entries()]
       .filter(([, c]) => c.state === "connected" && c.lastUsed > 0 && now - c.lastUsed > thresholdMs)
       .map(([name]) => name);
+  }
+}
+
+// -- Stderr safety --
+
+/**
+ * Write to stderr, silently swallowing EPIPE when the parent terminal has disconnected.
+ * @internal Exported for testing only.
+ */
+export function safeStderrWrite(data: string): void {
+  try {
+    process.stderr.write(data);
+  } catch {
+    // EPIPE: parent terminal disconnected — don't crash the daemon
   }
 }
 

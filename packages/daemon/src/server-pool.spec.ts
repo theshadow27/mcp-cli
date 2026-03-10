@@ -10,6 +10,7 @@ import {
   buildChildEnv,
   isRetryableError,
   isTransientCallError,
+  safeStderrWrite,
   wrapTransportError,
 } from "./server-pool";
 import { makeConfig, makeMockClient, makeMockTransport } from "./test-helpers";
@@ -1070,6 +1071,29 @@ describe("ServerPool.registerPendingVirtualServer", () => {
     // Server is now usable
     const result = await pool.callTool("_test", "my-tool", {});
     expect(result).toEqual({ content: [{ text: "ok" }] });
+  });
+});
+
+describe("safeStderrWrite", () => {
+  test("writes to stderr normally", () => {
+    // Should not throw
+    safeStderrWrite("test output\n");
+  });
+
+  test("swallows EPIPE errors from process.stderr.write", () => {
+    const original = process.stderr.write;
+    process.stderr.write = (() => {
+      const err = new Error("EPIPE: broken pipe, write");
+      (err as NodeJS.ErrnoException).code = "EPIPE";
+      throw err;
+    }) as typeof process.stderr.write;
+
+    try {
+      // Should not throw despite EPIPE
+      expect(() => safeStderrWrite("test\n")).not.toThrow();
+    } finally {
+      process.stderr.write = original;
+    }
   });
 });
 

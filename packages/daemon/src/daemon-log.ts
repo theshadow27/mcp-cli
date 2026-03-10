@@ -32,7 +32,11 @@ export function installDaemonLogCapture(): void {
   console.error = (...args: unknown[]) => {
     const line = args.map(String).join(" ");
     buffer.push(DAEMON_KEY, line);
-    original(...args);
+    try {
+      original(...args);
+    } catch {
+      // EPIPE: parent terminal disconnected — silently swallow
+    }
     writeToLogFile(line);
   };
 }
