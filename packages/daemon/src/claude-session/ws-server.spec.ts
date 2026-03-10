@@ -1207,6 +1207,184 @@ describe("ClaudeWsServer", () => {
 
     await expect(server.waitForEventsSince(null, 0, 100)).rejects.toThrow("No active sessions");
   });
+
+  // ── /clear and /model interception ──
+
+  test("sendPrompt with /clear kills process and respawns", async () => {
+    const spawnCalls: string[][] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (cmd: string[]) => {
+      spawnCalls.push(cmd);
+      return {
+        pid: 12345 + spawnCalls.length,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {},
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws); // initial prompt
+    ws.send(systemInitMessage("test-session"));
+    await Bun.sleep(20);
+    ws.send(resultMessage("test-session"));
+    await Bun.sleep(20);
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    // Send /clear — should kill+respawn
+    server.sendPrompt("test-session", "/clear");
+    await Bun.sleep(50);
+
+    // Should have spawned a second time
+    expect(spawnCalls.length).toBe(2);
+
+    // Should have emitted session:cleared event
+    const clearedEvent = events.find((e) => e.type === "session:cleared");
+    expect(clearedEvent).toBeDefined();
+
+    // Session should still exist in connecting state
+    const sessions = server.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0].state).toBe("connecting");
+
+    // New claude should be able to connect
+    const ws2 = await connectMockClaude(port, "test-session");
+    try {
+      const msg = await waitForMessage(ws2);
+      const parsed = JSON.parse(msg.trim());
+      // Prompt should be empty after clear
+      expect(parsed.message.content).toBe("");
+    } finally {
+      ws2.close();
+    }
+    ws.close();
+  });
+
+  test("sendPrompt with /model sends set_model control request", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // initial prompt
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+
+      const events: SessionEvent[] = [];
+      server.onSessionEvent = (_id, event) => events.push(event);
+
+      // Send /model command
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "/model claude-opus-4-6");
+
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.type).toBe("control_request");
+      expect(parsed.request.subtype).toBe("set_model");
+      expect(parsed.request.model).toBe("claude-opus-4-6");
+
+      // Should have emitted session:model_changed event
+      const modelEvent = events.find((e) => e.type === "session:model_changed");
+      expect(modelEvent).toBeDefined();
+      if (modelEvent?.type === "session:model_changed") {
+        expect(modelEvent.model).toBe("claude-opus-4-6");
+      }
+
+      // State should track new model
+      const status = server.getStatus("test-session");
+      expect(status.model).toBe("claude-opus-4-6");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("sendPrompt with regular message is not intercepted", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Regular message should be sent as user message
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Do something");
+
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.type).toBe("user");
+      expect(parsed.message.content).toBe("Do something");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("clearSession preserves cumulative cost/tokens", async () => {
+    const spawnCalls: string[][] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (cmd: string[]) => {
+      spawnCalls.push(cmd);
+      return {
+        pid: 12345 + spawnCalls.length,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {},
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    await Bun.sleep(20);
+    ws.send(assistantMessage("test-session"));
+    await Bun.sleep(20);
+    ws.send(resultMessage("test-session"));
+    await Bun.sleep(20);
+
+    // Verify cost accumulated
+    const statusBefore = server.getStatus("test-session");
+    expect(statusBefore.cost).toBeGreaterThan(0);
+    const costBefore = statusBefore.cost;
+
+    // Clear session
+    server.clearSession("test-session");
+    await Bun.sleep(50);
+
+    // Cost should be preserved
+    const statusAfter = server.getStatus("test-session");
+    expect(statusAfter.cost).toBe(costBefore);
+    expect(statusAfter.state).toBe("connecting");
+
+    ws.close();
+  });
 });
 
 // ── summarizeInput ──

@@ -29,7 +29,9 @@ export type SessionEvent =
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
   | { type: "session:disconnected"; reason: string }
-  | { type: "session:ended" };
+  | { type: "session:ended" }
+  | { type: "session:cleared" }
+  | { type: "session:model_changed"; model: string };
 
 // ── Outbound message (string ready to send over WS) ──
 
@@ -149,6 +151,20 @@ export class SessionState {
   reconnect(): void {
     if (this.state !== "disconnected") return;
     this.state = "connecting";
+  }
+
+  /** Reset state for a /clear (kill+respawn). Preserves cumulative cost/tokens. */
+  resetForClear(): SessionEvent[] {
+    if (this.state === "ended") return [];
+    this.state = "connecting";
+    this.pendingPermissions.clear();
+    return [{ type: "session:cleared" }];
+  }
+
+  /** Update the tracked model (from /model command). */
+  setModel(model: string): SessionEvent[] {
+    this.model = model;
+    return [{ type: "session:model_changed", model }];
   }
 
   /** Mark the session as ended (explicit bye or server shutdown). */
