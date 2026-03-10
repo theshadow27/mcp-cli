@@ -115,12 +115,15 @@ export function isWorkerEvent(data: unknown): data is WorkerEvent {
 
 // ── Server ──
 
+type ClientFactory = () => Client;
+
 export class ClaudeServer {
   private worker: Worker | null = null;
   private transport: WorkerClientTransport | null = null;
   private client: Client | null = null;
   private db: StateDb;
   private wsPort: number | null = null;
+  private readonly clientFactory: ClientFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionPids = new Map<string, number>();
   /** Timestamp (ms) when each session was added to activeSessions — used to TTL pid-less zombies. */
@@ -146,8 +149,11 @@ export class ClaudeServer {
   constructor(
     db: StateDb,
     private daemonId?: string,
+    clientFactory?: ClientFactory,
   ) {
     this.db = db;
+    this.clientFactory =
+      clientFactory ?? (() => new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" }));
   }
 
   /** Start the worker and connect the MCP client. */
@@ -197,14 +203,18 @@ export class ClaudeServer {
     // to prevent leaked threads (#471, #453).
     try {
       this.transport = new WorkerClientTransport(this.worker);
-      this.client = new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" });
+      this.client = this.clientFactory();
 
       // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage).
       // Race with a timeout to prevent indefinite hangs on broken handshakes (#454).
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         this.client.connect(this.transport),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000)),
+        new Promise<never>((_, reject) => {
+          handshakeTimer = setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000);
+        }),
       ]);
+      clearTimeout(handshakeTimer);
 
       // After transport.start(), wrap worker.onmessage to intercept DB event messages
       const transportHandler = worker.onmessage;
@@ -224,7 +234,12 @@ export class ClaudeServer {
       // Attach post-startup crash detection
       this.attachCrashDetection(worker);
     } catch (err) {
-      // Clean up the worker to prevent leaked threads
+      // Mirror stop()'s cleanup order: close client first, then terminate worker
+      try {
+        await this.client?.close();
+      } catch {
+        // ignore close errors
+      }
       try {
         worker.terminate();
       } catch {
