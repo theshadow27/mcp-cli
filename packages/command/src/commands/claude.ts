@@ -572,6 +572,20 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   await resumeWorktree(resolved, parsed, d);
 }
 
+/**
+ * Detect the default branch (e.g. "main" or "master") from origin/HEAD.
+ * Falls back to "main" if git symbolic-ref is unavailable or returns nothing.
+ */
+function getDefaultBranch(exec: ClaudeDeps["exec"], cwd: string): string {
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "symbolic-ref", "refs/remotes/origin/HEAD"]);
+  if (exitCode === 0 && stdout.trim()) {
+    // e.g. "refs/remotes/origin/main" → "main"
+    const parts = stdout.trim().split("/");
+    return parts[parts.length - 1] || "main";
+  }
+  return "main";
+}
+
 async function resumeWorktree(
   wt: { path: string; branch: string | null },
   parsed: ResumeArgs,
@@ -579,12 +593,24 @@ async function resumeWorktree(
 ): Promise<void> {
   const branch = wt.branch ?? "unknown";
 
-  // Check if branch is already merged into main
-  const { stdout: mergedOutput } = d.exec(["git", "-C", wt.path, "branch", "--merged", "main"]);
-  const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
-  if (mergedBranches.includes(branch)) {
-    d.printError(`Skipping "${branch}" — already merged into main. Use "mcx claude worktrees --prune" to clean up.`);
-    return;
+  // Check if branch is already merged into the default branch
+  const defaultBranch = getDefaultBranch(d.exec, wt.path);
+  const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+    "git",
+    "-C",
+    wt.path,
+    "branch",
+    "--merged",
+    defaultBranch,
+  ]);
+  if (mergedExit === 0) {
+    const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+    if (mergedBranches.includes(branch)) {
+      d.printError(
+        `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx claude worktrees --prune" to clean up.`,
+      );
+      return;
+    }
   }
 
   const toolArgs: Record<string, unknown> = { cwd: wt.path };
@@ -1054,11 +1080,45 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (prune) {
+    const defaultBranch = getDefaultBranch(d.exec, cwd);
+    // Get list of branches merged into the default branch
+    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+      "git",
+      "-C",
+      cwd,
+      "branch",
+      "--merged",
+      defaultBranch,
+    ]);
+    let mergedBranches: Set<string>;
+    let skipMergeCheck = false;
+    if (mergedExit !== 0) {
+      d.printError(
+        "Warning: could not determine merged branches (git branch --merged failed). Pruning clean orphaned worktrees without merge check.",
+      );
+      mergedBranches = new Set();
+      skipMergeCheck = true;
+    } else {
+      mergedBranches = new Set(
+        mergedOutput
+          .split("\n")
+          .map((line) => line.replace(/^\*?\s+/, "").trim())
+          .filter(Boolean),
+      );
+    }
+
     let pruned = 0;
+    const skipped: string[] = [];
     for (const wt of mcxWorktrees) {
       const wtName = wt.path.slice(`${worktreeParent}/`.length);
       // Skip worktrees with active sessions
       if (sessionWorktrees.has(wtName)) continue;
+
+      // Only prune worktrees whose branch has been merged (unless merge check failed)
+      if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch)) {
+        skipped.push(wt.branch);
+        continue;
+      }
 
       // Check if clean
       const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
@@ -1070,7 +1130,7 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
         if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
         d.printError(`Removed worktree: ${wt.path}`);
         pruned++;
-        // Delete merged branch
+        // Delete branch only if git branch -d succeeds
         if (wt.branch) {
           const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
           if (branchExit === 0) {
@@ -1083,6 +1143,9 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
       d.printError("Nothing to prune.");
     } else {
       d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+    }
+    if (skipped.length > 0) {
+      d.printError(`Skipped ${skipped.length} unmerged: ${skipped.join(", ")}`);
     }
     return;
   }

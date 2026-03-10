@@ -1919,7 +1919,7 @@ describe("mcx claude worktrees", () => {
     }
   });
 
-  test("prune removes clean orphaned worktrees", async () => {
+  test("prune removes clean orphaned worktrees with merged branches", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async () => toolResult([]));
     const cwd = process.cwd();
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
@@ -1938,6 +1938,7 @@ describe("mcx claude worktrees", () => {
           exitCode: 0,
         };
       }
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", exitCode: 0 };
       if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
@@ -1954,6 +1955,50 @@ describe("mcx claude worktrees", () => {
       expect(errOutput).toContain("Removed worktree:");
       expect(errOutput).toContain("Deleted branch: feat/orphan (merged)");
       expect(errOutput).toContain("Pruned 1 worktree.");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prune skips worktrees with unmerged branches", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async () => toolResult([]));
+    const cwd = process.cwd();
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("list") && cmd.includes("--porcelain")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc123",
+            "branch refs/heads/main",
+            "",
+            `worktree ${cwd}/.claude/worktrees/claude-unmerged`,
+            "HEAD 789abc",
+            "branch refs/heads/feat/unmerged",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      // feat/unmerged is NOT in the merged list
+      if (cmd.includes("--merged")) return { stdout: "  main\n", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["worktrees", "--prune"], deps);
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Nothing to prune.");
+      expect(errOutput).toContain("Skipped 1 unmerged: feat/unmerged");
+      // Should NOT call git worktree remove
+      const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
+        (c[0] as string[]).includes("remove"),
+      );
+      expect(removeCalls.length).toBe(0);
     } finally {
       console.log = origLog;
     }
@@ -1984,6 +2029,7 @@ describe("mcx claude worktrees", () => {
           exitCode: 0,
         };
       }
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/active\n", exitCode: 0 };
       if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
       return { stdout: "", exitCode: 0 };
     });
@@ -2025,6 +2071,7 @@ describe("mcx claude worktrees", () => {
           exitCode: 0,
         };
       }
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/dirty\n", exitCode: 0 };
       if (cmd.includes("status")) return { stdout: " M file.ts", exitCode: 0 };
       return { stdout: "", exitCode: 0 };
     });
@@ -2037,6 +2084,134 @@ describe("mcx claude worktrees", () => {
       await cmdClaude(["worktrees", "--prune"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(errOutput).toContain("Nothing to prune.");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prune detects default branch from symbolic-ref", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async () => toolResult([]));
+    const cwd = process.cwd();
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("list") && cmd.includes("--porcelain")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc123",
+            "branch refs/heads/master",
+            "",
+            `worktree ${cwd}/.claude/worktrees/claude-feature`,
+            "HEAD 789abc",
+            "branch refs/heads/feat/done",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+      if (cmd.includes("--merged")) {
+        // Only respond to "master" as the base — if "main" is passed, return empty
+        if (cmd.includes("master")) return { stdout: "  master\n  feat/done\n", exitCode: 0 };
+        return { stdout: "  main\n", exitCode: 0 };
+      }
+      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["worktrees", "--prune"], deps);
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Deleted branch: feat/done (merged)");
+      expect(errOutput).toContain("Pruned 1 worktree.");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prune falls back to pruning without merge check when git branch --merged fails", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async () => toolResult([]));
+    const cwd = process.cwd();
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("list") && cmd.includes("--porcelain")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc123",
+            "branch refs/heads/main",
+            "",
+            `worktree ${cwd}/.claude/worktrees/claude-orphan`,
+            "HEAD 789abc",
+            "branch refs/heads/feat/orphan",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) return { stdout: "", exitCode: 128 }; // git failure
+      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["worktrees", "--prune"], deps);
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Warning: could not determine merged branches");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Pruned 1 worktree.");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prune does not print 'Deleted branch' when git branch -d fails", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async () => toolResult([]));
+    const cwd = process.cwd();
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("list") && cmd.includes("--porcelain")) {
+        return {
+          stdout: [
+            `worktree ${cwd}`,
+            "HEAD abc123",
+            "branch refs/heads/main",
+            "",
+            `worktree ${cwd}/.claude/worktrees/claude-orphan`,
+            "HEAD 789abc",
+            "branch refs/heads/feat/orphan",
+            "",
+          ].join("\n"),
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", exitCode: 1 }; // branch -d fails
+      return { stdout: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["worktrees", "--prune"], deps);
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Pruned 1 worktree.");
+      expect(errOutput).not.toContain("Deleted branch:");
     } finally {
       console.log = origLog;
     }
