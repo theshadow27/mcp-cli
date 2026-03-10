@@ -22,7 +22,7 @@ export function tabByNumber(n: number): View | undefined {
   return ALL_TABS[n - 1];
 }
 
-interface UseKeyboardOptions {
+export interface ServersNav {
   servers: ServerStatus[];
   selectedIndex: number;
   setSelectedIndex: (fn: (i: number) => number) => void;
@@ -31,8 +31,9 @@ interface UseKeyboardOptions {
   refresh: () => void;
   authStatus: AuthStatus | null;
   setAuthStatus: (status: AuthStatus | null) => void;
-  view: View;
-  setView: (view: View) => void;
+}
+
+export interface LogsNav {
   logSource: LogSource;
   setLogSource: (source: LogSource) => void;
   logScrollOffset: number;
@@ -42,39 +43,52 @@ interface UseKeyboardOptions {
   setFilterMode: (mode: boolean) => void;
   filterText: string;
   setFilterText: (fn: string | ((prev: string) => string)) => void;
-  claudeSessions: SessionInfo[];
-  claudeSelectedIndex: number;
-  setClaudeSelectedIndex: (fn: (i: number) => number) => void;
+}
+
+export interface ClaudeNav {
+  sessions: SessionInfo[];
+  selectedIndex: number;
+  setSelectedIndex: (fn: (i: number) => number) => void;
   expandedSession: string | null;
   setExpandedSession: (id: string | null) => void;
 }
 
-export function useKeyboard({
-  servers,
-  selectedIndex,
-  setSelectedIndex,
-  expandedServer,
-  setExpandedServer,
-  refresh,
-  authStatus,
-  setAuthStatus,
-  view,
-  setView,
-  logSource,
-  setLogSource,
-  logScrollOffset,
-  setLogScrollOffset,
-  logLineCount,
-  filterMode,
-  setFilterMode,
-  filterText,
-  setFilterText,
-  claudeSessions,
-  claudeSelectedIndex,
-  setClaudeSelectedIndex,
-  expandedSession,
-  setExpandedSession,
-}: UseKeyboardOptions): void {
+interface UseKeyboardOptions {
+  view: View;
+  setView: (view: View) => void;
+  serversNav: ServersNav;
+  logsNav: LogsNav;
+  claudeNav: ClaudeNav;
+}
+
+export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: UseKeyboardOptions): void {
+  const {
+    servers,
+    selectedIndex,
+    setSelectedIndex,
+    expandedServer,
+    setExpandedServer,
+    refresh,
+    authStatus,
+    setAuthStatus,
+  } = serversNav;
+  const {
+    logSource,
+    setLogSource,
+    setLogScrollOffset,
+    logLineCount,
+    filterMode,
+    setFilterMode,
+    filterText,
+    setFilterText,
+  } = logsNav;
+  const {
+    sessions: claudeSessions,
+    selectedIndex: claudeSelectedIndex,
+    setSelectedIndex: setClaudeSelectedIndex,
+    expandedSession,
+    setExpandedSession,
+  } = claudeNav;
   const { exit } = useApp();
 
   useInput((input, key) => {
