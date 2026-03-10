@@ -503,6 +503,70 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
+  // ── Restart backoff ──
+
+  test("handleWorkerCrash retries with backoff when start() fails transiently", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    // Patch start() to fail twice then succeed
+    const originalStart = server.start.bind(server);
+    let callCount = 0;
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      callCount++;
+      if (callCount <= 2) {
+        throw new Error(`transient failure ${callCount}`);
+      }
+      return originalStart();
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test transient crash");
+
+    // start() was called 3 times (2 failures + 1 success)
+    expect(callCount).toBe(3);
+    expect(restartedCalled).toBe(true);
+    expect(server.port).toBeGreaterThan(0);
+  });
+
+  test("handleWorkerCrash gives up after all backoff retries are exhausted", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    // Patch start() to always fail
+    (server as unknown as { start: typeof server.start }).start = async () => {
+      throw new Error("permanent failure");
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test permanent crash");
+
+    // Should have given up — stopped = true, no restart callback
+    expect(restartedCalled).toBe(false);
+    const stopped = (server as unknown as { stopped: boolean }).stopped;
+    expect(stopped).toBe(true);
+  });
+
   // ── Worker handler cleanup ──
 
   test("restart cleans up old worker message/error handlers to prevent closure leaks", async () => {
