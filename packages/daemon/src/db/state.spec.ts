@@ -957,6 +957,55 @@ describe("StateDb", () => {
     });
   });
 
+  describe("claude_sessions → agent_sessions migration", () => {
+    test("migrates existing claude_sessions data to agent_sessions with provider column", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Simulate a pre-migration database with the old claude_sessions table
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec(`
+        CREATE TABLE claude_sessions (
+          session_id   TEXT PRIMARY KEY,
+          pid          INTEGER,
+          state        TEXT NOT NULL DEFAULT 'connecting',
+          model        TEXT,
+          cwd          TEXT,
+          worktree     TEXT,
+          total_cost   REAL NOT NULL DEFAULT 0,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+          ended_at     TEXT
+        )
+      `);
+      raw.run(
+        "INSERT INTO claude_sessions (session_id, pid, state, model, cwd, total_cost, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["old-sess-1", 9999, "ended", "opus", "/home/user", 1.23, 50000],
+      );
+      raw.close();
+
+      // Now open via StateDb which runs migrations
+      const db = new StateDb(p);
+
+      // Old data should be accessible via the new table
+      const session = db.getSession("old-sess-1");
+      expect(session).not.toBeNull();
+      expect(session?.sessionId).toBe("old-sess-1");
+      expect(session?.provider).toBe("claude"); // default from migration
+      expect(session?.pid).toBe(9999);
+      expect(session?.state).toBe("ended");
+      expect(session?.model).toBe("opus");
+      expect(session?.totalCost).toBe(1.23);
+      expect(session?.totalTokens).toBe(50000);
+
+      // claude_sessions should no longer exist (renamed)
+      expect(() => raw.exec?.("SELECT * FROM claude_sessions")).toThrow();
+
+      db.close();
+    });
+  });
+
   describe("claude sessions", () => {
     test("upsertSession and getSession round-trip", () => {
       const db = createDb();
@@ -972,6 +1021,7 @@ describe("StateDb", () => {
       const session = db.getSession("sess-1");
       expect(session).not.toBeNull();
       expect(session?.sessionId).toBe("sess-1");
+      expect(session?.provider).toBe("claude");
       expect(session?.pid).toBe(1234);
       expect(session?.state).toBe("active");
       expect(session?.model).toBe("opus");
@@ -1087,7 +1137,7 @@ describe("StateDb", () => {
       db.upsertSession({ sessionId: "old" });
       // Backdate the first session
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
-      db["db"].run("UPDATE claude_sessions SET spawned_at = '2024-01-01 00:00:00' WHERE session_id = 'old'");
+      db["db"].run("UPDATE agent_sessions SET spawned_at = '2024-01-01 00:00:00' WHERE session_id = 'old'");
       db.upsertSession({ sessionId: "new" });
 
       const sessions = db.listSessions();
@@ -1103,7 +1153,7 @@ describe("StateDb", () => {
       // Backdate ended_at to 60 days ago
       const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
-      db["db"].run("UPDATE claude_sessions SET ended_at = ? WHERE session_id = 'old-ended'", [old]);
+      db["db"].run("UPDATE agent_sessions SET ended_at = ? WHERE session_id = 'old-ended'", [old]);
 
       db.upsertSession({ sessionId: "recent-ended" });
       db.endSession("recent-ended");
@@ -1123,7 +1173,7 @@ describe("StateDb", () => {
       db.upsertSession({ sessionId: "active" });
       // Backdate spawned_at but don't end it
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
-      db["db"].run("UPDATE claude_sessions SET spawned_at = '2020-01-01 00:00:00' WHERE session_id = 'active'");
+      db["db"].run("UPDATE agent_sessions SET spawned_at = '2020-01-01 00:00:00' WHERE session_id = 'active'");
 
       const pruned = db.pruneOldSessions(1);
       expect(pruned).toBe(0);
@@ -1137,7 +1187,7 @@ describe("StateDb", () => {
       db.endSession("old");
       const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
-      db["db"].run("UPDATE claude_sessions SET ended_at = ? WHERE session_id = 'old'", [old]);
+      db["db"].run("UPDATE agent_sessions SET ended_at = ? WHERE session_id = 'old'", [old]);
 
       const pruned = db.pruneOldSessions();
       expect(pruned).toBe(1);

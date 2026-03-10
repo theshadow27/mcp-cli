@@ -11,15 +11,18 @@ import { type UseClaudeSessionsOptions, useClaudeSessions } from "./use-claude-s
 function session(id: string): SessionInfo {
   return {
     sessionId: id,
+    provider: "claude",
     state: "active",
     model: "opus",
     cwd: "/tmp",
     cost: 0,
     tokens: 0,
+    reasoningTokens: 0,
     numTurns: 0,
     pendingPermissions: 0,
     pendingPermissionDetails: [],
     worktree: null,
+    processAlive: true,
     wsConnected: true,
     spawnAlive: true,
     snapshotTs: Date.now(),

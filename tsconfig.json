@@ -19,6 +19,8 @@
       "@mcp-cli/core/*": ["./packages/core/src/*"],
       "@mcp-cli/daemon": ["./packages/daemon/src/index.ts"],
       "@mcp-cli/daemon/*": ["./packages/daemon/src/*"],
+      "@mcp-cli/permissions": ["./packages/permissions/src/index.ts"],
+      "@mcp-cli/permissions/*": ["./packages/permissions/src/*"],
       "@mcp-cli/command": ["./packages/command/src/main.ts"],
       "@mcp-cli/command/*": ["./packages/command/src/*"],
       "@mcp-cli/control": ["./packages/control/src/main.tsx"],

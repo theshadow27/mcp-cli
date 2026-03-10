@@ -54,8 +54,8 @@ describe("PermissionRouter — rules", () => {
     expect(decision.message).toContain("Denied by rule");
   });
 
-  test("glob pattern with args — Bash(git *) matches git commands", async () => {
-    const router = new PermissionRouter("rules", [{ tool: "Bash(git *)", action: "allow" }]);
+  test("colon wildcard — Bash(git:*) matches git commands", async () => {
+    const router = new PermissionRouter("rules", [{ tool: "Bash(git:*)", action: "allow" }]);
 
     const gitPush = await router.evaluate(makeRequest("Bash", { command: "git push origin main" }));
     expect(gitPush.allow).toBe(true);
@@ -64,16 +64,16 @@ describe("PermissionRouter — rules", () => {
     expect(gitStatus.allow).toBe(true);
   });
 
-  test("glob pattern does not match different commands", async () => {
-    const router = new PermissionRouter("rules", [{ tool: "Bash(git *)", action: "allow" }]);
+  test("colon wildcard does not match different commands", async () => {
+    const router = new PermissionRouter("rules", [{ tool: "Bash(git:*)", action: "allow" }]);
 
     const rm = await router.evaluate(makeRequest("Bash", { command: "rm -rf /" }));
     expect(rm.allow).toBe(false);
     expect(rm.message).toContain("No matching rule");
   });
 
-  test("glob pattern does not match different tools", async () => {
-    const router = new PermissionRouter("rules", [{ tool: "Bash(git *)", action: "allow" }]);
+  test("colon wildcard does not match different tools", async () => {
+    const router = new PermissionRouter("rules", [{ tool: "Bash(git:*)", action: "allow" }]);
 
     const read = await router.evaluate(makeRequest("Read", { command: "git status" }));
     expect(read.allow).toBe(false);
@@ -82,7 +82,7 @@ describe("PermissionRouter — rules", () => {
   test("deny takes precedence over allow", async () => {
     const rules: PermissionRule[] = [
       { tool: "Bash", action: "allow" },
-      { tool: "Bash(rm *)", action: "deny" },
+      { tool: "Bash(rm:*)", action: "deny" },
     ];
     const router = new PermissionRouter("rules", rules);
 
@@ -191,12 +191,12 @@ describe("PermissionRouter — delegate", () => {
     router.onDelegate = async (req) => ({
       allow: true,
       updatedInput: req.input,
-      updatedPermissions: [{ tool: "Bash(git *)", action: "allow" as const }],
+      updatedPermissions: [{ tool: "Bash(git:*)", action: "allow" as const }],
     });
 
     const decision = await router.evaluate(makeRequest("Bash", { command: "git push" }));
     expect(decision.allow).toBe(true);
-    expect(decision.updatedPermissions).toEqual([{ tool: "Bash(git *)", action: "allow" }]);
+    expect(decision.updatedPermissions).toEqual([{ tool: "Bash(git:*)", action: "allow" }]);
   });
 });
 

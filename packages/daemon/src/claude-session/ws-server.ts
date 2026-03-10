@@ -12,7 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import type { AgentPermissionRequest, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
@@ -1015,25 +1015,29 @@ export class ClaudeWsServer {
   }
 
   private buildSessionInfo(sessionId: string, s: WsSession): SessionInfo {
-    const details: PendingPermissionInfo[] = [];
+    const details: AgentPermissionRequest[] = [];
     for (const [reqId, req] of s.state.pendingPermissions) {
       details.push({
         requestId: reqId,
         toolName: req.tool_name,
+        input: req.input,
         inputSummary: summarizeInput(req.input),
       });
     }
     return {
       sessionId,
+      provider: "claude",
       state: s.state.state,
       model: s.state.model,
       cwd: s.state.cwd,
       cost: s.state.cost,
       tokens: s.state.tokens,
+      reasoningTokens: 0,
       numTurns: s.state.numTurns,
       pendingPermissions: s.state.pendingPermissions.size,
       pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
+      processAlive: s.spawnAlive,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,
       snapshotTs: Date.now(),

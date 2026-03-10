@@ -8,6 +8,7 @@ export * from "./env";
 export * from "./fs";
 export * from "./schema-display";
 export * from "./model";
+export * from "./agent-session";
 export * from "./session-types";
 export * from "./trace";
 export * from "./git";
