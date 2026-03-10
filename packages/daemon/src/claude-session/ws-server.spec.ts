@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn, WaitResult } from "./ws-server";
-import { ClaudeWsServer, WaitTimeoutError, summarizeInput } from "./ws-server";
+import { ClaudeWsServer, WaitTimeoutError, readJsonlTranscript, resolveJsonlPath, summarizeInput } from "./ws-server";
 
 // ── Mock spawn ──
 
@@ -1477,5 +1480,235 @@ describe("summarizeInput", () => {
 
   test("JSON-stringifies non-string values", () => {
     expect(summarizeInput({ count: 42 })).toBe("count=42");
+  });
+});
+
+// ── JSONL fallback tests ──
+
+describe("resolveJsonlPath", () => {
+  test("encodes cwd with dashes and appends session ID", () => {
+    const path = resolveJsonlPath("/Users/alice/code", "abc-123");
+    expect(path).toBe(join(homedir(), ".claude/projects/-Users-alice-code/abc-123.jsonl"));
+  });
+});
+
+describe("readJsonlTranscript", () => {
+  const testDir = join(homedir(), ".claude", "projects", "-tmp-jsonl-test");
+  const sessionId = "test-session-id";
+  const filePath = join(testDir, `${sessionId}.jsonl`);
+
+  afterEach(() => {
+    try {
+      rmSync(testDir, { recursive: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  test("returns null when cwd is null", () => {
+    expect(readJsonlTranscript(null, sessionId, 10)).toBeNull();
+  });
+
+  test("returns null when claudeSessionId is null", () => {
+    expect(readJsonlTranscript("/tmp/jsonl-test", null, 10)).toBeNull();
+  });
+
+  test("returns null when file does not exist", () => {
+    expect(readJsonlTranscript("/tmp/nonexistent-dir-xyz", sessionId, 10)).toBeNull();
+  });
+
+  test("reads user and assistant messages from JSONL file", () => {
+    mkdirSync(testDir, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "Hello" },
+        timestamp: "2026-01-01T00:00:00.000Z",
+        sessionId,
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          id: "msg-1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "Hi!" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+        timestamp: "2026-01-01T00:00:01.000Z",
+        sessionId,
+      }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Done",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        sessionId,
+      }),
+    ];
+    writeFileSync(filePath, `${lines.join("\n")}\n`);
+
+    const entries = readJsonlTranscript("/tmp/jsonl-test", sessionId, 10);
+    expect(entries).not.toBeNull();
+    expect(entries?.length).toBe(3);
+    expect(entries?.[0].direction).toBe("outbound"); // user
+    expect(entries?.[1].direction).toBe("inbound"); // assistant
+    expect(entries?.[2].direction).toBe("inbound"); // result
+    expect(entries?.[0].timestamp).toBe(new Date("2026-01-01T00:00:00.000Z").getTime());
+  });
+
+  test("filters out non-transcript types", () => {
+    mkdirSync(testDir, { recursive: true });
+    const lines = [
+      JSON.stringify({ type: "file-history-snapshot", timestamp: "2026-01-01T00:00:00.000Z" }),
+      JSON.stringify({ type: "user", message: { role: "user", content: "Hi" }, timestamp: "2026-01-01T00:00:01.000Z" }),
+      JSON.stringify({ type: "stream_event", event: {}, timestamp: "2026-01-01T00:00:02.000Z" }),
+    ];
+    writeFileSync(filePath, `${lines.join("\n")}\n`);
+
+    const entries = readJsonlTranscript("/tmp/jsonl-test", sessionId, 10);
+    expect(entries).not.toBeNull();
+    expect(entries?.length).toBe(1);
+    expect((entries?.[0].message as Record<string, unknown>).type).toBe("user");
+  });
+
+  test("returns last N entries when file has more", () => {
+    mkdirSync(testDir, { recursive: true });
+    const lines = Array.from({ length: 20 }, (_, i) =>
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: `Message ${i}` },
+        timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`,
+      }),
+    );
+    writeFileSync(filePath, `${lines.join("\n")}\n`);
+
+    const entries = readJsonlTranscript("/tmp/jsonl-test", sessionId, 5);
+    expect(entries).not.toBeNull();
+    expect(entries?.length).toBe(5);
+    expect((entries?.[0].message as Record<string, unknown>).message).toEqual({
+      role: "user",
+      content: "Message 15",
+    });
+  });
+
+  test("skips malformed lines gracefully", () => {
+    mkdirSync(testDir, { recursive: true });
+    const lines = [
+      "not valid json",
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "Valid" },
+        timestamp: "2026-01-01T00:00:00.000Z",
+      }),
+      "{broken",
+    ];
+    writeFileSync(filePath, `${lines.join("\n")}\n`);
+
+    const entries = readJsonlTranscript("/tmp/jsonl-test", sessionId, 10);
+    expect(entries).not.toBeNull();
+    expect(entries?.length).toBe(1);
+  });
+});
+
+describe("getTranscript JSONL fallback", () => {
+  const testDir = join(homedir(), ".claude", "projects", "-test-cwd");
+  const claudeSessionId = "claude-session-for-transcript";
+  const filePath = join(testDir, `${claudeSessionId}.jsonl`);
+  let server: ClaudeWsServer;
+  let spawnState: ReturnType<typeof mockSpawn>;
+
+  afterEach(() => {
+    // Resolve mock spawn exit to prevent stop() from hanging
+    spawnState?.exitResolve(0);
+    server?.stop();
+    try {
+      rmSync(testDir, { recursive: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  test("falls back to JSONL file when buffer has fewer entries than requested", async () => {
+    // Create JSONL file with 5 entries
+    mkdirSync(testDir, { recursive: true });
+    const lines = Array.from({ length: 5 }, (_, i) =>
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: `JSONL msg ${i}` },
+        timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`,
+      }),
+    );
+    writeFileSync(filePath, `${lines.join("\n")}\n`);
+
+    // Set up server with a session
+    spawnState = mockSpawn();
+    server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server.start();
+
+    const sessionId = "test-session-1";
+    server.prepareSession(sessionId, { prompt: "test", cwd: "/test-cwd" });
+    server.spawnClaude(sessionId);
+
+    // Connect mock client and send system/init so claudeSessionId is captured
+    const ws = await connectMockClaude(server.port, sessionId);
+    await waitForMessage(ws); // consume initial prompt
+
+    ws.send(
+      serialize({
+        type: "system",
+        subtype: "init",
+        cwd: "/test-cwd",
+        session_id: claudeSessionId,
+        tools: [],
+        mcp_servers: [],
+        model: "claude-sonnet-4-6",
+        permissionMode: "default",
+        apiKeySource: "test",
+        claude_code_version: "2.1.70",
+        uuid: "test-uuid",
+      }),
+    );
+
+    // Wait for init to be processed
+    await pollUntil(() => {
+      const status = server.getStatus(sessionId);
+      return status.model === "claude-sonnet-4-6";
+    });
+
+    // Buffer has 1 entry (the outbound prompt), requesting 200 exceeds it
+    const transcript = server.getTranscript(sessionId, 200);
+    // Should get 5 entries from JSONL (not just the 1 in buffer)
+    expect(transcript.length).toBe(5);
+    expect((transcript[0].message as Record<string, unknown>).message).toEqual({
+      role: "user",
+      content: "JSONL msg 0",
+    });
+
+    ws.close();
+  });
+
+  test("returns buffer entries when request fits in buffer", async () => {
+    spawnState = mockSpawn();
+    server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server.start();
+
+    const sessionId = "test-session-2";
+    server.prepareSession(sessionId, { prompt: "hello", cwd: "/test-cwd" });
+    server.spawnClaude(sessionId);
+
+    // Connect so the initial prompt is added to transcript
+    const ws = await connectMockClaude(server.port, sessionId);
+    await waitForMessage(ws); // consume initial prompt
+
+    // Buffer has 1 entry (the outbound prompt); requesting 1 should use buffer
+    const transcript = server.getTranscript(sessionId, 1);
+    expect(transcript.length).toBe(1);
+    expect(transcript[0].direction).toBe("outbound");
+
+    ws.close();
   });
 });
