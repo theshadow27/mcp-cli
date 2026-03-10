@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { statSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
-import { IPC_ERROR, PROTOCOL_VERSION } from "@mcp-cli/core";
+import { IPC_ERROR, PROTOCOL_VERSION, options } from "@mcp-cli/core";
+import { testOptions } from "../../../test/test-options";
 import { installDaemonLogCapture } from "./daemon-log";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
@@ -1217,5 +1218,279 @@ describe("IpcServer HTTP transport", () => {
     expect(snap.daemonId).toBe(TEST_DAEMON_ID);
     expect(snap.startedAt).toBe(TEST_STARTED_AT);
     expect(snap.collectedAt).toBeGreaterThan(0);
+  });
+
+  // -- Alias handler tests --
+
+  test("saveAlias writes freeform script to ALIASES_DIR and returns filePath", async () => {
+    using testOpts = testOptions();
+    socketPath = tmpSocket();
+    let savedArgs: unknown[] = [];
+    const db = mockDb({
+      saveAlias: (...args: unknown[]) => {
+        savedArgs = args;
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const script = 'const result = await mcp.echo.echo({ message: "hi" });';
+    const res = await rpc("/rpc", {
+      id: "sa1",
+      method: "saveAlias",
+      params: { name: "greet", script, description: "A greeting alias" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+
+    const result = json.result as { ok: boolean; filePath: string };
+    expect(result.ok).toBe(true);
+    expect(result.filePath).toBe(join(testOpts.ALIASES_DIR, "greet.ts"));
+
+    // File should exist on disk with auto-prepended import
+    const content = readFileSync(result.filePath, "utf-8");
+    expect(content).toContain('import { mcp, args, file, json } from "mcp-cli"');
+    expect(content).toContain(script);
+
+    // DB should be called with correct args
+    expect(savedArgs[0]).toBe("greet"); // name
+    expect(savedArgs[1]).toBe(result.filePath); // filePath
+    expect(savedArgs[2]).toBe("A greeting alias"); // description
+    expect(savedArgs[3]).toBe("freeform"); // type
+  });
+
+  test("saveAlias freeform skips auto-import when already present", async () => {
+    using _testOpts = testOptions();
+    socketPath = tmpSocket();
+    const db = mockDb({ saveAlias: () => {} });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const script = 'import { mcp, args, file, json } from "mcp-cli";\nawait mcp.echo.echo({});';
+    const res = await rpc("/rpc", {
+      id: "sa2",
+      method: "saveAlias",
+      params: { name: "already-imported", script },
+    });
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { ok: boolean; filePath: string };
+    expect(result.ok).toBe(true);
+
+    // File should NOT have a double import
+    const content = readFileSync(result.filePath, "utf-8");
+    const importCount = (content.match(/from "mcp-cli"/g) ?? []).length;
+    expect(importCount).toBe(1);
+  });
+
+  test("saveAlias with defineAlias script saves as structured type", async () => {
+    using _testOpts = testOptions();
+    socketPath = tmpSocket();
+    let savedType: string | undefined;
+    const db = mockDb({
+      saveAlias: (...args: unknown[]) => {
+        savedType = args[3] as string;
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    // defineAlias( sentinel triggers structured path; worker extraction will fail
+    // in test (no real worker), so it falls back to saving with sentinel-detected type
+    const script = `import { defineAlias, z } from "mcp-cli";\ndefineAlias({ name: "test", handler: async () => ({}) });`;
+    const res = await rpc("/rpc", {
+      id: "sa3",
+      method: "saveAlias",
+      params: { name: "structured", script, description: "structured alias" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { ok: boolean; filePath: string };
+    expect(result.ok).toBe(true);
+
+    // Should be saved as defineAlias type (worker fails, falls back to sentinel-only save)
+    expect(savedType).toBe("defineAlias");
+
+    // File should contain the script verbatim (no auto-import prepended)
+    const content = readFileSync(result.filePath, "utf-8");
+    expect(content).toBe(script);
+  });
+
+  test("deleteAlias removes file and db record", async () => {
+    using testOpts = testOptions({
+      files: {
+        "aliases/remove-me.ts": "// alias script",
+      },
+    });
+    socketPath = tmpSocket();
+    const filePath = join(testOpts.ALIASES_DIR, "remove-me.ts");
+    let deletedName: string | undefined;
+    const db = mockDb({
+      getAlias: (name: string) => (name === "remove-me" ? { name: "remove-me", filePath, type: "freeform" } : null),
+      deleteAlias: (name: string) => {
+        deletedName = name;
+      },
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    // File should exist before delete
+    expect(existsSync(filePath)).toBe(true);
+
+    const res = await rpc("/rpc", {
+      id: "da1",
+      method: "deleteAlias",
+      params: { name: "remove-me" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true });
+
+    // File should be removed
+    expect(existsSync(filePath)).toBe(false);
+    // DB record should be deleted
+    expect(deletedName).toBe("remove-me");
+  });
+
+  test("deleteAlias succeeds even when alias not in db", async () => {
+    using _testOpts = testOptions();
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "da2",
+      method: "deleteAlias",
+      params: { name: "nonexistent" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true });
+  });
+
+  test("getAlias returns script content from disk", async () => {
+    using testOpts = testOptions({
+      files: {
+        "aliases/my-alias.ts": "// my alias script content",
+      },
+    });
+    socketPath = tmpSocket();
+    const filePath = join(testOpts.ALIASES_DIR, "my-alias.ts");
+    const db = mockDb({
+      getAlias: (name: string) =>
+        name === "my-alias" ? { name: "my-alias", filePath, type: "freeform", description: "test" } : null,
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "ga1",
+      method: "getAlias",
+      params: { name: "my-alias" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+
+    const result = json.result as { name: string; script: string; type: string };
+    expect(result.name).toBe("my-alias");
+    expect(result.script).toBe("// my alias script content");
+    expect(result.type).toBe("freeform");
+  });
+
+  test("getAlias returns null for unknown alias", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "ga2",
+      method: "getAlias",
+      params: { name: "nonexistent" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toBeNull();
+  });
+
+  test("getAlias returns empty script when file is missing", async () => {
+    using _testOpts = testOptions();
+    socketPath = tmpSocket();
+    const db = mockDb({
+      getAlias: (name: string) =>
+        name === "missing-file" ? { name: "missing-file", filePath: "/nonexistent/path.ts", type: "freeform" } : null,
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "ga3",
+      method: "getAlias",
+      params: { name: "missing-file" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+
+    const result = json.result as { name: string; script: string };
+    expect(result.name).toBe("missing-file");
+    expect(result.script).toBe("");
+  });
+
+  // -- restartServer and reloadConfig handler tests --
+
+  test("restartServer calls pool.restart with server name", async () => {
+    socketPath = tmpSocket();
+    let restartedServer: string | undefined;
+    const pool = {
+      ...mockPool(),
+      restart: async (name: string) => {
+        restartedServer = name;
+      },
+    };
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "rs1",
+      method: "restartServer",
+      params: { server: "my-server" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true });
+    expect(restartedServer).toBe("my-server");
+  });
+
+  test("reloadConfig calls onReloadConfig callback", async () => {
+    socketPath = tmpSocket();
+    let reloadCalled = false;
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onReloadConfig: async () => {
+          reloadCalled = true;
+        },
+      }),
+    );
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "rl1",
+      method: "reloadConfig",
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true });
+    expect(reloadCalled).toBe(true);
+  });
+
+  test("reloadConfig returns INTERNAL_ERROR when no callback configured", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "rl2",
+      method: "reloadConfig",
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
+    expect(json.error?.message).toContain("Config reload not available");
   });
 });

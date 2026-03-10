@@ -576,4 +576,45 @@ describe("ConfigWatcher integration", () => {
     expect(cb).toHaveBeenCalledTimes(1);
     expect(cb.mock.calls[0][0].removed).toContain("alpha");
   });
+
+  test("start works when config directory does not exist", async () => {
+    using opts = testOptions();
+    // Point to a non-existent project directory as cwd
+    const nonExistentCwd = join(opts.dir, "does", "not", "exist");
+    const initial: ResolvedConfig = { servers: new Map(), sources: [] };
+    const cb = mock((_e: ConfigChangeEvent) => {});
+
+    // start() should not throw even when watch directories don't exist
+    watcher = new ConfigWatcher(initial, cb, nonExistentCwd);
+    watcher.start();
+
+    // Verify watcher is functional (stop should work cleanly)
+    watcher.stop();
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  test("scheduleReload is suppressed after stop during debounce window", async () => {
+    using opts = testOptions({
+      files: {
+        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+      },
+    });
+
+    const initial = makeConfig({ alpha: { command: "echo" } });
+    const cb = mock((_e: ConfigChangeEvent) => {});
+
+    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher.start();
+
+    // Write a change to trigger scheduleReload
+    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
+
+    // Stop immediately before debounce fires (debounce is 300ms)
+    await Bun.sleep(50);
+    watcher.stop();
+
+    // Wait long enough for debounce to have fired (if not cancelled)
+    await Bun.sleep(500);
+    expect(cb).not.toHaveBeenCalled();
+  });
 });
