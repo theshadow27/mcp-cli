@@ -62,6 +62,7 @@ export class IpcServer {
   private onShutdown: () => void;
   private inflightCount = 0;
   private draining = false;
+  private shutdownScheduled = false;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
   private aliasServer: AliasServer | null = null;
@@ -147,6 +148,7 @@ export class IpcServer {
 
         // Reject new requests while draining (except the shutdown request itself already dispatched)
         if (self.draining && request.method !== "shutdown") {
+          onRequestComplete();
           self.inflightCount--;
           self.checkDrain();
           const error: IpcResponse = {
@@ -192,7 +194,8 @@ export class IpcServer {
 
   /** If draining and no requests in flight, trigger shutdown on next tick (lets Bun flush responses) */
   private checkDrain(): void {
-    if (this.draining && this.inflightCount === 0) {
+    if (this.draining && this.inflightCount === 0 && !this.shutdownScheduled) {
+      this.shutdownScheduled = true;
       // Defer to next event-loop turn so Bun can finish writing the HTTP response
       setTimeout(() => this.onShutdown(), 0);
     }

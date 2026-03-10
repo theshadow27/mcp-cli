@@ -330,9 +330,14 @@ describe("IpcServer HTTP transport", () => {
   test("shutdown rejects new requests while draining", async () => {
     socketPath = tmpSocket();
     let shutdownCalled = false;
+    let handlerEntered: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    });
     const slowPool = {
       ...mockPool(),
       callTool: async () => {
+        handlerEntered();
         await Bun.sleep(200);
         return { content: [] };
       },
@@ -353,8 +358,8 @@ describe("IpcServer HTTP transport", () => {
     // Start a slow callTool request
     const slowReq = rpc("/rpc", { id: "slow1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
 
-    // Give the slow request time to be dispatched
-    await Bun.sleep(20);
+    // Wait for the slow handler to actually start executing
+    await handlerStarted;
 
     // Trigger shutdown while the slow request is in-flight
     const shutdownRes = await rpc("/rpc", { id: "sd-drain", method: "shutdown" });
