@@ -26,7 +26,7 @@ interface UseLogsResult {
   setSource: (source: LogSource) => void;
 }
 
-export function useLogs(servers: ServerStatus[]): UseLogsResult {
+export function useLogs(servers: ServerStatus[], enabled = true): UseLogsResult {
   const [source, setSourceRaw] = useState<LogSource>({ type: "daemon" });
   const [lines, setLines] = useState<LogEntry[]>([]);
   const sinceRef = useRef<number | undefined>(undefined);
@@ -45,6 +45,8 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
   );
 
   useEffect(() => {
+    if (!enabled) return;
+
     let cancelled = false;
     let isFirst = true;
 
@@ -97,7 +99,7 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
       cancelled = true;
       clearInterval(id);
     };
-  }, [source]);
+  }, [source, enabled]);
 
   return { lines, source, setSource };
 }

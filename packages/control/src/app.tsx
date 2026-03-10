@@ -36,7 +36,7 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
-  const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
+  const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers, view === "logs");
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const prevFilterRef = useRef(filterText);
