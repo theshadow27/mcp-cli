@@ -116,9 +116,18 @@ export class ServerPool {
    * Register a virtual server that is still starting up.
    * The promise resolves when the server is ready and registered via registerVirtualServer().
    * Commands that need this server will await the promise; others proceed immediately.
+   *
+   * If the startup promise does not settle within `timeoutMs` (default 30s), the pending
+   * entry is removed so the idle timer can proceed normally. The underlying startup may
+   * still complete later and call registerVirtualServer() successfully.
    */
-  registerPendingVirtualServer(name: string, startPromise: Promise<void>): void {
-    const tracked = startPromise
+  registerPendingVirtualServer(name: string, startPromise: Promise<void>, timeoutMs = 30_000): void {
+    const timeout = new Promise<void>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`startup timed out after ${timeoutMs}ms`)), timeoutMs);
+      // Don't let the timer keep the process alive if everything else has exited
+      (timer as NodeJS.Timeout).unref?.();
+    });
+    const tracked = Promise.race([startPromise, timeout])
       .catch((err) => {
         console.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
       })
