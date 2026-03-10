@@ -90,6 +90,13 @@ EOF
 )"
 ```
 
-### 6. File Issues for Larger Problems
+### 6. File Issues Sparingly
 
-If you discover problems that are beyond documentation scope (broken features, missing tests, architectural concerns), file them as separate issues rather than trying to fix everything in a docs PR.
+**Prefer fixing over filing.** Most documentation problems are straightforward to fix — wrong paths, stale command names, missing entries. Fix these directly in the PR.
+
+Only file issues for problems that are genuinely beyond documentation scope:
+- Broken features that need code changes
+- Missing test coverage
+- Architectural concerns
+
+Do NOT file one issue per document or per finding — that creates noise. If you must file issues, batch related problems into one issue per area.

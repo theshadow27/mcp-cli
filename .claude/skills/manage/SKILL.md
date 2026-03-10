@@ -28,6 +28,8 @@ Session IDs support prefix matching (like git SHAs) — `mcx claude send a3f "ms
 
 Always implement with opus — the cost difference is small; quality isn't. Use sonnet only for documentation-only issues.
 
+**Never switch models mid-stream.** `/model` changes the model but the session keeps its full history. Sonnet's early decisions (architecture, variable names, test structure) become the new model's context — it inherits the mistakes. If you spawned with the wrong model, either kill and restart fresh with the right model, or finish with the wrong model and do adversarial review to catch issues.
+
 Review depth is decided **after** implementation, not before. Run `bun .claude/skills/estimate/triage.ts --json` on the branch to measure the actual diff, then:
 
 - **Low scrutiny**: QA only
@@ -149,3 +151,4 @@ These work via `mcx claude send`. Other slash commands (like `/help`, `/compact`
 - **Don't force-remove worktrees** — always check for uncommitted changes first. Investigate before removing — there may be valuable uncommitted work.
 - **Don't ignore stuck sessions** — investigate and either nudge or restart them.
 - **Don't duplicate skills and commands** — pick one. Prefer skills for richer metadata.
+- **Don't switch models mid-stream to "fix" quality** — the new model inherits the old model's decisions as context. Kill and restart fresh, or finish and adversarial-review.
