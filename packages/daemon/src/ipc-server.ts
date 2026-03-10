@@ -565,6 +565,7 @@ export class IpcServer {
       const deadline = Date.now() + maxWait;
 
       while (Date.now() < deadline) {
+        if (this.draining) return { message: null };
         const msg = this.db.getNextUnread(recipient);
         if (msg) {
           this.db.markMailRead(msg.id);

@@ -875,6 +875,47 @@ describe("IpcServer HTTP transport", () => {
     expect((json.result as { message: null }).message).toBeNull();
   });
 
+  test("waitForMail returns null early when shutdown is requested", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    const db = mockDb({
+      getNextUnread: () => undefined,
+    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      db,
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+      }),
+    );
+    server.start(socketPath);
+
+    // Start a waitForMail with a long timeout (30s)
+    const waitReq = rpc("/rpc", { id: "wm-drain", method: "waitForMail", params: { recipient: "mgr", timeout: 30 } });
+
+    // Give it a moment to enter the poll loop
+    await Bun.sleep(100);
+
+    // Trigger shutdown — this should cause waitForMail to return early
+    const shutdownRes = await rpc("/rpc", { id: "sd-wm", method: "shutdown" });
+    const shutdownJson = (await shutdownRes.json()) as IpcResponse;
+    expect(shutdownJson.result).toEqual({ ok: true });
+
+    // waitForMail should complete quickly (not wait 30s)
+    const waitRes = await waitReq;
+    const waitJson = (await waitRes.json()) as IpcResponse;
+    expect(waitJson.error).toBeUndefined();
+    expect((waitJson.result as { message: null }).message).toBeNull();
+
+    // Shutdown should have completed
+    await pollUntil(() => shutdownCalled);
+    expect(shutdownCalled).toBe(true);
+  });
+
   test("replyToMail creates reply with swapped sender/recipient", async () => {
     socketPath = tmpSocket();
     const original = {
