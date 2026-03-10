@@ -237,6 +237,7 @@ export class ClaudeServer {
     this.activeSessions.clear();
     this.sessionPids.clear();
     this.sessionAddedAt.clear();
+    this.crashTimestamps.length = 0;
   }
 
   /** Get the WebSocket server port (available after start). */
