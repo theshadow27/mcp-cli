@@ -81,7 +81,12 @@ export interface SessionResult {
 export type SpawnFn = (
   cmd: string[],
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
-) => { pid: number; exited: Promise<number>; kill: (signal?: number) => void };
+) => {
+  pid: number;
+  exited: Promise<number>;
+  kill: (signal?: number) => void;
+  stderr?: ReadableStream<Uint8Array> | null;
+};
 
 interface ResultWaiter {
   resolve: (r: SessionResult) => void;
