@@ -273,7 +273,11 @@ export class ClaudeServer {
     this.client = null;
     this.wsPort = null;
     for (const sessionId of this.activeSessions) {
-      this.db.endSession(sessionId);
+      try {
+        this.db.endSession(sessionId);
+      } catch {
+        // ignore DB errors during stop — DB may already be closing
+      }
     }
     this.activeSessions.clear();
     this.sessionPids.clear();
