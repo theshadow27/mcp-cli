@@ -331,7 +331,13 @@ export class ClaudeWsServer {
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
-        this.handleSessionEvent(sessionId, session, event);
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          console.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
       }
       // Reject pending result waiters — they can't get results without a process
       for (const waiter of session.resultWaiters) {
@@ -438,7 +444,13 @@ export class ClaudeWsServer {
     const events = session.state.resetForClear();
     for (const event of events) {
       this.onSessionEvent?.(sessionId, event);
-      this.handleSessionEvent(sessionId, session, event);
+      try {
+        this.handleSessionEvent(sessionId, session, event);
+      } catch (err) {
+        console.error(
+          `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+        );
+      }
     }
 
     // Clear keep-alive timer
@@ -493,7 +505,13 @@ export class ClaudeWsServer {
     const events = session.state.setModel(model);
     for (const event of events) {
       this.onSessionEvent?.(sessionId, event);
-      this.handleSessionEvent(sessionId, session, event);
+      try {
+        this.handleSessionEvent(sessionId, session, event);
+      } catch (err) {
+        console.error(
+          `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+        );
+      }
     }
   }
 
@@ -756,7 +774,13 @@ export class ClaudeWsServer {
             `[_claude] onSessionEvent callback threw for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
           );
         }
-        this.handleSessionEvent(sessionId, session, event);
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          console.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
       }
     }
   }

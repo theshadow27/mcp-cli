@@ -1832,6 +1832,43 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("handleSessionEvent throw does not drop remaining events in the same NDJSON frame", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    // Make handleSessionEvent throw on session:init but delegate normally for all other events.
+    // This simulates an unexpected exception in the event handler for one event type.
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    const original = (server as any).handleSessionEvent.bind(server);
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    (server as any).handleSessionEvent = (sessionId: string, session: unknown, event: { type: string }) => {
+      if (event.type === "session:init") {
+        throw new Error("simulated handleSessionEvent failure on session:init");
+      }
+      return original(sessionId, session, event);
+    };
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // consume initial prompt
+
+      // Send all three messages as a SINGLE WebSocket frame (concatenated NDJSON).
+      // parseFrame splits them, so handleMessage processes all three in one call.
+      // session:init handler will throw, but session:result must still be processed.
+      const resultPromise = server.waitForResult("test-session", 5000);
+      ws.send(systemInitMessage("test-session") + assistantMessage("test-session") + resultMessage("test-session"));
+
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
   test("throwing onSessionEvent callback does not prevent handleSessionEvent from running", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
