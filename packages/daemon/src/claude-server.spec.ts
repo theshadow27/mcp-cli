@@ -842,6 +842,37 @@ describe("ClaudeServer", () => {
     expect(tools.length).toBe(9);
   });
 
+  // ── Worker cleanup on start() failure (#471, #453, #454) ──
+
+  test("start() terminates worker and nulls state if client.connect() throws", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Inject a factory that produces a client whose connect() always throws —
+    // avoids polluting the global Client.prototype across test files.
+    const fakeClient = {
+      connect: async () => {
+        throw new Error("simulated connect failure");
+      },
+      close: async () => {},
+    };
+    server = new ClaudeServer(db, undefined, () => fakeClient as never);
+
+    await expect(server.start()).rejects.toThrow("simulated connect failure");
+
+    // Worker, transport, client, wsPort should all be cleaned up
+    const internals = server as unknown as {
+      worker: Worker | null;
+      transport: unknown;
+      client: unknown;
+    };
+    expect(internals.worker).toBeNull();
+    expect(internals.transport).toBeNull();
+    expect(internals.client).toBeNull();
+    expect(server.port).toBeNull();
+    server = undefined; // already cleaned up
+  });
+
   // ── PID-less session TTL ──
 
   test("pruneDeadSessions prunes pid-less sessions after TTL expires", async () => {

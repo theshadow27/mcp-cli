@@ -115,12 +115,15 @@ export function isWorkerEvent(data: unknown): data is WorkerEvent {
 
 // ── Server ──
 
+type ClientFactory = () => Client;
+
 export class ClaudeServer {
   private worker: Worker | null = null;
   private transport: WorkerClientTransport | null = null;
   private client: Client | null = null;
   private db: StateDb;
   private wsPort: number | null = null;
+  private readonly clientFactory: ClientFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionPids = new Map<string, number>();
   /** Timestamp (ms) when each session was added to activeSessions — used to TTL pid-less zombies. */
@@ -146,8 +149,11 @@ export class ClaudeServer {
   constructor(
     db: StateDb,
     private daemonId?: string,
+    clientFactory?: ClientFactory,
   ) {
     this.db = db;
+    this.clientFactory =
+      clientFactory ?? (() => new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" }));
   }
 
   /** Start the worker and connect the MCP client. */
@@ -193,30 +199,58 @@ export class ClaudeServer {
       worker.postMessage({ type: "init", daemonId: this.daemonId });
     });
 
-    // Now set up MCP transport
-    this.transport = new WorkerClientTransport(this.worker);
-    this.client = new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" });
+    // Set up MCP transport and connect — if anything throws, terminate the worker
+    // to prevent leaked threads (#471, #453).
+    try {
+      this.transport = new WorkerClientTransport(this.worker);
+      this.client = this.clientFactory();
 
-    // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage)
-    await this.client.connect(this.transport);
+      // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage).
+      // Race with a timeout to prevent indefinite hangs on broken handshakes (#454).
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        this.client.connect(this.transport),
+        new Promise<never>((_, reject) => {
+          handshakeTimer = setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000);
+        }),
+      ]);
+      clearTimeout(handshakeTimer);
 
-    // After transport.start(), wrap worker.onmessage to intercept DB event messages
-    const transportHandler = worker.onmessage;
-    worker.onmessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (isWorkerEvent(data)) {
-        this.handleWorkerEvent(data);
-        return;
+      // After transport.start(), wrap worker.onmessage to intercept DB event messages
+      const transportHandler = worker.onmessage;
+      worker.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (isWorkerEvent(data)) {
+          this.handleWorkerEvent(data);
+          return;
+        }
+        // Forward MCP JSON-RPC messages to the transport
+        transportHandler?.call(worker, event);
+      };
+
+      // Clear stale startup error handler before attaching crash detection
+      worker.onerror = null;
+
+      // Attach post-startup crash detection
+      this.attachCrashDetection(worker);
+    } catch (err) {
+      // Mirror stop()'s cleanup order: close client first, then terminate worker
+      try {
+        await this.client?.close();
+      } catch {
+        // ignore close errors
       }
-      // Forward MCP JSON-RPC messages to the transport
-      transportHandler?.call(worker, event);
-    };
-
-    // Clear stale startup error handler before attaching crash detection
-    worker.onerror = null;
-
-    // Attach post-startup crash detection
-    this.attachCrashDetection(worker);
+      try {
+        worker.terminate();
+      } catch {
+        /* worker may already be dead */
+      }
+      this.worker = null;
+      this.transport = null;
+      this.client = null;
+      this.wsPort = null;
+      throw err;
+    }
 
     return { client: this.client, transport: this.transport };
   }
