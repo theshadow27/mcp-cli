@@ -361,6 +361,9 @@ export class ClaudeServer {
       );
       this.stopped = true;
       this.restartInProgress = false;
+      for (const sessionId of this.activeSessions) {
+        this.db.endSession(sessionId);
+      }
       this.activeSessions.clear();
       this.sessionPids.clear();
       this.sessionAddedAt.clear();

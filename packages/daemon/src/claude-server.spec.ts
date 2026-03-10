@@ -470,6 +470,13 @@ describe("ClaudeServer", () => {
     }
     expect(restartCount).toBe(3);
 
+    // Add active sessions immediately before the exhaustion crash so the new
+    // db.endSession() loop in the exhaustion branch is actually exercised.
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "exhaust-1", state: "active" } });
+    handle({ type: "db:upsert", session: { sessionId: "exhaust-2", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
     // 4th crash should be rate-limited — no restart
     await crash("crash 3");
     expect(restartCount).toBe(3);
@@ -477,6 +484,15 @@ describe("ClaudeServer", () => {
 
     // #463: activeSessions should be cleared on crash-loop exhaustion
     expect(server.hasActiveSessions()).toBe(false);
+
+    // Sessions must be ended in SQLite — not left as zombie 'disconnected' rows
+    const row1 = db.getSession("exhaust-1");
+    expect(row1?.state).toBe("ended");
+    expect(row1?.endedAt).not.toBeNull();
+
+    const row2 = db.getSession("exhaust-2");
+    expect(row2?.state).toBe("ended");
+    expect(row2?.endedAt).not.toBeNull();
   });
 
   test("handleWorkerCrash terminates worker and closes client before nulling", async () => {
@@ -486,16 +502,37 @@ describe("ClaudeServer", () => {
 
     await server.start();
 
-    // Grab references before crash
+    // Grab references before crash and spy on terminate() and close()
     const oldWorker = (server as unknown as { worker: Worker | null }).worker;
     expect(oldWorker).not.toBeNull();
+
+    let terminateCalled = false;
+    const origTerminate = (oldWorker as Worker).terminate.bind(oldWorker);
+    (oldWorker as Worker).terminate = () => {
+      terminateCalled = true;
+      return origTerminate();
+    };
+
+    const oldClient = (server as unknown as { client: { close: () => Promise<void> } | null }).client;
+    expect(oldClient).not.toBeNull();
+
+    let closeCalled = false;
+    const origClose = (oldClient as { close: () => Promise<void> }).close.bind(oldClient);
+    (oldClient as { close: () => Promise<void> }).close = async () => {
+      closeCalled = true;
+      return origClose();
+    };
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
     await crash("test cleanup");
 
-    // After restart, old worker handlers should be cleaned up (terminate was called)
+    // worker.terminate() and client.close() must have been called
+    expect(terminateCalled).toBe(true);
+    expect(closeCalled).toBe(true);
+
+    // After restart, old worker handlers should be cleaned up
     expect(oldWorker?.onmessage).toBeNull();
     expect(oldWorker?.onerror).toBeNull();
   });
