@@ -770,74 +770,78 @@ export class ClaudeWsServer {
   // ── Event handling ──
 
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
-    switch (event.type) {
-      case "session:init":
-        // Capture Claude Code's own session ID for JSONL file lookup
-        session.claudeSessionId = event.sessionId;
-        break;
-      case "session:permission_request":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:permission_request",
-          requestId: event.requestId,
-          toolName: event.request.tool_name,
-        });
-        this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
-          console.error(`[_claude] Permission evaluation failed for session ${sessionId}: ${err}`);
-        });
-        break;
-      case "session:result":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:result",
-          cost: event.cost,
-          tokens: event.tokens,
-          numTurns: event.numTurns,
-          result: event.result,
-        });
-        this.resolveWaiters(session, {
-          sessionId,
-          success: true,
-          result: event.result,
-          cost: event.cost,
-          tokens: event.tokens,
-          numTurns: event.numTurns,
-        });
-        break;
-      case "session:error":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:error",
-          cost: event.cost,
-          errors: event.errors,
-        });
-        this.resolveWaiters(session, {
-          sessionId,
-          success: false,
-          errors: event.errors,
-          cost: event.cost,
-          tokens: 0,
-          numTurns: 0,
-        });
-        break;
-      case "session:cleared":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:cleared",
-        });
-        break;
-      case "session:model_changed":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:model_changed",
-        });
-        break;
-      case "session:disconnected":
-        this.resolveEventWaiters(sessionId, {
-          sessionId,
-          event: "session:disconnected",
-        });
-        break;
+    try {
+      switch (event.type) {
+        case "session:init":
+          // Capture Claude Code's own session ID for JSONL file lookup
+          session.claudeSessionId = event.sessionId;
+          break;
+        case "session:permission_request":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:permission_request",
+            requestId: event.requestId,
+            toolName: event.request.tool_name,
+          });
+          this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
+            console.error(`[_claude] Permission evaluation failed for session ${sessionId}: ${err}`);
+          });
+          break;
+        case "session:result":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:result",
+            cost: event.cost,
+            tokens: event.tokens,
+            numTurns: event.numTurns,
+            result: event.result,
+          });
+          this.resolveWaiters(session, {
+            sessionId,
+            success: true,
+            result: event.result,
+            cost: event.cost,
+            tokens: event.tokens,
+            numTurns: event.numTurns,
+          });
+          break;
+        case "session:error":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:error",
+            cost: event.cost,
+            errors: event.errors,
+          });
+          this.resolveWaiters(session, {
+            sessionId,
+            success: false,
+            errors: event.errors,
+            cost: event.cost,
+            tokens: 0,
+            numTurns: 0,
+          });
+          break;
+        case "session:cleared":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:cleared",
+          });
+          break;
+        case "session:model_changed":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:model_changed",
+          });
+          break;
+        case "session:disconnected":
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:disconnected",
+          });
+          break;
+      }
+    } catch (err) {
+      console.error(`[_claude] Event handling failed for session ${sessionId}, event ${event.type}: ${err}`);
     }
   }
 
