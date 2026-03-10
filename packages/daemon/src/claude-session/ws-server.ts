@@ -21,6 +21,13 @@ import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
 import { SessionState } from "./session-state";
 
+// ── Constants ──
+
+/** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
+const KILL_TIMEOUT_MS = 5_000;
+/** Time (ms) to wait after SIGKILL before giving up. */
+const KILL_SIGKILL_GRACE_MS = 2_000;
+
 // ── Errors ──
 
 /** Thrown when waitForEvent() or waitForResult() times out. */
@@ -41,6 +48,12 @@ export interface SessionConfig {
   worktree?: string;
   cwd?: string;
   model?: string;
+  /**
+   * Claude CLI session ID to resume (restores conversation history via --resume).
+   * Set to a specific UUID to resume that session, or "continue" to resume
+   * the most recent conversation in the cwd (via --continue).
+   */
+  resumeSessionId?: string;
 }
 
 export interface TranscriptEntry {
@@ -68,7 +81,12 @@ export interface SessionResult {
 export type SpawnFn = (
   cmd: string[],
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
-) => { pid: number; exited: Promise<number>; kill: (signal?: number) => void };
+) => {
+  pid: number;
+  exited: Promise<number>;
+  kill: (signal?: number) => void;
+  stderr?: ReadableStream<Uint8Array> | null;
+};
 
 interface ResultWaiter {
   resolve: (r: SessionResult) => void;
@@ -152,6 +170,7 @@ export class ClaudeWsServer {
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
+  private readonly killTimeoutMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -159,8 +178,9 @@ export class ClaudeWsServer {
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  constructor(deps?: { spawn?: SpawnFn }) {
+  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
+    this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -200,16 +220,14 @@ export class ClaudeWsServer {
 
   /** Stop the server and all sessions. */
   async stop(): Promise<void> {
-    const exitPromises: Promise<number>[] = [];
+    const terminations: Promise<void>[] = [];
     for (const [sessionId, session] of this.sessions) {
-      if (session.proc) exitPromises.push(session.proc.exited);
-      this.terminateSession(sessionId, session, "Server stopping");
+      terminations.push(this.terminateSession(sessionId, session, "Server stopping"));
     }
-    this.sessions.clear();
+    await Promise.allSettled(terminations);
+    // terminateSession removes each session from the map; nothing left to clear.
     this.server?.stop();
     this.server = null;
-    // Wait for spawned processes to exit
-    await Promise.allSettled(exitPromises);
   }
 
   get port(): number {
@@ -279,11 +297,18 @@ export class ClaudeWsServer {
     if (session.config.worktree) {
       cmd.push("--worktree", session.config.worktree);
     }
+    if (session.config.resumeSessionId) {
+      if (session.config.resumeSessionId === "continue") {
+        cmd.push("--continue");
+      } else {
+        cmd.push("--resume", session.config.resumeSessionId);
+      }
+    }
 
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: "ignore",
-      stderr: "ignore",
+      stderr: "pipe",
       stdin: "ignore",
     });
 
@@ -292,17 +317,25 @@ export class ClaudeWsServer {
     session.spawnAlive = true;
 
     // Watch for process exit — mark spawn as dead but don't terminate the session
-    proc.exited.then(() => {
+    proc.exited.then(async () => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
+      const stderrText = proc.stderr ? (await new Response(proc.stderr).text()).trim() : "";
+      const suffix = stderrText ? `: ${stderrText}` : "";
+      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
+        this.handleSessionEvent(sessionId, session, event);
       }
+      // Reject pending result waiters — they can't get results without a process
+      for (const waiter of session.resultWaiters) {
+        waiter.reject(new Error("Process exited"));
+      }
+      session.resultWaiters.length = 0;
     });
 
     return proc.pid;
@@ -314,7 +347,14 @@ export class ClaudeWsServer {
 
     // Intercept /clear — kill process and respawn for fresh context
     if (trimmed === "/clear") {
-      this.clearSession(sessionId);
+      this.clearSession(sessionId).catch((err) => {
+        console.error(`[_claude] clearSession failed for ${sessionId}:`, err);
+        // Remove the stuck session so it doesn't remain in clearing=true permanently.
+        const stuck = this.sessions.get(sessionId);
+        if (stuck) {
+          this.terminateSession(sessionId, stuck, "clearSession failed").catch(console.error);
+        }
+      });
       return;
     }
 
@@ -346,11 +386,50 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Kill a process and wait for it to exit, with SIGKILL escalation.
+   * Sends SIGTERM, waits up to killTimeoutMs, then escalates to SIGKILL if still alive.
+   */
+  private async killAndAwaitProc(proc: NonNullable<WsSession["proc"]>): Promise<void> {
+    try {
+      proc.kill();
+    } catch {
+      // already dead
+      return;
+    }
+    let timeoutId: Timer | undefined;
+    const exited = proc.exited.then(() => "exited" as const);
+    const timedOut = new Promise<"timeout">((r) => {
+      timeoutId = setTimeout(() => r("timeout"), this.killTimeoutMs);
+    });
+    const result = await Promise.race([exited, timedOut]);
+    clearTimeout(timeoutId);
+    if (result === "timeout") {
+      console.error("[_claude] Process did not exit after SIGTERM — sending SIGKILL");
+      try {
+        proc.kill(9);
+      } catch {
+        // already dead
+        return;
+      }
+      let sigkillTimeoutId: Timer | undefined;
+      const sigkillTimeout = new Promise<void>((r) => {
+        sigkillTimeoutId = setTimeout(r, KILL_SIGKILL_GRACE_MS);
+      });
+      await Promise.race([proc.exited, sigkillTimeout]);
+      clearTimeout(sigkillTimeoutId);
+    }
+  }
+
+  /**
    * Clear a session by killing the claude process and respawning.
    * Gives a truly fresh context without losing the session entry.
+   * Idempotent — if a clear is already in progress, this is a no-op.
    */
-  clearSession(sessionId: string): void {
+  async clearSession(sessionId: string): Promise<void> {
     const session = this.getSession(sessionId);
+    // Reentrancy guard — if already clearing (e.g. rapid /clear), skip.
+    // The in-flight clear will respawn once the process exits.
+    if (session.clearing) return;
     session.clearing = true;
 
     // Reset state machine (preserves cumulative cost/tokens)
@@ -368,20 +447,27 @@ export class ClaudeWsServer {
 
     // Close WebSocket
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.close(1000, "Session cleared");
+      try {
+        session.ws.close(1000, "Session cleared");
+      } catch {
+        /* already dead */
+      }
     }
     session.ws = null;
 
-    // Kill process
+    // Kill process and wait for exit before respawning.
+    // Null the ref first so the proc.exited handler (which checks session.proc !== proc)
+    // skips the stale exit — we're about to respawn.
     if (session.proc) {
-      try {
-        session.proc.kill();
-      } catch {
-        // already dead
-      }
+      const dying = session.proc;
       session.proc = null;
       session.spawnAlive = false;
+      await this.killAndAwaitProc(dying);
     }
+
+    // Guard: if the session was terminated (bye/stop) during the kill await, bail out.
+    // terminateSession already cleaned everything up — don't respawn into a dead session.
+    if (!this.sessions.has(sessionId)) return;
 
     // Update config prompt to empty — next sendPrompt() will carry real work
     session.config.prompt = "";
@@ -409,12 +495,16 @@ export class ClaudeWsServer {
     }
   }
 
-  /** Gracefully end a session: close WS, stop process, clean up. Returns worktree info. */
-  bye(sessionId: string): { worktree: string | null; cwd: string | null } {
+  /**
+   * Gracefully end a session: close WS, stop process, clean up. Returns worktree info.
+   * Awaits process exit (SIGTERM → SIGKILL escalation), so may take up to ~7s if the
+   * process is stuck. Callers that need a fast return should fire-and-forget this.
+   */
+  async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null }> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`No session with id ${sessionId}`);
     const info = { worktree: session.worktree, cwd: session.config.cwd ?? null };
-    this.terminateSession(sessionId, session, "Session ended by user");
+    await this.terminateSession(sessionId, session, "Session ended by user");
     return info;
   }
 
@@ -562,6 +652,33 @@ export class ClaudeWsServer {
 
   // ── WebSocket handlers ──
 
+  /**
+   * Full WebSocket disconnection cleanup. Must be called from every error path
+   * that detects a broken WS — not just handleClose.
+   */
+  private disconnectSessionWs(sessionId: string, session: WsSession, reason: string): void {
+    session.ws = null;
+
+    if (session.keepAliveTimer) {
+      clearInterval(session.keepAliveTimer);
+      session.keepAliveTimer = null;
+    }
+
+    // Transition state if not already ended/disconnected/clearing
+    if (session.state.state !== "ended" && session.state.state !== "disconnected" && !session.clearing) {
+      const events = session.state.disconnect(reason);
+      for (const event of events) {
+        this.onSessionEvent?.(sessionId, event);
+      }
+    }
+
+    // Reject pending result waiters — they can't get results without WS
+    for (const waiter of session.resultWaiters) {
+      waiter.reject(new Error("WebSocket disconnected"));
+    }
+    session.resultWaiters.length = 0;
+  }
+
   private handleOpen(ws: ServerWebSocket<WsData>): void {
     const { sessionId } = ws.data;
     const session = this.sessions.get(sessionId);
@@ -582,13 +699,32 @@ export class ClaudeWsServer {
     // The CLI will NOT send system/init until it receives a user message.
     const prompt = session.config.prompt;
     const outbound = userMessage(prompt, sessionId);
-    ws.send(outbound);
+    try {
+      ws.send(outbound);
+    } catch (err) {
+      console.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+      this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+      // Kill the spawned process — it can't communicate without WS
+      if (session.proc) {
+        try {
+          session.proc.kill();
+        } catch {
+          /* already dead */
+        }
+      }
+      return;
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
       if (session.ws?.readyState === WS_OPEN) {
-        session.ws.send(keepAlive());
+        try {
+          session.ws.send(keepAlive());
+        } catch (err) {
+          console.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
+          this.disconnectSessionWs(sessionId, session, "WebSocket keep-alive send failed");
+        }
       }
     }, KEEP_ALIVE_MS);
   }
@@ -622,32 +758,11 @@ export class ClaudeWsServer {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    session.ws = null;
-
-    // Clear keep-alive timer (no WS to ping)
-    if (session.keepAliveTimer) {
-      clearInterval(session.keepAliveTimer);
-      session.keepAliveTimer = null;
-    }
-
-    // If already ended (bye was called) or being cleared (kill+respawn), nothing more to do
-    if (session.state.state === "ended" || session.clearing) return;
-
     console.error(
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
     );
 
-    // Move to disconnected state — session is NOT terminated
-    const events = session.state.disconnect("WebSocket closed");
-    for (const event of events) {
-      this.onSessionEvent?.(sessionId, event);
-    }
-
-    // Reject pending result waiters — they can't get results without WS
-    for (const waiter of session.resultWaiters) {
-      waiter.reject(new Error("WebSocket disconnected"));
-    }
-    session.resultWaiters.length = 0;
+    this.disconnectSessionWs(sessionId, session, "WebSocket closed");
   }
 
   // ── Event handling ──
@@ -713,6 +828,12 @@ export class ClaudeWsServer {
         this.resolveEventWaiters(sessionId, {
           sessionId,
           event: "session:model_changed",
+        });
+        break;
+      case "session:disconnected":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:disconnected",
         });
         break;
     }
@@ -847,7 +968,18 @@ export class ClaudeWsServer {
 
   private sendToWs(session: WsSession, message: string): void {
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.send(message);
+      try {
+        session.ws.send(message);
+      } catch (err) {
+        console.error(`[_claude] WebSocket send failed: ${err}`);
+        // Find sessionId for this session
+        for (const [sid, s] of this.sessions) {
+          if (s === session) {
+            this.disconnectSessionWs(sid, session, "WebSocket send failed");
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -887,7 +1019,7 @@ export class ClaudeWsServer {
    * Single cleanup path: end state machine, drain waiters, clear timers,
    * close WS, kill process, remove from sessions map.
    */
-  private terminateSession(sessionId: string, session: WsSession, errorMessage: string): void {
+  private async terminateSession(sessionId: string, session: WsSession, errorMessage: string): Promise<void> {
     // End state machine (idempotent — returns [] if already ended)
     const events = session.state.end();
     for (const event of events) {
@@ -920,19 +1052,21 @@ export class ClaudeWsServer {
 
     // Close WebSocket
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.close(1000, "Session ended");
+      try {
+        session.ws.close(1000, "Session ended");
+      } catch {
+        /* already dead */
+      }
     }
     session.ws = null;
 
-    // Kill process
+    // Kill process and await exit.
+    // Null the ref first so the proc.exited handler skips the stale exit.
     if (session.proc) {
-      try {
-        session.proc.kill();
-      } catch {
-        // already dead
-      }
+      const dying = session.proc;
       session.proc = null;
       session.spawnAlive = false;
+      await this.killAndAwaitProc(dying);
     }
 
     // Remove from map

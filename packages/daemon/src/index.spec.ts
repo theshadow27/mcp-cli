@@ -1,6 +1,5 @@
 /**
- * Tests for daemon index.ts — startup, shutdown, idle timeout, config reload,
- * and pruneOrphanedWorktrees.
+ * Tests for daemon index.ts — startup, shutdown, idle timeout, config reload.
  *
  * Uses startDaemon() directly for in-process coverage, with testOptions()
  * for filesystem isolation.
@@ -38,7 +37,6 @@ async function startTestDaemonInProcess(overrides?: Partial<Parameters<typeof st
   return startDaemon({
     skipLogSetup: true,
     skipVirtualServers: true,
-    skipWorktreePrune: true,
     ...overrides,
   });
 }
@@ -101,16 +99,6 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       handle = await startTestDaemonInProcess({ skipLogSetup: false });
 
-      const socketPath = join(opts.dir, "mcpd.sock");
-      const res = await rpc(socketPath, "ping");
-      expect(res.result).toHaveProperty("pong", true);
-    });
-
-    test("runs worktree pruning when not skipped", async () => {
-      opts = testOptions();
-      handle = await startTestDaemonInProcess({ skipWorktreePrune: false });
-
-      // Just verify daemon is alive — pruning ran without error on empty DB
       const socketPath = join(opts.dir, "mcpd.sock");
       const res = await rpc(socketPath, "ping");
       expect(res.result).toHaveProperty("pong", true);

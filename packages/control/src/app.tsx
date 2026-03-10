@@ -7,12 +7,14 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
+import { StatsView } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
+import { useMetrics } from "./hooks/use-metrics.js";
 
 const LOG_VIEW_HEIGHT = 20;
 
@@ -39,6 +41,11 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
+  const {
+    metrics: metricsData,
+    error: metricsError,
+    loading: metricsLoading,
+  } = useMetrics({ enabled: view === "stats" });
   const {
     lines: logLines,
     source: logSource,
@@ -169,9 +176,11 @@ export function App() {
           error={claudeError}
           permissionIndex={permissionIndex}
         />
+      ) : view === "stats" ? (
+        <StatsView metrics={metricsData} loading={metricsLoading} error={metricsError} />
       ) : (
         <Box marginTop={1}>
-          <Text dimColor>Coming soon — see #181</Text>
+          <Text dimColor>Coming soon</Text>
         </Box>
       )}
       <Footer

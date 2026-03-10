@@ -14,7 +14,7 @@
  */
 
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
@@ -113,8 +113,6 @@ export interface StartDaemonOptions {
   skipLogSetup?: boolean;
   /** Skip booting virtual servers (_aliases, _claude). */
   skipVirtualServers?: boolean;
-  /** Skip worktree pruning on startup. */
-  skipWorktreePrune?: boolean;
 }
 
 /**
@@ -175,6 +173,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const serversConnected = metrics.gauge("mcpd_servers_connected");
   serversTotal.set(config.servers.size);
 
+  // Periodically prune sessions whose processes have exited (every 30s).
+  // This ensures dead sessions are cleaned up promptly, not just at idle-timeout boundary.
+  const pruneInterval = setInterval(() => claudeServer.pruneDeadSessions(), 30_000);
+
   // Update uptime and server gauges periodically
   const metricsInterval = setInterval(() => {
     uptimeGauge.set(Math.round(process.uptime()));
@@ -201,6 +203,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         resetIdleTimer();
         return;
       }
+      // Prune sessions whose processes have exited before checking
+      claudeServer.pruneDeadSessions();
       if (claudeServer.hasActiveSessions()) {
         console.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
@@ -252,16 +256,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   ipcServer.start();
 
+  // Reset idle timer on Claude session worker events (db:upsert, db:state, db:cost)
+  claudeServer.onActivity = () => resetIdleTimer();
+
   // Start idle timer
   resetIdleTimer();
 
   // Signal readiness to parent (IPC socket is open, commands can connect now)
   console.log(DAEMON_READY_SIGNAL);
-
-  // Prune orphaned worktrees after ready signal (non-blocking)
-  if (!opts?.skipWorktreePrune) {
-    pruneOrphanedWorktrees(db);
-  }
 
   // Boot virtual servers in the background — commands that need them will await
   if (!opts?.skipVirtualServers) {
@@ -309,6 +311,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     console.error(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
     try {
       if (idleTimer) clearTimeout(idleTimer);
+      clearInterval(pruneInterval);
       clearInterval(metricsInterval);
       watcher.stop();
       ipcServer.stop();
@@ -341,40 +344,4 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     ipcServer,
     watcher,
   };
-}
-
-// --- Entry point (only runs when executed directly, not when imported) ---
-
-async function main(): Promise<void> {
-  const handle = await startDaemon();
-
-  process.on("SIGTERM", () => {
-    handle.shutdown("SIGTERM").then(() => process.exit(0));
-  });
-  process.on("SIGINT", () => {
-    handle.shutdown("SIGINT").then(() => process.exit(0));
-  });
-
-  process.on("uncaughtException", (err) => {
-    console.error("[mcpd] Uncaught exception:", err);
-    handle
-      .shutdown("uncaught exception")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (rejection) => {
-    console.error("[mcpd] Unhandled rejection:", rejection);
-    handle
-      .shutdown("unhandled rejection")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
-  });
-}
-
-// Only run main() when executed directly (not when imported for testing)
-if (import.meta.main) {
-  main().catch((err) => {
-    console.error("[mcpd] Fatal:", err);
-    process.exit(1);
-  });
 }

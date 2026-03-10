@@ -428,30 +428,52 @@ async function cmdGrep(args: string[]): Promise<void> {
 }
 
 async function cmdStatus(args: string[] = []): Promise<void> {
-  const { json } = extractJsonFlag(args);
+  const noStart = args.includes("--no-start");
+  const { json } = extractJsonFlag(args.filter((a) => a !== "--no-start"));
 
-  // Check daemon state without auto-starting — status should report, not spawn.
-  const running = await isDaemonRunning();
-  if (!running) {
-    if (isDaemonInitializing()) {
+  // --no-start: report state without spawning (original semantics).
+  if (noStart) {
+    let running: boolean;
+    try {
+      running = await isDaemonRunning();
+    } catch (err) {
+      if (err instanceof ProtocolMismatchError) {
+        printProtocolMismatchStatus(err, json);
+        return;
+      }
+      throw err;
+    }
+    if (!running) {
+      if (isDaemonInitializing()) {
+        if (json) {
+          console.log(JSON.stringify({ state: "starting" }));
+        } else {
+          console.error("Daemon is starting...");
+        }
+        return;
+      }
       if (json) {
-        console.log(JSON.stringify({ state: "starting" }));
+        console.log(JSON.stringify({ state: "stopped" }));
       } else {
-        console.error("Daemon is starting...");
+        console.error("Daemon is not running. Start it with: mcx daemon start");
       }
       return;
     }
-    if (json) {
-      console.log(JSON.stringify({ state: "stopped" }));
-    } else {
-      console.error("Daemon is not running. Start it with: mcx daemon start");
-    }
-    return;
   }
 
-  // Use a short timeout — status reads in-memory state and must return immediately.
-  // The default 60s IPC timeout would cause mcx status to hang if the daemon is slow.
-  const status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  // Auto-start daemon if not running — after a crash, `mcx status` is the first
+  // thing users check, so it should bring the daemon back (#412).
+  // ipcCall() wraps ensureDaemon(), so this handles auto-start + status in one call.
+  let status: DaemonStatus;
+  try {
+    status = await ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  } catch (err) {
+    if (err instanceof ProtocolMismatchError) {
+      printProtocolMismatchStatus(err, json);
+      return;
+    }
+    throw err;
+  }
 
   if (json) {
     console.log(JSON.stringify(status, null, 2));
@@ -461,6 +483,25 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     console.log(`Database: ${status.dbPath}\n`);
     printServerList(status.servers);
   }
+}
+
+function printProtocolMismatchStatus(err: ProtocolMismatchError, json: boolean): void {
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          state: "protocol_mismatch",
+          daemonProtocol: err.daemonVersion,
+          cliProtocol: err.cliVersion,
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.error(err.message);
+  }
+  process.exitCode = 2;
 }
 
 async function cmdMetrics(args: string[] = []): Promise<void> {
@@ -679,4 +720,4 @@ Examples:
   mcx run get-time`);
 }
 
-main().then(() => process.exit(0));
+main().then(() => process.exit(process.exitCode ?? 0));

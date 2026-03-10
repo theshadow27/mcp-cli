@@ -26,6 +26,8 @@ function mockSpawn(): {
         }),
         kill: () => {
           state.killed = true;
+          // Simulate immediate process exit on kill
+          exitResolve(143);
         },
       };
     }) as SpawnFn,
@@ -625,6 +627,43 @@ describe("ClaudeWsServer", () => {
     await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
   });
 
+  test("process exit rejects pending result waiters", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Register a result waiter BEFORE process exits
+    const resultPromise = server.waitForResult("test-session", 5000).catch((e: unknown) => e);
+
+    // Process exits — waiter should be rejected
+    ms.exitResolve(0);
+
+    const err = await resultPromise;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("Process exited");
+  });
+
+  test("process exit resolves pending event waiters with disconnect event", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Register an event waiter BEFORE process exits
+    const eventPromise = server.waitForEvent("test-session", 5000);
+
+    // Process exits — event waiter should resolve with a session event
+    ms.exitResolve(0);
+
+    const event = await eventPromise;
+    expect(event.sessionId).toBe("test-session");
+  });
+
   test("waitForEvent on already-disconnected session rejects immediately", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
@@ -650,7 +689,7 @@ describe("ClaudeWsServer", () => {
     ms.exitResolve(0);
     await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
-    const result = server.bye("test-session");
+    const result = await server.bye("test-session");
     expect(result).toEqual({ worktree: "my-tree", cwd: null });
     expect(server.sessionCount).toBe(0);
   });
@@ -686,7 +725,7 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("terminateSession sets spawnAlive to false", () => {
+  test("terminateSession sets spawnAlive to false", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -698,9 +737,68 @@ describe("ClaudeWsServer", () => {
     expect(server.listSessions()[0].spawnAlive).toBe(true);
 
     // bye calls terminateSession
-    server.bye("test-session");
+    await server.bye("test-session");
     // Session is removed, so we just verify it didn't throw
     expect(server.sessionCount).toBe(0);
+  });
+
+  test("killAndAwaitProc escalates to SIGKILL when SIGTERM times out", async () => {
+    const killSignals: (number | undefined)[] = [];
+    let exitResolve: (code: number) => void = () => {};
+    const stubbornSpawn: SpawnFn = () => ({
+      pid: 99999,
+      exited: new Promise<number>((r) => {
+        exitResolve = r;
+      }),
+      kill: (signal?: number) => {
+        killSignals.push(signal);
+        if (signal === 9) exitResolve(137); // SIGKILL exits immediately
+        // SIGTERM is ignored — stubborn process
+      },
+    });
+
+    server = new ClaudeWsServer({ spawn: stubbornSpawn, killTimeoutMs: 50 });
+    server.start();
+    server.prepareSession("stubborn", { prompt: "Hello" });
+    server.spawnClaude("stubborn");
+
+    await server.bye("stubborn");
+
+    // SIGTERM was sent first (undefined = default signal), then SIGKILL after timeout
+    expect(killSignals).toContain(9);
+    expect(server.sessionCount).toBe(0);
+  });
+
+  test("clearSession skips concurrent clear (reentrancy guard)", async () => {
+    let exitResolve: (code: number) => void = () => {};
+    let spawnCount = 0;
+    const slowSpawn: SpawnFn = () => {
+      spawnCount++;
+      return {
+        pid: spawnCount * 1000,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => {
+          exitResolve(143);
+        },
+      };
+    };
+
+    server = new ClaudeWsServer({ spawn: slowSpawn });
+    server.start();
+    server.prepareSession("double-clear", { prompt: "Hello" });
+    server.spawnClaude("double-clear"); // spawnCount = 1
+    const spawnAfterSetup = spawnCount;
+
+    // Fire two concurrent clears — second should be a no-op
+    const p1 = server.clearSession("double-clear");
+    const p2 = server.clearSession("double-clear");
+    await Promise.all([p1, p2]);
+
+    // Only one respawn should have happened (spawnAfterSetup + 1)
+    expect(spawnCount).toBe(spawnAfterSetup + 1);
+    expect(server.sessionCount).toBe(1);
   });
 
   test("respondToPermission sends control_response to WS", async () => {
@@ -971,12 +1069,12 @@ describe("ClaudeWsServer", () => {
     const eventPromise = server.waitForEvent("test-session", 5000);
 
     // End the session
-    server.bye("test-session");
+    void server.bye("test-session");
 
     await expect(eventPromise).rejects.toThrow("Session ended by user");
   });
 
-  test("bye returns worktree info", () => {
+  test("bye returns worktree info", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -984,11 +1082,11 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("wt-session", { prompt: "Hello", worktree: "claude-test1", cwd: "/repo" });
     server.spawnClaude("wt-session");
 
-    const result = server.bye("wt-session");
+    const result = await server.bye("wt-session");
     expect(result).toEqual({ worktree: "claude-test1", cwd: "/repo" });
   });
 
-  test("bye returns null worktree for non-worktree session", () => {
+  test("bye returns null worktree for non-worktree session", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -996,11 +1094,11 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("plain-session", { prompt: "Hello" });
     server.spawnClaude("plain-session");
 
-    const result = server.bye("plain-session");
+    const result = await server.bye("plain-session");
     expect(result).toEqual({ worktree: null, cwd: null });
   });
 
-  test("sessionCount tracks active sessions", () => {
+  test("sessionCount tracks active sessions", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn });
     server.start();
@@ -1013,10 +1111,10 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("s2", { prompt: "World" });
     expect(server.sessionCount).toBe(2);
 
-    server.bye("s1");
+    await server.bye("s1");
     expect(server.sessionCount).toBe(1);
 
-    server.bye("s2");
+    await server.bye("s2");
     expect(server.sessionCount).toBe(0);
   });
 
@@ -1293,7 +1391,9 @@ describe("ClaudeWsServer", () => {
         exited: new Promise<number>((r) => {
           exitResolve = r;
         }),
-        kill: () => {},
+        kill: () => {
+          exitResolve(143);
+        },
       };
     };
 
@@ -1423,7 +1523,9 @@ describe("ClaudeWsServer", () => {
         exited: new Promise<number>((r) => {
           exitResolve = r;
         }),
-        kill: () => {},
+        kill: () => {
+          exitResolve(143);
+        },
       };
     };
 
@@ -1447,9 +1549,8 @@ describe("ClaudeWsServer", () => {
     expect(statusBefore.cost).toBeGreaterThan(0);
     const costBefore = statusBefore.cost;
 
-    // Clear session
-    server.clearSession("test-session");
-    await Bun.sleep(50);
+    // Clear session and await completion
+    await server.clearSession("test-session");
 
     // Cost should be preserved
     const statusAfter = server.getStatus("test-session");
@@ -1457,6 +1558,51 @@ describe("ClaudeWsServer", () => {
     expect(statusAfter.state).toBe("connecting");
 
     ws.close();
+  });
+
+  test("WebSocket disconnect runs full cleanup: state, waiters, and keep-alive timer", async () => {
+    const spawnState = mockSpawn();
+    const events: SessionEvent[] = [];
+    const server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server.onSessionEvent = (_sid, event) => events.push(event);
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws); // consume initial user message
+
+    // Drive session to idle state so we can queue a result waiter and then follow-up
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+    // Send a follow-up prompt to move back to active, then set up result waiter
+    server.sendPrompt("test-session", "follow up");
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    const resultPromise = server.waitForResult("test-session", 10_000);
+
+    // Abrupt client disconnect — simulates network issue or send failure
+    ws.close();
+
+    // Result waiter should be rejected with disconnect error
+    await expect(resultPromise).rejects.toThrow("WebSocket disconnected");
+
+    // Session should transition to disconnected
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+    expect(server.sessionCount).toBe(1);
+    expect(server.getStatus("test-session").state).toBe("disconnected");
+    expect(server.getStatus("test-session").wsConnected).toBe(false);
+
+    // Should have emitted session:disconnected event
+    const disconnectEvent = events.find((e) => e.type === "session:disconnected");
+    expect(disconnectEvent).toBeDefined();
+
+    // Resolve spawn exit so stop() doesn't hang
+    spawnState.exitResolve(0);
+    await server.stop();
   });
 });
 

@@ -98,12 +98,24 @@ export function Footer({ view, filterMode, filterText, denyReasonMode, denyReaso
     );
   }
 
-  // Stub tabs (mail, stats)
+  if (view === "stats") {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          {tabHints}
+          <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>s</Text> shutdown
+        </Text>
+      </Box>
+    );
+  }
+
+  // Stub tabs (mail)
   return (
     <Box marginTop={1}>
       <Text>
         {tabHints}
-        <Text dimColor>l</Text> logs{"  "}
         <Text dimColor>esc</Text> back{"  "}
         <Text dimColor>q</Text> quit{"  "}
         <Text dimColor>s</Text> shutdown

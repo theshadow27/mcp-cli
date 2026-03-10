@@ -36,8 +36,16 @@ interface ToolsChangedMessage {
 
 type ControlMessage = InitMessage | ToolsChangedMessage;
 
+const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "tools_changed"]);
+
 function isControlMessage(data: unknown): data is ControlMessage {
-  return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    typeof (data as Record<string, unknown>).type === "string" &&
+    CONTROL_MESSAGE_TYPES.has((data as Record<string, unknown>).type as string)
+  );
 }
 
 // ── Worker globals ──
@@ -74,7 +82,7 @@ async function handleToolCall(
       case "claude_interrupt":
         return handleInterrupt(server, args);
       case "claude_bye":
-        return handleBye(server, args);
+        return await handleBye(server, args);
       case "claude_transcript":
         return handleTranscript(server, args);
       case "claude_wait":
@@ -109,6 +117,17 @@ async function handlePrompt(
     server.sendPrompt(sessionId, prompt);
   } else {
     // New session
+    if (args.worktree && args.resumeSessionId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: worktree and resumeSessionId cannot both be set — a new worktree creates a fresh directory, which conflicts with restoring conversation history from an existing session",
+          },
+        ],
+        isError: true,
+      };
+    }
     sessionId = crypto.randomUUID();
     const permissionMode = (args.permissionMode as PermissionStrategy) ?? "rules";
     const allowedTools = (args.allowedTools as string[]) ?? undefined;
@@ -125,6 +144,7 @@ async function handlePrompt(
       allowedTools,
       worktree: args.worktree as string | undefined,
       model: args.model ? resolveModelName(args.model as string) : undefined,
+      resumeSessionId: args.resumeSessionId as string | undefined,
     });
 
     // Post DB upsert
@@ -188,13 +208,13 @@ function handleInterrupt(
   return { content: [{ type: "text", text: JSON.stringify({ interrupted: true }) }] };
 }
 
-function handleBye(
+async function handleBye(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
-): {
+): Promise<{
   content: Array<{ type: "text"; text: string }>;
-} {
-  const { worktree, cwd } = server.bye(args.sessionId as string);
+}> {
+  const { worktree, cwd } = await server.bye(args.sessionId as string);
   return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd }) }] };
 }
 
@@ -304,14 +324,11 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 
 // ── Server startup ──
 
-async function startServer(): Promise<void> {
+async function startServer(): Promise<number> {
   // Start WebSocket server
   wsServer = new ClaudeWsServer();
   const port = wsServer.start();
   wsServer.onSessionEvent = forwardSessionEvent;
-
-  // Report port to main thread
-  self.postMessage({ type: "ready", port });
 
   // Start MCP Server
   mcpServer = new Server({ name: "_claude", version: "0.1.0" }, { capabilities: { tools: {} } });
@@ -345,6 +362,8 @@ async function startServer(): Promise<void> {
     // Forward JSON-RPC messages to the transport
     transportHandler?.call(self, event);
   };
+
+  return port;
 }
 
 // ── Initial message handler ──
@@ -354,6 +373,17 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     daemonId = data.daemonId;
     workerId = generateSpanId();
-    await startServer();
+    try {
+      const port = await startServer();
+      self.postMessage({ type: "ready", port });
+    } catch (err) {
+      // Clean up partially-initialized resources
+      await wsServer?.stop().catch(() => {});
+      wsServer = null;
+      mcpServer = null;
+      transport = null;
+      const message = err instanceof Error ? err.message : String(err);
+      self.postMessage({ type: "error", message });
+    }
   }
 };

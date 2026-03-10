@@ -2118,6 +2118,24 @@ describe("parseResumeArgs", () => {
     expect(result.timeout).toBe(60000);
   });
 
+  test("parses --fresh flag", () => {
+    const result = parseResumeArgs(["my-wt", "--fresh"]);
+    expect(result.fresh).toBe(true);
+    expect(result.target).toBe("my-wt");
+  });
+
+  test("parses second positional as session ID", () => {
+    const result = parseResumeArgs(["my-wt", "abc-session-uuid"]);
+    expect(result.target).toBe("my-wt");
+    expect(result.sessionId).toBe("abc-session-uuid");
+  });
+
+  test("defaults fresh to false and sessionId to undefined", () => {
+    const result = parseResumeArgs(["my-wt"]);
+    expect(result.fresh).toBe(false);
+    expect(result.sessionId).toBeUndefined();
+  });
+
   test("errors when no target and no --all", () => {
     const result = parseResumeArgs([]);
     expect(result.error).toBeDefined();
@@ -2136,6 +2154,11 @@ describe("parseResumeArgs", () => {
   test("errors on --allow without patterns", () => {
     const result = parseResumeArgs(["my-wt", "--allow"]);
     expect(result.error).toBe("--allow requires at least one tool pattern");
+  });
+
+  test("errors when --fresh and explicit session ID are both set", () => {
+    const result = parseResumeArgs(["my-wt", "abc-session-uuid", "--fresh"]);
+    expect(result.error).toBe("--fresh cannot be combined with an explicit session ID");
   });
 });
 
@@ -2308,7 +2331,71 @@ describe("cmdClaude resume", () => {
     expect(errOutput).toContain("already merged into main");
   });
 
-  test("spawns session with cwd set to worktree path", async () => {
+  test("default resume restores conversation history via resumeSessionId", async () => {
+    const wtPath = `${worktreeParent}/claude-orphan`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-session-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-orphan"], deps);
+
+    const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
+    expect(promptCall).toBeDefined();
+    const promptArgs = promptCall?.[1] as Record<string, unknown>;
+    expect(promptArgs.cwd).toBe(wtPath);
+    expect(promptArgs.resumeSessionId).toBe("continue");
+    expect(promptArgs.prompt).toContain("restored");
+    expect(promptArgs.prompt).toContain("continue where you left off");
+  });
+
+  test("resume with explicit session ID passes it as resumeSessionId", async () => {
+    const wtPath = `${worktreeParent}/claude-orphan`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-session-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-orphan", "specific-session-uuid"], deps);
+
+    const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
+    expect(promptCall).toBeDefined();
+    const promptArgs = promptCall?.[1] as Record<string, unknown>;
+    expect(promptArgs.cwd).toBe(wtPath);
+    expect(promptArgs.resumeSessionId).toBe("specific-session-uuid");
+  });
+
+  test("--fresh flag uses git-context prompt instead of conversation history", async () => {
     const wtPath = `${worktreeParent}/claude-orphan`;
     const exec = mock((cmd: string[]) => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
@@ -2321,7 +2408,7 @@ describe("cmdClaude resume", () => {
         return { stdout: "  main\n", exitCode: 0 };
       }
       if (cmd.includes("log")) {
-        return { stdout: "abc1234 add auth module\ndef5678 add tests", exitCode: 0 };
+        return { stdout: "abc1234 add auth module", exitCode: 0 };
       }
       if (cmd.includes("diff")) {
         return { stdout: " src/auth.ts | 3 ++-\n", exitCode: 0 };
@@ -2334,22 +2421,21 @@ describe("cmdClaude resume", () => {
       return toolResult({});
     });
     const deps = makeDeps({ exec, callTool });
-    await cmdClaude(["resume", "claude-orphan"], deps);
+    await cmdClaude(["resume", "claude-orphan", "--fresh"], deps);
 
-    // Verify claude_prompt was called with correct cwd
     const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
       (c: unknown[]) => c[0] === "claude_prompt",
     );
     expect(promptCall).toBeDefined();
     const promptArgs = promptCall?.[1] as Record<string, unknown>;
     expect(promptArgs.cwd).toBe(wtPath);
+    expect(promptArgs.resumeSessionId).toBeUndefined();
     expect(promptArgs.prompt).toContain("feat/issue-42-auth");
     expect(promptArgs.prompt).toContain("#42");
     expect(promptArgs.prompt).toContain("abc1234 add auth module");
-    expect(promptArgs.prompt).toContain("src/auth.ts");
   });
 
-  test("--all resumes all orphaned worktrees", async () => {
+  test("--all resumes all orphaned worktrees with conversation history", async () => {
     const wt1 = `${worktreeParent}/claude-wt1`;
     const wt2 = `${worktreeParent}/claude-wt2`;
     const exec = mock((cmd: string[]) => {
@@ -2377,7 +2463,7 @@ describe("cmdClaude resume", () => {
       }
       return { stdout: "", exitCode: 0 };
     });
-    const callTool = mock(async (tool: string) => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);
       if (tool === "claude_prompt") return toolResult({ sessionId: "new-id", seq: 1 });
       return toolResult({});
@@ -2385,9 +2471,15 @@ describe("cmdClaude resume", () => {
     const deps = makeDeps({ exec, callTool });
     await cmdClaude(["resume", "--all"], deps);
 
-    // Should have spawned 2 sessions
-    const promptCalls = callTool.mock.calls.filter((c: unknown[]) => c[0] === "claude_prompt");
+    // Should have spawned 2 sessions with conversation history restoration
+    const promptCalls = (callTool as ReturnType<typeof mock>).mock.calls.filter(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
     expect(promptCalls.length).toBe(2);
+    for (const call of promptCalls) {
+      const args = (call as unknown[])[1] as Record<string, unknown>;
+      expect(args.resumeSessionId).toBe("continue");
+    }
   });
 
   test("--all reports when no orphaned worktrees found", async () => {

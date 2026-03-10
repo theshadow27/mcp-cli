@@ -228,7 +228,7 @@ mcx completions {bash|zsh|fish}     # generate shell completions
 
 ```bash
 mcpctl                              # interactive dashboard
-# or: bun run packages/control/src/index.tsx
+# or: bun run packages/control/src/main.tsx
 ```
 
 Tab bar with 5 views — navigate with Tab/Shift+Tab or press 1-5 to jump directly:

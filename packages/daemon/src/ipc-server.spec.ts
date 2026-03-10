@@ -293,7 +293,7 @@ describe("IpcServer HTTP transport", () => {
     expect(json.id).toBe("sd1");
     expect(json.result).toEqual({ ok: true });
 
-    // onShutdown is called after a 100ms setTimeout
+    // onShutdown is called after the response is sent (drain mechanism)
     await pollUntil(() => shutdownCalled);
     expect(shutdownCalled).toBe(true);
   });
@@ -318,13 +318,67 @@ describe("IpcServer HTTP transport", () => {
     const res = await rpc("/rpc", { id: "sd2", method: "shutdown" });
     const json = (await res.json()) as IpcResponse;
 
-    // Response should arrive before the callback fires (100ms delay)
+    // Response should arrive before the callback fires (drain mechanism)
     expect(json.result).toEqual({ ok: true });
     expect(callbackTime === 0 || callbackTime >= responseTime).toBe(true);
 
     // Wait for callback to fire
     await pollUntil(() => callbackTime > 0);
     expect(callbackTime).toBeGreaterThan(0);
+  });
+
+  test("shutdown rejects new requests while draining", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    let handlerEntered: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    });
+    const slowPool = {
+      ...mockPool(),
+      callTool: async () => {
+        handlerEntered();
+        await Bun.sleep(200);
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(
+      slowPool as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+      }),
+    );
+    server.start(socketPath);
+
+    // Start a slow callTool request
+    const slowReq = rpc("/rpc", { id: "slow1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
+
+    // Wait for the slow handler to actually start executing
+    await handlerStarted;
+
+    // Trigger shutdown while the slow request is in-flight
+    const shutdownRes = await rpc("/rpc", { id: "sd-drain", method: "shutdown" });
+    const shutdownJson = (await shutdownRes.json()) as IpcResponse;
+    expect(shutdownJson.result).toEqual({ ok: true });
+
+    // New request should be rejected with 503 while draining
+    const rejectedRes = await rpc("/rpc", { id: "rejected1", method: "ping" });
+    expect(rejectedRes.status).toBe(503);
+    const rejectedJson = (await rejectedRes.json()) as IpcResponse;
+    expect(rejectedJson.error?.message).toBe("Server is shutting down");
+
+    // Wait for slow request to complete — shutdown should follow
+    const slowRes = await slowReq;
+    // The slow request may error due to server name not found, that's fine
+    expect(slowRes.status).toBe(200);
+
+    await pollUntil(() => shutdownCalled);
+    expect(shutdownCalled).toBe(true);
   });
 
   test("shutdown works when pool has active servers", async () => {
@@ -591,6 +645,63 @@ describe("IpcServer HTTP transport", () => {
     expect(json.id).toBe("auth2");
     expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
     expect(json.error?.message).toContain("Database not available");
+  });
+
+  test("triggerAuth calls auth tool on stdio server that exposes one", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined, // not a remote server
+      listTools: (name: string) =>
+        name === "myserver" ? [{ name: "auth", server: "myserver", description: "Authenticate", inputSchema: {} }] : [],
+      callTool: async (_server: string, tool: string) =>
+        tool === "auth"
+          ? { content: [{ type: "text", text: "SSO login completed" }], isError: false }
+          : { content: [] },
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth3", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth3");
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true, message: "SSO login completed" });
+  });
+
+  test("triggerAuth on stdio server without auth tool returns SERVER_NOT_FOUND", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined,
+      listTools: () => [{ name: "query", server: "myserver", description: "Query data", inputSchema: {} }],
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth4", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth4");
+    expect(json.error?.code).toBe(IPC_ERROR.SERVER_NOT_FOUND);
+    expect(json.error?.message).toContain("does not support auth");
+  });
+
+  test("triggerAuth returns error when auth tool reports isError", async () => {
+    socketPath = tmpSocket();
+    const pool = Object.assign(mockPool(), {
+      getServerUrl: () => undefined,
+      listTools: () => [{ name: "auth", server: "myserver", description: "Auth", inputSchema: {} }],
+      callTool: async () => ({
+        content: [{ type: "text", text: "SSO session expired, please retry" }],
+        isError: true,
+      }),
+    });
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "auth5", method: "triggerAuth", params: { server: "myserver" } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.id).toBe("auth5");
+    expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
+    expect(json.error?.message).toContain("SSO session expired");
   });
 
   // -- Parameter validation tests --

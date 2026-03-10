@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { options } from "./constants";
+import { DAEMON_BINARY_NAME, DAEMON_DEV_SCRIPT, options } from "./constants";
 
 /** Ensure ~/.mcp-cli/ exists with owner-only permissions (0700) */
 export function ensureStateDir(): void {
@@ -37,6 +37,23 @@ export function auditRuntimePermissions(): void {
       /* file doesn't exist yet */
     }
   }
+}
+
+/**
+ * Resolve the command to launch the daemon.
+ *
+ * 1. Compiled mode: look for `mcpd` binary next to the current executable.
+ * 2. Dev mode: walk up from `startDir` to find the workspace root, then resolve the daemon script.
+ * 3. Fallback: assume `mcpd` is on PATH.
+ */
+export function resolveDaemonCommand(startDir: string): string[] {
+  const siblingBinary = join(dirname(process.execPath), DAEMON_BINARY_NAME);
+  if (existsSync(siblingBinary)) return [siblingBinary];
+
+  const devScript = findFileUpward(DAEMON_DEV_SCRIPT, startDir);
+  if (devScript) return ["bun", "run", devScript];
+
+  return [DAEMON_BINARY_NAME];
 }
 
 /**

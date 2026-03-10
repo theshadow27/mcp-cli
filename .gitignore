@@ -11,3 +11,4 @@ dist/
 build/
 .claude/worktrees/*
 .env
+test-timing-report.json
