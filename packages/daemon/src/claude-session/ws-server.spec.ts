@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
-import type { SpawnFn } from "./ws-server";
+import type { SpawnFn, WaitResult } from "./ws-server";
 import { ClaudeWsServer, WaitTimeoutError, summarizeInput } from "./ws-server";
 
 // ── Mock spawn ──
@@ -1021,6 +1021,191 @@ describe("ClaudeWsServer", () => {
     } finally {
       ws.close();
     }
+  });
+  // ── Sequence cursors ──
+
+  test("currentSeq starts at 0", () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server.start();
+    expect(server.currentSeq).toBe(0);
+  });
+
+  test("events increment currentSeq and include seq in event", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      const eventPromise = server.waitForEvent("test-session", 5000);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+
+      const event = await eventPromise;
+      expect(event.seq).toBeGreaterThan(0);
+      expect(server.currentSeq).toBeGreaterThan(0);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince returns immediately when buffered events exist", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(20);
+
+      // Events have already fired — waitForEventsSince with afterSeq=0 should return immediately
+      const result: WaitResult = await server.waitForEventsSince("test-session", 0, 5000);
+      expect(result.seq).toBeGreaterThan(0);
+      expect(result.events.length).toBeGreaterThan(0);
+      expect(result.events[0].event).toBe("session:result");
+      expect(result.events[0].seq).toBeGreaterThan(0);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince blocks when no events past cursor", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(20);
+
+      const currentSeq = server.currentSeq;
+
+      // Wait with cursor at current — should block until new event
+      const resultPromise = server.waitForEventsSince(null, currentSeq, 5000);
+
+      // Send another result to trigger a new event
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(20);
+
+      const result: WaitResult = await resultPromise;
+      expect(result.seq).toBeGreaterThan(currentSeq);
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].event).toBe("session:result");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince returns empty events on timeout (no error)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // No events will fire — should timeout and return empty
+    const result: WaitResult = await server.waitForEventsSince("test-session", 0, 100);
+    expect(result.events).toHaveLength(0);
+    expect(result.seq).toBe(0); // No events ever fired
+  });
+
+  test("waitForEventsSince filters by sessionId from buffer", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    // Create two sessions sequentially (mockSpawn reuses PID, but that's fine)
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.spawnClaude("s1");
+
+    const ws1 = await connectMockClaude(port, "s1");
+    try {
+      await waitForMessage(ws1);
+      ws1.send(systemInitMessage("s1"));
+      await Bun.sleep(20);
+      ws1.send(resultMessage("s1"));
+      await Bun.sleep(20);
+
+      const seqAfterS1 = server.currentSeq;
+      expect(seqAfterS1).toBeGreaterThan(0);
+
+      // All buffered events should be for s1
+      const result: WaitResult = await server.waitForEventsSince("s1", 0, 5000);
+      expect(result.events.length).toBeGreaterThan(0);
+      for (const event of result.events) {
+        expect(event.sessionId).toBe("s1");
+      }
+
+      // Requesting events for a different prepared session should find none in buffer
+      server.prepareSession("s2", { prompt: "World" });
+      server.spawnClaude("s2");
+      const result2: WaitResult = await server.waitForEventsSince("s2", 0, 100);
+      // s2 hasn't emitted events yet — should timeout with empty
+      expect(result2.events).toHaveLength(0);
+    } finally {
+      ws1.close();
+    }
+  });
+
+  test("waitForEventsSince with null sessionId returns all session events", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.spawnClaude("s1");
+
+    const ws = await connectMockClaude(port, "s1");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("s1"));
+      await Bun.sleep(20);
+      ws.send(resultMessage("s1"));
+      await Bun.sleep(20);
+
+      const result: WaitResult = await server.waitForEventsSince(null, 0, 5000);
+      expect(result.events.length).toBeGreaterThan(0);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince rejects for unknown session", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server.start();
+
+    await expect(server.waitForEventsSince("nonexistent", 0, 100)).rejects.toThrow("Unknown session");
+  });
+
+  test("waitForEventsSince rejects with no active sessions", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server.start();
+
+    await expect(server.waitForEventsSince(null, 0, 100)).rejects.toThrow("No active sessions");
   });
 });
 

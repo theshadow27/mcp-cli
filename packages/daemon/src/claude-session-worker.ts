@@ -20,7 +20,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import { ClaudeWsServer, WaitTimeoutError } from "./claude-session/ws-server";
+import { ClaudeWsServer, type WaitResult, WaitTimeoutError } from "./claude-session/ws-server";
 import { WorkerServerTransport } from "./worker-transport";
 
 // ── Control messages ──
@@ -147,7 +147,7 @@ async function handlePrompt(
 
   if (!shouldWait) {
     return {
-      content: [{ type: "text", text: JSON.stringify({ sessionId }) }],
+      content: [{ type: "text", text: JSON.stringify({ sessionId, seq: server.currentSeq }) }],
     };
   }
 
@@ -235,7 +235,17 @@ async function handleWait(
 }> {
   const sessionId = (args.sessionId as string | undefined) ?? null;
   const timeoutMs = (args.timeout as number) ?? 300_000;
+  const afterSeq = args.afterSeq as number | undefined;
 
+  // Cursor-based path: use waitForEventsSince (errors propagate — no session-list fallback)
+  if (afterSeq !== undefined) {
+    const result: WaitResult = await server.waitForEventsSince(sessionId, afterSeq, timeoutMs);
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+
+  // Legacy path: single-event wait
   try {
     const event = await server.waitForEvent(sessionId, timeoutMs);
     return {

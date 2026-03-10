@@ -94,12 +94,17 @@ export const CLAUDE_TOOLS = [
     name: "claude_wait",
     description:
       "Block until a session event occurs (result, error, or permission request). " +
-      "If sessionId is provided, waits for that session only. Otherwise waits for any session.",
+      "If sessionId is provided, waits for that session only. Otherwise waits for any session. " +
+      "Use afterSeq for race-free cursor-based polling: returns immediately if events exist past the cursor.",
     inputSchema: {
       type: "object" as const,
       properties: {
         sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
+        afterSeq: {
+          type: "number",
+          description: "Sequence cursor: return events after this seq number (enables race-free long-poll)",
+        },
       },
     },
   },
