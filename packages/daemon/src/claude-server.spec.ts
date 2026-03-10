@@ -291,6 +291,44 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
+  test("stop() clears crashTimestamps so stale history does not poison restarts", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    // Simulate 2 crashes to accumulate timestamps
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("crash 0");
+    await crash("crash 1");
+
+    const timestamps = (server as unknown as { crashTimestamps: number[] }).crashTimestamps;
+    expect(timestamps.length).toBe(2);
+
+    // Manual stop + restart cycle
+    await server.stop();
+    expect(timestamps.length).toBe(0);
+
+    // Restart — should have a fresh crash budget
+    await server.start();
+
+    // 3 more crashes should all succeed (not poisoned by stale history)
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+    const crash2 = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    for (let i = 0; i < 3; i++) {
+      await crash2(`post-restart crash ${i}`);
+    }
+    expect(restartCount).toBe(3);
+  });
+
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
