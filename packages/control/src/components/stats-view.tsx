@@ -135,6 +135,8 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
     );
   }
 
+  const staleError = error && metrics;
+
   if (!metrics) {
     return (
       <Box marginLeft={2} marginTop={1}>
@@ -145,7 +147,7 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
 
   const totalCalls = findCounter(metrics, "mcpd_tool_calls_total");
   const totalErrors = findCounter(metrics, "mcpd_tool_errors_total");
-  const successRate = totalCalls > 0 ? ((totalCalls - totalErrors) / totalCalls) * 100 : 0;
+  const successRate = totalCalls > 0 ? ((totalCalls - totalErrors) / totalCalls) * 100 : null;
   const ipcRequests = findCounter(metrics, "mcpd_ipc_requests_total");
   const ipcErrors = findCounter(metrics, "mcpd_ipc_errors_total");
   const uptime = findGauge(metrics, "mcpd_uptime_seconds");
@@ -176,6 +178,11 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
 
   return (
     <Box flexDirection="column" marginTop={1}>
+      {staleError && (
+        <Box marginLeft={2}>
+          <Text color="yellow">⚠ stale data — {error}</Text>
+        </Box>
+      )}
       {/* Aggregate dashboard */}
       <Box marginLeft={2} flexDirection="column">
         <Text bold color="cyan">
@@ -195,7 +202,13 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
             <Text dimColor>errors:</Text> <Text color={totalErrors > 0 ? "red" : undefined}>{totalErrors}</Text>
             {"  "}
             <Text dimColor>success:</Text>{" "}
-            <Text color={successRate >= 99 ? "green" : successRate >= 90 ? "yellow" : "red"}>{fmt(successRate)}%</Text>
+            {successRate === null ? (
+              <Text dimColor>—</Text>
+            ) : (
+              <Text color={successRate >= 99 ? "green" : successRate >= 90 ? "yellow" : "red"}>
+                {fmt(successRate)}%
+              </Text>
+            )}
           </Text>
           <Text>
             <Text dimColor>p50:</Text> {fmt(p50)}ms{"  "}

@@ -14,19 +14,19 @@ describe("nextTab", () => {
   test("cycles forward through all tabs", () => {
     expect(nextTab("servers")).toBe("logs");
     expect(nextTab("logs")).toBe("claude");
-    expect(nextTab("claude")).toBe("mail");
-    expect(nextTab("mail")).toBe("stats");
-    expect(nextTab("stats")).toBe("servers");
+    expect(nextTab("claude")).toBe("stats");
+    expect(nextTab("stats")).toBe("mail");
+    expect(nextTab("mail")).toBe("servers");
   });
 });
 
 describe("prevTab", () => {
   test("cycles backward through all tabs", () => {
-    expect(prevTab("servers")).toBe("stats");
+    expect(prevTab("servers")).toBe("mail");
     expect(prevTab("logs")).toBe("servers");
     expect(prevTab("claude")).toBe("logs");
-    expect(prevTab("mail")).toBe("claude");
-    expect(prevTab("stats")).toBe("mail");
+    expect(prevTab("stats")).toBe("claude");
+    expect(prevTab("mail")).toBe("stats");
   });
 });
 
@@ -35,8 +35,8 @@ describe("tabByNumber", () => {
     expect(tabByNumber(1)).toBe("servers");
     expect(tabByNumber(2)).toBe("logs");
     expect(tabByNumber(3)).toBe("claude");
-    expect(tabByNumber(4)).toBe("mail");
-    expect(tabByNumber(5)).toBe("stats");
+    expect(tabByNumber(4)).toBe("stats");
+    expect(tabByNumber(5)).toBe("mail");
   });
 
   test("returns undefined for out-of-range numbers", () => {
@@ -48,7 +48,7 @@ describe("tabByNumber", () => {
 
 describe("ALL_TABS", () => {
   test("contains exactly 5 tabs in expected order", () => {
-    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "mail", "stats"]);
+    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "stats", "mail"]);
   });
 });
 

@@ -207,8 +207,27 @@ describe("StatsView", () => {
     expect(output).toContain("Dashboard");
     expect(output).toContain("30s");
     expect(output).toContain("0/0");
+    // Success rate shows "—" when no calls, not misleading "0%"
+    expect(output).toContain("—");
+    expect(output).not.toContain("0%");
     // No Servers or Top Tools sections when no tool calls
     expect(output).not.toContain("Servers");
     expect(output).not.toContain("Top Tools");
+  });
+
+  it("shows stale data warning when error occurs after successful fetch", () => {
+    const snap = makeSnapshot({
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 60 }],
+    });
+
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: "connection refused" }),
+    );
+    const output = lastFrame() ?? "";
+
+    expect(output).toContain("stale data");
+    expect(output).toContain("connection refused");
+    // Still renders the dashboard with stale metrics
+    expect(output).toContain("Dashboard");
   });
 });
