@@ -1,6 +1,6 @@
 # MCP CLI — Context-Free MCP Tool Access
 
-Use the `mcx` CLI via Bash instead of native MCP tools. This eliminates ~12,000 tokens of tool definitions per server from every conversation context.
+Use the `mcx` CLI via Bash instead of native MCP tools. This eliminates 15,000+ tokens of tool definitions per server from every conversation context.
 
 ## When to Use This
 
