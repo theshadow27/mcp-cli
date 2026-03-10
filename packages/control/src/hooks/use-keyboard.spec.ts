@@ -116,8 +116,14 @@ describe("exported nav interfaces", () => {
       setSelectedIndex: () => {},
       expandedSession: null,
       setExpandedSession: () => {},
+      denyReasonMode: false,
+      setDenyReasonMode: () => {},
+      denyReasonText: "",
+      setDenyReasonText: () => {},
     };
     expect(nav.sessions).toBeArray();
     expect(nav.expandedSession).toBeNull();
+    expect(nav.denyReasonMode).toBe(false);
+    expect(nav.denyReasonText).toBe("");
   });
 });

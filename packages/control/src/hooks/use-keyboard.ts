@@ -57,6 +57,10 @@ export interface ClaudeNav {
   setSelectedIndex: (fn: (i: number) => number) => void;
   expandedSession: string | null;
   setExpandedSession: (id: string | null) => void;
+  denyReasonMode: boolean;
+  setDenyReasonMode: (mode: boolean) => void;
+  denyReasonText: string;
+  setDenyReasonText: (fn: string | ((prev: string) => string)) => void;
 }
 
 interface UseKeyboardOptions {
@@ -94,10 +98,50 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     setSelectedIndex: setClaudeSelectedIndex,
     expandedSession,
     setExpandedSession,
+    denyReasonMode,
+    setDenyReasonMode,
+    denyReasonText,
+    setDenyReasonText,
   } = claudeNav;
   const { exit } = useApp();
 
   useInput((input, key) => {
+    // -- Deny reason mode: capture text for denial message --
+    if (denyReasonMode) {
+      if (key.return) {
+        const selectedSession = claudeSessions[claudeSelectedIndex];
+        const perm = selectedSession?.pendingPermissionDetails?.[0];
+        if (perm) {
+          const args: Record<string, string> = {
+            sessionId: selectedSession.sessionId,
+            requestId: perm.requestId,
+          };
+          if (denyReasonText) args.message = denyReasonText;
+          ipcCall("callTool", {
+            server: "_claude",
+            tool: "claude_deny",
+            arguments: args,
+          }).catch(() => {});
+        }
+        setDenyReasonText("");
+        setDenyReasonMode(false);
+        return;
+      }
+      if (key.escape) {
+        setDenyReasonText("");
+        setDenyReasonMode(false);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setDenyReasonText((prev) => prev.slice(0, -1));
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        setDenyReasonText((prev) => prev + input);
+      }
+      return;
+    }
+
     // -- Filter mode: capture all input for filter text --
     if (filterMode) {
       if (key.return) {
@@ -228,15 +272,24 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         return;
       }
 
-      // Approve / deny pending permission
-      if (input === "a" || input === "d") {
+      // Approve pending permission
+      if (input === "a") {
         const perm = selectedSession?.pendingPermissionDetails?.[0];
         if (perm) {
           ipcCall("callTool", {
             server: "_claude",
-            tool: input === "a" ? "claude_approve" : "claude_deny",
+            tool: "claude_approve",
             arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
           }).catch(() => {});
+        }
+        return;
+      }
+
+      // Deny pending permission — enter reason prompt
+      if (input === "d") {
+        const perm = selectedSession?.pendingPermissionDetails?.[0];
+        if (perm) {
+          setDenyReasonMode(true);
         }
         return;
       }
