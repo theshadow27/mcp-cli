@@ -137,7 +137,11 @@ export class ClaudeServer {
 
     // Wait for the worker to report ready with its WS port
     this.wsPort = await new Promise<number>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Claude session worker startup timeout")), 10_000);
+      const timeout = setTimeout(() => {
+        worker.terminate();
+        this.worker = null;
+        reject(new Error("Claude session worker startup timeout"));
+      }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
           clearTimeout(timeout);
@@ -146,6 +150,8 @@ export class ClaudeServer {
       };
       worker.onerror = (event: ErrorEvent | Event) => {
         clearTimeout(timeout);
+        worker.terminate();
+        this.worker = null;
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         reject(new Error(`Claude session worker error: ${msg}`));
       };
