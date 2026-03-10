@@ -9,13 +9,15 @@ import { render } from "ink";
 import React from "react";
 import { App } from "./app.js";
 
-if (!process.stdout.isTTY) {
-  console.error("mcpctl requires a terminal. Use 'mcx status' for non-interactive output.");
-  process.exit(1);
+if (import.meta.main) {
+  if (!process.stdout.isTTY) {
+    console.error("mcpctl requires a terminal. Use 'mcx status' for non-interactive output.");
+    process.exit(1);
+  }
+
+  const { waitUntilExit } = render(<App />, {
+    exitOnCtrlC: true,
+  });
+
+  await waitUntilExit();
 }
-
-const { waitUntilExit } = render(<App />, {
-  exitOnCtrlC: true,
-});
-
-await waitUntilExit();
