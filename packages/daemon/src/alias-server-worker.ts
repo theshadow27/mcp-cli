@@ -42,8 +42,16 @@ interface RefreshMessage {
 
 type ControlMessage = InitMessage | RefreshMessage;
 
+const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "refresh"]);
+
 function isControlMessage(data: unknown): data is ControlMessage {
-  return typeof data === "object" && data !== null && "type" in data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    typeof (data as Record<string, unknown>).type === "string" &&
+    CONTROL_MESSAGE_TYPES.has((data as Record<string, unknown>).type as string)
+  );
 }
 
 // -- Alias execution infrastructure --
