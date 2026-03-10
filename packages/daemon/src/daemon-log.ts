@@ -47,8 +47,8 @@ export function installDaemonLogFile(opts?: {
   backupPath?: string;
   maxBytes?: number;
 }): void {
-  if (opts?.path) logPath = opts.path;
-  if (opts?.backupPath) logBackupPath = opts.backupPath;
+  logPath = opts?.path ?? options.DAEMON_LOG_PATH;
+  logBackupPath = opts?.backupPath ?? options.DAEMON_LOG_BACKUP_PATH;
   if (opts?.maxBytes !== undefined) logMaxBytes = opts.maxBytes;
   logWriteCount = 0;
   logFd = openSync(logPath, "a");
