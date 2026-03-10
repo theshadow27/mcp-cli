@@ -21,6 +21,11 @@ import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
 import { SessionState } from "./session-state";
 
+// ── Constants ──
+
+/** Maximum time (ms) to wait for a killed process to exit before giving up. */
+const KILL_TIMEOUT_MS = 5_000;
+
 // ── Errors ──
 
 /** Thrown when waitForEvent() or waitForResult() times out. */
@@ -200,16 +205,14 @@ export class ClaudeWsServer {
 
   /** Stop the server and all sessions. */
   async stop(): Promise<void> {
-    const exitPromises: Promise<number>[] = [];
+    const terminations: Promise<void>[] = [];
     for (const [sessionId, session] of this.sessions) {
-      if (session.proc) exitPromises.push(session.proc.exited);
-      this.terminateSession(sessionId, session, "Server stopping");
+      terminations.push(this.terminateSession(sessionId, session, "Server stopping"));
     }
+    await Promise.allSettled(terminations);
     this.sessions.clear();
     this.server?.stop();
     this.server = null;
-    // Wait for spawned processes to exit
-    await Promise.allSettled(exitPromises);
   }
 
   get port(): number {
@@ -314,7 +317,7 @@ export class ClaudeWsServer {
 
     // Intercept /clear — kill process and respawn for fresh context
     if (trimmed === "/clear") {
-      this.clearSession(sessionId);
+      void this.clearSession(sessionId);
       return;
     }
 
@@ -346,10 +349,24 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Kill a process and wait for it to exit (with timeout).
+   * Returns once the process has exited or the timeout expires.
+   */
+  private async killAndAwaitProc(proc: NonNullable<WsSession["proc"]>): Promise<void> {
+    try {
+      proc.kill();
+    } catch {
+      // already dead
+      return;
+    }
+    await Promise.race([proc.exited, new Promise<void>((r) => setTimeout(r, KILL_TIMEOUT_MS))]);
+  }
+
+  /**
    * Clear a session by killing the claude process and respawning.
    * Gives a truly fresh context without losing the session entry.
    */
-  clearSession(sessionId: string): void {
+  async clearSession(sessionId: string): Promise<void> {
     const session = this.getSession(sessionId);
     session.clearing = true;
 
@@ -372,15 +389,14 @@ export class ClaudeWsServer {
     }
     session.ws = null;
 
-    // Kill process
+    // Kill process and wait for exit before respawning.
+    // Null the ref first so the proc.exited handler (which checks session.proc !== proc)
+    // skips the stale exit — we're about to respawn.
     if (session.proc) {
-      try {
-        session.proc.kill();
-      } catch {
-        // already dead
-      }
+      const dying = session.proc;
       session.proc = null;
       session.spawnAlive = false;
+      await this.killAndAwaitProc(dying);
     }
 
     // Update config prompt to empty — next sendPrompt() will carry real work
@@ -410,11 +426,11 @@ export class ClaudeWsServer {
   }
 
   /** Gracefully end a session: close WS, stop process, clean up. Returns worktree info. */
-  bye(sessionId: string): { worktree: string | null; cwd: string | null } {
+  async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null }> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`No session with id ${sessionId}`);
     const info = { worktree: session.worktree, cwd: session.config.cwd ?? null };
-    this.terminateSession(sessionId, session, "Session ended by user");
+    await this.terminateSession(sessionId, session, "Session ended by user");
     return info;
   }
 
@@ -887,7 +903,7 @@ export class ClaudeWsServer {
    * Single cleanup path: end state machine, drain waiters, clear timers,
    * close WS, kill process, remove from sessions map.
    */
-  private terminateSession(sessionId: string, session: WsSession, errorMessage: string): void {
+  private async terminateSession(sessionId: string, session: WsSession, errorMessage: string): Promise<void> {
     // End state machine (idempotent — returns [] if already ended)
     const events = session.state.end();
     for (const event of events) {
@@ -924,15 +940,13 @@ export class ClaudeWsServer {
     }
     session.ws = null;
 
-    // Kill process
+    // Kill process and await exit.
+    // Null the ref first so the proc.exited handler skips the stale exit.
     if (session.proc) {
-      try {
-        session.proc.kill();
-      } catch {
-        // already dead
-      }
+      const dying = session.proc;
       session.proc = null;
       session.spawnAlive = false;
+      await this.killAndAwaitProc(dying);
     }
 
     // Remove from map
