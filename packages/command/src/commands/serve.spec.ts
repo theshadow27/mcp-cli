@@ -324,6 +324,18 @@ describe("computeToolsFingerprint", () => {
 
 // -- startToolListPoller --
 
+/**
+ * Poll condition until it returns true or deadline passes.
+ * Never use a fixed sleep to wait for async side effects — poll instead.
+ */
+async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+}
+
 describe("startToolListPoller", () => {
   test("sends notification when tool list changes", async () => {
     let callCount = 0;
@@ -345,15 +357,19 @@ describe("startToolListPoller", () => {
     };
 
     const stop = startToolListPoller(notifier, ipc, 20);
-    // Wait for 3 poll cycles
-    await new Promise((r) => setTimeout(r, 80));
+    // Wait until the tool list has changed and notification was sent
+    await pollUntil(() => notifications.length >= 1);
     stop();
 
     expect(notifications).toEqual(["notifications/tools/list_changed"]);
   });
 
   test("does not notify when tool list is unchanged", async () => {
-    const ipc = (async () => [{ name: "search", server: "atlassian", description: "Search" }]) as IpcCaller;
+    let callCount = 0;
+    const ipc = (async () => {
+      callCount++;
+      return [{ name: "search", server: "atlassian", description: "Search" }];
+    }) as IpcCaller;
 
     const notifications: string[] = [];
     const notifier: ToolListNotifier = {
@@ -363,7 +379,8 @@ describe("startToolListPoller", () => {
     };
 
     const stop = startToolListPoller(notifier, ipc, 20);
-    await new Promise((r) => setTimeout(r, 80));
+    // Wait for at least 3 poll cycles to confirm no spurious notifications
+    await pollUntil(() => callCount >= 3);
     stop();
 
     expect(notifications).toEqual([]);
@@ -382,7 +399,8 @@ describe("startToolListPoller", () => {
     };
 
     const stop = startToolListPoller(notifier, ipc, 20);
-    await new Promise((r) => setTimeout(r, 80));
+    // Wait until polling has recovered and made at least 3 calls
+    await pollUntil(() => callCount >= 3);
     stop();
 
     // Should have made multiple calls despite the error
@@ -401,10 +419,12 @@ describe("startToolListPoller", () => {
     };
 
     const stop = startToolListPoller(notifier, ipc, 20);
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for polling to start
+    await pollUntil(() => callCount >= 2);
     stop();
     const countAtStop = callCount;
-    await new Promise((r) => setTimeout(r, 50));
+    // Give a brief window to confirm no further polling occurs after stop
+    await Bun.sleep(60);
 
     expect(callCount).toBe(countAtStop);
   });
