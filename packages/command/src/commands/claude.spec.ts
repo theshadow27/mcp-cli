@@ -4,6 +4,7 @@ import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import {
   MODEL_SHORTNAMES,
+  buildHeadedCommand,
   buildResumePrompt,
   cmdClaude,
   defaultGetPrStatus,
@@ -32,6 +33,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     getDiffStats: mock(async () => null),
     getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", exitCode: 0 })),
+    ttyOpen: mock(async () => {}),
     ...overrides,
   };
 }
@@ -202,6 +204,17 @@ describe("parseSpawnArgs", () => {
   test("errors on missing --model value", () => {
     const result = parseSpawnArgs(["--model"]);
     expect(result.error).toBe("--model requires a value");
+  });
+
+  test("parses --headed flag", () => {
+    const result = parseSpawnArgs(["--headed", "--task", "fix bug"]);
+    expect(result.headed).toBe(true);
+    expect(result.task).toBe("fix bug");
+  });
+
+  test("headed defaults to false", () => {
+    const result = parseSpawnArgs(["--task", "fix bug"]);
+    expect(result.headed).toBe(false);
   });
 });
 
@@ -564,6 +577,108 @@ describe("mcx claude spawn", () => {
     const deps = makeDeps();
     await expect(cmdClaude(["spawn"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+});
+
+// ── buildHeadedCommand ──
+
+describe("buildHeadedCommand", () => {
+  test("builds basic command with task", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "fix bug"]));
+    expect(result).toBe("claude -p 'fix bug'");
+  });
+
+  test("includes model flag", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--model", "sonnet"]));
+    expect(result).toBe("claude -p x --model claude-sonnet-4-6");
+  });
+
+  test("includes allowedTools", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--allow", "Read", "Glob"]));
+    expect(result).toBe("claude -p x --allowedTools Read Glob");
+  });
+
+  test("handles task with special characters", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "fix the 'bug' now"]));
+    expect(result).toBe("claude -p 'fix the '\\''bug'\\'' now'");
+  });
+
+  test("no -p flag when no task", () => {
+    const args = parseSpawnArgs(["--headed"]);
+    const result = buildHeadedCommand(args);
+    expect(result).toBe("claude");
+  });
+});
+
+// ── headed spawn ──
+
+describe("mcx claude spawn --headed", () => {
+  test("calls ttyOpen with claude command", async () => {
+    const ttyOpen = mock(async () => {});
+    const deps = makeDeps({ ttyOpen });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--headed", "--task", "fix bug"], deps);
+      expect(ttyOpen).toHaveBeenCalledTimes(1);
+      const args = ttyOpen.mock.calls[0] as unknown as [string[]];
+      expect(args[0][0]).toContain("claude -p 'fix bug'");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("does not call callTool (bypasses daemon)", async () => {
+    const callTool = mock(async () => toolResult({}));
+    const ttyOpen = mock(async () => {});
+    const deps = makeDeps({ callTool, ttyOpen });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--headed", "--task", "fix"], deps);
+      expect(callTool).not.toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("errors on --headed with --resume", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["spawn", "--headed", "--resume", "abc123", "--task", "x"], deps)).rejects.toThrow(
+      ExitError,
+    );
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--headed and --resume are incompatible"));
+  });
+
+  test("errors on --headed with --wait", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["spawn", "--headed", "--wait", "--task", "x"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--headed and --wait are incompatible"));
+  });
+
+  test("creates worktree and sets cwd for --headed --worktree", async () => {
+    const ttyOpen = mock(async () => {});
+    const exec = mock(() => ({ stdout: "", exitCode: 0 }));
+    const deps = makeDeps({ ttyOpen, exec });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--headed", "--task", "x", "--worktree", "my-feat"], deps);
+      // Verify git worktree add was called
+      const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
+      const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
+      expect(wtCall).toBeDefined();
+      expect(wtCall?.[0]).toContain("add");
+      // Verify ttyOpen was called with cd to worktree path
+      const ttyArgs = ttyOpen.mock.calls[0] as unknown as [string[]];
+      expect(ttyArgs[0][0]).toContain("cd ");
+      expect(ttyArgs[0][0]).toContain("my-feat");
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 

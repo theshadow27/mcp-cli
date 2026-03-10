@@ -385,21 +385,30 @@ describe("pruneOrphanedWorktrees", () => {
     const db = new StateDb(opts.DB_PATH);
     try {
       // Create a git repo with a worktree that has uncommitted changes
+      // Strip inherited git env vars so child git commands target the temp repo,
+      // not the parent repo (matters when running inside a pre-commit hook).
+      const cleanEnv = { ...process.env };
+      for (const k of [
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_DATE",
+      ]) {
+        delete cleanEnv[k];
+      }
+      const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
+
       const repoDir = join(opts.dir, "repo");
       mkdirSync(repoDir, { recursive: true });
-      Bun.spawnSync(["git", "init", repoDir], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      Bun.spawnSync(["git", "init", repoDir], gitOpts);
+      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], gitOpts);
 
       // Create a worktree
       const worktreeDir = join(repoDir, ".claude", "worktrees", "dirty-wt");
       mkdirSync(join(repoDir, ".claude", "worktrees"), { recursive: true });
-      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "dirty-branch"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "dirty-branch"], gitOpts);
 
       // Make the worktree dirty
       writeFileSync(join(worktreeDir, "dirty.txt"), "uncommitted");
@@ -428,21 +437,29 @@ describe("pruneOrphanedWorktrees", () => {
     const db = new StateDb(opts.DB_PATH);
     try {
       // Create a git repo with a clean worktree
+      // Strip inherited git env vars (see "skips dirty worktrees" test above)
+      const cleanEnv = { ...process.env };
+      for (const k of [
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_DATE",
+      ]) {
+        delete cleanEnv[k];
+      }
+      const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
+
       const repoDir = join(opts.dir, "repo-clean");
       mkdirSync(repoDir, { recursive: true });
-      Bun.spawnSync(["git", "init", repoDir], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      Bun.spawnSync(["git", "init", repoDir], gitOpts);
+      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], gitOpts);
 
       // Create a worktree
       const worktreeDir = join(repoDir, ".claude", "worktrees", "clean-wt");
       mkdirSync(join(repoDir, ".claude", "worktrees"), { recursive: true });
-      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "clean-branch"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "clean-branch"], gitOpts);
 
       db.upsertSession({
         sessionId: "ended-clean",
