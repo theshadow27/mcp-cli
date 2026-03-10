@@ -1730,6 +1730,138 @@ describe("ClaudeWsServer", () => {
     spawnState.exitResolve(0);
     await server.stop();
   });
+
+  // ── Error isolation in handleSessionEvent and handleMessage ──
+
+  test("resolveWaiters still runs when a waiting resolve callback throws on session:result", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // consume initial prompt
+
+      // Inject a throwing EventWaiter into the class-level eventWaiters array.
+      // When resolveEventWaiters iterates, this waiter's resolve throws — simulating
+      // the bug where a bad eventWaiter previously blocked resolveWaiters from running.
+      const srv = server as unknown as {
+        eventWaiters: Array<{
+          sessionId: string | null;
+          resolve: (e: unknown) => void;
+          reject: (e: Error) => void;
+          timer: ReturnType<typeof setTimeout>;
+        }>;
+      };
+      srv.eventWaiters.push({
+        sessionId: "test-session",
+        resolve: () => {
+          throw new Error("simulated eventWaiter resolve failure");
+        },
+        reject: () => {},
+        timer: setTimeout(() => {}, 60_000),
+      });
+
+      // waitForResult registers a resultWaiter — it must resolve even if the eventWaiter above throws
+      const resultPromise = server.waitForResult("test-session", 5000);
+      ws.send(systemInitMessage("test-session"));
+      ws.send(assistantMessage("test-session"));
+      ws.send(resultMessage("test-session"));
+
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("resolveWaiters still runs when a waiting resolve callback throws on session:error", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // consume initial prompt
+
+      // Inject a throwing EventWaiter
+      const srv = server as unknown as {
+        eventWaiters: Array<{
+          sessionId: string | null;
+          resolve: (e: unknown) => void;
+          reject: (e: Error) => void;
+          timer: ReturnType<typeof setTimeout>;
+        }>;
+      };
+      srv.eventWaiters.push({
+        sessionId: "test-session",
+        resolve: () => {
+          throw new Error("simulated eventWaiter resolve failure");
+        },
+        reject: () => {},
+        timer: setTimeout(() => {}, 60_000),
+      });
+
+      const resultPromise = server.waitForResult("test-session", 5000);
+      ws.send(systemInitMessage("test-session"));
+      ws.send(assistantMessage("test-session"));
+      ws.send(
+        serialize({
+          type: "result",
+          subtype: "error",
+          is_error: true,
+          errors: ["Something went wrong"],
+          duration_ms: 100,
+          num_turns: 1,
+          total_cost_usd: 0.001,
+          uuid: "err-uuid",
+          session_id: "test-session",
+        }),
+      );
+
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("throwing onSessionEvent callback does not prevent handleSessionEvent from running", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    const port = server.start();
+
+    // onSessionEvent that always throws — must not block handleSessionEvent from resolving waiters
+    server.onSessionEvent = () => {
+      throw new Error("callback error");
+    };
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws); // consume initial prompt
+
+      // waitForResult relies on handleSessionEvent running — if the onSessionEvent throw
+      // propagated and blocked it, this would hang until timeout
+      const resultPromise = server.waitForResult("test-session", 5000);
+      ws.send(systemInitMessage("test-session"));
+      ws.send(assistantMessage("test-session"));
+      ws.send(resultMessage("test-session"));
+
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
 });
 
 // ── summarizeInput ──
