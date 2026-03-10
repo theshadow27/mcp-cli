@@ -9,6 +9,7 @@ interface ClaudeSessionListProps {
   expandedSession: string | null;
   loading: boolean;
   error: string | null;
+  permissionIndex: number;
 }
 
 const stateColor: Record<SessionStateEnum, string> = {
@@ -60,6 +61,7 @@ export function ClaudeSessionList({
   expandedSession,
   loading,
   error,
+  permissionIndex,
 }: ClaudeSessionListProps) {
   if (loading && sessions.length === 0) {
     return (
@@ -125,18 +127,26 @@ export function ClaudeSessionList({
             </Text>
             {selected && session.pendingPermissionDetails?.length > 0 && (
               <Box flexDirection="column" marginLeft={4}>
-                {session.pendingPermissionDetails.map((perm) => (
-                  <Text key={perm.requestId} color="yellow">
-                    {"└─ "}
-                    <Text bold>{perm.toolName}</Text>
-                    {perm.inputSummary ? <Text dimColor>({perm.inputSummary})</Text> : null}
-                    {" — "}
-                    <Text color="green">[a]</Text>
-                    <Text>pprove </Text>
-                    <Text color="red">[d]</Text>
-                    <Text>eny</Text>
-                  </Text>
-                ))}
+                {session.pendingPermissionDetails.map((perm, permIdx) => {
+                  const targeted = permIdx === permissionIndex;
+                  return (
+                    <Text key={perm.requestId} color={targeted ? "yellow" : "gray"}>
+                      {targeted ? "▸ " : "  "}
+                      <Text bold={targeted}>{perm.toolName}</Text>
+                      {perm.inputSummary ? <Text dimColor>({perm.inputSummary})</Text> : null}
+                      {targeted && (
+                        <>
+                          {" — "}
+                          <Text color="green">[a]</Text>
+                          <Text>pprove </Text>
+                          <Text color="red">[d]</Text>
+                          <Text>eny</Text>
+                        </>
+                      )}
+                    </Text>
+                  );
+                })}
+                {session.pendingPermissionDetails.length > 1 && <Text dimColor>{"  ←/→ navigate permissions"}</Text>}
               </Box>
             )}
             {expanded && <ClaudeSessionDetail sessionId={session.sessionId} />}
