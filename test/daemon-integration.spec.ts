@@ -127,10 +127,11 @@ describe.skipIf(process.platform === "linux")("P2: Config hot reload", () => {
     // Write echo server config
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: { echo: echoServerConfig() } }));
 
-    // Wait for debounce (300ms) + processing — poll with retries for CI
+    // Poll with deadline — short backoff, exits as soon as condition is met
+    const deadline = Date.now() + 10_000;
     let found = false;
-    for (let i = 0; i < 10 && !found; i++) {
-      await Bun.sleep(500);
+    while (!found && Date.now() < deadline) {
+      await Bun.sleep(100);
       const after = await rpc(daemon.socketPath, "listServers");
       const servers = after.result as Array<{ name: string }>;
       found = servers.some((s) => s.name === "echo");
@@ -148,10 +149,11 @@ describe.skipIf(process.platform === "linux")("P2: Config hot reload", () => {
     // Remove all servers
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: {} }));
 
-    // Wait for debounce + processing — poll with retries for CI
+    // Poll with deadline — short backoff, exits as soon as condition is met
+    const deadline = Date.now() + 10_000;
     let removed = false;
-    for (let i = 0; i < 10 && !removed; i++) {
-      await Bun.sleep(500);
+    while (!removed && Date.now() < deadline) {
+      await Bun.sleep(100);
       const after = await rpc(daemon.socketPath, "listServers");
       const afterServers = after.result as Array<{ name: string }>;
       removed = afterServers.every((s) => s.name.startsWith("_"));
