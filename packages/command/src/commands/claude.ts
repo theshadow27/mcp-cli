@@ -607,7 +607,7 @@ async function resumeWorktree(
     }
 
     toolArgs.prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [fresh — git context only]`);
+    console.error(`Resuming session in ${wt.path} (branch: ${branch}) [fresh — git context only]`);
   } else {
     // Default: restore conversation history via Claude CLI --resume flag
     // If a specific session ID was provided, use it; otherwise bare --resume
@@ -616,7 +616,7 @@ async function resumeWorktree(
     toolArgs.prompt =
       "Your previous conversation history has just been restored via --continue/--resume. " +
       "Please review the restored context and continue where you left off, picking up any in-progress work.";
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
+    console.error(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
   }
 
   const result = await d.callTool("claude_prompt", toolArgs);
