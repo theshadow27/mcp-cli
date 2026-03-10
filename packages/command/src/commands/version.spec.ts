@@ -21,20 +21,28 @@ const mockDeps = {
   protocolVersion: "a3f2b1c9d0e1",
 };
 
-async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string[]; stderr: string[] }> {
+async function captureOutput(
+  fn: () => Promise<void>,
+): Promise<{ stdout: string[]; stderr: string[]; exitCode: number | undefined }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const origLog = console.log;
   const origError = console.error;
+  // Use a sentinel value (0) to detect if the function sets exitCode
+  process.exitCode = 0;
   console.log = (...args: unknown[]) => stdout.push(args.join(" "));
   console.error = (...args: unknown[]) => stderr.push(args.join(" "));
+  let exitCode: number | undefined;
   try {
     await fn();
   } finally {
     console.log = origLog;
     console.error = origError;
+    const code = process.exitCode;
+    exitCode = code === 0 ? undefined : (code as number | undefined);
+    process.exitCode = 0;
   }
-  return { stdout, stderr };
+  return { stdout, stderr, exitCode };
 }
 
 describe("cmdVersion", () => {
@@ -52,8 +60,8 @@ describe("cmdVersion", () => {
     expect(stdout[2]).toBe("Status:  protocol match");
   });
 
-  test("shows MISMATCH when protocol versions differ", async () => {
-    const { stdout } = await captureOutput(() =>
+  test("shows MISMATCH when protocol versions differ and sets exitCode 2", async () => {
+    const { stdout, exitCode } = await captureOutput(() =>
       cmdVersion([], {
         ...mockDeps,
         protocolVersion: "aabbccddeeff",
@@ -62,6 +70,7 @@ describe("cmdVersion", () => {
     );
     expect(stdout[2]).toContain("MISMATCH");
     expect(stdout[2]).toContain("mcx daemon restart");
+    expect(exitCode).toBe(2);
   });
 
   test("shows '(not running)' when daemon is offline", async () => {
@@ -94,8 +103,8 @@ describe("cmdVersion", () => {
     expect(parsed.protocolMatch).toBe(true);
   });
 
-  test("--json with protocol mismatch sets protocolMatch false", async () => {
-    const { stdout } = await captureOutput(() =>
+  test("--json with protocol mismatch sets protocolMatch false and exitCode 2", async () => {
+    const { stdout, exitCode } = await captureOutput(() =>
       cmdVersion(["--json"], {
         ...mockDeps,
         protocolVersion: "aabbccddeeff",
@@ -104,6 +113,7 @@ describe("cmdVersion", () => {
     );
     const parsed = JSON.parse(stdout.join(""));
     expect(parsed.protocolMatch).toBe(false);
+    expect(exitCode).toBe(2);
   });
 
   test("-j is shorthand for --json", async () => {
@@ -171,8 +181,8 @@ describe("cmdVersion", () => {
     expect(stdout[1]).toContain("unknown");
   });
 
-  test("shows mismatch status when ProtocolMismatchError is thrown", async () => {
-    const { stdout } = await captureOutput(() =>
+  test("shows mismatch status when ProtocolMismatchError is thrown and sets exitCode 2", async () => {
+    const { stdout, exitCode } = await captureOutput(() =>
       cmdVersion([], {
         ...mockDeps,
         ipcCall: async () => {
@@ -184,10 +194,11 @@ describe("cmdVersion", () => {
     expect(stdout[1]).toContain("protocol old-proto");
     expect(stdout[2]).toContain("MISMATCH");
     expect(stdout[2]).toContain("mcx daemon restart");
+    expect(exitCode).toBe(2);
   });
 
-  test("--json shows mismatch info when ProtocolMismatchError is thrown", async () => {
-    const { stdout } = await captureOutput(() =>
+  test("--json shows mismatch info when ProtocolMismatchError is thrown and sets exitCode 2", async () => {
+    const { stdout, exitCode } = await captureOutput(() =>
       cmdVersion(["--json"], {
         ...mockDeps,
         ipcCall: async () => {
@@ -201,5 +212,28 @@ describe("cmdVersion", () => {
     expect(parsed.daemon.version).toBe("unknown");
     expect(parsed.daemon.uptimeSeconds).toBeNull();
     expect(parsed.protocolMatch).toBe(false);
+    expect(exitCode).toBe(2);
+  });
+
+  test("does not set exitCode on protocol match", async () => {
+    const { exitCode } = await captureOutput(() =>
+      cmdVersion([], {
+        ...mockDeps,
+        ipcCall: async () => mockDaemonStatus() as never,
+      }),
+    );
+    expect(exitCode).toBeUndefined();
+  });
+
+  test("does not set exitCode when daemon is offline", async () => {
+    const { exitCode } = await captureOutput(() =>
+      cmdVersion([], {
+        ...mockDeps,
+        ipcCall: async () => {
+          throw new Error("connection refused");
+        },
+      }),
+    );
+    expect(exitCode).toBeUndefined();
   });
 });
