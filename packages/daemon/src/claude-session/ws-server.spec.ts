@@ -1522,6 +1522,51 @@ describe("ClaudeWsServer", () => {
 
     ws.close();
   });
+
+  test("WebSocket disconnect runs full cleanup: state, waiters, and keep-alive timer", async () => {
+    const spawnState = mockSpawn();
+    const events: SessionEvent[] = [];
+    const server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server.onSessionEvent = (_sid, event) => events.push(event);
+    const port = server.start();
+
+    server.prepareSession("test-session", { prompt: "hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws); // consume initial user message
+
+    // Drive session to idle state so we can queue a result waiter and then follow-up
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+    // Send a follow-up prompt to move back to active, then set up result waiter
+    server.sendPrompt("test-session", "follow up");
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    const resultPromise = server.waitForResult("test-session", 10_000);
+
+    // Abrupt client disconnect — simulates network issue or send failure
+    ws.close();
+
+    // Result waiter should be rejected with disconnect error
+    await expect(resultPromise).rejects.toThrow("WebSocket disconnected");
+
+    // Session should transition to disconnected
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+    expect(server.sessionCount).toBe(1);
+    expect(server.getStatus("test-session").state).toBe("disconnected");
+    expect(server.getStatus("test-session").wsConnected).toBe(false);
+
+    // Should have emitted session:disconnected event
+    const disconnectEvent = events.find((e) => e.type === "session:disconnected");
+    expect(disconnectEvent).toBeDefined();
+
+    // Resolve spawn exit so stop() doesn't hang
+    spawnState.exitResolve(0);
+    await server.stop();
+  });
 });
 
 // ── summarizeInput ──
