@@ -368,7 +368,11 @@ export class ClaudeWsServer {
 
     // Close WebSocket
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.close(1000, "Session cleared");
+      try {
+        session.ws.close(1000, "Session cleared");
+      } catch {
+        /* already dead */
+      }
     }
     session.ws = null;
 
@@ -562,6 +566,33 @@ export class ClaudeWsServer {
 
   // ── WebSocket handlers ──
 
+  /**
+   * Full WebSocket disconnection cleanup. Must be called from every error path
+   * that detects a broken WS — not just handleClose.
+   */
+  private disconnectSessionWs(sessionId: string, session: WsSession, reason: string): void {
+    session.ws = null;
+
+    if (session.keepAliveTimer) {
+      clearInterval(session.keepAliveTimer);
+      session.keepAliveTimer = null;
+    }
+
+    // Transition state if not already ended/disconnected/clearing
+    if (session.state.state !== "ended" && session.state.state !== "disconnected" && !session.clearing) {
+      const events = session.state.disconnect(reason);
+      for (const event of events) {
+        this.onSessionEvent?.(sessionId, event);
+      }
+    }
+
+    // Reject pending result waiters — they can't get results without WS
+    for (const waiter of session.resultWaiters) {
+      waiter.reject(new Error("WebSocket disconnected"));
+    }
+    session.resultWaiters.length = 0;
+  }
+
   private handleOpen(ws: ServerWebSocket<WsData>): void {
     const { sessionId } = ws.data;
     const session = this.sessions.get(sessionId);
@@ -582,13 +613,32 @@ export class ClaudeWsServer {
     // The CLI will NOT send system/init until it receives a user message.
     const prompt = session.config.prompt;
     const outbound = userMessage(prompt, sessionId);
-    ws.send(outbound);
+    try {
+      ws.send(outbound);
+    } catch (err) {
+      console.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+      this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+      // Kill the spawned process — it can't communicate without WS
+      if (session.proc) {
+        try {
+          session.proc.kill();
+        } catch {
+          /* already dead */
+        }
+      }
+      return;
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
       if (session.ws?.readyState === WS_OPEN) {
-        session.ws.send(keepAlive());
+        try {
+          session.ws.send(keepAlive());
+        } catch (err) {
+          console.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
+          this.disconnectSessionWs(sessionId, session, "WebSocket keep-alive send failed");
+        }
       }
     }, KEEP_ALIVE_MS);
   }
@@ -622,32 +672,11 @@ export class ClaudeWsServer {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    session.ws = null;
-
-    // Clear keep-alive timer (no WS to ping)
-    if (session.keepAliveTimer) {
-      clearInterval(session.keepAliveTimer);
-      session.keepAliveTimer = null;
-    }
-
-    // If already ended (bye was called) or being cleared (kill+respawn), nothing more to do
-    if (session.state.state === "ended" || session.clearing) return;
-
     console.error(
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
     );
 
-    // Move to disconnected state — session is NOT terminated
-    const events = session.state.disconnect("WebSocket closed");
-    for (const event of events) {
-      this.onSessionEvent?.(sessionId, event);
-    }
-
-    // Reject pending result waiters — they can't get results without WS
-    for (const waiter of session.resultWaiters) {
-      waiter.reject(new Error("WebSocket disconnected"));
-    }
-    session.resultWaiters.length = 0;
+    this.disconnectSessionWs(sessionId, session, "WebSocket closed");
   }
 
   // ── Event handling ──
@@ -847,7 +876,18 @@ export class ClaudeWsServer {
 
   private sendToWs(session: WsSession, message: string): void {
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.send(message);
+      try {
+        session.ws.send(message);
+      } catch (err) {
+        console.error(`[_claude] WebSocket send failed: ${err}`);
+        // Find sessionId for this session
+        for (const [sid, s] of this.sessions) {
+          if (s === session) {
+            this.disconnectSessionWs(sid, session, "WebSocket send failed");
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -920,7 +960,11 @@ export class ClaudeWsServer {
 
     // Close WebSocket
     if (session.ws?.readyState === WS_OPEN) {
-      session.ws.close(1000, "Session ended");
+      try {
+        session.ws.close(1000, "Session ended");
+      } catch {
+        /* already dead */
+      }
     }
     session.ws = null;
 

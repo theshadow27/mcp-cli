@@ -73,6 +73,7 @@ describe("useDaemon", () => {
 
     const { stateRef } = mount({
       ipcCallFn: ipcCallFn as UseDaemonOptions["ipcCallFn"],
+      ensureDaemonFn: async () => false,
     });
 
     await flush();
