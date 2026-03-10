@@ -36,6 +36,7 @@ import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
 import { ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
@@ -58,6 +59,7 @@ import {
 import { searchRegistry } from "./registry/client";
 
 async function main(): Promise<void> {
+  checkDeprecatedName(process.argv[1] ?? "");
   const args = process.argv.slice(2);
 
   if (args.includes("--version") || args.includes("-v")) {

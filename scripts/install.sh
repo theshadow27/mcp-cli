@@ -51,7 +51,10 @@ mv "$TMP/mcpd-${TARGET}" "$INSTALL_DIR/mcpd"
 mv "$TMP/mcpctl-${TARGET}" "$INSTALL_DIR/mcpctl"
 chmod +x "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcpd" "$INSTALL_DIR/mcpctl"
 
-echo "Installed mcx, mcpd, and mcpctl to $INSTALL_DIR"
+# Transitional symlink: mcp → mcx (deprecated name)
+ln -sf "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcp"
+
+echo "Installed mcx, mcpd, mcpctl, and mcp (deprecated symlink) to $INSTALL_DIR"
 
 # Check if install dir is in PATH
 case ":$PATH:" in
