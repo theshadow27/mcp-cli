@@ -9,7 +9,9 @@ import {
   configGetDispatch,
   configGetServer,
   configSetDispatch,
+  configSetServerArgs,
   configSetServerEnv,
+  configSetServerUrl,
   isCliOptionKey,
   maskConfig,
   maskValue,
@@ -712,6 +714,261 @@ describe("configSetServerEnv error handling", () => {
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+// -- configSetServerUrl --
+
+describe("configSetServerUrl", () => {
+  it("sets url on http server", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { "my-server": { transport: "http", source: sourcePath, scope: "user", toolCount: 3 } },
+      {
+        [sourcePath]: {
+          mcpServers: {
+            "my-server": { type: "http", url: "https://old.example.com" },
+          },
+        },
+      },
+      writtenFiles,
+    );
+
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetServerUrl(["my-server", "url", "https://new.example.com"], deps);
+
+    expect(writtenFiles[sourcePath]).toBeDefined();
+    const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { url: string };
+    expect(updated.url).toBe("https://new.example.com");
+    expect(logSpy).toHaveBeenCalledWith("Set url on my-server");
+  });
+
+  it("sets url on sse server", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { "my-server": { transport: "sse", source: sourcePath, scope: "user", toolCount: 0 } },
+      {
+        [sourcePath]: {
+          mcpServers: {
+            "my-server": { type: "sse", url: "https://old.example.com/sse" },
+          },
+        },
+      },
+      writtenFiles,
+    );
+
+    spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetServerUrl(["my-server", "url", "https://new.example.com/sse"], deps);
+
+    const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { url: string };
+    expect(updated.url).toBe("https://new.example.com/sse");
+  });
+
+  it("rejects url on stdio server", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const sourcePath = join(testDir, "servers.json");
+    const deps = makeDeps(
+      { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
+      { [sourcePath]: { mcpServers: { srv: { command: "node" } } } },
+    );
+
+    try {
+      await configSetServerUrl(["srv", "url", "https://example.com"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when server not found", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = makeDeps({});
+
+    try {
+      await configSetServerUrl(["nonexistent", "url", "https://example.com"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when server not found in config file", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = makeDeps(
+      { srv: { transport: "http", source: "/p", scope: "user", toolCount: 0 } },
+      { "/p": { mcpServers: {} } },
+    );
+
+    try {
+      await configSetServerUrl(["srv", "url", "https://example.com"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+// -- configSetServerArgs --
+
+describe("configSetServerArgs", () => {
+  it("sets args on stdio server", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 3 } },
+      {
+        [sourcePath]: {
+          mcpServers: {
+            "my-server": { command: "node", args: ["old.js"] },
+          },
+        },
+      },
+      writtenFiles,
+    );
+
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetServerArgs(["my-server", "args", "new.js", "--flag"], deps);
+
+    expect(writtenFiles[sourcePath]).toBeDefined();
+    const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { args: string[] };
+    expect(updated.args).toEqual(["new.js", "--flag"]);
+    expect(logSpy).toHaveBeenCalledWith("Set args on my-server");
+  });
+
+  it("sets args when none existed before", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
+      {
+        [sourcePath]: {
+          mcpServers: {
+            "my-server": { command: "node" },
+          },
+        },
+      },
+      writtenFiles,
+    );
+
+    spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetServerArgs(["my-server", "args", "server.js"], deps);
+
+    const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { args: string[] };
+    expect(updated.args).toEqual(["server.js"]);
+  });
+
+  it("rejects args on http server", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const sourcePath = join(testDir, "servers.json");
+    const deps = makeDeps(
+      { srv: { transport: "http", source: sourcePath, scope: "user", toolCount: 0 } },
+      { [sourcePath]: { mcpServers: { srv: { type: "http", url: "https://example.com" } } } },
+    );
+
+    try {
+      await configSetServerArgs(["srv", "args", "foo"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when server not found", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = makeDeps({});
+
+    try {
+      await configSetServerArgs(["nonexistent", "args", "foo"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when no args provided", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = makeDeps({});
+
+    try {
+      await configSetServerArgs(["srv", "args"], deps);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+// -- configSetDispatch: url and args routing --
+
+describe("configSetDispatch url/args routing", () => {
+  it("dispatches to url setter when second arg is 'url'", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { srv: { transport: "http", source: sourcePath, scope: "user", toolCount: 0 } },
+      { [sourcePath]: { mcpServers: { srv: { type: "http", url: "https://old.com" } } } },
+      writtenFiles,
+    );
+
+    spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetDispatch(["srv", "url", "https://new.com"], deps);
+
+    const updated = writtenFiles[sourcePath].mcpServers?.srv as { url: string };
+    expect(updated.url).toBe("https://new.com");
+  });
+
+  it("dispatches to args setter when second arg is 'args'", async () => {
+    const sourcePath = join(testDir, "servers.json");
+    const writtenFiles: Record<string, McpConfigFile> = {};
+    const deps = makeDeps(
+      { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
+      { [sourcePath]: { mcpServers: { srv: { command: "node" } } } },
+      writtenFiles,
+    );
+
+    spyOn(console, "log").mockImplementation(() => {});
+
+    await configSetDispatch(["srv", "args", "server.js", "--port", "3000"], deps);
+
+    const updated = writtenFiles[sourcePath].mcpServers?.srv as { args: string[] };
+    expect(updated.args).toEqual(["server.js", "--port", "3000"]);
   });
 });
 
