@@ -6,35 +6,17 @@
  * to bring a crashed daemon back. The useDaemon polling loop naturally retries.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
 import {
-  DAEMON_BINARY_NAME,
-  DAEMON_DEV_SCRIPT,
   DAEMON_READY_SIGNAL,
   DAEMON_START_TIMEOUT_MS,
-  findFileUpward,
+  resolveDaemonCommand as coreResolveDaemonCommand,
   pingDaemon,
 } from "@mcp-cli/core";
-
-/** Resolve the daemon command, same strategy as command/daemon-lifecycle.ts */
-export function resolveDaemonCommand(): string[] {
-  // Compiled mode: mcpd binary next to current executable
-  const siblingBinary = join(dirname(process.execPath), DAEMON_BINARY_NAME);
-  if (existsSync(siblingBinary)) return [siblingBinary];
-
-  // Dev mode: walk up from this file to find workspace root, then resolve daemon script
-  const devScript = findFileUpward(DAEMON_DEV_SCRIPT, import.meta.dir);
-  if (devScript) return ["bun", "run", devScript];
-
-  // Fallback: assume mcpd is on PATH
-  return [DAEMON_BINARY_NAME];
-}
 
 /** Dependencies injectable for testing */
 export interface EnsureDaemonDeps {
   ping: () => Promise<boolean>;
-  spawn: (cmd: string[]) => { stdout: ReadableStream; stderr: ReadableStream; unref: () => void };
+  spawn: (cmd: string[]) => { stdout: ReadableStream; stderr: ReadableStream; unref: () => void; kill: () => void };
   resolveCmd: () => string[];
   readySignal: string;
   timeoutMs: number;
@@ -43,7 +25,7 @@ export interface EnsureDaemonDeps {
 const defaultDeps: EnsureDaemonDeps = {
   ping: pingDaemon,
   spawn: (cmd) => Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" }),
-  resolveCmd: resolveDaemonCommand,
+  resolveCmd: () => coreResolveDaemonCommand(import.meta.dir),
   readySignal: DAEMON_READY_SIGNAL,
   timeoutMs: DAEMON_START_TIMEOUT_MS,
 };
@@ -63,36 +45,63 @@ export async function ensureDaemonRunning(deps: Partial<EnsureDaemonDeps> = {}):
     const cmd = resolveCmd();
     const proc = spawn(cmd);
 
+    // Abort controller bounds all reads to the timeout window.
+    // This prevents reader.read() from blocking indefinitely if the
+    // daemon emits partial output then hangs.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+
     // Wait for MCPD_READY signal on stdout
     const decoder = new TextDecoder();
     const reader = proc.stdout.getReader();
-    const deadline = Date.now() + timeoutMs;
     let stdout = "";
 
-    // Drain stderr to prevent pipe buffer deadlock
+    // Drain stderr to prevent pipe buffer deadlock.
+    // Attach .catch() so cancellation doesn't produce an unhandled rejection.
     const stderrReader = proc.stderr.getReader();
     const drainStderr = (async () => {
-      for (;;) {
-        const { done } = await stderrReader.read();
-        if (done) break;
+      try {
+        for (;;) {
+          const { done } = await stderrReader.read();
+          if (done) break;
+        }
+      } catch {
+        // Cancelled or aborted — expected on success/timeout paths
       }
     })();
 
-    while (Date.now() < deadline) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      stdout += decoder.decode(value, { stream: true });
-      if (stdout.includes(readySignal)) {
-        // Detach — let daemon run independently
-        proc.unref();
-        reader.releaseLock();
-        stderrReader.cancel();
-        return true;
+    try {
+      while (!ac.signal.aborted) {
+        const readResult = await Promise.race([
+          reader.read(),
+          new Promise<{ done: true; value: undefined }>((_, reject) => {
+            ac.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+              once: true,
+            });
+          }),
+        ]);
+        if (readResult.done) break;
+        stdout += decoder.decode(readResult.value, { stream: true });
+        if (stdout.includes(readySignal)) {
+          // Detach — let daemon run independently
+          clearTimeout(timer);
+          proc.unref();
+          reader.releaseLock();
+          stderrReader.cancel().catch(() => {});
+          await drainStderr;
+          return true;
+        }
       }
+    } catch {
+      // AbortError from timeout — fall through to cleanup
     }
 
-    // Timed out or process exited without ready signal
-    await drainStderr.catch(() => {});
+    // Timed out or process exited without ready signal — kill to avoid orphans
+    clearTimeout(timer);
+    proc.kill();
+    reader.releaseLock();
+    stderrReader.cancel().catch(() => {});
+    await drainStderr;
     return await ping();
   } catch {
     return false;

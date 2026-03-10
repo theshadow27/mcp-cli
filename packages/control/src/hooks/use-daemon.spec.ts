@@ -30,7 +30,7 @@ const Harness: FC<{ opts: UseDaemonOptions; stateRef: { current: HookState } }> 
 };
 
 async function flush(ms = 10) {
-  await new Promise((r) => setTimeout(r, ms));
+  await Bun.sleep(ms);
 }
 
 /* ---------- tests ---------- */
@@ -86,7 +86,7 @@ describe("useDaemon", () => {
     const ipcCallFn = async () => {
       concurrency++;
       maxConcurrency = Math.max(maxConcurrency, concurrency);
-      await new Promise((r) => setTimeout(r, 30));
+      await Bun.sleep(30);
       concurrency--;
       return daemonStatus();
     };

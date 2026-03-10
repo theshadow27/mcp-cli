@@ -55,30 +55,35 @@ export function useDaemon(opts: UseDaemonOptions = {}): UseDaemonResult {
           // Guard with startingRef to avoid concurrent spawn attempts.
           if (!startingRef.current) {
             startingRef.current = true;
-            const started = await ensureDaemonFn();
-            if (started && !cancelled) {
-              // Daemon came up — retry the poll immediately instead of showing error.
-              try {
-                const result = await ipcCallFn("status");
-                if (!cancelled) {
-                  startingRef.current = false;
-                  const mismatch = checkProtocolVersion(result.protocolVersion);
-                  if (mismatch) {
-                    console.error(mismatch);
-                    process.exit(2);
+            try {
+              const started = await ensureDaemonFn();
+              if (started && !cancelled) {
+                // Daemon came up — retry the poll immediately instead of showing error.
+                try {
+                  const result = await ipcCallFn("status");
+                  if (!cancelled) {
+                    const mismatch = checkProtocolVersion(result.protocolVersion);
+                    if (mismatch) {
+                      console.error(mismatch);
+                      process.exit(2);
+                    }
+                    setStatus(result);
+                    setError(null);
+                    setLoading(false);
+                    return;
                   }
-                  setStatus(result);
-                  setError(null);
-                  setLoading(false);
-                  return;
+                } catch {
+                  // Fall through to error state
                 }
-              } catch {
-                // Fall through to error state
               }
+            } finally {
+              startingRef.current = false;
             }
           }
-          setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : String(err));
+            setLoading(false);
+          }
         }
       }
     }

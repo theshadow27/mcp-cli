@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { ensureDaemonRunning, resolveDaemonCommand } from "./ensure-daemon";
+import { resolveDaemonCommand } from "@mcp-cli/core";
+import { ensureDaemonRunning } from "./ensure-daemon";
 
 /** Create a mock ReadableStream from a string, optionally with a delay */
 function mockStream(data: string, delayMs = 0): ReadableStream<Uint8Array> {
   const encoded = new TextEncoder().encode(data);
   return new ReadableStream({
     async start(controller) {
-      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      if (delayMs > 0) await Bun.sleep(delayMs);
       controller.enqueue(encoded);
       controller.close();
     },
@@ -19,7 +20,7 @@ function slowStream(intervalMs: number, count: number): ReadableStream<Uint8Arra
   return new ReadableStream({
     async start(controller) {
       for (let i = 0; i < count; i++) {
-        await new Promise((r) => setTimeout(r, intervalMs));
+        await Bun.sleep(intervalMs);
         controller.enqueue(encoded);
       }
       controller.close();
@@ -29,7 +30,7 @@ function slowStream(intervalMs: number, count: number): ReadableStream<Uint8Arra
 
 describe("resolveDaemonCommand", () => {
   it("returns an array of strings", () => {
-    const cmd = resolveDaemonCommand();
+    const cmd = resolveDaemonCommand(import.meta.dir);
     expect(Array.isArray(cmd)).toBe(true);
     expect(cmd.length).toBeGreaterThan(0);
     for (const part of cmd) {
@@ -60,6 +61,7 @@ describe("ensureDaemonRunning", () => {
           unref: () => {
             unrefCalled = true;
           },
+          kill: () => {},
         };
       },
       resolveCmd: () => ["fake-mcpd"],
@@ -79,6 +81,7 @@ describe("ensureDaemonRunning", () => {
         stdout: mockStream("some output but no signal\n"),
         stderr: mockStream(""),
         unref: () => {},
+        kill: () => {},
       }),
       resolveCmd: () => ["fake-mcpd"],
       readySignal: "MCPD_READY",
@@ -102,6 +105,7 @@ describe("ensureDaemonRunning", () => {
         stdout: slowStream(20, 10),
         stderr: mockStream(""),
         unref: () => {},
+        kill: () => {},
       }),
       resolveCmd: () => ["fake-mcpd"],
       readySignal: "MCPD_READY",
@@ -133,6 +137,7 @@ describe("ensureDaemonRunning", () => {
         stdout: mockStream(""),
         stderr: mockStream(""),
         unref: () => {},
+        kill: () => {},
       }),
       resolveCmd: () => {
         throw new Error("no binary found");

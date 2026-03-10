@@ -35,7 +35,7 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
-import { ipcCall, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import { ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -428,7 +428,29 @@ async function cmdGrep(args: string[]): Promise<void> {
 }
 
 async function cmdStatus(args: string[] = []): Promise<void> {
-  const { json } = extractJsonFlag(args);
+  const noStart = args.includes("--no-start");
+  const { json } = extractJsonFlag(args.filter((a) => a !== "--no-start"));
+
+  // --no-start: report state without spawning (original semantics).
+  if (noStart) {
+    const running = await isDaemonRunning();
+    if (!running) {
+      if (isDaemonInitializing()) {
+        if (json) {
+          console.log(JSON.stringify({ state: "starting" }));
+        } else {
+          console.error("Daemon is starting...");
+        }
+        return;
+      }
+      if (json) {
+        console.log(JSON.stringify({ state: "stopped" }));
+      } else {
+        console.error("Daemon is not running. Start it with: mcx daemon start");
+      }
+      return;
+    }
+  }
 
   // Auto-start daemon if not running — after a crash, `mcx status` is the first
   // thing users check, so it should bring the daemon back (#412).
