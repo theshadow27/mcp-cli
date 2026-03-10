@@ -6,7 +6,8 @@ import { projectConfigPath } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { makeConfig } from "../test-helpers";
 import { configHash } from "./loader";
-import { type ConfigChangeEvent, ConfigWatcher } from "./watcher";
+import { loadConfig } from "./loader";
+import { type ConfigChangeEvent, ConfigWatcher, type ConfigWatcherOptions } from "./watcher";
 
 /** Build an McpConfigFile from server entries */
 function mcpConfig(servers: Record<string, ServerConfig>): McpConfigFile {
@@ -27,7 +28,7 @@ function atomicWrite(path: string, data: unknown): void {
 }
 
 /** Wait for a mock to reach N calls, with timeout */
-async function waitForCalls(fn: ReturnType<typeof mock>, count: number, timeoutMs = 5000): Promise<void> {
+async function waitForCalls(fn: ReturnType<typeof mock>, count: number, timeoutMs = 8000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (fn.mock.calls.length < count && Date.now() < deadline) {
     await Bun.sleep(50);
@@ -35,8 +36,13 @@ async function waitForCalls(fn: ReturnType<typeof mock>, count: number, timeoutM
 }
 
 /** Wait for a mock to be called at least once, with timeout */
-async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 5000): Promise<void> {
+async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 8000): Promise<void> {
   await waitForCalls(fn, 1, timeoutMs);
+}
+
+/** Default watcher options for tests: fast polling + bound loadConfig */
+function testWatcherOpts(): ConfigWatcherOptions {
+  return { pollIntervalMs: 200, loadConfig: (cwd: string) => loadConfig(cwd) };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +173,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Modify the config file
@@ -191,7 +197,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Simulate atomic save: write to tmp, rename over original
@@ -211,7 +217,7 @@ describe("ConfigWatcher integration", () => {
     const initial: ResolvedConfig = { servers: new Map(), sources: [] };
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Create the file for the first time
@@ -234,7 +240,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" }, beta: { command: "cat" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Remove beta from config
@@ -257,7 +263,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Change alpha's command
@@ -280,14 +286,14 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Write the same config (no actual change)
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" } }));
 
-    // Wait enough time for debounce + reload
-    await Bun.sleep(500);
+    // Wait enough time for debounce + poll + reload
+    await Bun.sleep(800);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -301,7 +307,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Rapid writes — should debounce to a single reload
@@ -334,7 +340,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ projserver: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, cwd);
+    watcher = new ConfigWatcher(initial, cb, cwd, testWatcherOpts());
     watcher.start();
 
     // Modify project config
@@ -357,7 +363,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     // Note: NOT calling start() — testing forceReload in isolation
 
     // Modify the config file
@@ -381,7 +387,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     await watcher.forceReload();
     expect(cb).not.toHaveBeenCalled();
@@ -397,14 +403,14 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
     watcher.stop();
 
     // Modify after stop
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, stopped: { command: "ls" } }));
 
-    await Bun.sleep(500);
+    await Bun.sleep(800);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -418,7 +424,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.stop();
 
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, post_stop: { command: "ls" } }));
@@ -438,7 +444,7 @@ describe("ConfigWatcher integration", () => {
     const initialHash = configHash(initial);
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "cat" } }));
     await watcher.forceReload();
@@ -460,7 +466,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // First change
@@ -495,7 +501,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     // Write malformed JSON — loadConfig silently returns empty config,
     // so the watcher sees "alpha" as removed (hash changes)
@@ -516,7 +522,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     // Write malformed JSON — watcher treats it as empty config
     writeFileSync(opts.USER_SERVERS_PATH, "not json");
@@ -542,7 +548,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     writeJson(
       opts.USER_SERVERS_PATH,
@@ -567,7 +573,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
 
     // Delete the config file — loadConfig returns empty config
     unlinkSync(opts.USER_SERVERS_PATH);
@@ -585,7 +591,7 @@ describe("ConfigWatcher integration", () => {
     const cb = mock((_e: ConfigChangeEvent) => {});
 
     // start() should not throw even when watch directories don't exist
-    watcher = new ConfigWatcher(initial, cb, nonExistentCwd);
+    watcher = new ConfigWatcher(initial, cb, nonExistentCwd, testWatcherOpts());
     watcher.start();
 
     // Verify watcher is functional (stop should work cleanly)
@@ -603,7 +609,7 @@ describe("ConfigWatcher integration", () => {
     const initial = makeConfig({ alpha: { command: "echo" } });
     const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir);
+    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
     watcher.start();
 
     // Write a change to trigger scheduleReload
@@ -614,7 +620,7 @@ describe("ConfigWatcher integration", () => {
     watcher.stop();
 
     // Wait long enough for debounce to have fired (if not cancelled)
-    await Bun.sleep(500);
+    await Bun.sleep(800);
     expect(cb).not.toHaveBeenCalled();
   });
 });

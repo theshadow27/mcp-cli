@@ -103,8 +103,8 @@ describe("P1: Daemon lifecycle", () => {
 // ---------------------------------------------------------------------------
 // P2: Config hot reload
 // ---------------------------------------------------------------------------
-// fs.watch (inotify) is unreliable in Linux CI containers — see #313
-describe.skipIf(process.platform === "linux")("P2: Config hot reload", () => {
+// Polling fallback makes config detection reliable on all platforms — see #313
+describe("P2: Config hot reload", () => {
   let daemon: TestDaemon | undefined;
 
   afterEach(async () => {
