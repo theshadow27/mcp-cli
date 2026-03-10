@@ -52,6 +52,27 @@ describe("daemon-log", () => {
     expect(match).toBeDefined();
   });
 
+  test("console.error survives EPIPE from stderr", () => {
+    const original = process.stderr.write;
+    process.stderr.write = (() => {
+      const err = new Error("EPIPE: broken pipe, write");
+      (err as NodeJS.ErrnoException).code = "EPIPE";
+      throw err;
+    }) as typeof process.stderr.write;
+
+    try {
+      // Should not throw — EPIPE is caught internally
+      expect(() => console.error("epipe-test-line")).not.toThrow();
+
+      // Line should still be captured in ring buffer
+      const lines = getDaemonLogLines();
+      const match = lines.find((l) => l.line === "epipe-test-line");
+      expect(match).toBeDefined();
+    } finally {
+      process.stderr.write = original;
+    }
+  });
+
   test("second installDaemonLogCapture call is a no-op", () => {
     const countBefore = getDaemonLogLines().length;
     installDaemonLogCapture(); // should not double-wrap

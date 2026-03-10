@@ -8,6 +8,11 @@
 import { startDaemon } from "./index";
 
 async function main(): Promise<void> {
+  // Prevent EPIPE on stderr from crashing the daemon when the parent
+  // terminal disconnects. This is a safety net — individual write sites
+  // also catch EPIPE, but this covers any we might miss.
+  process.stderr.on("error", () => {});
+
   const handle = await startDaemon();
 
   process.on("SIGTERM", () => {
