@@ -187,16 +187,12 @@ export class ClaudeServer {
 
   /** Attach post-startup error listener to detect worker crashes. */
   private attachCrashDetection(worker: Worker): void {
-    worker.addEventListener(
-      "error",
-      (event: ErrorEvent | Event) => {
-        // Only handle if this is still our active worker
-        if (this.worker !== worker) return;
-        const msg = event instanceof ErrorEvent ? event.message : "unknown error";
-        this.handleWorkerCrash(`worker error: ${msg}`);
-      },
-      { once: true },
-    );
+    worker.addEventListener("error", (event: ErrorEvent | Event) => {
+      // Only handle if this is still our active worker
+      if (this.worker !== worker) return;
+      const msg = event instanceof ErrorEvent ? event.message : "unknown error";
+      this.handleWorkerCrash(`worker error: ${msg}`);
+    });
   }
 
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
