@@ -265,7 +265,7 @@ describe("ClaudeServer", () => {
 
   // ── Crash recovery ──
 
-  test("handleWorkerCrash marks sessions as disconnected but keeps them active", async () => {
+  test("handleWorkerCrash ends orphaned sessions after successful restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
@@ -277,23 +277,23 @@ describe("ClaudeServer", () => {
     handle({ type: "db:upsert", session: { sessionId: "crash-2", state: "active" } });
     expect(server.hasActiveSessions()).toBe(true);
 
-    // Trigger crash handler directly
+    // Trigger crash handler directly — it restarts the worker internally
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Sessions should be marked as disconnected (NOT ended)
+    // After restart, orphaned sessions are ended (can no longer reach new WS port)
     const row1 = db.getSession("crash-1");
-    expect(row1?.state).toBe("disconnected");
-    expect(row1?.endedAt).toBeNull();
+    expect(row1?.state).toBe("ended");
+    expect(row1?.endedAt).not.toBeNull();
 
     const row2 = db.getSession("crash-2");
-    expect(row2?.state).toBe("disconnected");
-    expect(row2?.endedAt).toBeNull();
+    expect(row2?.state).toBe("ended");
+    expect(row2?.endedAt).not.toBeNull();
 
-    // Sessions should still be tracked as active (prevents idle timeout)
-    expect(server.hasActiveSessions()).toBe(true);
+    // Active sessions cleared after restart cleanup
+    expect(server.hasActiveSessions()).toBe(false);
   });
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
@@ -511,7 +511,7 @@ describe("ClaudeServer", () => {
 
   // ── Worker crash + idle timeout interaction ──
 
-  test("hasActiveSessions stays true after worker crash when sessions had PIDs", async () => {
+  test("orphaned sessions are cleaned up after worker crash+restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
@@ -519,19 +519,46 @@ describe("ClaudeServer", () => {
     await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
-    // Use our own PID so it's "alive"
+    // Use our own PID so it's "alive" during crash detection
     handle({ type: "db:upsert", session: { sessionId: "crash-alive", pid: process.pid, state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Session should still be tracked (prevents idle timeout from firing)
+    // After successful restart, orphaned sessions are ended — they can no longer
+    // reach the new WS server (new port, new worker instance).
+    expect(server.hasActiveSessions()).toBe(false);
+    const row = db.getSession("crash-alive");
+    expect(row?.state).toBe("ended");
+  });
+
+  // ── PID-less session TTL ──
+
+  test("pruneDeadSessions prunes pid-less sessions after TTL expires", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Session without PID
+    handle({ type: "db:upsert", session: { sessionId: "no-pid-ttl", state: "active" } });
     expect(server.hasActiveSessions()).toBe(true);
 
-    // pruneDeadSessions should NOT remove it (PID is alive)
-    server.pruneDeadSessions();
+    // Not yet expired — should not be pruned
+    server.pruneDeadSessions(Date.now());
     expect(server.hasActiveSessions()).toBe(true);
+
+    // Simulate time past TTL (10+ minutes)
+    const future = Date.now() + 11 * 60 * 1000;
+    server.pruneDeadSessions(future);
+
+    expect(server.hasActiveSessions()).toBe(false);
+    const row = db.getSession("no-pid-ttl");
+    expect(row?.state).toBe("ended");
   });
 });

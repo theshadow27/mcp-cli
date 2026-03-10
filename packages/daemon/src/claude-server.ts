@@ -25,7 +25,10 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (e) {
+    // EPERM means the process exists but is owned by another user — treat as alive.
+    // ESRCH means no such process — treat as dead.
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return true;
     return false;
   }
 }
@@ -103,11 +106,15 @@ export class ClaudeServer {
   private wsPort: number | null = null;
   private readonly activeSessions = new Set<string>();
   private readonly sessionPids = new Map<string, number>();
+  /** Timestamp (ms) when each session was added to activeSessions — used to TTL pid-less zombies. */
+  private readonly sessionAddedAt = new Map<string, number>();
   private restartInProgress = false;
   private stopped = false;
   private readonly crashTimestamps: number[] = [];
   private static readonly MAX_CRASHES = 3;
   private static readonly CRASH_WINDOW_MS = 60_000;
+  /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
+  private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
@@ -186,6 +193,7 @@ export class ClaudeServer {
     this.wsPort = null;
     this.activeSessions.clear();
     this.sessionPids.clear();
+    this.sessionAddedAt.clear();
   }
 
   /** Get the WebSocket server port (available after start). */
@@ -198,15 +206,36 @@ export class ClaudeServer {
     return this.activeSessions.size > 0;
   }
 
-  /** Remove sessions whose processes are no longer alive. */
-  pruneDeadSessions(): void {
+  /** Remove sessions whose processes are no longer alive.
+   *
+   * @param now - Current timestamp in ms (injectable for testing). Defaults to Date.now().
+   */
+  pruneDeadSessions(now: number = Date.now()): void {
+    // Prune sessions with PIDs whose process is no longer alive
     for (const [sessionId, pid] of this.sessionPids) {
       if (!isProcessAlive(pid)) {
         this.activeSessions.delete(sessionId);
         this.sessionPids.delete(sessionId);
+        this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         console.error(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
+      }
+    }
+    // Prune sessions without PIDs that have exceeded the TTL — these are zombies
+    // that can never be cleaned up by PID check (e.g., db:upsert without pid, or
+    // sessions stranded after a crash when restart failed).
+    for (const sessionId of this.activeSessions) {
+      if (this.sessionPids.has(sessionId)) continue; // covered above
+      const addedAt = this.sessionAddedAt.get(sessionId) ?? 0;
+      if (now - addedAt > ClaudeServer.NO_PID_SESSION_TTL_MS) {
+        this.activeSessions.delete(sessionId);
+        this.sessionAddedAt.delete(sessionId);
+        this.db.endSession(sessionId);
+        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        console.error(
+          `[claude-server] Pruned pid-less zombie session ${sessionId} (exceeded ${ClaudeServer.NO_PID_SESSION_TTL_MS / 60_000}min TTL)`,
+        );
       }
     }
   }
@@ -235,12 +264,16 @@ export class ClaudeServer {
     console.error(`[claude-server] Worker crash detected: ${reason}`);
 
     // Mark tracked sessions as disconnected in SQLite — NOT ended.
-    // The Claude processes are still running; keep them in activeSessions
+    // The Claude processes may still be running; keep them in activeSessions
     // so the idle timeout won't fire while they exist.
     for (const sessionId of this.activeSessions) {
       console.error(`[claude-server] Session ${sessionId} disconnected (worker crash)`);
       this.db.updateSessionState(sessionId, "disconnected");
     }
+
+    // Snapshot pre-crash session IDs — after restart they can no longer reconnect
+    // to the new WS server (new port, new worker instance).
+    const orphanedSessions = new Set(this.activeSessions);
 
     // Clear stale references (don't terminate — worker is already dead)
     this.worker = null;
@@ -269,6 +302,19 @@ export class ClaudeServer {
       console.error("[claude-server] Restarting worker...");
       const { client, transport } = await this.start();
       console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+
+      // End sessions orphaned by the old worker — they can no longer reconnect
+      // to the new WS server (new port). Skip any already ended via db:end.
+      for (const sessionId of orphanedSessions) {
+        if (!this.activeSessions.has(sessionId)) continue;
+        console.error(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
+        this.activeSessions.delete(sessionId);
+        this.sessionPids.delete(sessionId);
+        this.sessionAddedAt.delete(sessionId);
+        this.db.endSession(sessionId);
+      }
+      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+
       // Notify connected MCP clients that the tool list may have changed
       // (this.worker is set by start() but TS can't track cross-method mutation)
       (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
@@ -293,6 +339,7 @@ export class ClaudeServer {
         if (event.session.pid != null) {
           this.sessionPids.set(event.session.sessionId, event.session.pid);
         }
+        this.sessionAddedAt.set(event.session.sessionId, Date.now());
         this.db.upsertSession(event.session);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         metrics.counter("mcpd_sessions_total").inc();
@@ -315,6 +362,7 @@ export class ClaudeServer {
       case "db:end":
         this.activeSessions.delete(event.sessionId);
         this.sessionPids.delete(event.sessionId);
+        this.sessionAddedAt.delete(event.sessionId);
         this.db.endSession(event.sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         break;
