@@ -15,7 +15,7 @@
  */
 
 import type { DaemonStatus, IpcMethod, IpcMethodResult } from "@mcp-cli/core";
-import { BUILD_VERSION, PING_TIMEOUT_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
+import { BUILD_VERSION, PING_TIMEOUT_MS, PROTOCOL_VERSION, ProtocolMismatchError } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 
 export interface VersionDeps {
@@ -39,10 +39,14 @@ export async function cmdVersion(args: string[], deps?: Partial<VersionDeps>): P
   const json = args.includes("--json") || args.includes("-j");
 
   let daemon: DaemonStatus | null = null;
+  let mismatch: ProtocolMismatchError | null = null;
   try {
     daemon = await d.ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
-  } catch {
-    // Daemon not running — show client-only info
+  } catch (err) {
+    if (err instanceof ProtocolMismatchError) {
+      mismatch = err;
+    }
+    // else: daemon not running — show client-only info
   }
 
   if (json) {
@@ -57,8 +61,10 @@ export async function cmdVersion(args: string[], deps?: Partial<VersionDeps>): P
             protocol: daemon.protocolVersion,
             uptimeSeconds: Math.round(daemon.uptime),
           }
-        : null,
-      protocolMatch: daemon ? daemon.protocolVersion === d.protocolVersion : null,
+        : mismatch
+          ? { version: "unknown", protocol: mismatch.daemonVersion, uptimeSeconds: null }
+          : null,
+      protocolMatch: daemon ? daemon.protocolVersion === d.protocolVersion : mismatch ? false : null,
     };
     console.log(JSON.stringify(out, null, 2));
     return;
@@ -75,8 +81,11 @@ export async function cmdVersion(args: string[], deps?: Partial<VersionDeps>): P
     if (daemon.protocolVersion === d.protocolVersion) {
       console.log("Status:  protocol match");
     } else {
-      console.log("Status:  protocol MISMATCH — run 'bun build && mcx daemon restart'");
+      console.log("Status:  protocol MISMATCH — run 'mcx daemon restart'");
     }
+  } else if (mismatch) {
+    console.log(`Daemon:  protocol ${mismatch.daemonVersion} (version unknown)`);
+    console.log("Status:  protocol MISMATCH — run 'mcx daemon restart'");
   } else {
     console.log("Daemon:  (not running)");
     console.log("Status:  daemon offline");

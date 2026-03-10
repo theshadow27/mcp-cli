@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DaemonStatus } from "@mcp-cli/core";
+import { ProtocolMismatchError } from "@mcp-cli/core";
 import { cmdVersion } from "./version";
 
 function mockDaemonStatus(overrides?: Partial<DaemonStatus>): DaemonStatus {
@@ -60,7 +61,7 @@ describe("cmdVersion", () => {
       }),
     );
     expect(stdout[2]).toContain("MISMATCH");
-    expect(stdout[2]).toContain("bun build");
+    expect(stdout[2]).toContain("mcx daemon restart");
   });
 
   test("shows '(not running)' when daemon is offline", async () => {
@@ -168,5 +169,37 @@ describe("cmdVersion", () => {
       }),
     );
     expect(stdout[1]).toContain("unknown");
+  });
+
+  test("shows mismatch status when ProtocolMismatchError is thrown", async () => {
+    const { stdout } = await captureOutput(() =>
+      cmdVersion([], {
+        ...mockDeps,
+        ipcCall: async () => {
+          throw new ProtocolMismatchError("old-proto", "new-proto");
+        },
+      }),
+    );
+    expect(stdout[0]).toContain("mcx 0.1.0-20260308");
+    expect(stdout[1]).toContain("protocol old-proto");
+    expect(stdout[2]).toContain("MISMATCH");
+    expect(stdout[2]).toContain("mcx daemon restart");
+  });
+
+  test("--json shows mismatch info when ProtocolMismatchError is thrown", async () => {
+    const { stdout } = await captureOutput(() =>
+      cmdVersion(["--json"], {
+        ...mockDeps,
+        ipcCall: async () => {
+          throw new ProtocolMismatchError("old-proto", "new-proto");
+        },
+      }),
+    );
+    const parsed = JSON.parse(stdout.join(""));
+    expect(parsed.client.protocol).toBe("a3f2b1c9d0e1");
+    expect(parsed.daemon.protocol).toBe("old-proto");
+    expect(parsed.daemon.version).toBe("unknown");
+    expect(parsed.daemon.uptimeSeconds).toBeNull();
+    expect(parsed.protocolMatch).toBe(false);
   });
 });
