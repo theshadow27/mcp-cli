@@ -35,4 +35,27 @@ describe("matchFilePath", () => {
     expect(matchFilePath("file.tsx", "*.{ts,tsx}")).toBe(true);
     expect(matchFilePath("file.js", "*.{ts,tsx}")).toBe(false);
   });
+
+  test("rejects directory traversal with ..", () => {
+    // "src/../../etc/passwd" normalizes to "../etc/passwd", not under "src/"
+    expect(matchFilePath("src/../../etc/passwd", "src/**")).toBe(false);
+    expect(matchFilePath("src/../../../etc/shadow", "src/**")).toBe(false);
+  });
+
+  test("normalizes redundant segments", () => {
+    // "src/./index.ts" normalizes to "src/index.ts"
+    expect(matchFilePath("src/./index.ts", "src/**")).toBe(true);
+    expect(matchFilePath("src/./index.ts", "src/*.ts")).toBe(true);
+  });
+
+  test("normalizes parent traversal that stays within pattern scope", () => {
+    // "src/deep/../index.ts" normalizes to "src/index.ts" — still under src/
+    expect(matchFilePath("src/deep/../index.ts", "src/**")).toBe(true);
+    expect(matchFilePath("src/deep/../index.ts", "src/*.ts")).toBe(true);
+  });
+
+  test("rejects traversal escaping absolute path patterns", () => {
+    // "/home/user/../../../etc/passwd" normalizes to "/etc/passwd"
+    expect(matchFilePath("/home/user/../../../etc/passwd", "/home/user/**")).toBe(false);
+  });
 });
