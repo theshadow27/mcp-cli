@@ -36,7 +36,7 @@ import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
 /** Remove worktrees from ended sessions that are clean and have no active session. */
-function pruneOrphanedWorktrees(db: StateDb): void {
+export function pruneOrphanedWorktrees(db: StateDb): void {
   try {
     const activeSessions = db.listSessions(true);
     const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
@@ -94,10 +94,42 @@ function pruneOrphanedWorktrees(db: StateDb): void {
   }
 }
 
-async function main(): Promise<void> {
-  // Capture daemon logs before anything else
-  installDaemonLogCapture();
-  installDaemonLogFile();
+export type ShutdownReason =
+  | "SIGTERM"
+  | "SIGINT"
+  | "idle timeout"
+  | "IPC shutdown request"
+  | "uncaught exception"
+  | "unhandled rejection";
+
+/** Handle returned by startDaemon for testing and lifecycle management. */
+export interface DaemonHandle {
+  shutdown(reason?: ShutdownReason): Promise<void>;
+  readonly isShuttingDown: boolean;
+  readonly db: StateDb;
+  readonly pool: ServerPool;
+  readonly ipcServer: IpcServer;
+  readonly watcher: ConfigWatcher;
+}
+
+export interface StartDaemonOptions {
+  /** Skip log capture and log file setup (useful for tests). */
+  skipLogSetup?: boolean;
+  /** Skip booting virtual servers (_aliases, _claude). */
+  skipVirtualServers?: boolean;
+  /** Skip worktree pruning on startup. */
+  skipWorktreePrune?: boolean;
+}
+
+/**
+ * Start the daemon and return a handle for lifecycle management.
+ * Does not install process signal handlers or call process.exit — the caller is responsible.
+ */
+export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
+  if (!opts?.skipLogSetup) {
+    installDaemonLogCapture();
+    installDaemonLogFile();
+  }
 
   // Ensure state directory exists with secure permissions (0700)
   ensureStateDir();
@@ -231,59 +263,56 @@ async function main(): Promise<void> {
   console.log(DAEMON_READY_SIGNAL);
 
   // Prune orphaned worktrees after ready signal (non-blocking)
-  pruneOrphanedWorktrees(db);
+  if (!opts?.skipWorktreePrune) {
+    pruneOrphanedWorktrees(db);
+  }
 
   // Boot virtual servers in the background — commands that need them will await
-  pool.registerPendingVirtualServer(
-    "_aliases",
-    (async () => {
-      try {
-        const { client, transport } = await aliasServer.start();
-        const cachedTools = buildAliasToolCache(db);
-        pool.registerVirtualServer("_aliases", client, transport, cachedTools);
-        console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
-      } catch (err) {
-        console.error(`[mcpd] Failed to start alias server: ${err}`);
-      }
-    })(),
-  );
+  if (!opts?.skipVirtualServers) {
+    pool.registerPendingVirtualServer(
+      "_aliases",
+      (async () => {
+        try {
+          const { client, transport } = await aliasServer.start();
+          const cachedTools = buildAliasToolCache(db);
+          pool.registerVirtualServer("_aliases", client, transport, cachedTools);
+          console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
+        } catch (err) {
+          console.error(`[mcpd] Failed to start alias server: ${err}`);
+        }
+      })(),
+    );
 
-  pool.registerPendingVirtualServer(
-    "_claude",
-    (async () => {
-      try {
-        const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
-        const claudeTools = buildClaudeToolCache();
-        pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
-        console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
-      } catch (err) {
-        console.error(`[mcpd] Failed to start Claude session server: ${err}`);
-      }
+    pool.registerPendingVirtualServer(
+      "_claude",
+      (async () => {
+        try {
+          const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
+          const claudeTools = buildClaudeToolCache();
+          pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
+          console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
+        } catch (err) {
+          console.error(`[mcpd] Failed to start Claude session server: ${err}`);
+        }
 
-      // Re-register _claude virtual server after crash recovery
-      claudeServer.onRestarted = (client, transport) => {
-        const claudeTools = buildClaudeToolCache();
-        pool.registerVirtualServer("_claude", client, transport, claudeTools);
-        console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
-      };
-    })(),
-  );
-
-  type ShutdownReason =
-    | "SIGTERM"
-    | "SIGINT"
-    | "idle timeout"
-    | "IPC shutdown request"
-    | "uncaught exception"
-    | "unhandled rejection";
+        // Re-register _claude virtual server after crash recovery
+        claudeServer.onRestarted = (client, transport) => {
+          const claudeTools = buildClaudeToolCache();
+          pool.registerVirtualServer("_claude", client, transport, claudeTools);
+          console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
+        };
+      })(),
+    );
+  }
 
   // Graceful shutdown — re-entrant safe
-  let isShuttingDown = false;
+  let _isShuttingDown = false;
   async function shutdown(reason?: ShutdownReason): Promise<void> {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
+    if (_isShuttingDown) return;
+    _isShuttingDown = true;
     console.error(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
     try {
+      if (idleTimer) clearTimeout(idleTimer);
       clearInterval(metricsInterval);
       watcher.stop();
       ipcServer.stop();
@@ -293,7 +322,9 @@ async function main(): Promise<void> {
       await aliasServer.stop();
       await pool.closeAll();
       db.close();
-      closeDaemonLogFile();
+      if (!opts?.skipLogSetup) {
+        closeDaemonLogFile();
+      }
     } catch (cleanupErr) {
       console.error("[mcpd] Error during shutdown cleanup:", cleanupErr);
     }
@@ -302,23 +333,52 @@ async function main(): Promise<void> {
     } catch {
       // already gone
     }
-    process.exit(0);
   }
 
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  return {
+    shutdown,
+    get isShuttingDown() {
+      return _isShuttingDown;
+    },
+    db,
+    pool,
+    ipcServer,
+    watcher,
+  };
+}
+
+// --- Entry point (only runs when executed directly, not when imported) ---
+
+async function main(): Promise<void> {
+  const handle = await startDaemon();
+
+  process.on("SIGTERM", () => {
+    handle.shutdown("SIGTERM").then(() => process.exit(0));
+  });
+  process.on("SIGINT", () => {
+    handle.shutdown("SIGINT").then(() => process.exit(0));
+  });
 
   process.on("uncaughtException", (err) => {
     console.error("[mcpd] Uncaught exception:", err);
-    shutdown("uncaught exception").catch(() => process.exit(1));
+    handle
+      .shutdown("uncaught exception")
+      .then(() => process.exit(1))
+      .catch(() => process.exit(1));
   });
   process.on("unhandledRejection", (rejection) => {
     console.error("[mcpd] Unhandled rejection:", rejection);
-    shutdown("unhandled rejection").catch(() => process.exit(1));
+    handle
+      .shutdown("unhandled rejection")
+      .then(() => process.exit(1))
+      .catch(() => process.exit(1));
   });
 }
 
-main().catch((err) => {
-  console.error("[mcpd] Fatal:", err);
-  process.exit(1);
-});
+// Only run main() when executed directly (not when imported for testing)
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("[mcpd] Fatal:", err);
+    process.exit(1);
+  });
+}
