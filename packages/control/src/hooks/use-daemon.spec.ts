@@ -102,6 +102,51 @@ describe("useDaemon", () => {
     expect(maxConcurrency).toBe(1);
   });
 
+  it("attempts auto-start when ipcCallFn fails, then retries successfully", async () => {
+    let callCount = 0;
+    const statusResult = daemonStatus();
+
+    // First call fails (daemon down), second call succeeds (after restart)
+    const ipcCallFn = async () => {
+      callCount++;
+      if (callCount === 1) throw new Error("daemon offline");
+      return statusResult;
+    };
+
+    let ensureCalled = false;
+    const ensureDaemonFn = async () => {
+      ensureCalled = true;
+      return true; // daemon started successfully
+    };
+
+    const { stateRef } = mount({
+      ipcCallFn: ipcCallFn as UseDaemonOptions["ipcCallFn"],
+      ensureDaemonFn,
+    });
+
+    await flush();
+    expect(ensureCalled).toBe(true);
+    expect(stateRef.current.status).toEqual(statusResult);
+    expect(stateRef.current.error).toBeNull();
+  });
+
+  it("shows error when auto-start fails", async () => {
+    const ipcCallFn = async () => {
+      throw new Error("daemon offline");
+    };
+
+    const ensureDaemonFn = async () => false; // failed to start
+
+    const { stateRef } = mount({
+      ipcCallFn: ipcCallFn as UseDaemonOptions["ipcCallFn"],
+      ensureDaemonFn,
+    });
+
+    await flush();
+    expect(stateRef.current.error).toBe("daemon offline");
+    expect(stateRef.current.loading).toBe(false);
+  });
+
   it("cleanup stops polling on unmount", async () => {
     let callCount = 0;
     const ipcCallFn = async () => {
