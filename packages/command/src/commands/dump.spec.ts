@@ -77,6 +77,7 @@ function makeDeps(overrides?: Partial<DumpDeps>): DumpDeps {
       throw new Error(`exit(${code})`);
     }) as unknown as DumpDeps["exit"],
     exec: mock(() => ({ stdout: "", exitCode: 0 })),
+    checkPid: mock(() => true),
     dumpsDir,
     ...overrides,
   };
@@ -204,23 +205,40 @@ describe("cmdDump", () => {
     expect(parsed.timestamp).toBeString();
   });
 
-  test("gathers process list filtering for mcp/claude", async () => {
+  test("daemonProcess uses checkPid to verify liveness, not ps aux", async () => {
+    const checkPid = mock(() => true);
+    const exec = mock((cmd: string[]) => {
+      // exec should NEVER be called with ps
+      if (cmd[0] === "ps") throw new Error("ps aux must not be called");
+      return { stdout: "", exitCode: 0 };
+    });
+    const deps = makeDeps({ dumpsDir: tempDir, checkPid, exec });
+
+    const origLog = console.log;
+    let output = "";
+    console.log = (msg: string) => {
+      output += msg;
+    };
+    try {
+      await cmdDump(["--stdout"], deps);
+    } finally {
+      console.log = origLog;
+    }
+
+    const parsed = JSON.parse(output);
+    expect(parsed.daemonProcess).toEqual({ pid: 12345, alive: true });
+    expect(checkPid).toHaveBeenCalledWith(12345);
+    expect(parsed.processes).toBeUndefined(); // old field gone
+  });
+
+  test("daemonProcess is null when daemon is not running", async () => {
+    const checkPid = mock(() => false);
     const deps = makeDeps({
       dumpsDir: tempDir,
-      exec: mock((cmd: string[]) => {
-        if (cmd[0] === "ps") {
-          return {
-            stdout: [
-              "USER  PID  %CPU  %MEM  COMMAND",
-              "user  100  0.5   1.0   mcpd --daemon",
-              "user  101  0.1   0.5   node some-other-thing",
-              "user  102  0.2   0.3   mcx claude ls",
-            ].join("\n"),
-            exitCode: 0,
-          };
-        }
-        return { stdout: "", exitCode: 0 };
-      }),
+      checkPid,
+      ipcCall: mock(async () => {
+        throw new Error("Connection refused");
+      }) as DumpDeps["ipcCall"],
     });
 
     const origLog = console.log;
@@ -235,10 +253,53 @@ describe("cmdDump", () => {
     }
 
     const parsed = JSON.parse(output);
-    expect(parsed.processes).toHaveLength(3); // header + 2 matching lines
-    expect(parsed.processes[0]).toContain("USER");
-    expect(parsed.processes[1]).toContain("mcpd");
-    expect(parsed.processes[2]).toContain("mcx");
+    expect(parsed.daemonProcess).toBeNull();
+    expect(checkPid).not.toHaveBeenCalled();
+  });
+
+  test("transcript failure for one session does not abort others", async () => {
+    const sessions = [
+      { ...fakeSessions[0], sessionId: "sess-1" },
+      { ...fakeSessions[0], sessionId: "sess-2" },
+      { ...fakeSessions[0], sessionId: "sess-3" },
+    ];
+    const deps = makeDeps({
+      dumpsDir: tempDir,
+      ipcCall: mock(async (method: string, params?: unknown) => {
+        if (method === "status") return fakeDaemonStatus;
+        if (method === "getMetrics") return fakeMetrics;
+        if (method === "getDaemonLogs") return fakeDaemonLogs;
+        if (method === "callTool") {
+          const p = params as { tool: string; arguments?: { sessionId?: string } };
+          if (p.tool === "claude_session_list") {
+            return { content: [{ type: "text", text: JSON.stringify(sessions) }] };
+          }
+          if (p.tool === "claude_session_log") {
+            // sess-2 fails
+            if (p.arguments?.sessionId === "sess-2") throw new Error("timeout");
+            return { content: [{ type: "text", text: "line1\nline2" }] };
+          }
+        }
+        return {};
+      }) as DumpDeps["ipcCall"],
+    });
+
+    const origLog = console.log;
+    let output = "";
+    console.log = (msg: string) => {
+      output += msg;
+    };
+    try {
+      await cmdDump(["--stdout", "--include-transcripts"], deps);
+    } finally {
+      console.log = origLog;
+    }
+
+    const parsed = JSON.parse(output);
+    expect(parsed.sessions).toHaveLength(3);
+    expect(parsed.sessions[0].transcript).toEqual(["line1", "line2"]);
+    expect(parsed.sessions[1].transcript).toEqual(["(unavailable)"]);
+    expect(parsed.sessions[2].transcript).toEqual(["line1", "line2"]);
   });
 
   test("gathers worktree list", async () => {

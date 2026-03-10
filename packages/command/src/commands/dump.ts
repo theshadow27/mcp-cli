@@ -22,7 +22,10 @@ import type {
 } from "@mcp-cli/core";
 import { MCP_CLI_DIR, PING_TIMEOUT_MS, ProtocolMismatchError } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
-import { printError as defaultPrintError, formatToolResult } from "../output";
+import { printError as defaultPrintError } from "../output";
+
+/** Timeout for individual session transcript fetches (independent of ping timeout). */
+const TRANSCRIPT_TIMEOUT_MS = 5_000;
 
 // ── Dependency injection ──
 
@@ -34,8 +37,10 @@ export interface DumpDeps {
   ) => Promise<IpcMethodResult[M]>;
   printError: (msg: string) => void;
   exit: (code: number) => never;
-  /** Run a command and return stdout. Used for ps and git. */
+  /** Run a command and return stdout. Used for git worktree list. */
   exec: (cmd: string[]) => { stdout: string; exitCode: number };
+  /** Check if a process PID is alive (kill -0 equivalent). */
+  checkPid: (pid: number) => boolean;
   /** Directory for dump output files. */
   dumpsDir: string;
 }
@@ -48,6 +53,14 @@ const defaultDeps: DumpDeps = {
     const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
     return { stdout: result.stdout.toString(), exitCode: result.exitCode };
   },
+  checkPid: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   dumpsDir: join(MCP_CLI_DIR, "dumps"),
 };
 
@@ -59,14 +72,16 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
   const timestamp = new Date().toISOString();
 
   // Gather all data concurrently, tolerating individual failures
-  const [daemon, metrics, daemonLogs, sessions, processes, worktrees] = await Promise.all([
+  const [daemon, metrics, daemonLogs, sessions, worktrees] = await Promise.all([
     gatherDaemon(d),
     gatherMetrics(d),
     gatherDaemonLogs(d),
     gatherSessions(d, includeTranscripts),
-    gatherProcesses(d),
     gatherWorktrees(d),
   ]);
+
+  // PID liveness check — uses kill -0, no raw process listing
+  const daemonProcess = daemon && daemon.pid > 0 ? { pid: daemon.pid, alive: d.checkPid(daemon.pid) } : null;
 
   const dump: Record<string, unknown> = {
     timestamp,
@@ -75,7 +90,7 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
     servers: daemon?.servers ?? null,
     metrics,
     worktrees,
-    processes,
+    daemonProcess,
     daemonLog: daemonLogs,
     db: daemon
       ? {
@@ -137,6 +152,17 @@ interface SessionDumpInfo extends SessionInfo {
   transcript?: string[];
 }
 
+/** Extract text from an MCP tool result content array. */
+function extractText(result: unknown): string | null {
+  if (result == null || typeof result !== "object") return null;
+  const { content } = result as { content?: unknown };
+  if (!Array.isArray(content)) return null;
+  const item = (content as Array<{ type: string; text?: string }>).find(
+    (c) => c.type === "text" && typeof c.text === "string",
+  );
+  return item?.text ?? null;
+}
+
 async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise<SessionDumpInfo[] | null> {
   try {
     const result = await d.ipcCall(
@@ -144,48 +170,36 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
       { server: "_claude", tool: "claude_session_list", arguments: {} },
       { timeoutMs: PING_TIMEOUT_MS },
     );
-    const text = formatToolResult(result);
+
+    // Parse IPC response directly — don't use formatToolResult as a data pipeline
+    const text = extractText(result);
+    if (text == null) return null;
     const sessions: SessionInfo[] = JSON.parse(text);
 
     if (!includeTranscripts) return sessions;
 
-    // Fetch last 50 lines of each session's log
-    const enriched: SessionDumpInfo[] = [];
-    for (const session of sessions) {
-      const info: SessionDumpInfo = { ...session };
-      try {
-        const logResult = await d.ipcCall(
-          "callTool",
-          {
-            server: "_claude",
-            tool: "claude_session_log",
-            arguments: { sessionId: session.sessionId, last: 50 },
-          },
-          { timeoutMs: PING_TIMEOUT_MS },
-        );
-        const logText = formatToolResult(logResult);
-        info.transcript = logText.split("\n");
-      } catch {
-        info.transcript = ["(unavailable)"];
-      }
-      enriched.push(info);
-    }
-    return enriched;
-  } catch {
-    return null;
-  }
-}
-
-function gatherProcesses(d: DumpDeps): string[] | null {
-  try {
-    const { stdout, exitCode } = d.exec(["ps", "aux"]);
-    if (exitCode !== 0) return null;
-    const lines = stdout.split("\n");
-    const header = lines[0];
-    const relevant = lines.filter(
-      (line) => line.includes("mcpd") || line.includes("mcx") || line.includes("claude") || line.includes("mcp-cli"),
+    // Fetch all transcripts concurrently; one failure does not abort others
+    const settled = await Promise.allSettled(
+      sessions.map((session) =>
+        d
+          .ipcCall(
+            "callTool",
+            {
+              server: "_claude",
+              tool: "claude_session_log",
+              arguments: { sessionId: session.sessionId, last: 50 },
+            },
+            { timeoutMs: TRANSCRIPT_TIMEOUT_MS },
+          )
+          .then((logResult) => extractText(logResult)),
+      ),
     );
-    return header ? [header, ...relevant] : relevant;
+
+    return sessions.map((session, i) => {
+      const r = settled[i];
+      const transcript = r.status === "fulfilled" && r.value != null ? r.value.split("\n") : ["(unavailable)"];
+      return { ...session, transcript };
+    });
   } catch {
     return null;
   }
