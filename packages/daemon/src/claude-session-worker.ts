@@ -74,7 +74,7 @@ async function handleToolCall(
       case "claude_interrupt":
         return handleInterrupt(server, args);
       case "claude_bye":
-        return handleBye(server, args);
+        return await handleBye(server, args);
       case "claude_transcript":
         return handleTranscript(server, args);
       case "claude_wait":
@@ -188,13 +188,13 @@ function handleInterrupt(
   return { content: [{ type: "text", text: JSON.stringify({ interrupted: true }) }] };
 }
 
-function handleBye(
+async function handleBye(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
-): {
+): Promise<{
   content: Array<{ type: "text"; text: string }>;
-} {
-  const { worktree, cwd } = server.bye(args.sessionId as string);
+}> {
+  const { worktree, cwd } = await server.bye(args.sessionId as string);
   return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd }) }] };
 }
 

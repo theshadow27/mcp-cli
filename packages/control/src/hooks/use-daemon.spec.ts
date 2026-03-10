@@ -71,9 +71,13 @@ describe("useDaemon", () => {
       throw new Error("daemon offline");
     };
 
+    // Inject a no-op ensureDaemonFn so the test doesn't call the real
+    // ensureDaemonRunning (which is slow and makes flush() race on CI).
+    const ensureDaemonFn = async () => false;
+
     const { stateRef } = mount({
       ipcCallFn: ipcCallFn as UseDaemonOptions["ipcCallFn"],
-      ensureDaemonFn: async () => false,
+      ensureDaemonFn,
     });
 
     await flush();
