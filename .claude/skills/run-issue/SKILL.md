@@ -141,10 +141,10 @@ The orchestrator's job is to keep the pipeline saturated, not to watch progress 
 After every batch of merged PRs (5-10), spawn a documentation review session:
 
 ```bash
-mcx claude spawn --worktree -t "Review README.md, CLAUDE.md, and any other docs for inconsistencies with recent changes (PR#s). Check: outdated file paths, missing new commands/features, stale architecture descriptions, incorrect examples, or undocumented features. File issues for each inconsistency found, then fix them, open a PR, and notify the orchistrator to run QA" --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --worktree -t "/documentation-review 123 124 125 126" --allow Read Glob Grep Write Edit Bash
 ```
 
-Docs are part of the product. If a new command was added but not documented, or an old pattern was removed but still referenced, that's a bug.
+Replace the PR numbers with the actual merged PRs. The `/documentation-review` command handles the full workflow: reviewing all project docs, fixing inconsistencies, and opening a PR.
 
 ## Periodic Review
 
