@@ -26,12 +26,17 @@ function atomicWrite(path: string, data: unknown): void {
   renameSync(tmp, path);
 }
 
-/** Wait for a mock to be called, with timeout */
-async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 5000): Promise<void> {
+/** Wait for a mock to reach N calls, with timeout */
+async function waitForCalls(fn: ReturnType<typeof mock>, count: number, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (fn.mock.calls.length === 0 && Date.now() < deadline) {
+  while (fn.mock.calls.length < count && Date.now() < deadline) {
     await Bun.sleep(50);
   }
+}
+
+/** Wait for a mock to be called at least once, with timeout */
+async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 5000): Promise<void> {
+  await waitForCalls(fn, 1, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +310,11 @@ describe("ConfigWatcher integration", () => {
       await Bun.sleep(50);
     }
 
-    // Wait for the debounce to settle
+    // Poll until the debounced callback fires
+    await waitForCall(cb);
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    // Wait a bit more to verify no extra calls arrive
     await Bun.sleep(500);
     expect(cb).toHaveBeenCalledTimes(1);
 
@@ -460,18 +469,18 @@ describe("ConfigWatcher integration", () => {
     expect(cb).toHaveBeenCalledTimes(1);
     expect(cb.mock.calls[0][0].added).toContain("beta");
 
+    // Wait for the debounce window to fully close before writing the second change.
+    // The debounce is 300ms; poll until enough time has passed after the first callback.
+    await Bun.sleep(500);
+
     // Second change (after first has been processed)
-    await Bun.sleep(400); // Wait for debounce window to fully close
     writeJson(
       opts.USER_SERVERS_PATH,
       mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" }, gamma: { command: "ls" } }),
     );
 
-    // Wait for second callback
-    const deadline = Date.now() + 2000;
-    while (cb.mock.calls.length < 2 && Date.now() < deadline) {
-      await Bun.sleep(50);
-    }
+    // Poll for second callback
+    await waitForCalls(cb, 2);
     expect(cb).toHaveBeenCalledTimes(2);
     expect(cb.mock.calls[1][0].added).toContain("gamma");
   });
