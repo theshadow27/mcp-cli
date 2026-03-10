@@ -168,11 +168,11 @@ export class ClaudeWsServer {
     return this.eventSeq;
   }
 
-  /** Start the WebSocket server. Returns the assigned port. */
-  start(): number {
-    this.server = Bun.serve<WsData>({
-      port: 0,
-      fetch: (req, server) => {
+  /** Start the WebSocket server. Returns the assigned port. Pass a port to reuse a specific port (e.g. after crash recovery, falls back to random port if unavailable). */
+  start(preferredPort?: number): number {
+    const targetPort = preferredPort ?? 0;
+    const serveOpts = {
+      fetch: (req: Request, server: { upgrade: (req: Request, opts: { data: WsData }) => boolean }) => {
         const url = new URL(req.url);
         const match = url.pathname.match(/^\/session\/([^/]+)$/);
         if (!match) {
@@ -189,11 +189,22 @@ export class ClaudeWsServer {
         return undefined;
       },
       websocket: {
-        open: (ws) => this.handleOpen(ws),
-        message: (ws, message) => this.handleMessage(ws, String(message)),
-        close: (ws) => this.handleClose(ws),
+        open: (ws: ServerWebSocket<WsData>) => this.handleOpen(ws),
+        message: (ws: ServerWebSocket<WsData>, message: string | Buffer) => this.handleMessage(ws, String(message)),
+        close: (ws: ServerWebSocket<WsData>) => this.handleClose(ws),
       },
-    });
+    };
+
+    try {
+      this.server = Bun.serve<WsData>({ port: targetPort, ...serveOpts });
+    } catch (err) {
+      // If preferred port is in use, fall back to a random port
+      if (targetPort !== 0) {
+        this.server = Bun.serve<WsData>({ port: 0, ...serveOpts });
+      } else {
+        throw err;
+      }
+    }
 
     return this.server.port as number;
   }

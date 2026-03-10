@@ -108,8 +108,8 @@ export class ClaudeServer {
     this.db = db;
   }
 
-  /** Start the worker and connect the MCP client. */
-  async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
+  /** Start the worker and connect the MCP client. Pass a port to reuse a specific WS port (e.g. after crash recovery). */
+  async start(preferredPort?: number): Promise<{ client: Client; transport: WorkerClientTransport }> {
     this.stopped = false;
     const worker = new Worker(workerPath("claude-session-worker.ts"));
     this.worker = worker;
@@ -128,8 +128,8 @@ export class ClaudeServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         reject(new Error(`Claude session worker error: ${msg}`));
       };
-      // Send init to start the worker
-      worker.postMessage({ type: "init", daemonId: this.daemonId });
+      // Send init to start the worker, optionally reusing a specific port
+      worker.postMessage({ type: "init", daemonId: this.daemonId, port: preferredPort });
     });
 
     // Now set up MCP transport
@@ -199,21 +199,29 @@ export class ClaudeServer {
     );
   }
 
-  /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
+  /** Handle a worker crash: preserve session state and attempt auto-restart on the same port. */
   private async handleWorkerCrash(reason: string): Promise<void> {
     if (this.restartInProgress || this.stopped) return;
     this.restartInProgress = true;
 
     console.error(`[claude-server] Worker crash detected: ${reason}`);
 
-    // Mark all tracked sessions as ended in SQLite
-    for (const sessionId of this.activeSessions) {
-      console.error(`[claude-server] Ending orphaned session: ${sessionId}`);
-      this.db.endSession(sessionId);
-    }
-    this.activeSessions.clear();
+    // Preserve the WS port so we can restart on the same one — orphaned Claude
+    // processes are still connected to this port and will reconnect.
+    const previousPort = this.wsPort;
 
-    // Clear stale references (don't terminate — worker is already dead)
+    // Do NOT end sessions in the DB or clear activeSessions — the Claude processes
+    // are still running. We'll rehydrate activeSessions from the DB after restart.
+
+    // Terminate old worker defensively to release the port — in a real crash
+    // the worker is already dead and terminate() is a no-op.
+    try {
+      this.worker?.terminate();
+    } catch {
+      // ignore — worker may already be dead
+    }
+    // Brief yield to let the terminated worker release its port binding
+    await new Promise((r) => setTimeout(r, 50));
     this.worker = null;
     this.transport = null;
     this.client = null;
@@ -235,10 +243,12 @@ export class ClaudeServer {
       return;
     }
 
-    // Auto-restart
+    // Auto-restart on the same port
     try {
       console.error("[claude-server] Restarting worker...");
-      const { client, transport } = await this.start();
+      const { client, transport } = await this.start(previousPort ?? undefined);
+      // Rehydrate activeSessions from the DB — any session not yet ended is still active
+      this.rehydrateActiveSessions();
       console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
       // Notify connected MCP clients that the tool list may have changed
       // (this.worker is set by start() but TS can't track cross-method mutation)
@@ -249,6 +259,19 @@ export class ClaudeServer {
       this.stopped = true;
     } finally {
       this.restartInProgress = false;
+    }
+  }
+
+  /** Rehydrate activeSessions from the DB by querying for sessions that aren't ended. */
+  private rehydrateActiveSessions(): void {
+    const sessions = this.db.listSessions(true); // active only (ended_at IS NULL)
+    this.activeSessions.clear();
+    for (const session of sessions) {
+      this.activeSessions.add(session.sessionId);
+    }
+    if (sessions.length > 0) {
+      console.error(`[claude-server] Rehydrated ${sessions.length} active session(s) from DB`);
+      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
     }
   }
 

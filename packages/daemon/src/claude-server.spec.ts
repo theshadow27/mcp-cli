@@ -265,7 +265,7 @@ describe("ClaudeServer", () => {
 
   // ── Crash recovery ──
 
-  test("handleWorkerCrash ends all active sessions in SQLite", async () => {
+  test("handleWorkerCrash preserves sessions in DB and rehydrates activeSessions", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
@@ -283,17 +283,17 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Both sessions should be marked as ended
+    // Sessions should NOT be marked as ended — Claude processes are still running
     const row1 = db.getSession("crash-1");
-    expect(row1?.state).toBe("ended");
-    expect(row1?.endedAt).not.toBeNull();
+    expect(row1?.state).toBe("active");
+    expect(row1?.endedAt).toBeNull();
 
     const row2 = db.getSession("crash-2");
-    expect(row2?.state).toBe("ended");
-    expect(row2?.endedAt).not.toBeNull();
+    expect(row2?.state).toBe("active");
+    expect(row2?.endedAt).toBeNull();
 
-    // Active sessions cleared
-    expect(server.hasActiveSessions()).toBe(false);
+    // activeSessions should be rehydrated from DB
+    expect(server.hasActiveSessions()).toBe(true);
   });
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
@@ -302,7 +302,6 @@ describe("ClaudeServer", () => {
     server = new ClaudeServer(db);
 
     await server.start();
-    const originalPort = server.port;
 
     let restartedCalled = false;
     server.onRestarted = () => {
@@ -314,9 +313,8 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Worker should be restarted with a new port
+    // Worker should be restarted (port reuse attempted, falls back to random if old worker still holds it)
     expect(server.port).toBeGreaterThan(0);
-    expect(server.port).not.toBe(originalPort);
     expect(restartedCalled).toBe(true);
   });
 
