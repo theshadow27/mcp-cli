@@ -85,6 +85,7 @@ export class ConfigWatcher {
 
   /** Start watching config files. */
   start(): void {
+    if (this.pollTimer) return;
     const paths = this.getWatchPaths();
     for (const filePath of paths) {
       this.watchFile(filePath);
@@ -165,24 +166,28 @@ export class ConfigWatcher {
 
   /** Poll watched paths for mtime changes as a fallback for unreliable fs.watch. */
   private pollCheck(): void {
-    if (this.stopped) return;
-    const paths = this.getWatchPaths();
-    let changed = false;
-    for (const filePath of paths) {
-      let mtime = 0;
-      try {
-        mtime = statSync(filePath).mtimeMs;
-      } catch {
-        // File doesn't exist — treat as mtime 0
+    try {
+      if (this.stopped) return;
+      const paths = this.getWatchPaths();
+      let changed = false;
+      for (const filePath of paths) {
+        let mtime = 0;
+        try {
+          mtime = statSync(filePath).mtimeMs;
+        } catch {
+          // File doesn't exist — treat as mtime 0
+        }
+        const last = this.lastMtimes.get(filePath) ?? 0;
+        if (mtime !== last) {
+          this.lastMtimes.set(filePath, mtime);
+          changed = true;
+        }
       }
-      const last = this.lastMtimes.get(filePath) ?? 0;
-      if (mtime !== last) {
-        this.lastMtimes.set(filePath, mtime);
-        changed = true;
+      if (changed) {
+        this.scheduleReload();
       }
-    }
-    if (changed) {
-      this.scheduleReload();
+    } catch (err) {
+      console.error(`[config-watcher] Poll check failed: ${err}`);
     }
   }
 
@@ -220,6 +225,16 @@ export class ConfigWatcher {
       this.previousServers = config.servers;
       console.error(`[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`);
       this.callback({ added, removed, changed, config, hash });
+
+      // Refresh mtimes so the polling fallback doesn't redundantly trigger
+      // for a change that fs.watch already handled.
+      for (const filePath of this.getWatchPaths()) {
+        try {
+          this.lastMtimes.set(filePath, statSync(filePath).mtimeMs);
+        } catch {
+          this.lastMtimes.set(filePath, 0);
+        }
+      }
     } catch (err) {
       console.error(`[config-watcher] Failed to reload config: ${err}`);
     }
