@@ -304,14 +304,11 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 
 // ── Server startup ──
 
-async function startServer(): Promise<void> {
+async function startServer(): Promise<number> {
   // Start WebSocket server
   wsServer = new ClaudeWsServer();
   const port = wsServer.start();
   wsServer.onSessionEvent = forwardSessionEvent;
-
-  // Report port to main thread
-  self.postMessage({ type: "ready", port });
 
   // Start MCP Server
   mcpServer = new Server({ name: "_claude", version: "0.1.0" }, { capabilities: { tools: {} } });
@@ -345,6 +342,8 @@ async function startServer(): Promise<void> {
     // Forward JSON-RPC messages to the transport
     transportHandler?.call(self, event);
   };
+
+  return port;
 }
 
 // ── Initial message handler ──
@@ -355,8 +354,14 @@ self.onmessage = async (event: MessageEvent) => {
     daemonId = data.daemonId;
     workerId = generateSpanId();
     try {
-      await startServer();
+      const port = await startServer();
+      self.postMessage({ type: "ready", port });
     } catch (err) {
+      // Clean up partially-initialized resources
+      await wsServer?.stop().catch(() => {});
+      wsServer = null;
+      mcpServer = null;
+      transport = null;
       const message = err instanceof Error ? err.message : String(err);
       self.postMessage({ type: "error", message });
     }
