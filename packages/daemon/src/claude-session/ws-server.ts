@@ -12,7 +12,7 @@
 import type { PendingPermissionInfo, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
-import { keepAlive, parseFrame, permissionAllow, permissionDeny, userMessage } from "./ndjson";
+import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
@@ -117,6 +117,7 @@ interface WsSession {
   worktree: string | null;
   resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
+  clearing: boolean;
 }
 
 interface WsData {
@@ -148,6 +149,7 @@ export class ClaudeWsServer {
   private readonly spawn: SpawnFn;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
+  private nextRequestId = 1;
 
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
@@ -234,6 +236,7 @@ export class ClaudeWsServer {
       worktree: config.worktree ?? null,
       resultWaiters: [],
       keepAliveTimer: null,
+      clearing: false,
     });
   }
 
@@ -284,6 +287,8 @@ export class ClaudeWsServer {
 
     // Watch for process exit — mark spawn as dead but don't terminate the session
     proc.exited.then(() => {
+      // If a new process has been spawned (e.g. via clearSession), ignore the old one
+      if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
       console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
@@ -297,8 +302,23 @@ export class ClaudeWsServer {
     return proc.pid;
   }
 
-  /** Send a follow-up prompt to an active session. */
+  /** Send a follow-up prompt to an active session. Intercepts /clear and /model. */
   sendPrompt(sessionId: string, message: string): void {
+    const trimmed = message.trim();
+
+    // Intercept /clear — kill process and respawn for fresh context
+    if (trimmed === "/clear") {
+      this.clearSession(sessionId);
+      return;
+    }
+
+    // Intercept /model — send set_model control request instead of user message
+    const modelMatch = trimmed.match(/^\/model\s+(.+)$/);
+    if (modelMatch) {
+      this.setModel(sessionId, modelMatch[1].trim());
+      return;
+    }
+
     const session = this.getSession(sessionId);
     const outbound = session.state.queuePrompt(message);
     this.sendToWs(session, outbound);
@@ -317,6 +337,70 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
     this.sendToWs(session, outbound);
+  }
+
+  /**
+   * Clear a session by killing the claude process and respawning.
+   * Gives a truly fresh context without losing the session entry.
+   */
+  clearSession(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    session.clearing = true;
+
+    // Reset state machine (preserves cumulative cost/tokens)
+    const events = session.state.resetForClear();
+    for (const event of events) {
+      this.onSessionEvent?.(sessionId, event);
+      this.handleSessionEvent(sessionId, session, event);
+    }
+
+    // Clear keep-alive timer
+    if (session.keepAliveTimer) {
+      clearInterval(session.keepAliveTimer);
+      session.keepAliveTimer = null;
+    }
+
+    // Close WebSocket
+    if (session.ws?.readyState === WS_OPEN) {
+      session.ws.close(1000, "Session cleared");
+    }
+    session.ws = null;
+
+    // Kill process
+    if (session.proc) {
+      try {
+        session.proc.kill();
+      } catch {
+        // already dead
+      }
+      session.proc = null;
+      session.spawnAlive = false;
+    }
+
+    // Update config prompt to empty — next sendPrompt() will carry real work
+    session.config.prompt = "";
+
+    // Clear transcript for fresh start
+    session.transcript.length = 0;
+
+    // Respawn
+    this.spawnClaude(sessionId);
+    session.clearing = false;
+  }
+
+  /** Send a set_model control request to change the session's model. */
+  setModel(sessionId: string, model: string): void {
+    const session = this.getSession(sessionId);
+    const requestId = `mcpd-model-${this.nextRequestId++}`;
+    const outbound = setModelRequest(requestId, model);
+    this.sendToWs(session, outbound);
+
+    // Update tracked model in state
+    const events = session.state.setModel(model);
+    for (const event of events) {
+      this.onSessionEvent?.(sessionId, event);
+      this.handleSessionEvent(sessionId, session, event);
+    }
   }
 
   /** Gracefully end a session: close WS, stop process, clean up. Returns worktree info. */
@@ -522,8 +606,8 @@ export class ClaudeWsServer {
       session.keepAliveTimer = null;
     }
 
-    // If already ended (bye was called), nothing more to do
-    if (session.state.state === "ended") return;
+    // If already ended (bye was called) or being cleared (kill+respawn), nothing more to do
+    if (session.state.state === "ended" || session.clearing) return;
 
     console.error(
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
@@ -589,6 +673,18 @@ export class ClaudeWsServer {
           cost: event.cost,
           tokens: 0,
           numTurns: 0,
+        });
+        break;
+      case "session:cleared":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:cleared",
+        });
+        break;
+      case "session:model_changed":
+        this.resolveEventWaiters(sessionId, {
+          sessionId,
+          event: "session:model_changed",
         });
         break;
     }

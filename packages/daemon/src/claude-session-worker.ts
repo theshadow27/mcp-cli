@@ -289,6 +289,12 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
     case "session:ended":
       self.postMessage({ type: "db:end", sessionId });
       break;
+    case "session:cleared":
+      self.postMessage({ type: "db:state", sessionId, state: "connecting" });
+      break;
+    case "session:model_changed":
+      self.postMessage({ type: "db:upsert", session: { sessionId, model: event.model } });
+      break;
   }
 }
 

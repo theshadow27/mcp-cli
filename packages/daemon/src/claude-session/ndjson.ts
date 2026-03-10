@@ -385,6 +385,15 @@ export function interruptRequest(requestId: string): string {
   });
 }
 
+/** Build a `control_request` for `set_model`. Pass "default" to reset. */
+export function setModelRequest(requestId: string, model: string): string {
+  return serialize({
+    type: "control_request",
+    request_id: requestId,
+    request: { subtype: "set_model", model },
+  });
+}
+
 /** Build a `keep_alive` message. */
 export function keepAlive(): string {
   return serialize({ type: "keep_alive" });

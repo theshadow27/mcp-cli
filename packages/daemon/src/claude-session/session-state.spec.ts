@@ -419,6 +419,58 @@ describe("SessionState", () => {
     });
   });
 
+  // -- resetForClear --
+
+  describe("resetForClear", () => {
+    test("resets to connecting, preserves cost/tokens", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.state).toBe("idle");
+      expect(session.cost).toBe(0.05);
+      expect(session.tokens).toBeGreaterThan(0);
+
+      const events = session.resetForClear();
+
+      expect(session.state).toBe("connecting");
+      expect(session.cost).toBe(0.05); // preserved
+      expect(session.tokens).toBeGreaterThan(0); // preserved
+      expect(events).toEqual([{ type: "session:cleared" }]);
+    });
+
+    test("clears pending permissions", () => {
+      const session = activeSession();
+      session.handleMessage(CAN_USE_TOOL);
+      expect(session.pendingPermissions.size).toBe(1);
+
+      session.resetForClear();
+
+      expect(session.pendingPermissions.size).toBe(0);
+    });
+
+    test("no-op on ended session", () => {
+      const session = new SessionState("sess-1");
+      session.end();
+
+      const events = session.resetForClear();
+      expect(events).toEqual([]);
+      expect(session.state).toBe("ended");
+    });
+  });
+
+  // -- setModel --
+
+  describe("setModel", () => {
+    test("updates model and emits event", () => {
+      const session = initSession();
+      expect(session.model).toBe("claude-sonnet-4-6");
+
+      const events = session.setModel("claude-opus-4-6");
+
+      expect(session.model).toBe("claude-opus-4-6");
+      expect(events).toEqual([{ type: "session:model_changed", model: "claude-opus-4-6" }]);
+    });
+  });
+
   // -- Full lifecycle --
 
   describe("full lifecycle", () => {
