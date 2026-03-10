@@ -1,20 +1,18 @@
 /**
- * Tests for daemon index.ts — startup, shutdown, idle timeout, config reload,
- * and pruneOrphanedWorktrees.
+ * Tests for daemon index.ts — startup, shutdown, idle timeout, config reload.
  *
  * Uses startDaemon() directly for in-process coverage, with testOptions()
  * for filesystem isolation.
  */
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
 import type { DaemonHandle } from "./index";
-import { pruneOrphanedWorktrees, startDaemon } from "./index";
+import { startDaemon } from "./index";
 
 setDefaultTimeout(15_000);
 
@@ -38,7 +36,6 @@ async function startTestDaemonInProcess(overrides?: Partial<Parameters<typeof st
   return startDaemon({
     skipLogSetup: true,
     skipVirtualServers: true,
-    skipWorktreePrune: true,
     ...overrides,
   });
 }
@@ -101,16 +98,6 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       handle = await startTestDaemonInProcess({ skipLogSetup: false });
 
-      const socketPath = join(opts.dir, "mcpd.sock");
-      const res = await rpc(socketPath, "ping");
-      expect(res.result).toHaveProperty("pong", true);
-    });
-
-    test("runs worktree pruning when not skipped", async () => {
-      opts = testOptions();
-      handle = await startTestDaemonInProcess({ skipWorktreePrune: false });
-
-      // Just verify daemon is alive — pruning ran without error on empty DB
       const socketPath = join(opts.dir, "mcpd.sock");
       const res = await rpc(socketPath, "ping");
       expect(res.result).toHaveProperty("pong", true);
@@ -291,210 +278,5 @@ describe("daemon index.ts", () => {
       const res = await rpc(socketPath, "ping");
       expect(res.result).toHaveProperty("pong", true);
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// pruneOrphanedWorktrees unit tests
-// ---------------------------------------------------------------------------
-describe("pruneOrphanedWorktrees", () => {
-  let opts: ReturnType<typeof testOptions> | undefined;
-
-  afterEach(() => {
-    if (opts) {
-      opts[Symbol.dispose]();
-      opts = undefined;
-    }
-    _restoreOptions();
-  });
-
-  test("no-ops when there are no ended sessions", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Should complete without error
-      pruneOrphanedWorktrees(db);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("skips sessions without worktree or cwd", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Insert a session without worktree, then end it
-      db.upsertSession({ sessionId: "test-no-wt", pid: 12345, model: "sonnet", cwd: "/tmp/test" });
-      db.endSession("test-no-wt");
-      // Should complete without error (skips the session)
-      pruneOrphanedWorktrees(db);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("skips worktrees still used by active sessions", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Active session with a worktree (not ended)
-      db.upsertSession({
-        sessionId: "active-1",
-        pid: process.pid,
-        model: "sonnet",
-        cwd: "/tmp/test",
-        worktree: "my-worktree",
-      });
-      // Ended session with the same worktree
-      db.upsertSession({
-        sessionId: "ended-1",
-        pid: 99999,
-        model: "sonnet",
-        cwd: "/tmp/test",
-        worktree: "my-worktree",
-      });
-      db.endSession("ended-1");
-      // Should skip because active session uses the same worktree
-      pruneOrphanedWorktrees(db);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("skips ended sessions whose worktree path does not exist", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      db.upsertSession({
-        sessionId: "ended-gone",
-        pid: 99999,
-        model: "sonnet",
-        cwd: "/tmp/nonexistent-repo",
-        worktree: "gone-worktree",
-      });
-      db.endSession("ended-gone");
-      // Should skip because the worktree path doesn't exist
-      pruneOrphanedWorktrees(db);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("skips dirty worktrees (uncommitted changes)", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Create a git repo with a worktree that has uncommitted changes
-      const repoDir = join(opts.dir, "repo");
-      mkdirSync(repoDir, { recursive: true });
-      Bun.spawnSync(["git", "init", repoDir], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      // Create a worktree
-      const worktreeDir = join(repoDir, ".claude", "worktrees", "dirty-wt");
-      mkdirSync(join(repoDir, ".claude", "worktrees"), { recursive: true });
-      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "dirty-branch"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      // Make the worktree dirty
-      writeFileSync(join(worktreeDir, "dirty.txt"), "uncommitted");
-
-      db.upsertSession({
-        sessionId: "ended-dirty-real",
-        pid: 99999,
-        model: "sonnet",
-        cwd: repoDir,
-        worktree: "dirty-wt",
-      });
-      db.endSession("ended-dirty-real");
-
-      // Should skip because worktree has uncommitted changes
-      pruneOrphanedWorktrees(db);
-
-      // Worktree should still exist
-      expect(existsSync(worktreeDir)).toBe(true);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("removes clean worktrees and deletes merged branches", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Create a git repo with a clean worktree
-      const repoDir = join(opts.dir, "repo-clean");
-      mkdirSync(repoDir, { recursive: true });
-      Bun.spawnSync(["git", "init", repoDir], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      // Create a worktree
-      const worktreeDir = join(repoDir, ".claude", "worktrees", "clean-wt");
-      mkdirSync(join(repoDir, ".claude", "worktrees"), { recursive: true });
-      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "clean-branch"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      db.upsertSession({
-        sessionId: "ended-clean",
-        pid: 99999,
-        model: "sonnet",
-        cwd: repoDir,
-        worktree: "clean-wt",
-      });
-      db.endSession("ended-clean");
-
-      // Should remove the clean worktree
-      pruneOrphanedWorktrees(db);
-
-      // Worktree should be removed
-      expect(existsSync(worktreeDir)).toBe(false);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("skips worktrees where git status fails (not a git repo)", () => {
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    try {
-      // Create a directory that looks like a worktree path
-      const fakeCwd = join(opts.dir, "fake-project");
-      const worktreeDir = join(fakeCwd, ".claude", "worktrees", "test-wt");
-      mkdirSync(worktreeDir, { recursive: true });
-
-      db.upsertSession({
-        sessionId: "ended-dirty",
-        pid: 99999,
-        model: "sonnet",
-        cwd: fakeCwd,
-        worktree: "test-wt",
-      });
-      db.endSession("ended-dirty");
-
-      // Should run through the git status check (fails because not a git repo) and continue
-      pruneOrphanedWorktrees(db);
-    } finally {
-      db.close();
-    }
-  });
-
-  test("handles errors gracefully without crashing", () => {
-    // Pass a closed DB to trigger an error inside the function
-    opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
-    db.close();
-
-    // Should not throw — catches internally
-    pruneOrphanedWorktrees(db);
   });
 });

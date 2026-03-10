@@ -52,7 +52,7 @@ export async function startTestDaemon(
   // Write servers.json so daemon has config to load
   writeFileSync(join(dir, "servers.json"), JSON.stringify({ mcpServers: servers }));
 
-  const proc = Bun.spawn(["bun", resolve("packages/daemon/src/index.ts")], {
+  const proc = Bun.spawn(["bun", resolve("packages/daemon/src/main.ts")], {
     stdout: "ignore",
     stderr: "pipe",
     env: {

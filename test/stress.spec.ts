@@ -16,7 +16,7 @@ import { createTestDir, echoServerConfig, rpc, startTestDaemon } from "./harness
 // These tests involve real process spawning and network I/O
 setDefaultTimeout(60_000);
 
-const MCX_SCRIPT = resolve("packages/command/src/index.ts");
+const MCX_SCRIPT = resolve("packages/command/src/main.ts");
 
 /** Run `mcx` as a child process with isolated MCP_CLI_DIR */
 async function mcx(
