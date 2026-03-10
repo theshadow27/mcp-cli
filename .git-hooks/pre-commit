@@ -13,8 +13,7 @@ bun run lint:check
 
 echo "  test + coverage..."
 if ! bun run test:coverage; then
-  # check-coverage.ts already logs failures via test-failure-log.ts,
-  # but if it crashed before logging, record a fallback entry
+  # check-coverage.ts logs failures via test-failure-log.ts
   echo "  (test failures logged to ~/.mcp-cli/test-failures.log)"
   exit 1
 fi

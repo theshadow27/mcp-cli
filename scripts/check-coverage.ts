@@ -89,7 +89,11 @@ process.stdout.write(stdout);
 process.stderr.write(stderr);
 
 if (exitCode !== 0) {
-  logTestRun(stdout + stderr, exitCode, testDuration);
+  try {
+    logTestRun(stdout + stderr, exitCode, testDuration);
+  } catch {
+    // Logging must never mask the actual test failure
+  }
   process.exit(exitCode);
 }
 

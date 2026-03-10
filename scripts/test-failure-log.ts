@@ -6,8 +6,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 
 /** Max entries before trimming oldest on write */
 const MAX_ENTRIES = 10_000;
@@ -41,13 +41,13 @@ export function getGitContext(): { worktree: string; branch: string; pr: number 
   let pr: number | null = null;
 
   try {
-    branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8" }).trim();
+    branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
   } catch {
-    // not in a git repo
+    // not in a git repo or timeout
   }
 
   try {
-    const toplevel = execSync("git rev-parse --show-toplevel", { encoding: "utf-8" }).trim();
+    const toplevel = execSync("git rev-parse --show-toplevel", { encoding: "utf-8", timeout: 5000 }).trim();
     const dirName = basename(toplevel);
     // Worktrees live in .claude/worktrees/<name>
     if (toplevel.includes(".claude/worktrees/")) {
@@ -74,15 +74,6 @@ export function getGitContext(): { worktree: string; branch: string; pr: number 
  */
 export function parseTestFailures(output: string): Array<{ file: string; test: string; error: string }> {
   const failures: Array<{ file: string; test: string; error: string }> = [];
-
-  // Bun test failure format:
-  // ✗ test name [duration]
-  //   error: Expected ...
-  // or:
-  // (fail) path/to/file.spec.ts:
-  //   ✗ test name
-  const failRegex = /^\s*(?:✗|✘|×)\s+(.+?)(?:\s+\[\d+.*?\])?\s*$/gm;
-  const fileHeaderRegex = /^\(fail\)\s+([\w/.@-]+\.(?:spec|test)\.ts):/gm;
 
   let currentFile = "unknown";
 
@@ -139,31 +130,20 @@ export function appendFailures(entries: TestFailureEntry[], logPath?: string): v
 export function rotateIfNeeded(logPath: string): void {
   if (!existsSync(logPath)) return;
 
-  let needsRotation = false;
-
   try {
     const stat = statSync(logPath);
-    if (stat.size > MAX_BYTES) {
-      needsRotation = true;
-    }
-  } catch {
-    return;
-  }
-
-  if (!needsRotation) {
-    // Check entry count
-    const content = readFileSync(logPath, "utf-8");
-    const lineCount = content.split("\n").filter((l) => l.trim()).length;
-    if (lineCount <= MAX_ENTRIES) return;
-    needsRotation = true;
-  }
-
-  if (needsRotation) {
     const content = readFileSync(logPath, "utf-8");
     const allLines = content.split("\n").filter((l) => l.trim());
-    // Keep the most recent entries
+
+    if (stat.size <= MAX_BYTES && allLines.length <= MAX_ENTRIES) return;
+
+    // Trim to MAX_ENTRIES, write atomically via temp+rename
     const keep = allLines.slice(-MAX_ENTRIES);
-    writeFileSync(logPath, `${keep.join("\n")}\n`, "utf-8");
+    const tmpPath = `${logPath}.tmp`;
+    writeFileSync(tmpPath, `${keep.join("\n")}\n`, "utf-8");
+    renameSync(tmpPath, logPath);
+  } catch {
+    return;
   }
 }
 
@@ -225,7 +205,7 @@ export function logTestRun(
           error:
             output
               .split("\n")
-              .find((l) => l.includes("error") || l.includes("fail"))
+              .find((l) => /^(error:|Error:|FAIL:|panic:)/i.test(l.trim()))
               ?.trim() ?? "",
         },
       ],
