@@ -28,6 +28,7 @@ export function App() {
   const [filterMode, setFilterMode] = useState(false);
   const [claudeSelectedIndex, setClaudeSelectedIndex] = useState(0);
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
+  const [permissionIndex, setPermissionIndex] = useState(0);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -62,6 +63,19 @@ export function App() {
   useEffect(() => {
     setClaudeSelectedIndex((i) => Math.min(i, Math.max(0, sessions.length - 1)));
   }, [sessions.length]);
+
+  // Clamp permission index when selected session or permission count changes
+  const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;
+  const permCount = sessions[claudeSelectedIndex]?.pendingPermissionDetails?.length ?? 0;
+  const prevSessionRef = useRef(selectedSessionId);
+  useEffect(() => {
+    if (prevSessionRef.current !== selectedSessionId) {
+      prevSessionRef.current = selectedSessionId;
+      setPermissionIndex(0);
+    } else {
+      setPermissionIndex((i) => Math.min(i, Math.max(0, permCount - 1)));
+    }
+  }, [selectedSessionId, permCount]);
 
   // Auto-clear success/error auth status after 5 seconds
   useEffect(() => {
@@ -104,6 +118,8 @@ export function App() {
       setSelectedIndex: setClaudeSelectedIndex,
       expandedSession,
       setExpandedSession,
+      permissionIndex,
+      setPermissionIndex,
     },
   });
 
@@ -145,6 +161,7 @@ export function App() {
           expandedSession={expandedSession}
           loading={claudeLoading}
           error={claudeError}
+          permissionIndex={permissionIndex}
         />
       ) : (
         <Box marginTop={1}>

@@ -57,6 +57,8 @@ export interface ClaudeNav {
   setSelectedIndex: (fn: (i: number) => number) => void;
   expandedSession: string | null;
   setExpandedSession: (id: string | null) => void;
+  permissionIndex: number;
+  setPermissionIndex: (fn: (i: number) => number) => void;
 }
 
 interface UseKeyboardOptions {
@@ -94,6 +96,8 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     setSelectedIndex: setClaudeSelectedIndex,
     expandedSession,
     setExpandedSession,
+    permissionIndex,
+    setPermissionIndex,
   } = claudeNav;
   const { exit } = useApp();
 
@@ -220,6 +224,17 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         return;
       }
 
+      // Navigate pending permissions within selected session
+      if (key.leftArrow) {
+        setPermissionIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        const permCount = selectedSession?.pendingPermissionDetails?.length ?? 0;
+        setPermissionIndex((i) => Math.min(Math.max(0, permCount - 1), i + 1));
+        return;
+      }
+
       // Toggle transcript detail
       if (key.return) {
         if (selectedSession) {
@@ -228,9 +243,9 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         return;
       }
 
-      // Approve / deny pending permission
+      // Approve / deny targeted pending permission
       if (input === "a" || input === "d") {
-        const perm = selectedSession?.pendingPermissionDetails?.[0];
+        const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
         if (perm) {
           ipcCall("callTool", {
             server: "_claude",
