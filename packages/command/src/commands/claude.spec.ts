@@ -2040,6 +2040,11 @@ describe("parseResumeArgs", () => {
     const result = parseResumeArgs(["my-wt", "--allow"]);
     expect(result.error).toBe("--allow requires at least one tool pattern");
   });
+
+  test("errors when --fresh and explicit session ID are both set", () => {
+    const result = parseResumeArgs(["my-wt", "abc-session-uuid", "--fresh"]);
+    expect(result.error).toBe("--fresh cannot be combined with an explicit session ID");
+  });
 });
 
 describe("extractIssueNumber", () => {
@@ -2240,7 +2245,8 @@ describe("cmdClaude resume", () => {
     const promptArgs = promptCall?.[1] as Record<string, unknown>;
     expect(promptArgs.cwd).toBe(wtPath);
     expect(promptArgs.resumeSessionId).toBe("continue");
-    expect(promptArgs.prompt).toBe("Continue from where you left off.");
+    expect(promptArgs.prompt).toContain("restored");
+    expect(promptArgs.prompt).toContain("continue where you left off");
   });
 
   test("resume with explicit session ID passes it as resumeSessionId", async () => {

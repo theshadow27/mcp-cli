@@ -303,7 +303,7 @@ export class ClaudeWsServer {
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: "ignore",
-      stderr: "ignore",
+      stderr: "pipe",
       stdin: "ignore",
     });
 
@@ -312,12 +312,14 @@ export class ClaudeWsServer {
     session.spawnAlive = true;
 
     // Watch for process exit — mark spawn as dead but don't terminate the session
-    proc.exited.then(() => {
+    proc.exited.then(async () => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})`);
+      const stderrText = proc.stderr ? (await new Response(proc.stderr).text()).trim() : "";
+      const suffix = stderrText ? `: ${stderrText}` : "";
+      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {

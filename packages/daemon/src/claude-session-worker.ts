@@ -109,6 +109,17 @@ async function handlePrompt(
     server.sendPrompt(sessionId, prompt);
   } else {
     // New session
+    if (args.worktree && args.resumeSessionId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: worktree and resumeSessionId cannot both be set — a new worktree creates a fresh directory, which conflicts with restoring conversation history from an existing session",
+          },
+        ],
+        isError: true,
+      };
+    }
     sessionId = crypto.randomUUID();
     const permissionMode = (args.permissionMode as PermissionStrategy) ?? "rules";
     const allowedTools = (args.allowedTools as string[]) ?? undefined;

@@ -333,7 +333,9 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
   const target = positionals[0];
   const sessionId = positionals[1];
 
-  if (!all && !target) {
+  if (fresh && sessionId) {
+    error = "--fresh cannot be combined with an explicit session ID";
+  } else if (!all && !target) {
     error =
       "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--model M] [--allow tools...]\n       mcx claude resume --all";
   }
@@ -534,7 +536,9 @@ async function resumeWorktree(
     // If a specific session ID was provided, use it; otherwise bare --resume
     // tells the CLI to pick the last session for this directory.
     toolArgs.resumeSessionId = parsed.sessionId ?? "continue";
-    toolArgs.prompt = "Continue from where you left off.";
+    toolArgs.prompt =
+      "Your previous conversation history has just been restored via --continue/--resume. " +
+      "Please review the restored context and continue where you left off, picking up any in-progress work.";
     d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
   }
 
