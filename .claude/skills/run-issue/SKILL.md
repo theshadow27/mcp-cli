@@ -148,13 +148,15 @@ Replace the PR numbers with the actual merged PRs. The `/documentation-review` c
 
 ## Periodic Review
 
-For large feature blocks (3+ related issues), periodically spawn a review session to assess overall coherence:
+For large feature blocks (3+ related issues), periodically spawn a coherence review session to assess overall architectural consistency:
 
 ```bash
-mcx claude spawn --worktree -t "Review the recent PRs for [feature area]. Check for: architectural consistency across PRs, missed integration points, duplicated patterns, and anything that looks like it's heading down a wrong path. File issues for any problems found." --allow Read Glob Grep Bash
+mcx claude spawn --worktree -t "/coherence-review [feature area] PRs #N1 #N2 #N3 #N4" --allow Read Glob Grep Bash
 ```
 
-This catches integration issues early — before multiple sessions build on top of a flawed foundation. Launch a review after every 3-4 issues in the same feature area merge, or whenever a session's cost exceeds $15 (sign of complexity/struggle).
+The `/coherence-review` skill checks for architectural consistency across PRs, missed integration points, duplicated patterns, and wrong directions — then files issues for any problems found.
+
+Launch a review after every 3-4 issues in the same feature area merge, or whenever a session's cost exceeds $15 (sign of complexity/struggle).
 
 ## Issue discipline
 

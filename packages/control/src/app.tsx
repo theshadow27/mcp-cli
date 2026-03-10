@@ -17,7 +17,7 @@ import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 const LOG_VIEW_HEIGHT = 20;
 
 export function App() {
-  const { status, error, loading, refresh } = useDaemon(2500);
+  const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -36,7 +36,11 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
-  const { lines: logLines, source: logSource, setSource: setLogSource } = useLogs(servers);
+  const {
+    lines: logLines,
+    source: logSource,
+    setSource: setLogSource,
+  } = useLogs(servers, { enabled: view === "logs" });
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const prevFilterRef = useRef(filterText);
@@ -71,30 +75,36 @@ export function App() {
   }, [authStatus]);
 
   useKeyboard({
-    servers,
-    selectedIndex,
-    setSelectedIndex,
-    expandedServer,
-    setExpandedServer,
-    refresh,
-    authStatus,
-    setAuthStatus,
     view,
     setView,
-    logSource,
-    setLogSource,
-    logScrollOffset,
-    setLogScrollOffset,
-    logLineCount: filteredLogLines.length,
-    filterMode,
-    setFilterMode,
-    filterText,
-    setFilterText,
-    claudeSessions: sessions,
-    claudeSelectedIndex,
-    setClaudeSelectedIndex,
-    expandedSession,
-    setExpandedSession,
+    serversNav: {
+      servers,
+      selectedIndex,
+      setSelectedIndex,
+      expandedServer,
+      setExpandedServer,
+      refresh,
+      authStatus,
+      setAuthStatus,
+    },
+    logsNav: {
+      logSource,
+      setLogSource,
+      logScrollOffset,
+      setLogScrollOffset,
+      logLineCount: filteredLogLines.length,
+      filterMode,
+      setFilterMode,
+      filterText,
+      setFilterText,
+    },
+    claudeNav: {
+      sessions,
+      selectedIndex: claudeSelectedIndex,
+      setSelectedIndex: setClaudeSelectedIndex,
+      expandedSession,
+      setExpandedSession,
+    },
   });
 
   if (loading && !status) return <Loading />;

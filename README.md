@@ -92,7 +92,7 @@ mcx remove <name>                   # remove a server
 mcx get <name>                      # inspect server config and status
 ```
 
-Options for `add`: `--env KEY=VALUE` (repeatable), `--header "Name: Value"` (HTTP/SSE), `--scope {user|project}`, `--callback-port PORT`.
+Options for `add`: `--env KEY=VALUE` (repeatable), `--header "Name: Value"` (HTTP/SSE), `--scope {user|project|local}`, `--callback-port PORT`.
 
 ### Auth & Management
 
@@ -105,7 +105,12 @@ mcx config set <key> <value>        # set CLI option or server env var
 mcx status                          # daemon PID, uptime, server states
 mcx restart [server]                # reconnect server(s)
 mcx daemon restart                  # restart daemon (kills sessions)
-mcx daemon shutdown                 # stop the daemon
+mcx daemon shutdown                 # stop the daemon (alias: daemon stop)
+mcx shutdown                        # stop the daemon (legacy shorthand)
+mcx version                         # show CLI, daemon, and protocol versions
+mcx metrics                         # show daemon metrics (Prometheus-style)
+mcx spans                           # list trace spans
+mcx spans prune                     # delete exported spans
 mcx logs <server> [-f]              # view server stderr output
 mcx logs --daemon [-f]              # view daemon log file
 ```
@@ -139,12 +144,16 @@ Spawn and manage headless Claude Code sessions:
 ```bash
 mcx claude spawn --task "describe the work"   # start a session (non-blocking)
 mcx claude spawn -w --task "work in isolation" # start in a git worktree
-mcx claude ls                                  # list active sessions
+mcx claude ls                                  # list active sessions (alias: list)
 mcx claude send <session> <message>            # send follow-up prompt
 mcx claude wait [session]                      # block until session event
 mcx claude log <session> [--last N]            # view session transcript
 mcx claude interrupt <session>                 # interrupt current turn
-mcx claude bye <session>                       # end session (cleans up worktree)
+mcx claude bye <session>                       # end session (alias: quit)
+mcx claude resume <worktree-or-branch>         # reattach to orphaned worktree session
+mcx claude resume --all                        # resume all orphaned worktree sessions
+mcx claude worktrees                           # list mcx-created worktrees (alias: wt)
+mcx claude worktrees --prune                   # remove orphaned worktrees + merged branches
 ```
 
 Session IDs support prefix matching (like git SHAs). Use `--wait` on `spawn` or `send` to block until Claude produces a result. Use `--json` on `ls` or `log` for machine-readable output.

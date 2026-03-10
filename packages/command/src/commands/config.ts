@@ -117,12 +117,24 @@ export async function configGetDispatch(args: string[], deps: ConfigDeps = defau
 export async function configSetDispatch(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
   const [first, second] = args;
   if (!first) {
-    printError("Usage: mcx config set <key> <value>\n       mcx config set <server> env <KEY>:<VALUE>");
+    printError(
+      "Usage: mcx config set <key> <value>\n       mcx config set <server> env <KEY>:<VALUE>\n       mcx config set <server> url <new-url>\n       mcx config set <server> args <arg1> [arg2...]",
+    );
     process.exit(1);
   }
 
   if (second === "env") {
     await configSetServerEnv(args, deps);
+    return;
+  }
+
+  if (second === "url") {
+    await configSetServerUrl(args, deps);
+    return;
+  }
+
+  if (second === "args") {
+    await configSetServerArgs(args, deps);
     return;
   }
 
@@ -290,6 +302,76 @@ export async function configSetServerEnv(args: string[], deps: ConfigDeps = defa
   deps.writeConfig(serverMeta.source, fileConfig);
 
   console.log(`Set ${key} on ${serverName}`);
+}
+
+export async function configSetServerUrl(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const serverName = args[0];
+  const newUrl = args[2];
+
+  if (!serverName || !newUrl) {
+    printError("Usage: mcx config set <server> url <new-url>");
+    process.exit(1);
+  }
+
+  const result = await deps.getConfig();
+  const serverMeta = result.servers[serverName];
+  if (!serverMeta) {
+    printError(`Server "${serverName}" not found`);
+    process.exit(1);
+  }
+
+  const fileConfig = deps.readConfig(serverMeta.source);
+  const serverConfig = fileConfig.mcpServers?.[serverName];
+  if (!serverConfig) {
+    printError(`Server "${serverName}" not found in ${serverMeta.source}`);
+    process.exit(1);
+  }
+
+  if (isStdioConfig(serverConfig)) {
+    printError(`Server "${serverName}" uses stdio transport. The url field is only supported for http/sse servers.`);
+    process.exit(1);
+  }
+
+  serverConfig.url = newUrl;
+  deps.writeConfig(serverMeta.source, fileConfig);
+
+  console.log(`Set url on ${serverName}`);
+}
+
+export async function configSetServerArgs(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const serverName = args[0];
+  const newArgs = args.slice(2);
+
+  if (!serverName || newArgs.length === 0) {
+    printError("Usage: mcx config set <server> args <arg1> [arg2...]");
+    process.exit(1);
+  }
+
+  const result = await deps.getConfig();
+  const serverMeta = result.servers[serverName];
+  if (!serverMeta) {
+    printError(`Server "${serverName}" not found`);
+    process.exit(1);
+  }
+
+  const fileConfig = deps.readConfig(serverMeta.source);
+  const serverConfig = fileConfig.mcpServers?.[serverName];
+  if (!serverConfig) {
+    printError(`Server "${serverName}" not found in ${serverMeta.source}`);
+    process.exit(1);
+  }
+
+  if (!isStdioConfig(serverConfig)) {
+    printError(
+      `Server "${serverName}" uses ${serverConfig.type} transport. The args field is only supported for stdio servers.`,
+    );
+    process.exit(1);
+  }
+
+  serverConfig.args = newArgs;
+  deps.writeConfig(serverMeta.source, fileConfig);
+
+  console.log(`Set args on ${serverName}`);
 }
 
 // -- Masking --
