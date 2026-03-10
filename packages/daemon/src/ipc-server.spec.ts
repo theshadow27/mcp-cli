@@ -1111,10 +1111,25 @@ describe("IpcServer HTTP transport", () => {
 
   test("concurrent callTool requests get independent spans", async () => {
     socketPath = tmpSocket();
-    const spans: Array<{ traceId: string; name: string }> = [];
+    const spans: Array<{ traceId: string; name: string; parentSpanId?: string }> = [];
+    const usageRecords: Array<{
+      server: string;
+      tool: string;
+      traceContext?: { daemonId?: string; traceId?: string; parentId?: string };
+    }> = [];
     const db = mockDb({
-      recordSpan: (span: { traceId: string; name: string }) => {
+      recordSpan: (span: { traceId: string; name: string; parentSpanId?: string }) => {
         spans.push(span);
+      },
+      recordUsage: (
+        server: string,
+        tool: string,
+        _durationMs: number,
+        _success: boolean,
+        _error: string | undefined,
+        traceContext?: { daemonId?: string; traceId?: string; parentId?: string },
+      ) => {
+        usageRecords.push({ server, tool, traceContext });
       },
     });
     // Make callTool take some time to expose race conditions
@@ -1162,6 +1177,32 @@ describe("IpcServer HTTP transport", () => {
     expect(traceIds.size).toBe(2);
     expect(traceIds.has("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11")).toBe(true);
     expect(traceIds.has("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22")).toBe(true);
+
+    // Verify no span has undefined traceId or parentSpanId
+    for (const span of spans) {
+      expect(span.traceId).toBeDefined();
+      expect(span.traceId).not.toBe("");
+    }
+    // Tool spans must have a parentSpanId (they are children of the IPC span)
+    for (const span of toolSpans) {
+      expect(span.parentSpanId).toBeDefined();
+      expect(span.parentSpanId).not.toBe("");
+    }
+
+    // Verify usage_stats also recorded correct trace context per request
+    expect(usageRecords).toHaveLength(2);
+    const usageTraceIds = new Set(usageRecords.map((r) => r.traceContext?.traceId));
+    expect(usageTraceIds.size).toBe(2);
+    expect(usageTraceIds.has("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11")).toBe(true);
+    expect(usageTraceIds.has("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22")).toBe(true);
+    // Verify no usage record has undefined trace context
+    for (const record of usageRecords) {
+      expect(record.traceContext).toBeDefined();
+      expect(record.traceContext?.traceId).toBeDefined();
+      expect(record.traceContext?.traceId).not.toBe("");
+      expect(record.traceContext?.parentId).toBeDefined();
+      expect(record.traceContext?.parentId).not.toBe("");
+    }
   });
 
   test("getMetrics includes daemonId and startedAt", async () => {
