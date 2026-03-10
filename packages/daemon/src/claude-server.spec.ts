@@ -339,8 +339,11 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Give the async notification a moment to arrive
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Poll until the notification arrives (deadline-based, no fixed sleep)
+    const deadline = Date.now() + 5000;
+    while (!notificationReceived && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(notificationReceived).toBe(true);
   });

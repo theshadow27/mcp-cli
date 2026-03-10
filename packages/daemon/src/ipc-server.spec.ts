@@ -558,8 +558,8 @@ describe("IpcServer HTTP transport", () => {
     // Start a long-running tool call (don't await)
     const pending = rpc("/rpc", { id: "slow1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } });
 
-    // Give the request time to arrive
-    await Bun.sleep(50);
+    // Poll until the request arrives at the server
+    await pollUntil(() => activities >= 1);
     expect(activities).toBe(1);
     expect(completions).toBe(0); // Still in-flight
 
