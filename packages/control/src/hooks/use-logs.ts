@@ -26,7 +26,13 @@ interface UseLogsResult {
   setSource: (source: LogSource) => void;
 }
 
-export function useLogs(servers: ServerStatus[]): UseLogsResult {
+export interface UseLogsOptions {
+  /** Override ipcCall for testing (dependency injection). */
+  ipcCallFn?: typeof ipcCall;
+}
+
+export function useLogs(servers: ServerStatus[], opts: UseLogsOptions = {}): UseLogsResult {
+  const { ipcCallFn = ipcCall } = opts;
   const [source, setSourceRaw] = useState<LogSource>({ type: "daemon" });
   const [lines, setLines] = useState<LogEntry[]>([]);
   const sinceRef = useRef<number | undefined>(undefined);
@@ -59,7 +65,7 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
           } else if (sinceRef.current !== undefined) {
             params.since = sinceRef.current;
           }
-          const result = await ipcCall("getDaemonLogs", params);
+          const result = await ipcCallFn("getDaemonLogs", params);
           fetched = result.lines;
         } else {
           const params: Record<string, unknown> = { server: source.name };
@@ -68,7 +74,7 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
           } else if (sinceRef.current !== undefined) {
             params.since = sinceRef.current;
           }
-          const result = await ipcCall("getLogs", params);
+          const result = await ipcCallFn("getLogs", params);
           fetched = result.lines;
         }
 
@@ -90,14 +96,22 @@ export function useLogs(servers: ServerStatus[]): UseLogsResult {
       }
     }
 
-    poll();
-    const id = setInterval(poll, POLL_INTERVAL_MS);
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    async function scheduleNext() {
+      await poll();
+      if (!cancelled) {
+        timerId = setTimeout(scheduleNext, POLL_INTERVAL_MS);
+      }
+    }
+
+    scheduleNext();
 
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [source]);
+  }, [source, ipcCallFn]);
 
   return { lines, source, setSource };
 }
