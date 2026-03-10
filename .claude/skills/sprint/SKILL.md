@@ -134,7 +134,11 @@ When the sprint is done (or the user stops it):
    ```bash
    mcx claude spawn --worktree -t "/coherence-review [area] PRs #N1 #N2 #N3" --allow Read Glob Grep Bash
    ```
-5. Run `/diary` to capture the session
+5. Offer to update and rebuild so the next sprint dogfoods the latest code:
+   ```bash
+   git checkout main && git pull && bun run build
+   ```
+6. Run `/diary` to capture the session
 
 ## Rules
 
