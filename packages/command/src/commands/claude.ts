@@ -1053,11 +1053,27 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (prune) {
+    // Get list of branches merged into main
+    const { stdout: mergedOutput } = d.exec(["git", "-C", cwd, "branch", "--merged", "main"]);
+    const mergedBranches = new Set(
+      mergedOutput
+        .split("\n")
+        .map((line) => line.replace(/^\*?\s+/, "").trim())
+        .filter(Boolean),
+    );
+
     let pruned = 0;
+    const skipped: string[] = [];
     for (const wt of mcxWorktrees) {
       const wtName = wt.path.slice(`${worktreeParent}/`.length);
       // Skip worktrees with active sessions
       if (sessionWorktrees.has(wtName)) continue;
+
+      // Only prune worktrees whose branch has been merged into main
+      if (wt.branch && !mergedBranches.has(wt.branch)) {
+        skipped.push(wt.branch);
+        continue;
+      }
 
       // Check if clean
       const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
@@ -1070,10 +1086,8 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
         pruned++;
         // Delete merged branch
         if (wt.branch) {
-          const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
-          if (branchExit === 0) {
-            d.printError(`Deleted branch: ${wt.branch} (merged)`);
-          }
+          d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
+          d.printError(`Deleted branch: ${wt.branch} (merged)`);
         }
       }
     }
@@ -1081,6 +1095,9 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
       d.printError("Nothing to prune.");
     } else {
       d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+    }
+    if (skipped.length > 0) {
+      d.printError(`Skipped ${skipped.length} unmerged: ${skipped.join(", ")}`);
     }
     return;
   }
