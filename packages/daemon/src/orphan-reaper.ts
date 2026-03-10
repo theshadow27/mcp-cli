@@ -26,9 +26,6 @@ export function reapOrphanedSessions(db: StateDb): number {
 
     if (pid !== null) {
       try {
-        // signal 0 checks existence without sending a real signal
-        process.kill(pid, 0);
-        // Process is alive — terminate it
         process.kill(pid, "SIGTERM");
         console.error(`[mcpd] Reaped orphaned claude process pid=${pid} (session ${sessionId})`);
         reaped++;

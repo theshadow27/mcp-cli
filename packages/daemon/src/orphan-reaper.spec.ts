@@ -61,7 +61,6 @@ describe("reapOrphanedSessions", () => {
 
     const killCalls: Array<[number, number | string | undefined]> = [];
     const origKill = process.kill.bind(process);
-    // Mock process.kill: signal 0 succeeds (process alive), SIGTERM succeeds
     process.kill = (pid: number, signal?: number | string): true => {
       killCalls.push([pid, signal]);
       return true;
@@ -71,10 +70,8 @@ describe("reapOrphanedSessions", () => {
     process.kill = origKill;
 
     expect(result).toBe(1);
-    // Should have called kill(pid, 0) then kill(pid, SIGTERM)
-    expect(killCalls).toHaveLength(2);
-    expect(killCalls[0]).toEqual([fakePid, 0]);
-    expect(killCalls[1]).toEqual([fakePid, "SIGTERM"]);
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0]).toEqual([fakePid, "SIGTERM"]);
 
     // Session should be ended
     const active = db.listSessions(true);
@@ -87,10 +84,9 @@ describe("reapOrphanedSessions", () => {
     db.upsertSession({ sessionId: "sess-dead", state: "running", pid: deadPid });
 
     const origKill = process.kill.bind(process);
-    // Mock process.kill: signal 0 throws (process not found)
-    process.kill = (pid: number, signal?: number | string): true => {
-      if (signal === 0) throw new Error("ESRCH");
-      return true;
+    // Mock process.kill: SIGTERM throws ESRCH (process not found)
+    process.kill = (_pid: number, _signal?: number | string): true => {
+      throw new Error("ESRCH");
     };
 
     const result = reapOrphanedSessions(db);
@@ -113,8 +109,8 @@ describe("reapOrphanedSessions", () => {
     db.upsertSession({ sessionId: "sess-3", state: "connecting", pid: undefined });
 
     const origKill = process.kill.bind(process);
-    process.kill = (pid: number, signal?: number | string): true => {
-      if (pid === deadPid && signal === 0) throw new Error("ESRCH");
+    process.kill = (pid: number, _signal?: number | string): true => {
+      if (pid === deadPid) throw new Error("ESRCH");
       return true;
     };
 
