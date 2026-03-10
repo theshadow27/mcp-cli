@@ -884,6 +884,15 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:result");
       expect(event.cost).toBe(0.01);
       expect(event.result).toBe("Done!");
+      // session snapshot should be present with same fields as listSessions()
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(event.session?.state).toBe("idle");
+      expect(event.session?.model).toBe("claude-sonnet-4-6");
+      expect(event.session?.cwd).toBe("/test");
+      expect(event.session?.cost).toBe(0.01);
+      expect(typeof event.session?.wsConnected).toBe("boolean");
+      expect(typeof event.session?.spawnAlive).toBe("boolean");
     } finally {
       ws.close();
     }
@@ -980,6 +989,12 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:result");
       expect(event.cost).toBe(0.01);
       expect(event.numTurns).toBe(1);
+      // immediate events also include session snapshot
+      expect(event.session).toBeDefined();
+      expect(event.session?.sessionId).toBe("test-session");
+      expect(event.session?.state).toBe("idle");
+      expect(event.session?.cwd).toBe("/test");
+      expect(event.session?.model).toBe("claude-sonnet-4-6");
     } finally {
       ws.close();
     }
@@ -1037,6 +1052,10 @@ describe("ClaudeWsServer", () => {
       expect(event.event).toBe("session:permission_request");
       expect(event.requestId).toBe("req-perm-1");
       expect(event.toolName).toBe("Bash");
+      // session snapshot included for permission events too
+      expect(event.session).toBeDefined();
+      expect(event.session?.state).toBe("waiting_permission");
+      expect(event.session?.pendingPermissions).toBe(1);
     } finally {
       ws.close();
     }
@@ -1251,6 +1270,9 @@ describe("ClaudeWsServer", () => {
       expect(result.events.length).toBeGreaterThan(0);
       expect(result.events[0].event).toBe("session:result");
       expect(result.events[0].seq).toBeGreaterThan(0);
+      // buffered events carry session snapshot
+      expect(result.events[0].session).toBeDefined();
+      expect(result.events[0].session?.sessionId).toBe("test-session");
     } finally {
       ws.close();
     }
