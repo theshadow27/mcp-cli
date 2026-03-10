@@ -720,4 +720,4 @@ Examples:
   mcx run get-time`);
 }
 
-main().then(() => process.exit(0));
+main().then(() => process.exit(process.exitCode ?? 0));
