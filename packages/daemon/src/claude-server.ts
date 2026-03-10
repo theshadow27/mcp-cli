@@ -240,6 +240,9 @@ export class ClaudeServer {
       console.error("[claude-server] Restarting worker...");
       const { client, transport } = await this.start();
       console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+      // Notify connected MCP clients that the tool list may have changed
+      // (this.worker is set by start() but TS can't track cross-method mutation)
+      (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
       this.onRestarted?.(client, transport);
     } catch (err) {
       console.error(`[claude-server] Failed to restart worker: ${err}`);

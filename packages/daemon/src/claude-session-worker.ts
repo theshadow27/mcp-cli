@@ -30,7 +30,11 @@ interface InitMessage {
   daemonId?: string;
 }
 
-type ControlMessage = InitMessage;
+interface ToolsChangedMessage {
+  type: "tools_changed";
+}
+
+type ControlMessage = InitMessage | ToolsChangedMessage;
 
 function isControlMessage(data: unknown): data is ControlMessage {
   return typeof data === "object" && data !== null && "type" in data && !("jsonrpc" in data);
@@ -333,7 +337,9 @@ async function startServer(): Promise<void> {
   self.onmessage = async (event: MessageEvent) => {
     const data = event.data;
     if (isControlMessage(data)) {
-      // No additional control messages after init for now
+      if (data.type === "tools_changed") {
+        await mcpServer?.notification({ method: "notifications/tools/list_changed" });
+      }
       return;
     }
     // Forward JSON-RPC messages to the transport
