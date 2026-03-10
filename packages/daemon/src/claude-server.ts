@@ -142,6 +142,9 @@ export class ClaudeServer {
         if (event.data?.type === "ready") {
           clearTimeout(timeout);
           resolve(event.data.port as number);
+        } else if (event.data?.type === "error") {
+          clearTimeout(timeout);
+          reject(new Error(`Claude session worker init failed: ${event.data.message}`));
         }
       };
       worker.onerror = (event: ErrorEvent | Event) => {

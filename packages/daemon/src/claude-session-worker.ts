@@ -354,6 +354,11 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     daemonId = data.daemonId;
     workerId = generateSpanId();
-    await startServer();
+    try {
+      await startServer();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      self.postMessage({ type: "error", message });
+    }
   }
 };
