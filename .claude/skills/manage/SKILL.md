@@ -24,15 +24,20 @@ mcx claude wait [id]                 # Block until next event
 
 Session IDs support prefix matching (like git SHAs) — `mcx claude send a3f "msg"` works.
 
-## Model Selection
+## Model and Pipeline Selection
 
-Use `--model` on spawn to pick the right model for the task:
+Always implement with opus — the cost difference is small; quality isn't. Use sonnet only for documentation-only issues.
 
-- **opus** (default): complex implementations, deep refactoring, simplify passes
-- **sonnet**: QA, documentation, simple bug fixes, routine tasks
-- **haiku**: trivial tasks
+Review depth is decided **after** implementation, not before. Run `bun .claude/skills/estimate/triage.ts --json` on the branch to measure the actual diff, then:
 
-To switch models mid-session, send `/model sonnet` or `/model opus`.
+- **Low scrutiny**: QA only
+- **High scrutiny**: adversarial-review → repair loop if needed → QA
+
+High scrutiny triggers (validated: 92.5% F1 on 91 PRs):
+- src churn ≥ 120 lines
+- src additions ≥ 100 lines
+- 2+ risk areas touched (IPC, auth, workers, pool, config, db, transport)
+- 4+ files across 2+ packages
 
 ## Spawning Best Practices
 
@@ -110,10 +115,37 @@ mcx claude bye <id>    # Ends session, auto-cleans worktree if clean
 - **Sequential for shared files**: README changes, config changes, etc. must run one at a time
 - **Parallel for independent work**: different packages, different features, different file sets
 
+## Session Lifecycle Pipeline
+
+```
+implement → triage → [low: QA] or [high: adversarial-review → repair? → QA]
+```
+
+Each phase gets a fresh session on the same branch. This avoids context accumulation.
+
+- **Spawn fresh sessions per phase** — don't reuse sessions across implement/review/QA. Sessions that accumulate many turns hit context limits and become unresponsive after compaction.
+- **Triage is mechanical** — run `triage.ts` on the branch after implement completes. No LLM judgment needed for the low/high split.
+- **Repair loops** — if adversarial review finds issues, spawn a repair session, then re-triage. Loop until the review is clean.
+
+## Daemon Discipline
+
+- **Never randomly kill/restart the daemon** — it masks symptoms and hides bugs. If a kill seems required, file a GH issue documenting why so the root cause gets fixed.
+- **Verify cleanup after sessions end** — check that no dangling processes remain, confirm worktrees are removed, verify daemon state is clean.
+
+## Protocol Notes
+
+`/clear` and `/model` are intercepted by the daemon and translated to native protocol actions:
+- `/clear` → kills the claude process and respawns on the same session (fresh context)
+- `/model <name>` → sends `set_model` control request over WebSocket (runtime model switch)
+
+These work via `mcx claude send`. Other slash commands (like `/help`, `/compact`) are NOT intercepted and get sent as plain text — they won't work.
+
 ## Anti-Patterns
 
 - **Don't implement directly** when orchestrating — always delegate to spawned sessions. Direct implementation eats the orchestrator's context window.
-- **Don't tight-loop polls** — 30 second intervals are sufficient. Shorter wastes context.
+- **Don't tight-loop polls** — ~30 second intervals are sufficient. Between polls, do useful work (spawn more issues, file issues, clean up merged sessions). Don't burn context on empty polls.
+- **Don't sleep when you can work** — if waiting on sessions, launch more work in parallel. Idle orchestrator time is wasted time.
 - **Don't skip `/clear`** between phases — context accumulation degrades quality.
-- **Don't force-remove worktrees** — always check for uncommitted changes first.
+- **Don't force-remove worktrees** — always check for uncommitted changes first. Investigate before removing — there may be valuable uncommitted work.
 - **Don't ignore stuck sessions** — investigate and either nudge or restart them.
+- **Don't duplicate skills and commands** — pick one. Prefer skills for richer metadata.

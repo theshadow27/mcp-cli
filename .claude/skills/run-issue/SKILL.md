@@ -31,48 +31,83 @@ For each issue N:
 
 ### 1. Implement
 
+Always use opus. The implementation cost is similar across models; quality isn't.
+
 ```bash
 mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash
 ```
 
-**Model selection** (now available via `--model`):
-- `--model sonnet`: simple bug fixes, small tasks, documentation, QA
-- `--model opus` (default): complex features, simplify passes
-
-For sessions that span multiple phases (implement → simplify → QA), you can switch models mid-session by sending `/model sonnet` or `/model opus` before the next phase.
-
 Save the returned `sessionId`. Monitor with `mcx claude ls` until idle.
 
-### 2. Clear + Simplify
-
+For documentation-only issues, use sonnet (no code complexity to handle):
 ```bash
-mcx claude send <sessionId> "/clear"
-mcx claude send <sessionId> "/simplify"
+mcx claude spawn --worktree --model sonnet -t "/implement N" --allow Read Glob Grep Write Edit Bash
 ```
 
-Wait until idle. Simplify reviews the changes for quality, pushes any fixes.
+### 2. Triage
 
-**Skip simplify for documentation-only issues** (README, CLAUDE.md, etc.) — go straight from implement to QA.
-
-### 3. Clear + QA
+After implementation completes, measure the actual diff to decide review depth. Spawn a fresh session on the same branch:
 
 ```bash
-mcx claude send <sessionId> "/clear"
+mcx claude bye <sessionId>
 ```
 
-Find the PR number:
+Then check the diff from the worktree (or from the branch if worktree is cleaned):
+
 ```bash
-gh pr list --head <branch> --json number
+# Get the branch name from the worktree or PR
+gh pr list --head <branch> --json number,headRefName
 ```
 
-Then:
+The triage rules (validated: 92.5% F1, 0% false negatives on 91 historical PRs):
+
+**High scrutiny** if ANY of:
+- src churn (additions + deletions, excluding tests) ≥ 120 lines
+- src additions ≥ 100 lines
+- 2+ risk areas touched (IPC, auth, workers, server-pool, config, db, transport)
+- 4+ source files across 2+ packages
+
+Everything else is **low scrutiny**.
+
+You can run this mechanically:
 ```bash
-mcx claude send <sessionId> "/qa N (PR <pr-number>, already checked out)"
+bun .claude/skills/estimate/triage.ts --base main --json
 ```
 
-Wait until idle. QA verifies the implementation and merges if everything passes.
+### 3a. Low scrutiny path
 
-### 4. Clean up
+Spawn QA directly:
+
+```bash
+mcx claude spawn --worktree -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+```
+
+### 3b. High scrutiny path
+
+Spawn adversarial review first:
+
+```bash
+mcx claude spawn --worktree -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+```
+
+Wait until idle. If review finds issues:
+
+```bash
+# Spawn repair session on the same branch
+mcx claude spawn --worktree -t "Fix issues found in adversarial review of PR <pr-number>: <summary of issues>" --allow Read Glob Grep Write Edit Bash
+```
+
+After repair, re-triage. If still high scrutiny, review again. Loop until clean, then proceed to QA.
+
+### 4. QA
+
+```bash
+mcx claude spawn --worktree -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+```
+
+Wait until idle. QA verifies and merges if passing.
+
+### 5. Clean up
 
 ```bash
 mcx claude bye <sessionId>
@@ -84,9 +119,7 @@ git -C <worktree-path> status --porcelain
 ```
 
 - If clean (empty output): `git worktree remove <worktree-path>`
-- If dirty: investigate the reason - you can ask the agent or just read the files - before you remove. There may be uncommitted changes worth preserving.
-
-Always clean up sessions — but protect worktrees with uncommitted work.
+- If dirty: investigate before removing — there may be valuable uncommitted work.
 
 ## Monitoring
 
