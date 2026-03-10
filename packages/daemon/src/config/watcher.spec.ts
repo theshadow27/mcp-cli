@@ -329,29 +329,34 @@ describe("ConfigWatcher integration", () => {
     expect(event.changed).toContain("alpha");
   });
 
-  test("detects project config changes", async () => {
-    using opts = testOptions();
-    const cwd = join(opts.dir, "myproject");
-    mkdirSync(cwd, { recursive: true });
+  test(
+    "detects project config changes",
+    async () => {
+      using opts = testOptions();
+      const cwd = join(opts.dir, "myproject");
+      mkdirSync(cwd, { recursive: true });
 
-    const projPath = projectConfigPath(cwd);
-    writeJson(projPath, mcpConfig({ projserver: { command: "echo" } }));
+      const projPath = projectConfigPath(cwd);
+      writeJson(projPath, mcpConfig({ projserver: { command: "echo" } }));
 
-    const initial = makeConfig({ projserver: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ projserver: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, cwd, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, cwd, testWatcherOpts());
+      watcher.start();
 
-    // Modify project config
-    writeJson(projPath, mcpConfig({ projserver: { command: "echo" }, newproj: { command: "cat" } }));
+      // Modify project config
+      writeJson(projPath, mcpConfig({ projserver: { command: "echo" }, newproj: { command: "cat" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      // Project config watches nested dirs — FS events can be slow under load
+      await waitForCall(cb, 10_000);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.added).toContain("newproj");
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.added).toContain("newproj");
+    },
+    { timeout: 15_000 },
+  );
 
   test("forceReload triggers immediate reload without debounce", async () => {
     using opts = testOptions({

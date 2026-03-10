@@ -10,6 +10,7 @@ import { ipcCall, resolveModelName } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
+import { ttyOpen } from "./tty";
 
 import type { SessionInfo } from "@mcp-cli/core";
 
@@ -28,6 +29,8 @@ export interface ClaudeDeps {
   getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Run a command and return stdout + exit code. Used for git operations in `bye`. */
   exec: (cmd: string[]) => { stdout: string; exitCode: number };
+  /** Open a command in a terminal tab/window. Used for --headed spawn. */
+  ttyOpen: (args: string[]) => Promise<void>;
 }
 
 /** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
@@ -110,6 +113,7 @@ const defaultDeps: ClaudeDeps = {
     const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
     return { stdout: result.stdout.toString().trim(), exitCode: result.exitCode };
   },
+  ttyOpen: (args) => ttyOpen(args),
 };
 
 // ── Entry point ──
@@ -176,6 +180,7 @@ export interface SpawnArgs {
   timeout: number | undefined;
   model: string | undefined;
   wait: boolean;
+  headed: boolean;
   error: string | undefined;
 }
 
@@ -187,12 +192,15 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let timeout: number | undefined;
   let model: string | undefined;
   let wait = false;
+  let headed = false;
   const allow: string[] = [];
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--task" || arg === "-t") {
+    if (arg === "--headed") {
+      headed = true;
+    } else if (arg === "--task" || arg === "-t") {
       task = args[++i];
       if (!task) error = "--task requires a value";
     } else if (arg === "--worktree" || arg === "-w") {
@@ -239,7 +247,33 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
     }
   }
 
-  return { task, worktree, resume, allow, cwd, timeout, model, wait, error };
+  return { task, worktree, resume, allow, cwd, timeout, model, wait, headed, error };
+}
+
+/**
+ * Build a shell command string for launching interactive Claude in a terminal.
+ * Escapes arguments for safe shell interpolation.
+ */
+export function buildHeadedCommand(parsed: SpawnArgs): string {
+  const parts: string[] = ["claude"];
+
+  if (parsed.task) {
+    parts.push("-p", shellQuote(parsed.task));
+  }
+  if (parsed.model) {
+    parts.push("--model", shellQuote(parsed.model));
+  }
+  if (parsed.allow.length > 0) {
+    parts.push("--allowedTools", ...parsed.allow.map(shellQuote));
+  }
+
+  return parts.join(" ");
+}
+
+/** Shell-quote a string (wrap in single quotes, escape internal single quotes). */
+function shellQuote(s: string): string {
+  if (/^[a-zA-Z0-9._:/@=-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
@@ -255,6 +289,11 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.exit(1);
   }
 
+  if (parsed.headed) {
+    await claudeSpawnHeaded(parsed, d);
+    return;
+  }
+
   const toolArgs: Record<string, unknown> = {
     prompt: parsed.task ?? "Continue from where you left off.",
   };
@@ -268,6 +307,44 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
   const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
+}
+
+async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void> {
+  if (parsed.resume) {
+    d.printError("--headed and --resume are incompatible. Use headless spawn for session resume.");
+    d.exit(1);
+  }
+  if (parsed.wait) {
+    d.printError("--headed and --wait are incompatible. Headed sessions are interactive.");
+    d.exit(1);
+  }
+
+  // Handle --worktree: create a git worktree and use it as cwd
+  let cwd = parsed.cwd;
+  if (parsed.worktree) {
+    const repoRoot = process.cwd();
+    const worktreePath = join(repoRoot, ".claude", "worktrees", parsed.worktree);
+    const { exitCode, stdout } = d.exec([
+      "git",
+      "worktree",
+      "add",
+      worktreePath,
+      "-b",
+      `headed/${parsed.worktree}`,
+      "HEAD",
+    ]);
+    if (exitCode !== 0) {
+      d.printError(`Failed to create worktree: ${stdout}`);
+      d.exit(1);
+    }
+    cwd = worktreePath;
+    d.printError(`Created worktree: ${worktreePath}`);
+  }
+
+  // Build the claude command and prepend cd if cwd is set
+  const command = cwd ? `cd ${shellQuote(cwd)} && ${buildHeadedCommand(parsed)}` : buildHeadedCommand(parsed);
+
+  await d.ttyOpen([command]);
 }
 
 // ── Resume ──
@@ -1085,6 +1162,7 @@ function printClaudeUsage(): void {
 
 Usage:
   mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
+  mcx claude spawn --headed --task "desc"  Start Claude in a visible terminal tab
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude resume <worktree-or-branch>   Resume with conversation history (--continue)
   mcx claude resume <worktree> <session>   Resume specific session (--resume <id>)
@@ -1104,6 +1182,7 @@ Usage:
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude
+  --headed                    Open Claude in a visible terminal tab (via tty)
   --wait                      Block until Claude produces a result
   --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID (default: opus)
   --worktree, -w [name]       Git worktree isolation (auto-generates name if omitted)
