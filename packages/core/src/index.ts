@@ -10,3 +10,4 @@ export * from "./schema-display";
 export * from "./model";
 export * from "./session-types";
 export * from "./trace";
+export * from "./git";

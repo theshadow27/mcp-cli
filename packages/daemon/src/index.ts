@@ -21,6 +21,7 @@ import {
   PROTOCOL_VERSION,
   auditRuntimePermissions,
   ensureStateDir,
+  fixCoreBare,
   generateSpanId,
   options,
 } from "@mcp-cli/core";
@@ -70,6 +71,13 @@ export function pruneOrphanedWorktrees(db: StateDb): void {
       // Remove worktree
       const removeResult = Bun.spawnSync(["git", "-C", session.cwd, "worktree", "remove", worktreePath], gitOpts);
       if (removeResult.exitCode === 0) {
+        const gitExec = (cmd: string[]) => {
+          const r = Bun.spawnSync(cmd, gitOpts);
+          return { stdout: r.stdout.toString().trim(), exitCode: r.exitCode };
+        };
+        if (fixCoreBare(session.cwd, gitExec)) {
+          console.error("[mcpd] Fixed core.bare=true after worktree removal");
+        }
         pruned++;
         console.error(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
         // Delete merged branch

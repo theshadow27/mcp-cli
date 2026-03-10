@@ -6,7 +6,7 @@
  */
 
 import { join } from "node:path";
-import { ipcCall, resolveModelName } from "@mcp-cli/core";
+import { fixCoreBare, ipcCall, resolveModelName } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -765,6 +765,7 @@ function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
     // Clean — remove the worktree
     const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", worktreePath]);
     if (removeExit === 0) {
+      if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
       d.printError(`Removed worktree: ${worktreePath}`);
       // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
       if (branch) {
@@ -1066,6 +1067,7 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
       // Remove worktree
       const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
       if (removeExit === 0) {
+        if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
         d.printError(`Removed worktree: ${wt.path}`);
         pruned++;
         // Delete merged branch
