@@ -122,8 +122,9 @@ export class ServerPool {
    * still complete later and call registerVirtualServer() successfully.
    */
   registerPendingVirtualServer(name: string, startPromise: Promise<void>, timeoutMs = 30_000): void {
+    let timer: ReturnType<typeof setTimeout>;
     const timeout = new Promise<void>((_, reject) => {
-      const timer = setTimeout(() => reject(new Error(`startup timed out after ${timeoutMs}ms`)), timeoutMs);
+      timer = setTimeout(() => reject(new Error(`startup timed out after ${timeoutMs}ms`)), timeoutMs);
       // Don't let the timer keep the process alive if everything else has exited
       (timer as NodeJS.Timeout).unref?.();
     });
@@ -131,7 +132,10 @@ export class ServerPool {
       .catch((err) => {
         console.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
       })
-      .finally(() => this.pendingServers.delete(name));
+      .finally(() => {
+        clearTimeout(timer);
+        this.pendingServers.delete(name);
+      });
     this.pendingServers.set(name, tracked);
   }
 
