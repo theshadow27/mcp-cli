@@ -126,6 +126,28 @@ describe("evaluate", () => {
     expect(d.allow).toBe(true);
   });
 
+  // ── Command substitution rejection ──
+
+  test("rejects $() substitution with prefix rule", () => {
+    const rules: PermissionRule[] = [{ tool: "Bash(git:*)", action: "allow" }];
+    expect(evaluate(rules, req("Bash", { command: "git status $(rm -rf /)" })).allow).toBe(false);
+  });
+
+  test("rejects backtick substitution with prefix rule", () => {
+    const rules: PermissionRule[] = [{ tool: "Bash(git:*)", action: "allow" }];
+    expect(evaluate(rules, req("Bash", { command: "git status `rm -rf /`" })).allow).toBe(false);
+  });
+
+  test("rejects process substitution with prefix rule", () => {
+    const rules: PermissionRule[] = [{ tool: "Bash(git:*)", action: "allow" }];
+    expect(evaluate(rules, req("Bash", { command: "git diff <(cat /etc/passwd)" })).allow).toBe(false);
+  });
+
+  test("rejects newline injection with prefix rule", () => {
+    const rules: PermissionRule[] = [{ tool: "Bash(git:*)", action: "allow" }];
+    expect(evaluate(rules, req("Bash", { command: "git status\nrm -rf /" })).allow).toBe(false);
+  });
+
   // ── Exact command match (no :*) ──
 
   test("exact command match — literal * is part of command", () => {
@@ -283,6 +305,12 @@ describe("evaluate", () => {
     const rules: PermissionRule[] = [{ tool: "CustomTool(foo:*)", action: "allow" }];
     expect(evaluate(rules, req("CustomTool", { command: "foo bar" })).allow).toBe(true);
     expect(evaluate(rules, req("CustomTool", { command: "baz" })).allow).toBe(false);
+  });
+
+  test("unknown tool with wildcard rejects compound commands", () => {
+    const rules: PermissionRule[] = [{ tool: "CustomTool(foo:*)", action: "allow" }];
+    expect(evaluate(rules, req("CustomTool", { command: "foo bar && rm -rf /" })).allow).toBe(false);
+    expect(evaluate(rules, req("CustomTool", { command: "foo bar $(whoami)" })).allow).toBe(false);
   });
 
   test("unknown tool with argPattern and no command field → deny", () => {

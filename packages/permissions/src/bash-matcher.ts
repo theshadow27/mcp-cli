@@ -11,12 +11,30 @@
 const COMPOUND_OPERATORS = ["&&", "||", ";", "|"];
 
 /**
- * Check if a command string is compound (contains shell operators).
+ * Patterns that indicate command substitution or injection vectors.
+ * These allow arbitrary code execution inside an otherwise-safe prefix match.
+ */
+const SUBSTITUTION_PATTERNS = ["$(", "`", "<(", ">("];
+
+/**
+ * Check if a command string is compound (contains shell operators)
+ * or contains command substitution patterns.
+ *
  * Compound commands are rejected for prefix/wildcard rules because
  * `git status && rm -rf /` should not match `Bash(git *)`.
+ *
+ * Command substitutions like `$(...)` and backticks are also rejected
+ * because they allow arbitrary execution inside a permitted prefix.
+ *
+ * Note: This is a cooperative guardrail, not a security boundary.
+ * It uses naive string matching and does not parse shell quoting,
+ * so `git commit -m "a && b"` will be falsely rejected.
  */
 export function isCompoundCommand(command: string): boolean {
-  return COMPOUND_OPERATORS.some((op) => command.includes(op));
+  if (COMPOUND_OPERATORS.some((op) => command.includes(op))) return true;
+  if (SUBSTITUTION_PATTERNS.some((p) => command.includes(p))) return true;
+  if (command.includes("\n")) return true;
+  return false;
 }
 
 /**

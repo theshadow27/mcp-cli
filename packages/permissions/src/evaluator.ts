@@ -70,7 +70,7 @@ function matchesRule(rule: PermissionRule, request: PermissionRequest): boolean 
   const command = extractCommand(request.input);
   if (command !== null) {
     if (!isWildcardPattern(argPattern)) return command === argPattern;
-    return command.startsWith(toArgPrefix(argPattern));
+    return matchBashCommand(command, toArgPrefix(argPattern));
   }
 
   return false;

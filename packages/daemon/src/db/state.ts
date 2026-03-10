@@ -147,18 +147,6 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
-      CREATE TABLE IF NOT EXISTS agent_sessions (
-        session_id   TEXT PRIMARY KEY,
-        pid          INTEGER,
-        state        TEXT NOT NULL DEFAULT 'connecting',
-        model        TEXT,
-        cwd          TEXT,
-        worktree     TEXT,
-        total_cost   REAL NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
-        ended_at     TEXT
-      );
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -197,9 +185,9 @@ export class StateDb {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id)");
 
-    // -- Rename agent_sessions → agent_sessions, add provider column --
+    // -- Rename claude_sessions → agent_sessions, add provider column --
     try {
-      this.db.exec("ALTER TABLE agent_sessions RENAME TO agent_sessions");
+      this.db.exec("ALTER TABLE claude_sessions RENAME TO agent_sessions");
     } catch {
       /* already renamed or doesn't exist yet */
     }

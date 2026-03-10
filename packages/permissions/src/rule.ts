@@ -9,8 +9,6 @@
 export interface PermissionRule {
   /** Tool pattern: "Read", "Bash", "Bash(git *)", etc. */
   tool: string;
-  /** Optional argument pattern extracted from tool string (e.g., "git " from "Bash(git *)"). */
-  pattern?: string;
   action: "allow" | "deny";
 }
 
