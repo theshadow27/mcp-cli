@@ -265,7 +265,7 @@ describe("ClaudeServer", () => {
 
   // ── Crash recovery ──
 
-  test("handleWorkerCrash ends all active sessions in SQLite", async () => {
+  test("handleWorkerCrash marks sessions as disconnected but keeps them active", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db);
@@ -283,17 +283,17 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Both sessions should be marked as ended
+    // Sessions should be marked as disconnected (NOT ended)
     const row1 = db.getSession("crash-1");
-    expect(row1?.state).toBe("ended");
-    expect(row1?.endedAt).not.toBeNull();
+    expect(row1?.state).toBe("disconnected");
+    expect(row1?.endedAt).toBeNull();
 
     const row2 = db.getSession("crash-2");
-    expect(row2?.state).toBe("ended");
-    expect(row2?.endedAt).not.toBeNull();
+    expect(row2?.state).toBe("disconnected");
+    expect(row2?.endedAt).toBeNull();
 
-    // Active sessions cleared
-    expect(server.hasActiveSessions()).toBe(false);
+    // Sessions should still be tracked as active (prevents idle timeout)
+    expect(server.hasActiveSessions()).toBe(true);
   });
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
@@ -420,5 +420,118 @@ describe("ClaudeServer", () => {
     expect(server.port).toBeNull();
     expect(restartedCalled).toBe(false);
     server = undefined; // prevent double stop
+  });
+
+  // ── pruneDeadSessions ──
+
+  test("pruneDeadSessions removes sessions with dead PIDs", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Use a PID that definitely doesn't exist
+    handle({ type: "db:upsert", session: { sessionId: "dead-1", pid: 999999, state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    server.pruneDeadSessions();
+
+    expect(server.hasActiveSessions()).toBe(false);
+    const row = db.getSession("dead-1");
+    expect(row?.state).toBe("ended");
+  });
+
+  test("pruneDeadSessions keeps sessions with live PIDs", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Use our own PID — definitely alive
+    handle({ type: "db:upsert", session: { sessionId: "alive-1", pid: process.pid, state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    server.pruneDeadSessions();
+
+    expect(server.hasActiveSessions()).toBe(true);
+  });
+
+  test("pruneDeadSessions handles sessions without PIDs (no prune)", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Session without PID — should not be pruned (no PID to check)
+    handle({ type: "db:upsert", session: { sessionId: "no-pid", state: "active" } });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    server.pruneDeadSessions();
+
+    expect(server.hasActiveSessions()).toBe(true);
+  });
+
+  // ── onActivity callback ──
+
+  test("onActivity is called on db:upsert, db:state, and db:cost events", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    let activityCount = 0;
+    server.onActivity = () => {
+      activityCount++;
+    };
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "s1", state: "active" } });
+    expect(activityCount).toBe(1);
+
+    handle({ type: "db:state", sessionId: "s1", state: "idle" });
+    expect(activityCount).toBe(2);
+
+    handle({ type: "db:cost", sessionId: "s1", cost: 0.01, tokens: 100 });
+    expect(activityCount).toBe(3);
+
+    // db:end and db:disconnected should NOT trigger onActivity
+    handle({ type: "db:disconnected", sessionId: "s1", reason: "test" });
+    expect(activityCount).toBe(3);
+
+    handle({ type: "db:end", sessionId: "s1" });
+    expect(activityCount).toBe(3);
+  });
+
+  // ── Worker crash + idle timeout interaction ──
+
+  test("hasActiveSessions stays true after worker crash when sessions had PIDs", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // Use our own PID so it's "alive"
+    handle({ type: "db:upsert", session: { sessionId: "crash-alive", pid: process.pid, state: "active" } });
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    // Session should still be tracked (prevents idle timeout from firing)
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // pruneDeadSessions should NOT remove it (PID is alive)
+    server.pruneDeadSessions();
+    expect(server.hasActiveSessions()).toBe(true);
   });
 });

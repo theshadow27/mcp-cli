@@ -20,6 +20,16 @@ import { WorkerClientTransport } from "./worker-transport";
 
 export const CLAUDE_SERVER_NAME = "_claude";
 
+/** Check if a process is still running (signal 0 = existence check). */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── DB event messages from worker ──
 
 interface DbUpsert {
@@ -92,6 +102,7 @@ export class ClaudeServer {
   private db: StateDb;
   private wsPort: number | null = null;
   private readonly activeSessions = new Set<string>();
+  private readonly sessionPids = new Map<string, number>();
   private restartInProgress = false;
   private stopped = false;
   private readonly crashTimestamps: number[] = [];
@@ -100,6 +111,9 @@ export class ClaudeServer {
 
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
+
+  /** Called on worker activity (session events) — lets the daemon reset its idle timer. */
+  onActivity?: () => void;
 
   constructor(
     db: StateDb,
@@ -171,6 +185,7 @@ export class ClaudeServer {
     this.client = null;
     this.wsPort = null;
     this.activeSessions.clear();
+    this.sessionPids.clear();
   }
 
   /** Get the WebSocket server port (available after start). */
@@ -181,6 +196,19 @@ export class ClaudeServer {
   /** True if any WebSocket sessions are active (not yet ended). */
   hasActiveSessions(): boolean {
     return this.activeSessions.size > 0;
+  }
+
+  /** Remove sessions whose processes are no longer alive. */
+  pruneDeadSessions(): void {
+    for (const [sessionId, pid] of this.sessionPids) {
+      if (!isProcessAlive(pid)) {
+        this.activeSessions.delete(sessionId);
+        this.sessionPids.delete(sessionId);
+        this.db.endSession(sessionId);
+        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        console.error(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
+      }
+    }
   }
 
   // ── Crash detection ──
@@ -206,12 +234,13 @@ export class ClaudeServer {
 
     console.error(`[claude-server] Worker crash detected: ${reason}`);
 
-    // Mark all tracked sessions as ended in SQLite
+    // Mark tracked sessions as disconnected in SQLite — NOT ended.
+    // The Claude processes are still running; keep them in activeSessions
+    // so the idle timeout won't fire while they exist.
     for (const sessionId of this.activeSessions) {
-      console.error(`[claude-server] Ending orphaned session: ${sessionId}`);
-      this.db.endSession(sessionId);
+      console.error(`[claude-server] Session ${sessionId} disconnected (worker crash)`);
+      this.db.updateSessionState(sessionId, "disconnected");
     }
-    this.activeSessions.clear();
 
     // Clear stale references (don't terminate — worker is already dead)
     this.worker = null;
@@ -261,16 +290,22 @@ export class ClaudeServer {
         break;
       case "db:upsert":
         this.activeSessions.add(event.session.sessionId);
+        if (event.session.pid != null) {
+          this.sessionPids.set(event.session.sessionId, event.session.pid);
+        }
         this.db.upsertSession(event.session);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         metrics.counter("mcpd_sessions_total").inc();
+        this.onActivity?.();
         break;
       case "db:state":
         this.db.updateSessionState(event.sessionId, event.state);
+        this.onActivity?.();
         break;
       case "db:cost":
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
         metrics.counter("mcpd_session_cost_usd").inc(event.cost);
+        this.onActivity?.();
         break;
       case "db:disconnected":
         // Session lost transport but was NOT bye'd — keep in activeSessions
@@ -279,6 +314,7 @@ export class ClaudeServer {
         break;
       case "db:end":
         this.activeSessions.delete(event.sessionId);
+        this.sessionPids.delete(event.sessionId);
         this.db.endSession(event.sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         break;

@@ -143,6 +143,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         resetIdleTimer();
         return;
       }
+      // Prune sessions whose processes have exited before checking
+      claudeServer.pruneDeadSessions();
       if (claudeServer.hasActiveSessions()) {
         console.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
@@ -193,6 +195,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     onReloadConfig: () => watcher.forceReload(),
   });
   ipcServer.start();
+
+  // Reset idle timer on Claude session worker events (db:upsert, db:state, db:cost)
+  claudeServer.onActivity = () => resetIdleTimer();
 
   // Start idle timer
   resetIdleTimer();
