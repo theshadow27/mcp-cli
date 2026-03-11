@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { capturingLogger, silentLogger } from "@mcp-cli/core";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import {
@@ -870,5 +871,49 @@ describe("ClaudeServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
     const row = db.getSession("no-pid-ttl");
     expect(row?.state).toBe("ended");
+  });
+});
+
+// ── connect timeout metric ──
+
+describe("ClaudeServer connect timeout metric", () => {
+  let server: ClaudeServer | undefined;
+  let db: StateDb | undefined;
+
+  beforeEach(() => {
+    metrics.reset();
+  });
+
+  afterEach(async () => {
+    await server?.stop();
+    db?.close();
+    server = undefined;
+    db = undefined;
+  });
+
+  test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Mock client that never resolves connect() — forces the handshake timeout to fire
+    const neverConnect = {
+      connect: () => new Promise<void>(() => {}),
+      close: async () => {},
+    } as unknown as Client;
+
+    server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50);
+
+    await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
+    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
+  });
+
+  test("does not increment counter on successful connect", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });

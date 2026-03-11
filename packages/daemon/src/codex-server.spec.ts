@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { silentLogger } from "@mcp-cli/core";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { CODEX_SERVER_NAME, CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
 import { StateDb } from "./db/state";
+import { metrics } from "./metrics";
 
 // ── isWorkerEvent ──
 
@@ -553,5 +555,49 @@ describe("CodexServer", () => {
     expect(internals.transport).toBeNull();
     expect(internals.client).toBeNull();
     server = undefined;
+  });
+});
+
+// ── connect timeout metric ──
+
+describe("CodexServer connect timeout metric", () => {
+  let server: CodexServer | undefined;
+  let db: StateDb | undefined;
+
+  beforeEach(() => {
+    metrics.reset();
+  });
+
+  afterEach(async () => {
+    await server?.stop();
+    db?.close();
+    server = undefined;
+    db = undefined;
+  });
+
+  test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Mock client that never resolves connect() — forces the handshake timeout to fire
+    const neverConnect = {
+      connect: () => new Promise<void>(() => {}),
+      close: async () => {},
+    } as unknown as Client;
+
+    server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50);
+
+    await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
+    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
+  });
+
+  test("does not increment counter on successful connect", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new CodexServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });
