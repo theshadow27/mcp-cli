@@ -262,11 +262,13 @@ export class CodexServer {
     return this.activeSessions.size > 0;
   }
 
-  /** Remove sessions that have exceeded the TTL without activity. */
+  /** Remove sessions that have exceeded the TTL without activity.
+   *  sessionAddedAt is refreshed on db:state/db:cost events, so it acts as
+   *  "last seen" — only truly idle sessions get pruned. */
   pruneDeadSessions(now: number = Date.now()): void {
     for (const sessionId of this.activeSessions) {
-      const addedAt = this.sessionAddedAt.get(sessionId) ?? 0;
-      if (now - addedAt > CodexServer.NO_PID_SESSION_TTL_MS) {
+      const lastSeen = this.sessionAddedAt.get(sessionId) ?? 0;
+      if (now - lastSeen > CodexServer.NO_PID_SESSION_TTL_MS) {
         this.activeSessions.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
@@ -417,10 +419,12 @@ export class CodexServer {
         this.onActivity?.();
         break;
       case "db:state":
+        this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionState(event.sessionId, event.state);
         this.onActivity?.();
         break;
       case "db:cost":
+        this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
         this.onActivity?.();
         break;

@@ -235,14 +235,16 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
     };
   }
 
-  // Block until result
+  // Block until next actionable event (result, error, permission request, or ended).
+  // Using waitForEvent instead of waitForResult so that permission_request events
+  // surface to the caller — otherwise on-request approval policy deadlocks.
   const session = sessions.get(sessionId);
   if (!session) {
     return { content: [{ type: "text", text: `Session ${sessionId} already ended` }], isError: true };
   }
 
   const startTime = Date.now();
-  const result = await session.waitForResult(timeoutMs);
+  const event = await session.waitForEvent(timeoutMs);
   const durationS = (Date.now() - startTime) / 1000;
   self.postMessage({
     type: "metrics:observe",
@@ -251,8 +253,8 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
   });
 
   return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    isError: result.type === "session:error",
+    content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
+    isError: event.type === "session:error",
   };
 }
 
@@ -329,12 +331,18 @@ async function handleWait(args: Record<string, unknown>): Promise<{
     return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
   }
 
-  // Wait for any session
+  // Wait for any session — race all waiters and suppress timeout rejections
+  // from the losers to prevent unhandled promise rejections from leaked timers.
   if (sessions.size === 0) {
     return { content: [{ type: "text", text: JSON.stringify([]) }] };
   }
 
-  const event = await Promise.race([...sessions.values()].map((s) => s.waitForEvent(timeoutMs)));
+  const waiters = [...sessions.values()].map((s) => s.waitForEvent(timeoutMs));
+  const event = await Promise.race(waiters);
+  // Swallow timeout rejections from losing waiters
+  for (const p of waiters) {
+    p.catch(() => {});
+  }
   return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
 }
 

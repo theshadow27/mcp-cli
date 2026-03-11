@@ -10,7 +10,9 @@ export const CODEX_TOOLS = [
     name: "codex_prompt",
     description:
       "Start a new Codex session with a prompt, or send a follow-up prompt to an existing session. " +
-      "Returns the session ID immediately by default. Set wait=true to block until Codex produces a result.",
+      "Returns the session ID immediately by default. Set wait=true to block until the next actionable event " +
+      "(result, error, permission request, or ended). With on-request approval, a permission_request event " +
+      "is returned so the caller can approve/deny before continuing.",
     inputSchema: {
       type: "object" as const,
       properties: {
