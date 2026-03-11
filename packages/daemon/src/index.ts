@@ -80,18 +80,18 @@ export function pruneOrphanedWorktrees(
 ): void {
   try {
     const activeSessions = db.listSessions(true);
-    const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
+    const activeWorktrees = new Set(
+      activeSessions.filter((s) => s.worktree).map((s) => `${s.repoRoot ?? s.cwd}:${s.worktree}`),
+    );
 
     const endedSessions = db.listSessions(false);
     let pruned = 0;
 
     for (const session of endedSessions) {
       if (!session.worktree || !session.cwd) continue;
-      if (activeWorktrees.has(session.worktree)) continue;
-
-      // Determine repo root: use persisted repoRoot if available, otherwise fall back to cwd
-      // (pre-hook sessions have cwd == repoRoot; hook-based sessions store repoRoot separately)
       const repoRoot = session.repoRoot ?? session.cwd;
+      if (activeWorktrees.has(`${repoRoot}:${session.worktree}`)) continue;
+
       const hookConfig = readWorktreeConfig(repoRoot);
       const worktreePath = resolveWorktreePath(repoRoot, session.worktree, hookConfig);
       if (!gitOps.pathExists(worktreePath)) continue;

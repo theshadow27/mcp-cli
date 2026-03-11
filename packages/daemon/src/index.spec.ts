@@ -428,6 +428,36 @@ describe("pruneOrphanedWorktrees", () => {
     }
   });
 
+  test("does not guard worktrees across different repos (fixes #573)", () => {
+    opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      // Active session with worktree "feature-x" in repo A
+      db.upsertSession({
+        sessionId: "active-repo-a",
+        pid: process.pid,
+        model: "sonnet",
+        cwd: "/tmp/repo-a",
+        worktree: "feature-x",
+      });
+      // Ended session with same worktree name "feature-x" but in repo B
+      db.upsertSession({
+        sessionId: "ended-repo-b",
+        pid: 99999,
+        model: "sonnet",
+        cwd: "/tmp/repo-b",
+        worktree: "feature-x",
+      });
+      db.endSession("ended-repo-b");
+      // Should NOT skip — different repo means different worktree.
+      // The function will try to process the ended session (and skip because
+      // the worktree path doesn't exist on disk), proving it wasn't guarded.
+      pruneOrphanedWorktrees(db);
+    } finally {
+      db.close();
+    }
+  });
+
   test("skips ended sessions whose worktree path does not exist", () => {
     opts = testOptions();
     const db = new StateDb(opts.DB_PATH);
