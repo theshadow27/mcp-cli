@@ -9,6 +9,7 @@ interface FooterProps {
   denyReasonMode: boolean;
   denyReasonText: string;
   transcriptExpanded: boolean;
+  mailExpanded?: boolean;
 }
 
 export function Footer({
@@ -18,6 +19,7 @@ export function Footer({
   denyReasonMode,
   denyReasonText,
   transcriptExpanded,
+  mailExpanded,
 }: FooterProps) {
   if (denyReasonMode) {
     return (
@@ -124,12 +126,18 @@ export function Footer({
     );
   }
 
-  // Stub tabs (mail)
+  // Mail view
   return (
     <Box marginTop={1}>
       <Text>
         {tabHints}
-        <Text dimColor>esc</Text> back{"  "}
+        <Text dimColor>j/k</Text> {mailExpanded ? "scroll" : "navigate"}
+        {"  "}
+        <Text dimColor>enter</Text> {mailExpanded ? "collapse" : "read"}
+        {"  "}
+        <Text dimColor>m</Text> mark read{"  "}
+        <Text dimColor>esc</Text> {mailExpanded ? "collapse" : "back"}
+        {"  "}
         <Text dimColor>q</Text> quit{"  "}
         <Text dimColor>s</Text> shutdown
       </Text>

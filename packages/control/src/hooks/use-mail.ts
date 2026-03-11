@@ -1,35 +1,39 @@
+import type { MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 
-interface UseUnreadMailResult {
-  unreadCount: number;
+const POLL_INTERVAL_MS = 3000;
+const MAX_MESSAGES = 200;
+
+export interface UseMailResult {
+  messages: MailMessage[];
 }
 
-export interface UseUnreadMailOptions {
+export interface UseMailOptions {
   /** Gate polling — when false, the effect is a no-op. */
   enabled?: boolean;
-  intervalMs?: number;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
 
-export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailResult {
-  const { enabled = true, intervalMs = 10_000, ipcCallFn = ipcCall } = opts;
-  const [unreadCount, setUnreadCount] = useState(0);
+export function useMail(opts: UseMailOptions = {}): UseMailResult {
+  const { enabled = true, ipcCallFn = ipcCall } = opts;
+  const [messages, setMessages] = useState<MailMessage[]>([]);
 
   useEffect(() => {
     if (!enabled) return;
+
     let cancelled = false;
 
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCallFn("readMail", { unreadOnly: true });
+        const result = await ipcCallFn("readMail", { limit: MAX_MESSAGES, recipient: "human" });
         if (!cancelled) {
-          setUnreadCount(result.messages.length);
+          setMessages(result.messages);
         }
       } catch {
-        // Silently ignore — badge just won't update
+        // Daemon unreachable — skip this tick
       }
     }
 
@@ -38,7 +42,7 @@ export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailRes
     async function scheduleNext() {
       await poll();
       if (!cancelled) {
-        timerId = setTimeout(scheduleNext, intervalMs);
+        timerId = setTimeout(scheduleNext, POLL_INTERVAL_MS);
       }
     }
 
@@ -48,7 +52,7 @@ export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailRes
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [enabled, intervalMs, ipcCallFn]);
+  }, [enabled, ipcCallFn]);
 
-  return { unreadCount };
+  return { messages };
 }

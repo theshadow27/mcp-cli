@@ -8,6 +8,8 @@ import { entryKey, formatFullEntry, summarizeEntry } from "../components/claude-
 import { extractToolText } from "./ipc-tool-helpers";
 import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
+import type { MailNav } from "./use-keyboard-mail";
+import { handleMailInput } from "./use-keyboard-mail";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
@@ -87,6 +89,8 @@ export interface StatsNav {
   lineCount: number;
 }
 
+export type { MailNav } from "./use-keyboard-mail";
+
 interface UseKeyboardOptions {
   view: View;
   setView: (view: View) => void;
@@ -94,9 +98,18 @@ interface UseKeyboardOptions {
   logsNav: LogsNav;
   claudeNav: ClaudeNav;
   statsNav: StatsNav;
+  mailNav: MailNav;
 }
 
-export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, statsNav }: UseKeyboardOptions): void {
+export function useKeyboard({
+  view,
+  setView,
+  serversNav,
+  logsNav,
+  claudeNav,
+  statsNav,
+  mailNav,
+}: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
 
@@ -217,6 +230,11 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, sta
         claudeNav.setExpandedSession(null);
         return;
       }
+      if (view === "mail" && mailNav.expandedMessage !== null) {
+        mailNav.setExpandedMessage(null);
+        mailNav.setScrollOffset(() => 0);
+        return;
+      }
       if (view === "logs") logsNav.setFilterText("");
       setView("servers");
       return;
@@ -238,6 +256,8 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, sta
       handleClaudeInput(input, key, claudeNav);
     } else if (view === "stats") {
       handleStatsInput(input, key, statsNav);
+    } else if (view === "mail") {
+      handleMailInput(input, key, mailNav);
     } else if (view === "servers") {
       handleServersInput(input, key, serversNav);
     }
