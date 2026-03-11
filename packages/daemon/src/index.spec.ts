@@ -494,6 +494,105 @@ describe("pruneOrphanedWorktrees", () => {
     }
   });
 
+  test("resolves hook-based worktree paths using repoRoot and .mcx-worktree.json", () => {
+    opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      // Strip inherited git env vars
+      const cleanEnv = { ...process.env };
+      for (const k of [
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_DATE",
+      ]) {
+        delete cleanEnv[k];
+      }
+      const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
+
+      // Create a repo with a custom worktree base via .mcx-worktree.json
+      const repoDir = join(opts.dir, "repo-hooks");
+      mkdirSync(repoDir, { recursive: true });
+      Bun.spawnSync(["git", "init", repoDir], gitOpts);
+      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], gitOpts);
+
+      // Configure custom worktree base
+      const customBase = join(opts.dir, "custom-worktrees");
+      mkdirSync(customBase, { recursive: true });
+      writeFileSync(join(repoDir, ".mcx-worktree.json"), JSON.stringify({ worktree: { base: customBase } }));
+
+      // Create a worktree in the custom base
+      const worktreeDir = join(customBase, "hook-wt");
+      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "hook-branch"], gitOpts);
+
+      // Simulate a hook-based session: cwd = worktreeDir, repoRoot = repoDir
+      db.upsertSession({
+        sessionId: "ended-hook",
+        pid: 99999,
+        model: "sonnet",
+        cwd: worktreeDir,
+        worktree: "hook-wt",
+        repoRoot: repoDir,
+      });
+      db.endSession("ended-hook");
+
+      // Should resolve the path correctly via repoRoot + .mcx-worktree.json
+      pruneOrphanedWorktrees(db);
+
+      // Worktree should be removed
+      expect(existsSync(worktreeDir)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("falls back to cwd when repoRoot is not set (legacy sessions)", () => {
+    opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      const cleanEnv = { ...process.env };
+      for (const k of [
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_DATE",
+      ]) {
+        delete cleanEnv[k];
+      }
+      const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
+
+      const repoDir = join(opts.dir, "repo-legacy");
+      mkdirSync(repoDir, { recursive: true });
+      Bun.spawnSync(["git", "init", repoDir], gitOpts);
+      Bun.spawnSync(["git", "-C", repoDir, "commit", "--allow-empty", "-m", "init"], gitOpts);
+
+      const worktreeDir = join(repoDir, ".claude", "worktrees", "legacy-wt");
+      mkdirSync(join(repoDir, ".claude", "worktrees"), { recursive: true });
+      Bun.spawnSync(["git", "-C", repoDir, "worktree", "add", worktreeDir, "-b", "legacy-branch"], gitOpts);
+
+      // Legacy session: no repoRoot field
+      db.upsertSession({
+        sessionId: "ended-legacy",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        worktree: "legacy-wt",
+      });
+      db.endSession("ended-legacy");
+
+      pruneOrphanedWorktrees(db);
+
+      // Should still work via cwd fallback
+      expect(existsSync(worktreeDir)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   test("handles errors gracefully without crashing", () => {
     // Pass a closed DB to trigger an error inside the function
     opts = testOptions();
