@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { silentLogger } from "@mcp-cli/core";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import {
   CLAUDE_SERVER_NAME,
@@ -390,7 +391,35 @@ describe("ClaudeServer", () => {
     expect(restartedCalled).toBe(true);
   });
 
-  test("handleWorkerCrash debounces concurrent crashes", async () => {
+  test("handleWorkerCrash emits tools/list_changed notification after restart", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    let notificationReceived = false;
+    server.onRestarted = (client) => {
+      client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        notificationReceived = true;
+      });
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    // Poll until the notification arrives (deadline-based, no fixed sleep)
+    const deadline = Date.now() + 5000;
+    while (!notificationReceived && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
+
+    expect(notificationReceived).toBe(true);
+  });
+
+  test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
@@ -406,10 +435,10 @@ describe("ClaudeServer", () => {
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
 
-    // Fire two crashes concurrently — only one should restart
+    // Fire two crashes concurrently — second queues behind the first, both restart
     await Promise.all([crash("crash A"), crash("crash B")]);
 
-    expect(restartCount).toBe(1);
+    expect(restartCount).toBe(2);
   });
 
   test("handleWorkerCrash terminates worker and closes client before nulling", async () => {

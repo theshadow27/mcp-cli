@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DaemonStatus, MetricsSnapshot } from "@mcp-cli/core";
-import { type DumpDeps, cmdDump } from "./dump";
+import { type DumpDeps, type GatherError, cmdDump, isGatherError } from "./dump";
 
 const fakeDaemonStatus: DaemonStatus = {
   pid: 12345,
@@ -198,10 +198,12 @@ describe("cmdDump", () => {
     }
 
     const parsed = JSON.parse(output);
-    expect(parsed.daemon).toBeNull();
-    expect(parsed.metrics).toBeNull();
-    expect(parsed.daemonLog).toBeNull();
-    expect(parsed.sessions).toBeNull();
+    expect(isGatherError(parsed.daemon)).toBe(true);
+    expect((parsed.daemon as GatherError).error).toBe("Connection refused");
+    expect((parsed.daemon as GatherError).gatheredAt).toBeString();
+    expect(isGatherError(parsed.metrics)).toBe(true);
+    expect(isGatherError(parsed.daemonLog)).toBe(true);
+    expect(isGatherError(parsed.sessions)).toBe(true);
     expect(parsed.timestamp).toBeString();
   });
 

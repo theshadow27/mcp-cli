@@ -370,6 +370,28 @@ describe("CodexServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
   });
 
+  test("handleWorkerCrash queues second crash during restart and retries", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new CodexServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    // Fire two crashes concurrently — second queues behind the first, both restart
+    await Promise.all([crash("crash A"), crash("crash B")]);
+
+    expect(restartCount).toBe(2);
+  });
+
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);

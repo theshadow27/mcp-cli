@@ -17,11 +17,15 @@ the signature of true flakiness vs one-time breakage.
 ## How it works
 
 ```bash
-bun run .claude/skills/flaky-tests/mine-flaky-tests.ts
+bun run .claude/skills/flaky-tests/mine-flaky-tests.ts --since 2026-03-10
 ```
 
+**Always pass `--since`** with a recent date (e.g. the start of the last sprint) to
+avoid counting failures from before known fixes landed. Without it, the script
+scans every session file ever created and will report stale hits.
+
 The script:
-1. Reads all JSONL session files for the current project
+1. Reads JSONL session files for the current project (filtered by `--since` if given)
 2. Extracts tool result content (Bash output from test runs)
 3. Matches bun test failure patterns (`✗`, `FAIL`, `expect(...).toEqual` mismatches)
 4. Extracts test file name and test description from failure context

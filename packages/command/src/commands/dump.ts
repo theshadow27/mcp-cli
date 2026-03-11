@@ -27,6 +27,22 @@ import { printError as defaultPrintError } from "../output";
 /** Timeout for individual session transcript fetches (independent of ping timeout). */
 const TRANSCRIPT_TIMEOUT_MS = 5_000;
 
+/** Structured error returned when a gather function fails, instead of opaque null. */
+export interface GatherError {
+  error: string;
+  gatheredAt: string;
+}
+
+function gatherError(err: unknown): GatherError {
+  const message = err instanceof Error ? err.message : String(err);
+  return { error: message, gatheredAt: new Date().toISOString() };
+}
+
+/** Type guard: returns true if the value is a GatherError (has `error` and `gatheredAt` fields). */
+export function isGatherError(v: unknown): v is GatherError {
+  return v != null && typeof v === "object" && "error" in v && "gatheredAt" in v;
+}
+
 // ── Dependency injection ──
 
 export interface DumpDeps {
@@ -81,18 +97,19 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
   ]);
 
   // PID liveness check — uses kill -0, no raw process listing
-  const daemonProcess = daemon && daemon.pid > 0 ? { pid: daemon.pid, alive: d.checkPid(daemon.pid) } : null;
+  const daemonOk = !isGatherError(daemon);
+  const daemonProcess = daemonOk && daemon.pid > 0 ? { pid: daemon.pid, alive: d.checkPid(daemon.pid) } : null;
 
   const dump: Record<string, unknown> = {
     timestamp,
     daemon,
     sessions,
-    servers: daemon?.servers ?? null,
+    servers: daemonOk ? daemon.servers : null,
     metrics,
     worktrees,
     daemonProcess,
     daemonLog: daemonLogs,
-    db: daemon
+    db: daemonOk
       ? {
           path: daemon.dbPath,
           usageStatsCount: daemon.usageStats.length,
@@ -120,31 +137,31 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
 
 // ── Data gatherers ──
 
-async function gatherDaemon(d: DumpDeps): Promise<DaemonStatus | null> {
+async function gatherDaemon(d: DumpDeps): Promise<DaemonStatus | GatherError> {
   try {
     return await d.ipcCall("status", undefined, { timeoutMs: PING_TIMEOUT_MS });
   } catch (err) {
     if (err instanceof ProtocolMismatchError) {
       return { pid: -1, uptime: 0, protocolVersion: err.daemonVersion, servers: [], dbPath: "", usageStats: [] };
     }
-    return null;
+    return gatherError(err);
   }
 }
 
-async function gatherMetrics(d: DumpDeps): Promise<MetricsSnapshot | null> {
+async function gatherMetrics(d: DumpDeps): Promise<MetricsSnapshot | GatherError> {
   try {
     return await d.ipcCall("getMetrics", undefined, { timeoutMs: PING_TIMEOUT_MS });
-  } catch {
-    return null;
+  } catch (err) {
+    return gatherError(err);
   }
 }
 
-async function gatherDaemonLogs(d: DumpDeps): Promise<GetDaemonLogsResult["lines"] | null> {
+async function gatherDaemonLogs(d: DumpDeps): Promise<GetDaemonLogsResult["lines"] | GatherError> {
   try {
     const result = await d.ipcCall("getDaemonLogs", { limit: 200 }, { timeoutMs: PING_TIMEOUT_MS });
     return result.lines;
-  } catch {
-    return null;
+  } catch (err) {
+    return gatherError(err);
   }
 }
 
@@ -163,7 +180,7 @@ function extractText(result: unknown): string | null {
   return item?.text ?? null;
 }
 
-async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise<SessionDumpInfo[] | null> {
+async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise<SessionDumpInfo[] | GatherError> {
   try {
     const result = await d.ipcCall(
       "callTool",
@@ -173,7 +190,7 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
 
     // Parse IPC response directly — don't use formatToolResult as a data pipeline
     const text = extractText(result);
-    if (text == null) return null;
+    if (text == null) return gatherError("No text content in session list response");
     const sessions: SessionInfo[] = JSON.parse(text);
 
     if (!includeTranscripts) return sessions;
@@ -200,15 +217,15 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
       const transcript = r.status === "fulfilled" && r.value != null ? r.value.split("\n") : ["(unavailable)"];
       return { ...session, transcript };
     });
-  } catch {
-    return null;
+  } catch (err) {
+    return gatherError(err);
   }
 }
 
-function gatherWorktrees(d: DumpDeps): Array<{ path: string; branch: string | null }> | null {
+function gatherWorktrees(d: DumpDeps): Array<{ path: string; branch: string | null }> | GatherError {
   try {
     const { stdout, exitCode } = d.exec(["git", "worktree", "list", "--porcelain"]);
-    if (exitCode !== 0) return null;
+    if (exitCode !== 0) return gatherError(`git worktree list exited with code ${exitCode}`);
 
     const worktrees: Array<{ path: string; branch: string | null }> = [];
     let currentPath: string | null = null;
@@ -226,7 +243,7 @@ function gatherWorktrees(d: DumpDeps): Array<{ path: string; branch: string | nu
     if (currentPath) worktrees.push({ path: currentPath, branch: currentBranch });
 
     return worktrees;
-  } catch {
-    return null;
+  } catch (err) {
+    return gatherError(err);
   }
 }
