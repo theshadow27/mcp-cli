@@ -41,22 +41,49 @@ import { metrics } from "./metrics";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
+/** Git operations interface for dependency injection (testable without real git). */
+export interface PruneGitOps {
+  pathExists(path: string): boolean;
+  status(worktreePath: string): { exitCode: number; stdout: string };
+  showBranch(worktreePath: string): { exitCode: number; stdout: string };
+  removeWorktree(repoRoot: string, worktreePath: string): { exitCode: number };
+  deleteBranch(repoRoot: string, branch: string): { exitCode: number };
+  exec(cmd: string[]): { stdout: string; exitCode: number };
+}
+
+/** Default git ops using Bun.spawnSync with cleaned environment. */
+function defaultGitOps(): PruneGitOps {
+  const cleanEnv = { ...process.env };
+  for (const k of ["GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_PREFIX"]) {
+    delete cleanEnv[k];
+  }
+  const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
+  const run = (cmd: string[]) => {
+    const r = Bun.spawnSync(cmd, gitOpts);
+    return { exitCode: r.exitCode, stdout: r.stdout.toString().trim() };
+  };
+  return {
+    pathExists: (p) => existsSync(p),
+    status: (wt) => run(["git", "-C", wt, "status", "--porcelain"]),
+    showBranch: (wt) => run(["git", "-C", wt, "branch", "--show-current"]),
+    removeWorktree: (root, wt) => run(["git", "-C", root, "worktree", "remove", wt]),
+    deleteBranch: (root, branch) => run(["git", "-C", root, "branch", "-d", branch]),
+    exec: run,
+  };
+}
+
 /** Remove worktrees from ended sessions that are clean and have no active session. */
-export function pruneOrphanedWorktrees(db: StateDb, logger: Logger = consoleLogger): void {
+export function pruneOrphanedWorktrees(
+  db: StateDb,
+  logger: Logger = consoleLogger,
+  gitOps: PruneGitOps = defaultGitOps(),
+): void {
   try {
     const activeSessions = db.listSessions(true);
     const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
 
     const endedSessions = db.listSessions(false);
     let pruned = 0;
-
-    // Strip inherited git env vars so child git commands target the correct repo,
-    // not a parent repo (e.g. when called inside a pre-commit hook).
-    const cleanEnv = { ...process.env };
-    for (const k of ["GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_PREFIX"]) {
-      delete cleanEnv[k];
-    }
-    const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
 
     for (const session of endedSessions) {
       if (!session.worktree || !session.cwd) continue;
@@ -67,32 +94,28 @@ export function pruneOrphanedWorktrees(db: StateDb, logger: Logger = consoleLogg
       const repoRoot = session.repoRoot ?? session.cwd;
       const hookConfig = readWorktreeConfig(repoRoot);
       const worktreePath = resolveWorktreePath(repoRoot, session.worktree, hookConfig);
-      if (!existsSync(worktreePath)) continue;
+      if (!gitOps.pathExists(worktreePath)) continue;
 
       // Check if clean
-      const statusResult = Bun.spawnSync(["git", "-C", worktreePath, "status", "--porcelain"], gitOpts);
-      if (statusResult.exitCode !== 0 || statusResult.stdout.toString().trim() !== "") continue;
+      const statusResult = gitOps.status(worktreePath);
+      if (statusResult.exitCode !== 0 || statusResult.stdout.trim() !== "") continue;
 
       // Capture branch before removal
-      const branchResult = Bun.spawnSync(["git", "-C", worktreePath, "branch", "--show-current"], gitOpts);
-      const branch = branchResult.exitCode === 0 ? branchResult.stdout.toString().trim() : null;
+      const branchResult = gitOps.showBranch(worktreePath);
+      const branch = branchResult.exitCode === 0 ? branchResult.stdout.trim() : null;
 
       // Remove worktree
-      const removeResult = Bun.spawnSync(["git", "-C", repoRoot, "worktree", "remove", worktreePath], gitOpts);
+      const removeResult = gitOps.removeWorktree(repoRoot, worktreePath);
       if (removeResult.exitCode === 0) {
-        const gitExec = (cmd: string[]) => {
-          const r = Bun.spawnSync(cmd, gitOpts);
-          return { stdout: r.stdout.toString().trim(), exitCode: r.exitCode };
-        };
-        if (fixCoreBare(repoRoot, gitExec)) {
+        if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
           logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
         }
         pruned++;
         logger.info(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
         // Delete merged branch
         if (branch) {
-          const branchDelete = Bun.spawnSync(["git", "-C", repoRoot, "branch", "-d", branch], gitOpts);
-          if (branchDelete.exitCode === 0) {
+          const deleteResult = gitOps.deleteBranch(repoRoot, branch);
+          if (deleteResult.exitCode === 0) {
             logger.info(`[mcpd] Deleted branch: ${branch} (merged)`);
           }
         }
