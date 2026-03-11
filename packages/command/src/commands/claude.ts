@@ -717,6 +717,7 @@ async function resumeWorktree(
 
 async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
+  const short = args.includes("--short");
   const showPr = args.includes("--pr");
   const result = await d.callTool("claude_session_list", {});
   const text = formatToolResult(result);
@@ -736,6 +737,13 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 
   if (sessions.length === 0) {
     console.error("No active sessions.");
+    return;
+  }
+
+  if (short) {
+    for (const s of sessions) {
+      console.log(formatSessionShort(s));
+    }
     return;
   }
 
@@ -768,6 +776,24 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const cwd = s.cwd ?? "—";
     console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`);
   }
+}
+
+/** Compact one-line format: SESSION STATE MODEL COST TOKENS TURNS */
+export function formatSessionShort(s: {
+  sessionId: string;
+  state: string;
+  model?: string | null;
+  cost?: number | null;
+  tokens?: number;
+  numTurns?: number;
+}): string {
+  const id = s.sessionId.slice(0, 8);
+  const state = s.state;
+  const model = s.model ?? "—";
+  const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
+  const tokens = s.tokens && s.tokens > 0 ? String(s.tokens) : "—";
+  const turns = s.numTurns !== undefined ? String(s.numTurns) : "—";
+  return `${id} ${state} ${model} ${cost} ${tokens} ${turns}`;
 }
 
 function formatPrStatus(pr: PrStatus | null): string {
@@ -1058,6 +1084,7 @@ export interface WaitArgs {
   sessionPrefix: string | undefined;
   timeout: number | undefined;
   afterSeq: number | undefined;
+  short: boolean;
   error: string | undefined;
 }
 
@@ -1065,6 +1092,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   let sessionPrefix: string | undefined;
   let timeout: number | undefined;
   let afterSeq: number | undefined;
+  let short = false;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -1085,12 +1113,14 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         afterSeq = Number(val);
         if (Number.isNaN(afterSeq)) error = "--after must be a number";
       }
+    } else if (arg === "--short") {
+      short = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, timeout, afterSeq, error };
+  return { sessionPrefix, timeout, afterSeq, short, error };
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1115,7 +1145,45 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const result = await d.callTool("claude_wait", toolArgs);
-  console.log(formatToolResult(result));
+  const text = formatToolResult(result);
+
+  if (!parsed.short) {
+    console.log(text);
+    return;
+  }
+
+  // --short: try to parse the result
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.log(text);
+    return;
+  }
+
+  // Timeout fallback returns a session list array
+  if (Array.isArray(data)) {
+    for (const s of data as Array<{
+      sessionId: string;
+      state: string;
+      model?: string | null;
+      cost?: number | null;
+      tokens?: number;
+      numTurns?: number;
+    }>) {
+      console.log(formatSessionShort(s));
+    }
+    return;
+  }
+
+  // Normal event result: SESSION EVENT COST TURNS RESULT_PREVIEW
+  const evt = data as { sessionId?: string; event?: string; cost?: number; numTurns?: number; result?: string };
+  const id = evt.sessionId ? evt.sessionId.slice(0, 8) : "—";
+  const event = evt.event ?? "—";
+  const cost = evt.cost && evt.cost > 0 ? `$${evt.cost.toFixed(4)}` : "—";
+  const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
+  const preview = evt.result ? evt.result.slice(0, 100) : "";
+  console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
 }
 
 /** Parse `git worktree list --porcelain` output into structured entries. */

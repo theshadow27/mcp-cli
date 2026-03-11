@@ -10,6 +10,7 @@ import {
   defaultGetPrStatus,
   extractContentSummary,
   extractIssueNumber,
+  formatSessionShort,
   parseDiffShortstat,
   parseLogArgs,
   parseResumeArgs,
@@ -898,6 +899,60 @@ describe("mcx claude ls", () => {
       console.log = origLog;
     }
   });
+
+  test("--short outputs compact one-line-per-session", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--short"], deps);
+      // No header row — just one line per session
+      expect(logSpy.mock.calls.length).toBe(2);
+      const line1 = (logSpy.mock.calls[0] as string[])[0];
+      expect(line1).toContain("abc12345");
+      expect(line1).toContain("active");
+      expect(line1).toContain("opus-4");
+      expect(line1).toContain("$0.0500");
+      expect(line1).toContain("1000");
+      expect(line1).toContain("3");
+      const line2 = (logSpy.mock.calls[1] as string[])[0];
+      expect(line2).toContain("def67890");
+      expect(line2).toContain("idle");
+    } finally {
+      console.log = origLog;
+    }
+  });
+});
+
+// ── formatSessionShort ──
+
+describe("formatSessionShort", () => {
+  test("formats session as compact one-liner", () => {
+    const line = formatSessionShort({
+      sessionId: "abc12345-1111-2222-3333-444444444444",
+      state: "active",
+      model: "opus-4",
+      cost: 0.05,
+      tokens: 1000,
+      numTurns: 3,
+    });
+    expect(line).toBe("abc12345 active opus-4 $0.0500 1000 3");
+  });
+
+  test("uses dashes for missing values", () => {
+    const line = formatSessionShort({
+      sessionId: "abc12345-1111-2222-3333-444444444444",
+      state: "idle",
+      model: null,
+      cost: 0,
+      tokens: 0,
+    });
+    expect(line).toContain("abc12345 idle — — —");
+  });
 });
 
 // ── defaultGetPrStatus ──
@@ -1479,6 +1534,19 @@ describe("parseWaitArgs", () => {
     const result = parseWaitArgs(["--after"]);
     expect(result.error).toBe("--after requires a sequence number");
   });
+
+  test("parses --short flag", () => {
+    const result = parseWaitArgs(["--short"]);
+    expect(result.short).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --short with session and timeout", () => {
+    const result = parseWaitArgs(["abc123", "--short", "--timeout", "5000"]);
+    expect(result.sessionPrefix).toBe("abc123");
+    expect(result.short).toBe(true);
+    expect(result.timeout).toBe(5000);
+  });
 });
 
 // ── wait ──
@@ -1547,6 +1615,54 @@ describe("mcx claude wait", () => {
       const parsed = JSON.parse(output);
       expect(parsed).toHaveLength(2);
       expect(parsed[0].sessionId).toBe(SESSION_LIST[0].sessionId);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--short outputs compact event line", async () => {
+    const callTool = mock(async () =>
+      toolResult({
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+        event: "session:result",
+        cost: 0.05,
+        numTurns: 3,
+        result: "Done fixing tests",
+      }),
+    );
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short"], deps);
+      expect(logSpy.mock.calls.length).toBe(1);
+      const line = (logSpy.mock.calls[0] as string[])[0];
+      expect(line).toContain("abc12345");
+      expect(line).toContain("session:result");
+      expect(line).toContain("$0.0500");
+      expect(line).toContain("3");
+      expect(line).toContain("Done fixing tests");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--short outputs compact session list on timeout fallback", async () => {
+    const callTool = mock(async () => toolResult(SESSION_LIST));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      // One line per session, no header
+      expect(logSpy.mock.calls.length).toBe(2);
+      const line1 = (logSpy.mock.calls[0] as string[])[0];
+      expect(line1).toContain("abc12345");
+      expect(line1).toContain("active");
     } finally {
       console.log = origLog;
     }
