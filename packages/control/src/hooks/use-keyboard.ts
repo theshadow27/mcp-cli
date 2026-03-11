@@ -2,7 +2,10 @@ import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import type { AuthStatus } from "../components/auth-banner";
-import { type LogSource, buildLogSources } from "./use-logs";
+import { handleClaudeInput } from "./use-keyboard-claude";
+import { handleLogsInput } from "./use-keyboard-logs";
+import { handleServersInput } from "./use-keyboard-servers";
+import type { LogSource } from "./use-logs";
 
 export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
 
@@ -74,97 +77,17 @@ interface UseKeyboardOptions {
 }
 
 export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: UseKeyboardOptions): void {
-  const {
-    servers,
-    selectedIndex,
-    setSelectedIndex,
-    expandedServer,
-    setExpandedServer,
-    refresh,
-    authStatus,
-    setAuthStatus,
-  } = serversNav;
-  const {
-    logSource,
-    setLogSource,
-    setLogScrollOffset,
-    logLineCount,
-    filterMode,
-    setFilterMode,
-    filterText,
-    setFilterText,
-  } = logsNav;
-  const {
-    sessions: claudeSessions,
-    selectedIndex: claudeSelectedIndex,
-    setSelectedIndex: setClaudeSelectedIndex,
-    expandedSession,
-    setExpandedSession,
-    permissionIndex,
-    setPermissionIndex,
-    denyReasonMode,
-    setDenyReasonMode,
-    denyReasonText,
-    setDenyReasonText,
-  } = claudeNav;
   const { exit } = useApp();
 
   useInput((input, key) => {
-    // -- Deny reason mode: capture text for denial message --
-    if (denyReasonMode) {
-      if (key.return) {
-        const selectedSession = claudeSessions[claudeSelectedIndex];
-        const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
-        if (perm) {
-          const args: Record<string, string> = {
-            sessionId: selectedSession.sessionId,
-            requestId: perm.requestId,
-          };
-          if (denyReasonText) args.message = denyReasonText;
-          ipcCall("callTool", {
-            server: "_claude",
-            tool: "claude_deny",
-            arguments: args,
-          }).catch(() => {});
-        }
-        setDenyReasonText("");
-        setDenyReasonMode(false);
-        return;
-      }
-      if (key.escape) {
-        setDenyReasonText("");
-        setDenyReasonMode(false);
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setDenyReasonText((prev) => prev.slice(0, -1));
-        return;
-      }
-      if (input && !key.ctrl && !key.meta) {
-        setDenyReasonText((prev) => prev + input);
-      }
+    // Modal input modes are handled by their respective view handlers first,
+    // before global keys, so they can capture all input.
+    if (view === "claude" && claudeNav.denyReasonMode) {
+      handleClaudeInput(input, key, claudeNav);
       return;
     }
-
-    // -- Filter mode: capture all input for filter text --
-    if (filterMode) {
-      if (key.return) {
-        setFilterMode(false);
-        return;
-      }
-      if (key.escape) {
-        setFilterText("");
-        setFilterMode(false);
-        return;
-      }
-      if (key.backspace || key.delete) {
-        setFilterText((prev) => prev.slice(0, -1));
-        return;
-      }
-      // Append printable characters
-      if (input && !key.ctrl && !key.meta) {
-        setFilterText((prev) => prev + input);
-      }
+    if (view === "logs" && logsNav.filterMode) {
+      handleLogsInput(input, key, logsNav, serversNav.servers);
       return;
     }
 
@@ -198,7 +121,7 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     // Global: `l` toggles to/from logs (backwards compat)
     if (input === "l") {
       if (view === "logs") {
-        setFilterText("");
+        logsNav.setFilterText("");
         setView("servers");
       } else {
         setView("logs");
@@ -208,183 +131,22 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
 
     // Esc: collapse expanded state first, then go back to servers
     if (key.escape && view !== "servers") {
-      if (escAction(view, expandedSession) === "collapse-transcript") {
-        setExpandedSession(null);
+      if (escAction(view, claudeNav.expandedSession) === "collapse-transcript") {
+        claudeNav.setExpandedSession(null);
         return;
       }
-      if (view === "logs") setFilterText("");
+      if (view === "logs") logsNav.setFilterText("");
       setView("servers");
       return;
     }
 
-    // -- Logs view --
+    // Delegate to active view handler
     if (view === "logs") {
-      // Enter filter mode
-      if (input === "f" || input === "/") {
-        setFilterMode(true);
-        return;
-      }
-
-      // Scroll up
-      if (key.upArrow || input === "k") {
-        setLogScrollOffset((o) => Math.max(0, o - 1));
-        return;
-      }
-
-      // Scroll down
-      if (key.downArrow || input === "j") {
-        setLogScrollOffset((o) => Math.min(Math.max(0, logLineCount - 1), o + 1));
-        return;
-      }
-
-      // Cycle log source (t key, since Tab now cycles tabs)
-      if (input === "t") {
-        const sources = buildLogSources(servers);
-        const currentIdx = sources.findIndex((src) => {
-          if (src.type === "daemon" && logSource.type === "daemon") return true;
-          if (src.type === "server" && logSource.type === "server" && src.name === logSource.name) return true;
-          return false;
-        });
-        const nextIdx = (currentIdx + 1) % sources.length;
-        setLogSource(sources[nextIdx]);
-        setLogScrollOffset(() => 0);
-        return;
-      }
-
-      return;
-    }
-
-    // -- Claude view --
-    if (view === "claude") {
-      const selectedSession = claudeSessions[claudeSelectedIndex];
-
-      // Navigate sessions
-      if (key.upArrow || input === "k") {
-        setClaudeSelectedIndex((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (key.downArrow || input === "j") {
-        setClaudeSelectedIndex((i) => Math.min(claudeSessions.length - 1, i + 1));
-        return;
-      }
-
-      // Navigate pending permissions within selected session
-      if (key.leftArrow) {
-        setPermissionIndex((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (key.rightArrow) {
-        const permCount = selectedSession?.pendingPermissionDetails?.length ?? 0;
-        setPermissionIndex((i) => Math.min(Math.max(0, permCount - 1), i + 1));
-        return;
-      }
-
-      // Toggle transcript detail
-      if (key.return) {
-        if (selectedSession) {
-          setExpandedSession(expandedSession === selectedSession.sessionId ? null : selectedSession.sessionId);
-        }
-        return;
-      }
-
-      // Approve targeted pending permission
-      if (input === "a") {
-        const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
-        if (perm) {
-          ipcCall("callTool", {
-            server: "_claude",
-            tool: "claude_approve",
-            arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      // Deny targeted pending permission — enter reason prompt
-      if (input === "d") {
-        const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
-        if (perm) {
-          setDenyReasonMode(true);
-        }
-        return;
-      }
-
-      // End session
-      if (input === "x") {
-        if (selectedSession) {
-          ipcCall("callTool", {
-            server: "_claude",
-            tool: "claude_bye",
-            arguments: { sessionId: selectedSession.sessionId },
-          }).catch(() => {});
-          setExpandedSession(null);
-        }
-        return;
-      }
-
-      return;
-    }
-
-    // -- Servers view --
-    if (view !== "servers") return;
-
-    // Navigation
-    if (key.upArrow || input === "k") {
-      setSelectedIndex((i) => Math.max(0, i - 1));
-      return;
-    }
-    if (key.downArrow || input === "j") {
-      setSelectedIndex((i) => Math.min(servers.length - 1, i + 1));
-      return;
-    }
-
-    // Toggle detail view
-    if (key.return) {
-      const server = servers[selectedIndex];
-      if (server) {
-        setExpandedServer(expandedServer === server.name ? null : server.name);
-      }
-      return;
-    }
-
-    // Trigger auth for selected server
-    if (input === "a") {
-      if (authStatus?.state === "pending") return;
-      const server = servers[selectedIndex];
-      if (!server) return;
-      setAuthStatus({ server: server.name, state: "pending" });
-      ipcCall("triggerAuth", { server: server.name })
-        .then(() => {
-          setAuthStatus({ server: server.name, state: "success" });
-          refresh();
-        })
-        .catch((err) => {
-          setAuthStatus({
-            server: server.name,
-            state: "error",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        });
-      return;
-    }
-
-    // Restart selected server
-    if (input === "r") {
-      const server = servers[selectedIndex];
-      if (server) {
-        ipcCall("restartServer", { server: server.name })
-          .then(refresh)
-          .catch(() => {});
-      }
-      return;
-    }
-
-    // Restart all servers
-    if (input === "R") {
-      ipcCall("restartServer", {})
-        .then(refresh)
-        .catch(() => {});
-      return;
+      handleLogsInput(input, key, logsNav, serversNav.servers);
+    } else if (view === "claude") {
+      handleClaudeInput(input, key, claudeNav);
+    } else if (view === "servers") {
+      handleServersInput(input, key, serversNav);
     }
   });
 }
