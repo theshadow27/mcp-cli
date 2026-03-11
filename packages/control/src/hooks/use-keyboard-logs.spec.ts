@@ -75,6 +75,15 @@ describe("handleLogsInput", () => {
     expect(nav.setLogScrollOffset).toHaveBeenCalled();
   });
 
+  test("t falls back to daemon source when current source no longer exists", () => {
+    const nav = makeNav({ logSource: { type: "server", name: "gone-server" } });
+    const consumed = handleLogsInput("t", baseKey, nav, servers);
+    expect(consumed).toBe(true);
+    // sources = [daemon, s1]; findIndex returns -1 for "gone-server"; nextIdx = 0 → daemon
+    const setLogSourceCalls = (nav.setLogSource as ReturnType<typeof mock>).mock.calls;
+    expect(setLogSourceCalls[0][0]).toEqual({ type: "daemon" });
+  });
+
   test("unrecognized key returns false", () => {
     const nav = makeNav();
     expect(handleLogsInput("z", baseKey, nav, servers)).toBe(false);

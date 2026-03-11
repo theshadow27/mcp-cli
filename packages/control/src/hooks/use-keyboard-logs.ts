@@ -8,16 +8,7 @@ import { buildLogSources } from "./use-logs";
  * Returns true if the input was consumed.
  */
 export function handleLogsInput(input: string, key: Key, nav: LogsNav, servers: ServerStatus[]): boolean {
-  const {
-    logSource,
-    setLogSource,
-    setLogScrollOffset,
-    logLineCount,
-    filterMode,
-    setFilterMode,
-    filterText,
-    setFilterText,
-  } = nav;
+  const { logSource, setLogSource, setLogScrollOffset, logLineCount, filterMode, setFilterMode, setFilterText } = nav;
 
   // -- Filter mode: capture all input for filter text --
   if (filterMode) {
