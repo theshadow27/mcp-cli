@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DaemonStatus, MetricsSnapshot } from "@mcp-cli/core";
-import { type DumpDeps, type GatherError, cmdDump, isGatherError } from "./dump";
+import {
+  type DumpDeps,
+  type GatherError,
+  MAX_DUMP_FILES,
+  cmdDump,
+  isGatherError,
+  rotateDumps,
+  truncateDump,
+} from "./dump";
 
 const fakeDaemonStatus: DaemonStatus = {
   pid: 12345,
@@ -304,6 +312,54 @@ describe("cmdDump", () => {
     expect(parsed.sessions[2].transcript).toEqual(["line1", "line2"]);
   });
 
+  test("rotates old dump files keeping at most MAX_DUMP_FILES", async () => {
+    mkdirSync(tempDir, { recursive: true });
+    // Create MAX_DUMP_FILES + 5 existing dumps
+    const fileNames: string[] = [];
+    for (let i = 0; i < MAX_DUMP_FILES + 5; i++) {
+      const name = `dump-2026-01-${String(i + 1).padStart(2, "0")}_00-00-00.json`;
+      writeFileSync(join(tempDir, name), "{}");
+      fileNames.push(name);
+    }
+
+    rotateDumps(tempDir);
+
+    const remaining = readdirSync(tempDir)
+      .filter((f) => f.startsWith("dump-") && f.endsWith(".json"))
+      .sort();
+    expect(remaining).toHaveLength(MAX_DUMP_FILES);
+    // Oldest 5 should be gone
+    for (let i = 0; i < 5; i++) {
+      expect(remaining).not.toContain(fileNames[i]);
+    }
+    // Newest should remain
+    expect(remaining).toContain(fileNames[MAX_DUMP_FILES + 4]);
+  });
+
+  test("rotateDumps is no-op when under limit", async () => {
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(join(tempDir, "dump-2026-01-01_00-00-00.json"), "{}");
+
+    rotateDumps(tempDir);
+
+    const remaining = readdirSync(tempDir);
+    expect(remaining).toHaveLength(1);
+  });
+
+  test("rotateDumps ignores non-dump files", async () => {
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(join(tempDir, "notes.txt"), "keep me");
+    for (let i = 0; i < MAX_DUMP_FILES + 2; i++) {
+      writeFileSync(join(tempDir, `dump-2026-01-${String(i + 1).padStart(2, "0")}_00-00-00.json`), "{}");
+    }
+
+    rotateDumps(tempDir);
+
+    expect(existsSync(join(tempDir, "notes.txt"))).toBe(true);
+    const dumps = readdirSync(tempDir).filter((f) => f.startsWith("dump-"));
+    expect(dumps).toHaveLength(MAX_DUMP_FILES);
+  });
+
   test("gathers worktree list", async () => {
     const deps = makeDeps({
       dumpsDir: tempDir,
@@ -342,5 +398,49 @@ describe("cmdDump", () => {
     expect(parsed.worktrees).toHaveLength(2);
     expect(parsed.worktrees[0]).toEqual({ path: "/Users/test/repo", branch: "main" });
     expect(parsed.worktrees[1]).toEqual({ path: "/Users/test/repo/.claude/worktrees/test-wt", branch: "feat/test" });
+  });
+});
+
+describe("truncateDump", () => {
+  test("no-op when dump is under size limit", () => {
+    const dump: Record<string, unknown> = { timestamp: "2026-01-01", data: "small" };
+    truncateDump(dump);
+    expect(dump.truncated).toBeUndefined();
+  });
+
+  test("strips transcripts first, then metrics, then logs", () => {
+    // Build a dump that exceeds MAX_DUMP_BYTES via transcripts
+    const bigTranscript = Array.from({ length: 100_000 }, (_, i) => `line ${i} ${"x".repeat(500)}`);
+    const dump: Record<string, unknown> = {
+      timestamp: "2026-01-01",
+      sessions: [
+        { sessionId: "s1", transcript: bigTranscript },
+        { sessionId: "s2", transcript: bigTranscript },
+      ],
+      metrics: { counters: Array.from({ length: 1000 }, () => ({ name: "c", value: 1 })) },
+      daemonLog: Array.from({ length: 1000 }, () => ({ line: "x".repeat(100), timestamp: 0 })),
+    };
+
+    truncateDump(dump);
+
+    expect(dump.truncated).toBe(true);
+    // Transcripts should be replaced
+    const sessions = dump.sessions as Array<{ transcript: string[] }>;
+    expect(sessions[0].transcript).toEqual(["(truncated — dump exceeded size limit)"]);
+    expect(sessions[1].transcript).toEqual(["(truncated — dump exceeded size limit)"]);
+  });
+
+  test("sets truncated flag in output JSON", () => {
+    const bigData = "x".repeat(60 * 1024 * 1024);
+    const dump: Record<string, unknown> = {
+      timestamp: "2026-01-01",
+      sessions: [{ sessionId: "s1", transcript: [bigData] }],
+      metrics: {},
+      daemonLog: [],
+    };
+
+    truncateDump(dump);
+
+    expect(dump.truncated).toBe(true);
   });
 });
