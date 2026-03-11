@@ -8,9 +8,17 @@ interface FooterProps {
   filterText: string;
   denyReasonMode: boolean;
   denyReasonText: string;
+  transcriptExpanded: boolean;
 }
 
-export function Footer({ view, filterMode, filterText, denyReasonMode, denyReasonText }: FooterProps) {
+export function Footer({
+  view,
+  filterMode,
+  filterText,
+  denyReasonMode,
+  denyReasonText,
+  transcriptExpanded,
+}: FooterProps) {
   if (denyReasonMode) {
     return (
       <Box marginTop={1}>
@@ -85,12 +93,16 @@ export function Footer({ view, filterMode, filterText, denyReasonMode, denyReaso
       <Box marginTop={1}>
         <Text>
           {tabHints}
-          <Text dimColor>j/k</Text> navigate{"  "}
-          <Text dimColor>enter</Text> transcript{"  "}
+          <Text dimColor>j/k</Text> {transcriptExpanded ? "messages" : "navigate"}
+          {"  "}
+          <Text dimColor>enter</Text> {transcriptExpanded ? "expand" : "transcript"}
+          {"  "}
+          <Text dimColor>ctrl+o</Text> pager{"  "}
           <Text dimColor>a</Text> approve{"  "}
           <Text dimColor>d</Text> deny{"  "}
           <Text dimColor>x</Text> end session{"  "}
-          <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>esc</Text> {transcriptExpanded ? "collapse" : "back"}
+          {"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
         </Text>
