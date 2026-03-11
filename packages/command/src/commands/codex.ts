@@ -5,7 +5,7 @@
  * No resume, headed, or worktrees subcommands (Codex threads are ephemeral).
  */
 
-import { ipcCall, resolveModelName } from "@mcp-cli/core";
+import { PROMPT_IPC_TIMEOUT_MS, ipcCall, resolveModelName } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
@@ -25,9 +25,6 @@ import {
 
 /** Tool name prefix for the Codex provider. */
 const P = "codex";
-
-/** IPC timeout for blocking codex_prompt calls (5 min + buffer). */
-const PROMPT_IPC_TIMEOUT_MS = 330_000;
 
 // ── Dependency injection ──
 
