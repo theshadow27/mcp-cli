@@ -1,6 +1,8 @@
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DAEMON_BINARY_NAME, DAEMON_DEV_SCRIPT, options } from "./constants";
+import type { Logger } from "./logger";
+import { consoleLogger } from "./logger";
 
 /** Ensure ~/.mcp-cli/ exists with owner-only permissions (0700) */
 export function ensureStateDir(): void {
@@ -13,11 +15,11 @@ export function hardenFile(filePath: string): void {
 }
 
 /** Warn to stderr if runtime state permissions are too open (group/other bits set) */
-export function auditRuntimePermissions(): void {
+export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
   try {
     const dirMode = statSync(options.MCP_CLI_DIR).mode & 0o777;
     if (dirMode & 0o077) {
-      console.error(
+      logger.warn(
         `[security] Warning: ${options.MCP_CLI_DIR} has mode 0${dirMode.toString(8)}, expected 0700 — run: chmod 700 ${options.MCP_CLI_DIR}`,
       );
     }
@@ -29,7 +31,7 @@ export function auditRuntimePermissions(): void {
     try {
       const fileMode = statSync(filePath).mode & 0o777;
       if (fileMode & 0o077) {
-        console.error(
+        logger.warn(
           `[security] Warning: ${filePath} has mode 0${fileMode.toString(8)}, expected 0600 — run: chmod 600 ${filePath}`,
         );
       }

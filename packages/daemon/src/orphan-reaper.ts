@@ -7,6 +7,8 @@
  * The DB still has their PIDs and non-null ended_at rows let us find them.
  */
 
+import type { Logger } from "@mcp-cli/core";
+import { consoleLogger } from "@mcp-cli/core";
 import type { StateDb } from "./db/state";
 
 /**
@@ -17,7 +19,7 @@ import type { StateDb } from "./db/state";
  *
  * Returns the count of processes actually killed (process existed and was signaled).
  */
-export function reapOrphanedSessions(db: StateDb): number {
+export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger): number {
   const activeSessions = db.listSessions(true); // active = ended_at IS NULL
   let reaped = 0;
 
@@ -27,7 +29,7 @@ export function reapOrphanedSessions(db: StateDb): number {
     if (pid !== null) {
       try {
         process.kill(pid, "SIGTERM");
-        console.error(`[mcpd] Reaped orphaned claude process pid=${pid} (session ${sessionId})`);
+        logger.warn(`[mcpd] Reaped orphaned claude process pid=${pid} (session ${sessionId})`);
         reaped++;
       } catch {
         // Process already dead — nothing to do

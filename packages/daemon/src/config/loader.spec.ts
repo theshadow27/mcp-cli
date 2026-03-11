@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
-import { projectConfigPath } from "@mcp-cli/core";
+import { projectConfigPath, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { loadConfig } from "./loader";
 
@@ -90,7 +90,7 @@ describe("loadConfig", () => {
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem", "airtable"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     expect(config.servers.has("filesystem")).toBe(true);
     expect(config.servers.has("airtable")).toBe(true);
 
@@ -106,7 +106,7 @@ describe("loadConfig", () => {
 
     writeJson(projectConfigPath(cwd), fixtureConfig("notion", "atlassian", "sentry"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     expect(config.servers.has("notion")).toBe(true);
     expect(config.servers.has("atlassian")).toBe(true);
     expect(config.servers.has("sentry")).toBe(true);
@@ -131,7 +131,7 @@ describe("loadConfig", () => {
       },
     });
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     expect(config.servers.has("backdoor")).toBe(false);
   });
 
@@ -140,7 +140,7 @@ describe("loadConfig", () => {
     const cwd = join(opts.dir, "claude-test");
     mkdirSync(cwd, { recursive: true });
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     const userSources = config.sources.filter((s) => s.scope === "user");
     expect(userSources).toHaveLength(0);
   });
@@ -153,7 +153,7 @@ describe("loadConfig", () => {
     const configPath = projectConfigPath(cwd);
     writeJson(configPath, fixtureConfig("github"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     const server = config.servers.get("github");
     expect(server).toBeDefined();
     expect(server?.source.scope).toBe("project");
@@ -165,7 +165,7 @@ describe("loadConfig", () => {
     const cwd = join(opts.dir, "empty");
     mkdirSync(cwd, { recursive: true });
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     const projectSources = config.sources.filter((s) => s.scope === "project");
     expect(projectSources).toHaveLength(0);
   });
@@ -177,7 +177,7 @@ describe("loadConfig", () => {
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     const fs = getServerConfig(config, "filesystem");
     if ("command" in fs) {
       expect(fs.env?.MCP_FS_ROOT).toBe("/home/user/projects");
@@ -191,7 +191,7 @@ describe("loadConfig", () => {
 
     writeJson(projectConfigPath(cwd), fixtureConfig("github", "atlassian"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
 
     const gh = getServerConfig(config, "github");
     expect("headers" in gh && gh.headers).toBeDefined();
@@ -207,7 +207,7 @@ describe("loadConfig", () => {
 
     writeJson(projectConfigPath(cwd), fixtureConfig("filesystem", "notion", "atlassian", "jupyter-mcp"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     expect(config.servers.size).toBeGreaterThanOrEqual(4);
 
     const types = [...config.servers.values()]
@@ -226,7 +226,7 @@ describe("loadConfig", () => {
     const configPath = projectConfigPath(cwd);
     writeJson(configPath, fixtureConfig("sentry"));
 
-    const config = await loadConfig(cwd);
+    const config = await loadConfig(cwd, silentLogger);
     const projectSource = config.sources.find((s) => s.scope === "project");
     expect(projectSource).toBeDefined();
     expect(projectSource?.file).toBe(configPath);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { capturingLogger, silentLogger } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
 import { reapOrphanedSessions } from "./orphan-reaper";
 
@@ -36,7 +37,7 @@ describe("reapOrphanedSessions", () => {
 
   test("returns 0 when no active sessions", () => {
     const db = createDb();
-    const result = reapOrphanedSessions(db);
+    const result = reapOrphanedSessions(db, silentLogger);
     expect(result).toBe(0);
   });
 
@@ -44,7 +45,7 @@ describe("reapOrphanedSessions", () => {
     const db = createDb();
     db.upsertSession({ sessionId: "sess-no-pid", state: "connecting", pid: undefined });
 
-    const result = reapOrphanedSessions(db);
+    const result = reapOrphanedSessions(db, silentLogger);
     expect(result).toBe(0);
 
     // Session should be ended in DB
@@ -66,12 +67,16 @@ describe("reapOrphanedSessions", () => {
       return true;
     };
 
-    const result = reapOrphanedSessions(db);
+    const { logger, messages } = capturingLogger();
+    const result = reapOrphanedSessions(db, logger);
     process.kill = origKill;
 
     expect(result).toBe(1);
     expect(killCalls).toHaveLength(1);
     expect(killCalls[0]).toEqual([fakePid, "SIGTERM"]);
+
+    // Verify reap was logged at warn level
+    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("Reaped"))).toBe(true);
 
     // Session should be ended
     const active = db.listSessions(true);
@@ -89,7 +94,7 @@ describe("reapOrphanedSessions", () => {
       throw new Error("ESRCH");
     };
 
-    const result = reapOrphanedSessions(db);
+    const result = reapOrphanedSessions(db, silentLogger);
     process.kill = origKill;
 
     expect(result).toBe(0);
@@ -114,7 +119,7 @@ describe("reapOrphanedSessions", () => {
       return true;
     };
 
-    const result = reapOrphanedSessions(db);
+    const result = reapOrphanedSessions(db, silentLogger);
     process.kill = origKill;
 
     expect(result).toBe(1);
@@ -135,7 +140,7 @@ describe("reapOrphanedSessions", () => {
       return true;
     };
 
-    const result = reapOrphanedSessions(db);
+    const result = reapOrphanedSessions(db, silentLogger);
     process.kill = origKill;
 
     expect(result).toBe(0);

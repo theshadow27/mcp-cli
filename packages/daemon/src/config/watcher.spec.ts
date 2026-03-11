@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
-import { projectConfigPath } from "@mcp-cli/core";
+import { projectConfigPath, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { makeConfig } from "../test-helpers";
 import { configHash } from "./loader";
@@ -42,7 +42,7 @@ async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 8000): Promi
 
 /** Default watcher options for tests: fast polling + bound loadConfig */
 function testWatcherOpts(): ConfigWatcherOptions {
-  return { pollIntervalMs: 200, loadConfig: (cwd: string) => loadConfig(cwd) };
+  return { pollIntervalMs: 200, loadConfig: (cwd: string) => loadConfig(cwd, silentLogger), logger: silentLogger };
 }
 
 // ---------------------------------------------------------------------------

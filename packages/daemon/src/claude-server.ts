@@ -9,8 +9,8 @@
  * Follows the same pattern as AliasServer (alias-server.ts).
  */
 
-import type { JsonSchema, ToolInfo } from "@mcp-cli/core";
-import { formatToolSignature } from "@mcp-cli/core";
+import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
+import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
@@ -133,6 +133,7 @@ export class ClaudeServer {
   private readonly crashTimestamps: number[] = [];
   /** Stored reference to the crash error handler so it can be removed via removeEventListener. */
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
+  private readonly logger: Logger;
   private static readonly MAX_CRASHES = 3;
   private static readonly CRASH_WINDOW_MS = 60_000;
   /** Backoff delays (ms) for retrying start() during crash restart. */
@@ -150,10 +151,12 @@ export class ClaudeServer {
     db: StateDb,
     private daemonId?: string,
     clientFactory?: ClientFactory,
+    logger?: Logger,
   ) {
     this.db = db;
     this.clientFactory =
       clientFactory ?? (() => new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" }));
+    this.logger = logger ?? consoleLogger;
   }
 
   /** Start the worker and connect the MCP client. */
@@ -308,7 +311,7 @@ export class ClaudeServer {
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
-        console.error(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
+        this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
       }
     }
     // Prune sessions without PIDs that have exceeded the TTL — these are zombies
@@ -322,7 +325,7 @@ export class ClaudeServer {
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
-        console.error(
+        this.logger.warn(
           `[claude-server] Pruned pid-less zombie session ${sessionId} (exceeded ${ClaudeServer.NO_PID_SESSION_TTL_MS / 60_000}min TTL)`,
         );
       }
@@ -359,13 +362,13 @@ export class ClaudeServer {
     if (this.restartInProgress || this.stopped) return;
     this.restartInProgress = true;
 
-    console.error(`[claude-server] Worker crash detected: ${reason}`);
+    this.logger.error(`[claude-server] Worker crash detected: ${reason}`);
 
     // Mark tracked sessions as disconnected in SQLite — NOT ended.
     // The Claude processes may still be running; keep them in activeSessions
     // so the idle timeout won't fire while they exist.
     for (const sessionId of this.activeSessions) {
-      console.error(`[claude-server] Session ${sessionId} disconnected (worker crash)`);
+      this.logger.warn(`[claude-server] Session ${sessionId} disconnected (worker crash)`);
       this.db.updateSessionState(sessionId, "disconnected");
     }
 
@@ -398,7 +401,7 @@ export class ClaudeServer {
       this.crashTimestamps.shift();
     }
     if (this.crashTimestamps.length > ClaudeServer.MAX_CRASHES) {
-      console.error(
+      this.logger.error(
         `[claude-server] ${this.crashTimestamps.length} crashes in ${ClaudeServer.CRASH_WINDOW_MS / 1000}s — giving up auto-restart`,
       );
       this.stopped = true;
@@ -422,26 +425,26 @@ export class ClaudeServer {
       for (let attempt = 0; attempt <= backoffs.length; attempt++) {
         if (attempt > 0) {
           const delay = backoffs[attempt - 1] ?? backoffs.at(-1) ?? 2000;
-          console.error(`[claude-server] Retry ${attempt}/${backoffs.length} after ${delay}ms...`);
+          this.logger.warn(`[claude-server] Retry ${attempt}/${backoffs.length} after ${delay}ms...`);
           await Bun.sleep(delay);
         }
 
         // Respect stop() called during backoff sleep
         if (this.stopped) {
-          console.error("[claude-server] Server stopped during restart backoff — aborting");
+          this.logger.info("[claude-server] Server stopped during restart backoff — aborting");
           return;
         }
 
         try {
-          console.error("[claude-server] Restarting worker...");
+          this.logger.info("[claude-server] Restarting worker...");
           const { client, transport } = await this.start();
-          console.error(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
+          this.logger.info(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
 
           // End sessions orphaned by the old worker — they can no longer reconnect
           // to the new WS server (new port). Skip any already ended via db:end.
           for (const sessionId of orphanedSessions) {
             if (!this.activeSessions.has(sessionId)) continue;
-            console.error(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
+            this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
             this.activeSessions.delete(sessionId);
             this.sessionPids.delete(sessionId);
             this.sessionAddedAt.delete(sessionId);
@@ -456,12 +459,12 @@ export class ClaudeServer {
           return;
         } catch (err) {
           lastErr = err;
-          console.error(`[claude-server] Restart attempt ${attempt + 1} failed: ${err}`);
+          this.logger.error(`[claude-server] Restart attempt ${attempt + 1} failed: ${err}`);
         }
       }
 
       // All retries exhausted
-      console.error(
+      this.logger.error(
         `[claude-server] All ${backoffs.length + 1} restart attempts failed (last: ${lastErr}) — giving up`,
       );
       this.stopped = true;
@@ -503,7 +506,7 @@ export class ClaudeServer {
         break;
       case "db:disconnected":
         // Session lost transport but was NOT bye'd — keep in activeSessions
-        console.error(`[claude-server] Session ${event.sessionId} disconnected: ${event.reason}`);
+        this.logger.warn(`[claude-server] Session ${event.sessionId} disconnected: ${event.reason}`);
         this.db.updateSessionState(event.sessionId, "disconnected");
         break;
       case "db:end":

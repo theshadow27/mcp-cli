@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { MCP_TOOL_TIMEOUT_MS } from "@mcp-cli/core";
+import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -230,7 +230,7 @@ describe("wrapTransportError", () => {
 describe("ServerPool.updateConfig", () => {
   test("detects added servers", () => {
     const initial = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
     const result = pool.updateConfig(updated);
@@ -242,7 +242,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("detects removed servers", () => {
     const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "echo" } });
     const result = pool.updateConfig(updated);
@@ -254,7 +254,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("detects changed server configs", () => {
     const initial = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "cat" } });
     const result = pool.updateConfig(updated);
@@ -266,7 +266,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("returns empty lists when config unchanged", () => {
     const initial = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "echo" } });
     const result = pool.updateConfig(updated);
@@ -278,7 +278,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("handles simultaneous add, remove, and change", () => {
     const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "sed" }, c: { command: "grep" } });
     const result = pool.updateConfig(updated);
@@ -290,7 +290,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("listServers reflects updated config after add", () => {
     const initial = makeConfig({ a: { command: "echo" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
     pool.updateConfig(updated);
@@ -304,7 +304,7 @@ describe("ServerPool.updateConfig", () => {
 
   test("listServers reflects updated config after remove", () => {
     const initial = makeConfig({ a: { command: "echo" }, b: { command: "cat" } });
-    const pool = new ServerPool(initial);
+    const pool = new ServerPool(initial, undefined, undefined, silentLogger);
 
     const updated = makeConfig({ a: { command: "echo" } });
     pool.updateConfig(updated);
@@ -599,7 +599,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("successful call does not trigger retry logic", async () => {
     const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     const result = await pool.callTool("test", "my-tool", { arg: 1 });
 
@@ -610,7 +610,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("forwards default MCP_TOOL_TIMEOUT_MS to client.callTool options", async () => {
     const callToolMock = mock((...args: unknown[]) => Promise.resolve({ content: [] }));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await pool.callTool("test", "my-tool", {});
 
@@ -622,7 +622,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("forwards custom timeoutMs to client.callTool options", async () => {
     const callToolMock = mock((...args: unknown[]) => Promise.resolve({ content: [] }));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await pool.callTool("test", "my-tool", {}, 30_000);
 
@@ -633,7 +633,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("non-transient error surfaces immediately without retry", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("HTTP 401 Unauthorized")));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("401 Unauthorized");
     // Should only be called once — no retry
@@ -651,7 +651,7 @@ describe("ServerPool.callTool auto-retry", () => {
     });
 
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     const result = await pool.callTool("test", "my-tool", { x: 42 });
 
@@ -664,7 +664,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("only one retry attempt — second transient error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("Connection closed")));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("Connection closed");
     // callTool was called exactly twice: initial + one retry
@@ -683,7 +683,7 @@ describe("ServerPool.callTool auto-retry", () => {
     });
 
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     const result = await pool.callTool("test", "my-tool", {});
     expect(result).toEqual({ content: [{ text: "recovered" }] });
@@ -693,7 +693,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("permission denied error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("permission denied for resource")));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("permission denied");
     expect(callToolMock).toHaveBeenCalledTimes(1);
@@ -702,7 +702,7 @@ describe("ServerPool.callTool auto-retry", () => {
   test("'not found' error is not retried", async () => {
     const callToolMock = mock(() => Promise.reject(new Error("Tool not found on server")));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow("not found");
     expect(callToolMock).toHaveBeenCalledTimes(1);
@@ -715,7 +715,7 @@ describe("transport lifecycle handlers", () => {
   test("transport onclose resets connection state to disconnected", async () => {
     const transport = makeMockTransport();
     const { connectFn } = mockConnectFn(undefined, transport);
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await pool.listTools("test");
     expect(pool.listServers()[0].state).toBe("connected");
@@ -729,7 +729,7 @@ describe("transport lifecycle handlers", () => {
   test("transport onerror resets connection state and records lastError", async () => {
     const transport = makeMockTransport();
     const { connectFn } = mockConnectFn(undefined, transport);
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     await pool.listTools("test");
 
@@ -744,7 +744,7 @@ describe("transport lifecycle handlers", () => {
   test("transport onclose is a no-op if already disconnected", async () => {
     const transport = makeMockTransport();
     const { connectFn } = mockConnectFn(undefined, transport);
-    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     // Connect then disconnect
     await pool.listTools("test");
@@ -770,7 +770,7 @@ describe("ServerPool.updateConfig reconnect", () => {
         transport: makeMockTransport() as unknown as Transport,
       });
     });
-    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     // Connect server "a" via public API
     await pool.listTools("a");
@@ -795,7 +795,7 @@ describe("ServerPool.updateConfig reconnect", () => {
         transport: makeMockTransport() as unknown as Transport,
       });
     });
-    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     // Server is disconnected — don't connect it
     expect(pool.listServers()[0].state).toBe("disconnected");
@@ -816,7 +816,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   test("callTool awaits pending server before proceeding", async () => {
     const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({}), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -839,7 +839,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("listServers shows pending servers as connecting", () => {
-    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, undefined, silentLogger);
 
     pool.registerPendingVirtualServer("_test", new Promise(() => {}));
 
@@ -851,7 +851,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("listServers does not duplicate once registered", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -872,7 +872,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("listTools awaits all pending servers", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -895,7 +895,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("listTools(serverName) awaits pending server before checking connections", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -921,7 +921,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("awaitPendingServers resolves when all pending servers settle", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -935,7 +935,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("callTool throws 'not found' after pending server fails to start", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     // Register a pending server whose startup fails (the IIFE catches and resolves)
     pool.registerPendingVirtualServer(
@@ -955,9 +955,9 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("failed pending server does not block other operations", async () => {
-    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }));
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, undefined, silentLogger);
     const { connectFn } = mockConnectFn();
-    const poolWithConnect = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn);
+    const poolWithConnect = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn, silentLogger);
 
     // Register a pending server that fails
     poolWithConnect.registerPendingVirtualServer("_broken", Promise.reject(new Error("worker crash")));
@@ -968,7 +968,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("failed pending server shows error state in listServers", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     pool.registerPendingVirtualServer(
       "_broken",
@@ -995,7 +995,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("hasPendingServers returns true while server is starting, false after settled", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -1012,12 +1012,12 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("hasPendingServers returns false when pool has no pending servers", () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
     expect(pool.hasPendingServers()).toBe(false);
   });
 
   test("hasPendingServers returns false after failed pending server settles", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     pool.registerPendingVirtualServer(
       "_broken",
@@ -1034,7 +1034,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   });
 
   test("hasPendingServers returns false after startup timeout elapses", async () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
 
     // Never-settling promise simulates a hung server startup
     pool.registerPendingVirtualServer("_test", new Promise(() => {}), 1);
@@ -1048,7 +1048,7 @@ describe("ServerPool.registerPendingVirtualServer", () => {
   test("server registered after timeout is still usable", async () => {
     const callToolMock = mock(() => Promise.resolve({ content: [{ text: "ok" }] }));
     const { connectFn } = mockConnectFn({ callTool: callToolMock });
-    const pool = new ServerPool(makeConfig({}), undefined, connectFn);
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
 
     let resolve!: () => void;
     const startPromise = new Promise<void>((r) => {
@@ -1111,6 +1111,7 @@ describe("ServerPool.restart", () => {
       makeConfig({ a: { command: "echo" }, b: { command: "cat" }, c: { command: "ls" } }),
       undefined,
       connectFn,
+      silentLogger,
     );
 
     // Connect a and b, leave c disconnected
@@ -1137,7 +1138,12 @@ describe("ServerPool.restart", () => {
         transport: makeMockTransport() as unknown as Transport,
       });
     });
-    const pool = new ServerPool(makeConfig({ a: { command: "echo" }, b: { command: "cat" } }), undefined, connectFn);
+    const pool = new ServerPool(
+      makeConfig({ a: { command: "echo" }, b: { command: "cat" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
 
     // Connect both servers
     await pool.listTools("a");

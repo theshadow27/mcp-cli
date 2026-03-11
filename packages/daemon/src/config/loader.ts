@@ -19,7 +19,8 @@ import type {
   ServerConfig,
   ServerConfigMap,
 } from "@mcp-cli/core";
-import { expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
+import type { Logger } from "@mcp-cli/core";
+import { consoleLogger, expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
 
 /**
  * Load and merge all config sources for the given working directory.
@@ -28,14 +29,14 @@ import { expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
  *   1. ~/.mcp-cli/projects/{mangled-cwd}/servers.json (project-scoped, lower priority)
  *   2. ~/.mcp-cli/servers.json (global, highest priority)
  */
-export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
+export async function loadConfig(cwd = process.cwd(), logger: Logger = consoleLogger): Promise<ResolvedConfig> {
   const servers = new Map<string, ResolvedServer>();
   const sources: ConfigSource[] = [];
 
   // Priority 2 (lower): project-scoped config
   const projectPath = projectConfigPath(cwd);
   if (existsSync(projectPath)) {
-    const projectConfig = await readJsonFile<McpConfigFile>(projectPath);
+    const projectConfig = await readJsonFile<McpConfigFile>(projectPath, logger);
     if (projectConfig?.mcpServers) {
       const source: ConfigSource = { file: projectPath, scope: "project" };
       sources.push(source);
@@ -45,7 +46,7 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
 
   // Priority 1 (highest): ~/.mcp-cli/servers.json (global)
   if (existsSync(options.USER_SERVERS_PATH)) {
-    const userConfig = await readJsonFile<McpConfigFile>(options.USER_SERVERS_PATH);
+    const userConfig = await readJsonFile<McpConfigFile>(options.USER_SERVERS_PATH, logger);
     if (userConfig?.mcpServers) {
       const source: ConfigSource = { file: options.USER_SERVERS_PATH, scope: "mcp-cli" };
       sources.push(source);
@@ -61,7 +62,7 @@ export async function loadConfig(cwd = process.cwd()): Promise<ResolvedConfig> {
         config: expandEnvVarsDeep(resolved.config, process.env as Record<string, string | undefined>, false),
       });
     } catch (err) {
-      console.error(`[config] Failed to expand env vars for server "${name}": ${err}`);
+      logger.error(`[config] Failed to expand env vars for server "${name}": ${err}`);
     }
   }
 
@@ -85,13 +86,13 @@ function addServer(
   target.set(name, { name, config, source });
 }
 
-async function readJsonFile<T>(path: string): Promise<T | null> {
+async function readJsonFile<T>(path: string, logger: Logger = consoleLogger): Promise<T | null> {
   try {
     const text = await readFile(path, "utf-8");
     return JSON.parse(text) as T;
   } catch (err) {
     if (err instanceof SyntaxError) {
-      console.error(`[config] Failed to parse ${path}: ${err.message}`);
+      logger.error(`[config] Failed to parse ${path}: ${err.message}`);
     }
     return null;
   }

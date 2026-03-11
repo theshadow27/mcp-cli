@@ -12,7 +12,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentPermissionRequest, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import { consoleLogger } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
@@ -176,13 +177,15 @@ export class ClaudeWsServer {
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
+  private readonly logger: Logger;
 
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number }) {
+  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number; logger?: Logger }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
+    this.logger = deps?.logger ?? consoleLogger;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -326,7 +329,7 @@ export class ClaudeWsServer {
       if (session.state.state === "ended") return;
       const stderrText = proc.stderr ? (await new Response(proc.stderr).text()).trim() : "";
       const suffix = stderrText ? `: ${stderrText}` : "";
-      console.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
+      this.logger.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
@@ -334,7 +337,7 @@ export class ClaudeWsServer {
         try {
           this.handleSessionEvent(sessionId, session, event);
         } catch (err) {
-          console.error(
+          this.logger.error(
             `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
           );
         }
@@ -356,7 +359,7 @@ export class ClaudeWsServer {
     // Intercept /clear — kill process and respawn for fresh context
     if (trimmed === "/clear") {
       this.clearSession(sessionId).catch((err) => {
-        console.error(`[_claude] clearSession failed for ${sessionId}:`, err);
+        this.logger.error(`[_claude] clearSession failed for ${sessionId}:`, err);
         // Remove the stuck session so it doesn't remain in clearing=true permanently.
         const stuck = this.sessions.get(sessionId);
         if (stuck) {
@@ -412,7 +415,7 @@ export class ClaudeWsServer {
     const result = await Promise.race([exited, timedOut]);
     clearTimeout(timeoutId);
     if (result === "timeout") {
-      console.error("[_claude] Process did not exit after SIGTERM — sending SIGKILL");
+      this.logger.error("[_claude] Process did not exit after SIGTERM — sending SIGKILL");
       try {
         proc.kill(9);
       } catch {
@@ -447,7 +450,7 @@ export class ClaudeWsServer {
       try {
         this.handleSessionEvent(sessionId, session, event);
       } catch (err) {
-        console.error(
+        this.logger.error(
           `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
         );
       }
@@ -508,7 +511,7 @@ export class ClaudeWsServer {
       try {
         this.handleSessionEvent(sessionId, session, event);
       } catch (err) {
-        console.error(
+        this.logger.error(
           `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
         );
       }
@@ -711,7 +714,7 @@ export class ClaudeWsServer {
 
     // If reconnecting from disconnected state, transition back to connecting
     if (session.state.state === "disconnected") {
-      console.error(`[_claude] WebSocket reconnected for session ${sessionId}`);
+      this.logger.error(`[_claude] WebSocket reconnected for session ${sessionId}`);
       session.state.reconnect();
     }
 
@@ -722,7 +725,7 @@ export class ClaudeWsServer {
     try {
       ws.send(outbound);
     } catch (err) {
-      console.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+      this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
       this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
       // Kill the spawned process — it can't communicate without WS
       if (session.proc) {
@@ -742,7 +745,7 @@ export class ClaudeWsServer {
         try {
           session.ws.send(keepAlive());
         } catch (err) {
-          console.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
+          this.logger.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
           this.disconnectSessionWs(sessionId, session, "WebSocket keep-alive send failed");
         }
       }
@@ -758,7 +761,7 @@ export class ClaudeWsServer {
     try {
       messages = parseFrame(rawMessage);
     } catch {
-      console.error(`[_claude] Failed to parse NDJSON from session ${sessionId}`);
+      this.logger.error(`[_claude] Failed to parse NDJSON from session ${sessionId}`);
       return;
     }
 
@@ -770,14 +773,14 @@ export class ClaudeWsServer {
         try {
           this.onSessionEvent?.(sessionId, event);
         } catch (err) {
-          console.error(
+          this.logger.error(
             `[_claude] onSessionEvent callback threw for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
           );
         }
         try {
           this.handleSessionEvent(sessionId, session, event);
         } catch (err) {
-          console.error(
+          this.logger.error(
             `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
           );
         }
@@ -790,7 +793,7 @@ export class ClaudeWsServer {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    console.error(
+    this.logger.error(
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
     );
 
@@ -801,7 +804,7 @@ export class ClaudeWsServer {
 
   private handleSessionEvent(sessionId: string, session: WsSession, event: SessionEvent): void {
     const logErr = (label: string, err: unknown) =>
-      console.error(
+      this.logger.error(
         `[_claude] ${label} for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
       );
 
@@ -822,7 +825,7 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
-          console.error(
+          this.logger.error(
             `[_claude] Permission evaluation failed for session ${sessionId}: ${err instanceof Error ? err.stack : err}`,
           );
         });
@@ -1049,7 +1052,7 @@ export class ClaudeWsServer {
       try {
         session.ws.send(message);
       } catch (err) {
-        console.error(`[_claude] WebSocket send failed: ${err}`);
+        this.logger.error(`[_claude] WebSocket send failed: ${err}`);
         // Find sessionId for this session
         for (const [sid, s] of this.sessions) {
           if (s === session) {

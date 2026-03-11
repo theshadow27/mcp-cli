@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { silentLogger } from "@mcp-cli/core";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
@@ -101,7 +102,7 @@ describe("ClaudeServer", () => {
   test("start() connects and listTools returns claude tools", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
     const { tools } = await client.listTools();
@@ -124,7 +125,7 @@ describe("ClaudeServer", () => {
   test("start() reports a WS port", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -134,7 +135,7 @@ describe("ClaudeServer", () => {
   test("claude_session_list returns empty array initially", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
     const result = await client.callTool({ name: "claude_session_list", arguments: {} });
@@ -147,7 +148,7 @@ describe("ClaudeServer", () => {
   test("claude_session_status returns error for unknown session", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
     const result = await client.callTool({
@@ -163,7 +164,7 @@ describe("ClaudeServer", () => {
   test("worker db:upsert event persists session to SQLite", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -184,7 +185,7 @@ describe("ClaudeServer", () => {
   test("worker db:state event updates session state", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -199,7 +200,7 @@ describe("ClaudeServer", () => {
   test("worker db:cost event updates cost and tokens", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -215,7 +216,7 @@ describe("ClaudeServer", () => {
   test("worker db:end event marks session as ended", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -231,7 +232,7 @@ describe("ClaudeServer", () => {
   test("hasActiveSessions() returns false initially", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -241,7 +242,7 @@ describe("ClaudeServer", () => {
   test("hasActiveSessions() returns true after db:upsert, false after db:end", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -258,7 +259,7 @@ describe("ClaudeServer", () => {
   test("hasActiveSessions() tracks multiple sessions independently", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -278,7 +279,7 @@ describe("ClaudeServer", () => {
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -294,7 +295,7 @@ describe("ClaudeServer", () => {
   test("stop() clears crashTimestamps so stale history does not poison restarts", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -332,7 +333,7 @@ describe("ClaudeServer", () => {
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
     await server.stop();
@@ -346,7 +347,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash ends orphaned sessions after successful restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -377,7 +378,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
     const originalPort = server.port;
@@ -401,7 +402,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash emits tools/list_changed notification after restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -429,7 +430,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash debounces concurrent crashes", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -451,7 +452,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash gives up after too many crashes in window", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -498,7 +499,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash terminates worker and closes client before nulling", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -540,7 +541,7 @@ describe("ClaudeServer", () => {
   test("crash-loop exhaustion clears activeSessions so idle timer can fire", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -568,7 +569,7 @@ describe("ClaudeServer", () => {
   test("retry exhaustion clears activeSessions when all restart attempts fail", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -596,7 +597,7 @@ describe("ClaudeServer", () => {
   test("worker error event triggers crash detection and survives after first error", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -637,7 +638,7 @@ describe("ClaudeServer", () => {
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
     await server.stop();
@@ -663,7 +664,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash retries with backoff when start() fails transiently", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -697,7 +698,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash gives up after all backoff retries are exhausted", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -725,7 +726,7 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash aborts retry loop when stop() is called during backoff", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -778,7 +779,7 @@ describe("ClaudeServer", () => {
   test("restart cleans up old worker message/error handlers to prevent closure leaks", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -807,7 +808,7 @@ describe("ClaudeServer", () => {
   test("stop() cleans up worker message/error handlers", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -827,7 +828,7 @@ describe("ClaudeServer", () => {
   test("pruneDeadSessions removes sessions with dead PIDs", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -846,7 +847,7 @@ describe("ClaudeServer", () => {
   test("pruneDeadSessions keeps sessions with live PIDs", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -863,7 +864,7 @@ describe("ClaudeServer", () => {
   test("pruneDeadSessions handles sessions without PIDs (no prune)", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -882,7 +883,7 @@ describe("ClaudeServer", () => {
   test("onActivity is called on db:upsert, db:state, and db:cost events", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -914,7 +915,7 @@ describe("ClaudeServer", () => {
   test("orphaned sessions are cleaned up after worker crash+restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -940,7 +941,7 @@ describe("ClaudeServer", () => {
   test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
 
@@ -973,7 +974,7 @@ describe("ClaudeServer", () => {
       },
       close: async () => {},
     };
-    server = new ClaudeServer(db, undefined, () => fakeClient as never);
+    server = new ClaudeServer(db, undefined, () => fakeClient as never, silentLogger);
 
     await expect(server.start()).rejects.toThrow("simulated connect failure");
 
@@ -995,7 +996,7 @@ describe("ClaudeServer", () => {
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -1007,7 +1008,7 @@ describe("ClaudeServer", () => {
   test("stop() calls db.endSession() for all active sessions", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 
@@ -1035,7 +1036,7 @@ describe("ClaudeServer", () => {
   test("pruneDeadSessions prunes pid-less sessions after TTL expires", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
 

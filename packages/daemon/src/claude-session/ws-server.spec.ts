@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn, WaitResult } from "./ws-server";
@@ -135,14 +136,14 @@ describe("ClaudeWsServer", () => {
   });
 
   test("start() creates server and returns port", () => {
-    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
     const port = server.start();
     expect(port).toBeGreaterThan(0);
   });
 
   test("prepareSession + spawnClaude starts claude process with correct args", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -165,7 +166,7 @@ describe("ClaudeWsServer", () => {
 
   test("spawnClaude passes --model flag when model is set in config", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("model-session", {
@@ -180,7 +181,7 @@ describe("ClaudeWsServer", () => {
 
   test("spawnClaude omits --model flag when model is not set", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("no-model-session", {
@@ -193,7 +194,7 @@ describe("ClaudeWsServer", () => {
 
   test("WS connect sends user message immediately on open", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello Claude" });
@@ -214,7 +215,7 @@ describe("ClaudeWsServer", () => {
 
   test("system/init triggers session:init event", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     const events: SessionEvent[] = [];
@@ -245,7 +246,7 @@ describe("ClaudeWsServer", () => {
 
   test("result message resolves waitForResult", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -275,7 +276,7 @@ describe("ClaudeWsServer", () => {
 
   test("can_use_tool with auto router is auto-approved", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -305,7 +306,7 @@ describe("ClaudeWsServer", () => {
 
   test("can_use_tool with rules router denies unmatched tool", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -333,7 +334,7 @@ describe("ClaudeWsServer", () => {
 
   test("listSessions returns session info", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("s1", { prompt: "Hello" });
@@ -346,7 +347,7 @@ describe("ClaudeWsServer", () => {
 
   test("getStatus returns detailed session info", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("s1", { prompt: "Hello", worktree: "my-tree" });
@@ -361,7 +362,7 @@ describe("ClaudeWsServer", () => {
 
   test("transcript stores messages up to limit", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -387,7 +388,7 @@ describe("ClaudeWsServer", () => {
 
   test("getTranscript with limit returns last N entries", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -411,7 +412,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForResult rejects on timeout", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -422,7 +423,7 @@ describe("ClaudeWsServer", () => {
 
   test("unknown session path returns 404", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     const res = await fetch(`http://localhost:${port}/session/nonexistent`);
@@ -431,7 +432,7 @@ describe("ClaudeWsServer", () => {
 
   test("invalid path returns 404", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     const res = await fetch(`http://localhost:${port}/invalid`);
@@ -440,7 +441,7 @@ describe("ClaudeWsServer", () => {
 
   test("sendPrompt on existing session sends user message", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -471,7 +472,7 @@ describe("ClaudeWsServer", () => {
 
   test("process exit marks session as disconnected but does not terminate", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -493,7 +494,7 @@ describe("ClaudeWsServer", () => {
 
   test("WS close marks session as disconnected and rejects result waiters", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -527,7 +528,7 @@ describe("ClaudeWsServer", () => {
 
   test("process exit while WS still open marks session as disconnected", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -559,7 +560,7 @@ describe("ClaudeWsServer", () => {
 
   test("WS close then process exit fires disconnect event only once", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -586,7 +587,7 @@ describe("ClaudeWsServer", () => {
 
   test("sendPrompt on disconnected session throws", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -601,7 +602,7 @@ describe("ClaudeWsServer", () => {
 
   test("interrupt on disconnected session throws", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -615,7 +616,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForResult on already-disconnected session rejects immediately", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -629,7 +630,7 @@ describe("ClaudeWsServer", () => {
 
   test("process exit rejects pending result waiters", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -648,7 +649,7 @@ describe("ClaudeWsServer", () => {
 
   test("process exit resolves pending event waiters with disconnect event", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -666,7 +667,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent on already-disconnected session rejects immediately", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -680,7 +681,7 @@ describe("ClaudeWsServer", () => {
 
   test("bye on disconnected session cleans up properly", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello", worktree: "my-tree" });
@@ -696,7 +697,7 @@ describe("ClaudeWsServer", () => {
 
   test("WS reconnect after disconnect transitions back to connecting", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -727,7 +728,7 @@ describe("ClaudeWsServer", () => {
 
   test("terminateSession sets spawnAlive to false", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -757,7 +758,7 @@ describe("ClaudeWsServer", () => {
       },
     });
 
-    server = new ClaudeWsServer({ spawn: stubbornSpawn, killTimeoutMs: 50 });
+    server = new ClaudeWsServer({ spawn: stubbornSpawn, killTimeoutMs: 50, logger: silentLogger });
     server.start();
     server.prepareSession("stubborn", { prompt: "Hello" });
     server.spawnClaude("stubborn");
@@ -803,7 +804,7 @@ describe("ClaudeWsServer", () => {
 
   test("respondToPermission sends control_response to WS", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     // Use delegate strategy so auto-router doesn't handle can_use_tool
@@ -838,7 +839,7 @@ describe("ClaudeWsServer", () => {
 
   test("interrupt sends sigint to session", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -862,7 +863,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent resolves on session:result", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -900,7 +901,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent with null sessionId resolves on any session event", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -926,7 +927,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent resolves on permission_request (delegate mode)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -955,7 +956,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent rejects on timeout", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -968,7 +969,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent resolves immediately when session is already idle", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1002,7 +1003,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent resolves immediately when any session is idle (null filter)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("s1", { prompt: "Hello" });
@@ -1027,7 +1028,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent resolves immediately when session has pending permission", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -1063,7 +1064,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent rejects for unknown session", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     await expect(server.waitForEvent("nonexistent", 100)).rejects.toThrow("Unknown session");
@@ -1071,7 +1072,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent rejects with no active sessions", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     await expect(server.waitForEvent(null, 100)).rejects.toThrow("No active sessions");
@@ -1079,7 +1080,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent rejects when session terminates", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1095,7 +1096,7 @@ describe("ClaudeWsServer", () => {
 
   test("bye returns worktree info", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("wt-session", { prompt: "Hello", worktree: "claude-test1", cwd: "/repo" });
@@ -1107,7 +1108,7 @@ describe("ClaudeWsServer", () => {
 
   test("bye returns null worktree for non-worktree session", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("plain-session", { prompt: "Hello" });
@@ -1119,7 +1120,7 @@ describe("ClaudeWsServer", () => {
 
   test("sessionCount tracks active sessions", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     expect(server.sessionCount).toBe(0);
@@ -1139,7 +1140,7 @@ describe("ClaudeWsServer", () => {
 
   test("stop() cleans up all sessions", () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("s1", { prompt: "Hello" });
@@ -1155,7 +1156,7 @@ describe("ClaudeWsServer", () => {
 
   test("listSessions includes pendingPermissionDetails", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -1187,7 +1188,7 @@ describe("ClaudeWsServer", () => {
 
   test("pendingPermissionDetails clears after respondToPermission", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", {
@@ -1218,14 +1219,14 @@ describe("ClaudeWsServer", () => {
   // ── Sequence cursors ──
 
   test("currentSeq starts at 0", () => {
-    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
     server.start();
     expect(server.currentSeq).toBe(0);
   });
 
   test("events increment currentSeq and include seq in event", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1250,7 +1251,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEventsSince returns immediately when buffered events exist", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1280,7 +1281,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEventsSince blocks when no events past cursor", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1314,7 +1315,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEventsSince returns empty events on timeout (no error)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1328,7 +1329,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEventsSince filters by sessionId from buffer", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     // Create two sessions sequentially (mockSpawn reuses PID, but that's fine)
@@ -1366,7 +1367,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEventsSince with null sessionId returns all session events", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("s1", { prompt: "Hello" });
@@ -1388,14 +1389,14 @@ describe("ClaudeWsServer", () => {
   });
 
   test("waitForEventsSince rejects for unknown session", async () => {
-    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
     server.start();
 
     await expect(server.waitForEventsSince("nonexistent", 0, 100)).rejects.toThrow("Unknown session");
   });
 
   test("waitForEventsSince rejects with no active sessions", async () => {
-    server = new ClaudeWsServer({ spawn: mockSpawn().spawn });
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
     server.start();
 
     await expect(server.waitForEventsSince(null, 0, 100)).rejects.toThrow("No active sessions");
@@ -1448,7 +1449,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent session:model_changed event includes session snapshot with snapshotTs", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1477,7 +1478,7 @@ describe("ClaudeWsServer", () => {
 
   test("waitForEvent session:disconnected event includes session snapshot with snapshotTs", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1570,7 +1571,7 @@ describe("ClaudeWsServer", () => {
 
   test("sendPrompt with /model sends set_model control request", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1612,7 +1613,7 @@ describe("ClaudeWsServer", () => {
 
   test("sendPrompt with regular message is not intercepted", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1735,7 +1736,7 @@ describe("ClaudeWsServer", () => {
 
   test("resolveWaiters still runs when a waiting resolve callback throws on session:result", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1780,7 +1781,7 @@ describe("ClaudeWsServer", () => {
 
   test("resolveWaiters still runs when a waiting resolve callback throws on session:error", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1834,7 +1835,7 @@ describe("ClaudeWsServer", () => {
 
   test("handleSessionEvent throw does not drop remaining events in the same NDJSON frame", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     // Make handleSessionEvent throw on session:init but delegate normally for all other events.
@@ -1871,7 +1872,7 @@ describe("ClaudeWsServer", () => {
 
   test("throwing onSessionEvent callback does not prevent handleSessionEvent from running", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = server.start();
 
     // onSessionEvent that always throws — must not block handleSessionEvent from resolving waiters

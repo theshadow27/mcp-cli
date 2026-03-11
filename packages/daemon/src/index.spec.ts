@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PROTOCOL_VERSION } from "@mcp-cli/core";
+import { PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
@@ -37,6 +37,7 @@ async function startTestDaemonInProcess(overrides?: Partial<Parameters<typeof st
   return startDaemon({
     skipLogSetup: true,
     skipVirtualServers: true,
+    logger: silentLogger,
     ...overrides,
   });
 }

@@ -5,7 +5,16 @@
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import type { IpcError, IpcMethod, IpcRequest, IpcResponse, LiveSpan, ResolvedConfig, ToolInfo } from "@mcp-cli/core";
+import type {
+  IpcError,
+  IpcMethod,
+  IpcRequest,
+  IpcResponse,
+  LiveSpan,
+  Logger,
+  ResolvedConfig,
+  ToolInfo,
+} from "@mcp-cli/core";
 import {
   BUILD_VERSION,
   CallToolParamsSchema,
@@ -29,6 +38,7 @@ import {
   SendMailParamsSchema,
   TriggerAuthParamsSchema,
   WaitForMailParamsSchema,
+  consoleLogger,
   hardenFile,
   isDefineAlias,
   options,
@@ -68,6 +78,7 @@ export class IpcServer {
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
+  private logger: Logger;
 
   constructor(
     private pool: ServerPool,
@@ -81,6 +92,7 @@ export class IpcServer {
       onRequestComplete?: () => void;
       onShutdown?: () => void;
       onReloadConfig?: () => Promise<void>;
+      logger?: Logger;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -90,6 +102,7 @@ export class IpcServer {
     this.onShutdown = options.onShutdown ?? (() => process.exit(0));
     this.onReloadConfig = options.onReloadConfig ?? null;
     this.aliasServer = aliasServer;
+    this.logger = options.logger ?? consoleLogger;
     this.registerHandlers();
   }
 
@@ -179,7 +192,7 @@ export class IpcServer {
     // Restrict socket to owner-only access (0600)
     hardenFile(socketPath);
 
-    console.error(`[ipc] Listening on ${socketPath}`);
+    this.logger.info(`[ipc] Listening on ${socketPath}`);
   }
 
   /** Stop listening and clean up socket */
@@ -212,9 +225,10 @@ export class IpcServer {
     }
 
     // Create a per-request span (child of caller's traceparent, or root)
-    const span = startSpan(`ipc.${request.method}`, request.traceparent, () =>
-      metrics.counter("mcpd_trace_fallback_root_total").inc(),
-    );
+    const span = startSpan(`ipc.${request.method}`, {
+      parentTraceparent: request.traceparent,
+      onFallback: () => metrics.counter("mcpd_trace_fallback_root_total").inc(),
+    });
     span.setAttribute("ipc.method", request.method);
     const ctx: RequestContext = { span };
 
@@ -236,7 +250,7 @@ export class IpcServer {
       try {
         this.db.recordSpan(span.end(), this.daemonId);
       } catch (e) {
-        console.error("[ipc] Failed to record span:", e);
+        this.logger.error("[ipc] Failed to record span:", e);
       }
     }
   }
