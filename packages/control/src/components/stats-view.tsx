@@ -6,6 +6,8 @@ interface StatsViewProps {
   metrics: MetricsSnapshot | null;
   loading: boolean;
   error: string | null;
+  /** Timestamp (ms) when a daemon restart was detected, or null. */
+  restartedAt?: number | null;
 }
 
 /** Find a counter value by name and optional label match. */
@@ -118,7 +120,14 @@ function formatUptime(seconds: number): string {
   return `${h}h ${m}m`;
 }
 
-export function StatsView({ metrics, loading, error }: StatsViewProps) {
+function formatElapsed(ms: number): string {
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+}
+
+export function StatsView({ metrics, loading, error, restartedAt }: StatsViewProps) {
   if (loading && !metrics) {
     return (
       <Box marginLeft={2} marginTop={1}>
@@ -181,6 +190,11 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
       {staleError && (
         <Box marginLeft={2}>
           <Text color="yellow">⚠ stale data — {error}</Text>
+        </Box>
+      )}
+      {restartedAt && (
+        <Box marginLeft={2}>
+          <Text color="yellow">⟳ daemon restarted {formatElapsed(Date.now() - restartedAt)} ago — counters reset</Text>
         </Box>
       )}
       {/* Aggregate dashboard */}

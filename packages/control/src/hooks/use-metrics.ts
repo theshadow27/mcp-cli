@@ -1,11 +1,13 @@
 import type { MetricsSnapshot } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface UseMetricsResult {
   metrics: MetricsSnapshot | null;
   error: string | null;
   loading: boolean;
+  /** Timestamp (ms) when a daemon restart was detected, or null if no restart seen. */
+  restartedAt: number | null;
 }
 
 export interface UseMetricsOptions {
@@ -20,6 +22,8 @@ export function useMetrics(opts: UseMetricsOptions = {}): UseMetricsResult {
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [restartedAt, setRestartedAt] = useState<number | null>(null);
+  const prevDaemonIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -30,6 +34,14 @@ export function useMetrics(opts: UseMetricsOptions = {}): UseMetricsResult {
       try {
         const result = await ipcCallFn("getMetrics");
         if (!cancelled) {
+          // Detect daemon restart by comparing daemonId
+          if (result.daemonId) {
+            const prev = prevDaemonIdRef.current;
+            if (prev !== null && prev !== result.daemonId) {
+              setRestartedAt(Date.now());
+            }
+            prevDaemonIdRef.current = result.daemonId;
+          }
           setMetrics(result);
           setError(null);
           setLoading(false);
@@ -59,5 +71,5 @@ export function useMetrics(opts: UseMetricsOptions = {}): UseMetricsResult {
     };
   }, [intervalMs, enabled, ipcCallFn]);
 
-  return { metrics, error, loading };
+  return { metrics, error, loading, restartedAt };
 }

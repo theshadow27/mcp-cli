@@ -215,6 +215,35 @@ describe("StatsView", () => {
     expect(output).not.toContain("Top Tools");
   });
 
+  it("shows daemon restart banner when restartedAt is set", () => {
+    const snap = makeSnapshot({
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 10 }],
+    });
+
+    const restartedAt = Date.now() - 120_000; // 2 minutes ago
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, restartedAt }),
+    );
+    const output = lastFrame() ?? "";
+
+    expect(output).toContain("daemon restarted");
+    expect(output).toContain("ago");
+    expect(output).toContain("counters reset");
+  });
+
+  it("does not show restart banner when restartedAt is null", () => {
+    const snap = makeSnapshot({
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 10 }],
+    });
+
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, restartedAt: null }),
+    );
+    const output = lastFrame() ?? "";
+
+    expect(output).not.toContain("daemon restarted");
+  });
+
   it("shows stale data warning when error occurs after successful fetch", () => {
     const snap = makeSnapshot({
       gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 60 }],

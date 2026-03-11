@@ -45,6 +45,7 @@ export function App() {
     metrics: metricsData,
     error: metricsError,
     loading: metricsLoading,
+    restartedAt: metricsRestartedAt,
   } = useMetrics({ enabled: view === "stats" });
   const {
     lines: logLines,
@@ -177,7 +178,12 @@ export function App() {
           permissionIndex={permissionIndex}
         />
       ) : view === "stats" ? (
-        <StatsView metrics={metricsData} loading={metricsLoading} error={metricsError} />
+        <StatsView
+          metrics={metricsData}
+          loading={metricsLoading}
+          error={metricsError}
+          restartedAt={metricsRestartedAt}
+        />
       ) : (
         <Box marginTop={1}>
           <Text dimColor>Coming soon</Text>
