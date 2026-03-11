@@ -1,19 +1,17 @@
 /**
  * Centralized test failure logging.
  *
- * Writes JSONL entries to ~/.mcp-cli/test-failures.log so failures are
- * preserved across ephemeral worktree lifetimes.
+ * Uses bun:sqlite for concurrent-safe persistence at ~/.mcp-cli/test-failures.db.
+ * Failures are preserved across ephemeral worktree lifetimes.
  */
 
+import { Database } from "bun:sqlite";
 import { execSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
-/** Max entries before trimming oldest on write */
+/** Max entries before pruning oldest on write */
 const MAX_ENTRIES = 10_000;
-
-/** Max file size before triggering rotation (10 MB) */
-const MAX_BYTES = 10 * 1024 * 1024;
 
 export interface TestFailureEntry {
   timestamp: string;
@@ -28,11 +26,64 @@ export interface TestFailureEntry {
   error: string;
 }
 
-/** Resolve the log path from env or default */
-export function getLogPath(): string {
-  const dir = process.env.MCP_CLI_DIR || `${process.env.HOME}/.mcp-cli`;
-  return `${dir}/test-failures.log`;
+/** Lazy-opened database handle per path */
+const dbCache = new Map<string, Database>();
+
+function openDb(dbPath: string): Database {
+  const cached = dbCache.get(dbPath);
+  if (cached) return cached;
+
+  const dir = dirname(dbPath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  const db = new Database(dbPath, { create: true });
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA busy_timeout = 3000");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS test_failures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      file TEXT NOT NULL,
+      test TEXT NOT NULL,
+      worktree TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      pr INTEGER,
+      exit_code INTEGER NOT NULL,
+      retry_passed INTEGER NOT NULL DEFAULT 0,
+      duration INTEGER NOT NULL,
+      error TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_test_failures_timestamp ON test_failures(timestamp)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_test_failures_file ON test_failures(file)
+  `);
+
+  dbCache.set(dbPath, db);
+  return db;
 }
+
+/** Close and remove a cached database handle (for testing cleanup). */
+export function closeDb(dbPath: string): void {
+  const cached = dbCache.get(dbPath);
+  if (cached) {
+    cached.close();
+    dbCache.delete(dbPath);
+  }
+}
+
+/** Resolve the database path from env or default */
+export function getDbPath(): string {
+  const dir = process.env.MCP_CLI_DIR || `${process.env.HOME}/.mcp-cli`;
+  return `${dir}/test-failures.db`;
+}
+
+/** @deprecated Use getDbPath() instead */
+export const getLogPath = getDbPath;
 
 /** Extract current git context (worktree name, branch, PR number) */
 export function getGitContext(): { worktree: string; branch: string; pr: number | null } {
@@ -48,7 +99,7 @@ export function getGitContext(): { worktree: string; branch: string; pr: number 
 
   try {
     const toplevel = execSync("git rev-parse --show-toplevel", { encoding: "utf-8", timeout: 5000 }).trim();
-    const dirName = basename(toplevel);
+    const dirName = toplevel.split("/").pop() ?? "main";
     // Worktrees live in .claude/worktrees/<name>
     if (toplevel.includes(".claude/worktrees/")) {
       worktree = dirName;
@@ -110,60 +161,99 @@ export function parseTestFailures(output: string): Array<{ file: string; test: s
   return failures;
 }
 
-/** Append one or more failure entries to the log file, rotating if needed. */
-export function appendFailures(entries: TestFailureEntry[], logPath?: string): void {
-  const path = logPath ?? getLogPath();
-  const dir = dirname(path);
+/** Append one or more failure entries to the database, pruning if needed. */
+export function appendFailures(entries: TestFailureEntry[], dbPath?: string): void {
+  const path = dbPath ?? getDbPath();
+  const db = openDb(path);
 
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  const insert = db.prepare(`
+    INSERT INTO test_failures (timestamp, file, test, worktree, branch, pr, exit_code, retry_passed, duration, error)
+    VALUES ($timestamp, $file, $test, $worktree, $branch, $pr, $exitCode, $retryPassed, $duration, $error)
+  `);
 
-  const lines = `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-  appendFileSync(path, lines, "utf-8");
+  const insertMany = db.transaction((rows: TestFailureEntry[]) => {
+    for (const e of rows) {
+      insert.run({
+        $timestamp: e.timestamp,
+        $file: e.file,
+        $test: e.test,
+        $worktree: e.worktree,
+        $branch: e.branch,
+        $pr: e.pr,
+        $exitCode: e.exitCode,
+        $retryPassed: e.retryPassed ? 1 : 0,
+        $duration: e.duration,
+        $error: e.error,
+      });
+    }
+  });
 
-  // Rotate if needed
-  rotateIfNeeded(path);
+  insertMany(entries);
+
+  // Prune if over limit
+  pruneIfNeeded(db);
 }
 
-/** Trim log to MAX_ENTRIES if it exceeds size or entry limits. */
-export function rotateIfNeeded(logPath: string): void {
-  if (!existsSync(logPath)) return;
+/** Delete rows beyond MAX_ENTRIES, keeping the most recent. */
+function pruneIfNeeded(db: Database): void {
+  const countRow = db.prepare("SELECT COUNT(*) as cnt FROM test_failures").get() as { cnt: number };
+  if (countRow.cnt <= MAX_ENTRIES) return;
 
-  try {
-    const stat = statSync(logPath);
-    const content = readFileSync(logPath, "utf-8");
-    const allLines = content.split("\n").filter((l) => l.trim());
-
-    if (stat.size <= MAX_BYTES && allLines.length <= MAX_ENTRIES) return;
-
-    // Trim to MAX_ENTRIES, write atomically via temp+rename
-    const keep = allLines.slice(-MAX_ENTRIES);
-    const tmpPath = `${logPath}.tmp`;
-    writeFileSync(tmpPath, `${keep.join("\n")}\n`, "utf-8");
-    renameSync(tmpPath, logPath);
-  } catch {
-    return;
-  }
+  db.exec(`
+    DELETE FROM test_failures WHERE id NOT IN (
+      SELECT id FROM test_failures ORDER BY id DESC LIMIT ${MAX_ENTRIES}
+    )
+  `);
 }
 
-/** Read all entries from the log file. */
-export function readFailures(logPath?: string): TestFailureEntry[] {
-  const path = logPath ?? getLogPath();
+/** Read entries from the database with optional filters. */
+export function readFailures(dbPath?: string, filters?: { since?: number; file?: string }): TestFailureEntry[] {
+  const path = dbPath ?? getDbPath();
   if (!existsSync(path)) return [];
 
-  const content = readFileSync(path, "utf-8");
-  return content
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((line) => {
-      try {
-        return JSON.parse(line) as TestFailureEntry;
-      } catch {
-        return null;
-      }
-    })
-    .filter((e): e is TestFailureEntry => e !== null);
+  const db = openDb(path);
+
+  const conditions: string[] = [];
+  const params: Record<string, string | number> = {};
+
+  if (filters?.since) {
+    conditions.push("timestamp >= $since");
+    params.$since = new Date(filters.since).toISOString();
+  }
+  if (filters?.file) {
+    conditions.push("file LIKE $file");
+    params.$file = `%${filters.file}%`;
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const query = `SELECT * FROM test_failures ${where} ORDER BY id ASC`;
+
+  const rows = db.prepare(query).all(params) as Array<{
+    id: number;
+    timestamp: string;
+    file: string;
+    test: string;
+    worktree: string;
+    branch: string;
+    pr: number | null;
+    exit_code: number;
+    retry_passed: number;
+    duration: number;
+    error: string;
+  }>;
+
+  return rows.map((r) => ({
+    timestamp: r.timestamp,
+    file: r.file,
+    test: r.test,
+    worktree: r.worktree,
+    branch: r.branch,
+    pr: r.pr,
+    exitCode: r.exit_code,
+    retryPassed: r.retry_passed === 1,
+    duration: r.duration,
+    error: r.error,
+  }));
 }
 
 /**
@@ -173,14 +263,14 @@ export function readFailures(logPath?: string): TestFailureEntry[] {
  * @param exitCode - process exit code
  * @param duration - total test duration in ms
  * @param retryPassed - did a retry succeed?
- * @param logPath - override log path (for testing)
+ * @param dbPath - override db path (for testing)
  */
 export function logTestRun(
   output: string,
   exitCode: number,
   duration: number,
   retryPassed = false,
-  logPath?: string,
+  dbPath?: string,
 ): void {
   if (exitCode === 0 && !retryPassed) return; // nothing to log on clean pass
 
@@ -209,7 +299,7 @@ export function logTestRun(
               ?.trim() ?? "",
         },
       ],
-      logPath,
+      dbPath,
     );
     return;
   }
@@ -227,5 +317,5 @@ export function logTestRun(
     error: f.error,
   }));
 
-  appendFailures(entries, logPath);
+  appendFailures(entries, dbPath);
 }
