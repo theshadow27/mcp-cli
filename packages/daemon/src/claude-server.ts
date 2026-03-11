@@ -44,6 +44,7 @@ interface DbUpsert {
     model?: string;
     cwd?: string;
     worktree?: string;
+    repoRoot?: string;
   };
 }
 
