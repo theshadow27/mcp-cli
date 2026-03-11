@@ -41,7 +41,7 @@ import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } fro
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
-import { MetricsServer, buildMetricsToolCache } from "./metrics-server";
+import { MetricsServer } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
@@ -395,8 +395,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       "_metrics",
       (async () => {
         try {
-          const { client: metricsClient, transport: metricsTransport } = await metricsServer.start();
-          const metricsTools = buildMetricsToolCache();
+          const {
+            client: metricsClient,
+            transport: metricsTransport,
+            tools: metricsTools,
+          } = await metricsServer.start();
           pool.registerVirtualServer("_metrics", metricsClient, metricsTransport, metricsTools);
           logger.info("[mcpd] Metrics server started");
         } catch (err) {

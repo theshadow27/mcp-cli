@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MetricsCollector } from "./metrics";
-import { METRICS_SERVER_NAME, MetricsServer, buildMetricsToolCache } from "./metrics-server";
+import { METRICS_SERVER_NAME, MetricsServer } from "./metrics-server";
 
 describe("METRICS_SERVER_NAME", () => {
   test("is _metrics", () => {
@@ -8,34 +8,58 @@ describe("METRICS_SERVER_NAME", () => {
   });
 });
 
-describe("buildMetricsToolCache", () => {
-  test("returns 3 tools", () => {
-    const cache = buildMetricsToolCache();
-    expect(cache.size).toBe(3);
-    expect(cache.has("get_metrics")).toBe(true);
-    expect(cache.has("get_metric")).toBe(true);
-    expect(cache.has("get_health")).toBe(true);
-  });
-
-  test("tool entries have correct server name", () => {
-    const cache = buildMetricsToolCache();
-    for (const [, info] of cache) {
-      expect(info.server).toBe("_metrics");
+describe("start() returns tool cache", () => {
+  test("returns 3 tools with correct server name", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector);
+    try {
+      const { tools } = await server.start();
+      expect(tools.size).toBe(3);
+      expect(tools.has("get_metrics")).toBe(true);
+      expect(tools.has("get_metric")).toBe(true);
+      expect(tools.has("get_health")).toBe(true);
+      for (const [, info] of tools) {
+        expect(info.server).toBe("_metrics");
+      }
+    } finally {
+      await server.stop();
     }
   });
 });
 
 describe("MetricsServer", () => {
-  test("start returns client and transport", async () => {
+  test("start returns client, transport, and tools", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector);
     try {
-      const { client, transport } = await server.start();
+      const { client, transport, tools } = await server.start();
       expect(client).toBeDefined();
       expect(transport).toBeDefined();
+      expect(tools).toBeDefined();
     } finally {
       await server.stop();
     }
+  });
+
+  test("double start throws", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector);
+    try {
+      await server.start();
+      await expect(server.start()).rejects.toThrow("MetricsServer already started");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("can restart after stop", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector);
+    await server.start();
+    await server.stop();
+    const { client } = await server.start();
+    expect(client).toBeDefined();
+    await server.stop();
   });
 
   test("get_metrics returns full snapshot", async () => {
@@ -101,6 +125,24 @@ describe("MetricsServer", () => {
 
       expect(data.series).toHaveLength(1);
       expect(data.series[0].value).toBe(7);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("get_metric returns error for non-string label values", async () => {
+    const collector = new MetricsCollector();
+    collector.counter("mcpd_tool_calls_total", { server: "foo" }).inc(3);
+    const server = new MetricsServer(collector);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({
+        name: "get_metric",
+        arguments: { name: "mcpd_tool_calls_total", labels: { server: 42 } },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      expect(text).toContain("must be a string");
     } finally {
       await server.stop();
     }

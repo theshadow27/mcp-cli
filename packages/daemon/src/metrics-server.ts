@@ -54,7 +54,11 @@ export class MetricsServer {
 
   constructor(private metrics: MetricsCollector) {}
 
-  async start(): Promise<{ client: Client; transport: Transport }> {
+  async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
+    if (this.server) {
+      throw new Error("MetricsServer already started");
+    }
+
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     this.serverTransport = serverTransport;
     this.clientTransport = clientTransport;
@@ -94,7 +98,7 @@ export class MetricsServer {
     this.client = new Client({ name: `mcp-cli/${METRICS_SERVER_NAME}`, version: "0.1.0" });
     await this.client.connect(clientTransport);
 
-    return { client: this.client, transport: this.clientTransport };
+    return { client: this.client, transport: this.clientTransport, tools: buildMetricsToolCache() };
   }
 
   async stop(): Promise<void> {
@@ -126,7 +130,22 @@ export class MetricsServer {
       };
     }
 
-    const labelFilter = (args?.labels ?? {}) as Record<string, string>;
+    const rawLabels = args?.labels ?? {};
+    if (typeof rawLabels !== "object" || rawLabels === null || Array.isArray(rawLabels)) {
+      return {
+        content: [{ type: "text", text: '"labels" must be an object with string values' }],
+        isError: true,
+      };
+    }
+    for (const [k, v] of Object.entries(rawLabels)) {
+      if (typeof v !== "string") {
+        return {
+          content: [{ type: "text", text: `Label "${k}" must be a string, got ${typeof v}` }],
+          isError: true,
+        };
+      }
+    }
+    const labelFilter = rawLabels as Record<string, string>;
     const snap = this.metrics.toJSON();
     const matches: Array<Record<string, unknown>> = [];
 
