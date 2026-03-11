@@ -17,6 +17,7 @@ import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
+  BUILD_VERSION,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   PROTOCOL_VERSION,
@@ -188,6 +189,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     configHash: configHash(config),
     startedAt,
     protocolVersion: PROTOCOL_VERSION,
+    buildVersion: BUILD_VERSION,
   };
   writeFileSync(options.PID_PATH, JSON.stringify(pidData));
 

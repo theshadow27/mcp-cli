@@ -18,6 +18,7 @@ import {
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import type { WorktreeHooksConfig } from "@mcp-cli/core";
+import { getStaleDaemonWarning } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -812,6 +813,11 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
     console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`);
+  }
+
+  const staleWarning = getStaleDaemonWarning();
+  if (staleWarning) {
+    console.error(`\n⚠ ${staleWarning}`);
   }
 }
 

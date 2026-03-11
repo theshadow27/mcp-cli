@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { PID_MAX_AGE_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
+import { BUILD_VERSION, PID_MAX_AGE_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { DaemonStartCooldownError } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
+  _buildStaleDaemonWarning,
   _resetStartCooldown,
+  getStaleDaemonWarning,
   isDaemonInitializing,
   isDaemonRunning,
   isProcessMcpd,
@@ -332,5 +334,43 @@ describe("stderr pipe draining", () => {
     const part2 = decoder.decode(chunk2);
 
     expect(part1 + part2).not.toBe("€");
+  });
+});
+
+// -- _buildStaleDaemonWarning --
+
+describe("_buildStaleDaemonWarning", () => {
+  it("returns null when daemon buildVersion matches CLI", () => {
+    expect(_buildStaleDaemonWarning(BUILD_VERSION)).toBeNull();
+  });
+
+  it("returns warning when daemon buildVersion differs from CLI", () => {
+    const warning = _buildStaleDaemonWarning("0.1.0-20250101");
+    expect(warning).toContain("older build");
+    expect(warning).toContain("0.1.0-20250101");
+    expect(warning).toContain(BUILD_VERSION);
+    expect(warning).toContain("mcx shutdown");
+  });
+
+  it("returns warning with 'unknown' when daemon has no buildVersion", () => {
+    const warning = _buildStaleDaemonWarning(undefined);
+    expect(warning).toContain("unknown");
+    expect(warning).toContain("mcx shutdown");
+  });
+});
+
+// -- getStaleDaemonWarning --
+
+describe("getStaleDaemonWarning", () => {
+  it("returns null when no daemon is running (no PID file)", () => {
+    using opts = testOptions();
+    expect(getStaleDaemonWarning()).toBeNull();
+  });
+
+  it("returns null when PID file has invalid JSON", () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, "not json{{{");
+    expect(getStaleDaemonWarning()).toBeNull();
   });
 });

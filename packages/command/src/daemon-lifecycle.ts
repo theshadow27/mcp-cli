@@ -9,6 +9,7 @@
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import {
+  BUILD_VERSION,
   DAEMON_BINARY_NAME,
   DAEMON_DEV_SCRIPT,
   DAEMON_READY_SIGNAL,
@@ -170,8 +171,13 @@ export async function stopDaemon(): Promise<void> {
  * Returns the parsed data on success, null on any failure.
  * Does NOT clean up stale files — callers decide based on context.
  */
-function readLivePidData(): { pid: number; startedAt: number; protocolVersion?: string } | null {
-  let data: { pid: number; startedAt: number; protocolVersion?: string };
+function readLivePidData(): {
+  pid: number;
+  startedAt: number;
+  protocolVersion?: string;
+  buildVersion?: string;
+} | null {
+  let data: { pid: number; startedAt: number; protocolVersion?: string; buildVersion?: string };
   try {
     data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
   } catch {
@@ -293,4 +299,28 @@ async function startDaemon(): Promise<void> {
     .filter(Boolean)
     .join("; ");
   throw new Error(`Daemon failed to start within ${DAEMON_START_TIMEOUT_MS}ms${details ? `. ${details}` : ""}`);
+}
+
+/**
+ * Compare a daemon's build version against the CLI's BUILD_VERSION.
+ * Returns a warning string if they differ, null if they match.
+ * Exported with underscore prefix for testing.
+ */
+export function _buildStaleDaemonWarning(daemonBuildVersion: string | undefined): string | null {
+  if (!daemonBuildVersion || daemonBuildVersion !== BUILD_VERSION) {
+    const daemonBuild = daemonBuildVersion ?? "unknown";
+    return `Daemon is running an older build (${daemonBuild}) than CLI (${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
+  }
+  return null;
+}
+
+/**
+ * Check if the running daemon was built from an older binary than the CLI.
+ * Returns a warning string if stale, null otherwise.
+ * Reads the PID file (no IPC call) so it's cheap to call from any command.
+ */
+export function getStaleDaemonWarning(): string | null {
+  const data = readLivePidData();
+  if (!data) return null;
+  return _buildStaleDaemonWarning(data.buildVersion);
 }
