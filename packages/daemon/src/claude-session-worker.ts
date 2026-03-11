@@ -338,7 +338,7 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 async function startServer(wsPort?: number): Promise<number> {
   // Start WebSocket server
   wsServer = new ClaudeWsServer();
-  const port = wsServer.start(wsPort);
+  const port = await wsServer.start(wsPort);
   wsServer.onSessionEvent = forwardSessionEvent;
 
   // Start MCP Server

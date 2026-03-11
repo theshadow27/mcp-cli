@@ -176,6 +176,8 @@ export class ClaudeWsServer {
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
   private readonly killTimeoutMs: number;
+  private readonly portRetryCount: number;
+  private readonly portRetryDelayMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -184,10 +186,18 @@ export class ClaudeWsServer {
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number; logger?: Logger }) {
+  constructor(deps?: {
+    spawn?: SpawnFn;
+    killTimeoutMs?: number;
+    logger?: Logger;
+    portRetryCount?: number;
+    portRetryDelayMs?: number;
+  }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
+    this.portRetryCount = deps?.portRetryCount ?? 5;
+    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 200;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -197,8 +207,9 @@ export class ClaudeWsServer {
 
   /** Start the WebSocket server. Returns the assigned port.
    *  If `port` is provided and non-zero, tries that port first;
-   *  falls back to a random OS-assigned port on EADDRINUSE. */
-  start(port?: number): number {
+   *  retries up to MAX_PORT_RETRIES times with backoff before falling back
+   *  to a random OS-assigned port on EADDRINUSE. */
+  async start(port?: number): Promise<number> {
     const requestedPort = port ?? 0;
 
     const createServer = (p: number) =>
@@ -227,17 +238,26 @@ export class ClaudeWsServer {
         },
       });
 
-    try {
-      this.server = createServer(requestedPort);
-    } catch (err) {
-      if (requestedPort !== 0 && isAddrInUse(err)) {
-        this.logger.warn(`[ws-server] Port ${requestedPort} in use, falling back to random port`);
-        this.server = createServer(0);
-      } else {
-        throw err;
+    if (requestedPort !== 0) {
+      for (let attempt = 0; attempt <= this.portRetryCount; attempt++) {
+        try {
+          this.server = createServer(requestedPort);
+          return this.server.port as number;
+        } catch (err) {
+          if (!isAddrInUse(err)) throw err;
+          if (attempt < this.portRetryCount) {
+            await Bun.sleep(this.portRetryDelayMs);
+            continue;
+          }
+          // All retries exhausted — fall back to random port
+          this.logger.error(
+            `[ws-server] Port ${requestedPort} still in use after ${this.portRetryCount} retries, falling back to random port`,
+          );
+        }
       }
     }
 
+    this.server = createServer(0);
     return this.server.port as number;
   }
 

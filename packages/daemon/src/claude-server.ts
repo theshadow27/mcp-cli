@@ -389,7 +389,7 @@ export class ClaudeServer {
     }
 
     // Snapshot pre-crash session IDs — after restart they can no longer reconnect
-    // to the new WS server (new port, new worker instance).
+    // to the new WS server (new worker instance).
     const orphanedSessions = new Set(this.activeSessions);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
@@ -451,7 +451,7 @@ export class ClaudeServer {
           this.logger.info(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
 
           // End sessions orphaned by the old worker — they can no longer reconnect
-          // to the new WS server (new port). Skip any already ended via db:end.
+          // to the new WS server. Skip any already ended via db:end.
           for (const sessionId of orphanedSessions) {
             if (!this.activeSessions.has(sessionId)) continue;
             this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);

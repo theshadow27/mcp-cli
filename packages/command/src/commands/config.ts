@@ -4,7 +4,7 @@
  */
 
 import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { ipcCall, isStdioConfig, readCliConfig, writeCliConfig } from "@mcp-cli/core";
+import { DEFAULT_CLAUDE_WS_PORT, ipcCall, isStdioConfig, readCliConfig, writeCliConfig } from "@mcp-cli/core";
 import { c, printError } from "../output";
 import { readConfigFile, writeConfigFile } from "./config-file";
 
@@ -162,7 +162,12 @@ function configSetCliOption(args: string[]): void {
   if (BOOLEAN_KEYS.has(key as ConfigKey)) {
     (config as Record<string, unknown>)[prop] = value === "true";
   } else if (NUMBER_KEYS.has(key as ConfigKey)) {
-    (config as Record<string, unknown>)[prop] = Number(value);
+    const num = Number(value);
+    if (Number.isNaN(num) || !Number.isInteger(num) || num < 0 || num > 65535) {
+      printError(`Invalid value for ${key}: must be an integer in [0, 65535]`);
+      process.exit(1);
+    }
+    (config as Record<string, unknown>)[prop] = num;
   } else {
     (config as Record<string, unknown>)[prop] = value;
   }
@@ -182,7 +187,11 @@ function configGetCliOption(args: string[]): void {
   }
   const prop = KEY_MAP[key as ConfigKey];
   const config = readCliConfig();
-  const defaultValue = BOOLEAN_KEYS.has(key as ConfigKey) ? false : NUMBER_KEYS.has(key as ConfigKey) ? "" : "";
+  const defaultValue = BOOLEAN_KEYS.has(key as ConfigKey)
+    ? false
+    : NUMBER_KEYS.has(key as ConfigKey)
+      ? String(DEFAULT_CLAUDE_WS_PORT)
+      : "";
   console.log(String(config[prop] ?? defaultValue));
 }
 
