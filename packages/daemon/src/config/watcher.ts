@@ -26,6 +26,7 @@ export type ConfigChangeCallback = (event: ConfigChangeEvent) => void;
 
 export interface ConfigWatcherOptions {
   pollIntervalMs?: number;
+  debounceMs?: number;
   loadConfig?: (cwd: string) => Promise<ResolvedConfig>;
   logger?: Logger;
 }
@@ -35,6 +36,7 @@ export class ConfigWatcher {
   private debounceTimer: Timer | null = null;
   private pollTimer: Timer | null = null;
   private pollIntervalMs: number;
+  private debounceMs: number;
   private loadConfigFn: (cwd: string) => Promise<ResolvedConfig>;
   private lastMtimes: Map<string, number> = new Map();
   private currentHash: string;
@@ -55,6 +57,7 @@ export class ConfigWatcher {
     this.callback = callback;
     this.cwd = cwd;
     this.pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.debounceMs = opts?.debounceMs ?? DEBOUNCE_MS;
     this.loadConfigFn = opts?.loadConfig ?? defaultLoadConfig;
     this.logger = opts?.logger ?? consoleLogger;
   }
@@ -210,7 +213,7 @@ export class ConfigWatcher {
       this.debounceTimer = null;
       if (this.stopped) return;
       this.reload();
-    }, DEBOUNCE_MS);
+    }, this.debounceMs);
   }
 
   /** Reload config and fire callback if hash changed. */

@@ -40,9 +40,17 @@ async function waitForCall(fn: ReturnType<typeof mock>, timeoutMs = 8000): Promi
   await waitForCalls(fn, 1, timeoutMs);
 }
 
-/** Default watcher options for tests: fast polling + bound loadConfig */
+/** Debounce used in test watcher options — keep in sync with sleeps below */
+const TEST_DEBOUNCE_MS = 50;
+
+/** Default watcher options for tests: fast polling + fast debounce + bound loadConfig */
 function testWatcherOpts(): ConfigWatcherOptions {
-  return { pollIntervalMs: 200, loadConfig: (cwd: string) => loadConfig(cwd, silentLogger), logger: silentLogger };
+  return {
+    pollIntervalMs: 50,
+    debounceMs: TEST_DEBOUNCE_MS,
+    loadConfig: (cwd: string) => loadConfig(cwd, silentLogger),
+    logger: silentLogger,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +300,8 @@ describe("ConfigWatcher integration", () => {
     // Write the same config (no actual change)
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" } }));
 
-    // Wait enough time for debounce + poll + reload
-    await Bun.sleep(800);
+    // Wait enough time for debounce + poll + reload (negative assertion)
+    await Bun.sleep(TEST_DEBOUNCE_MS * 3);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -313,15 +321,15 @@ describe("ConfigWatcher integration", () => {
     // Rapid writes — should debounce to a single reload
     for (let i = 0; i < 5; i++) {
       writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: `echo-${i}` } }));
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     // Poll until the debounced callback fires
     await waitForCall(cb);
     expect(cb).toHaveBeenCalledTimes(1);
 
-    // Wait a bit more to verify no extra calls arrive
-    await Bun.sleep(500);
+    // Wait a bit more to verify no extra calls arrive (negative assertion)
+    await Bun.sleep(TEST_DEBOUNCE_MS * 3);
     expect(cb).toHaveBeenCalledTimes(1);
 
     // Should have the final config
@@ -415,7 +423,8 @@ describe("ConfigWatcher integration", () => {
     // Modify after stop
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, stopped: { command: "ls" } }));
 
-    await Bun.sleep(800);
+    // Negative assertion: callback should not fire after stop
+    await Bun.sleep(TEST_DEBOUNCE_MS * 3);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -481,8 +490,7 @@ describe("ConfigWatcher integration", () => {
     expect(cb.mock.calls[0][0].added).toContain("beta");
 
     // Wait for the debounce window to fully close before writing the second change.
-    // The debounce is 300ms; poll until enough time has passed after the first callback.
-    await Bun.sleep(500);
+    await Bun.sleep(TEST_DEBOUNCE_MS * 2);
 
     // Second change (after first has been processed)
     writeJson(
@@ -620,12 +628,12 @@ describe("ConfigWatcher integration", () => {
     // Write a change to trigger scheduleReload
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
 
-    // Stop immediately before debounce fires (debounce is 300ms)
-    await Bun.sleep(50);
+    // Stop immediately before debounce fires
+    await Bun.sleep(TEST_DEBOUNCE_MS / 2);
     watcher.stop();
 
-    // Wait long enough for debounce to have fired (if not cancelled)
-    await Bun.sleep(800);
+    // Wait long enough for debounce to have fired (if not cancelled) — negative assertion
+    await Bun.sleep(TEST_DEBOUNCE_MS * 3);
     expect(cb).not.toHaveBeenCalled();
   });
 });
