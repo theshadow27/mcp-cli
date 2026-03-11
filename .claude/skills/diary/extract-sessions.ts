@@ -101,12 +101,16 @@ for (const s of sessions) {
   byDate.set(s.date, list);
 }
 
-// Check which dates already have diary entries
-const existingEntries = new Set<string>();
+// Check which dates already have diary entries and find the next available suffix
+const existingEntriesByDate = new Map<string, number>(); // date -> count of entries
 if (existsSync(diaryDir)) {
   for (const file of readdirSync(diaryDir)) {
-    if (file.match(/^\d{8}\.md$/)) {
-      existingEntries.add(file.replace(".md", ""));
+    // Match YYYYMMDD.md, YYYYMMDD.1.md, YYYYMMDD.2.md, etc.
+    const match = file.match(/^(\d{8})(?:\.(\d+))?\.md$/);
+    if (match) {
+      const date = match[1];
+      const count = existingEntriesByDate.get(date) ?? 0;
+      existingEntriesByDate.set(date, count + 1);
     }
   }
 }
@@ -173,6 +177,8 @@ interface ManifestEntry {
   date: string;
   formattedDate: string;
   extractPath: string;
+  /** Filename for the diary entry (e.g. "20260311.md", "20260311.1.md") */
+  diaryFilename: string;
   sessionCount: number;
   totalSize: number;
 }
@@ -180,8 +186,9 @@ interface ManifestEntry {
 const manifest: ManifestEntry[] = [];
 
 for (const [date, dateSessions] of [...byDate.entries()].sort()) {
-  if (existingEntries.has(date) && date !== forceDate) {
-    console.error(`Skipping ${date} — diary entry already exists`);
+  const entryCount = existingEntriesByDate.get(date) ?? 0;
+  if (entryCount > 0 && date !== forceDate) {
+    console.error(`Skipping ${date} — ${entryCount} diary entry/entries already exist`);
     continue;
   }
 
@@ -202,10 +209,13 @@ for (const [date, dateSessions] of [...byDate.entries()].sort()) {
   writeFileSync(extractPath, combined.join("\n\n" + "=".repeat(80) + "\n\n"));
 
   const formatted = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+  // Determine filename: YYYYMMDD.md for first, YYYYMMDD.1.md for second, etc.
+  const diaryFilename = entryCount === 0 ? `${date}.md` : `${date}.${entryCount}.md`;
   manifest.push({
     date,
     formattedDate: formatted,
     extractPath,
+    diaryFilename,
     sessionCount: topSessions.length,
     totalSize: topSessions.reduce((sum, s) => sum + s.size, 0),
   });
