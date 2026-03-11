@@ -47,7 +47,9 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
-  const { entries: transcriptEntries, error: transcriptError } = useTranscript(expandedSession);
+  const { entries: transcriptEntries, error: transcriptError } = useTranscript(
+    view === "claude" ? expandedSession : null,
+  );
   const {
     metrics: metricsData,
     error: metricsError,
