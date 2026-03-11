@@ -21,6 +21,8 @@
       "@mcp-cli/daemon/*": ["./packages/daemon/src/*"],
       "@mcp-cli/permissions": ["./packages/permissions/src/index.ts"],
       "@mcp-cli/permissions/*": ["./packages/permissions/src/*"],
+      "@mcp-cli/codex": ["./packages/codex/src/index.ts"],
+      "@mcp-cli/codex/*": ["./packages/codex/src/*"],
       "@mcp-cli/command": ["./packages/command/src/main.ts"],
       "@mcp-cli/command/*": ["./packages/command/src/*"],
       "@mcp-cli/control": ["./packages/control/src/main.tsx"],
