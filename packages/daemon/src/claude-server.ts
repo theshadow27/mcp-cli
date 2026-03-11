@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
+import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
 
@@ -137,10 +138,7 @@ export class ClaudeServer {
   /** Stored reference to the crash error handler so it can be removed via removeEventListener. */
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
   private readonly logger: Logger;
-  private static readonly MAX_CRASHES = 3;
-  private static readonly CRASH_WINDOW_MS = 60_000;
-  /** Backoff delays (ms) for retrying start() during crash restart. */
-  private static readonly RESTART_BACKOFF_MS: readonly number[] = [100, 500, 2000];
+  private readonly restartPolicy = DEFAULT_RESTART_POLICY;
   /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -397,15 +395,9 @@ export class ClaudeServer {
     this.wsPort = null;
 
     // Rate-limit restarts to prevent crash loops
-    const now = Date.now();
-    this.crashTimestamps.push(now);
-    // Trim timestamps outside the window
-    while (this.crashTimestamps.length > 0 && (this.crashTimestamps[0] ?? 0) <= now - ClaudeServer.CRASH_WINDOW_MS) {
-      this.crashTimestamps.shift();
-    }
-    if (this.crashTimestamps.length > ClaudeServer.MAX_CRASHES) {
+    if (!shouldRestart(this.crashTimestamps, this.restartPolicy)) {
       this.logger.error(
-        `[claude-server] ${this.crashTimestamps.length} crashes in ${ClaudeServer.CRASH_WINDOW_MS / 1000}s — giving up auto-restart`,
+        `[claude-server] ${this.crashTimestamps.length} crashes in ${this.restartPolicy.crashWindowMs / 1000}s — giving up auto-restart`,
       );
       this.stopped = true;
       this.restartInProgress = false;
@@ -421,14 +413,14 @@ export class ClaudeServer {
     }
 
     // Auto-restart with backoff retries
-    const backoffs = ClaudeServer.RESTART_BACKOFF_MS;
+    const totalAttempts = maxAttempts(this.restartPolicy);
     let lastErr: unknown;
 
     try {
-      for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+      for (let attempt = 0; attempt < totalAttempts; attempt++) {
         if (attempt > 0) {
-          const delay = backoffs[attempt - 1] ?? backoffs.at(-1) ?? 2000;
-          this.logger.warn(`[claude-server] Retry ${attempt}/${backoffs.length} after ${delay}ms...`);
+          const delay = getBackoffDelay(attempt, this.restartPolicy.backoffDelaysMs);
+          this.logger.warn(`[claude-server] Retry ${attempt}/${totalAttempts - 1} after ${delay}ms...`);
           await Bun.sleep(delay);
         }
 
@@ -467,9 +459,7 @@ export class ClaudeServer {
       }
 
       // All retries exhausted
-      this.logger.error(
-        `[claude-server] All ${backoffs.length + 1} restart attempts failed (last: ${lastErr}) — giving up`,
-      );
+      this.logger.error(`[claude-server] All ${totalAttempts} restart attempts failed (last: ${lastErr}) — giving up`);
       this.stopped = true;
       this.activeSessions.clear();
       this.sessionPids.clear();

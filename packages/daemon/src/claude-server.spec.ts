@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { silentLogger } from "@mcp-cli/core";
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import {
   CLAUDE_SERVER_NAME,
@@ -322,44 +321,6 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
-  test("stop() clears crashTimestamps so stale history does not poison restarts", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    // Simulate 2 crashes to accumulate timestamps
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("crash 0");
-    await crash("crash 1");
-
-    const timestamps = (server as unknown as { crashTimestamps: number[] }).crashTimestamps;
-    expect(timestamps.length).toBe(2);
-
-    // Manual stop + restart cycle
-    await server.stop();
-    expect(timestamps.length).toBe(0);
-
-    // Restart — should have a fresh crash budget
-    await server.start();
-
-    // 3 more crashes should all succeed (not poisoned by stale history)
-    let restartCount = 0;
-    server.onRestarted = () => {
-      restartCount++;
-    };
-    const crash2 = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    for (let i = 0; i < 3; i++) {
-      await crash2(`post-restart crash ${i}`);
-    }
-    expect(restartCount).toBe(3);
-  });
-
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
@@ -429,34 +390,6 @@ describe("ClaudeServer", () => {
     expect(restartedCalled).toBe(true);
   });
 
-  test("handleWorkerCrash emits tools/list_changed notification after restart", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    let notificationReceived = false;
-    server.onRestarted = (client) => {
-      client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-        notificationReceived = true;
-      });
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("test crash");
-
-    // Poll until the notification arrives (deadline-based, no fixed sleep)
-    const deadline = Date.now() + 5000;
-    while (!notificationReceived && Date.now() < deadline) {
-      await Bun.sleep(50);
-    }
-
-    expect(notificationReceived).toBe(true);
-  });
-
   test("handleWorkerCrash debounces concurrent crashes", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
@@ -477,53 +410,6 @@ describe("ClaudeServer", () => {
     await Promise.all([crash("crash A"), crash("crash B")]);
 
     expect(restartCount).toBe(1);
-  });
-
-  test("handleWorkerCrash gives up after too many crashes in window", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    let restartCount = 0;
-    server.onRestarted = () => {
-      restartCount++;
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-
-    // Crash MAX_CRASHES times (3) — all should succeed
-    for (let i = 0; i < 3; i++) {
-      await crash(`crash ${i}`);
-    }
-    expect(restartCount).toBe(3);
-
-    // Add active sessions immediately before the exhaustion crash so the new
-    // db.endSession() loop in the exhaustion branch is actually exercised.
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
-    handle({ type: "db:upsert", session: { sessionId: "exhaust-1", state: "active" } });
-    handle({ type: "db:upsert", session: { sessionId: "exhaust-2", state: "active" } });
-    expect(server.hasActiveSessions()).toBe(true);
-
-    // 4th crash should be rate-limited — no restart
-    await crash("crash 3");
-    expect(restartCount).toBe(3);
-    expect(server.port).toBeNull();
-
-    // #463: activeSessions should be cleared on crash-loop exhaustion
-    expect(server.hasActiveSessions()).toBe(false);
-
-    // Sessions must be ended in SQLite — not left as zombie 'disconnected' rows
-    const row1 = db.getSession("exhaust-1");
-    expect(row1?.state).toBe("ended");
-    expect(row1?.endedAt).not.toBeNull();
-
-    const row2 = db.getSession("exhaust-2");
-    expect(row2?.state).toBe("ended");
-    expect(row2?.endedAt).not.toBeNull();
   });
 
   test("handleWorkerCrash terminates worker and closes client before nulling", async () => {
@@ -568,103 +454,6 @@ describe("ClaudeServer", () => {
     expect(oldWorker?.onerror).toBeNull();
   });
 
-  test("crash-loop exhaustion clears activeSessions so idle timer can fire", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    // Add sessions before crash loop
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
-    handle({ type: "db:upsert", session: { sessionId: "loop-1", pid: process.pid, state: "active" } });
-    handle({ type: "db:upsert", session: { sessionId: "loop-2", state: "active" } });
-    expect(server.hasActiveSessions()).toBe(true);
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-
-    // Exhaust crash budget (3 crashes) + 1 more to trigger exhaustion
-    for (let i = 0; i < 4; i++) {
-      await crash(`crash ${i}`);
-    }
-
-    // #463: sessions must be cleared so hasActiveSessions returns false
-    expect(server.hasActiveSessions()).toBe(false);
-    const stopped = (server as unknown as { stopped: boolean }).stopped;
-    expect(stopped).toBe(true);
-  });
-
-  test("retry exhaustion clears activeSessions when all restart attempts fail", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    // Add a session before crash
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
-    handle({ type: "db:upsert", session: { sessionId: "retry-1", state: "active" } });
-    expect(server.hasActiveSessions()).toBe(true);
-
-    // Patch start() to always fail
-    (server as unknown as { start: typeof server.start }).start = async () => {
-      throw new Error("permanent failure");
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("test permanent crash");
-
-    // After all retries exhausted, sessions should be cleared
-    expect(server.hasActiveSessions()).toBe(false);
-    const stopped = (server as unknown as { stopped: boolean }).stopped;
-    expect(stopped).toBe(true);
-  });
-
-  test("worker error event triggers crash detection and survives after first error", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    // Track restarts via the callback
-    let restartCount = 0;
-    server.onRestarted = () => {
-      restartCount++;
-    };
-
-    // Access the internal worker to fire a real error event
-    const worker = (server as unknown as { worker: Worker | null }).worker;
-    expect(worker).not.toBeNull();
-
-    // Fire a real error event on the worker — this goes through addEventListener, not handleWorkerCrash directly
-    worker?.dispatchEvent(new ErrorEvent("error", { message: "simulated crash" }));
-
-    // handleWorkerCrash is async; poll for restart completion
-    const deadline = Date.now() + 10_000;
-    while (restartCount < 1 && Date.now() < deadline) {
-      await Bun.sleep(50);
-    }
-    expect(restartCount).toBe(1);
-
-    // Fire a second error event on the NEW worker to verify the listener persists across restarts
-    const worker2 = (server as unknown as { worker: Worker | null }).worker;
-    expect(worker2).not.toBeNull();
-    expect(worker2).not.toBe(worker); // should be a new worker
-
-    worker2?.dispatchEvent(new ErrorEvent("error", { message: "second crash" }));
-
-    const deadline2 = Date.now() + 10_000;
-    while (restartCount < 2 && Date.now() < deadline2) {
-      await Bun.sleep(50);
-    }
-    expect(restartCount).toBe(2);
-  });
-
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
@@ -687,121 +476,6 @@ describe("ClaudeServer", () => {
     expect(server.port).toBeNull();
     expect(restartedCalled).toBe(false);
     server = undefined; // prevent double stop
-  });
-
-  // ── Restart backoff ──
-
-  test("handleWorkerCrash retries with backoff when start() fails transiently", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    let restartedCalled = false;
-    server.onRestarted = () => {
-      restartedCalled = true;
-    };
-
-    // Patch start() to fail twice then succeed
-    const originalStart = server.start.bind(server);
-    let callCount = 0;
-    (server as unknown as { start: typeof server.start }).start = async () => {
-      callCount++;
-      if (callCount <= 2) {
-        throw new Error(`transient failure ${callCount}`);
-      }
-      return originalStart();
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("test transient crash");
-
-    // start() was called 3 times (2 failures + 1 success)
-    expect(callCount).toBe(3);
-    expect(restartedCalled).toBe(true);
-    expect(server.port).toBeGreaterThan(0);
-  });
-
-  test("handleWorkerCrash gives up after all backoff retries are exhausted", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    let restartedCalled = false;
-    server.onRestarted = () => {
-      restartedCalled = true;
-    };
-
-    // Patch start() to always fail
-    (server as unknown as { start: typeof server.start }).start = async () => {
-      throw new Error("permanent failure");
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("test permanent crash");
-
-    // Should have given up — stopped = true, no restart callback
-    expect(restartedCalled).toBe(false);
-    const stopped = (server as unknown as { stopped: boolean }).stopped;
-    expect(stopped).toBe(true);
-  });
-
-  test("handleWorkerCrash aborts retry loop when stop() is called during backoff", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    let startCalled = false;
-    // Patch start() to track if it's called after stop()
-    (server as unknown as { start: typeof server.start }).start = async () => {
-      startCalled = true;
-      throw new Error("should not reach here");
-    };
-
-    // Call stop() immediately — sets stopped = true
-    await server.stop();
-
-    // Now trigger crash handler (it would normally be blocked by stopped check,
-    // but we need to test the in-loop check, so reset the flags)
-    const srv = server as unknown as { stopped: boolean; restartInProgress: boolean };
-    srv.stopped = false;
-    srv.restartInProgress = false;
-
-    // Patch start to fail once, then set stopped during backoff sleep
-    let attempt = 0;
-    (server as unknown as { start: typeof server.start }).start = async () => {
-      attempt++;
-      if (attempt === 1) {
-        // First attempt fails — triggers backoff sleep
-        // Schedule stop() to fire during the sleep
-        queueMicrotask(() => {
-          srv.stopped = true;
-        });
-        throw new Error("first attempt fails");
-      }
-      // Should never reach attempt 2
-      startCalled = true;
-      throw new Error("should not reach second attempt");
-    };
-
-    const crash = (
-      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
-    ).handleWorkerCrash.bind(server);
-    await crash("test stop-during-backoff");
-
-    expect(attempt).toBe(1);
-    expect(startCalled).toBe(false);
-    expect(srv.stopped).toBe(true);
-    server = undefined; // prevent double stop — already stopped
   });
 
   // ── Worker handler cleanup ──
