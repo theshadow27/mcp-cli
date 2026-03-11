@@ -18,6 +18,7 @@ import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
+import { cmdAuth } from "./commands/auth";
 import { cmdClaude } from "./commands/claude";
 import { cmdCodex } from "./commands/codex";
 import { cmdCompletions } from "./commands/completions";
@@ -570,18 +571,6 @@ function formatMetricLabels(labels: Record<string, string>): string {
   return `{${entries.map(([k, v]) => `${k}="${v}"`).join(",")}}`;
 }
 
-async function cmdAuth(args: string[]): Promise<void> {
-  if (args.length < 1) {
-    printError("Usage: mcx auth <server>");
-    process.exit(1);
-  }
-
-  const server = args[0];
-  console.error(`Authenticating with ${server}...`);
-  const result = await ipcCall("triggerAuth", { server });
-  console.error(result.message);
-}
-
 async function cmdDaemon(args: string[]): Promise<void> {
   const sub = args[0];
   if (sub === "restart") {
@@ -665,7 +654,9 @@ Usage:
   mcx add-json <name> '<json>'        Add a server from raw JSON
   mcx remove <name>                   Remove a server
   mcx get <name>                      Inspect a server's config and status
-  mcx auth <server>                   Authenticate with an OAuth server
+  mcx auth                             List servers with auth status
+  mcx auth <server>                   Trigger authentication (OAuth or auth tool)
+  mcx auth <server> --status          Check auth status without login
   mcx config show                     Show resolved server config
   mcx config sources                  Show config file sources
   mcx config set <key> <value>        Set a CLI option (e.g. trust-claude)

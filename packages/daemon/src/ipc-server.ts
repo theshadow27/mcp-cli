@@ -13,9 +13,11 @@ import type {
   LiveSpan,
   Logger,
   ResolvedConfig,
+  ServerAuthStatus,
   ToolInfo,
 } from "@mcp-cli/core";
 import {
+  AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
@@ -422,6 +424,69 @@ export class IpcServer {
       } finally {
         callback.stop();
       }
+    });
+
+    this.handlers.set("authStatus", async (params, _ctx) => {
+      const { server } = AuthStatusParamsSchema.parse(params ?? {});
+      const allServers = this.pool.listServers();
+      const filtered = server ? allServers.filter((s) => s.name === server) : allServers;
+
+      if (server && filtered.length === 0) {
+        throw Object.assign(new Error(`Server "${server}" not found`), { code: IPC_ERROR.SERVER_NOT_FOUND });
+      }
+
+      const poolDb = this.pool.getDb();
+      const results: ServerAuthStatus[] = [];
+
+      for (const srv of filtered) {
+        const serverUrl = this.pool.getServerUrl(srv.name);
+        let authSupport: ServerAuthStatus["authSupport"] = "none";
+        let status: ServerAuthStatus["status"] = "unknown";
+        let expiresAt: number | undefined;
+
+        if (serverUrl) {
+          // Remote server — check for OAuth tokens
+          authSupport = "oauth";
+          if (poolDb) {
+            const tokens = poolDb.getTokens(srv.name);
+            if (tokens) {
+              if (tokens.expires_in !== undefined && tokens.expires_in > 0) {
+                status = "authenticated";
+                expiresAt = Date.now() + tokens.expires_in * 1000;
+              } else if (tokens.expires_in !== undefined) {
+                status = "expired";
+              } else {
+                // No expiry info — token exists, assume valid
+                status = "authenticated";
+              }
+            } else {
+              status = "not_authenticated";
+            }
+          }
+        } else if (srv.transport !== "virtual") {
+          // Stdio server — check for auth tool
+          let tools: ToolInfo[];
+          try {
+            tools = await this.pool.listTools(srv.name);
+          } catch {
+            tools = [];
+          }
+          if (tools.some((t) => t.name === "auth")) {
+            authSupport = "auth_tool";
+            status = "unknown"; // can't check without calling it
+          }
+        }
+
+        results.push({
+          server: srv.name,
+          transport: srv.transport,
+          authSupport,
+          status,
+          ...(expiresAt !== undefined && { expiresAt }),
+        });
+      }
+
+      return { servers: results };
     });
 
     this.handlers.set("restartServer", async (params, _ctx) => {
