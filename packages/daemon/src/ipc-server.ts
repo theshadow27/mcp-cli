@@ -13,9 +13,11 @@ import type {
   LiveSpan,
   Logger,
   ResolvedConfig,
+  ServerAuthStatus,
   ToolInfo,
 } from "@mcp-cli/core";
 import {
+  AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
   DeleteAliasParamsSchema,
@@ -422,6 +424,74 @@ export class IpcServer {
       } finally {
         callback.stop();
       }
+    });
+
+    this.handlers.set("authStatus", async (params, _ctx) => {
+      const { server } = AuthStatusParamsSchema.parse(params ?? {});
+      const allServers = this.pool.listServers();
+      const filtered = server ? allServers.filter((s) => s.name === server) : allServers;
+
+      if (server && filtered.length === 0) {
+        throw Object.assign(new Error(`Server "${server}" not found`), { code: IPC_ERROR.SERVER_NOT_FOUND });
+      }
+
+      const poolDb = this.pool.getDb();
+      const results: ServerAuthStatus[] = [];
+
+      for (const srv of filtered) {
+        const serverUrl = this.pool.getServerUrl(srv.name);
+        let authSupport: ServerAuthStatus["authSupport"] = "none";
+        let status: ServerAuthStatus["status"] = "unknown";
+        let expiresAt: number | undefined;
+
+        if (serverUrl) {
+          // Remote server — check for OAuth tokens via provider (includes keychain fallback)
+          authSupport = "oauth";
+          if (poolDb) {
+            const serverConfig = this.pool.getServerConfig(srv.name);
+            const provider = new McpOAuthProvider(srv.name, serverUrl, poolDb, {
+              clientId: serverConfig?.clientId,
+              clientSecret: serverConfig?.clientSecret,
+            });
+            const tokens = await provider.tokens();
+            if (tokens) {
+              // Check raw expires_at from DB for accurate expiry detection
+              const rawExpiry = poolDb.getTokenExpiry(srv.name);
+              if (rawExpiry !== null && rawExpiry <= Date.now()) {
+                status = "expired";
+                expiresAt = rawExpiry;
+              } else {
+                status = "authenticated";
+                if (rawExpiry !== null) {
+                  expiresAt = rawExpiry;
+                } else if (tokens.expires_in !== undefined && tokens.expires_in > 0) {
+                  // Keychain token with expiry info
+                  expiresAt = Date.now() + tokens.expires_in * 1000;
+                }
+              }
+            } else {
+              status = "not_authenticated";
+            }
+          }
+        } else if (srv.transport !== "virtual") {
+          // Stdio server — only check cached tools, never spawn the process
+          const cachedTools = this.pool.getCachedTools(srv.name);
+          if (cachedTools?.some((t) => t.name === "auth")) {
+            authSupport = "auth_tool";
+            status = "unknown"; // can't check without calling it
+          }
+        }
+
+        results.push({
+          server: srv.name,
+          transport: srv.transport,
+          authSupport,
+          status,
+          ...(expiresAt !== undefined && { expiresAt }),
+        });
+      }
+
+      return { servers: results };
     });
 
     this.handlers.set("restartServer", async (params, _ctx) => {

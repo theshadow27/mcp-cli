@@ -20,6 +20,7 @@ export type IpcMethod =
   | "grepTools"
   | "callTool"
   | "triggerAuth"
+  | "authStatus"
   | "restartServer"
   | "getConfig"
   | "shutdown"
@@ -88,6 +89,10 @@ export const GrepToolsParamsSchema = z.object({
 
 export const TriggerAuthParamsSchema = z.object({
   server: z.string(),
+});
+
+export const AuthStatusParamsSchema = z.object({
+  server: z.string().optional(),
 });
 
 export const RestartServerParamsSchema = z.object({
@@ -275,6 +280,18 @@ export interface TriggerAuthResult {
   message: string;
 }
 
+export interface ServerAuthStatus {
+  server: string;
+  transport: "stdio" | "http" | "sse" | "virtual";
+  authSupport: "oauth" | "auth_tool" | "none";
+  status: "authenticated" | "expired" | "not_authenticated" | "unknown";
+  expiresAt?: number;
+}
+
+export interface AuthStatusResult {
+  servers: ServerAuthStatus[];
+}
+
 export interface RestartServerResult {
   ok: true;
 }
@@ -371,6 +388,7 @@ export interface IpcMethodResult {
   grepTools: ToolInfo[];
   callTool: unknown;
   triggerAuth: TriggerAuthResult;
+  authStatus: AuthStatusResult;
   restartServer: RestartServerResult;
   getConfig: GetConfigResult;
   shutdown: ShutdownResult;
