@@ -24,6 +24,8 @@ import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import type { SharedSpawnArgs } from "./spawn-args";
+import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { SessionInfo } from "@mcp-cli/core";
@@ -225,83 +227,42 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
 // Re-export for tests
 export { MODEL_SHORTNAMES, resolveModelName } from "@mcp-cli/core";
 
-export interface SpawnArgs {
-  task: string | undefined;
+export interface SpawnArgs extends SharedSpawnArgs {
   worktree: string | undefined;
   resume: string | undefined;
-  allow: string[];
-  cwd: string | undefined;
-  timeout: number | undefined;
-  model: string | undefined;
-  wait: boolean;
   headed: boolean;
-  error: string | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
-  let task: string | undefined;
   let worktree: string | undefined;
   let resume: string | undefined;
-  let cwd: string | undefined;
-  let timeout: number | undefined;
-  let model: string | undefined;
-  let wait = false;
   let headed = false;
-  const allow: string[] = [];
-  let error: string | undefined;
+  let extraError: string | undefined;
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+  const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
     if (arg === "--headed") {
       headed = true;
-    } else if (arg === "--task" || arg === "-t") {
-      task = args[++i];
-      if (!task) error = "--task requires a value";
-    } else if (arg === "--worktree" || arg === "-w") {
-      const next = args[i + 1];
+      return i;
+    }
+    if (arg === "--worktree" || arg === "-w") {
+      const next = allArgs[i + 1];
       if (next && !next.startsWith("-")) {
         worktree = next;
-        i++;
-      } else {
-        // Auto-generate worktree name
-        worktree = `claude-${Date.now().toString(36)}`;
+        return i + 1;
       }
-    } else if (arg === "--resume") {
-      resume = args[++i];
-      if (!resume) error = "--resume requires a session ID";
-    } else if (arg === "--allow") {
-      // Collect all following non-flag args as tool patterns
-      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]);
-      }
-      if (allow.length === 0) error = "--allow requires at least one tool pattern";
-    } else if (arg === "--cwd") {
-      cwd = args[++i];
-      if (!cwd) error = "--cwd requires a path";
-    } else if (arg === "--timeout") {
-      const val = args[++i];
-      if (!val) {
-        error = "--timeout requires a value in ms";
-      } else {
-        timeout = Number(val);
-        if (Number.isNaN(timeout)) error = "--timeout must be a number";
-      }
-    } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i];
-      if (!val) {
-        error = "--model requires a value";
-      } else {
-        model = resolveModelName(val);
-      }
-    } else if (arg === "--wait") {
-      wait = true;
-    } else if (!arg.startsWith("-")) {
-      // Positional arg treated as task if no --task provided
-      if (!task) task = arg;
+      // Auto-generate worktree name
+      worktree = `claude-${Date.now().toString(36)}`;
+      return i;
     }
-  }
+    if (arg === "--resume") {
+      resume = allArgs[i + 1];
+      if (!resume) extraError = "--resume requires a session ID";
+      return i + 1;
+    }
+    return undefined;
+  });
 
-  return { task, worktree, resume, allow, cwd, timeout, model, wait, headed, error };
+  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed };
 }
 
 /**
