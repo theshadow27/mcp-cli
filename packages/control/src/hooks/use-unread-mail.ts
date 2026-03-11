@@ -6,16 +6,19 @@ interface UseUnreadMailResult {
 }
 
 export interface UseUnreadMailOptions {
+  /** Gate polling — when false, the effect is a no-op. */
+  enabled?: boolean;
   intervalMs?: number;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
 
 export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailResult {
-  const { intervalMs = 10_000, ipcCallFn = ipcCall } = opts;
+  const { enabled = true, intervalMs = 10_000, ipcCallFn = ipcCall } = opts;
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     async function poll() {
@@ -45,7 +48,7 @@ export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailRes
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [intervalMs, ipcCallFn]);
+  }, [enabled, intervalMs, ipcCallFn]);
 
   return { unreadCount };
 }

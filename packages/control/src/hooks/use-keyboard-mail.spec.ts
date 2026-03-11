@@ -35,14 +35,14 @@ const baseKey: Key = {
 
 function makeNav(overrides: Partial<MailNav> = {}): MailNav & { state: Record<string, unknown> } {
   const state: Record<string, unknown> = {
-    selectedIndex: 0,
-    expandedMessage: null,
-    scrollOffset: 0,
+    selectedIndex: overrides.selectedIndex ?? 0,
+    expandedMessage: overrides.expandedMessage ?? null,
+    scrollOffset: overrides.scrollOffset ?? 0,
   };
 
   return {
     messages: [makeMsg({ id: 1 }), makeMsg({ id: 2, read: true }), makeMsg({ id: 3 })],
-    selectedIndex: (state.selectedIndex as number) ?? 0,
+    selectedIndex: state.selectedIndex as number,
     setSelectedIndex: (fn) => {
       state.selectedIndex = fn(state.selectedIndex as number);
     },
@@ -76,21 +76,18 @@ describe("handleMailInput", () => {
 
   it("navigates up with up arrow", () => {
     const nav = makeNav({ selectedIndex: 2 });
-    nav.state.selectedIndex = 2;
     handleMailInput("", { ...baseKey, upArrow: true }, nav);
     expect(nav.state.selectedIndex).toBe(1);
   });
 
   it("clamps at top boundary", () => {
     const nav = makeNav();
-    nav.state.selectedIndex = 0;
     handleMailInput("", { ...baseKey, upArrow: true }, nav);
     expect(nav.state.selectedIndex).toBe(0);
   });
 
   it("clamps at bottom boundary", () => {
     const nav = makeNav({ selectedIndex: 2 });
-    nav.state.selectedIndex = 2;
     handleMailInput("", { ...baseKey, downArrow: true }, nav);
     expect(nav.state.selectedIndex).toBe(2);
   });
@@ -103,7 +100,6 @@ describe("handleMailInput", () => {
 
   it("collapses message on enter when already expanded", () => {
     const nav = makeNav({ expandedMessage: 1 });
-    nav.state.expandedMessage = 1;
     handleMailInput("", { ...baseKey, return: true }, nav);
     expect(nav.state.expandedMessage).toBeNull();
   });
@@ -153,10 +149,40 @@ describe("handleMailInput", () => {
   });
 
   it("scrolls in detail view with down arrow", () => {
-    const nav = makeNav({ expandedMessage: 1 });
-    nav.state.expandedMessage = 1;
-    nav.state.scrollOffset = 0;
+    const longBody = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    const msgs = [makeMsg({ id: 1, body: longBody }), makeMsg({ id: 2, read: true }), makeMsg({ id: 3 })];
+    const nav = makeNav({ messages: msgs, expandedMessage: 1, viewHeight: 10 });
     handleMailInput("", { ...baseKey, downArrow: true }, nav);
     expect(nav.state.scrollOffset).toBe(1);
+  });
+
+  it("clamps scroll offset at max in detail view", () => {
+    // Message with id=1 has body "hello" → ~7 lines total (From, To, Subject, Date, blank, hello)
+    // With viewHeight=20, all content fits → maxOffset = 0 → can't scroll past 0
+    const nav = makeNav({ expandedMessage: 1, scrollOffset: 0, viewHeight: 20 });
+    // Try scrolling down many times
+    for (let i = 0; i < 30; i++) {
+      handleMailInput("", { ...baseKey, downArrow: true }, nav);
+    }
+    // Should be clamped, not 30
+    expect(nav.state.scrollOffset).toBe(0);
+  });
+
+  it("allows scroll within bounds for long messages", () => {
+    const longBody = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    const msgs = [makeMsg({ id: 1, body: longBody })];
+    const nav = makeNav({ messages: msgs, expandedMessage: 1, scrollOffset: 0, viewHeight: 10 });
+    // Scroll down a few times
+    for (let i = 0; i < 5; i++) {
+      handleMailInput("", { ...baseKey, downArrow: true }, nav);
+    }
+    expect(nav.state.scrollOffset).toBe(5);
+    // Scroll way past the end
+    for (let i = 0; i < 100; i++) {
+      handleMailInput("", { ...baseKey, downArrow: true }, nav);
+    }
+    // 6 header lines + 50 body lines = 56 total, viewHeight=10 → maxOffset = 46
+    expect(nav.state.scrollOffset).toBeLessThanOrEqual(46);
+    expect(nav.state.scrollOffset).toBeGreaterThan(0);
   });
 });

@@ -66,7 +66,7 @@ export function App() {
   } = useLogs(servers, { enabled: view === "logs" });
 
   const { messages: mailMessages } = useMail({ enabled: view === "mail" });
-  const { unreadCount: unreadMailCount } = useUnreadMail();
+  const { unreadCount: unreadMailCount } = useUnreadMail({ enabled: view !== "mail" });
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
     () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
@@ -104,6 +104,13 @@ export function App() {
   useEffect(() => {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
+
+  // Clear orphaned expandedMessage when the message disappears from the list
+  useEffect(() => {
+    if (expandedMessage !== null && !mailMessages.some((m) => m.id === expandedMessage)) {
+      setExpandedMessage(null);
+    }
+  }, [mailMessages, expandedMessage]);
 
   // Clamp permission index when selected session or permission count changes
   const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;

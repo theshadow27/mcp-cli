@@ -1,6 +1,7 @@
 import type { MailMessage } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
+import { getMessageLines } from "../hooks/use-keyboard-mail.js";
 
 const MAIL_VIEW_HEIGHT = 20;
 
@@ -46,21 +47,7 @@ function MailListItem({ msg, selected }: { msg: MailMessage; selected: boolean }
 }
 
 function MailDetail({ msg, scrollOffset, height }: { msg: MailMessage; scrollOffset: number; height: number }) {
-  const lines: string[] = [];
-  lines.push(`From:    ${msg.sender}`);
-  lines.push(`To:      ${msg.recipient}`);
-  lines.push(`Subject: ${msg.subject ?? "(no subject)"}`);
-  lines.push(`Date:    ${msg.createdAt}`);
-  if (msg.replyTo !== null) {
-    lines.push(`Reply-To: #${msg.replyTo}`);
-  }
-  lines.push("");
-  if (msg.body) {
-    lines.push(...msg.body.split("\n"));
-  } else {
-    lines.push("(empty body)");
-  }
-
+  const lines = getMessageLines(msg);
   const maxOffset = Math.max(0, lines.length - height);
   const effectiveOffset = Math.min(scrollOffset, maxOffset);
   const visible = lines.slice(effectiveOffset, effectiveOffset + height);

@@ -10,8 +10,29 @@ export interface MailNav {
   setExpandedMessage: (id: number | null) => void;
   scrollOffset: number;
   setScrollOffset: (fn: (offset: number) => number) => void;
+  /** Viewport height for scroll clamping (defaults to 20). */
+  viewHeight?: number;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
+}
+
+/** Compute the rendered lines for a mail message detail view. */
+export function getMessageLines(msg: MailMessage): string[] {
+  const lines: string[] = [];
+  lines.push(`From:    ${msg.sender}`);
+  lines.push(`To:      ${msg.recipient}`);
+  lines.push(`Subject: ${msg.subject ?? "(no subject)"}`);
+  lines.push(`Date:    ${msg.createdAt}`);
+  if (msg.replyTo !== null) {
+    lines.push(`Reply-To: #${msg.replyTo}`);
+  }
+  lines.push("");
+  if (msg.body) {
+    lines.push(...msg.body.split("\n"));
+  } else {
+    lines.push("(empty body)");
+  }
+  return lines;
 }
 
 /**
@@ -21,6 +42,7 @@ export interface MailNav {
 export function handleMailInput(input: string, key: Key, nav: MailNav): boolean {
   const { messages, selectedIndex, expandedMessage } = nav;
   const callFn = nav.ipcCallFn ?? ipcCall;
+  const height = nav.viewHeight ?? 20;
 
   if (messages.length === 0) return false;
 
@@ -35,7 +57,9 @@ export function handleMailInput(input: string, key: Key, nav: MailNav): boolean 
   }
   if (key.downArrow || input === "j") {
     if (expandedMessage !== null) {
-      nav.setScrollOffset((o) => o + 1);
+      const msg = messages.find((m) => m.id === expandedMessage);
+      const maxOffset = msg ? Math.max(0, getMessageLines(msg).length - height) : 0;
+      nav.setScrollOffset((o) => Math.min(maxOffset, o + 1));
     } else {
       nav.setSelectedIndex((i) => Math.min(messages.length - 1, i + 1));
     }
