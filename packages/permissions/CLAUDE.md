@@ -71,6 +71,32 @@ const decision = evaluate(rules, {
 bun test packages/permissions/    # run tests
 ```
 
+## Threat Model
+
+**These rules are cooperative guardrails, not security boundaries.**
+
+The permission engine is designed to prevent a well-intentioned agent from accidentally running a command outside its allowed scope. It assumes the agent is not actively trying to escape constraints.
+
+### What the rules defend against
+
+- An agent mistakenly calling a tool it wasn't meant to use
+- Accidental execution of commands outside an allowed prefix (e.g., running `git push` when only `git log` should be permitted)
+- Drift beyond the intended operation scope in automated pipelines
+
+### Known limitations (not defended against)
+
+1. **Command substitution bypass**: Prefix rules like `Bash(git:*)` block compound operators (`&&`, `||`, `;`, `|`) but an agent can still embed a subshell via `$(...)` in a non-prefix position — e.g., `git log $(rm -rf /)` would pass the prefix check because the command starts with `git `. An adversarial agent can exploit this.
+
+2. **Compound detector false positives**: The shell lexer respects single/double quoting, so `git commit -m "fix: don't use || here"` correctly passes. However, the lexer is not a full POSIX parser — unusual quoting edge cases or heredocs may produce unexpected results.
+
+3. **Non-standard field names**: The evaluator checks `command`, `cmd`, and `script` for Bash-like tools, and `file_path`, `path`, `filePath` for file tools. A tool implementation using a different field name would bypass deny rules entirely — the rule would simply not match.
+
+4. **No runtime enforcement**: Rules are evaluated at `can_use_tool` request time, before the tool runs. There is no sandbox or OS-level enforcement. If the agent bypasses the permission check (e.g., by calling the tool directly), no rule applies.
+
+### Consequence
+
+Do not rely on this package to constrain an adversarial agent. If you need hard isolation, use OS-level sandboxing (seccomp, containers, etc.) in addition to these rules.
+
 ## Rules
 
 - Zero external dependencies — uses only Bun built-ins
