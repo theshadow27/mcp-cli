@@ -11,7 +11,7 @@ import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
-import { type ClaudeDeps, parseLogArgs, parseWaitArgs, resolveSessionId } from "./claude";
+import { type SharedSessionDeps, parseLogArgs, parseWaitArgs, resolveSessionId } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Constants ──
@@ -21,8 +21,8 @@ const P = "codex";
 
 // ── Dependency injection ──
 
-/** Codex deps are identical to ClaudeDeps — just route to _codex server. */
-export type CodexDeps = ClaudeDeps;
+/** Codex deps use only the shared session fields — no claude-specific helpers. */
+export type CodexDeps = SharedSessionDeps;
 
 const defaultDeps: CodexDeps = {
   callTool: (tool, args) => {
@@ -32,8 +32,6 @@ const defaultDeps: CodexDeps = {
   },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
-  getDiffStats: async () => null,
-  getPrStatus: async () => null,
   exec: (cmd, opts) => {
     const result = Bun.spawnSync(cmd, {
       stdout: "pipe",
@@ -46,8 +44,6 @@ const defaultDeps: CodexDeps = {
       exitCode: result.exitCode,
     };
   },
-  ttyOpen: async () => {},
-  getGitRoot: () => null,
 };
 
 // ── Entry point ──

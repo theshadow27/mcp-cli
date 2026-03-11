@@ -12,11 +12,7 @@ function makeDeps(overrides?: Partial<CodexDeps>): CodexDeps {
     exit: mock((code: number) => {
       throw new ExitError(code);
     }) as CodexDeps["exit"],
-    getDiffStats: mock(async () => null),
-    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
-    ttyOpen: mock(async () => {}),
-    getGitRoot: mock(() => null),
     ...overrides,
   };
 }

@@ -35,17 +35,21 @@ export interface PrStatus {
   state: string;
 }
 
-export interface ClaudeDeps {
+/** Shared dependency interface for session-based commands (claude, codex). */
+export interface SharedSessionDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   printError: (msg: string) => void;
   exit: (code: number) => never;
-  getDiffStats: (worktreePath: string) => Promise<string | null>;
-  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
   exec: (
     cmd: string[],
     opts?: { env?: Record<string, string> },
   ) => { stdout: string; stderr: string; exitCode: number };
+}
+
+export interface ClaudeDeps extends SharedSessionDeps {
+  getDiffStats: (worktreePath: string) => Promise<string | null>;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
   ttyOpen: (args: string[]) => Promise<void>;
   /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
@@ -1436,7 +1440,7 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
 
 export async function resolveSessionId(
   prefix: string,
-  d: ClaudeDeps,
+  d: SharedSessionDeps,
   listTool = "claude_session_list",
 ): Promise<string> {
   const result = await d.callTool(listTool, {});
