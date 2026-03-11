@@ -194,7 +194,10 @@ export class CodexServer {
       await Promise.race([
         this.client.connect(this.transport),
         new Promise<never>((_, reject) => {
-          handshakeTimer = setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000);
+          handshakeTimer = setTimeout(() => {
+            metrics.counter("mcpd_connect_timeouts_total").inc();
+            reject(new Error("MCP handshake timeout (10s)"));
+          }, 10_000);
         }),
       ]);
       clearTimeout(handshakeTimer);
