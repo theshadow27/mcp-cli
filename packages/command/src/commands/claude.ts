@@ -768,7 +768,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
-  let sessions: (SessionInfo & { repoRoot?: string | null })[];
+  let sessions: SessionInfo[];
   try {
     sessions = JSON.parse(text);
   } catch {
