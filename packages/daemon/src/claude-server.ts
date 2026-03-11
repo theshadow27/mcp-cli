@@ -264,7 +264,71 @@ export class ClaudeServer {
       throw err;
     }
 
+    // Restore active sessions from SQLite after a successful start.
+    // This enables zero-downtime daemon restarts: sessions persisted in the DB
+    // are re-registered in the worker's in-memory map so Claude CLI processes
+    // that reconnect to the well-known WS port find their session entries.
+    this.restoreActiveSessions();
+
     return { client: this.client, transport: this.transport };
+  }
+
+  /**
+   * Load active sessions from SQLite and send them to the worker for restoration.
+   * Also repopulates the in-memory tracking sets (activeSessions, sessionPids, sessionAddedAt).
+   */
+  private restoreActiveSessions(): void {
+    const rows = this.db.listSessions(true); // active only (ended_at IS NULL)
+    if (rows.length === 0) return;
+
+    // Filter to sessions that are plausibly alive (have a running process)
+    const restorable = rows.filter((row) => {
+      // Skip sessions already tracked (shouldn't happen on fresh start, but be safe)
+      if (this.activeSessions.has(row.sessionId)) return false;
+      // Skip sessions already in ended state in the DB
+      if (row.state === "ended") return false;
+      // If the session has a PID, check if the process is still alive
+      if (row.pid != null && !isProcessAlive(row.pid)) {
+        this.logger.warn(
+          `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is no longer alive`,
+        );
+        this.db.endSession(row.sessionId);
+        return false;
+      }
+      return true;
+    });
+
+    if (restorable.length === 0) return;
+
+    // Repopulate in-memory tracking
+    const now = Date.now();
+    for (const row of restorable) {
+      this.activeSessions.add(row.sessionId);
+      if (row.pid != null) {
+        this.sessionPids.set(row.sessionId, row.pid);
+      }
+      this.sessionAddedAt.set(row.sessionId, now);
+      // Mark as disconnected in DB — they'll transition back when CLI reconnects
+      this.db.updateSessionState(row.sessionId, "disconnected");
+    }
+    metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+
+    // Send to worker for WS server restoration
+    this.worker?.postMessage({
+      type: "restore_sessions",
+      sessions: restorable.map((row) => ({
+        sessionId: row.sessionId,
+        pid: row.pid,
+        state: "disconnected",
+        model: row.model,
+        cwd: row.cwd,
+        worktree: row.worktree,
+        totalCost: row.totalCost,
+        totalTokens: row.totalTokens,
+      })),
+    });
+
+    this.logger.info(`[claude-server] Restored ${restorable.length} session(s) from SQLite for WS reconnection`);
   }
 
   /** Stop the worker and clean up. Prevents auto-restart after crash. */

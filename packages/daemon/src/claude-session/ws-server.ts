@@ -283,6 +283,59 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Restore sessions from persisted state (e.g., after daemon restart).
+   * Creates session entries in `disconnected` state with no WS or process.
+   * When Claude CLI reconnects to `/session/{id}`, the existing handleOpen()
+   * will transition the session back to `connecting`.
+   */
+  restoreSessions(
+    sessions: Array<{
+      sessionId: string;
+      pid: number | null;
+      state: string;
+      model: string | null;
+      cwd: string | null;
+      worktree: string | null;
+      totalCost: number;
+      totalTokens: number;
+    }>,
+  ): number {
+    let restored = 0;
+    for (const s of sessions) {
+      // Skip sessions already in the map (shouldn't happen, but be safe)
+      if (this.sessions.has(s.sessionId)) continue;
+
+      const state = new SessionState(s.sessionId);
+      state.state = "disconnected";
+      state.model = s.model;
+      state.cwd = s.cwd;
+      state.cost = s.totalCost;
+      state.tokens = s.totalTokens;
+
+      const router = new PermissionRouter("auto");
+
+      this.sessions.set(s.sessionId, {
+        state,
+        router,
+        ws: null,
+        transcript: [],
+        config: { prompt: "", worktree: s.worktree ?? undefined },
+        pid: s.pid,
+        proc: null,
+        spawnAlive: false,
+        worktree: s.worktree,
+        resultWaiters: [],
+        keepAliveTimer: null,
+        clearing: false,
+        claudeSessionId: null,
+      });
+      restored++;
+      this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
+    }
+    return restored;
+  }
+
+  /**
    * Prepare a session for an incoming Claude CLI connection.
    * Call this before spawning the Claude process.
    */
@@ -454,6 +507,51 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
     this.sendToWs(session, outbound);
+  }
+
+  /**
+   * Kill a raw PID (no proc handle) with SIGTERM → SIGKILL escalation.
+   * Used for restored sessions where we only have the PID from SQLite, not
+   * a Bun Subprocess handle. Polls process.kill(pid, 0) to detect exit.
+   */
+  private async killRawPid(pid: number): Promise<void> {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already dead (ESRCH) or not owned (EPERM)
+      return;
+    }
+
+    // Poll for exit up to killTimeoutMs
+    const deadline = Date.now() + this.killTimeoutMs;
+    const POLL_INTERVAL_MS = 100;
+    while (Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return; // process exited
+      }
+    }
+
+    // Still alive — escalate to SIGKILL
+    this.logger.error(`[_claude] Raw PID ${pid} did not exit after SIGTERM — sending SIGKILL`);
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      return; // already dead
+    }
+
+    // Wait briefly for SIGKILL to take effect
+    const sigkillDeadline = Date.now() + KILL_SIGKILL_GRACE_MS;
+    while (Date.now() < sigkillDeadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return; // process exited
+      }
+    }
   }
 
   /**
@@ -776,32 +874,39 @@ export class ClaudeWsServer {
 
     session.ws = ws;
 
+    const isReconnect = session.state.state === "disconnected";
+
     // If reconnecting from disconnected state, transition back to connecting
-    if (session.state.state === "disconnected") {
-      this.logger.error(`[_claude] WebSocket reconnected for session ${sessionId}`);
+    if (isReconnect) {
+      this.logger.info(`[_claude] WebSocket reconnected for session ${sessionId}`);
       session.state.reconnect();
     }
 
-    // CRITICAL: Send the initial user message immediately.
-    // The CLI will NOT send system/init until it receives a user message.
-    const prompt = session.config.prompt;
-    const outbound = userMessage(prompt, sessionId);
-    try {
-      ws.send(outbound);
-    } catch (err) {
-      this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
-      this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
-      // Kill the spawned process — it can't communicate without WS
-      if (session.proc) {
-        try {
-          session.proc.kill();
-        } catch {
-          /* already dead */
+    // Only send the initial user message on fresh connections.
+    // Reconnecting sessions already have their conversation state — resending
+    // the original prompt would inject an empty/stale message into the stream.
+    if (!isReconnect) {
+      // CRITICAL: Send the initial user message immediately.
+      // The CLI will NOT send system/init until it receives a user message.
+      const prompt = session.config.prompt;
+      const outbound = userMessage(prompt, sessionId);
+      try {
+        ws.send(outbound);
+      } catch (err) {
+        this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+        this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+        // Kill the spawned process — it can't communicate without WS
+        if (session.proc) {
+          try {
+            session.proc.kill();
+          } catch {
+            /* already dead */
+          }
         }
+        return;
       }
-      return;
+      this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
     }
-    this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
@@ -1222,6 +1327,10 @@ export class ClaudeWsServer {
       session.proc = null;
       session.spawnAlive = false;
       await this.killAndAwaitProc(dying);
+    } else if (session.pid) {
+      // Restored sessions have no proc ref but may still have a live process.
+      // Use killRawPid for SIGTERM → SIGKILL escalation (matches killAndAwaitProc behavior).
+      await this.killRawPid(session.pid);
     }
 
     // Remove from map

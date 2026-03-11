@@ -36,9 +36,27 @@ interface ToolsChangedMessage {
   type: "tools_changed";
 }
 
-type ControlMessage = InitMessage | ToolsChangedMessage;
+interface RestoreSessionsMessage {
+  type: "restore_sessions";
+  sessions: Array<{
+    sessionId: string;
+    pid: number | null;
+    state: string;
+    model: string | null;
+    cwd: string | null;
+    worktree: string | null;
+    totalCost: number;
+    totalTokens: number;
+  }>;
+}
 
-const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>(["init", "tools_changed"]);
+type ControlMessage = InitMessage | ToolsChangedMessage | RestoreSessionsMessage;
+
+const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>([
+  "init",
+  "tools_changed",
+  "restore_sessions",
+]);
 const isControlMessage = createIsControlMessage<ControlMessage>(CONTROL_MESSAGE_TYPES);
 
 // ── Worker globals ──
@@ -367,6 +385,8 @@ async function startServer(wsPort?: number): Promise<number> {
     if (isControlMessage(data)) {
       if (data.type === "tools_changed") {
         await mcpServer?.notification({ method: "notifications/tools/list_changed" });
+      } else if (data.type === "restore_sessions" && wsServer) {
+        wsServer.restoreSessions(data.sessions);
       }
       return;
     }
