@@ -40,7 +40,6 @@ import {
   WaitForMailParamsSchema,
   bundleAlias,
   consoleLogger,
-  extractMetadata,
   hardenFile,
   isDefineAlias,
   options,
@@ -491,7 +490,8 @@ export class IpcServer {
         const { js, sourceHash } = await bundleAlias(filePath);
 
         if (isStructured) {
-          const meta = await extractMetadata(js);
+          if (!this.aliasServer) throw new Error("Alias server not initialized");
+          const meta = await this.aliasServer.extractMetadataInSubprocess(js);
           this.db.saveAlias(
             name,
             filePath,

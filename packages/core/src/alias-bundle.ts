@@ -91,7 +91,8 @@ export async function computeSourceHash(sourcePath: string): Promise<string> {
  */
 export function stripMcpCliImport(bundledJs: string): string {
   // ESM: import { ... } from "mcp-cli";  or  import ... from "mcp-cli";
-  const esmPattern = /^import\s+.*from\s+["']mcp-cli["'];?\s*$/gm;
+  // Uses [^;]*? to handle multi-line imports from Bun.build (e.g. import {\n  defineAlias,\n  z\n} from "mcp-cli";)
+  const esmPattern = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
   // CJS: var/const/let { ... } = require("mcp-cli");
   const cjsPattern = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
 

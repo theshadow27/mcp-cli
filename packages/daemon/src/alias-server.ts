@@ -5,8 +5,8 @@
  * Alias execution happens in a subprocess via Bun.spawn for fault isolation.
  */
 
-import type { JsonSchema, ToolInfo } from "@mcp-cli/core";
-import { computeSourceHash, formatToolSignature } from "@mcp-cli/core";
+import type { AliasMetadata, JsonSchema, ToolInfo } from "@mcp-cli/core";
+import { bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -16,6 +16,36 @@ import type { StateDb } from "./db/state";
 import { workerPath } from "./worker-path";
 
 export const ALIAS_SERVER_NAME = "_aliases";
+
+/** Max concurrent subprocess executions to prevent fork-bomb scenarios. */
+const MAX_CONCURRENT_SUBPROCESSES = 8;
+
+/** Simple counting semaphore for limiting concurrent subprocess spawns. */
+class Semaphore {
+  private running = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.running < this.max) {
+      this.running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.running++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    this.running--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
 
 /** Serializable tool definition */
 export interface AliasToolDef {
@@ -35,6 +65,7 @@ export class AliasServer {
   private currentAliases: AliasToolDef[] = [];
   private db: StateDb;
   private executorPath: string;
+  private semaphore = new Semaphore(MAX_CONCURRENT_SUBPROCESSES);
 
   constructor(
     db: StateDb,
@@ -135,13 +166,13 @@ export class AliasServer {
           bundledJs = undefined; // Force re-bundle below
         }
       } catch {
-        // Can't read file — use cached bundle
+        // Can't read file — use cached bundle but warn
+        console.warn(`[alias] cannot read source for "${aliasDef.name}" at ${aliasDef.filePath}, using stale bundle`);
       }
     }
 
     if (!bundledJs) {
       // Bundle on the fly
-      const { bundleAlias } = await import("@mcp-cli/core");
       const result = await bundleAlias(aliasDef.filePath);
       bundledJs = result.js;
 
@@ -162,54 +193,70 @@ export class AliasServer {
       }
     }
 
-    const input = JSON.stringify({
+    const payload = JSON.stringify({
       bundledJs,
       input: args,
       isDefineAlias: aliasDef.isDefineAlias,
     });
 
-    const proc = Bun.spawn([process.execPath, this.executorPath], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+    return this.spawnExecutor(payload, 30_000) as Promise<unknown>;
+  }
+
+  /** Extract metadata from bundled JS in a subprocess (safe against sync infinite loops). */
+  async extractMetadataInSubprocess(bundledJs: string): Promise<AliasMetadata> {
+    const payload = JSON.stringify({
+      bundledJs,
+      input: null,
+      isDefineAlias: true,
+      mode: "extractMetadata",
     });
 
-    proc.stdin.write(input);
-    proc.stdin.end();
+    return this.spawnExecutor(payload, 10_000) as Promise<AliasMetadata>;
+  }
 
-    // Kill subprocess after 30s timeout
-    const killTimeout = setTimeout(() => {
-      proc.kill("SIGKILL");
-    }, 30_000);
+  /** Spawn executor subprocess with semaphore-limited concurrency. */
+  private async spawnExecutor(stdinPayload: string, timeoutMs: number): Promise<unknown> {
+    await this.semaphore.acquire();
+    try {
+      const proc = Bun.spawn([process.execPath, this.executorPath], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-    // Read stdout and stderr concurrently to prevent pipe buffer deadlock
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+      proc.stdin.write(stdinPayload);
+      proc.stdin.end();
 
-    clearTimeout(killTimeout);
+      const killTimeout = setTimeout(() => {
+        proc.kill("SIGKILL");
+      }, timeoutMs);
 
-    if (exitCode !== 0) {
-      // Try to parse structured error from stdout before falling back to stderr
-      if (stdout) {
-        try {
-          const parsed = JSON.parse(stdout) as { error?: string };
-          if (parsed.error) throw new Error(parsed.error);
-        } catch (e) {
-          if (!(e instanceof SyntaxError)) throw e;
-          // JSON.parse failed — fall through to stderr/generic error
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      clearTimeout(killTimeout);
+
+      if (exitCode !== 0) {
+        if (stdout) {
+          try {
+            const parsed = JSON.parse(stdout) as { error?: string };
+            if (parsed.error) throw new Error(parsed.error);
+          } catch (e) {
+            if (!(e instanceof SyntaxError)) throw e;
+          }
         }
+        throw new Error(stderr || `Alias executor exited with code ${exitCode}`);
       }
-      throw new Error(stderr || `Alias executor exited with code ${exitCode}`);
-    }
 
-    const parsed = JSON.parse(stdout) as { result: unknown; error?: string };
-    if (parsed.error) {
-      throw new Error(parsed.error);
+      const parsed = JSON.parse(stdout) as { result: unknown; error?: string };
+      if (parsed.error) throw new Error(parsed.error);
+      return parsed.result;
+    } finally {
+      this.semaphore.release();
     }
-    return parsed.result;
   }
 
   /** Build AliasToolDef[] from the database. Only defineAlias aliases with input schemas. */

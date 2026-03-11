@@ -66,6 +66,12 @@ describe("stripMcpCliImport", () => {
     expect(result).toBe(input);
   });
 
+  test("strips multi-line ESM import from Bun.build", () => {
+    const input = `import {\n  defineAlias,\n  z\n} from "mcp-cli";\nconsole.log("hello");`;
+    const result = stripMcpCliImport(input);
+    expect(result.trim()).toBe('console.log("hello");');
+  });
+
   test("handles single quotes", () => {
     const input = `import { defineAlias } from 'mcp-cli';\nconsole.log("hello");`;
     const result = stripMcpCliImport(input);

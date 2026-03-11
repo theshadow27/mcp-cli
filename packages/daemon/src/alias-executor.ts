@@ -11,18 +11,33 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { type AliasContext, executeAliasBundled, stubProxy } from "@mcp-cli/core";
+import { type AliasContext, executeAliasBundled, extractMetadata, stubProxy } from "@mcp-cli/core";
 
 interface ExecutorInput {
   bundledJs: string;
   input: unknown;
   isDefineAlias: boolean;
+  mode?: "execute" | "extractMetadata";
 }
 
 async function main(): Promise<void> {
+  // Redirect console to stderr so alias scripts' console.log doesn't corrupt stdout JSON protocol
+  const stderrWrite = (data: string) => process.stderr.write(`${data}\n`);
+  console.log = stderrWrite;
+  console.warn = stderrWrite;
+  console.error = stderrWrite;
+  console.info = stderrWrite;
+  console.debug = stderrWrite;
+
   // Read input from stdin
   const stdinText = await Bun.stdin.text();
-  const { bundledJs, input, isDefineAlias } = JSON.parse(stdinText) as ExecutorInput;
+  const { bundledJs, input, isDefineAlias, mode } = JSON.parse(stdinText) as ExecutorInput;
+
+  if (mode === "extractMetadata") {
+    const meta = await extractMetadata(bundledJs);
+    process.stdout.write(JSON.stringify({ result: meta }));
+    return;
+  }
 
   const ctx: AliasContext = {
     mcp: stubProxy,
