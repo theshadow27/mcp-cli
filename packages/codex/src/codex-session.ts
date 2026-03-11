@@ -255,6 +255,7 @@ export class CodexSession {
       pendingPermissions: this.pendingPermissions.size,
       pendingPermissionDetails: [...this.pendingPermissions.values()],
       worktree: this.config.worktree ?? null,
+      repoRoot: null,
       processAlive: this.proc?.alive ?? false,
     };
   }

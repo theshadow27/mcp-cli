@@ -44,6 +44,8 @@ export interface AgentSessionInfo {
   pendingPermissions: number;
   pendingPermissionDetails: AgentPermissionRequest[];
   worktree: string | null;
+  /** Git repo root the session was spawned in (null if unknown). */
+  repoRoot: string | null;
   /** Whether the agent process is still alive. */
   processAlive: boolean;
 }

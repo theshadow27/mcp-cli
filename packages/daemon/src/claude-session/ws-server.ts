@@ -1068,6 +1068,7 @@ export class ClaudeWsServer {
       pendingPermissions: s.state.pendingPermissions.size,
       pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
+      repoRoot: s.config.repoRoot ?? null,
       processAlive: s.spawnAlive,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,

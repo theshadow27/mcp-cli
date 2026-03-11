@@ -35,6 +35,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ttyOpen: mock(async () => {}),
+    getGitRoot: mock(() => null),
     ...overrides,
   };
 }
@@ -926,6 +927,95 @@ describe("mcx claude ls", () => {
       console.log = origLog;
     }
   });
+
+  test("filters sessions by repo root when getGitRoot returns a path", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      // Header + 1 matching session (not 2)
+      expect(logSpy.mock.calls.length).toBe(2);
+      const row = (logSpy.mock.calls[1] as string[])[0];
+      expect(row).toContain("abc12345");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--all bypasses repo root filtering", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--all"], deps);
+      // Header + 2 sessions (no filtering)
+      expect(logSpy.mock.calls.length).toBe(3);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("-a is an alias for --all", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "-a"], deps);
+      expect(logSpy.mock.calls.length).toBe(3);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows all sessions when not in a git repo", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getGitRoot: mock(() => null),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      // Header + 2 sessions (no filtering when outside git repo)
+      expect(logSpy.mock.calls.length).toBe(3);
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── formatSessionShort ──
@@ -1547,6 +1637,22 @@ describe("parseWaitArgs", () => {
     expect(result.short).toBe(true);
     expect(result.timeout).toBe(5000);
   });
+
+  test("parses --all flag", () => {
+    const result = parseWaitArgs(["--all"]);
+    expect(result.all).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses -a shorthand for --all", () => {
+    const result = parseWaitArgs(["-a"]);
+    expect(result.all).toBe(true);
+  });
+
+  test("defaults all to false", () => {
+    const result = parseWaitArgs([]);
+    expect(result.all).toBe(false);
+  });
 });
 
 // ── wait ──
@@ -1663,6 +1769,88 @@ describe("mcx claude wait", () => {
       const line1 = (logSpy.mock.calls[0] as string[])[0];
       expect(line1).toContain("abc12345");
       expect(line1).toContain("active");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--short filters timeout fallback by repo root", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const callTool = mock(async () => toolResult(sessions));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      // Only 1 session matches /repo/a
+      expect(logSpy.mock.calls.length).toBe(1);
+      const line = (logSpy.mock.calls[0] as string[])[0];
+      expect(line).toContain("abc12345");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--all bypasses repo filtering in wait", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const callTool = mock(async () => toolResult(sessions));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--all", "--timeout", "1000"], deps);
+      // Both sessions shown
+      expect(logSpy.mock.calls.length).toBe(2);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("filters cursor-based events by repo root in --short mode", async () => {
+    const waitResult = {
+      seq: 5,
+      events: [
+        {
+          event: "session:result",
+          session: { sessionId: "abc12345", repoRoot: "/repo/a", cost: 0.05, numTurns: 2 },
+        },
+        {
+          event: "session:result",
+          session: { sessionId: "def67890", repoRoot: "/repo/b", cost: 0.02, numTurns: 1 },
+        },
+      ],
+    };
+    const callTool = mock(async () => toolResult(waitResult));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--after", "0"], deps);
+      // Only event for /repo/a
+      expect(logSpy.mock.calls.length).toBe(1);
+      const line = (logSpy.mock.calls[0] as string[])[0];
+      expect(line).toContain("abc12345");
     } finally {
       console.log = origLog;
     }

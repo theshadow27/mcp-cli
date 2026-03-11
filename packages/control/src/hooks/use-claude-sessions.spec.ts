@@ -22,6 +22,7 @@ function session(id: string): SessionInfo {
     pendingPermissions: 0,
     pendingPermissionDetails: [],
     worktree: null,
+    repoRoot: null,
     processAlive: true,
     wsConnected: true,
     spawnAlive: true,
