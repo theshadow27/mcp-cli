@@ -23,16 +23,27 @@ For each issue, run the full lifecycle:
 Always use opus. For documentation-only issues, use sonnet.
 
 ```bash
-mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
 ```
 
 ### Triage
 
-After implementation completes, end the session and measure the diff:
+After implementation completes, end the session. The `bye` response includes
+the worktree path — **save it** for reuse in subsequent phases:
 
 ```bash
+# bye returns JSON: {"ended":true,"worktree":"claude-xxx","cwd":"/path/...","repoRoot":"/path/..."}
 mcx claude bye <sessionId>
-bun .claude/skills/estimate/triage.ts --base main --json
+```
+
+**Track the worktree path** from the `bye` response. If `cwd` is null (daemon-
+created worktrees), resolve it: `.claude/worktrees/<worktree-name>` relative
+to the repo root.
+
+Run triage from the worktree directory:
+
+```bash
+cd <worktree-path> && bun .claude/skills/estimate/triage.ts --base main --json
 ```
 
 **High scrutiny** if ANY of:
@@ -45,17 +56,26 @@ Everything else is **low scrutiny**.
 
 ### Review (high scrutiny only)
 
+**Reuse the worktree** from the implement phase via `--cwd`:
+
 ```bash
-mcx claude spawn --worktree --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --cwd <worktree-path> --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
-If review finds issues, spawn an opus repair session on the same branch, then
-re-triage. High scrutiny rewrites get 2 adversarial reviews.
+If review finds issues, spawn an opus repair session on the same worktree:
+
+```bash
+mcx claude spawn --cwd <worktree-path> -t "Repair PR #N ..." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+```
+
+Then re-triage. High scrutiny rewrites get 2 adversarial reviews.
 
 ### QA
 
+**Reuse the worktree** from the implement phase via `--cwd`:
+
 ```bash
-mcx claude spawn --worktree --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --cwd <worktree-path> --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
 QA verifies and merges if passing.
@@ -66,6 +86,21 @@ When QA does not merge:
 1. Label the issue `needs-clarification`
 2. Comment on the PR with what went wrong
 3. Report to user — do not retry automatically
+
+## Worktree lifecycle
+
+Each issue gets ONE worktree, created at implementation time. All subsequent
+phases (review, repair, QA) reuse it via `--cwd`. This avoids creating
+redundant worktrees and avoids branch checkout conflicts.
+
+```
+implement: spawn --worktree  →  creates worktree  →  bye (save worktree path)
+review:    spawn --cwd <path> →  reuses worktree   →  bye
+repair:    spawn --cwd <path> →  reuses worktree   →  bye
+QA:        spawn --cwd <path> →  reuses worktree   →  bye (final cleanup)
+```
+
+Only the final `bye` (after QA merge or failure) should clean up the worktree.
 
 ## Monitor and saturate
 
@@ -79,13 +114,12 @@ while issues remain:
 
   for each session that completed (idle/result):
     if implementation session:
-      bye → triage → spawn review or QA
+      bye → save worktree path → triage → spawn review or QA (--cwd)
       spawn next issue from backlog (backfill the slot)
     if review session:
-      bye → read findings → spawn repair if needed, else spawn QA
+      bye → read findings → spawn repair (--cwd) if needed, else spawn QA (--cwd)
     if QA session:
       bye → record result (merged or failed)
-      clean up worktree
 
   file issues for any problems observed
 ```
@@ -96,6 +130,7 @@ while issues remain:
 - Always `bye` before triaging (need the worktree path for triage.ts)
 - Don't `bye` a session before verifying the PR was pushed
 - Spawn fresh sessions per phase — never reuse across implement/review/QA
+- Reuse worktrees across phases via `--cwd` — never `--worktree` for repair/review/QA
 - Don't bulk-clean worktrees during a sprint — check `mcx claude ls` first
 - Don't restart the daemon mid-batch — wait for active sessions to idle
 
