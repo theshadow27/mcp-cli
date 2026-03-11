@@ -15,6 +15,7 @@ import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMetrics } from "./hooks/use-metrics.js";
+import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
 const LOG_VIEW_HEIGHT = 20;
 
@@ -52,6 +53,7 @@ export function App() {
     setSource: setLogSource,
   } = useLogs(servers, { enabled: view === "logs" });
 
+  const { unreadCount: unreadMailCount } = useUnreadMail();
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const prevFilterRef = useRef(filterText);
 
@@ -141,7 +143,12 @@ export function App() {
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
   const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
   const errorServerCount = servers.filter((s) => s.state === "error").length;
-  const badges = buildBadges({ sessionCount: sessions.length, pendingPermissionCount, errorServerCount });
+  const badges = buildBadges({
+    sessionCount: sessions.length,
+    pendingPermissionCount,
+    errorServerCount,
+    unreadMailCount,
+  });
 
   return (
     <Box flexDirection="column" padding={1}>
