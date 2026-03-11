@@ -65,15 +65,22 @@ export interface ClaudeNav {
   setDenyReasonText: (fn: string | ((prev: string) => string)) => void;
 }
 
+export interface StatsNav {
+  scrollOffset: number;
+  setScrollOffset: (fn: (offset: number) => number) => void;
+  lineCount: number;
+}
+
 interface UseKeyboardOptions {
   view: View;
   setView: (view: View) => void;
   serversNav: ServersNav;
   logsNav: LogsNav;
   claudeNav: ClaudeNav;
+  statsNav: StatsNav;
 }
 
-export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: UseKeyboardOptions): void {
+export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, statsNav }: UseKeyboardOptions): void {
   const {
     servers,
     selectedIndex,
@@ -322,6 +329,19 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         return;
       }
 
+      return;
+    }
+
+    // -- Stats view --
+    if (view === "stats") {
+      if (key.upArrow || input === "k") {
+        statsNav.setScrollOffset((o) => Math.max(0, o - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        statsNav.setScrollOffset((o) => Math.min(Math.max(0, statsNav.lineCount - 1), o + 1));
+        return;
+      }
       return;
     }
 

@@ -103,6 +103,7 @@ export function Footer({ view, filterMode, filterText, denyReasonMode, denyReaso
       <Box marginTop={1}>
         <Text>
           {tabHints}
+          <Text dimColor>j/k</Text> scroll{"  "}
           <Text dimColor>esc</Text> back{"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
