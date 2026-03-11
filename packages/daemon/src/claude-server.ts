@@ -155,6 +155,7 @@ export class ClaudeServer {
     private daemonId?: string,
     clientFactory?: ClientFactory,
     logger?: Logger,
+    private handshakeTimeoutMs = 10_000,
   ) {
     this.db = db;
     this.clientFactory =
@@ -221,7 +222,7 @@ export class ClaudeServer {
           handshakeTimer = setTimeout(() => {
             metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error("MCP handshake timeout (10s)"));
-          }, 10_000);
+          }, this.handshakeTimeoutMs);
         }),
       ]);
       clearTimeout(handshakeTimer);
