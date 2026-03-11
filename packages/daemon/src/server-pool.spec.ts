@@ -1128,6 +1128,63 @@ describe("ServerPool.restart", () => {
     expect(connectCalls).toHaveLength(2);
   });
 
+  test("restart without name skips virtual servers", async () => {
+    const connectCalls: string[] = [];
+    const connectFn: ConnectFn = mock((name: string) => {
+      connectCalls.push(name);
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(makeConfig({ a: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    // Connect server "a" via config
+    await pool.listTools("a");
+
+    // Register a virtual server
+    pool.registerVirtualServer(
+      "_virtual",
+      makeMockClient() as unknown as Client,
+      makeMockTransport() as unknown as Transport,
+    );
+
+    connectCalls.length = 0;
+
+    await pool.restart();
+
+    // Only "a" should be restarted, not the virtual server
+    expect(connectCalls).toContain("a");
+    expect(connectCalls).not.toContain("_virtual");
+    expect(connectCalls).toHaveLength(1);
+
+    // Virtual server should still be listed as connected
+    const servers = pool.listServers();
+    const virtualServer = servers.find((s) => s.name === "_virtual");
+    expect(virtualServer?.state).toBe("connected");
+  });
+
+  test("ensureConnected on disconnected virtual server throws clear error", async () => {
+    const connectFn: ConnectFn = mock(() => {
+      return Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      });
+    });
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
+
+    // Register and then disconnect a virtual server
+    pool.registerVirtualServer(
+      "_test",
+      makeMockClient() as unknown as Client,
+      makeMockTransport() as unknown as Transport,
+    );
+    await pool.disconnect("_test");
+
+    // Attempting to use the disconnected virtual server should throw
+    await expect(pool.callTool("_test", "some-tool", {})).rejects.toThrow(/Virtual server "_test" failed to start/);
+  });
+
   test("restart logs errors for failed servers but does not throw", async () => {
     let firstConnect = true;
     const connectFn: ConnectFn = mock((name: string) => {
