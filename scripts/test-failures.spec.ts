@@ -78,6 +78,26 @@ describe("test-failures CLI", () => {
       expect(result.file).toBeNull();
       expect(result.json).toBe(false);
     });
+
+    it("throws on --top without value", () => {
+      expect(() => parseArgs(["node", "script", "--top"])).toThrow("--top requires a numeric argument");
+    });
+
+    it("throws on --top with non-numeric value", () => {
+      expect(() => parseArgs(["node", "script", "--top", "abc"])).toThrow("--top value must be a positive integer");
+    });
+
+    it("throws on --since without value", () => {
+      expect(() => parseArgs(["node", "script", "--since"])).toThrow("--since requires an argument");
+    });
+
+    it("throws on --since with invalid format", () => {
+      expect(() => parseArgs(["node", "script", "--since", "xyz"])).toThrow("Invalid --since value");
+    });
+
+    it("throws on --file without value", () => {
+      expect(() => parseArgs(["node", "script", "--file"])).toThrow("--file requires an argument");
+    });
   });
 
   describe("formatOutput", () => {

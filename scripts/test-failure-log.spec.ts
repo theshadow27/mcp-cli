@@ -115,10 +115,9 @@ describe("test-failure-log", () => {
       expect(result.error).toBe("some error message");
     });
 
-    it("handles concurrent writes from same process", () => {
+    it("handles sequential writes from same process", () => {
       const dbPath = makeDbPath();
 
-      // Simulate two concurrent append operations
       appendFailures([makeEntry({ test: "writer-1" })], dbPath);
       appendFailures([makeEntry({ test: "writer-2" })], dbPath);
 

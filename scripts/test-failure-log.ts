@@ -3,6 +3,11 @@
  *
  * Uses bun:sqlite for concurrent-safe persistence at ~/.mcp-cli/test-failures.db.
  * Failures are preserved across ephemeral worktree lifetimes.
+ *
+ * Migration note: This replaces the previous JSONL-based test-failures.log.
+ * Existing .log data is not migrated — this is intentional since the JSONL
+ * format had no stable schema and the data is ephemeral diagnostic info.
+ * The old test-failures.log file can be safely deleted.
  */
 
 import { Database } from "bun:sqlite";
@@ -40,7 +45,7 @@ function openDb(dbPath: string): Database {
 
   const db = new Database(dbPath, { create: true });
   db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA busy_timeout = 3000");
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec(`
     CREATE TABLE IF NOT EXISTS test_failures (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,12 +83,12 @@ export function closeDb(dbPath: string): void {
 
 /** Resolve the database path from env or default */
 export function getDbPath(): string {
-  const dir = process.env.MCP_CLI_DIR || `${process.env.HOME}/.mcp-cli`;
-  return `${dir}/test-failures.db`;
+  const dir = process.env.MCP_CLI_DIR;
+  if (dir) return `${dir}/test-failures.db`;
+  const home = process.env.HOME;
+  if (!home) throw new Error("Neither MCP_CLI_DIR nor HOME is set");
+  return `${home}/.mcp-cli/test-failures.db`;
 }
-
-/** @deprecated Use getDbPath() instead */
-export const getLogPath = getDbPath;
 
 /** Extract current git context (worktree name, branch, PR number) */
 export function getGitContext(): { worktree: string; branch: string; pr: number | null } {
@@ -171,7 +176,7 @@ export function appendFailures(entries: TestFailureEntry[], dbPath?: string): vo
     VALUES ($timestamp, $file, $test, $worktree, $branch, $pr, $exitCode, $retryPassed, $duration, $error)
   `);
 
-  const insertMany = db.transaction((rows: TestFailureEntry[]) => {
+  const insertAndPrune = db.transaction((rows: TestFailureEntry[]) => {
     for (const e of rows) {
       insert.run({
         $timestamp: e.timestamp,
@@ -186,12 +191,10 @@ export function appendFailures(entries: TestFailureEntry[], dbPath?: string): vo
         $error: e.error,
       });
     }
+    pruneIfNeeded(db);
   });
 
-  insertMany(entries);
-
-  // Prune if over limit
-  pruneIfNeeded(db);
+  insertAndPrune(entries);
 }
 
 /** Delete rows beyond MAX_ENTRIES, keeping the most recent. */
@@ -250,7 +253,7 @@ export function readFailures(dbPath?: string, filters?: { since?: number; file?:
     branch: r.branch,
     pr: r.pr,
     exitCode: r.exit_code,
-    retryPassed: r.retry_passed === 1,
+    retryPassed: r.retry_passed !== 0,
     duration: r.duration,
     error: r.error,
   }));

@@ -29,13 +29,11 @@ export function parseArgs(argv: string[]): {
       case "--top": {
         const val = args[++i];
         if (val === undefined) {
-          console.error("Error: --top requires a numeric argument");
-          process.exit(1);
+          throw new Error("--top requires a numeric argument");
         }
         const parsed = Number.parseInt(val, 10);
         if (Number.isNaN(parsed) || parsed <= 0) {
-          console.error(`Error: --top value must be a positive integer, got: ${val}`);
-          process.exit(1);
+          throw new Error(`--top value must be a positive integer, got: ${val}`);
         }
         top = parsed;
         break;
@@ -43,13 +41,11 @@ export function parseArgs(argv: string[]): {
       case "--since": {
         const val = args[++i];
         if (val === undefined) {
-          console.error("Error: --since requires an argument (e.g. 7d, 24h, 30m)");
-          process.exit(1);
+          throw new Error("--since requires an argument (e.g. 7d, 24h, 30m)");
         }
         const match = val.match(/^(\d+)([dhm])$/);
         if (!match) {
-          console.error(`Invalid --since value: ${val} (expected e.g. 7d, 24h, 30m)`);
-          process.exit(1);
+          throw new Error(`Invalid --since value: ${val} (expected e.g. 7d, 24h, 30m)`);
         }
         const num = Number.parseInt(match[1], 10);
         const unit = match[2];
@@ -60,8 +56,7 @@ export function parseArgs(argv: string[]): {
       case "--file": {
         const val = args[++i];
         if (val === undefined) {
-          console.error("Error: --file requires an argument");
-          process.exit(1);
+          throw new Error("--file requires an argument");
         }
         file = val;
         break;
@@ -139,7 +134,15 @@ export function formatOutput(entries: TestFailureEntry[], opts: { top: number | 
 }
 
 function main(): void {
-  const { top, since, file, json } = parseArgs(process.argv);
+  let parsed: ReturnType<typeof parseArgs>;
+  try {
+    parsed = parseArgs(process.argv);
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  const { top, since, file, json } = parsed;
 
   // Push filters to SQL
   const entries = readFailures(undefined, {
@@ -150,4 +153,6 @@ function main(): void {
   console.log(formatOutput(entries, { top, json }));
 }
 
-main();
+if (import.meta.main) {
+  main();
+}
