@@ -1,7 +1,7 @@
 import type { SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { ClaudeSessionDetail } from "./claude-session-detail.js";
+import { ClaudeSessionDetail, type TranscriptEntry } from "./claude-session-detail.js";
 
 interface ClaudeSessionListProps {
   sessions: SessionInfo[];
@@ -10,6 +10,10 @@ interface ClaudeSessionListProps {
   loading: boolean;
   error: string | null;
   permissionIndex: number;
+  transcriptEntries: TranscriptEntry[];
+  transcriptError: string | null;
+  transcriptSelectedEntry: number;
+  transcriptExpandedEntries: ReadonlySet<number>;
 }
 
 const stateColor: Record<SessionStateEnum, string> = {
@@ -62,6 +66,10 @@ export function ClaudeSessionList({
   loading,
   error,
   permissionIndex,
+  transcriptEntries,
+  transcriptError,
+  transcriptSelectedEntry,
+  transcriptExpandedEntries,
 }: ClaudeSessionListProps) {
   if (loading && sessions.length === 0) {
     return (
@@ -149,7 +157,14 @@ export function ClaudeSessionList({
                 {session.pendingPermissionDetails.length > 1 && <Text dimColor>{"  ←/→ navigate permissions"}</Text>}
               </Box>
             )}
-            {expanded && <ClaudeSessionDetail sessionId={session.sessionId} />}
+            {expanded && (
+              <ClaudeSessionDetail
+                entries={transcriptEntries}
+                error={transcriptError}
+                selectedEntry={transcriptSelectedEntry}
+                expandedEntries={transcriptExpandedEntries}
+              />
+            )}
           </Box>
         );
       })}

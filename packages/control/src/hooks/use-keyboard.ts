@@ -1,7 +1,11 @@
 import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
+import { useCallback, useState } from "react";
 import type { AuthStatus } from "../components/auth-banner";
+import type { TranscriptEntry } from "../components/claude-session-detail";
+import { formatFullEntry, summarizeEntry } from "../components/claude-session-detail";
+import { extractToolText } from "./ipc-tool-helpers";
 import { type LogSource, buildLogSources } from "./use-logs";
 
 export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
@@ -63,6 +67,11 @@ export interface ClaudeNav {
   setDenyReasonMode: (mode: boolean) => void;
   denyReasonText: string;
   setDenyReasonText: (fn: string | ((prev: string) => string)) => void;
+  transcriptIndex: number;
+  setTranscriptIndex: (fn: (i: number) => number) => void;
+  transcriptEntries: TranscriptEntry[];
+  expandedEntries: ReadonlySet<number>;
+  setExpandedEntries: (fn: (prev: ReadonlySet<number>) => ReadonlySet<number>) => void;
 }
 
 interface UseKeyboardOptions {
@@ -106,8 +115,60 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     setDenyReasonMode,
     denyReasonText,
     setDenyReasonText,
+    transcriptIndex,
+    setTranscriptIndex,
+    transcriptEntries,
+    expandedEntries,
+    setExpandedEntries,
   } = claudeNav;
   const { exit } = useApp();
+  const [pagerBusy, setPagerBusy] = useState(false);
+
+  const openPager = useCallback(
+    async (sessionId: string) => {
+      if (pagerBusy) return;
+      setPagerBusy(true);
+      try {
+        const result = await ipcCall("callTool", {
+          server: "_claude",
+          tool: "claude_transcript",
+          arguments: { sessionId, limit: 500 },
+        });
+        const text = extractToolText(result);
+        if (!text) return;
+        const entries = JSON.parse(text) as TranscriptEntry[];
+        const formatted = entries
+          .map((e) => {
+            const dir = e.direction === "outbound" ? "→" : "←";
+            const ts = new Date(e.timestamp).toISOString();
+            const summary = summarizeEntry(e);
+            const full = formatFullEntry(e);
+            return `${ts} ${dir} ${summary}\n${full}`;
+          })
+          .join("\n\n---\n\n");
+
+        const tmpFile = `/tmp/mcpctl-log-${sessionId.slice(0, 8)}.txt`;
+        await Bun.write(tmpFile, formatted);
+
+        const pager = process.env.PAGER || "less";
+        // Temporarily exit raw mode for the pager
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(false);
+        }
+        process.stdout.write("\x1b[?1049l"); // exit alt screen
+        Bun.spawnSync([pager, tmpFile], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+        process.stdout.write("\x1b[?1049h"); // re-enter alt screen
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(true);
+        }
+      } catch {
+        // Pager errors are non-fatal
+      } finally {
+        setPagerBusy(false);
+      }
+    },
+    [pagerBusy],
+  );
 
   useInput((input, key) => {
     // -- Deny reason mode: capture text for denial message --
@@ -258,14 +319,58 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     if (view === "claude") {
       const selectedSession = claudeSessions[claudeSelectedIndex];
 
-      // Navigate sessions
-      if (key.upArrow || input === "k") {
-        setClaudeSelectedIndex((i) => Math.max(0, i - 1));
+      // Ctrl+O: open full transcript in pager
+      if (key.ctrl && input === "o") {
+        if (selectedSession) {
+          openPager(selectedSession.sessionId);
+        }
         return;
       }
-      if (key.downArrow || input === "j") {
-        setClaudeSelectedIndex((i) => Math.min(claudeSessions.length - 1, i + 1));
-        return;
+
+      // When transcript is expanded, j/k navigate within transcript entries
+      if (expandedSession) {
+        if (key.upArrow || input === "k") {
+          setTranscriptIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        if (key.downArrow || input === "j") {
+          setTranscriptIndex((i) => Math.min(Math.max(0, transcriptEntries.length - 1), i + 1));
+          return;
+        }
+
+        // Enter: toggle expand/collapse selected entry
+        if (key.return) {
+          setExpandedEntries((prev) => {
+            const next = new Set(prev);
+            if (next.has(transcriptIndex)) {
+              next.delete(transcriptIndex);
+            } else {
+              next.add(transcriptIndex);
+            }
+            return next;
+          });
+          return;
+        }
+
+        // Esc: collapse transcript (handled by escAction above)
+      } else {
+        // Navigate sessions (only when transcript not expanded)
+        if (key.upArrow || input === "k") {
+          setClaudeSelectedIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        if (key.downArrow || input === "j") {
+          setClaudeSelectedIndex((i) => Math.min(claudeSessions.length - 1, i + 1));
+          return;
+        }
+
+        // Toggle transcript detail
+        if (key.return) {
+          if (selectedSession) {
+            setExpandedSession(selectedSession.sessionId);
+          }
+          return;
+        }
       }
 
       // Navigate pending permissions within selected session
@@ -276,14 +381,6 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
       if (key.rightArrow) {
         const permCount = selectedSession?.pendingPermissionDetails?.length ?? 0;
         setPermissionIndex((i) => Math.min(Math.max(0, permCount - 1), i + 1));
-        return;
-      }
-
-      // Toggle transcript detail
-      if (key.return) {
-        if (selectedSession) {
-          setExpandedSession(expandedSession === selectedSession.sessionId ? null : selectedSession.sessionId);
-        }
         return;
       }
 

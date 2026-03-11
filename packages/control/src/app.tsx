@@ -15,6 +15,7 @@ import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMetrics } from "./hooks/use-metrics.js";
+import { useTranscript } from "./hooks/use-transcript.js";
 
 const LOG_VIEW_HEIGHT = 20;
 
@@ -33,6 +34,8 @@ export function App() {
   const [permissionIndex, setPermissionIndex] = useState(0);
   const [denyReasonMode, setDenyReasonMode] = useState(false);
   const [denyReasonText, setDenyReasonText] = useState("");
+  const [transcriptIndex, setTranscriptIndex] = useState(0);
+  const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<number>>(new Set());
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -41,6 +44,7 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
+  const { entries: transcriptEntries, error: transcriptError } = useTranscript(expandedSession);
   const {
     metrics: metricsData,
     error: metricsError,
@@ -67,6 +71,19 @@ export function App() {
       return prev;
     });
   }, [filteredLogLines.length, filterText]);
+
+  // Reset transcript navigation when expanded session changes
+  const prevExpandedRef = useRef(expandedSession);
+  if (prevExpandedRef.current !== expandedSession) {
+    prevExpandedRef.current = expandedSession;
+    setTranscriptIndex(0);
+    setExpandedEntries(new Set());
+  }
+
+  // Clamp transcript index when entries change
+  useEffect(() => {
+    setTranscriptIndex((i) => Math.min(i, Math.max(0, transcriptEntries.length - 1)));
+  }, [transcriptEntries.length]);
 
   // Clamp claudeSelectedIndex when sessions list shrinks
   useEffect(() => {
@@ -133,6 +150,11 @@ export function App() {
       setDenyReasonMode,
       denyReasonText,
       setDenyReasonText,
+      transcriptIndex,
+      setTranscriptIndex,
+      transcriptEntries,
+      expandedEntries,
+      setExpandedEntries,
     },
   });
 
@@ -175,6 +197,10 @@ export function App() {
           loading={claudeLoading}
           error={claudeError}
           permissionIndex={permissionIndex}
+          transcriptEntries={transcriptEntries}
+          transcriptError={transcriptError}
+          transcriptSelectedEntry={transcriptIndex}
+          transcriptExpandedEntries={expandedEntries}
         />
       ) : view === "stats" ? (
         <StatsView metrics={metricsData} loading={metricsLoading} error={metricsError} />
@@ -189,6 +215,7 @@ export function App() {
         filterText={filterText}
         denyReasonMode={denyReasonMode}
         denyReasonText={denyReasonText}
+        transcriptExpanded={expandedSession !== null}
       />
     </Box>
   );

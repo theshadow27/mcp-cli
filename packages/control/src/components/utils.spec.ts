@@ -6,7 +6,7 @@ import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
 import { isAuthError } from "./auth-banner";
 import type { TranscriptEntry } from "./claude-session-detail";
-import { summarizeEntry } from "./claude-session-detail";
+import { formatFullEntry, summarizeEntry } from "./claude-session-detail";
 import { formatCost, formatTokens, shortCwd, shortId } from "./claude-session-list";
 import { formatUptime } from "./header";
 import { formatRelativeTime } from "./server-detail";
@@ -281,7 +281,21 @@ describe("summarizeEntry", () => {
     expect(summarizeEntry(entry)).toBe("Hello world");
   });
 
-  it("summarizes assistant tool use", () => {
+  it("summarizes assistant tool use with input", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Bash", input: { command: "bun typecheck && bun lint" } }],
+        },
+      },
+    };
+    expect(summarizeEntry(entry)).toBe("[Bash: bun typecheck && bun lint]");
+  });
+
+  it("summarizes assistant tool use without input", () => {
     const entry: TranscriptEntry = {
       timestamp: 1000,
       direction: "outbound",
@@ -292,7 +306,21 @@ describe("summarizeEntry", () => {
         },
       },
     };
-    expect(summarizeEntry(entry)).toBe("[tool: Read]");
+    expect(summarizeEntry(entry)).toBe("[Read]");
+  });
+
+  it("summarizes tool use with file_path input", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Read", input: { file_path: "/src/index.ts" } }],
+        },
+      },
+    };
+    expect(summarizeEntry(entry)).toBe("[Read: /src/index.ts]");
   });
 
   it("summarizes result entries", () => {
@@ -326,6 +354,76 @@ describe("summarizeEntry", () => {
       message: { type: "system" },
     };
     expect(summarizeEntry(entry)).toBe("[system]");
+  });
+
+  it("truncates long tool input", () => {
+    const longCmd = "a".repeat(200);
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Bash", input: { command: longCmd } }],
+        },
+      },
+    };
+    const result = summarizeEntry(entry);
+    expect(result.length).toBeLessThanOrEqual(80);
+    expect(result.startsWith("[Bash: ")).toBe(true);
+    expect(result.endsWith("...]")).toBe(true);
+  });
+});
+
+describe("formatFullEntry", () => {
+  it("formats assistant text message", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Hello world" }],
+        },
+      },
+    };
+    expect(formatFullEntry(entry)).toBe("Hello world");
+  });
+
+  it("formats assistant tool use with input", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "outbound",
+      message: {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Bash", input: { command: "ls -la" } }],
+        },
+      },
+    };
+    const result = formatFullEntry(entry);
+    expect(result).toContain("[tool_use: Bash]");
+    expect(result).toContain('"command": "ls -la"');
+  });
+
+  it("formats result entries", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "inbound",
+      message: { type: "result", result: "Done successfully!" },
+    };
+    expect(formatFullEntry(entry)).toBe("Done successfully!");
+  });
+
+  it("formats unknown types as JSON", () => {
+    const entry: TranscriptEntry = {
+      timestamp: 1000,
+      direction: "inbound",
+      message: { type: "system", data: "test" },
+    };
+    const result = formatFullEntry(entry);
+    expect(result).toContain('"type": "system"');
+    expect(result).toContain('"data": "test"');
   });
 });
 
