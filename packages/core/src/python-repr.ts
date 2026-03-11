@@ -195,12 +195,18 @@ export function pythonReprToJson(input: string): string {
     // Keywords (True, False, None) and numbers
     if (isWordChar(ch) || ch === "-" || ch === "+") {
       const start = i;
-      // Allow leading sign for numbers
+      // Allow leading sign for numbers — but only if followed by digit/dot
       if ((ch === "-" || ch === "+") && i + 1 < len && (isDigit(input[i + 1]) || input[i + 1] === ".")) {
         i++;
       }
       while (i < len && (isWordChar(input[i]) || input[i] === ".")) {
         i++;
+      }
+      // If no progress was made (bare +/- with no digits), emit the character and advance
+      if (i === start) {
+        out.push(ch);
+        i++;
+        continue;
       }
       const word = input.substring(start, i);
 

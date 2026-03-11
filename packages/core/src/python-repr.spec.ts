@@ -81,6 +81,14 @@ describe("pythonReprToJson", () => {
     const result = JSON.parse(pythonReprToJson(input));
     expect(result).toEqual({ bell: "\u0007", vt: "\u000b", null: "\u0000" });
   });
+
+  it("does not infinite loop on bare + or -", () => {
+    const input = "{'a': +, 'b': -}";
+    // Should complete without hanging — output may not be valid JSON
+    // but must not loop forever
+    const result = pythonReprToJson(input);
+    expect(typeof result).toBe("string");
+  });
 });
 
 describe("parsePythonRepr", () => {
