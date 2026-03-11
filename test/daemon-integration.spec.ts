@@ -11,7 +11,7 @@ setDefaultTimeout(30_000);
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestDaemon } from "./harness";
-import { echoServerConfig, rpc, startTestDaemon } from "./harness";
+import { echoServerConfig, pollUntil, rpc, startTestDaemon } from "./harness";
 
 // ---------------------------------------------------------------------------
 // P1: Daemon lifecycle
@@ -127,16 +127,13 @@ describe("P2: Config hot reload", () => {
     // Write echo server config
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: { echo: echoServerConfig() } }));
 
-    // Poll with deadline — short backoff, exits as soon as condition is met
-    const deadline = Date.now() + 10_000;
-    let found = false;
-    while (!found && Date.now() < deadline) {
-      await Bun.sleep(100);
-      const after = await rpc(daemon.socketPath, "listServers");
+    // Poll with async predicate — exits as soon as condition is met
+    const sock = daemon.socketPath;
+    await pollUntil(async () => {
+      const after = await rpc(sock, "listServers");
       const servers = after.result as Array<{ name: string }>;
-      found = servers.some((s) => s.name === "echo");
-    }
-    expect(found).toBe(true);
+      return servers.some((s) => s.name === "echo");
+    }, 10_000);
   });
 
   test("removing a server from config is detected", async () => {
@@ -149,16 +146,13 @@ describe("P2: Config hot reload", () => {
     // Remove all servers
     writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: {} }));
 
-    // Poll with deadline — short backoff, exits as soon as condition is met
-    const deadline = Date.now() + 10_000;
-    let removed = false;
-    while (!removed && Date.now() < deadline) {
-      await Bun.sleep(100);
-      const after = await rpc(daemon.socketPath, "listServers");
+    // Poll with async predicate — exits as soon as condition is met
+    const sock = daemon.socketPath;
+    await pollUntil(async () => {
+      const after = await rpc(sock, "listServers");
       const afterServers = after.result as Array<{ name: string }>;
-      removed = afterServers.every((s) => s.name.startsWith("_"));
-    }
-    expect(removed).toBe(true);
+      return afterServers.every((s) => s.name.startsWith("_"));
+    }, 10_000);
   });
 });
 
