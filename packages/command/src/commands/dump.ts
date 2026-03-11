@@ -10,7 +10,7 @@
  *   mcx dump --include-transcripts   Include last 50 lines of each session log
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   DaemonStatus,
@@ -26,6 +26,12 @@ import { printError as defaultPrintError } from "../output";
 
 /** Timeout for individual session transcript fetches (independent of ping timeout). */
 const TRANSCRIPT_TIMEOUT_MS = 5_000;
+
+/** Maximum number of dump files to keep in the dumps directory. */
+export const MAX_DUMP_FILES = 20;
+
+/** Maximum size in bytes for a single dump file before truncation kicks in. */
+export const MAX_DUMP_BYTES = 50 * 1024 * 1024; // 50 MB
 
 /** Structured error returned when a gather function fails, instead of opaque null. */
 export interface GatherError {
@@ -117,6 +123,9 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
       : null,
   };
 
+  // Apply size cap with progressive truncation
+  truncateDump(dump);
+
   const json = JSON.stringify(dump, null, 2);
 
   if (toStdout) {
@@ -133,6 +142,9 @@ export async function cmdDump(args: string[], deps?: Partial<DumpDeps>): Promise
   const filePath = join(d.dumpsDir, `dump-${slug}.json`);
   writeFileSync(filePath, `${json}\n`);
   console.error(`Dump written to ${filePath}`);
+
+  // Rotate old dumps
+  rotateDumps(d.dumpsDir);
 }
 
 // ── Data gatherers ──
@@ -219,6 +231,61 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
     });
   } catch (err) {
     return gatherError(err);
+  }
+}
+
+// ── Dump rotation and size capping ──
+
+/**
+ * Progressively truncate dump content to stay under MAX_DUMP_BYTES.
+ * Truncation order: transcripts → metrics → daemonLog.
+ * Mutates the dump object in-place and sets `truncated: true` when content is removed.
+ */
+export function truncateDump(dump: Record<string, unknown>): void {
+  const size = () => JSON.stringify(dump).length;
+
+  if (size() <= MAX_DUMP_BYTES) return;
+
+  dump.truncated = true;
+
+  // 1. Strip transcripts from sessions
+  if (Array.isArray(dump.sessions)) {
+    for (const session of dump.sessions as Array<Record<string, unknown>>) {
+      if ("transcript" in session) {
+        session.transcript = ["(truncated — dump exceeded size limit)"];
+      }
+    }
+  }
+  if (size() <= MAX_DUMP_BYTES) return;
+
+  // 2. Strip metrics
+  dump.metrics = { truncated: true };
+  if (size() <= MAX_DUMP_BYTES) return;
+
+  // 3. Strip daemon logs
+  dump.daemonLog = [{ line: "(truncated — dump exceeded size limit)", timestamp: Date.now() }];
+}
+
+/**
+ * Delete oldest dump files when the directory contains more than MAX_DUMP_FILES.
+ * Files are sorted lexicographically (timestamp-based names sort chronologically).
+ */
+export function rotateDumps(dumpsDir: string): void {
+  if (!existsSync(dumpsDir)) return;
+
+  const files = readdirSync(dumpsDir)
+    .filter((f) => f.startsWith("dump-") && f.endsWith(".json"))
+    .sort(); // lexicographic = chronological for ISO-based names
+
+  const excess = files.length - MAX_DUMP_FILES;
+  if (excess <= 0) return;
+
+  for (let i = 0; i < excess; i++) {
+    try {
+      unlinkSync(join(dumpsDir, files[i]));
+    } catch {
+      // Best-effort cleanup — don't fail the dump command
+    }
   }
 }
 
