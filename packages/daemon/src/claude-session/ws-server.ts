@@ -146,8 +146,6 @@ interface WsSession {
   clearing: boolean;
   /** Claude Code's own session ID (from system/init), used for JSONL file lookup. */
   claudeSessionId: string | null;
-  /** Captured stderr lines from the spawned process (ring buffer, last 50 lines). */
-  stderrLines: string[];
 }
 
 interface WsData {
@@ -270,7 +268,6 @@ export class ClaudeWsServer {
       keepAliveTimer: null,
       clearing: false,
       claudeSessionId: null,
-      stderrLines: [],
     });
   }
 
@@ -336,19 +333,26 @@ export class ClaudeWsServer {
     // This is the root cause of #546: hook-created worktrees in complex repos
     // (git-crypt, large projects) produce enough stderr during Claude startup
     // to fill the buffer, blocking Claude before it connects via WebSocket.
-    if (proc.stderr) {
-      drainStderr(proc.stderr, session.stderrLines).catch(() => {
-        /* stream closed — expected on process exit */
-      });
-    }
+    //
+    // Per-process buffer: captured by closure so old drain coroutines can't
+    // contaminate a new process's buffer after clearSession respawns.
+    const procStderrLines: string[] = [];
+    const drainDone = proc.stderr
+      ? drainStderr(proc.stderr, procStderrLines).catch(() => {
+          /* stream closed — expected on process exit */
+        })
+      : Promise.resolve();
 
     // Watch for process exit — mark spawn as dead but don't terminate the session
-    proc.exited.then(() => {
+    proc.exited.then(async () => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      const suffix = session.stderrLines.length > 0 ? `: ${session.stderrLines.join("\n")}` : "";
+      // Wait for drain to finish — proc.exited fires when the kernel reaps
+      // the process, but the pipe may still have buffered data.
+      await drainDone;
+      const suffix = procStderrLines.length > 0 ? `: ${procStderrLines.join("\n")}` : "";
       this.logger.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
@@ -509,9 +513,8 @@ export class ClaudeWsServer {
     // Update config prompt to empty — next sendPrompt() will carry real work
     session.config.prompt = "";
 
-    // Clear transcript and stderr for fresh start
+    // Clear transcript for fresh start
     session.transcript.length = 0;
-    session.stderrLines.length = 0;
 
     // Respawn
     this.spawnClaude(sessionId);

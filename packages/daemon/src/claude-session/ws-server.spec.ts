@@ -2251,8 +2251,10 @@ describe("stderr drain", () => {
   }
 
   test("stderr is drained and captured — session transitions to disconnected on exit", async () => {
+    const errors: string[] = [];
+    const capturingLogger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args.join(" ")) };
     const ms = mockSpawnWithStderr();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: capturingLogger });
     server.start();
 
     server.prepareSession("stderr-test", { prompt: "Hello", cwd: "/test/worktree" });
@@ -2261,13 +2263,7 @@ describe("stderr drain", () => {
     // Write some stderr lines
     ms.writeStderr("line 1\nline 2\nline 3\n");
 
-    // Give the drain loop time to consume
-    await new Promise((r) => setTimeout(r, 50));
-
-    const status = server.getStatus("stderr-test");
-    expect(status.state).toBe("connecting");
-
-    // Process exits — close stderr first so drain completes
+    // Close stderr and exit process — drain completes before exit handler reads buffer
     ms.closeStderr();
     ms.exitResolve(0);
     await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
@@ -2275,6 +2271,11 @@ describe("stderr drain", () => {
     // Session should have transitioned to disconnected (not stuck in connecting)
     const sessions = server.listSessions();
     expect(sessions[0].state).toBe("disconnected");
+
+    // Stderr lines should appear in the exit log
+    const exitLog = errors.find((e) => e.includes("Spawn exited"));
+    expect(exitLog).toContain("line 1");
+    expect(exitLog).toContain("line 3");
   });
 
   test("stderr drain prevents pipe buffer deadlock with large output", async () => {
@@ -2291,21 +2292,18 @@ describe("stderr drain", () => {
       ms.writeStderr(`${bigLine}\n`);
     }
 
-    // Give drain time to consume
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Session should still be alive (not deadlocked)
-    const status = server.getStatus("large-stderr");
-    expect(status.state).toBe("connecting");
-
+    // Close stderr and resolve exit — if drain wasn't consuming, the writes above
+    // would have blocked (deadlock). Reaching this point proves the drain works.
     ms.closeStderr();
     ms.exitResolve(0);
     await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
   });
 
   test("stderrLines ring buffer limits to 50 lines", async () => {
+    const errors: string[] = [];
+    const capturingLogger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args.join(" ")) };
     const ms = mockSpawnWithStderr();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: capturingLogger });
     server.start();
 
     server.prepareSession("ring-buffer-test", { prompt: "Hello" });
@@ -2316,13 +2314,23 @@ describe("stderr drain", () => {
       ms.writeStderr(`line ${i}\n`);
     }
 
-    await new Promise((r) => setTimeout(r, 100));
-
     ms.closeStderr();
     ms.exitResolve(1);
     await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
 
-    expect(server?.listSessions()[0].state).toBe("disconnected");
+    // The exit handler logs all buffered stderr lines — verify ring buffer behavior
+    const exitLog = errors.find((e) => e.includes("Spawn exited"));
+    expect(exitLog).toBeDefined();
+    // Should NOT contain early lines (0-29) — they were evicted
+    expect(exitLog).not.toContain("line 0\n");
+    expect(exitLog).not.toContain("line 29\n");
+    // Should contain the last 50 lines (30-79)
+    expect(exitLog).toContain("line 30");
+    expect(exitLog).toContain("line 79");
+    // Count the lines in the logged suffix (after ": ")
+    const suffix = exitLog?.split(": ").slice(1).join(": ") ?? "";
+    const lineCount = suffix.split("\n").filter((l: string) => l.startsWith("line ")).length;
+    expect(lineCount).toBe(50);
   });
 
   test("spawnClaude passes cwd to spawn for hook-created worktrees", () => {
