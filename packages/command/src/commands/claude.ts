@@ -23,6 +23,7 @@ import { getStaleDaemonWarning } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
+import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { ttyOpen } from "./tty";
 
 import type { SessionInfo } from "@mcp-cli/core";
@@ -34,17 +35,21 @@ export interface PrStatus {
   state: string;
 }
 
-export interface ClaudeDeps {
+/** Shared dependency interface for session-based commands (claude, codex). */
+export interface SharedSessionDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   printError: (msg: string) => void;
   exit: (code: number) => never;
-  getDiffStats: (worktreePath: string) => Promise<string | null>;
-  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
   exec: (
     cmd: string[],
     opts?: { env?: Record<string, string> },
   ) => { stdout: string; stderr: string; exitCode: number };
+}
+
+export interface ClaudeDeps extends SharedSessionDeps {
+  getDiffStats: (worktreePath: string) => Promise<string | null>;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
   ttyOpen: (args: string[]) => Promise<void>;
   /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
@@ -768,7 +773,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
-  let sessions: (SessionInfo & { repoRoot?: string | null })[];
+  let sessions: SessionInfo[];
   try {
     sessions = JSON.parse(text);
   } catch {
@@ -824,23 +829,8 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   }
 }
 
-/** Compact one-line format: SESSION STATE MODEL COST TOKENS TURNS */
-export function formatSessionShort(s: {
-  sessionId: string;
-  state: string;
-  model?: string | null;
-  cost?: number | null;
-  tokens?: number;
-  numTurns?: number;
-}): string {
-  const id = s.sessionId.slice(0, 8);
-  const state = s.state;
-  const model = s.model ?? "—";
-  const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
-  const tokens = s.tokens && s.tokens > 0 ? String(s.tokens) : "—";
-  const turns = s.numTurns !== undefined ? String(s.numTurns) : "—";
-  return `${id} ${state} ${model} ${cost} ${tokens} ${turns}`;
-}
+// formatSessionShort, extractContentSummary, colorState → ./session-display.ts
+export { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 function formatPrStatus(pr: PrStatus | null): string {
   if (!pr) return "—";
@@ -1031,34 +1021,6 @@ export function parseLogArgs(args: string[]): LogArgs {
   }
 
   return { sessionPrefix, last, json, full, jq, error };
-}
-
-/** Extract a readable summary from a Claude API content field (string or content block array). */
-export function extractContentSummary(content: unknown): string | null {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return null;
-
-  const parts: string[] = [];
-  for (const block of content) {
-    if (typeof block === "string") {
-      parts.push(block);
-    } else if (block && typeof block === "object") {
-      const b = block as Record<string, unknown>;
-      if (b.type === "text" && typeof b.text === "string") {
-        parts.push(b.text);
-      } else if (b.type === "tool_use" && typeof b.name === "string") {
-        parts.push(`[tool_use: ${b.name}]`);
-      } else if (b.type === "tool_result") {
-        const rc = b.content;
-        if (typeof rc === "string") {
-          parts.push(rc);
-        } else {
-          parts.push("[tool_result]");
-        }
-      }
-    }
-  }
-  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1478,7 +1440,7 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
 
 export async function resolveSessionId(
   prefix: string,
-  d: ClaudeDeps,
+  d: SharedSessionDeps,
   listTool = "claude_session_list",
 ): Promise<string> {
   const result = await d.callTool(listTool, {});
@@ -1503,24 +1465,6 @@ export async function resolveSessionId(
   }
 
   return matches[0].sessionId;
-}
-
-export function colorState(state: string): string {
-  const padded = state.padEnd(12);
-  switch (state) {
-    case "active":
-      return `${c.green}${padded}${c.reset}`;
-    case "connecting":
-    case "init":
-      return `${c.yellow}${padded}${c.reset}`;
-    case "waiting_permission":
-    case "disconnected":
-      return `${c.red}${padded}${c.reset}`;
-    case "ended":
-      return `${c.dim}${padded}${c.reset}`;
-    default:
-      return padded;
-  }
 }
 
 // ── Usage ──

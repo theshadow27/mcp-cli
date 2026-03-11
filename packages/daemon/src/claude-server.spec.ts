@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { capturingLogger, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
@@ -704,6 +704,59 @@ describe("ClaudeServer", () => {
     server = undefined; // already cleaned up
   });
 
+  // ── Crash counter metric (#475) ──
+
+  test("handleWorkerCrash increments mcpd_claude_server_crashes_total", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    const before = metrics.counter("mcpd_claude_server_crashes_total").value();
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash for metric");
+
+    expect(metrics.counter("mcpd_claude_server_crashes_total").value()).toBe(before + 1);
+  });
+
+  // ── Crash timestamp log on stop (#475) ──
+
+  test("stop() logs cleared crash timestamps count after a crash", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const { logger, texts } = capturingLogger();
+    server = new ClaudeServer(db, undefined, undefined, logger);
+
+    await server.start();
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    await server.stop();
+    server = undefined;
+
+    expect(texts.some((t) => t.includes("Cleared") && t.includes("crash timestamp"))).toBe(true);
+  });
+
+  test("stop() does not log crash timestamps when none exist", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const { logger, texts } = capturingLogger();
+    server = new ClaudeServer(db, undefined, undefined, logger);
+
+    await server.start();
+    await server.stop();
+    server = undefined;
+
+    expect(texts.some((t) => t.includes("Cleared") && t.includes("crash timestamp"))).toBe(false);
+  });
+
   // ── Re-entrancy guard (#493) ──
 
   test("start() throws if called while worker is already running", async () => {
@@ -714,6 +767,57 @@ describe("ClaudeServer", () => {
     await server.start();
 
     await expect(server.start()).rejects.toThrow("start() called while worker is already running");
+  });
+
+  // ── repoRoot filtering (#607) ──
+
+  test("db:upsert with repoRoot persists to SQLite", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "repo-1", state: "active", repoRoot: "/projects/my-repo" },
+    });
+
+    const row = db.getSession("repo-1");
+    expect(row).not.toBeNull();
+    expect(row?.repoRoot).toBe("/projects/my-repo");
+  });
+
+  test("db:upsert without repoRoot stores null", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "repo-2", state: "active" },
+    });
+
+    const row = db.getSession("repo-2");
+    expect(row).not.toBeNull();
+    // repoRoot should be null/undefined when not set
+    expect(row?.repoRoot ?? null).toBeNull();
+  });
+
+  test("claude_session_list returns empty array with repoRoot filter when no sessions", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "claude_session_list",
+      arguments: { repoRoot: "/some/repo" },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const sessions = JSON.parse(content[0].text);
+
+    expect(sessions).toEqual([]);
   });
 
   // ── stop() ends sessions in DB (#495) ──

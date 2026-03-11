@@ -292,6 +292,9 @@ export class ClaudeServer {
     this.activeSessions.clear();
     this.sessionPids.clear();
     this.sessionAddedAt.clear();
+    if (this.crashTimestamps.length > 0) {
+      this.logger.error(`[claude-server] Cleared ${this.crashTimestamps.length} crash timestamp(s) on stop`);
+    }
     this.crashTimestamps.length = 0;
   }
 
@@ -366,6 +369,7 @@ export class ClaudeServer {
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
   private async handleWorkerCrash(reason: string): Promise<void> {
     metrics.counter("mcpd_worker_crashes_total").inc();
+    metrics.counter("mcpd_claude_server_crashes_total").inc();
     if (this.stopped) return;
     if (this.restartInProgress) {
       this.pendingCrashReason = reason;

@@ -11,9 +11,7 @@ import {
   buildResumePrompt,
   cmdClaude,
   defaultGetPrStatus,
-  extractContentSummary,
   extractIssueNumber,
-  formatSessionShort,
   parseDiffShortstat,
   parseLogArgs,
   parseResumeArgs,
@@ -24,6 +22,7 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
+import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Helpers ──
 
@@ -2288,6 +2287,31 @@ describe("extractContentSummary", () => {
 
   test("returns null for empty array", () => {
     expect(extractContentSummary([])).toBeNull();
+  });
+});
+
+// ── colorState ──
+
+// In test env stdout.isTTY is false, so c.* colors are empty strings.
+// We test the padding/trim behavior; color wrapping is verified by inspection.
+describe("colorState", () => {
+  test("pads state to 12 chars", () => {
+    // In non-TTY test env colors are empty, result is just the padded string.
+    const result = colorState("active");
+    expect(result.trim()).toBe("active");
+    expect(result.length).toBeGreaterThanOrEqual(12);
+  });
+
+  test("known states are padded to at least 12 chars", () => {
+    for (const state of ["active", "connecting", "init", "waiting_permission", "disconnected", "ended"]) {
+      expect(colorState(state).length).toBeGreaterThanOrEqual(12);
+    }
+  });
+
+  test("unknown state returns padded string", () => {
+    const result = colorState("unknown");
+    expect(result.trim()).toBe("unknown");
+    expect(result.length).toBeGreaterThanOrEqual(12);
   });
 });
 
