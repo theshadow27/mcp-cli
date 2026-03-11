@@ -203,7 +203,7 @@ describe("CodexSession (with fake codex server)", () => {
     const { session, events } = makeSession({
       command: fakeCommand("approval"),
       approvalPolicy: "on-request",
-      allowedTools: ["Bash(npm *)"],
+      allowedTools: ["Bash(npm:*)"],
     });
 
     const resultPromise = session.waitForResult(10000);
