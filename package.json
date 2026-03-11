@@ -14,6 +14,7 @@
     "dev:daemon": "bun packages/daemon/src/main.ts",
     "dev:mcx": "bun packages/command/src/main.ts",
     "dev:mcpctl": "bun packages/control/src/main.tsx",
+    "smoke-test": "bun scripts/smoke-test.ts",
     "prepare": "git config core.hooksPath .git-hooks"
   },
   "devDependencies": {
