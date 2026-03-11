@@ -1,10 +1,10 @@
 import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { ipcCall, options } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import { useCallback, useRef } from "react";
 import type { AuthStatus } from "../components/auth-banner";
 import type { TranscriptEntry } from "../components/claude-session-detail";
-import { formatFullEntry, summarizeEntry } from "../components/claude-session-detail";
+import { entryKey, formatFullEntry, summarizeEntry } from "../components/claude-session-detail";
 import { extractToolText } from "./ipc-tool-helpers";
 import { type LogSource, buildLogSources } from "./use-logs";
 
@@ -67,11 +67,11 @@ export interface ClaudeNav {
   setDenyReasonMode: (mode: boolean) => void;
   denyReasonText: string;
   setDenyReasonText: (fn: string | ((prev: string) => string)) => void;
-  transcriptIndex: number;
-  setTranscriptIndex: (fn: (i: number) => number) => void;
+  transcriptCursor: string | null;
+  setTranscriptCursor: (fn: (prev: string | null) => string | null) => void;
   transcriptEntries: TranscriptEntry[];
-  expandedEntries: ReadonlySet<number>;
-  setExpandedEntries: (fn: (prev: ReadonlySet<number>) => ReadonlySet<number>) => void;
+  expandedEntries: ReadonlySet<string>;
+  setExpandedEntries: (fn: (prev: ReadonlySet<string>) => ReadonlySet<string>) => void;
 }
 
 interface UseKeyboardOptions {
@@ -115,8 +115,8 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     setDenyReasonMode,
     denyReasonText,
     setDenyReasonText,
-    transcriptIndex,
-    setTranscriptIndex,
+    transcriptCursor,
+    setTranscriptCursor,
     transcriptEntries,
     expandedEntries,
     setExpandedEntries,
@@ -127,6 +127,9 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
   const openPager = useCallback(async (sessionId: string) => {
     if (pagerBusyRef.current) return;
     pagerBusyRef.current = true;
+    const { join } = await import("node:path");
+    const { unlinkSync } = await import("node:fs");
+    const tmpFile = join(options.MCP_CLI_DIR, `mcpctl-log-${sessionId}.txt`);
     try {
       const result = await ipcCall("callTool", {
         server: "_claude",
@@ -134,8 +137,15 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         arguments: { sessionId, limit: 500 },
       });
       const text = extractToolText(result);
-      if (!text) return;
+      if (!text) {
+        console.error("[mcpctl] Empty transcript for session", sessionId);
+        return;
+      }
       const entries = JSON.parse(text) as TranscriptEntry[];
+      if (entries.length === 0) {
+        console.error("[mcpctl] No transcript entries for session", sessionId);
+        return;
+      }
       const formatted = entries
         .map((e) => {
           const dir = e.direction === "outbound" ? "→" : "←";
@@ -146,7 +156,6 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         })
         .join("\n\n---\n\n");
 
-      const tmpFile = `/tmp/mcpctl-log-${sessionId.slice(0, 8)}.txt`;
       await Bun.write(tmpFile, formatted);
 
       const pagerEnv = process.env.PAGER || "less";
@@ -163,9 +172,10 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
         if (process.stdin.isTTY) {
           process.stdin.setRawMode(true);
         }
+        try { unlinkSync(tmpFile); } catch { /* already gone */ }
       }
-    } catch {
-      // Pager errors are non-fatal
+    } catch (err) {
+      console.error("[mcpctl] Pager error:", err instanceof Error ? err.message : String(err));
     } finally {
       pagerBusyRef.current = false;
     }
@@ -331,25 +341,36 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
       // When transcript is expanded, j/k navigate within transcript entries
       if (expandedSession) {
         if (key.upArrow || input === "k") {
-          setTranscriptIndex((i) => Math.max(0, i - 1));
+          setTranscriptCursor((cur) => {
+            const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : 0;
+            const next = Math.max(0, (idx === -1 ? 0 : idx) - 1);
+            return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
+          });
           return;
         }
         if (key.downArrow || input === "j") {
-          setTranscriptIndex((i) => Math.min(Math.max(0, transcriptEntries.length - 1), i + 1));
+          setTranscriptCursor((cur) => {
+            const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : -1;
+            const next = Math.min(transcriptEntries.length - 1, (idx === -1 ? -1 : idx) + 1);
+            return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
+          });
           return;
         }
 
         // Enter: toggle expand/collapse selected entry
         if (key.return) {
-          setExpandedEntries((prev) => {
-            const next = new Set(prev);
-            if (next.has(transcriptIndex)) {
-              next.delete(transcriptIndex);
-            } else {
-              next.add(transcriptIndex);
-            }
-            return next;
-          });
+          const cursorKey = transcriptCursor;
+          if (cursorKey) {
+            setExpandedEntries((prev) => {
+              const next = new Set(prev);
+              if (next.has(cursorKey)) {
+                next.delete(cursorKey);
+              } else {
+                next.add(cursorKey);
+              }
+              return next;
+            });
+          }
           return;
         }
 

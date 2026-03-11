@@ -122,10 +122,10 @@ describe("exported nav interfaces", () => {
       setDenyReasonMode: () => {},
       denyReasonText: "",
       setDenyReasonText: () => {},
-      transcriptIndex: 0,
-      setTranscriptIndex: () => {},
+      transcriptCursor: null,
+      setTranscriptCursor: () => {},
       transcriptEntries: [],
-      expandedEntries: new Set(),
+      expandedEntries: new Set<string>(),
       setExpandedEntries: () => {},
     };
     expect(nav.sessions).toBeArray();

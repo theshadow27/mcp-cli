@@ -12,8 +12,8 @@ interface ClaudeSessionListProps {
   permissionIndex: number;
   transcriptEntries: TranscriptEntry[];
   transcriptError: string | null;
-  transcriptSelectedEntry: number;
-  transcriptExpandedEntries: ReadonlySet<number>;
+  transcriptSelectedEntry: string | null;
+  transcriptExpandedEntries: ReadonlySet<string>;
 }
 
 const stateColor: Record<SessionStateEnum, string> = {

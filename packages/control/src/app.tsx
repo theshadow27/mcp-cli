@@ -34,8 +34,8 @@ export function App() {
   const [permissionIndex, setPermissionIndex] = useState(0);
   const [denyReasonMode, setDenyReasonMode] = useState(false);
   const [denyReasonText, setDenyReasonText] = useState("");
-  const [transcriptIndex, setTranscriptIndex] = useState(0);
-  const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<number>>(new Set());
+  const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
+  const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -76,14 +76,9 @@ export function App() {
   const prevExpandedRef = useRef(expandedSession);
   if (prevExpandedRef.current !== expandedSession) {
     prevExpandedRef.current = expandedSession;
-    setTranscriptIndex(0);
+    setTranscriptCursor(null);
     setExpandedEntries(new Set());
   }
-
-  // Clamp transcript index when entries change
-  useEffect(() => {
-    setTranscriptIndex((i) => Math.min(i, Math.max(0, transcriptEntries.length - 1)));
-  }, [transcriptEntries.length]);
 
   // Clamp claudeSelectedIndex when sessions list shrinks
   useEffect(() => {
@@ -150,8 +145,8 @@ export function App() {
       setDenyReasonMode,
       denyReasonText,
       setDenyReasonText,
-      transcriptIndex,
-      setTranscriptIndex,
+      transcriptCursor,
+      setTranscriptCursor,
       transcriptEntries,
       expandedEntries,
       setExpandedEntries,
@@ -199,7 +194,7 @@ export function App() {
           permissionIndex={permissionIndex}
           transcriptEntries={transcriptEntries}
           transcriptError={transcriptError}
-          transcriptSelectedEntry={transcriptIndex}
+          transcriptSelectedEntry={transcriptCursor}
           transcriptExpandedEntries={expandedEntries}
         />
       ) : view === "stats" ? (

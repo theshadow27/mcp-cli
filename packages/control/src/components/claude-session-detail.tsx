@@ -7,11 +7,16 @@ export interface TranscriptEntry {
   message: Record<string, unknown>;
 }
 
+/** Stable identity key for a transcript entry (survives array reordering). */
+export function entryKey(entry: TranscriptEntry): string {
+  return `${entry.timestamp}-${entry.direction}`;
+}
+
 interface ClaudeSessionDetailProps {
   entries: TranscriptEntry[];
   error: string | null;
-  selectedEntry: number;
-  expandedEntries: ReadonlySet<number>;
+  selectedEntry: string | null;
+  expandedEntries: ReadonlySet<string>;
 }
 
 /** Extract a short summary of the tool input for display. */
@@ -157,12 +162,12 @@ export function ClaudeSessionDetail({ entries, error, selectedEntry, expandedEnt
 
   return (
     <Box flexDirection="column" marginLeft={4}>
-      {entries.map((entry, i) => {
+      {entries.map((entry) => {
         const arrow = entry.direction === "outbound" ? "→" : "←";
         const color = entry.direction === "outbound" ? "cyan" : "white";
-        const key = `${entry.timestamp}-${entry.direction}-${i}`;
-        const selected = i === selectedEntry;
-        const expanded = expandedEntries.has(i);
+        const key = entryKey(entry);
+        const selected = key === selectedEntry;
+        const expanded = expandedEntries.has(key);
 
         return (
           <Box key={key} flexDirection="column">
