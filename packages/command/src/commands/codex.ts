@@ -5,15 +5,7 @@
  * No resume, headed, or worktrees subcommands (Codex threads are ephemeral).
  */
 
-import { existsSync } from "node:fs";
-import {
-  buildHookEnv,
-  hasWorktreeHooks,
-  ipcCall,
-  readWorktreeConfig,
-  resolveModelName,
-  resolveWorktreePath,
-} from "@mcp-cli/core";
+import { ipcCall, resolveModelName } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
@@ -21,11 +13,9 @@ import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import {
   type ClaudeDeps,
-  cleanupWorktree,
   colorState,
   extractContentSummary,
   formatSessionShort,
-  parseByeResult,
   parseLogArgs,
   parseWaitArgs,
   resolveSessionId,
@@ -116,7 +106,6 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
 
 interface CodexSpawnArgs {
   task: string | undefined;
-  worktree: string | undefined;
   allow: string[];
   cwd: string | undefined;
   timeout: number | undefined;
@@ -127,7 +116,6 @@ interface CodexSpawnArgs {
 
 export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
   let task: string | undefined;
-  let worktree: string | undefined;
   let cwd: string | undefined;
   let timeout: number | undefined;
   let model: string | undefined;
@@ -140,14 +128,6 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
     if (arg === "--task" || arg === "-t") {
       task = args[++i];
       if (!task) error = "--task requires a value";
-    } else if (arg === "--worktree" || arg === "-w") {
-      const next = args[i + 1];
-      if (next && !next.startsWith("-")) {
-        worktree = next;
-        i++;
-      } else {
-        worktree = `codex-${Date.now().toString(36)}`;
-      }
     } else if (arg === "--allow") {
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         allow.push(args[++i]);
@@ -178,7 +158,7 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
     }
   }
 
-  return { task, worktree, allow, cwd, timeout, model, wait, error };
+  return { task, allow, cwd, timeout, model, wait, error };
 }
 
 async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
@@ -190,7 +170,7 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   }
 
   if (!parsed.task) {
-    d.printError('Usage: mcx codex spawn --task "description" [--worktree [name]] [--allow tools...]');
+    d.printError('Usage: mcx codex spawn --task "description" [--allow tools...]');
     d.exit(1);
   }
 
@@ -200,32 +180,6 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
-
-  // Handle worktree with lifecycle hooks
-  if (parsed.worktree) {
-    const repoRoot = process.cwd();
-    const wtConfig = readWorktreeConfig(repoRoot);
-
-    if (hasWorktreeHooks(wtConfig)) {
-      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
-      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
-      if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stderr}`);
-        d.exit(1);
-      }
-      if (!existsSync(worktreePath)) {
-        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
-        d.exit(1);
-      }
-      toolArgs.cwd = worktreePath;
-      toolArgs.worktree = parsed.worktree;
-      toolArgs.repoRoot = repoRoot;
-      d.printError(`Created worktree via hook: ${worktreePath}`);
-    } else {
-      toolArgs.worktree = parsed.worktree;
-    }
-  }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
   console.log(formatToolResult(result));
@@ -320,13 +274,7 @@ async function codexBye(args: string[], d: CodexDeps): Promise<void> {
 
   const sessionId = await resolveSessionId(sessionPrefix, d, `${P}_session_list`);
   const result = await d.callTool(`${P}_bye`, { sessionId });
-
-  const byeResult = parseByeResult(result);
   console.log(formatToolResult(result));
-
-  if (byeResult.worktree && byeResult.cwd) {
-    cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
-  }
 }
 
 // ── Interrupt ──
@@ -496,7 +444,6 @@ Spawn options:
   --task, -t "description"    Task prompt for Codex
   --wait                      Block until Codex produces a result
   --model, -m <name>          Model to use (default: provider default)
-  --worktree, -w [name]       Git worktree isolation (auto-generates name if omitted)
   --allow <tools...>          Pre-approved tool patterns
   --cwd <path>                Working directory for Codex
   --timeout <ms>              Max wait time (default: 300000, only with --wait)

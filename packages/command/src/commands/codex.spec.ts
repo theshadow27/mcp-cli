@@ -76,17 +76,6 @@ describe("parseCodexSpawnArgs", () => {
     expect(result.task).toBe("fix the tests");
   });
 
-  test("parses --worktree with name", () => {
-    const result = parseCodexSpawnArgs(["--worktree", "my-feature", "--task", "x"]);
-    expect(result.worktree).toBe("my-feature");
-  });
-
-  test("parses --worktree without name (auto-generates)", () => {
-    const result = parseCodexSpawnArgs(["--worktree", "--task", "x"]);
-    expect(result.worktree).toBeDefined();
-    expect(result.worktree).toStartWith("codex-");
-  });
-
   test("parses --allow with multiple tools", () => {
     const result = parseCodexSpawnArgs(["--allow", "Read", "Glob", "Grep", "--task", "x"]);
     expect(result.allow).toEqual(["Read", "Glob", "Grep"]);
@@ -125,11 +114,6 @@ describe("parseCodexSpawnArgs", () => {
   test("parses --timeout flag", () => {
     const result = parseCodexSpawnArgs(["--timeout", "60000", "--task", "x"]);
     expect(result.timeout).toBe(60000);
-  });
-
-  test("parses -w shorthand", () => {
-    const result = parseCodexSpawnArgs(["-w", "feat", "-t", "x"]);
-    expect(result.worktree).toBe("feat");
   });
 
   test("-m shorthand works", () => {
@@ -285,20 +269,6 @@ describe("codex spawn", () => {
     const deps = makeDeps();
     await expect(cmdCodex(["spawn", "--timeout", "abc"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith("--timeout must be a number");
-  });
-
-  test("passes --worktree without hooks", async () => {
-    const deps = makeDeps({
-      callTool: mock(async () => toolResult({ sessionId: "s1" })),
-    });
-    const origLog = console.log;
-    console.log = mock(() => {});
-    try {
-      await cmdCodex(["spawn", "--task", "x", "--worktree", "my-wt"], deps);
-      expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-wt" }));
-    } finally {
-      console.log = origLog;
-    }
   });
 });
 

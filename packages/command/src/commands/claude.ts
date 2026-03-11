@@ -1361,7 +1361,7 @@ export async function resolveSessionId(
 ): Promise<string> {
   const result = await d.callTool(listTool, {});
   const text = formatToolResult(result);
-  let sessions: SessionInfo[];
+  let sessions: Array<{ sessionId: string }>;
   try {
     sessions = JSON.parse(text);
   } catch {
