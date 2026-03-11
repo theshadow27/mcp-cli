@@ -148,6 +148,7 @@ async function handlePrompt(
         state: "connecting",
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,
+        repoRoot: args.repoRoot as string | undefined,
       },
     });
 

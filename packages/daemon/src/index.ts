@@ -26,6 +26,8 @@ import {
   fixCoreBare,
   generateSpanId,
   options,
+  readWorktreeConfig,
+  resolveWorktreePath,
 } from "@mcp-cli/core";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
@@ -60,7 +62,11 @@ export function pruneOrphanedWorktrees(db: StateDb, logger: Logger = consoleLogg
       if (!session.worktree || !session.cwd) continue;
       if (activeWorktrees.has(session.worktree)) continue;
 
-      const worktreePath = join(session.cwd, ".claude", "worktrees", session.worktree);
+      // Determine repo root: use persisted repoRoot if available, otherwise fall back to cwd
+      // (pre-hook sessions have cwd == repoRoot; hook-based sessions store repoRoot separately)
+      const repoRoot = session.repoRoot ?? session.cwd;
+      const hookConfig = readWorktreeConfig(repoRoot);
+      const worktreePath = resolveWorktreePath(repoRoot, session.worktree, hookConfig);
       if (!existsSync(worktreePath)) continue;
 
       // Check if clean
@@ -72,20 +78,20 @@ export function pruneOrphanedWorktrees(db: StateDb, logger: Logger = consoleLogg
       const branch = branchResult.exitCode === 0 ? branchResult.stdout.toString().trim() : null;
 
       // Remove worktree
-      const removeResult = Bun.spawnSync(["git", "-C", session.cwd, "worktree", "remove", worktreePath], gitOpts);
+      const removeResult = Bun.spawnSync(["git", "-C", repoRoot, "worktree", "remove", worktreePath], gitOpts);
       if (removeResult.exitCode === 0) {
         const gitExec = (cmd: string[]) => {
           const r = Bun.spawnSync(cmd, gitOpts);
           return { stdout: r.stdout.toString().trim(), exitCode: r.exitCode };
         };
-        if (fixCoreBare(session.cwd, gitExec)) {
+        if (fixCoreBare(repoRoot, gitExec)) {
           logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
         }
         pruned++;
         logger.info(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
         // Delete merged branch
         if (branch) {
-          const branchDelete = Bun.spawnSync(["git", "-C", session.cwd, "branch", "-d", branch], gitOpts);
+          const branchDelete = Bun.spawnSync(["git", "-C", repoRoot, "branch", "-d", branch], gitOpts);
           if (branchDelete.exitCode === 0) {
             logger.info(`[mcpd] Deleted branch: ${branch} (merged)`);
           }
