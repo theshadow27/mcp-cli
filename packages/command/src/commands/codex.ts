@@ -13,7 +13,6 @@ import {
   hasWorktreeHooks,
   ipcCall,
   readWorktreeConfig,
-  resolveModelName,
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
@@ -30,6 +29,8 @@ import {
   resolveSessionId,
 } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import type { SharedSpawnArgs } from "./spawn-args";
+import { parseSharedSpawnArgs } from "./spawn-args";
 
 // ── Constants ──
 
@@ -108,74 +109,32 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
 
 // ── Spawn ──
 
-interface CodexSpawnArgs {
-  task: string | undefined;
-  worktree: string | undefined;
-  allow: string[];
-  cwd: string | undefined;
-  timeout: number | undefined;
-  model: string | undefined;
-  wait: boolean;
+/** Codex spawn args extend the shared set with --json and --worktree flags. */
+export interface CodexSpawnArgs extends SharedSpawnArgs {
   json: boolean;
-  error: string | undefined;
+  worktree: string | undefined;
 }
 
 export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
-  let task: string | undefined;
-  let worktree: string | undefined;
-  let cwd: string | undefined;
-  let timeout: number | undefined;
-  let model: string | undefined;
-  let wait = false;
   let json = false;
-  const allow: string[] = [];
-  let error: string | undefined;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+  let worktree: string | undefined;
+  const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
     if (arg === "--json") {
       json = true;
-    } else if (arg === "--task" || arg === "-t") {
-      task = args[++i];
-      if (!task) error = "--task requires a value";
-    } else if (arg === "--worktree" || arg === "-w") {
-      const next = args[i + 1];
-      if (next && !next.startsWith("-")) {
-        worktree = args[++i];
-      } else {
-        worktree = `codex-${Date.now().toString(36)}`;
-      }
-    } else if (arg === "--allow") {
-      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]);
-      }
-      if (allow.length === 0) error = "--allow requires at least one tool pattern";
-    } else if (arg === "--cwd") {
-      cwd = args[++i];
-      if (!cwd) error = "--cwd requires a path";
-    } else if (arg === "--timeout") {
-      const val = args[++i];
-      if (!val) {
-        error = "--timeout requires a value in ms";
-      } else {
-        timeout = Number(val);
-        if (Number.isNaN(timeout)) error = "--timeout must be a number";
-      }
-    } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i];
-      if (!val) {
-        error = "--model requires a value";
-      } else {
-        model = resolveModelName(val);
-      }
-    } else if (arg === "--wait") {
-      wait = true;
-    } else if (!arg.startsWith("-")) {
-      if (!task) task = arg;
+      return 0;
     }
-  }
-
-  return { task, worktree, allow, cwd, timeout, model, wait, json, error };
+    if (arg === "--worktree" || arg === "-w") {
+      const next = allArgs[i + 1];
+      if (next && !next.startsWith("-")) {
+        worktree = allArgs[i + 1];
+        return 1;
+      }
+      worktree = `codex-${Date.now().toString(36)}`;
+      return 0;
+    }
+    return undefined;
+  });
+  return { ...shared, json, worktree };
 }
 
 async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
