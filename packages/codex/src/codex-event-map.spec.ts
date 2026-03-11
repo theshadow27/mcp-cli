@@ -200,6 +200,26 @@ describe("mapNotification", () => {
     });
   });
 
+  test("turn/completed evicts itemFiles and itemCommands maps", () => {
+    const state = createEventMapState();
+    // Populate tracking maps as if items were started during the turn
+    state.itemFiles.set("item-1", ["src/a.ts"]);
+    state.itemFiles.set("item-2", ["src/b.ts", "src/c.ts"]);
+    state.itemCommands.set("item-3", "npm test");
+    state.itemCommands.set("item-4", "bun build");
+
+    mapNotification(
+      "turn/completed",
+      { threadId: "t1", turnId: "turn1", status: "completed" },
+      state,
+      sessionId,
+      provider,
+    );
+
+    expect(state.itemFiles.size).toBe(0);
+    expect(state.itemCommands.size).toBe(0);
+  });
+
   test("turn/completed includes diff when available", () => {
     const state = createEventMapState();
     state.currentDiff = "unified diff content";

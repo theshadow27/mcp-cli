@@ -135,6 +135,11 @@ export function mapNotification(
         diff: state.currentDiff ?? undefined,
       };
 
+      // Evict item tracking maps — correlation is only needed during
+      // active approval flows within the turn, not after completion.
+      state.itemFiles.clear();
+      state.itemCommands.clear();
+
       return [{ type: "session:result", result }];
     }
 
