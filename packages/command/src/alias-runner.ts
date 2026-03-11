@@ -1,60 +1,28 @@
 /**
- * Alias runner — executes TypeScript alias scripts via Bun's virtual module system.
+ * Alias runner — executes TypeScript alias scripts via Bun.build bundles + eval.
  *
  * Supports two modes:
  * - **Freeform**: script runs at top level via side effects (legacy)
  * - **defineAlias**: structured definition with typed input/output via Zod schemas
  *
- * The virtual "mcp-cli" module provides both APIs:
- * - Legacy: `mcp` (API proxy), `args`, `file`, `json`
- * - Structured: `defineAlias`, `z`
+ * Replaces the previous bun.plugin() virtual module approach with
+ * bundleAlias() + executeAliasBundled() to avoid Bun module resolver segfaults (#577).
  */
 
 import { resolve } from "node:path";
-import { type AliasContext, type AliasDefinition, type McpProxy, ipcCall, options } from "@mcp-cli/core";
-import { plugin } from "bun";
-import { z } from "zod/v4";
-
-// Module-level capture slot for defineAlias definitions.
-// Reset before each runAlias call. Safe because CLI is single-threaded.
-//
-// Note: TypeScript 5.9's CFA can't track mutations inside plugin callbacks,
-// so we use getCaptured() below to break the CFA chain when reading.
-let _captured: AliasDefinition | null = null;
-function getCaptured(): AliasDefinition | null {
-  return _captured;
-}
+import {
+  type AliasContext,
+  type McpProxy,
+  bundleAlias,
+  executeAliasBundled,
+  ipcCall,
+  isDefineAlias,
+  options,
+} from "@mcp-cli/core";
+import type { z } from "zod/v4";
 
 export async function runAlias(aliasPath: string, cliArgs: Record<string, string>, jsonInput?: string): Promise<void> {
-  _captured = null;
   const mcpProxy = createMcpProxy();
-
-  // Register virtual module BEFORE importing the alias
-  plugin({
-    name: "mcp-cli-alias-sdk",
-    setup(builder) {
-      builder.module("mcp-cli", () => ({
-        exports: {
-          // -- defineAlias API --
-          defineAlias: (defOrFactory: AliasDefinition | ((ctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
-            if (typeof defOrFactory === "function") {
-              _captured = defOrFactory({ mcp: mcpProxy, z });
-            } else {
-              _captured = defOrFactory;
-            }
-          },
-          z,
-
-          // -- Legacy freeform API (backward compat) --
-          mcp: mcpProxy,
-          args: cliArgs,
-          file: (path: string) => Bun.file(path).text(),
-          json: async (path: string) => JSON.parse(await Bun.file(path).text()),
-        },
-        loader: "object",
-      }));
-    },
-  });
 
   // Defense-in-depth: verify the alias path is inside the aliases directory
   const resolved = resolve(aliasPath);
@@ -62,27 +30,32 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
     throw new Error(`Refusing to execute alias outside aliases directory: ${resolved}`);
   }
 
-  // Execute the alias script (triggers defineAlias capture or freeform side effects)
-  await import(aliasPath);
+  // Read the source to determine alias type
+  const source = await Bun.file(aliasPath).text();
+  const isStructured = isDefineAlias(source);
 
-  // If defineAlias was called, run the structured handler
-  const def = getCaptured();
-  if (def) {
-    const ctx: AliasContext = {
-      mcp: mcpProxy,
-      args: cliArgs,
-      file: (path: string) => Bun.file(path).text(),
-      json: async (path: string) => JSON.parse(await Bun.file(path).text()),
-    };
+  // Bundle the alias
+  const { js } = await bundleAlias(aliasPath);
 
-    const input = parseAliasInput(def.input, jsonInput, cliArgs);
-    const output = await def.fn(input, ctx);
+  const ctx: AliasContext = {
+    mcp: mcpProxy,
+    args: cliArgs,
+    file: (path: string) => Bun.file(path).text(),
+    json: async (path: string) => JSON.parse(await Bun.file(path).text()),
+  };
+
+  if (isStructured) {
+    // Parse input for defineAlias handler
+    const input = parseAliasInput(undefined, jsonInput, cliArgs);
+    const output = await executeAliasBundled(js, input, ctx, true);
     const formatted = formatAliasOutput(output);
     if (formatted !== undefined) {
       console.log(formatted);
     }
+  } else {
+    // Freeform: side effects execute during eval
+    await executeAliasBundled(js, undefined, ctx, false);
   }
-  // else: freeform script already executed via side effects during import
 }
 
 /**

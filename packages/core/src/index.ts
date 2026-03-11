@@ -1,4 +1,5 @@
 export * from "./alias";
+export * from "./alias-bundle";
 export * from "./ipc";
 export * from "./ipc-client";
 export * from "./config";
