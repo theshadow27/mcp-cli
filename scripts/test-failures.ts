@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Query the centralized test failure log.
+ * Query the centralized test failure database.
  *
  * Usage:
  *   bun scripts/test-failures.ts                    # show all failures
@@ -12,8 +12,13 @@
 
 import { type TestFailureEntry, readFailures } from "./test-failure-log";
 
-function parseArgs(): { top: number | null; since: number | null; file: string | null; json: boolean } {
-  const args = process.argv.slice(2);
+export function parseArgs(argv: string[]): {
+  top: number | null;
+  since: number | null;
+  file: string | null;
+  json: boolean;
+} {
+  const args = argv.slice(2);
   let top: number | null = null;
   let since: number | null = null;
   let file: string | null = null;
@@ -21,15 +26,26 @@ function parseArgs(): { top: number | null; since: number | null; file: string |
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case "--top":
-        top = Number.parseInt(args[++i], 10);
+      case "--top": {
+        const val = args[++i];
+        if (val === undefined) {
+          throw new Error("--top requires a numeric argument");
+        }
+        const parsed = Number.parseInt(val, 10);
+        if (Number.isNaN(parsed) || parsed <= 0) {
+          throw new Error(`--top value must be a positive integer, got: ${val}`);
+        }
+        top = parsed;
         break;
+      }
       case "--since": {
         const val = args[++i];
+        if (val === undefined) {
+          throw new Error("--since requires an argument (e.g. 7d, 24h, 30m)");
+        }
         const match = val.match(/^(\d+)([dhm])$/);
         if (!match) {
-          console.error(`Invalid --since value: ${val} (expected e.g. 7d, 24h, 30m)`);
-          process.exit(1);
+          throw new Error(`Invalid --since value: ${val} (expected e.g. 7d, 24h, 30m)`);
         }
         const num = Number.parseInt(match[1], 10);
         const unit = match[2];
@@ -37,9 +53,14 @@ function parseArgs(): { top: number | null; since: number | null; file: string |
         since = Date.now() - num * multipliers[unit];
         break;
       }
-      case "--file":
-        file = args[++i];
+      case "--file": {
+        const val = args[++i];
+        if (val === undefined) {
+          throw new Error("--file requires an argument");
+        }
+        file = val;
         break;
+      }
       case "--json":
         json = true;
         break;
@@ -60,31 +81,16 @@ Options:
   return { top, since, file, json };
 }
 
-function main(): void {
-  const { top, since, file, json } = parseArgs();
-  let entries = readFailures();
-
+export function formatOutput(entries: TestFailureEntry[], opts: { top: number | null; json: boolean }): string {
   if (entries.length === 0) {
-    console.log("No test failures recorded.");
-    return;
+    return "No test failures recorded.";
   }
 
-  // Filter by time
-  if (since !== null) {
-    entries = entries.filter((e) => new Date(e.timestamp).getTime() >= since);
+  if (opts.json) {
+    return JSON.stringify(entries, null, 2);
   }
 
-  // Filter by file
-  if (file !== null) {
-    entries = entries.filter((e) => e.file.includes(file));
-  }
-
-  if (json) {
-    console.log(JSON.stringify(entries, null, 2));
-    return;
-  }
-
-  if (top !== null) {
+  if (opts.top !== null) {
     // Aggregate by file+test and show most frequent
     const counts = new Map<string, { count: number; lastSeen: string; file: string; test: string }>();
     for (const e of entries) {
@@ -98,29 +104,55 @@ function main(): void {
       }
     }
 
-    const sorted = [...counts.values()].sort((a, b) => b.count - a.count).slice(0, top);
+    const sorted = [...counts.values()].sort((a, b) => b.count - a.count).slice(0, opts.top);
 
-    console.log(`Top ${Math.min(top, sorted.length)} most frequent test failures:\n`);
-    console.log("Count  Last seen             File                                    Test");
-    console.log("─────  ────────────────────  ──────────────────────────────────────  ────────────────────────────");
+    const lines: string[] = [];
+    lines.push(`Top ${Math.min(opts.top, sorted.length)} most frequent test failures:\n`);
+    lines.push("Count  Last seen             File                                    Test");
+    lines.push("─────  ────────────────────  ──────────────────────────────────────  ────────────────────────────");
     for (const { count, lastSeen, file: f, test } of sorted) {
       const date = lastSeen.slice(0, 19).replace("T", " ");
-      console.log(`${String(count).padStart(5)}  ${date.padEnd(20)}  ${f.padEnd(38)}  ${test}`);
+      lines.push(`${String(count).padStart(5)}  ${date.padEnd(20)}  ${f.padEnd(38)}  ${test}`);
     }
-  } else {
-    // Show recent failures
-    console.log(`${entries.length} test failure(s) recorded:\n`);
-    console.log("Timestamp             File                                    Test                          Retry?");
-    console.log("────────────────────  ──────────────────────────────────────  ────────────────────────────  ──────");
-    for (const e of entries.slice(-50)) {
-      const date = e.timestamp.slice(0, 19).replace("T", " ");
-      const retry = e.retryPassed ? "yes" : "no";
-      console.log(`${date.padEnd(20)}  ${e.file.padEnd(38)}  ${e.test.slice(0, 28).padEnd(28)}  ${retry}`);
-    }
-    if (entries.length > 50) {
-      console.log(`\n... and ${entries.length - 50} more. Use --top or --since to filter.`);
-    }
+    return lines.join("\n");
   }
+
+  // Show recent failures
+  const lines: string[] = [];
+  lines.push(`${entries.length} test failure(s) recorded:\n`);
+  lines.push("Timestamp             File                                    Test                          Retry?");
+  lines.push("────────────────────  ──────────────────────────────────────  ────────────────────────────  ──────");
+  for (const e of entries.slice(-50)) {
+    const date = e.timestamp.slice(0, 19).replace("T", " ");
+    const retry = e.retryPassed ? "yes" : "no";
+    lines.push(`${date.padEnd(20)}  ${e.file.padEnd(38)}  ${e.test.slice(0, 28).padEnd(28)}  ${retry}`);
+  }
+  if (entries.length > 50) {
+    lines.push(`\n... and ${entries.length - 50} more. Use --top or --since to filter.`);
+  }
+  return lines.join("\n");
 }
 
-main();
+function main(): void {
+  let parsed: ReturnType<typeof parseArgs>;
+  try {
+    parsed = parseArgs(process.argv);
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  const { top, since, file, json } = parsed;
+
+  // Push filters to SQL
+  const entries = readFailures(undefined, {
+    ...(since !== null ? { since } : {}),
+    ...(file !== null ? { file } : {}),
+  });
+
+  console.log(formatOutput(entries, { top, json }));
+}
+
+if (import.meta.main) {
+  main();
+}

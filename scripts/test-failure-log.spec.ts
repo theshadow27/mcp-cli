@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type TestFailureEntry,
   appendFailures,
+  closeDb,
+  getDbPath,
   getGitContext,
-  getLogPath,
   logTestRun,
   parseTestFailures,
   readFailures,
-  rotateIfNeeded,
 } from "./test-failure-log";
 
 function makeTmpDir(): string {
@@ -37,27 +37,38 @@ function makeEntry(overrides: Partial<TestFailureEntry> = {}): TestFailureEntry 
 
 describe("test-failure-log", () => {
   const tmpDirs: string[] = [];
+  const dbPaths: string[] = [];
 
   afterEach(() => {
+    for (const p of dbPaths) {
+      closeDb(p);
+    }
+    dbPaths.length = 0;
     for (const dir of tmpDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
     tmpDirs.length = 0;
   });
 
+  function makeDbPath(): string {
+    const dir = makeTmpDir();
+    tmpDirs.push(dir);
+    const dbPath = join(dir, "test-failures.db");
+    dbPaths.push(dbPath);
+    return dbPath;
+  }
+
   describe("appendFailures + readFailures", () => {
-    it("writes and reads JSONL entries", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+    it("writes and reads entries via SQLite", () => {
+      const dbPath = makeDbPath();
 
       const entry1 = makeEntry({ test: "test one" });
       const entry2 = makeEntry({ test: "test two" });
 
-      appendFailures([entry1], logPath);
-      appendFailures([entry2], logPath);
+      appendFailures([entry1], dbPath);
+      appendFailures([entry2], dbPath);
 
-      const entries = readFailures(logPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(2);
       expect(entries[0].test).toBe("test one");
       expect(entries[1].test).toBe("test two");
@@ -66,35 +77,70 @@ describe("test-failure-log", () => {
     it("creates parent directory if missing", () => {
       const dir = makeTmpDir();
       tmpDirs.push(dir);
-      const logPath = join(dir, "nested", "deep", "test-failures.log");
+      const dbPath = join(dir, "nested", "deep", "test-failures.db");
+      dbPaths.push(dbPath);
 
-      appendFailures([makeEntry()], logPath);
-      const entries = readFailures(logPath);
+      appendFailures([makeEntry()], dbPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(1);
     });
 
     it("returns empty array for missing file", () => {
-      const entries = readFailures("/tmp/nonexistent-test-failure-log.log");
+      const entries = readFailures("/tmp/nonexistent-test-failure-log.db");
       expect(entries).toEqual([]);
+    });
+
+    it("preserves all fields through roundtrip", () => {
+      const dbPath = makeDbPath();
+      const entry = makeEntry({
+        pr: null,
+        retryPassed: true,
+        exitCode: 0,
+        duration: 9999,
+        error: "some error message",
+      });
+
+      appendFailures([entry], dbPath);
+      const [result] = readFailures(dbPath);
+
+      expect(result.timestamp).toBe(entry.timestamp);
+      expect(result.file).toBe(entry.file);
+      expect(result.test).toBe(entry.test);
+      expect(result.worktree).toBe(entry.worktree);
+      expect(result.branch).toBe(entry.branch);
+      expect(result.pr).toBeNull();
+      expect(result.exitCode).toBe(0);
+      expect(result.retryPassed).toBe(true);
+      expect(result.duration).toBe(9999);
+      expect(result.error).toBe("some error message");
+    });
+
+    it("handles sequential writes from same process", () => {
+      const dbPath = makeDbPath();
+
+      appendFailures([makeEntry({ test: "writer-1" })], dbPath);
+      appendFailures([makeEntry({ test: "writer-2" })], dbPath);
+
+      const entries = readFailures(dbPath);
+      expect(entries).toHaveLength(2);
+      const tests = entries.map((e) => e.test);
+      expect(tests).toContain("writer-1");
+      expect(tests).toContain("writer-2");
     });
   });
 
-  describe("rotateIfNeeded", () => {
-    it("trims to 10000 entries when over limit", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+  describe("pruning", () => {
+    it("prunes to 10000 entries when over limit", () => {
+      const dbPath = makeDbPath();
 
-      // Write 10050 entries
-      const lines: string[] = [];
+      // Write 10050 entries in a batch
+      const entries: TestFailureEntry[] = [];
       for (let i = 0; i < 10_050; i++) {
-        lines.push(JSON.stringify(makeEntry({ test: `test-${i}` })));
+        entries.push(makeEntry({ test: `test-${i}` }));
       }
-      writeFileSync(logPath, `${lines.join("\n")}\n`, "utf-8");
+      appendFailures(entries, dbPath);
 
-      rotateIfNeeded(logPath);
-
-      const after = readFailures(logPath);
+      const after = readFailures(dbPath);
       expect(after).toHaveLength(10_000);
       // Should keep the most recent (last) entries
       expect(after[0].test).toBe("test-50");
@@ -102,14 +148,38 @@ describe("test-failure-log", () => {
     });
 
     it("does nothing when under limit", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+      const dbPath = makeDbPath();
 
-      appendFailures([makeEntry(), makeEntry()], logPath);
-      rotateIfNeeded(logPath);
+      appendFailures([makeEntry(), makeEntry()], dbPath);
 
-      expect(readFailures(logPath)).toHaveLength(2);
+      expect(readFailures(dbPath)).toHaveLength(2);
+    });
+  });
+
+  describe("readFailures with filters", () => {
+    it("filters by since timestamp", () => {
+      const dbPath = makeDbPath();
+      const old = makeEntry({ test: "old", timestamp: "2020-01-01T00:00:00.000Z" });
+      const recent = makeEntry({ test: "recent", timestamp: new Date().toISOString() });
+
+      appendFailures([old, recent], dbPath);
+
+      // Filter to last day
+      const filtered = readFailures(dbPath, { since: Date.now() - 86400000 });
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].test).toBe("recent");
+    });
+
+    it("filters by file pattern", () => {
+      const dbPath = makeDbPath();
+      appendFailures(
+        [makeEntry({ file: "packages/core/a.spec.ts" }), makeEntry({ file: "packages/daemon/b.spec.ts" })],
+        dbPath,
+      );
+
+      const filtered = readFailures(dbPath, { file: "daemon" });
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].file).toBe("packages/daemon/b.spec.ts");
     });
   });
 
@@ -167,36 +237,26 @@ describe("test-failure-log", () => {
       // pr may be null if branch doesn't match issue-N pattern
       expect(ctx.pr === null || typeof ctx.pr === "number").toBe(true);
     });
-
-    it("extracts PR number from issue branch names", () => {
-      // We're on feat/issue-456-test-failure-logging
-      const ctx = getGitContext();
-      if (ctx.branch.includes("issue-456")) {
-        expect(ctx.pr).toBe(456);
-      }
-    });
   });
 
-  describe("getLogPath", () => {
-    it("returns path under MCP_CLI_DIR", () => {
-      const path = getLogPath();
-      expect(path).toEndWith("test-failures.log");
+  describe("getDbPath", () => {
+    it("returns path ending with .db", () => {
+      const path = getDbPath();
+      expect(path).toEndWith("test-failures.db");
     });
   });
 
   describe("logTestRun", () => {
     it("logs parsed failures from bun test output", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+      const dbPath = makeDbPath();
 
       const output = `(fail) packages/core/src/foo.spec.ts:
  ✗ my failing test [10ms]
    error: Expected true, got false`;
 
-      logTestRun(output, 1, 5000, false, logPath);
+      logTestRun(output, 1, 5000, false, dbPath);
 
-      const entries = readFailures(logPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(1);
       expect(entries[0].file).toBe("packages/core/src/foo.spec.ts");
       expect(entries[0].test).toBe("my failing test");
@@ -208,37 +268,31 @@ describe("test-failure-log", () => {
     });
 
     it("logs a generic entry when no test names are parseable", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+      const dbPath = makeDbPath();
 
-      logTestRun("some error output with fail", 1, 3000, false, logPath);
+      logTestRun("some error output with fail", 1, 3000, false, dbPath);
 
-      const entries = readFailures(logPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(1);
       expect(entries[0].file).toBe("unknown");
       expect(entries[0].test).toBe("unknown");
     });
 
     it("skips logging on clean pass (exit 0, no retry)", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+      const dbPath = makeDbPath();
 
-      logTestRun("all good", 0, 1000, false, logPath);
+      logTestRun("all good", 0, 1000, false, dbPath);
 
-      const entries = readFailures(logPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(0);
     });
 
     it("logs when retryPassed is true even with exit 0", () => {
-      const dir = makeTmpDir();
-      tmpDirs.push(dir);
-      const logPath = join(dir, "test-failures.log");
+      const dbPath = makeDbPath();
 
-      logTestRun("some flaky failure output", 0, 2000, true, logPath);
+      logTestRun("some flaky failure output", 0, 2000, true, dbPath);
 
-      const entries = readFailures(logPath);
+      const entries = readFailures(dbPath);
       expect(entries).toHaveLength(1);
       expect(entries[0].retryPassed).toBe(true);
     });
