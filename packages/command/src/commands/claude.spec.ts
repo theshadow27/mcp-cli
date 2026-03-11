@@ -22,7 +22,7 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
-import { extractContentSummary, formatSessionShort } from "./session-display";
+import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Helpers ──
 
@@ -2287,6 +2287,28 @@ describe("extractContentSummary", () => {
 
   test("returns null for empty array", () => {
     expect(extractContentSummary([])).toBeNull();
+  });
+});
+
+// ── colorState ──
+
+describe("colorState", () => {
+  test("pads state to 12 chars", () => {
+    const result = colorState("active");
+    // strip ANSI escape codes (present in TTY, absent in test env)
+    expect(result.replace(/\x1b\[[^m]*m/g, "")).toBe("active      ");
+  });
+
+  test("known states are padded to 12 chars", () => {
+    for (const state of ["active", "connecting", "init", "waiting_permission", "disconnected", "ended"]) {
+      const stripped = colorState(state).replace(/\x1b\[[^m]*m/g, "");
+      expect(stripped).toBe(state.padEnd(12));
+    }
+  });
+
+  test("unknown state returns padded string", () => {
+    const result = colorState("unknown");
+    expect(result.replace(/\x1b\[[^m]*m/g, "")).toBe("unknown     ");
   });
 });
 
