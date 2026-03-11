@@ -274,7 +274,7 @@ async function handleWait(
     };
   }
 
-  // Legacy path: single-event wait
+  // Legacy path: unified { event?, sessions } shape
   try {
     const event = await server.waitForEvent(sessionId, timeoutMs);
     // Filter single event by repoRoot — if mismatched, return empty array (same as timeout)
@@ -282,12 +282,13 @@ async function handleWait(
       return handleSessionList(server, { repoRoot });
     }
     return {
-      content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({ event, sessions: server.listSessions() }, null, 2) }],
     };
   } catch (err) {
     if (err instanceof WaitTimeoutError) {
-      // On timeout, fall back to session list instead of erroring
-      return handleSessionList(server, { repoRoot });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
+      };
     }
     throw err;
   }

@@ -1800,7 +1800,12 @@ describe("parseWaitArgs", () => {
 
 describe("mcx claude wait", () => {
   test("calls claude_wait with no args (any session)", async () => {
-    const callTool = mock(async () => toolResult({ sessionId: "abc123", event: "session:result", cost: 0.05 }));
+    const callTool = mock(async () =>
+      toolResult({
+        event: { sessionId: "abc123", event: "session:result", cost: 0.05 },
+        sessions: SESSION_LIST,
+      }),
+    );
     const deps = makeDeps({ callTool });
 
     const origLog = console.log;
@@ -1816,7 +1821,10 @@ describe("mcx claude wait", () => {
   test("resolves session prefix and passes sessionId", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
-      return toolResult({ sessionId: "abc12345-1111-2222-3333-444444444444", event: "session:result" });
+      return toolResult({
+        event: { sessionId: "abc12345-1111-2222-3333-444444444444", event: "session:result" },
+        sessions: SESSION_LIST,
+      });
     });
     const deps = makeDeps({ callTool });
 
@@ -1833,7 +1841,9 @@ describe("mcx claude wait", () => {
   });
 
   test("passes timeout when specified", async () => {
-    const callTool = mock(async () => toolResult({ sessionId: "abc", event: "session:result" }));
+    const callTool = mock(async () =>
+      toolResult({ event: { sessionId: "abc", event: "session:result" }, sessions: SESSION_LIST }),
+    );
     const deps = makeDeps({ callTool });
 
     const origLog = console.log;
@@ -1846,9 +1856,9 @@ describe("mcx claude wait", () => {
     }
   });
 
-  test("prints session list on timeout fallback", async () => {
-    // When the daemon falls back to session list on timeout, the result is a session list
-    const callTool = mock(async () => toolResult(SESSION_LIST));
+  test("prints unified shape on timeout fallback", async () => {
+    // When the daemon times out, the result is { sessions: [...] } with no event
+    const callTool = mock(async () => toolResult({ sessions: SESSION_LIST }));
     const deps = makeDeps({ callTool });
 
     const logSpy = mock(() => {});
@@ -1857,11 +1867,32 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
-      // Output should contain the session list JSON
+      // Output should contain the unified JSON with sessions
       const output = (logSpy.mock.calls[0] as string[])[0];
       const parsed = JSON.parse(output);
-      expect(parsed).toHaveLength(2);
-      expect(parsed[0].sessionId).toBe(SESSION_LIST[0].sessionId);
+      expect(parsed.sessions).toHaveLength(2);
+      expect(parsed.sessions[0].sessionId).toBe(SESSION_LIST[0].sessionId);
+      expect(parsed.event).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("prints unified shape on event success", async () => {
+    const eventData = { sessionId: "abc123", event: "session:result", cost: 0.05 };
+    const callTool = mock(async () => toolResult({ event: eventData, sessions: SESSION_LIST }));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait"], deps);
+      const output = (logSpy.mock.calls[0] as string[])[0];
+      const parsed = JSON.parse(output);
+      expect(parsed.event.sessionId).toBe("abc123");
+      expect(parsed.event.event).toBe("session:result");
+      expect(parsed.sessions).toHaveLength(2);
     } finally {
       console.log = origLog;
     }
@@ -1870,11 +1901,14 @@ describe("mcx claude wait", () => {
   test("--short outputs compact event line", async () => {
     const callTool = mock(async () =>
       toolResult({
-        sessionId: "abc12345-1111-2222-3333-444444444444",
-        event: "session:result",
-        cost: 0.05,
-        numTurns: 3,
-        result: "Done fixing tests",
+        event: {
+          sessionId: "abc12345-1111-2222-3333-444444444444",
+          event: "session:result",
+          cost: 0.05,
+          numTurns: 3,
+          result: "Done fixing tests",
+        },
+        sessions: SESSION_LIST,
       }),
     );
     const deps = makeDeps({ callTool });
@@ -1897,7 +1931,7 @@ describe("mcx claude wait", () => {
   });
 
   test("--short outputs compact session list on timeout fallback", async () => {
-    const callTool = mock(async () => toolResult(SESSION_LIST));
+    const callTool = mock(async () => toolResult({ sessions: SESSION_LIST }));
     const deps = makeDeps({ callTool });
 
     const logSpy = mock(() => {});
@@ -1916,9 +1950,11 @@ describe("mcx claude wait", () => {
   });
 
   test("--short filters timeout fallback by repo root", async () => {
-    // Daemon-side filtering: mock returns only matching session
-    const filteredSessions = [{ ...SESSION_LIST[0], repoRoot: "/repo/a" }];
-    const callTool = mock(async () => toolResult(filteredSessions));
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const callTool = mock(async () => toolResult({ sessions }));
     const deps = makeDeps({
       callTool,
       getGitRoot: mock(() => "/repo/a"),
@@ -1945,7 +1981,7 @@ describe("mcx claude wait", () => {
       { ...SESSION_LIST[0], repoRoot: "/repo/a" },
       { ...SESSION_LIST[1], repoRoot: "/repo/b" },
     ];
-    const callTool = mock(async () => toolResult(sessions));
+    const callTool = mock(async () => toolResult({ sessions }));
     const deps = makeDeps({
       callTool,
       getGitRoot: mock(() => "/repo/a"),
@@ -1995,6 +2031,73 @@ describe("mcx claude wait", () => {
       expect(line).toContain("abc12345");
     } finally {
       console.log = origLog;
+    }
+  });
+
+  test("--short emits stderr note when timeout fallback filters all sessions", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/b" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const callTool = mock(async () => toolResult({ sessions }));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const errSpy = mock(() => {});
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = logSpy;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      // No sessions printed to stdout
+      expect(logSpy.mock.calls.length).toBe(0);
+      // Stderr note about hidden sessions
+      expect(errSpy.mock.calls.length).toBe(1);
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 sessions in other repos — use --all to see them)");
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+  });
+
+  test("--short emits stderr note when cursor-based events filter to empty", async () => {
+    const waitResult = {
+      seq: 5,
+      events: [
+        {
+          event: "session:result",
+          session: { sessionId: "abc12345", repoRoot: "/repo/b", cost: 0.05, numTurns: 2 },
+        },
+        {
+          event: "session:result",
+          session: { sessionId: "def67890", repoRoot: "/repo/b", cost: 0.02, numTurns: 1 },
+        },
+      ],
+    };
+    const callTool = mock(async () => toolResult(waitResult));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const errSpy = mock(() => {});
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = logSpy;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--after", "0"], deps);
+      expect(logSpy.mock.calls.length).toBe(0);
+      expect(errSpy.mock.calls.length).toBe(1);
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 events in other repos — use --all to see them)");
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
     }
   });
 });
