@@ -145,16 +145,16 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, sta
         if (process.stdin.isTTY) {
           process.stdin.setRawMode(true);
         }
-        try {
-          unlinkSync(tmpFile);
-        } catch {
-          /* already gone */
-        }
       }
     } catch (err) {
       console.error("[mcpctl] Pager error:", err instanceof Error ? err.message : String(err));
     } finally {
       pagerBusyRef.current = false;
+      try {
+        unlinkSync(tmpFile);
+      } catch {
+        /* file may not have been written */
+      }
     }
   }, []);
 
