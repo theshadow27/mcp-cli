@@ -1,13 +1,36 @@
 name: Release
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false # queue, don't cancel — multiple PRs merged quickly
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history for git describe
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - id: bump
+        run: |
+          NEW_VERSION=$(bun scripts/release.ts)
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: version
+    if: needs.version.outputs.new_version != ''
     strategy:
       matrix:
         include:
@@ -31,6 +54,13 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      # Update version in package.json before building (version job only computed, didn't push)
+      - run: |
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf-8'));
+            pkg.version = '${{ needs.version.outputs.new_version }}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
       - run: bun scripts/build.ts --release --target=${{ matrix.target }}
       - name: Create tarball
         run: |
@@ -42,10 +72,27 @@ jobs:
           path: dist/*.tar.gz
 
   release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      # Re-run release.ts to update package.json (deterministic — same result as version job)
+      - run: bun scripts/release.ts
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "release: v${{ needs.version.outputs.new_version }} [skip ci]"
+          git tag "v${{ needs.version.outputs.new_version }}"
+          git push origin main --tags
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -56,6 +103,7 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.version.outputs.new_version }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt

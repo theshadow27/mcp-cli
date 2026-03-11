@@ -62,6 +62,9 @@ const EXCLUSIONS: Record<string, string> = {
   "daemon/src/ipc-server.ts": "59% coverage, handler logic (#46)",
   "daemon/src/config/watcher.ts": "47% coverage, FS watcher loop (#48)",
 
+  // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
+  "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
+
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
