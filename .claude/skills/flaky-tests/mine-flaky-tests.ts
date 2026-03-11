@@ -7,9 +7,21 @@
  * runs happen in worktree sessions spawned by the orchestrator.
  */
 
-import { readdirSync, readFileSync, existsSync } from "fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
+
+// Parse --since flag (e.g. --since 2026-03-10)
+let sinceMs = 0;
+const sinceIdx = process.argv.indexOf("--since");
+if (sinceIdx >= 0 && process.argv[sinceIdx + 1]) {
+  const parsed = new Date(process.argv[sinceIdx + 1]);
+  if (isNaN(parsed.getTime())) {
+    console.error(`Invalid --since date: ${process.argv[sinceIdx + 1]}`);
+    process.exit(1);
+  }
+  sinceMs = parsed.getTime();
+}
 
 // Derive project key from cwd
 const cwd = process.cwd();
@@ -92,6 +104,13 @@ for (const sessionsDir of sessionDirs) {
 
   for (const file of jsonlFiles) {
     const path = join(sessionsDir, file);
+
+    // Filter by modification time if --since was given
+    if (sinceMs > 0) {
+      const { mtimeMs } = statSync(path);
+      if (mtimeMs < sinceMs) continue;
+    }
+
     const sessionId = file.replace(".jsonl", "").slice(0, 8);
     filesScanned++;
 
@@ -186,8 +205,9 @@ const sorted = [...agg.values()].sort((a, b) => {
 
 // Output report
 console.log(`# Flaky Test Report`);
+const sinceNote = sinceMs > 0 ? ` (since ${new Date(sinceMs).toISOString().slice(0, 10)})` : "";
 console.log(
-  `\nScanned ${filesScanned} session files across ${sessionDirs.length} project dirs.`,
+  `\nScanned ${filesScanned} session files across ${sessionDirs.length} project dirs${sinceNote}.`,
 );
 console.log(
   `Found ${failures.length} failure instances across ${agg.size} unique (file, test) combinations.\n`,
