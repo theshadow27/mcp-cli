@@ -242,26 +242,27 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
     if (arg === "--headed") {
       headed = true;
-      return i;
+      return 0;
     }
     if (arg === "--worktree" || arg === "-w") {
       const next = allArgs[i + 1];
       if (next && !next.startsWith("-")) {
         worktree = next;
-        return i + 1;
+        return 1;
       }
       // Auto-generate worktree name
       worktree = `claude-${Date.now().toString(36)}`;
-      return i;
+      return 0;
     }
     if (arg === "--resume") {
       resume = allArgs[i + 1];
       if (!resume) extraError = "--resume requires a session ID";
-      return i + 1;
+      return 1;
     }
     return undefined;
   });
 
+  // shared.error wins: it reflects a bad shared flag; extraError covers provider-specific failures
   return { ...shared, error: shared.error ?? extraError, worktree, resume, headed };
 }
 

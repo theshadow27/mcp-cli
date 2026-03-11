@@ -22,7 +22,8 @@ export interface SharedSpawnArgs {
  *
  * @param args - CLI arguments after the `spawn` subcommand
  * @param extra - Optional callback for provider-specific flags.
- *   Called with `(arg, args, index)`. Return the new index if handled, or `undefined` to skip.
+ *   Called with `(arg, args, index)`. Return the number of additional args consumed
+ *   (0 for flag-only, 1 if the next arg was consumed), or `undefined` to skip.
  */
 export function parseSharedSpawnArgs(
   args: string[],
@@ -41,9 +42,9 @@ export function parseSharedSpawnArgs(
 
     // Let provider-specific handler try first
     if (extra) {
-      const newIndex = extra(arg, args, i);
-      if (newIndex !== undefined) {
-        i = newIndex;
+      const consumed = extra(arg, args, i);
+      if (consumed !== undefined) {
+        i += consumed;
         continue;
       }
     }

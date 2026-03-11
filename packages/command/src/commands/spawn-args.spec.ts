@@ -89,10 +89,10 @@ describe("parseSharedSpawnArgs", () => {
 
   it("calls extra handler for provider-specific flags", () => {
     let sawCustom = false;
-    const result = parseSharedSpawnArgs(["--custom", "--task", "x"], (arg, _allArgs, i) => {
+    const result = parseSharedSpawnArgs(["--custom", "--task", "x"], (arg) => {
       if (arg === "--custom") {
         sawCustom = true;
-        return i;
+        return 0;
       }
       return undefined;
     });
@@ -105,7 +105,7 @@ describe("parseSharedSpawnArgs", () => {
     const result = parseSharedSpawnArgs(["--custom", "val", "--task", "x"], (arg, allArgs, i) => {
       if (arg === "--custom") {
         customValue = allArgs[i + 1];
-        return i + 1;
+        return 1;
       }
       return undefined;
     });
