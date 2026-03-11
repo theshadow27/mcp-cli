@@ -2,16 +2,33 @@
  * `mcx codex` commands — manage Codex sessions via the _codex virtual server.
  *
  * Mirrors `mcx claude` but routes to `codex_*` tools on the `_codex` server.
- * No resume, headed, or worktrees subcommands (Codex threads are ephemeral).
+ * No resume or headed subcommands (Codex threads are ephemeral).
+ * Worktree support: spawn with --worktree for isolated git worktrees, cleanup on bye.
  */
 
-import { PROMPT_IPC_TIMEOUT_MS, ipcCall, resolveModelName } from "@mcp-cli/core";
+import { existsSync } from "node:fs";
+import {
+  PROMPT_IPC_TIMEOUT_MS,
+  buildHookEnv,
+  hasWorktreeHooks,
+  ipcCall,
+  readWorktreeConfig,
+  resolveModelName,
+  resolveWorktreePath,
+} from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
-import { type ClaudeDeps, parseLogArgs, parseWaitArgs, resolveSessionId } from "./claude";
+import {
+  type ClaudeDeps,
+  cleanupWorktree,
+  parseByeResult,
+  parseLogArgs,
+  parseWaitArgs,
+  resolveSessionId,
+} from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Constants ──
@@ -97,6 +114,7 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
 
 interface CodexSpawnArgs {
   task: string | undefined;
+  worktree: string | undefined;
   allow: string[];
   cwd: string | undefined;
   timeout: number | undefined;
@@ -107,6 +125,7 @@ interface CodexSpawnArgs {
 
 export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
   let task: string | undefined;
+  let worktree: string | undefined;
   let cwd: string | undefined;
   let timeout: number | undefined;
   let model: string | undefined;
@@ -119,6 +138,13 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
     if (arg === "--task" || arg === "-t") {
       task = args[++i];
       if (!task) error = "--task requires a value";
+    } else if (arg === "--worktree" || arg === "-w") {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        worktree = args[++i];
+      } else {
+        worktree = `codex-${Date.now().toString(36)}`;
+      }
     } else if (arg === "--allow") {
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         allow.push(args[++i]);
@@ -149,7 +175,7 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
     }
   }
 
-  return { task, allow, cwd, timeout, model, wait, error };
+  return { task, worktree, allow, cwd, timeout, model, wait, error };
 }
 
 async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
@@ -161,7 +187,7 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   }
 
   if (!parsed.task) {
-    d.printError('Usage: mcx codex spawn --task "description" [--allow tools...]');
+    d.printError('Usage: mcx codex spawn --task "description" [--worktree [name]] [--allow tools...]');
     d.exit(1);
   }
 
@@ -171,6 +197,42 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
+
+  if (parsed.worktree) {
+    const repoRoot = process.cwd();
+    const wtConfig = readWorktreeConfig(repoRoot);
+
+    if (hasWorktreeHooks(wtConfig)) {
+      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
+      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
+      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
+      if (exitCode !== 0) {
+        d.printError(`Worktree setup hook failed: ${stderr}`);
+        d.exit(1);
+      }
+      if (!existsSync(worktreePath)) {
+        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
+        d.exit(1);
+      }
+      toolArgs.cwd = worktreePath;
+      toolArgs.worktree = parsed.worktree;
+      toolArgs.repoRoot = repoRoot;
+      d.printError(`Created worktree via hook: ${worktreePath}`);
+    } else if (wtConfig?.branchPrefix === false) {
+      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
+      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", parsed.worktree, "HEAD"]);
+      if (exitCode !== 0) {
+        d.printError(`Failed to create worktree: ${stdout}`);
+        d.exit(1);
+      }
+      toolArgs.cwd = worktreePath;
+      toolArgs.worktree = parsed.worktree;
+      toolArgs.repoRoot = repoRoot;
+      d.printError(`Created worktree: ${worktreePath}`);
+    } else {
+      toolArgs.worktree = parsed.worktree;
+    }
+  }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
   console.log(formatToolResult(result));
@@ -265,7 +327,13 @@ async function codexBye(args: string[], d: CodexDeps): Promise<void> {
 
   const sessionId = await resolveSessionId(sessionPrefix, d, `${P}_session_list`);
   const result = await d.callTool(`${P}_bye`, { sessionId });
+
+  const byeResult = parseByeResult(result);
   console.log(formatToolResult(result));
+
+  if (byeResult.worktree && byeResult.cwd) {
+    cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
+  }
 }
 
 // ── Interrupt ──
@@ -421,6 +489,7 @@ function printCodexUsage(): void {
 Usage:
   mcx codex spawn --task "description"    Start a new Codex session (non-blocking)
   mcx codex spawn "description"           Shorthand (positional task)
+  mcx codex spawn -w --task "desc"        Spawn in a new git worktree
   mcx codex ls                            List active Codex sessions
   mcx codex send <session> <message>      Send follow-up prompt (non-blocking)
   mcx codex wait [session]                Block until a session event occurs
@@ -433,6 +502,7 @@ Usage:
 
 Spawn options:
   --task, -t "description"    Task prompt for Codex
+  --worktree, -w [name]       Run in a new git worktree (auto-generates name if omitted)
   --wait                      Block until Codex produces a result
   --model, -m <name>          Model to use (default: provider default)
   --allow <tools...>          Pre-approved tool patterns
