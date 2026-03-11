@@ -660,6 +660,42 @@ describe("pruneOrphanedWorktrees", () => {
     }
   });
 
+  test("skips sessions ended more than 7 days ago", () => {
+    opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "old-ended",
+        pid: 12345,
+        model: "sonnet",
+        cwd: "/tmp/test",
+        worktree: "old-wt",
+      });
+      db.endSession("old-ended");
+      // Backdate ended_at to 10 days ago via raw SQL
+      const { Database } = require("bun:sqlite");
+      const rawDb = new Database(opts.DB_PATH);
+      rawDb.run("UPDATE agent_sessions SET ended_at = datetime('now', '-10 days') WHERE session_id = ?", ["old-ended"]);
+      rawDb.close();
+
+      const pathsChecked: string[] = [];
+      pruneOrphanedWorktrees(
+        db,
+        silentLogger,
+        mockGitOps({
+          pathExists: (p: string) => {
+            pathsChecked.push(p);
+            return true;
+          },
+        }),
+      );
+      // Old session should be skipped entirely — no path checks
+      expect(pathsChecked).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
   test("handles errors gracefully without crashing", () => {
     opts = testOptions();
     const db = new StateDb(opts.DB_PATH);
