@@ -461,6 +461,14 @@ export class StateDb {
     );
   }
 
+  /** Get the raw absolute expires_at timestamp (ms) for a server's token, or null if no expiry / no token. */
+  getTokenExpiry(serverName: string): number | null {
+    const row = this.db
+      .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM auth_tokens WHERE server_name = ?")
+      .get(serverName);
+    return row?.expires_at ?? null;
+  }
+
   deleteTokens(serverName: string): void {
     this.db.run("DELETE FROM auth_tokens WHERE server_name = ?", [serverName]);
   }

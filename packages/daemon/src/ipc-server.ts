@@ -438,6 +438,9 @@ export class IpcServer {
       const poolDb = this.pool.getDb();
       const results: ServerAuthStatus[] = [];
 
+      // Collect stdio servers that need tool discovery (only if already connected)
+      const stdioChecks: Array<{ index: number; name: string }> = [];
+
       for (const srv of filtered) {
         const serverUrl = this.pool.getServerUrl(srv.name);
         let authSupport: ServerAuthStatus["authSupport"] = "none";
@@ -445,36 +448,40 @@ export class IpcServer {
         let expiresAt: number | undefined;
 
         if (serverUrl) {
-          // Remote server — check for OAuth tokens
+          // Remote server — check for OAuth tokens via provider (includes keychain fallback)
           authSupport = "oauth";
           if (poolDb) {
-            const tokens = poolDb.getTokens(srv.name);
+            const serverConfig = this.pool.getServerConfig(srv.name);
+            const provider = new McpOAuthProvider(srv.name, serverUrl, poolDb, {
+              clientId: serverConfig?.clientId,
+              clientSecret: serverConfig?.clientSecret,
+            });
+            const tokens = await provider.tokens();
             if (tokens) {
-              if (tokens.expires_in !== undefined && tokens.expires_in > 0) {
-                status = "authenticated";
-                expiresAt = Date.now() + tokens.expires_in * 1000;
-              } else if (tokens.expires_in !== undefined) {
+              // Check raw expires_at from DB for accurate expiry detection
+              const rawExpiry = poolDb.getTokenExpiry(srv.name);
+              if (rawExpiry !== null && rawExpiry <= Date.now()) {
                 status = "expired";
+                expiresAt = rawExpiry;
               } else {
-                // No expiry info — token exists, assume valid
                 status = "authenticated";
+                if (rawExpiry !== null) {
+                  expiresAt = rawExpiry;
+                } else if (tokens.expires_in !== undefined && tokens.expires_in > 0) {
+                  // Keychain token with expiry info
+                  expiresAt = Date.now() + tokens.expires_in * 1000;
+                }
               }
             } else {
               status = "not_authenticated";
             }
           }
         } else if (srv.transport !== "virtual") {
-          // Stdio server — check for auth tool
-          let tools: ToolInfo[];
-          try {
-            tools = await this.pool.listTools(srv.name);
-          } catch {
-            tools = [];
+          // Stdio server — only check already-connected servers to avoid spawning processes
+          if (srv.state === "connected") {
+            stdioChecks.push({ index: results.length, name: srv.name });
           }
-          if (tools.some((t) => t.name === "auth")) {
-            authSupport = "auth_tool";
-            status = "unknown"; // can't check without calling it
-          }
+          // authSupport stays "none" until we check tools (updated below)
         }
 
         results.push({
@@ -484,6 +491,18 @@ export class IpcServer {
           status,
           ...(expiresAt !== undefined && { expiresAt }),
         });
+      }
+
+      // Check stdio servers for auth tools in parallel (only already-connected ones)
+      if (stdioChecks.length > 0) {
+        const toolResults = await Promise.allSettled(stdioChecks.map(({ name }) => this.pool.listTools(name)));
+        for (let i = 0; i < stdioChecks.length; i++) {
+          const outcome = toolResults[i];
+          if (outcome.status === "fulfilled" && outcome.value.some((t) => t.name === "auth")) {
+            results[stdioChecks[i].index].authSupport = "auth_tool";
+            results[stdioChecks[i].index].status = "unknown";
+          }
+        }
       }
 
       return { servers: results };
