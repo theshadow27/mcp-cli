@@ -76,40 +76,29 @@ Group by user impact, not by file or package. Skip internal-only changes that
 no user would care about (test refactors, CI tweaks) or collapse them into a
 single "Internal improvements" line.
 
-## Step 4: Tag and push
+## Step 4: Write release notes to a file
+
+Save the release notes from Step 3 to a temporary file:
 
 ```bash
-# Update package.json with the new version
-bun -e "
-  const fs = require('fs');
-  const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
-  pkg.version = 'X.Y.Z';
-  fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-"
-
-# Commit, tag, push
-git add package.json
-git commit -m "release: vX.Y.Z"
-git tag vX.Y.Z
-git push origin main vX.Y.Z
-```
-
-The tag push triggers the Release workflow (`.github/workflows/release.yml`)
-which builds cross-platform binaries and creates the GitHub Release.
-
-## Step 5: Create the GitHub Release
-
-After pushing the tag, create the release with the notes:
-
-```bash
-gh release create vX.Y.Z --title "vX.Y.Z" --notes "$(cat <<'EOF'
+cat > /tmp/release-notes.md <<'EOF'
 <release notes from step 3>
 EOF
-)"
 ```
 
-If the Release workflow hasn't finished building yet, create the release
-without assets — the workflow will attach them when it completes.
+## Step 5: Run the release script
+
+The release script handles all mechanical steps: updating `package.json`,
+committing, tagging, pushing, and creating the GitHub release.
+
+```bash
+bun .claude/skills/release/release.ts --version X.Y.Z --notes /tmp/release-notes.md
+```
+
+Use `--dry-run` to preview what would happen without making changes.
+
+The tag push triggers the Release workflow (`.github/workflows/release.yml`)
+which builds cross-platform binaries and attaches them to the GitHub Release.
 
 ## Rules
 
