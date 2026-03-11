@@ -155,6 +155,7 @@ export class ClaudeServer {
     private daemonId?: string,
     clientFactory?: ClientFactory,
     logger?: Logger,
+    private handshakeTimeoutMs = 10_000,
   ) {
     this.db = db;
     this.clientFactory =
@@ -218,7 +219,10 @@ export class ClaudeServer {
       await Promise.race([
         this.client.connect(this.transport),
         new Promise<never>((_, reject) => {
-          handshakeTimer = setTimeout(() => reject(new Error("MCP handshake timeout (10s)")), 10_000);
+          handshakeTimer = setTimeout(() => {
+            metrics.counter("mcpd_connect_timeouts_total").inc();
+            reject(new Error("MCP handshake timeout (10s)"));
+          }, this.handshakeTimeoutMs);
         }),
       ]);
       clearTimeout(handshakeTimer);
