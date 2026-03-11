@@ -43,6 +43,13 @@ export function evaluateApproval(
   }
 
   const decision: PermissionDecision = evaluate(rules, request);
+
+  // If no rule matched (neither allow nor explicit deny), escalate to manual review
+  // rather than silently denying. This ensures new tool types aren't blocked invisibly.
+  if (!decision.allow && decision.message?.startsWith("No matching rule")) {
+    return { resolved: false, allow: false, request };
+  }
+
   return { resolved: true, allow: decision.allow, request };
 }
 

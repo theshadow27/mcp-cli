@@ -183,6 +183,23 @@ describe("mapNotification", () => {
     expect(events).toEqual([]);
   });
 
+  test("turn/completed with interrupted status emits session:error", () => {
+    const state = createEventMapState();
+    const events = mapNotification(
+      "turn/completed",
+      { threadId: "t1", turnId: "turn1", status: "interrupted" },
+      state,
+      sessionId,
+      provider,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: "session:error",
+      errors: ["Turn interrupted"],
+      cost: null,
+    });
+  });
+
   test("turn/completed includes diff when available", () => {
     const state = createEventMapState();
     state.currentDiff = "unified diff content";

@@ -6,7 +6,7 @@ import { CodexRpcClient } from "./codex-rpc";
 function createMockProcess() {
   const written: Record<string, unknown>[] = [];
   const proc = {
-    write(msg: Record<string, unknown>) {
+    async write(msg: Record<string, unknown>) {
       written.push(msg);
     },
   } as unknown as CodexProcess;
@@ -55,11 +55,11 @@ describe("CodexRpcClient", () => {
     expect(rpc.pendingCount).toBe(0);
   });
 
-  test("notify sends without id", () => {
+  test("notify sends without id", async () => {
     const { proc, written } = createMockProcess();
     const rpc = new CodexRpcClient(proc);
 
-    rpc.notify("initialized", { foo: "bar" });
+    await rpc.notify("initialized", { foo: "bar" });
 
     expect(written).toHaveLength(1);
     expect(written[0]).toEqual({ jsonrpc: "2.0", method: "initialized", params: { foo: "bar" } });
@@ -103,11 +103,11 @@ describe("CodexRpcClient", () => {
     });
   });
 
-  test("respondToServerRequest sends response with matching id", () => {
+  test("respondToServerRequest sends response with matching id", async () => {
     const { proc, written } = createMockProcess();
     const rpc = new CodexRpcClient(proc);
 
-    rpc.respondToServerRequest(42, { decision: "accept" });
+    await rpc.respondToServerRequest(42, { decision: "accept" });
 
     expect(written).toHaveLength(1);
     expect(written[0]).toEqual({ jsonrpc: "2.0", id: 42, result: { decision: "accept" } });
@@ -145,6 +145,18 @@ describe("CodexRpcClient", () => {
     await expect(p1).rejects.toThrow("cleanup");
     await expect(p2).rejects.toThrow("cleanup");
     await expect(p3).rejects.toThrow("cleanup");
+  });
+
+  test("request cleans up timer and pending on write failure", async () => {
+    const proc = {
+      async write(_msg: Record<string, unknown>) {
+        throw new Error("stdin closed");
+      },
+    } as unknown as CodexProcess;
+    const rpc = new CodexRpcClient(proc, { timeoutMs: 60_000 });
+
+    await expect(rpc.request("test/method")).rejects.toThrow("stdin closed");
+    expect(rpc.pendingCount).toBe(0);
   });
 
   test("ignores orphaned responses", () => {

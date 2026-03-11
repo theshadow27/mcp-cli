@@ -30,8 +30,14 @@ export interface CodexSessionConfig {
   model?: string;
   /** Sandbox policy. Defaults to "read-only". */
   sandbox?: "read-only" | "danger-full-access";
-  /** Approval policy. Defaults to "on-request". */
-  approvalPolicy?: "never" | "on-request" | "unless-allow-listed";
+  /**
+   * Approval policy. Defaults to "on-request".
+   * - "auto_approve" (alias: "never"): auto-approve ALL tool calls with no human review.
+   *    WARNING: every destructive command will be silently approved.
+   * - "on-request": prompt for each tool call (default, safest).
+   * - "unless-allow-listed": auto-approve allowed tools, prompt for the rest.
+   */
+  approvalPolicy?: "auto_approve" | "never" | "on-request" | "unless-allow-listed";
   /** Permission rules in Claude format. */
   allowedTools?: readonly string[];
   /** Deny rules in Claude format. */
@@ -95,39 +101,48 @@ export class CodexSession {
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
     });
 
-    // Step 1: Initialize handshake
-    const initResult = (await this.rpc.request("initialize", {
-      clientInfo: { name: "mcp-cli-codex", version: "0.1.0" },
-      capabilities: { experimentalApi: false },
-    })) as InitializeResult;
+    try {
+      // Step 1: Initialize handshake
+      const initResult = (await this.rpc.request("initialize", {
+        clientInfo: { name: "mcp-cli-codex", version: "0.1.0" },
+        capabilities: { experimentalApi: false },
+      })) as InitializeResult;
 
-    // Send initialized notification
-    this.rpc.notify("initialized");
+      // Send initialized notification
+      await this.rpc.notify("initialized");
 
-    this.model = this.config.model ?? initResult.serverInfo?.name ?? "codex";
-    this.setState("init");
-    this.emit({
-      type: "session:init",
-      sessionId: this.sessionId,
-      provider: "codex",
-      model: this.model,
-      cwd: this.config.cwd,
-    });
+      this.model = this.config.model ?? initResult.serverInfo?.name ?? "codex";
+      this.setState("init");
+      this.emit({
+        type: "session:init",
+        sessionId: this.sessionId,
+        provider: "codex",
+        model: this.model,
+        cwd: this.config.cwd,
+      });
 
-    // Step 2: Start thread
-    const threadResult = (await this.rpc.request("thread/start", {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      sandbox: this.config.sandbox ?? "read-only",
-      approvalPolicy: this.config.approvalPolicy ?? "on-request",
-      experimentalRawEvents: false,
-      persistExtendedHistory: false,
-    })) as Thread;
+      // Step 2: Start thread
+      // Map "auto_approve" alias to the Codex protocol value "never"
+      const rawPolicy = this.config.approvalPolicy ?? "on-request";
+      const protocolPolicy = rawPolicy === "auto_approve" ? "never" : rawPolicy;
+      const threadResult = (await this.rpc.request("thread/start", {
+        cwd: this.config.cwd,
+        model: this.config.model,
+        sandbox: this.config.sandbox ?? "read-only",
+        approvalPolicy: protocolPolicy,
+        experimentalRawEvents: false,
+        persistExtendedHistory: false,
+      })) as Thread;
 
-    this.thread = threadResult;
+      this.thread = threadResult;
 
-    // Step 3: Start first turn with the prompt
-    await this.startTurn(this.config.prompt);
+      // Step 3: Start first turn with the prompt
+      await this.startTurn(this.config.prompt);
+    } catch (err) {
+      // Kill the process on any initialization failure to prevent leaks
+      this.proc.kill();
+      throw err;
+    }
   }
 
   /** Send a follow-up message (starts a new turn on the existing thread). */
@@ -180,10 +195,14 @@ export class CodexSession {
     this.rpc?.rejectAll("Session terminated");
     this.setState("ended");
     this.emit({ type: "session:ended" });
+    this.rejectAllWaiters("Session terminated");
   }
 
   /** Wait for a turn result or error. */
   waitForResult(timeoutMs: number): Promise<AgentSessionEvent> {
+    if (this.state === "ended") {
+      return Promise.reject(new Error("Session already ended"));
+    }
     return new Promise<AgentSessionEvent>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.resultWaiters = this.resultWaiters.filter((w) => w !== waiter);
@@ -203,6 +222,9 @@ export class CodexSession {
 
   /** Wait for any actionable event. */
   waitForEvent(timeoutMs: number): Promise<AgentSessionEvent> {
+    if (this.state === "ended") {
+      return Promise.reject(new Error("Session already ended"));
+    }
     return new Promise<AgentSessionEvent>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
@@ -252,6 +274,8 @@ export class CodexSession {
   private async startTurn(text: string): Promise<void> {
     if (!this.rpc || !this.thread) throw new Error("Session not initialized");
     this.setState("active");
+    this.eventState.lastResultText = "";
+    this.eventState.currentDiff = null;
 
     const turnResult = (await this.rpc.request("turn/start", {
       threadId: this.thread.id,
@@ -303,8 +327,8 @@ export class CodexSession {
       return;
     }
 
-    // If approval policy is "never", auto-approve everything
-    if (this.config.approvalPolicy === "never") {
+    // If approval policy is "auto_approve" (or legacy "never"), auto-approve everything
+    if (this.config.approvalPolicy === "auto_approve" || this.config.approvalPolicy === "never") {
       this.rpc?.respondToServerRequest(id, { decision: "accept" });
       return;
     }
@@ -342,6 +366,22 @@ export class CodexSession {
       }
       this.emit({ type: "session:ended" });
     }
+    this.rejectAllWaiters("Process exited");
+  }
+
+  /** Reject all pending result/event waiters (e.g. on exit or terminate). */
+  private rejectAllWaiters(reason: string): void {
+    // Note: emit() already dispatches session:ended to waiters that filter for it.
+    // This handles any waiters that didn't resolve from the emitted events
+    // (e.g. waitForEvent waiters that were added after the last emit).
+    // Clear arrays to avoid double-resolution — spread first so filter inside waiter is safe.
+    const rw = this.resultWaiters;
+    const ew = this.eventWaiters;
+    this.resultWaiters = [];
+    this.eventWaiters = [];
+    const endedEvent: AgentSessionEvent = { type: "session:ended" };
+    for (const w of rw) w(endedEvent);
+    for (const w of ew) w(endedEvent);
   }
 
   private setState(newState: AgentSessionState): void {

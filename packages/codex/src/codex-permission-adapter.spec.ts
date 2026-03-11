@@ -42,17 +42,17 @@ describe("evaluateApproval", () => {
     expect(result.allow).toBe(false);
   });
 
-  test("bash command not matched — denied (fail-closed)", () => {
+  test("bash command not matched — escalated to manual review", () => {
     const rules = buildRules(["Bash(git:*)"]);
     const result = evaluateApproval(bashRequest("curl evil.com"), rules);
-    expect(result.resolved).toBe(true);
+    expect(result.resolved).toBe(false);
     expect(result.allow).toBe(false);
   });
 
-  test("bash compound command rejected by wildcard rule", () => {
+  test("bash compound command rejected by wildcard rule — escalated", () => {
     const rules = buildRules(["Bash(git:*)"]);
     const result = evaluateApproval(bashRequest("git status && rm -rf /"), rules);
-    expect(result.resolved).toBe(true);
+    expect(result.resolved).toBe(false);
     expect(result.allow).toBe(false);
   });
 
@@ -63,10 +63,10 @@ describe("evaluateApproval", () => {
     expect(result.allow).toBe(true);
   });
 
-  test("file path denied — no matching rule", () => {
+  test("file path not matched — escalated to manual review", () => {
     const rules = buildRules(["Write(src/**/*.ts)"]);
     const result = evaluateApproval(writeRequest("/etc/passwd"), rules);
-    expect(result.resolved).toBe(true);
+    expect(result.resolved).toBe(false);
     expect(result.allow).toBe(false);
   });
 

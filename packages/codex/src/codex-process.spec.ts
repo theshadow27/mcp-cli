@@ -79,8 +79,7 @@ describe("CodexProcess", () => {
     });
 
     proc.spawn();
-    proc.write({ jsonrpc: "2.0", method: "test" });
-    await proc.flush();
+    await proc.write({ jsonrpc: "2.0", method: "test" });
 
     // Wait for process to exit naturally after echoing
     await new Promise<void>((resolve) => {
@@ -138,7 +137,7 @@ describe("CodexProcess", () => {
     expect(() => proc.spawn()).toThrow("already spawned");
   });
 
-  test("throws if write called before spawn", () => {
+  test("throws if write called before spawn", async () => {
     const proc = new CodexProcess({
       cwd: process.cwd(),
       command: ["true"],
@@ -146,7 +145,7 @@ describe("CodexProcess", () => {
       onExit: () => {},
     });
 
-    expect(() => proc.write({ test: true })).toThrow("not spawned");
+    await expect(proc.write({ test: true })).rejects.toThrow("not spawned");
   });
 
   test("captures stderr when onStderr is provided", async () => {

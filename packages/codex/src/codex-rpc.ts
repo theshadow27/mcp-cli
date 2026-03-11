@@ -88,20 +88,24 @@ export class CodexRpcClient {
       }, this.timeoutMs);
 
       this.pending.set(id, { resolve, reject, timer });
-      this.proc.write(msg);
+      this.proc.write(msg).catch((err: unknown) => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
     });
   }
 
   /** Send a JSON-RPC notification (fire-and-forget, no id). */
-  notify(method: string, params?: Record<string, unknown>): void {
+  async notify(method: string, params?: Record<string, unknown>): Promise<void> {
     const msg: Record<string, unknown> = { jsonrpc: "2.0", method };
     if (params !== undefined) msg.params = params;
-    this.proc.write(msg);
+    await this.proc.write(msg);
   }
 
   /** Respond to a server-initiated request (e.g. approval). */
-  respondToServerRequest(id: number | string, result: unknown): void {
-    this.proc.write({ jsonrpc: "2.0", id, result });
+  async respondToServerRequest(id: number | string, result: unknown): Promise<void> {
+    await this.proc.write({ jsonrpc: "2.0", id, result });
   }
 
   /** Reject all pending requests (e.g. on process death). */

@@ -119,6 +119,14 @@ export function mapNotification(
       const p = params as unknown as TurnCompletedParams;
       state.numTurns++;
 
+      if (p.status === "failed") {
+        return [{ type: "session:error", errors: [p.reason ?? "Turn failed"], cost: null }];
+      }
+
+      if (p.status === "interrupted") {
+        return [{ type: "session:error", errors: ["Turn interrupted"], cost: null }];
+      }
+
       const result: AgentResult = {
         result: state.lastResultText,
         cost: null, // Codex doesn't report cost
@@ -126,10 +134,6 @@ export function mapNotification(
         numTurns: state.numTurns,
         diff: state.currentDiff ?? undefined,
       };
-
-      if (p.status === "failed") {
-        return [{ type: "session:error", errors: [p.reason ?? "Turn failed"], cost: null }];
-      }
 
       return [{ type: "session:result", result }];
     }

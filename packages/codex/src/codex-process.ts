@@ -65,18 +65,12 @@ export class CodexProcess {
     });
   }
 
-  /** Write a JSON-RPC message to the process stdin. */
-  write(msg: Record<string, unknown>): void {
+  /** Write a JSON-RPC message to the process stdin and flush. */
+  async write(msg: Record<string, unknown>): Promise<void> {
     const stdin = this.proc?.stdin;
     if (!stdin || typeof stdin === "number") throw new Error("Process not spawned or stdin unavailable");
     const line = `${JSON.stringify(msg)}\n`;
     stdin.write(line);
-  }
-
-  /** Flush stdin to ensure buffered writes are sent. */
-  async flush(): Promise<void> {
-    const stdin = this.proc?.stdin;
-    if (!stdin || typeof stdin === "number") return;
     await stdin.flush();
   }
 
