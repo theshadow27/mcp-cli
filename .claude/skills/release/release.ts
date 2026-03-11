@@ -100,16 +100,32 @@ function main(): void {
     process.exit(1);
   }
 
+  // Guard: must be on main
+  const branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+    quiet: true,
+  });
+  if (branch !== "main") {
+    throw new Error(`Must release from main, currently on: ${branch}`);
+  }
+
+  // Guard: working tree must be clean
+  const status = run(["git", "status", "--porcelain"], { quiet: true });
+  if (status) {
+    throw new Error(
+      `Working tree is dirty — commit or stash changes first:\n${status}`,
+    );
+  }
+
   console.error(`Releasing ${tag}${dryRun ? " (dry run)" : ""}…`);
+
+  if (dryRun) {
+    console.error("\nDry run — skipping all mutations.");
+    console.error(`Would update package.json, commit, tag ${tag}, push, and create GitHub release.`);
+    return;
+  }
 
   // 1. Update package.json
   updatePackageJson(version);
-
-  if (dryRun) {
-    console.error("\nDry run — skipping git and GitHub operations.");
-    console.error(`Would commit, tag ${tag}, push, and create GitHub release.`);
-    return;
-  }
 
   // 2. Commit
   run(["git", "add", "package.json"]);
@@ -119,9 +135,6 @@ function main(): void {
   run(["git", "tag", tag]);
 
   // 4. Push branch + tag
-  const branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
-    quiet: true,
-  });
   run(["git", "push", "origin", branch, tag]);
 
   // 5. Create GitHub release
