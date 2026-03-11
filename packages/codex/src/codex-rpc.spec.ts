@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { CodexProcess } from "./codex-process";
 import { CodexRpcClient } from "./codex-rpc";
 
@@ -159,13 +159,16 @@ describe("CodexRpcClient", () => {
     expect(rpc.pendingCount).toBe(0);
   });
 
-  test("ignores orphaned responses", () => {
+  test("logs warning for orphaned responses", () => {
     const { proc } = createMockProcess();
     const rpc = new CodexRpcClient(proc);
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
-    // Should not throw — just silently drops
     rpc.handleMessage({ jsonrpc: "2.0", id: 999, result: "orphan" });
     expect(rpc.pendingCount).toBe(0);
+    expect(warnSpy).toHaveBeenCalledWith("[codex-rpc] Orphaned response for id 999 — request may have timed out");
+
+    warnSpy.mockRestore();
   });
 
   test("ignores unknown message shapes", () => {
