@@ -885,13 +885,13 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 }
 
-interface ByeResult {
+export interface ByeResult {
   worktree: string | null;
   cwd: string | null;
   repoRoot: string | null;
 }
 
-function parseByeResult(result: unknown): ByeResult {
+export function parseByeResult(result: unknown): ByeResult {
   const r = result as { content?: Array<{ text?: string }> };
   const text = r?.content?.[0]?.text;
   if (!text) return { worktree: null, cwd: null, repoRoot: null };
@@ -903,7 +903,7 @@ function parseByeResult(result: unknown): ByeResult {
 }
 
 /** Clean up a worktree after session ends: remove if clean, warn if dirty. */
-function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps, repoRoot?: string | null): void {
+export function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps, repoRoot?: string | null): void {
   // repoRoot is stored in session metadata at spawn time and returned by bye.
   // For hook-based worktrees, cwd is the worktree path (not repo root), so repoRoot is required.
   // For non-hook worktrees, cwd from bye IS the repo root — use it as fallback.
@@ -1470,10 +1470,14 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
 
 // ── Helpers ──
 
-export async function resolveSessionId(prefix: string, d: ClaudeDeps): Promise<string> {
-  const result = await d.callTool("claude_session_list", {});
+export async function resolveSessionId(
+  prefix: string,
+  d: ClaudeDeps,
+  listTool = "claude_session_list",
+): Promise<string> {
+  const result = await d.callTool(listTool, {});
   const text = formatToolResult(result);
-  let sessions: SessionInfo[];
+  let sessions: Array<{ sessionId: string }>;
   try {
     sessions = JSON.parse(text);
   } catch {
@@ -1495,7 +1499,7 @@ export async function resolveSessionId(prefix: string, d: ClaudeDeps): Promise<s
   return matches[0].sessionId;
 }
 
-function colorState(state: string): string {
+export function colorState(state: string): string {
   const padded = state.padEnd(12);
   switch (state) {
     case "active":

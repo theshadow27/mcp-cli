@@ -19,6 +19,7 @@ import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchErr
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
 import { cmdClaude } from "./commands/claude";
+import { cmdCodex } from "./commands/codex";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
@@ -219,6 +220,10 @@ async function main(): Promise<void> {
 
       case "claude":
         await cmdClaude(args.slice(1));
+        break;
+
+      case "codex":
+        await cmdCodex(args.slice(1));
         break;
 
       case "serve":
@@ -689,6 +694,12 @@ Usage:
   mcx claude bye <session>             End a session gracefully
   mcx claude log <session>             View session transcript
   mcx claude worktrees                 List worktrees with session status
+  mcx codex spawn --task "..."         Start a Codex session
+  mcx codex ls                         List active Codex sessions
+  mcx codex send <session> <msg>       Send follow-up prompt to Codex session
+  mcx codex wait <session>             Block until a Codex session completes
+  mcx codex bye <session>              End a Codex session
+  mcx codex log <session>              View Codex session transcript
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
