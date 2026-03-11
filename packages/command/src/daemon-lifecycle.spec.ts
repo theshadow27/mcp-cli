@@ -346,15 +346,16 @@ describe("_buildStaleDaemonWarning", () => {
 
   it("returns warning when daemon buildVersion differs from CLI", () => {
     const warning = _buildStaleDaemonWarning("0.1.0-20250101");
-    expect(warning).toContain("older build");
+    expect(warning).toContain("different build");
     expect(warning).toContain("0.1.0-20250101");
     expect(warning).toContain(BUILD_VERSION);
     expect(warning).toContain("mcx shutdown");
   });
 
-  it("returns warning with 'unknown' when daemon has no buildVersion", () => {
+  it("returns warning when daemon has no buildVersion (predates tracking)", () => {
     const warning = _buildStaleDaemonWarning(undefined);
-    expect(warning).toContain("unknown");
+    expect(warning).toContain("predates build version tracking");
+    expect(warning).toContain(BUILD_VERSION);
     expect(warning).toContain("mcx shutdown");
   });
 });
@@ -373,4 +374,5 @@ describe("getStaleDaemonWarning", () => {
     writeFileSync(opts.PID_PATH, "not json{{{");
     expect(getStaleDaemonWarning()).toBeNull();
   });
+
 });

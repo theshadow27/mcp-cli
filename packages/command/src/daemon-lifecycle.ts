@@ -308,8 +308,10 @@ async function startDaemon(): Promise<void> {
  */
 export function _buildStaleDaemonWarning(daemonBuildVersion: string | undefined): string | null {
   if (!daemonBuildVersion || daemonBuildVersion !== BUILD_VERSION) {
-    const daemonBuild = daemonBuildVersion ?? "unknown";
-    return `Daemon is running an older build (${daemonBuild}) than CLI (${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
+    if (!daemonBuildVersion) {
+      return `Daemon predates build version tracking (CLI is ${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
+    }
+    return `Daemon is running a different build (${daemonBuildVersion}) than CLI (${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
   }
   return null;
 }
