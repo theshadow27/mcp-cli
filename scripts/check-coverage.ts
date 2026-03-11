@@ -19,6 +19,13 @@ const GLOBAL_THRESHOLDS = {
   lines: 69,
 };
 
+/**
+ * Maximum allowed production log noise lines during test runs.
+ * Matches daemon log prefixes ([mcpd], [_claude], [_aliases]) and
+ * production signals (MCPD_READY). Ratchet this down toward zero.
+ */
+const NOISE_THRESHOLD = 15;
+
 /** Per-file minimum coverage — every file must meet this unless excluded */
 const PER_FILE_MIN_LINES = 80;
 
@@ -72,6 +79,7 @@ const EXCLUSIONS: Record<string, string> = {
 // --- Main ---
 
 import { logTestRun } from "./test-failure-log";
+import { detectTestNoise } from "./test-noise";
 
 // Ensure deps are installed (fast no-op when already present)
 const installProc = Bun.spawn(["bun", "install"], { stdout: "ignore", stderr: "ignore" });
@@ -133,6 +141,10 @@ for (const match of output.matchAll(fileRowRegex)) {
   failures.push({ file, lines });
 }
 
+// --- Check test output noise ---
+
+const noiseLines = detectTestNoise(output);
+
 // --- Report ---
 
 console.log("\n--- Coverage Report ---");
@@ -158,6 +170,19 @@ if (failures.length > 0) {
     console.error(`  ${lines.toFixed(1)}%  ${file}`);
   }
   console.error("\nEither add tests or add an exclusion with a reason in scripts/check-coverage.ts");
+  failed = true;
+}
+
+console.log(`\nTest noise: ${noiseLines.length} production log line(s) detected (threshold: ${NOISE_THRESHOLD})`);
+if (noiseLines.length > NOISE_THRESHOLD) {
+  console.error(`\nFAIL: Test output noise ${noiseLines.length} exceeds threshold ${NOISE_THRESHOLD}`);
+  console.error("Production log output leaked into test run. Inject silentLogger to suppress:");
+  for (const line of noiseLines.slice(0, 20)) {
+    console.error(`  ${line}`);
+  }
+  if (noiseLines.length > 20) {
+    console.error(`  ... and ${noiseLines.length - 20} more`);
+  }
   failed = true;
 }
 
