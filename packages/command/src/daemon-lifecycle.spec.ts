@@ -374,5 +374,4 @@ describe("getStaleDaemonWarning", () => {
     writeFileSync(opts.PID_PATH, "not json{{{");
     expect(getStaleDaemonWarning()).toBeNull();
   });
-
 });
