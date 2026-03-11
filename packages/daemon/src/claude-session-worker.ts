@@ -29,6 +29,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  wsPort?: number;
 }
 
 interface ToolsChangedMessage {
@@ -334,10 +335,10 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 
 // ── Server startup ──
 
-async function startServer(): Promise<number> {
+async function startServer(wsPort?: number): Promise<number> {
   // Start WebSocket server
   wsServer = new ClaudeWsServer();
-  const port = wsServer.start();
+  const port = await wsServer.start(wsPort);
   wsServer.onSessionEvent = forwardSessionEvent;
 
   // Start MCP Server
@@ -384,7 +385,7 @@ self.onmessage = async (event: MessageEvent) => {
     daemonId = data.daemonId;
     workerId = generateSpanId();
     try {
-      const port = await startServer();
+      const port = await startServer(data.wsPort);
       self.postMessage({ type: "ready", port });
     } catch (err) {
       // Clean up partially-initialized resources

@@ -176,6 +176,8 @@ export class ClaudeWsServer {
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
   private readonly killTimeoutMs: number;
+  private readonly portRetryCount: number;
+  private readonly portRetryDelayMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -184,10 +186,18 @@ export class ClaudeWsServer {
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  constructor(deps?: { spawn?: SpawnFn; killTimeoutMs?: number; logger?: Logger }) {
+  constructor(deps?: {
+    spawn?: SpawnFn;
+    killTimeoutMs?: number;
+    logger?: Logger;
+    portRetryCount?: number;
+    portRetryDelayMs?: number;
+  }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
+    this.portRetryCount = deps?.portRetryCount ?? 5;
+    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 200;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -195,33 +205,59 @@ export class ClaudeWsServer {
     return this.eventSeq;
   }
 
-  /** Start the WebSocket server. Returns the assigned port. */
-  start(): number {
-    this.server = Bun.serve<WsData>({
-      port: 0,
-      fetch: (req, server) => {
-        const url = new URL(req.url);
-        const match = url.pathname.match(/^\/session\/([^/]+)$/);
-        if (!match) {
-          return new Response("Not found", { status: 404 });
-        }
-        const sessionId = match[1];
-        if (!this.sessions.has(sessionId)) {
-          return new Response("Unknown session", { status: 404 });
-        }
-        const upgraded = server.upgrade(req, { data: { sessionId } });
-        if (!upgraded) {
-          return new Response("WebSocket upgrade failed", { status: 500 });
-        }
-        return undefined;
-      },
-      websocket: {
-        open: (ws) => this.handleOpen(ws),
-        message: (ws, message) => this.handleMessage(ws, String(message)),
-        close: (ws) => this.handleClose(ws),
-      },
-    });
+  /** Start the WebSocket server. Returns the assigned port.
+   *  If `port` is provided and non-zero, tries that port first;
+   *  retries up to MAX_PORT_RETRIES times with backoff before falling back
+   *  to a random OS-assigned port on EADDRINUSE. */
+  async start(port?: number): Promise<number> {
+    const requestedPort = port ?? 0;
 
+    const createServer = (p: number) =>
+      Bun.serve<WsData>({
+        port: p,
+        fetch: (req, server) => {
+          const url = new URL(req.url);
+          const match = url.pathname.match(/^\/session\/([^/]+)$/);
+          if (!match) {
+            return new Response("Not found", { status: 404 });
+          }
+          const sessionId = match[1];
+          if (!this.sessions.has(sessionId)) {
+            return new Response("Unknown session", { status: 404 });
+          }
+          const upgraded = server.upgrade(req, { data: { sessionId } });
+          if (!upgraded) {
+            return new Response("WebSocket upgrade failed", { status: 500 });
+          }
+          return undefined;
+        },
+        websocket: {
+          open: (ws) => this.handleOpen(ws),
+          message: (ws, message) => this.handleMessage(ws, String(message)),
+          close: (ws) => this.handleClose(ws),
+        },
+      });
+
+    if (requestedPort !== 0) {
+      for (let attempt = 0; attempt <= this.portRetryCount; attempt++) {
+        try {
+          this.server = createServer(requestedPort);
+          return this.server.port as number;
+        } catch (err) {
+          if (!isAddrInUse(err)) throw err;
+          if (attempt < this.portRetryCount) {
+            await Bun.sleep(this.portRetryDelayMs);
+            continue;
+          }
+          // All retries exhausted — fall back to random port
+          this.logger.error(
+            `[ws-server] Port ${requestedPort} still in use after ${this.portRetryCount} retries, falling back to random port`,
+          );
+        }
+      }
+    }
+
+    this.server = createServer(0);
     return this.server.port as number;
   }
 
@@ -1286,6 +1322,12 @@ async function drainStderr(stream: ReadableStream<Uint8Array>, lines: string[]):
   } finally {
     reader.releaseLock();
   }
+}
+
+// ── Helpers ──
+
+function isAddrInUse(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as { code: string }).code === "EADDRINUSE";
 }
 
 // ── Default spawn ──

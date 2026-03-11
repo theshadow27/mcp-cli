@@ -342,7 +342,7 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // After restart, orphaned sessions are ended (can no longer reach new WS port)
+    // After restart, orphaned sessions are ended (can no longer reach new WS server)
     const row1 = db.getSession("crash-1");
     expect(row1?.state).toBe("ended");
     expect(row1?.endedAt).not.toBeNull();
@@ -373,7 +373,7 @@ describe("ClaudeServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    // Worker should be restarted with a new port
+    // Worker should be restarted
     expect(server.port).toBeGreaterThan(0);
     expect(server.port).not.toBe(originalPort);
     expect(restartedCalled).toBe(true);
@@ -643,7 +643,7 @@ describe("ClaudeServer", () => {
     await crash("test crash");
 
     // After successful restart, orphaned sessions are ended — they can no longer
-    // reach the new WS server (new port, new worker instance).
+    // reach the new WS server (new worker instance).
     expect(server.hasActiveSessions()).toBe(false);
     const row = db.getSession("crash-alive");
     expect(row?.state).toBe("ended");

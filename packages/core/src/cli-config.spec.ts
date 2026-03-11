@@ -20,6 +20,13 @@ describe("readCliConfig", () => {
     using _opts = testOptions({ files: { "config.json": config } });
     expect(readCliConfig()).toEqual(config);
   });
+
+  test("parses wsPort as number", () => {
+    const config = { wsPort: 19275 };
+    using _opts = testOptions({ files: { "config.json": config } });
+    expect(readCliConfig()).toEqual(config);
+    expect(readCliConfig().wsPort).toBe(19275);
+  });
 });
 
 describe("writeCliConfig", () => {

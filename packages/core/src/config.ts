@@ -57,6 +57,8 @@ export interface CliConfig {
   trustClaude?: boolean;
   /** Preferred terminal emulator for `mcx tty open` (e.g. ghostty, iterm, tmux) */
   terminal?: string;
+  /** Fixed WebSocket port for Claude SDK sessions (default: 19275). Set 0 for random. */
+  wsPort?: number;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

@@ -200,3 +200,11 @@ export const DAEMON_DEV_SCRIPT = "packages/daemon/src/main.ts";
 
 /** IPC timeout for prompt-like commands (claude send/wait, codex) that may take minutes (ms) */
 export const PROMPT_IPC_TIMEOUT_MS = 330_000;
+
+/**
+ * Default WebSocket port for Claude Code SDK sessions (survives daemon restarts).
+ * Chosen to be below Linux's ephemeral range (32768–60999) and above the
+ * registered-port range (1024–49151 IANA, but well below the ephemeral floor).
+ * 19275 is not assigned by IANA and is unlikely to conflict with other services.
+ */
+export const DEFAULT_CLAUDE_WS_PORT = 19275;

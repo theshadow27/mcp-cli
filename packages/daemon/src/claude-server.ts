@@ -156,6 +156,7 @@ export class ClaudeServer {
     clientFactory?: ClientFactory,
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
+    private readonly configuredWsPort?: number,
   ) {
     this.db = db;
     this.clientFactory =
@@ -204,7 +205,7 @@ export class ClaudeServer {
         if (cleanup()) reject(new Error(`Claude session worker error: ${msg}`));
       };
       // Send init to start the worker
-      worker.postMessage({ type: "init", daemonId: this.daemonId });
+      worker.postMessage({ type: "init", daemonId: this.daemonId, wsPort: this.configuredWsPort });
     });
 
     // Set up MCP transport and connect — if anything throws, terminate the worker
@@ -388,7 +389,7 @@ export class ClaudeServer {
     }
 
     // Snapshot pre-crash session IDs — after restart they can no longer reconnect
-    // to the new WS server (new port, new worker instance).
+    // to the new WS server (new worker instance).
     const orphanedSessions = new Set(this.activeSessions);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
@@ -450,7 +451,7 @@ export class ClaudeServer {
           this.logger.info(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
 
           // End sessions orphaned by the old worker — they can no longer reconnect
-          // to the new WS server (new port). Skip any already ended via db:end.
+          // to the new WS server. Skip any already ended via db:end.
           for (const sessionId of orphanedSessions) {
             if (!this.activeSessions.has(sessionId)) continue;
             this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
