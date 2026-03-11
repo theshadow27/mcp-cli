@@ -32,7 +32,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     }) as ClaudeDeps["exit"],
     getDiffStats: mock(async () => null),
     getPrStatus: mock(async () => null),
-    exec: mock(() => ({ stdout: "", exitCode: 0 })),
+    exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ttyOpen: mock(async () => {}),
     ...overrides,
   };
@@ -660,7 +660,7 @@ describe("mcx claude spawn --headed", () => {
 
   test("creates worktree and sets cwd for --headed --worktree", async () => {
     const ttyOpen = mock(async () => {});
-    const exec = mock(() => ({ stdout: "", exitCode: 0 }));
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const deps = makeDeps({ ttyOpen, exec });
 
     const origLog = console.log;
@@ -1040,8 +1040,8 @@ describe("mcx claude bye", () => {
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1070,8 +1070,8 @@ describe("mcx claude bye", () => {
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: " M file.ts\n?? new.ts", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: " M file.ts\n?? new.ts", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1100,7 +1100,7 @@ describe("mcx claude bye", () => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: null, cwd: null });
     });
-    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", exitCode: 0 }));
+    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const deps = makeDeps({ callTool, exec });
 
     const origLog = console.log;
@@ -1118,7 +1118,7 @@ describe("mcx claude bye", () => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-gone", cwd: "/repo" });
     });
-    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", exitCode: 128 }));
+    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 128 }));
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
 
@@ -1142,9 +1142,9 @@ describe("mcx claude bye", () => {
       return toolResult({ ended: true, worktree: "claude-locked", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 1 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1165,7 +1165,7 @@ describe("mcx claude bye", () => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "../../..", cwd: "/repo" });
     });
-    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", exitCode: 0 }));
+    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const deps = makeDeps({ callTool, exec });
 
     const origLog = console.log;
@@ -1184,7 +1184,7 @@ describe("mcx claude bye", () => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return { content: [{ type: "text", text: "not json" }] };
     });
-    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", exitCode: 0 }));
+    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const deps = makeDeps({ callTool, exec });
 
     const origLog = console.log;
@@ -1783,11 +1783,11 @@ describe("mcx claude bye branch cleanup", () => {
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("--show-current")) return { stdout: "feat/issue-42", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/issue-42", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1815,11 +1815,11 @@ describe("mcx claude bye branch cleanup", () => {
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("--show-current")) return { stdout: "feat/unmerged", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 1 }; // unmerged
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/unmerged", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 }; // unmerged
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1842,10 +1842,10 @@ describe("mcx claude bye branch cleanup", () => {
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("--show-current")) return { stdout: "", exitCode: 0 }; // detached HEAD
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "", stderr: "", exitCode: 0 }; // detached HEAD
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1894,11 +1894,12 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/orphan",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const deps = makeDeps({ callTool, exec });
 
@@ -1935,14 +1936,15 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/orphan",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", exitCode: 0 };
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -1976,13 +1978,14 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/unmerged",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
       // feat/unmerged is NOT in the merged list
-      if (cmd.includes("--merged")) return { stdout: "  main\n", exitCode: 0 };
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2026,12 +2029,13 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/active",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/active\n", exitCode: 0 };
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/active\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2068,12 +2072,13 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/dirty",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/dirty\n", exitCode: 0 };
-      if (cmd.includes("status")) return { stdout: " M file.ts", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/dirty\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: " M file.ts", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2105,19 +2110,20 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/done",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/master\n", stderr: "", exitCode: 0 };
       if (cmd.includes("--merged")) {
         // Only respond to "master" as the base — if "main" is passed, return empty
-        if (cmd.includes("master")) return { stdout: "  master\n  feat/done\n", exitCode: 0 };
-        return { stdout: "  main\n", exitCode: 0 };
+        if (cmd.includes("master")) return { stdout: "  master\n  feat/done\n", stderr: "", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2151,14 +2157,15 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/orphan",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "", exitCode: 128 }; // git failure
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "", stderr: "", exitCode: 128 }; // git failure
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2192,14 +2199,15 @@ describe("mcx claude worktrees", () => {
             "branch refs/heads/feat/orphan",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", exitCode: 0 };
-      if (cmd.includes("status")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("remove")) return { stdout: "", exitCode: 0 };
-      if (cmd.includes("-d")) return { stdout: "", exitCode: 1 }; // branch -d fails
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n  feat/orphan\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 }; // branch -d fails
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ callTool, exec, printError });
@@ -2223,10 +2231,11 @@ describe("mcx claude worktrees", () => {
         const cwd = process.cwd();
         return {
           stdout: `worktree ${cwd}\nHEAD abc123\nbranch refs/heads/main\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ exec, printError });
@@ -2242,10 +2251,11 @@ describe("mcx claude worktrees", () => {
         const cwd = process.cwd();
         return {
           stdout: `worktree ${cwd}\nHEAD abc123\nbranch refs/heads/main\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
     const deps = makeDeps({ exec, printError });
@@ -2448,9 +2458,9 @@ describe("cmdClaude resume", () => {
   test("errors when worktree not found", async () => {
     const exec = mock((cmd: string[]) => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
-        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, exitCode: 0 };
+        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const deps = makeDeps({ exec });
     await expect(cmdClaude(["resume", "nonexistent"], deps)).rejects.toThrow(ExitError);
@@ -2464,10 +2474,11 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-1-test\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") {
@@ -2487,13 +2498,14 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-5-done\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n  feat/issue-5-done\n", exitCode: 0 };
+        return { stdout: "  main\n  feat/issue-5-done\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2512,13 +2524,14 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2545,13 +2558,14 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2581,13 +2595,14 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n", exitCode: 0 };
-      if (cmd.includes("log")) return { stdout: "abc1234 add auth\n", exitCode: 0 };
-      if (cmd.includes("diff")) return { stdout: " src/auth.ts | 3 ++-\n", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("log")) return { stdout: "abc1234 add auth\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("diff")) return { stdout: " src/auth.ts | 3 ++-\n", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2617,13 +2632,14 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2648,19 +2664,20 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-42-auth\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
       if (cmd.includes("log")) {
-        return { stdout: "abc1234 add auth module", exitCode: 0 };
+        return { stdout: "abc1234 add auth module", stderr: "", exitCode: 0 };
       }
       if (cmd.includes("diff")) {
-        return { stdout: " src/auth.ts | 3 ++-\n", exitCode: 0 };
+        return { stdout: " src/auth.ts | 3 ++-\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2702,13 +2719,14 @@ describe("cmdClaude resume", () => {
             "branch refs/heads/feat/issue-2-bar",
             "",
           ].join("\n"),
+          stderr: "",
           exitCode: 0,
         };
       }
       if (cmd.includes("--merged")) {
-        return { stdout: "  main\n", exitCode: 0 };
+        return { stdout: "  main\n", stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2732,9 +2750,9 @@ describe("cmdClaude resume", () => {
   test("--all reports when no orphaned worktrees found", async () => {
     const exec = mock((cmd: string[]) => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
-        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, exitCode: 0 };
+        return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, stderr: "", exitCode: 0 };
       }
-      return { stdout: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult([]);
@@ -2753,11 +2771,12 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
         return {
           stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-1-test\n`,
+          stderr: "",
           exitCode: 0,
         };
       }
-      if (cmd.includes("--merged")) return { stdout: "  main\n", exitCode: 0 };
-      return { stdout: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "claude_session_list") return toolResult([]);

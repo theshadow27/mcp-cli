@@ -55,6 +55,8 @@ export interface SessionConfig {
    * the most recent conversation in the cwd (via --continue).
    */
   resumeSessionId?: string;
+  /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
+  repoRoot?: string;
 }
 
 export interface TranscriptEntry {
@@ -299,7 +301,11 @@ export class ClaudeWsServer {
     if (session.config.allowedTools?.length) {
       cmd.push("--allowedTools", ...session.config.allowedTools);
     }
-    if (session.config.worktree) {
+    if (session.config.worktree && !session.config.cwd) {
+      // Only pass --worktree when cwd is not set. When both are present,
+      // the worktree was pre-created by a lifecycle hook and cwd already
+      // points to it — passing --worktree would make Claude try to create
+      // another worktree.
       cmd.push("--worktree", session.config.worktree);
     }
     if (session.config.resumeSessionId) {
@@ -523,10 +529,14 @@ export class ClaudeWsServer {
    * Awaits process exit (SIGTERM → SIGKILL escalation), so may take up to ~7s if the
    * process is stuck. Callers that need a fast return should fire-and-forget this.
    */
-  async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null }> {
+  async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null; repoRoot: string | null }> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`No session with id ${sessionId}`);
-    const info = { worktree: session.worktree, cwd: session.config.cwd ?? null };
+    const info = {
+      worktree: session.worktree,
+      cwd: session.config.cwd ?? null,
+      repoRoot: session.config.repoRoot ?? null,
+    };
     await this.terminateSession(sessionId, session, "Session ended by user");
     return info;
   }

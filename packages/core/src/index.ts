@@ -13,3 +13,4 @@ export * from "./session-types";
 export * from "./trace";
 export * from "./git";
 export * from "./logger";
+export * from "./worktree-config";
