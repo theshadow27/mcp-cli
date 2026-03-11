@@ -1197,20 +1197,19 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   // Pass repoRoot to daemon for server-side filtering (only when no explicit session and no --all)
+  let repoFilter: string | undefined;
   if (!parsed.all && !parsed.sessionPrefix) {
     const gitRoot = d.getGitRoot();
-    if (gitRoot) toolArgs.repoRoot = gitRoot;
+    if (gitRoot) {
+      toolArgs.repoRoot = gitRoot;
+      repoFilter = gitRoot;
+    }
   }
 
   const result = await d.callTool("claude_wait", toolArgs);
   const text = formatToolResult(result);
 
-  if (!parsed.short) {
-    console.log(text);
-    return;
-  }
-
-  // --short: try to parse the result
+  // Parse daemon response
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -1219,27 +1218,78 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
-  // Timeout fallback returns a session list array
-  if (Array.isArray(data)) {
-    const sessions = data as Array<{
-      sessionId: string;
-      state: string;
-      model?: string | null;
-      cost?: number | null;
-      tokens?: number;
-      numTurns?: number;
-      repoRoot?: string | null;
-    }>;
-    for (const s of sessions) {
-      console.log(formatSessionShort(s));
+  // Apply repo filtering to unified { event?, sessions } shape
+  if (data && typeof data === "object" && "sessions" in data) {
+    const unified = data as {
+      event?: Record<string, unknown>;
+      sessions: Array<Record<string, unknown>>;
+    };
+    if (repoFilter) {
+      unified.sessions = unified.sessions.filter((s) => !s.repoRoot || s.repoRoot === repoFilter);
+      // Filter event if its session snapshot is from another repo
+      if (unified.event?.session) {
+        const eventRepo = (unified.event.session as Record<string, unknown>).repoRoot;
+        if (eventRepo && eventRepo !== repoFilter) {
+          unified.event = undefined;
+        }
+      }
+    }
+    if (!parsed.short) {
+      console.log(JSON.stringify(unified, null, 2));
+      if (repoFilter && unified.sessions.length === 0) {
+        const orig = (JSON.parse(text) as { sessions: unknown[] }).sessions.length;
+        if (orig > 0) {
+          console.error(`(${orig} session${orig === 1 ? "" : "s"} in other repos — use --all to see them)`);
+        }
+      }
+      return;
+    }
+    // --short: print event line if present, then session dashboard
+    if (unified.event) {
+      const evt = unified.event;
+      const id = evt.sessionId ? String(evt.sessionId).slice(0, 8) : "—";
+      const event = (evt.event as string) ?? "—";
+      const cost = evt.cost && (evt.cost as number) > 0 ? `$${(evt.cost as number).toFixed(4)}` : "—";
+      const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
+      const preview = (evt.result as string) ? (evt.result as string).slice(0, 100) : "";
+      console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+    } else {
+      // Timeout (no event) — print session list
+      const totalBeforeFilter = (JSON.parse(text) as { sessions: unknown[] }).sessions.length;
+      for (const s of unified.sessions) {
+        console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
+      }
+      if (unified.sessions.length === 0 && totalBeforeFilter > 0 && repoFilter) {
+        console.error(
+          `(${totalBeforeFilter} session${totalBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+        );
+      }
     }
     return;
   }
 
-  // Cursor-based result with events array
+  // Cursor-based result with events array: { seq, events }
   if (data && typeof data === "object" && "events" in data) {
     const waitResult = data as { seq: number; events: Array<Record<string, unknown>> };
-    for (const e of waitResult.events) {
+    let events = waitResult.events;
+    const totalEventsBeforeFilter = events.length;
+    if (repoFilter) {
+      events = events.filter((e) => {
+        const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
+        return !repo || repo === repoFilter;
+      });
+    }
+    if (!parsed.short) {
+      waitResult.events = events;
+      console.log(JSON.stringify(waitResult, null, 2));
+      if (events.length === 0 && totalEventsBeforeFilter > 0) {
+        console.error(
+          `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+        );
+      }
+      return;
+    }
+    for (const e of events) {
       const session = e.session as Record<string, unknown> | undefined;
       const id = session?.sessionId ? String(session.sessionId).slice(0, 8) : "—";
       const event = (e.event as string) ?? "—";
@@ -1248,24 +1298,16 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       const preview = (e.result as string) ? (e.result as string).slice(0, 100) : "";
       console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
     }
+    if (events.length === 0 && totalEventsBeforeFilter > 0 && repoFilter) {
+      console.error(
+        `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+      );
+    }
     return;
   }
 
-  // Normal event result: SESSION EVENT COST TURNS RESULT_PREVIEW
-  const evt = data as {
-    sessionId?: string;
-    event?: string;
-    cost?: number;
-    numTurns?: number;
-    result?: string;
-  };
-
-  const id = evt.sessionId ? evt.sessionId.slice(0, 8) : "—";
-  const event = evt.event ?? "—";
-  const cost = evt.cost && evt.cost > 0 ? `$${evt.cost.toFixed(4)}` : "—";
-  const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
-  const preview = evt.result ? evt.result.slice(0, 100) : "";
-  console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+  // Unrecognized shape — pass through
+  console.log(text);
 }
 
 /** Parse `git worktree list --porcelain` output into structured entries. */
