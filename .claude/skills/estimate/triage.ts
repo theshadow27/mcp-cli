@@ -9,6 +9,7 @@
  * Usage:
  *   bun .claude/skills/estimate/triage.ts                    # diff vs main
  *   bun .claude/skills/estimate/triage.ts --base develop     # diff vs develop
+ *   bun .claude/skills/estimate/triage.ts --pr 532           # analyze a specific PR
  *   bun .claude/skills/estimate/triage.ts --json             # machine-readable output
  *
  * Output:
@@ -18,10 +19,6 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync } from "fs";
-import { resolve, dirname } from "path";
-
-const SCORE_SCRIPT = resolve(dirname(import.meta.path), "score.ts");
 
 // ─── Risk patterns ───────────────────────────────────────────────────────────
 
@@ -67,11 +64,14 @@ function exec(cmd: string): string {
 	return execSync(cmd, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }).trim();
 }
 
-function triage(baseBranch: string): TriageResult {
-	// Get changed files vs base
-	const diffStat = exec(`git diff ${baseBranch}...HEAD --numstat`);
-	const files: { path: string; additions: number; deletions: number }[] = [];
+interface FileEntry {
+	path: string;
+	additions: number;
+	deletions: number;
+}
 
+function parseNumstat(diffStat: string): FileEntry[] {
+	const files: FileEntry[] = [];
 	for (const line of diffStat.split("\n").filter(Boolean)) {
 		const [add, del, path] = line.split("\t");
 		if (!path || !path.endsWith(".ts") || path.includes("node_modules")) continue;
@@ -81,7 +81,35 @@ function triage(baseBranch: string): TriageResult {
 			deletions: del === "-" ? 0 : parseInt(del, 10),
 		});
 	}
+	return files;
+}
 
+function getFilesFromGitDiff(baseBranch: string): FileEntry[] {
+	const diffStat = exec(`git diff ${baseBranch}...HEAD --numstat`);
+	return parseNumstat(diffStat);
+}
+
+interface PrFile {
+	filename: string;
+	additions: number;
+	deletions: number;
+}
+
+function getFilesFromPr(prNumber: number): FileEntry[] {
+	const filesJson = exec(
+		`gh api repos/{owner}/{repo}/pulls/${prNumber}/files --paginate`,
+	);
+	const prFiles: PrFile[] = JSON.parse(filesJson);
+	return prFiles
+		.filter(f => f.filename.endsWith(".ts") && !f.filename.includes("node_modules"))
+		.map(f => ({
+			path: f.filename,
+			additions: f.additions,
+			deletions: f.deletions,
+		}));
+}
+
+function triage(files: FileEntry[]): TriageResult {
 	const isTest = (p: string) => /\.spec\.ts$|\.test\.ts$|__tests__/.test(p);
 	const srcFiles = files.filter(f => !isTest(f.path));
 	const testFiles = files.filter(f => isTest(f.path));
@@ -143,9 +171,14 @@ function triage(baseBranch: string): TriageResult {
 const args = process.argv.slice(2);
 const baseIdx = args.indexOf("--base");
 const baseBranch = baseIdx !== -1 ? args[baseIdx + 1] : "main";
+const prIdx = args.indexOf("--pr");
+const prNumber = prIdx !== -1 ? parseInt(args[prIdx + 1], 10) : undefined;
 const jsonMode = args.includes("--json");
 
-const result = triage(baseBranch);
+const files = prNumber != null
+	? getFilesFromPr(prNumber)
+	: getFilesFromGitDiff(baseBranch);
+const result = triage(files);
 
 if (jsonMode) {
 	console.log(JSON.stringify(result, null, 2));
