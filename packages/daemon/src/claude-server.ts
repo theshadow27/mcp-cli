@@ -156,6 +156,7 @@ export class ClaudeServer {
     clientFactory?: ClientFactory,
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
+    private readonly configuredWsPort?: number,
   ) {
     this.db = db;
     this.clientFactory =
@@ -204,7 +205,7 @@ export class ClaudeServer {
         if (cleanup()) reject(new Error(`Claude session worker error: ${msg}`));
       };
       // Send init to start the worker
-      worker.postMessage({ type: "init", daemonId: this.daemonId });
+      worker.postMessage({ type: "init", daemonId: this.daemonId, wsPort: this.configuredWsPort });
     });
 
     // Set up MCP transport and connect — if anything throws, terminate the worker

@@ -20,6 +20,7 @@ import {
   BUILD_VERSION,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
+  DEFAULT_CLAUDE_WS_PORT,
   PROTOCOL_VERSION,
   auditRuntimePermissions,
   consoleLogger,
@@ -27,6 +28,7 @@ import {
   fixCoreBare,
   generateSpanId,
   options,
+  readCliConfig,
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
@@ -214,7 +216,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Create virtual servers (started lazily after IPC socket is ready)
   const aliasServer = new AliasServer(db, daemonId);
-  const claudeServer = new ClaudeServer(db, daemonId, undefined, logger);
+  const cliConfig = readCliConfig();
+  const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
+  const claudeServer = new ClaudeServer(db, daemonId, undefined, logger, 10_000, wsPort);
 
   // Codex server: only created if `codex` binary is installed
   const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;

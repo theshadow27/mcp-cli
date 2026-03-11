@@ -141,6 +141,27 @@ describe("ClaudeWsServer", () => {
     expect(port).toBeGreaterThan(0);
   });
 
+  test("start(port) binds to the requested port", () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const port = server.start(0); // OS-assigned
+    expect(port).toBeGreaterThan(0);
+  });
+
+  test("start(port) falls back to random port on EADDRINUSE", async () => {
+    // Occupy a port with a first server
+    const first = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const occupiedPort = first.start(0);
+    try {
+      // Second server tries the same port — should fall back gracefully
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      const fallbackPort = server.start(occupiedPort);
+      expect(fallbackPort).toBeGreaterThan(0);
+      expect(fallbackPort).not.toBe(occupiedPort);
+    } finally {
+      await first.stop();
+    }
+  });
+
   test("prepareSession + spawnClaude starts claude process with correct args", () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

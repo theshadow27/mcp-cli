@@ -195,32 +195,48 @@ export class ClaudeWsServer {
     return this.eventSeq;
   }
 
-  /** Start the WebSocket server. Returns the assigned port. */
-  start(): number {
-    this.server = Bun.serve<WsData>({
-      port: 0,
-      fetch: (req, server) => {
-        const url = new URL(req.url);
-        const match = url.pathname.match(/^\/session\/([^/]+)$/);
-        if (!match) {
-          return new Response("Not found", { status: 404 });
-        }
-        const sessionId = match[1];
-        if (!this.sessions.has(sessionId)) {
-          return new Response("Unknown session", { status: 404 });
-        }
-        const upgraded = server.upgrade(req, { data: { sessionId } });
-        if (!upgraded) {
-          return new Response("WebSocket upgrade failed", { status: 500 });
-        }
-        return undefined;
-      },
-      websocket: {
-        open: (ws) => this.handleOpen(ws),
-        message: (ws, message) => this.handleMessage(ws, String(message)),
-        close: (ws) => this.handleClose(ws),
-      },
-    });
+  /** Start the WebSocket server. Returns the assigned port.
+   *  If `port` is provided and non-zero, tries that port first;
+   *  falls back to a random OS-assigned port on EADDRINUSE. */
+  start(port?: number): number {
+    const requestedPort = port ?? 0;
+
+    const createServer = (p: number) =>
+      Bun.serve<WsData>({
+        port: p,
+        fetch: (req, server) => {
+          const url = new URL(req.url);
+          const match = url.pathname.match(/^\/session\/([^/]+)$/);
+          if (!match) {
+            return new Response("Not found", { status: 404 });
+          }
+          const sessionId = match[1];
+          if (!this.sessions.has(sessionId)) {
+            return new Response("Unknown session", { status: 404 });
+          }
+          const upgraded = server.upgrade(req, { data: { sessionId } });
+          if (!upgraded) {
+            return new Response("WebSocket upgrade failed", { status: 500 });
+          }
+          return undefined;
+        },
+        websocket: {
+          open: (ws) => this.handleOpen(ws),
+          message: (ws, message) => this.handleMessage(ws, String(message)),
+          close: (ws) => this.handleClose(ws),
+        },
+      });
+
+    try {
+      this.server = createServer(requestedPort);
+    } catch (err) {
+      if (requestedPort !== 0 && isAddrInUse(err)) {
+        this.logger.warn(`[ws-server] Port ${requestedPort} in use, falling back to random port`);
+        this.server = createServer(0);
+      } else {
+        throw err;
+      }
+    }
 
     return this.server.port as number;
   }
@@ -1286,6 +1302,12 @@ async function drainStderr(stream: ReadableStream<Uint8Array>, lines: string[]):
   } finally {
     reader.releaseLock();
   }
+}
+
+// ── Helpers ──
+
+function isAddrInUse(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as { code: string }).code === "EADDRINUSE";
 }
 
 // ── Default spawn ──
