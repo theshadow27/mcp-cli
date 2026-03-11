@@ -49,9 +49,13 @@ describe("useMail", () => {
     return { instance, stateRef };
   }
 
-  it("fetches messages via readMail", async () => {
+  it("fetches messages via readMail with recipient filter", async () => {
     const msgs = [makeMsg({ id: 1 }), makeMsg({ id: 2, read: true })];
-    const ipcCallFn = async () => ({ messages: msgs });
+    let calledParams: Record<string, unknown> = {};
+    const ipcCallFn = async (_method: string, params: Record<string, unknown>) => {
+      calledParams = params;
+      return { messages: msgs };
+    };
 
     const { stateRef } = mount({
       ipcCallFn: ipcCallFn as UseMailOptions["ipcCallFn"],
@@ -60,6 +64,7 @@ describe("useMail", () => {
     await flush();
     expect(stateRef.current.messages).toHaveLength(2);
     expect(stateRef.current.messages[0].id).toBe(1);
+    expect(calledParams.recipient).toBe("human");
   });
 
   it("returns empty array on error", async () => {

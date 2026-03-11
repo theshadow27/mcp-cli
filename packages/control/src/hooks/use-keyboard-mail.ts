@@ -76,8 +76,8 @@ export function handleMailInput(input: string, key: Key, nav: MailNav): boolean 
     } else {
       nav.setExpandedMessage(msg.id);
       nav.setScrollOffset(() => 0);
-      // Auto-mark as read when expanding
-      if (!msg.read) {
+      // Auto-mark as read when expanding (only for human-addressed mail)
+      if (!msg.read && (msg.recipient === "human" || msg.recipient === "*")) {
         callFn("markRead", { id: msg.id }).catch(() => {});
       }
     }
@@ -87,7 +87,7 @@ export function handleMailInput(input: string, key: Key, nav: MailNav): boolean 
   // m: mark selected as read/toggle
   if (input === "m") {
     const msg = messages[selectedIndex];
-    if (msg && !msg.read) {
+    if (msg && !msg.read && (msg.recipient === "human" || msg.recipient === "*")) {
       callFn("markRead", { id: msg.id }).catch(() => {});
     }
     return true;

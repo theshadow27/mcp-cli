@@ -6,7 +6,7 @@ import { type MailNav, handleMailInput } from "./use-keyboard-mail";
 function makeMsg(overrides: Partial<MailMessage> & { id: number }): MailMessage {
   return {
     sender: "alice",
-    recipient: "bob",
+    recipient: "human",
     subject: "test",
     body: "hello",
     replyTo: null,
@@ -114,6 +114,46 @@ describe("handleMailInput", () => {
     const nav = makeNav({ ipcCallFn: ipcCallFn as MailNav["ipcCallFn"] });
     handleMailInput("", { ...baseKey, return: true }, nav);
     expect(markedIds).toEqual([1]);
+  });
+
+  it("does not mark session-addressed message as read on expand", () => {
+    let called = false;
+    const ipcCallFn = async () => {
+      called = true;
+      return {} as never;
+    };
+
+    const msgs = [makeMsg({ id: 1, recipient: "session-abc" })];
+    const nav = makeNav({ messages: msgs, ipcCallFn: ipcCallFn as MailNav["ipcCallFn"] });
+    handleMailInput("", { ...baseKey, return: true }, nav);
+    expect(called).toBe(false);
+    expect(nav.state.expandedMessage).toBe(1); // still expands, just doesn't mark read
+  });
+
+  it("marks wildcard-recipient message as read on expand", () => {
+    const markedIds: number[] = [];
+    const ipcCallFn = async (_method: string, params: Record<string, unknown>) => {
+      markedIds.push(params.id as number);
+      return {} as never;
+    };
+
+    const msgs = [makeMsg({ id: 1, recipient: "*" })];
+    const nav = makeNav({ messages: msgs, ipcCallFn: ipcCallFn as MailNav["ipcCallFn"] });
+    handleMailInput("", { ...baseKey, return: true }, nav);
+    expect(markedIds).toEqual([1]);
+  });
+
+  it("does not mark session-addressed message with m key", () => {
+    let called = false;
+    const ipcCallFn = async () => {
+      called = true;
+      return {} as never;
+    };
+
+    const msgs = [makeMsg({ id: 1, recipient: "session-abc" })];
+    const nav = makeNav({ messages: msgs, ipcCallFn: ipcCallFn as MailNav["ipcCallFn"] });
+    handleMailInput("m", baseKey, nav);
+    expect(called).toBe(false);
   });
 
   it("does not mark already-read message on expand", () => {

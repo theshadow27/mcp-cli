@@ -28,7 +28,7 @@ export function useMail(opts: UseMailOptions = {}): UseMailResult {
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCallFn("readMail", { limit: MAX_MESSAGES });
+        const result = await ipcCallFn("readMail", { limit: MAX_MESSAGES, recipient: "human" });
         if (!cancelled) {
           setMessages(result.messages);
         }
