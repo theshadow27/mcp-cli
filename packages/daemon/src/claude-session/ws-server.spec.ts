@@ -722,7 +722,7 @@ describe("ClaudeWsServer", () => {
     expect(server.sessionCount).toBe(0);
   });
 
-  test("WS reconnect after disconnect transitions back to connecting", async () => {
+  test("WS reconnect after disconnect transitions back to connecting without resending prompt", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = await server.start();
@@ -732,21 +732,22 @@ describe("ClaudeWsServer", () => {
 
     // Connect, then disconnect
     const ws1 = await connectMockClaude(port, "test-session");
-    await waitForMessage(ws1);
+    await waitForMessage(ws1); // consume initial prompt
     ws1.close();
     await pollUntil(() => server?.listSessions()[0]?.state === "disconnected");
 
     expect(server.listSessions()[0].state).toBe("disconnected");
 
-    // Reconnect
+    // Reconnect — should NOT receive the initial prompt again
     const ws2 = await connectMockClaude(port, "test-session");
     try {
-      await waitForMessage(ws2);
+      // Wait briefly — no message should arrive
+      const msg = await Promise.race([waitForMessage(ws2), new Promise<null>((r) => setTimeout(() => r(null), 200))]);
+      expect(msg).toBeNull(); // No prompt resent on reconnect
 
       // Should transition back from disconnected
       const sessions = server.listSessions();
       expect(sessions[0].wsConnected).toBe(true);
-      // State should be connecting (or init/active after receiving messages)
       expect(sessions[0].state).not.toBe("disconnected");
     } finally {
       ws2.close();
@@ -2642,7 +2643,7 @@ describe("restoreSessions", () => {
     expect(server.sessionCount).toBe(1);
   });
 
-  test("restored session accepts WS reconnection", async () => {
+  test("restored session accepts WS reconnection without resending prompt", async () => {
     server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
     const port = await server.start();
 
@@ -2659,20 +2660,99 @@ describe("restoreSessions", () => {
       },
     ]);
 
-    // Simulate Claude CLI reconnecting
+    // Simulate Claude CLI reconnecting — should NOT receive a prompt
     const ws = await connectMockClaude(port, "reconnect-1");
-    const msg = await waitForMessage(ws);
-    expect(msg).toBeTruthy(); // Should receive the initial user message
+    const msg = await Promise.race([waitForMessage(ws), new Promise<null>((r) => setTimeout(() => r(null), 200))]);
+    expect(msg).toBeNull(); // No prompt sent on reconnect
 
     // Session should transition from disconnected → connecting
     const sessions = server.listSessions();
     const session = sessions.find((s) => s.sessionId === "reconnect-1");
     expect(session).toBeDefined();
-    // After WS open, state transitions from disconnected → connecting (via reconnect())
-    // then the initial user message is sent
     expect(session?.state).not.toBe("disconnected");
+    expect(session?.wsConnected).toBe(true);
 
     ws.close();
+  });
+
+  test("reconnect is logged at info level, not error", async () => {
+    const infos: string[] = [];
+    const errors: string[] = [];
+    const capturingLogger = {
+      ...silentLogger,
+      info: (...args: unknown[]) => infos.push(args.join(" ")),
+      error: (...args: unknown[]) => errors.push(args.join(" ")),
+    };
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: capturingLogger });
+    const port = await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "log-level-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: null,
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    const ws = await connectMockClaude(port, "log-level-1");
+    // Wait for handleOpen to complete
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Reconnect should be logged at info, not error
+    expect(infos.some((m) => m.includes("reconnected"))).toBe(true);
+    expect(errors.some((m) => m.includes("reconnected"))).toBe(false);
+
+    ws.close();
+  });
+
+  test("bye on restored session with pid sends SIGTERM to process", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "orphan-kill-1",
+        pid: 999999, // Non-existent PID — process.kill will throw ESRCH, which is caught
+        state: "idle",
+        model: null,
+        cwd: null,
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    // bye should not throw even though pid doesn't exist (ESRCH caught)
+    const result = await server.bye("orphan-kill-1");
+    expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
+    expect(server.sessionCount).toBe(0);
+  });
+
+  test("bye on restored session with null pid does not throw", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "null-pid-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: null,
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    const result = await server.bye("null-pid-1");
+    expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
+    expect(server.sessionCount).toBe(0);
   });
 
   test("restores multiple sessions", async () => {

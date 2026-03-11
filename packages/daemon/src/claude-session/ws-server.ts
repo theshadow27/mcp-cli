@@ -829,32 +829,39 @@ export class ClaudeWsServer {
 
     session.ws = ws;
 
+    const isReconnect = session.state.state === "disconnected";
+
     // If reconnecting from disconnected state, transition back to connecting
-    if (session.state.state === "disconnected") {
-      this.logger.error(`[_claude] WebSocket reconnected for session ${sessionId}`);
+    if (isReconnect) {
+      this.logger.info(`[_claude] WebSocket reconnected for session ${sessionId}`);
       session.state.reconnect();
     }
 
-    // CRITICAL: Send the initial user message immediately.
-    // The CLI will NOT send system/init until it receives a user message.
-    const prompt = session.config.prompt;
-    const outbound = userMessage(prompt, sessionId);
-    try {
-      ws.send(outbound);
-    } catch (err) {
-      this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
-      this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
-      // Kill the spawned process — it can't communicate without WS
-      if (session.proc) {
-        try {
-          session.proc.kill();
-        } catch {
-          /* already dead */
+    // Only send the initial user message on fresh connections.
+    // Reconnecting sessions already have their conversation state — resending
+    // the original prompt would inject an empty/stale message into the stream.
+    if (!isReconnect) {
+      // CRITICAL: Send the initial user message immediately.
+      // The CLI will NOT send system/init until it receives a user message.
+      const prompt = session.config.prompt;
+      const outbound = userMessage(prompt, sessionId);
+      try {
+        ws.send(outbound);
+      } catch (err) {
+        this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
+        this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+        // Kill the spawned process — it can't communicate without WS
+        if (session.proc) {
+          try {
+            session.proc.kill();
+          } catch {
+            /* already dead */
+          }
         }
+        return;
       }
-      return;
+      this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
     }
-    this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     // Start keep-alive
     session.keepAliveTimer = setInterval(() => {
@@ -1275,6 +1282,14 @@ export class ClaudeWsServer {
       session.proc = null;
       session.spawnAlive = false;
       await this.killAndAwaitProc(dying);
+    } else if (session.pid) {
+      // Restored sessions have no proc ref but may still have a live process.
+      // Fall back to process.kill() to avoid orphaning the Claude CLI.
+      try {
+        process.kill(session.pid, "SIGTERM");
+      } catch {
+        /* process already dead — ESRCH */
+      }
     }
 
     // Remove from map
