@@ -11,15 +11,8 @@ import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
-import {
-  type ClaudeDeps,
-  colorState,
-  extractContentSummary,
-  formatSessionShort,
-  parseLogArgs,
-  parseWaitArgs,
-  resolveSessionId,
-} from "./claude";
+import { type ClaudeDeps, parseLogArgs, parseWaitArgs, resolveSessionId } from "./claude";
+import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Constants ──
 

@@ -11,9 +11,7 @@ import {
   buildResumePrompt,
   cmdClaude,
   defaultGetPrStatus,
-  extractContentSummary,
   extractIssueNumber,
-  formatSessionShort,
   parseDiffShortstat,
   parseLogArgs,
   parseResumeArgs,
@@ -24,6 +22,7 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
+import { extractContentSummary, formatSessionShort } from "./session-display";
 
 // ── Helpers ──
 
