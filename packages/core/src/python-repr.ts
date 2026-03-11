@@ -4,6 +4,11 @@
  * Handles: single-quoted strings, True/False/None, tuple syntax (,) → arrays,
  * nested structures. Uses a character-level tokenizer to avoid regex pitfalls
  * with embedded quotes (e.g., `{'msg': "it's broken"}`).
+ *
+ * Limitations:
+ * - Python string prefixes (b'', r'', u'', f'') are not supported and will
+ *   produce invalid JSON, causing silent fallback to the raw string.
+ * - Octal escapes (\177) are not converted and will produce invalid JSON.
  */
 
 const KEYWORD_MAP: Record<string, string> = {
@@ -82,11 +87,49 @@ export function pythonReprToJson(input: string): string {
             str.push("\\b");
           } else if (esc === "f") {
             str.push("\\f");
-          } else if (esc === "u" || esc === "U" || esc === "x") {
-            str.push("\\");
-            str.push(esc);
+          } else if (esc === "x") {
+            // \xNN → \u00NN
+            const hex = input.substring(i + 1, i + 3);
+            if (hex.length === 2 && /^[0-9a-fA-F]{2}$/.test(hex)) {
+              str.push("\\u00");
+              str.push(hex);
+              i += 2;
+            } else {
+              str.push("\\u0078"); // literal 'x'
+            }
+          } else if (esc === "U") {
+            // \UNNNNNNNN → \uNNNN (BMP) or surrogate pair
+            const hex = input.substring(i + 1, i + 9);
+            if (hex.length === 8 && /^[0-9a-fA-F]{8}$/.test(hex)) {
+              const cp = Number.parseInt(hex, 16);
+              if (cp <= 0xffff) {
+                str.push(`\\u${hex.slice(4)}`);
+              } else if (cp <= 0x10ffff) {
+                // Surrogate pair
+                const offset = cp - 0x10000;
+                const hi = 0xd800 + (offset >> 10);
+                const lo = 0xdc00 + (offset & 0x3ff);
+                str.push(`\\u${hi.toString(16).padStart(4, "0")}`);
+                str.push(`\\u${lo.toString(16).padStart(4, "0")}`);
+              } else {
+                str.push("\\u0055"); // literal 'U' for out-of-range
+              }
+              i += 8;
+            } else {
+              str.push("\\u0055"); // literal 'U'
+            }
+          } else if (esc === "u") {
+            // \uNNNN — valid in JSON, pass through
+            str.push("\\u");
+          } else if (esc === "0") {
+            str.push("\\u0000");
+          } else if (esc === "a") {
+            str.push("\\u0007"); // BEL
+          } else if (esc === "v") {
+            str.push("\\u000b"); // VT
           } else {
-            str.push("\\");
+            // Unknown escape — emit the character literally (drop the backslash)
+            // This handles octal and other Python-specific escapes gracefully
             str.push(esc);
           }
         } else if (input[i] === '"') {

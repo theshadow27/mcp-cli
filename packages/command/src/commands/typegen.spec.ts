@@ -85,6 +85,7 @@ describe("generateDeclarations", () => {
     expect(dts).toContain("export const args: Record<string, string>;");
     expect(dts).toContain("export function file(path: string): Promise<string>;");
     expect(dts).toContain("export function json(path: string): Promise<unknown>;");
+    expect(dts).toContain("export function parsePythonRepr(raw: unknown): unknown;");
   });
 
   test("server name requiring quoting", () => {

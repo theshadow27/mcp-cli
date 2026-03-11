@@ -57,6 +57,30 @@ describe("pythonReprToJson", () => {
     const result = JSON.parse(pythonReprToJson(input));
     expect(result).toEqual({ path: "C:\\Users\\test", line: "hello\nworld" });
   });
+
+  it("handles \\x escapes in single-quoted strings", () => {
+    const input = "{'name': 'caf\\xc3\\xa9'}";
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({ name: "caf\u00c3\u00a9" });
+  });
+
+  it("handles \\U BMP escapes in single-quoted strings", () => {
+    const input = "{'emoji': '\\U00000041'}";
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({ emoji: "A" });
+  });
+
+  it("handles \\U astral plane escapes as surrogate pairs", () => {
+    const input = "{'emoji': '\\U0001F600'}";
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({ emoji: "\u{1F600}" });
+  });
+
+  it("handles \\0, \\a, \\v escapes", () => {
+    const input = "{'bell': '\\a', 'vt': '\\v', 'null': '\\0'}";
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({ bell: "\u0007", vt: "\u000b", null: "\u0000" });
+  });
 });
 
 describe("parsePythonRepr", () => {
