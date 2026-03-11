@@ -917,3 +917,107 @@ describe("ClaudeServer connect timeout metric", () => {
     expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });
+
+// ── Session persistence across restart ──
+
+describe("session persistence", () => {
+  let server: ClaudeServer | undefined;
+  let db: StateDb | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    db?.close();
+    server = undefined;
+    db = undefined;
+  });
+
+  test("start() restores active sessions from SQLite", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Seed the DB with an active session (simulating a previous daemon's state)
+    db.upsertSession({
+      sessionId: "persist-1",
+      pid: process.pid, // Use current process PID so isProcessAlive returns true
+      state: "idle",
+      model: "claude-sonnet-4-6",
+      cwd: "/test/persist",
+    });
+
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    await server.start();
+
+    // The server should have restored the session
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // Session should be marked as disconnected in DB (waiting for CLI reconnect)
+    const row = db.getSession("persist-1");
+    expect(row?.state).toBe("disconnected");
+  });
+
+  test("start() skips sessions whose processes are dead", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Seed with a session whose PID doesn't exist
+    db.upsertSession({
+      sessionId: "dead-1",
+      pid: 999999, // Very unlikely to be a real process
+      state: "idle",
+      model: "claude-sonnet-4-6",
+      cwd: "/test/dead",
+    });
+
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    await server.start();
+
+    // Dead session should NOT be restored
+    expect(server.hasActiveSessions()).toBe(false);
+
+    // Session should be ended in DB
+    const row = db.getSession("dead-1");
+    expect(row?.state).toBe("ended");
+    expect(row?.endedAt).not.toBeNull();
+  });
+
+  test("start() restores sessions without PIDs", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Session with no PID (e.g., PID wasn't captured before crash)
+    db.upsertSession({
+      sessionId: "no-pid-1",
+      state: "connecting",
+      model: undefined,
+      cwd: "/test/no-pid",
+    });
+
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    await server.start();
+
+    // Should be restored (no PID to check, so we can't tell if alive)
+    expect(server.hasActiveSessions()).toBe(true);
+
+    const row = db.getSession("no-pid-1");
+    expect(row?.state).toBe("disconnected");
+  });
+
+  test("start() skips already-ended sessions in DB", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // Insert and then end a session
+    db.upsertSession({
+      sessionId: "ended-1",
+      state: "active",
+      cwd: "/test/ended",
+    });
+    db.endSession("ended-1");
+
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    await server.start();
+
+    // Ended sessions should not be restored
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+});

@@ -7,7 +7,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
-import { StatsView } from "./components/stats-view.js";
+import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
@@ -16,8 +16,10 @@ import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 import { useTranscript } from "./hooks/use-transcript.js";
+import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
 const LOG_VIEW_HEIGHT = 20;
+const STATS_VIEW_HEIGHT = 20;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
@@ -36,6 +38,7 @@ export function App() {
   const [denyReasonText, setDenyReasonText] = useState("");
   const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
+  const [statsScrollOffset, setStatsScrollOffset] = useState(0);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -49,6 +52,7 @@ export function App() {
     metrics: metricsData,
     error: metricsError,
     loading: metricsLoading,
+    restartedAt: metricsRestartedAt,
   } = useMetrics({ enabled: view === "stats" });
   const {
     lines: logLines,
@@ -56,7 +60,12 @@ export function App() {
     setSource: setLogSource,
   } = useLogs(servers, { enabled: view === "logs" });
 
+  const { unreadCount: unreadMailCount } = useUnreadMail();
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
+  const statsLineCount = useMemo(
+    () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
+    [metricsData, metricsError],
+  );
   const prevFilterRef = useRef(filterText);
 
   // Auto-scroll: follow new lines at the tail, or force-jump when filter changes
@@ -151,6 +160,11 @@ export function App() {
       expandedEntries,
       setExpandedEntries,
     },
+    statsNav: {
+      scrollOffset: statsScrollOffset,
+      setScrollOffset: setStatsScrollOffset,
+      lineCount: statsLineCount,
+    },
   });
 
   if (loading && !status) return <Loading />;
@@ -158,7 +172,12 @@ export function App() {
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
   const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
   const errorServerCount = servers.filter((s) => s.state === "error").length;
-  const badges = buildBadges({ sessionCount: sessions.length, pendingPermissionCount, errorServerCount });
+  const badges = buildBadges({
+    sessionCount: sessions.length,
+    pendingPermissionCount,
+    errorServerCount,
+    unreadMailCount,
+  });
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -198,7 +217,14 @@ export function App() {
           transcriptExpandedEntries={expandedEntries}
         />
       ) : view === "stats" ? (
-        <StatsView metrics={metricsData} loading={metricsLoading} error={metricsError} />
+        <StatsView
+          metrics={metricsData}
+          loading={metricsLoading}
+          error={metricsError}
+          restartedAt={metricsRestartedAt}
+          scrollOffset={statsScrollOffset}
+          height={STATS_VIEW_HEIGHT}
+        />
       ) : (
         <Box marginTop={1}>
           <Text dimColor>Coming soon</Text>

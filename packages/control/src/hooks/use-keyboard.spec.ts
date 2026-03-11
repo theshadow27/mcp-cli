@@ -4,6 +4,7 @@ import {
   type ClaudeNav,
   type LogsNav,
   type ServersNav,
+  type StatsNav,
   escAction,
   nextTab,
   prevTab,
@@ -107,6 +108,16 @@ describe("exported nav interfaces", () => {
     expect(nav.logSource.type).toBe("daemon");
     expect(nav.filterMode).toBe(false);
     expect(nav.filterText).toBe("");
+  });
+
+  test("StatsNav shape is structurally valid", () => {
+    const nav: StatsNav = {
+      scrollOffset: 0,
+      setScrollOffset: () => {},
+      lineCount: 0,
+    };
+    expect(nav.scrollOffset).toBe(0);
+    expect(nav.lineCount).toBe(0);
   });
 
   test("ClaudeNav shape is structurally valid", () => {

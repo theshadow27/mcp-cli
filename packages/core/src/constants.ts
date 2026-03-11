@@ -30,11 +30,20 @@ export const PROTOCOL_VERSION: string =
 
 /**
  * Build version identifier.
- * Compiled binaries: just VERSION (the git tag IS the identifier).
+ * Compiled binaries: VERSION+epoch (epoch seconds set at compile time).
  * Dev mode: VERSION-dev suffix.
+ *
+ * The epoch suffix ensures two builds of the same version are distinguishable,
+ * which is critical for stale daemon detection (see #604).
  */
 declare const __COMPILED__: boolean;
-export const BUILD_VERSION: string = typeof __COMPILED__ !== "undefined" ? VERSION : `${VERSION}-dev`;
+declare const __BUILD_EPOCH__: string;
+export const BUILD_VERSION: string =
+  typeof __COMPILED__ !== "undefined"
+    ? typeof __BUILD_EPOCH__ !== "undefined"
+      ? `${VERSION}+${__BUILD_EPOCH__}`
+      : VERSION
+    : `${VERSION}-dev`;
 
 function computeDevProtocolHash(): string {
   try {

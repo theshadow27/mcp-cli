@@ -26,7 +26,10 @@ hasher.update(ipcSource);
 const protocolHash = hasher.digest("hex").slice(0, 12);
 const defineFlag = `--define=__PROTOCOL_HASH__="${protocolHash}"`;
 const compiledFlag = "--define=__COMPILED__=true";
+const buildEpoch = Math.floor(Date.now() / 1000).toString();
+const epochFlag = `--define=__BUILD_EPOCH__="${buildEpoch}"`;
 console.log(`Protocol hash: ${protocolHash}`);
+console.log(`Build epoch: ${buildEpoch}`);
 
 // ── jq-web build plugin ──
 // Patches jq-web's Emscripten loader at build time:
@@ -149,6 +152,7 @@ async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: 
       __PROTOCOL_HASH__: JSON.stringify(protocolHash),
       __VERSION__: JSON.stringify(version),
       __COMPILED__: "true",
+      __BUILD_EPOCH__: JSON.stringify(buildEpoch),
     },
   });
   if (!result.success) {
@@ -182,7 +186,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -192,7 +196,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);

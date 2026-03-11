@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail } from "@mcp-cli/core";
-import { formatToolResult, printAliasDebug, printAliasList } from "./output";
+import { extractErrorMessage, formatToolResult, printAliasDebug, printAliasList } from "./output";
 
 describe("formatToolResult", () => {
   test("returns empty string for null", () => {
@@ -190,5 +190,43 @@ describe("printAliasDebug", () => {
     const output = captureStderr(() => printAliasDebug(alias));
     expect(output).not.toContain("description");
     expect(output).toContain("source");
+  });
+});
+
+describe("extractErrorMessage", () => {
+  test("returns message for regular Error", () => {
+    expect(extractErrorMessage(new Error("something broke"))).toBe("something broke");
+  });
+
+  test("returns String(err) for non-Error", () => {
+    expect(extractErrorMessage("raw string")).toBe("raw string");
+    expect(extractErrorMessage(42)).toBe("42");
+  });
+
+  test("returns stderr for ShellError-like object", () => {
+    const err = new Error("Failed with exit code 254");
+    Object.assign(err, {
+      stderr: Buffer.from("An error occurred (InvalidParameterValue)\n"),
+      exitCode: 254,
+    });
+    expect(extractErrorMessage(err)).toBe("An error occurred (InvalidParameterValue)");
+  });
+
+  test("falls back to message when stderr is empty", () => {
+    const err = new Error("Failed with exit code 1");
+    Object.assign(err, {
+      stderr: Buffer.from(""),
+      exitCode: 1,
+    });
+    expect(extractErrorMessage(err)).toBe("Failed with exit code 1");
+  });
+
+  test("falls back to message when stderr is whitespace-only", () => {
+    const err = new Error("Failed with exit code 1");
+    Object.assign(err, {
+      stderr: Buffer.from("  \n  "),
+      exitCode: 1,
+    });
+    expect(extractErrorMessage(err)).toBe("Failed with exit code 1");
   });
 });
