@@ -17,6 +17,8 @@ interface ClaudeSessionDetailProps {
   error: string | null;
   selectedEntry: string | null;
   expandedEntries: ReadonlySet<string>;
+  scrollOffset: number;
+  height: number;
 }
 
 /** Extract a short summary of the tool input for display. */
@@ -143,7 +145,14 @@ function ExpandedContent({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
-export function ClaudeSessionDetail({ entries, error, selectedEntry, expandedEntries }: ClaudeSessionDetailProps) {
+export function ClaudeSessionDetail({
+  entries,
+  error,
+  selectedEntry,
+  expandedEntries,
+  scrollOffset,
+  height,
+}: ClaudeSessionDetailProps) {
   if (error) {
     return (
       <Box marginLeft={4}>
@@ -160,9 +169,14 @@ export function ClaudeSessionDetail({ entries, error, selectedEntry, expandedEnt
     );
   }
 
+  // Compute visible window
+  const maxOffset = Math.max(0, entries.length - height);
+  const effectiveOffset = Math.min(scrollOffset, maxOffset);
+  const visible = entries.slice(effectiveOffset, effectiveOffset + height);
+
   return (
     <Box flexDirection="column" marginLeft={4}>
-      {entries.map((entry) => {
+      {visible.map((entry) => {
         const arrow = entry.direction === "outbound" ? "→" : "←";
         const color = entry.direction === "outbound" ? "cyan" : "white";
         const key = entryKey(entry);
@@ -179,6 +193,11 @@ export function ClaudeSessionDetail({ entries, error, selectedEntry, expandedEnt
           </Box>
         );
       })}
+      {entries.length > height && (
+        <Text dimColor>
+          {effectiveOffset + 1}-{Math.min(effectiveOffset + height, entries.length)} of {entries.length}
+        </Text>
+      )}
     </Box>
   );
 }

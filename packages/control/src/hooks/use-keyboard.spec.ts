@@ -138,6 +138,9 @@ describe("exported nav interfaces", () => {
       transcriptEntries: [],
       expandedEntries: new Set<string>(),
       setExpandedEntries: () => {},
+      transcriptScrollOffset: 0,
+      setTranscriptScrollOffset: () => 0,
+      transcriptViewHeight: 15,
     };
     expect(nav.sessions).toBeArray();
     expect(nav.expandedSession).toBeNull();

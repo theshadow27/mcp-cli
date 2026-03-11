@@ -20,6 +20,7 @@ import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
 const LOG_VIEW_HEIGHT = 20;
 const STATS_VIEW_HEIGHT = 20;
+const TRANSCRIPT_VIEW_HEIGHT = 15;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
@@ -38,6 +39,7 @@ export function App() {
   const [denyReasonText, setDenyReasonText] = useState("");
   const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
+  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
   const [statsScrollOffset, setStatsScrollOffset] = useState(0);
 
   const servers = status?.servers ?? [];
@@ -87,6 +89,7 @@ export function App() {
     prevExpandedRef.current = expandedSession;
     setTranscriptCursor(null);
     setExpandedEntries(new Set());
+    setTranscriptScrollOffset(0);
   }
 
   // Clamp claudeSelectedIndex when sessions list shrinks
@@ -159,6 +162,9 @@ export function App() {
       transcriptEntries,
       expandedEntries,
       setExpandedEntries,
+      transcriptScrollOffset,
+      setTranscriptScrollOffset,
+      transcriptViewHeight: TRANSCRIPT_VIEW_HEIGHT,
     },
     statsNav: {
       scrollOffset: statsScrollOffset,
@@ -215,6 +221,8 @@ export function App() {
           transcriptError={transcriptError}
           transcriptSelectedEntry={transcriptCursor}
           transcriptExpandedEntries={expandedEntries}
+          transcriptScrollOffset={transcriptScrollOffset}
+          transcriptViewHeight={TRANSCRIPT_VIEW_HEIGHT}
         />
       ) : view === "stats" ? (
         <StatsView
