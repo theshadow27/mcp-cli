@@ -25,14 +25,10 @@ describe("CodexProcess", () => {
     expect(proc.pid).toBeDefined();
 
     // Wait for process to complete
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (proc.exited) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 10);
-    });
+    const deadline = Date.now() + 5000;
+    while (!proc.exited && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(messages).toHaveLength(2);
     expect(messages[0]).toEqual({ jsonrpc: "2.0", method: "test", params: {} });
@@ -54,14 +50,10 @@ describe("CodexProcess", () => {
 
     proc.spawn();
 
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (proc.exited) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 10);
-    });
+    const deadline = Date.now() + 5000;
+    while (!proc.exited && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBe("not json");
@@ -82,14 +74,10 @@ describe("CodexProcess", () => {
     await proc.write({ jsonrpc: "2.0", method: "test" });
 
     // Wait for process to exit naturally after echoing
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (proc.exited) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 10);
-    });
+    const deadline = Date.now() + 5000;
+    while (!proc.exited && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(messages.length).toBeGreaterThanOrEqual(1);
     expect(messages[0]).toEqual({ jsonrpc: "2.0", method: "test" });
@@ -112,14 +100,10 @@ describe("CodexProcess", () => {
 
     proc.kill();
 
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (proc.exited) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 10);
-    });
+    const deadline = Date.now() + 5000;
+    while (!proc.exited && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(exitCalled).toBe(true);
     expect(proc.alive).toBe(false);
@@ -161,14 +145,10 @@ describe("CodexProcess", () => {
 
     proc.spawn();
 
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (proc.exited) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 10);
-    });
+    const deadline = Date.now() + 5000;
+    while (!proc.exited && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
 
     expect(stderrChunks.join("")).toContain("error");
   });
