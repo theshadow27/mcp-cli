@@ -43,3 +43,19 @@ Sprint 9 (evening) shipped session persistence, Control TUI overhaul (6 PRs),
 and v0.3.0. The TUI follow-ups (#638-641) are direct findings from adversarial
 review of #443. Daemon hardening (#642) fixes a blocker found in review of #632.
 Rest is tech debt and tooling that's been accumulating.
+
+## Results
+
+- **Released**: v0.4.0
+- **PRs merged**: 11 (#648, #649, #650, #651, #655, #656, #657, #659, #660, #661, #662)
+- **Issues closed (already fixed)**: 4 (#638, #642, #496, #385)
+- **Issues closed (new PRs)**: 11 (#639, #640, #641, #647, #409, #466, #126, #361, #129, #140, #290)
+- **Issues dropped**: 0
+- **New issues filed**: 8 (#652, #653, #654, #664, #666, #670, #671 + follow-ups from reviews)
+- **100% completion rate** — all 15 planned issues resolved
+
+### Pipeline stats
+- 4 issues required no code (already fixed in prior sprints)
+- 5 PRs went through adversarial review + repair (high scrutiny)
+- 2 PRs needed 2 rounds of review + repair (#409, #129)
+- First sprint using the 4-phase skill (plan/run/review/retro)
