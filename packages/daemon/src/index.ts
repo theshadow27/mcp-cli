@@ -41,6 +41,7 @@ import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } fro
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
+import { MetricsServer, buildMetricsToolCache } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
@@ -223,6 +224,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Codex server: only created if `codex` binary is installed
   const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
+  const metricsServer = new MetricsServer(metrics);
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -388,6 +390,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         })(),
       );
     }
+
+    pool.registerPendingVirtualServer(
+      "_metrics",
+      (async () => {
+        try {
+          const { client: metricsClient, transport: metricsTransport } = await metricsServer.start();
+          const metricsTools = buildMetricsToolCache();
+          pool.registerVirtualServer("_metrics", metricsClient, metricsTransport, metricsTools);
+          logger.info("[mcpd] Metrics server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start metrics server: ${err}`);
+        }
+      })(),
+    );
   }
 
   // Graceful shutdown — re-entrant safe
@@ -407,6 +423,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       await claudeServer.stop();
       if (codexServer) await codexServer.stop();
       await aliasServer.stop();
+      await metricsServer.stop();
       await pool.closeAll();
       db.close();
       if (!opts?.skipLogSetup) {
