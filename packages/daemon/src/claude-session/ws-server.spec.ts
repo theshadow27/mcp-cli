@@ -741,7 +741,8 @@ describe("ClaudeWsServer", () => {
     // Reconnect — should NOT receive the initial prompt again
     const ws2 = await connectMockClaude(port, "test-session");
     try {
-      // Wait briefly — no message should arrive
+      // Intentional setTimeout: negative assertion — verify no message arrives within 200ms.
+      // No observable condition to poll for (test/CLAUDE.md §exception).
       const msg = await Promise.race([waitForMessage(ws2), new Promise<null>((r) => setTimeout(() => r(null), 200))]);
       expect(msg).toBeNull(); // No prompt resent on reconnect
 
@@ -2700,7 +2701,8 @@ describe("restoreSessions", () => {
     ]);
 
     const ws = await connectMockClaude(port, "log-level-1");
-    // Wait for handleOpen to complete
+    // Intentional setTimeout: negative-style assertion — we need handleOpen to finish
+    // before checking log output. No observable condition to poll for (test/CLAUDE.md §exception).
     await new Promise((r) => setTimeout(r, 100));
 
     // Reconnect should be logged at info, not error
@@ -2731,6 +2733,36 @@ describe("restoreSessions", () => {
     const result = await server.bye("orphan-kill-1");
     expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
     expect(server.sessionCount).toBe(0);
+  });
+
+  test("bye on restored session escalates to SIGKILL when SIGTERM is ignored", async () => {
+    // Spawn a real process that traps SIGTERM (ignores it)
+    const stubborn = Bun.spawn(["bash", "-c", "trap '' TERM; sleep 60"], { stdio: ["ignore", "ignore", "ignore"] });
+
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, killTimeoutMs: 200, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "sigkill-restore-1",
+        pid: stubborn.pid,
+        state: "idle",
+        model: null,
+        cwd: null,
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    // bye should escalate to SIGKILL and complete
+    const result = await server.bye("sigkill-restore-1");
+    expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
+    expect(server.sessionCount).toBe(0);
+
+    // Process should be dead (SIGKILL can't be caught)
+    const exitCode = await stubborn.exited;
+    expect(exitCode).not.toBe(0);
   });
 
   test("bye on restored session with null pid does not throw", async () => {

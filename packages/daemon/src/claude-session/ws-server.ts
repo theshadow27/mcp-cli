@@ -510,6 +510,51 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Kill a raw PID (no proc handle) with SIGTERM → SIGKILL escalation.
+   * Used for restored sessions where we only have the PID from SQLite, not
+   * a Bun Subprocess handle. Polls process.kill(pid, 0) to detect exit.
+   */
+  private async killRawPid(pid: number): Promise<void> {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already dead (ESRCH) or not owned (EPERM)
+      return;
+    }
+
+    // Poll for exit up to killTimeoutMs
+    const deadline = Date.now() + this.killTimeoutMs;
+    const POLL_INTERVAL_MS = 100;
+    while (Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return; // process exited
+      }
+    }
+
+    // Still alive — escalate to SIGKILL
+    this.logger.error(`[_claude] Raw PID ${pid} did not exit after SIGTERM — sending SIGKILL`);
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      return; // already dead
+    }
+
+    // Wait briefly for SIGKILL to take effect
+    const sigkillDeadline = Date.now() + KILL_SIGKILL_GRACE_MS;
+    while (Date.now() < sigkillDeadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return; // process exited
+      }
+    }
+  }
+
+  /**
    * Kill a process and wait for it to exit, with SIGKILL escalation.
    * Sends SIGTERM, waits up to killTimeoutMs, then escalates to SIGKILL if still alive.
    */
@@ -1284,12 +1329,8 @@ export class ClaudeWsServer {
       await this.killAndAwaitProc(dying);
     } else if (session.pid) {
       // Restored sessions have no proc ref but may still have a live process.
-      // Fall back to process.kill() to avoid orphaning the Claude CLI.
-      try {
-        process.kill(session.pid, "SIGTERM");
-      } catch {
-        /* process already dead — ESRCH */
-      }
+      // Use killRawPid for SIGTERM → SIGKILL escalation (matches killAndAwaitProc behavior).
+      await this.killRawPid(session.pid);
     }
 
     // Remove from map
