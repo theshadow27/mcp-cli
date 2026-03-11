@@ -8,6 +8,8 @@ interface StatsViewProps {
   error: string | null;
   scrollOffset: number;
   height: number;
+  /** Timestamp (ms) when a daemon restart was detected, or null. */
+  restartedAt?: number | null;
 }
 
 /** Find a counter value by name and optional label match. */
@@ -118,6 +120,13 @@ function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   return `${h}h ${m}m`;
+}
+
+function formatElapsed(ms: number): string {
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
 /** Build all stats lines as a flat array of React elements. */
@@ -263,7 +272,7 @@ export function buildStatsLines(metrics: MetricsSnapshot, error: string | null):
   return lines;
 }
 
-export function StatsView({ metrics, loading, error, scrollOffset, height }: StatsViewProps) {
+export function StatsView({ metrics, loading, error, scrollOffset, height, restartedAt }: StatsViewProps) {
   if (loading && !metrics) {
     return (
       <Box marginLeft={2} marginTop={1}>
@@ -295,6 +304,11 @@ export function StatsView({ metrics, loading, error, scrollOffset, height }: Sta
 
   return (
     <Box flexDirection="column" marginTop={1}>
+      {restartedAt && (
+        <Box marginLeft={2}>
+          <Text color="yellow">⟳ daemon restarted {formatElapsed(Date.now() - restartedAt)} ago — counters reset</Text>
+        </Box>
+      )}
       {visible}
       {allLines.length > height && (
         <Box marginLeft={2}>

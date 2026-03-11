@@ -15,6 +15,8 @@ import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMetrics } from "./hooks/use-metrics.js";
+import { useTranscript } from "./hooks/use-transcript.js";
+import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
 const LOG_VIEW_HEIGHT = 20;
 const STATS_VIEW_HEIGHT = 20;
@@ -34,6 +36,8 @@ export function App() {
   const [permissionIndex, setPermissionIndex] = useState(0);
   const [denyReasonMode, setDenyReasonMode] = useState(false);
   const [denyReasonText, setDenyReasonText] = useState("");
+  const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
+  const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
   const [statsScrollOffset, setStatsScrollOffset] = useState(0);
 
   const servers = status?.servers ?? [];
@@ -43,10 +47,12 @@ export function App() {
     loading: claudeLoading,
     error: claudeError,
   } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
+  const { entries: transcriptEntries, error: transcriptError } = useTranscript(expandedSession);
   const {
     metrics: metricsData,
     error: metricsError,
     loading: metricsLoading,
+    restartedAt: metricsRestartedAt,
   } = useMetrics({ enabled: view === "stats" });
   const {
     lines: logLines,
@@ -54,6 +60,7 @@ export function App() {
     setSource: setLogSource,
   } = useLogs(servers, { enabled: view === "logs" });
 
+  const { unreadCount: unreadMailCount } = useUnreadMail();
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
     () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
@@ -73,6 +80,14 @@ export function App() {
       return prev;
     });
   }, [filteredLogLines.length, filterText]);
+
+  // Reset transcript navigation when expanded session changes
+  const prevExpandedRef = useRef(expandedSession);
+  if (prevExpandedRef.current !== expandedSession) {
+    prevExpandedRef.current = expandedSession;
+    setTranscriptCursor(null);
+    setExpandedEntries(new Set());
+  }
 
   // Clamp claudeSelectedIndex when sessions list shrinks
   useEffect(() => {
@@ -139,6 +154,11 @@ export function App() {
       setDenyReasonMode,
       denyReasonText,
       setDenyReasonText,
+      transcriptCursor,
+      setTranscriptCursor,
+      transcriptEntries,
+      expandedEntries,
+      setExpandedEntries,
     },
     statsNav: {
       scrollOffset: statsScrollOffset,
@@ -152,7 +172,12 @@ export function App() {
   const needsAuth = servers.filter((s) => s.state === "error" && isAuthError(s.lastError));
   const pendingPermissionCount = sessions.reduce((n, s) => n + s.pendingPermissions, 0);
   const errorServerCount = servers.filter((s) => s.state === "error").length;
-  const badges = buildBadges({ sessionCount: sessions.length, pendingPermissionCount, errorServerCount });
+  const badges = buildBadges({
+    sessionCount: sessions.length,
+    pendingPermissionCount,
+    errorServerCount,
+    unreadMailCount,
+  });
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -186,12 +211,17 @@ export function App() {
           loading={claudeLoading}
           error={claudeError}
           permissionIndex={permissionIndex}
+          transcriptEntries={transcriptEntries}
+          transcriptError={transcriptError}
+          transcriptSelectedEntry={transcriptCursor}
+          transcriptExpandedEntries={expandedEntries}
         />
       ) : view === "stats" ? (
         <StatsView
           metrics={metricsData}
           loading={metricsLoading}
           error={metricsError}
+          restartedAt={metricsRestartedAt}
           scrollOffset={statsScrollOffset}
           height={STATS_VIEW_HEIGHT}
         />
@@ -206,6 +236,7 @@ export function App() {
         filterText={filterText}
         denyReasonMode={denyReasonMode}
         denyReasonText={denyReasonText}
+        transcriptExpanded={expandedSession !== null}
       />
     </Box>
   );

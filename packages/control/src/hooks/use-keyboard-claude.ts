@@ -1,5 +1,6 @@
 import { ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
+import { entryKey } from "../components/claude-session-detail";
 import type { ClaudeNav } from "./use-keyboard";
 
 /**
@@ -19,6 +20,11 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     setDenyReasonMode,
     denyReasonText,
     setDenyReasonText,
+    transcriptCursor,
+    setTranscriptCursor,
+    transcriptEntries,
+    expandedEntries: _expandedEntries,
+    setExpandedEntries,
   } = nav;
 
   // -- Deny reason mode: capture text for denial message --
@@ -59,14 +65,59 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
 
   const selectedSession = sessions[selectedIndex];
 
-  // Navigate sessions
-  if (key.upArrow || input === "k") {
-    setSelectedIndex((i) => Math.max(0, i - 1));
-    return true;
-  }
-  if (key.downArrow || input === "j") {
-    setSelectedIndex((i) => Math.min(Math.max(0, sessions.length - 1), i + 1));
-    return true;
+  // When transcript is expanded, j/k navigate within transcript entries
+  if (expandedSession) {
+    if (key.upArrow || input === "k") {
+      setTranscriptCursor((cur) => {
+        const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : 0;
+        const next = Math.max(0, (idx === -1 ? 0 : idx) - 1);
+        return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
+      });
+      return true;
+    }
+    if (key.downArrow || input === "j") {
+      setTranscriptCursor((cur) => {
+        const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : -1;
+        const next = Math.min(transcriptEntries.length - 1, (idx === -1 ? -1 : idx) + 1);
+        return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
+      });
+      return true;
+    }
+
+    // Enter: toggle expand/collapse selected entry
+    if (key.return) {
+      const cursorKey = transcriptCursor;
+      if (cursorKey) {
+        setExpandedEntries((prev) => {
+          const next = new Set(prev);
+          if (next.has(cursorKey)) {
+            next.delete(cursorKey);
+          } else {
+            next.add(cursorKey);
+          }
+          return next;
+        });
+      }
+      return true;
+    }
+  } else {
+    // Navigate sessions (only when transcript not expanded)
+    if (key.upArrow || input === "k") {
+      setSelectedIndex((i) => Math.max(0, i - 1));
+      return true;
+    }
+    if (key.downArrow || input === "j") {
+      setSelectedIndex((i) => Math.min(Math.max(0, sessions.length - 1), i + 1));
+      return true;
+    }
+
+    // Toggle transcript detail
+    if (key.return) {
+      if (selectedSession) {
+        setExpandedSession(selectedSession.sessionId);
+      }
+      return true;
+    }
   }
 
   // Navigate pending permissions within selected session
@@ -77,14 +128,6 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
   if (key.rightArrow) {
     const permCount = selectedSession?.pendingPermissionDetails?.length ?? 0;
     setPermissionIndex((i) => Math.min(Math.max(0, permCount - 1), i + 1));
-    return true;
-  }
-
-  // Toggle transcript detail
-  if (key.return) {
-    if (selectedSession) {
-      setExpandedSession(expandedSession === selectedSession.sessionId ? null : selectedSession.sessionId);
-    }
     return true;
   }
 

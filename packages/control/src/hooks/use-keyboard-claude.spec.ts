@@ -39,6 +39,11 @@ function makeNav(overrides: Partial<ClaudeNav> = {}): ClaudeNav {
     setDenyReasonMode: mock(() => {}),
     denyReasonText: "",
     setDenyReasonText: mock(() => {}),
+    transcriptCursor: null,
+    setTranscriptCursor: mock(() => {}),
+    transcriptEntries: [],
+    expandedEntries: new Set(),
+    setExpandedEntries: mock(() => {}),
     ...overrides,
   };
 }
@@ -176,5 +181,65 @@ describe("handleClaudeInput deny reason mode", () => {
     expect(consumed).toBe(true);
     // setDenyReasonText should not be called with text append
     expect(nav.setDenyReasonText).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleClaudeInput transcript navigation (expanded session)", () => {
+  const entries: ClaudeNav["transcriptEntries"] = [
+    { direction: "outbound", timestamp: 1, message: { role: "user", content: "a" } },
+    { direction: "inbound", timestamp: 2, message: { role: "assistant", content: "b" } },
+  ];
+
+  test("j moves transcript cursor down", () => {
+    let result: string | null = null;
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: entries,
+      transcriptCursor: null,
+      setTranscriptCursor: mock((fn: (prev: string | null) => string | null) => {
+        result = fn(null);
+      }),
+    });
+    const consumed = handleClaudeInput("j", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(result).not.toBeNull();
+  });
+
+  test("k moves transcript cursor up", () => {
+    let result: string | null = null;
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: entries,
+      transcriptCursor: null,
+      setTranscriptCursor: mock((fn: (prev: string | null) => string | null) => {
+        result = fn(null);
+      }),
+    });
+    const consumed = handleClaudeInput("k", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setTranscriptCursor).toHaveBeenCalled();
+  });
+
+  test("Enter toggles expanded entry when cursor set", () => {
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: entries,
+      transcriptCursor: `${entries[0].timestamp}-${entries[0].direction}`,
+      setExpandedEntries: mock(() => {}),
+    });
+    const consumed = handleClaudeInput("", { ...baseKey, return: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setExpandedEntries).toHaveBeenCalled();
+  });
+
+  test("Enter is no-op when no cursor", () => {
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: entries,
+      transcriptCursor: null,
+    });
+    const consumed = handleClaudeInput("", { ...baseKey, return: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setExpandedEntries).not.toHaveBeenCalled();
   });
 });
