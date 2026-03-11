@@ -84,7 +84,10 @@ export function pruneOrphanedWorktrees(
       activeSessions.filter((s) => s.worktree).map((s) => `${s.repoRoot ?? s.cwd}:${s.worktree}`),
     );
 
-    const endedSessions = db.listSessions(false);
+    const RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const endedSessions = db
+      .listSessions(false)
+      .filter((s) => s.endedAt && Date.now() - new Date(s.endedAt).getTime() < RETENTION_MS);
     let pruned = 0;
 
     for (const session of endedSessions) {
