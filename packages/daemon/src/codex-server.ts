@@ -113,6 +113,7 @@ export class CodexServer {
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private restartInProgress = false;
+  private pendingCrashReason: string | null = null;
   private stopped = false;
   private readonly crashTimestamps: number[] = [];
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
@@ -303,7 +304,11 @@ export class CodexServer {
 
   private async handleWorkerCrash(reason: string): Promise<void> {
     metrics.counter("mcpd_codex_worker_crashes_total").inc();
-    if (this.restartInProgress || this.stopped) return;
+    if (this.stopped) return;
+    if (this.restartInProgress) {
+      this.pendingCrashReason = reason;
+      return;
+    }
     this.restartInProgress = true;
 
     this.logger.error(`[codex-server] Worker crash detected: ${reason}`);
@@ -401,6 +406,11 @@ export class CodexServer {
       metrics.gauge("mcpd_codex_active_sessions").set(0);
     } finally {
       this.restartInProgress = false;
+      if (this.pendingCrashReason !== null && !this.stopped) {
+        const pending = this.pendingCrashReason;
+        this.pendingCrashReason = null;
+        await this.handleWorkerCrash(pending);
+      }
     }
   }
 
