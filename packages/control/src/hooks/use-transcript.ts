@@ -5,10 +5,19 @@ import { extractToolText } from "./ipc-tool-helpers.js";
 
 const MAX_ENTRIES = 10;
 
-export function useTranscript(sessionId: string | null): {
+export interface UseTranscriptOptions {
+  /** Override ipcCall for testing (dependency injection). */
+  ipcCallFn?: typeof ipcCall;
+}
+
+export function useTranscript(
+  sessionId: string | null,
+  opts: UseTranscriptOptions = {},
+): {
   entries: TranscriptEntry[];
   error: string | null;
 } {
+  const { ipcCallFn = ipcCall } = opts;
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +32,7 @@ export function useTranscript(sessionId: string | null): {
 
     async function poll() {
       try {
-        const result = await ipcCall("callTool", {
+        const result = await ipcCallFn("callTool", {
           server: "_claude",
           tool: "claude_transcript",
           arguments: { sessionId, limit: MAX_ENTRIES },
@@ -49,7 +58,7 @@ export function useTranscript(sessionId: string | null): {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId]);
+  }, [sessionId, ipcCallFn]);
 
   return { entries, error };
 }
