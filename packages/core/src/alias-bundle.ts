@@ -47,6 +47,12 @@ export interface BundleResult {
  * dependencies injected at eval time.
  */
 export async function bundleAlias(sourcePath: string): Promise<BundleResult> {
+  // Read source once for hashing — Bun.build re-reads from path (unavoidable with path-based API)
+  const sourceContent = await Bun.file(sourcePath).arrayBuffer();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(sourceContent);
+  const sourceHash = hasher.digest("hex");
+
   const result = await Bun.build({
     entrypoints: [sourcePath],
     external: ["mcp-cli"],
@@ -59,7 +65,6 @@ export async function bundleAlias(sourcePath: string): Promise<BundleResult> {
   }
 
   const js = await result.outputs[0].text();
-  const sourceHash = await computeSourceHash(sourcePath);
 
   return { js, sourceHash };
 }
@@ -94,59 +99,91 @@ export function stripMcpCliImport(bundledJs: string): string {
 }
 
 /**
+ * Eval bundled alias JS with injected context, capturing any defineAlias call.
+ *
+ * Shared core for extractMetadata and executeAliasBundled.
+ * Returns the captured AliasDefinition, or null for freeform scripts.
+ */
+async function evalBundledJs(
+  bundledJs: string,
+  ctx: {
+    mcp: McpProxy;
+    args: Record<string, string>;
+    file: (p: string) => Promise<string>;
+    json: (p: string) => Promise<unknown>;
+  },
+  timeoutMs?: number,
+): Promise<AliasDefinition | null> {
+  const stripped = stripMcpCliImport(bundledJs);
+
+  let captured: AliasDefinition | null = null;
+
+  const injected = {
+    defineAlias: (defOrFactory: AliasDefinition | ((dctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
+      if (typeof defOrFactory === "function") {
+        captured = defOrFactory({ mcp: ctx.mcp, z });
+      } else {
+        captured = defOrFactory;
+      }
+    },
+    z,
+    mcp: ctx.mcp,
+    args: ctx.args,
+    file: ctx.file,
+    json: ctx.json,
+  };
+
+  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
+  const fn = new AsyncFunction("__mcp_inject__", code);
+
+  if (timeoutMs !== undefined) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      fn(injected),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  } else {
+    await fn(injected);
+  }
+
+  return captured;
+}
+
+/**
  * Extract metadata from bundled defineAlias JS without executing the handler.
  *
  * Evaluates the bundled code with a capture-only defineAlias function that
  * records the definition and extracts JSON Schemas from Zod types.
  */
 export async function extractMetadata(bundledJs: string, timeoutMs = 5_000): Promise<AliasMetadata> {
-  const stripped = stripMcpCliImport(bundledJs);
-
-  let captured: AliasDefinition | null = null;
-
-  const injected = {
-    defineAlias: (defOrFactory: AliasDefinition | ((ctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
-      if (typeof defOrFactory === "function") {
-        captured = defOrFactory({ mcp: stubProxy, z });
-      } else {
-        captured = defOrFactory;
-      }
-    },
-    z,
-    mcp: stubProxy,
-    args: {},
-    file: () => Promise.resolve(""),
-    json: () => Promise.resolve(null),
-  };
-
-  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
-  const fn = new AsyncFunction("__mcp_inject__", code);
-  await Promise.race([
-    fn(injected),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs)),
-  ]);
+  const captured = await evalBundledJs(
+    bundledJs,
+    { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
+    timeoutMs,
+  );
 
   if (!captured) {
     throw new Error("Script did not call defineAlias()");
   }
 
-  const def = captured as AliasDefinition;
   const meta: AliasMetadata = {
-    name: def.name,
-    description: def.description ?? "",
+    name: captured.name,
+    description: captured.description ?? "",
   };
 
   try {
-    if (def.input) {
-      meta.inputSchema = z.toJSONSchema(def.input) as Record<string, unknown>;
+    if (captured.input) {
+      meta.inputSchema = z.toJSONSchema(captured.input) as Record<string, unknown>;
     }
   } catch {
     /* schema conversion failed — skip */
   }
 
   try {
-    if (def.output) {
-      meta.outputSchema = z.toJSONSchema(def.output) as Record<string, unknown>;
+    if (captured.output) {
+      meta.outputSchema = z.toJSONSchema(captured.output) as Record<string, unknown>;
     }
   } catch {
     /* schema conversion failed — skip */
@@ -169,28 +206,7 @@ export async function executeAliasBundled(
   ctx: AliasContext,
   isDefineAlias: boolean,
 ): Promise<unknown> {
-  const stripped = stripMcpCliImport(bundledJs);
-
-  let captured: AliasDefinition | null = null;
-
-  const injected = {
-    defineAlias: (defOrFactory: AliasDefinition | ((dctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
-      if (typeof defOrFactory === "function") {
-        captured = defOrFactory({ mcp: ctx.mcp, z });
-      } else {
-        captured = defOrFactory;
-      }
-    },
-    z,
-    mcp: ctx.mcp,
-    args: ctx.args,
-    file: ctx.file,
-    json: ctx.json,
-  };
-
-  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
-  const fn = new AsyncFunction("__mcp_inject__", code);
-  await fn(injected);
+  const captured = await evalBundledJs(bundledJs, ctx);
 
   if (!isDefineAlias) {
     // Freeform: side effects already executed during eval
@@ -201,23 +217,21 @@ export async function executeAliasBundled(
     throw new Error("Script did not call defineAlias()");
   }
 
-  const def = captured as AliasDefinition;
-
   // Validate input
   let parsedInput = input;
-  if (def.input) {
-    const result = def.input.safeParse(input);
+  if (captured.input) {
+    const result = captured.input.safeParse(input);
     if (!result.success) {
       throw new Error(`Invalid input: ${result.error.message}`);
     }
     parsedInput = result.data;
   }
 
-  const output = await def.fn(parsedInput, ctx);
+  const output = await captured.fn(parsedInput, ctx);
 
   // Validate output
-  if (def.output) {
-    const result = def.output.safeParse(output);
+  if (captured.output) {
+    const result = captured.output.safeParse(output);
     if (!result.success) {
       throw new Error(`Invalid output: ${result.error.message}`);
     }

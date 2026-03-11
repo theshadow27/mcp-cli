@@ -24,8 +24,6 @@ export interface AliasToolDef {
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   filePath: string;
-  bundledJs?: string;
-  sourceHash?: string;
   isDefineAlias: boolean;
 }
 
@@ -194,18 +192,14 @@ export class AliasServer {
     clearTimeout(killTimeout);
 
     if (exitCode !== 0) {
-      // Try to parse structured error from stdout
+      // Try to parse structured error from stdout before falling back to stderr
       if (stdout) {
         try {
           const parsed = JSON.parse(stdout) as { error?: string };
           if (parsed.error) throw new Error(parsed.error);
         } catch (e) {
-          // Re-throw structured errors from the executor; swallow JSON parse failures
-          if (e instanceof SyntaxError) {
-            // JSON.parse failed — fall through to stderr/generic error
-          } else {
-            throw e;
-          }
+          if (!(e instanceof SyntaxError)) throw e;
+          // JSON.parse failed — fall through to stderr/generic error
         }
       }
       throw new Error(stderr || `Alias executor exited with code ${exitCode}`);
@@ -233,7 +227,6 @@ export class AliasServer {
         inputSchema,
         outputSchema: alias.outputSchemaJson,
         filePath: alias.filePath,
-        // bundledJs/sourceHash loaded lazily via getAlias() at execution time
         isDefineAlias: true,
       });
     }
