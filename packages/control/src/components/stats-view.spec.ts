@@ -2,7 +2,15 @@ import { describe, expect, it } from "bun:test";
 import type { MetricsSnapshot } from "@mcp-cli/core";
 import { render } from "ink-testing-library";
 import React from "react";
-import { StatsView, aggregateByServer, findCounter, findGauge, percentile, topTools } from "./stats-view";
+import {
+  StatsView,
+  aggregateByServer,
+  buildStatsLines,
+  findCounter,
+  findGauge,
+  percentile,
+  topTools,
+} from "./stats-view";
 
 function makeSnapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -131,21 +139,66 @@ describe("topTools", () => {
   });
 });
 
+describe("buildStatsLines", () => {
+  it("returns lines array with dashboard, servers, and tools sections", () => {
+    const snap = makeSnapshot({
+      counters: [{ name: "mcpd_tool_calls_total", labels: { server: "a", tool: "search" }, value: 10 }],
+      gauges: [
+        { name: "mcpd_uptime_seconds", labels: {}, value: 60 },
+        { name: "mcpd_servers_total", labels: {}, value: 1 },
+        { name: "mcpd_servers_connected", labels: {}, value: 1 },
+      ],
+    });
+
+    const lines = buildStatsLines(snap, null);
+    // Dashboard header + 3 dashboard lines + spacer + servers header + 1 server + spacer + tools header + 1 tool
+    expect(lines.length).toBeGreaterThanOrEqual(4); // at least dashboard
+    expect(lines.length).toBeLessThan(50); // sanity check
+  });
+
+  it("grows with more servers", () => {
+    const snap1 = makeSnapshot({
+      counters: [{ name: "mcpd_tool_calls_total", labels: { server: "a", tool: "t" }, value: 1 }],
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 60 }],
+    });
+    const snap2 = makeSnapshot({
+      counters: [
+        { name: "mcpd_tool_calls_total", labels: { server: "a", tool: "t" }, value: 1 },
+        { name: "mcpd_tool_calls_total", labels: { server: "b", tool: "t" }, value: 1 },
+        { name: "mcpd_tool_calls_total", labels: { server: "c", tool: "t" }, value: 1 },
+      ],
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 60 }],
+    });
+
+    expect(buildStatsLines(snap2, null).length).toBeGreaterThan(buildStatsLines(snap1, null).length);
+  });
+});
+
 describe("StatsView", () => {
   it("shows loading state", () => {
-    const { lastFrame } = render(React.createElement(StatsView, { metrics: null, loading: true, error: null }));
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: null, loading: true, error: null, scrollOffset: 0, height: 20 }),
+    );
     expect(lastFrame()).toContain("Loading metrics");
   });
 
   it("shows error state", () => {
     const { lastFrame } = render(
-      React.createElement(StatsView, { metrics: null, loading: false, error: "connection refused" }),
+      React.createElement(StatsView, {
+        metrics: null,
+        loading: false,
+        error: "connection refused",
+        scrollOffset: 0,
+        height: 20,
+      }),
     );
     expect(lastFrame()).toContain("connection refused");
   });
 
   it("shows no metrics state", () => {
-    const { lastFrame } = render(React.createElement(StatsView, { metrics: null, loading: false, error: null }));
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: null, loading: false, error: null, scrollOffset: 0, height: 20 }),
+    );
     expect(lastFrame()).toContain("No metrics available");
   });
 
@@ -179,7 +232,9 @@ describe("StatsView", () => {
       ],
     });
 
-    const { lastFrame } = render(React.createElement(StatsView, { metrics: snap, loading: false, error: null }));
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, scrollOffset: 0, height: 40 }),
+    );
     const output = lastFrame() ?? "";
 
     expect(output).toContain("Dashboard");
@@ -201,7 +256,9 @@ describe("StatsView", () => {
       ],
     });
 
-    const { lastFrame } = render(React.createElement(StatsView, { metrics: snap, loading: false, error: null }));
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, scrollOffset: 0, height: 40 }),
+    );
     const output = lastFrame() ?? "";
 
     expect(output).toContain("Dashboard");
@@ -215,13 +272,70 @@ describe("StatsView", () => {
     expect(output).not.toContain("Top Tools");
   });
 
+  it("scrolls content when offset is applied", () => {
+    const snap = makeSnapshot({
+      counters: Array.from({ length: 20 }, (_, i) => ({
+        name: "mcpd_tool_calls_total",
+        labels: { server: `server-${i}`, tool: `tool-${i}` },
+        value: 10 - i,
+      })),
+      gauges: [
+        { name: "mcpd_uptime_seconds", labels: {}, value: 60 },
+        { name: "mcpd_servers_total", labels: {}, value: 20 },
+        { name: "mcpd_servers_connected", labels: {}, value: 20 },
+      ],
+    });
+
+    // With small height and offset=0, should show Dashboard
+    const { lastFrame: frame0 } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, scrollOffset: 0, height: 5 }),
+    );
+    expect(frame0()).toContain("Dashboard");
+
+    // With large offset, should skip past Dashboard to show later content
+    const { lastFrame: frameOffset } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, scrollOffset: 6, height: 5 }),
+    );
+    const output = frameOffset() ?? "";
+    // Should show server entries instead of Dashboard header
+    expect(output).toContain("server-");
+  });
+
+  it("shows scroll position indicator when content exceeds height", () => {
+    const snap = makeSnapshot({
+      counters: Array.from({ length: 20 }, (_, i) => ({
+        name: "mcpd_tool_calls_total",
+        labels: { server: `server-${i}`, tool: `tool-${i}` },
+        value: 10,
+      })),
+      gauges: [
+        { name: "mcpd_uptime_seconds", labels: {}, value: 60 },
+        { name: "mcpd_servers_total", labels: {}, value: 20 },
+        { name: "mcpd_servers_connected", labels: {}, value: 20 },
+      ],
+    });
+
+    const { lastFrame } = render(
+      React.createElement(StatsView, { metrics: snap, loading: false, error: null, scrollOffset: 0, height: 5 }),
+    );
+    const output = lastFrame() ?? "";
+    // Should contain position indicator like [1-5/N]
+    expect(output).toMatch(/\[\d+-\d+\/\d+\]/);
+  });
+
   it("shows stale data warning when error occurs after successful fetch", () => {
     const snap = makeSnapshot({
       gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 60 }],
     });
 
     const { lastFrame } = render(
-      React.createElement(StatsView, { metrics: snap, loading: false, error: "connection refused" }),
+      React.createElement(StatsView, {
+        metrics: snap,
+        loading: false,
+        error: "connection refused",
+        scrollOffset: 0,
+        height: 40,
+      }),
     );
     const output = lastFrame() ?? "";
 

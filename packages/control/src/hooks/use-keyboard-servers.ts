@@ -24,7 +24,7 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     return true;
   }
   if (key.downArrow || input === "j") {
-    setSelectedIndex((i) => Math.min(servers.length - 1, i + 1));
+    setSelectedIndex((i) => Math.min(Math.max(0, servers.length - 1), i + 1));
     return true;
   }
 

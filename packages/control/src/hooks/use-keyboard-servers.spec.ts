@@ -117,4 +117,58 @@ describe("handleServersInput", () => {
     handleServersInput("j", baseKey, nav);
     expect(result).toBe(1); // already at max (2 servers, index 1)
   });
+
+  test("j clamps to 0 when servers list is empty", () => {
+    let result = -1;
+    const nav = makeNav({
+      servers: [] as ServersNav["servers"],
+      selectedIndex: 0,
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(0);
+      }),
+    });
+    handleServersInput("j", baseKey, nav);
+    expect(result).toBe(0); // must not go to -1
+  });
+
+  test("j advances index by 1 from middle of list", () => {
+    let result = -1;
+    const nav = makeNav({
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(0);
+      }),
+    });
+    handleServersInput("j", baseKey, nav);
+    expect(result).toBe(1);
+  });
+
+  test("k decrements index by 1", () => {
+    let result = -1;
+    const nav = makeNav({
+      selectedIndex: 1,
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(1);
+      }),
+    });
+    handleServersInput("k", baseKey, nav);
+    expect(result).toBe(0);
+  });
+
+  test("Enter expands correct server name", () => {
+    const nav = makeNav({ selectedIndex: 1 });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    expect(nav.setExpandedServer).toHaveBeenCalledWith("s2");
+  });
+
+  test("Enter collapses when already expanded", () => {
+    const nav = makeNav({ selectedIndex: 0, expandedServer: "s1" });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    expect(nav.setExpandedServer).toHaveBeenCalledWith(null);
+  });
+
+  test("a sets auth status with correct server name", () => {
+    const nav = makeNav({ selectedIndex: 1 });
+    handleServersInput("a", baseKey, nav);
+    expect(nav.setAuthStatus).toHaveBeenCalledWith({ server: "s2", state: "pending" });
+  });
 });

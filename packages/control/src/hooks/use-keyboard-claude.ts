@@ -65,7 +65,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     return true;
   }
   if (key.downArrow || input === "j") {
-    setSelectedIndex((i) => Math.min(sessions.length - 1, i + 1));
+    setSelectedIndex((i) => Math.min(Math.max(0, sessions.length - 1), i + 1));
     return true;
   }
 

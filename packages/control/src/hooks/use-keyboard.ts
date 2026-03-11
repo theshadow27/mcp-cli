@@ -5,6 +5,7 @@ import type { AuthStatus } from "../components/auth-banner";
 import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
 import { handleServersInput } from "./use-keyboard-servers";
+import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
 export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
@@ -68,15 +69,22 @@ export interface ClaudeNav {
   setDenyReasonText: (fn: string | ((prev: string) => string)) => void;
 }
 
+export interface StatsNav {
+  scrollOffset: number;
+  setScrollOffset: (fn: (offset: number) => number) => void;
+  lineCount: number;
+}
+
 interface UseKeyboardOptions {
   view: View;
   setView: (view: View) => void;
   serversNav: ServersNav;
   logsNav: LogsNav;
   claudeNav: ClaudeNav;
+  statsNav: StatsNav;
 }
 
-export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: UseKeyboardOptions): void {
+export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav, statsNav }: UseKeyboardOptions): void {
   const { exit } = useApp();
 
   useInput((input, key) => {
@@ -145,6 +153,8 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
       handleLogsInput(input, key, logsNav, serversNav.servers);
     } else if (view === "claude") {
       handleClaudeInput(input, key, claudeNav);
+    } else if (view === "stats") {
+      handleStatsInput(input, key, statsNav);
     } else if (view === "servers") {
       handleServersInput(input, key, serversNav);
     }

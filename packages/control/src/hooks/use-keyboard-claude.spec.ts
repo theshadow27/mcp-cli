@@ -97,6 +97,46 @@ describe("handleClaudeInput", () => {
     const nav = makeNav();
     expect(handleClaudeInput("z", baseKey, nav)).toBe(false);
   });
+
+  test("j clamps to 0 when sessions list is empty", () => {
+    let result = -1;
+    const nav = makeNav({
+      sessions: [] as unknown as ClaudeNav["sessions"],
+      selectedIndex: 0,
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(0);
+      }),
+    });
+    handleClaudeInput("j", baseKey, nav);
+    expect(result).toBe(0); // must not go to -1
+  });
+
+  test("j advances index by 1", () => {
+    let result = -1;
+    const nav = makeNav({
+      sessions: [
+        { sessionId: "s1", state: "running", pendingPermissionDetails: [] },
+        { sessionId: "s2", state: "running", pendingPermissionDetails: [] },
+      ] as unknown as ClaudeNav["sessions"],
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(0);
+      }),
+    });
+    handleClaudeInput("j", baseKey, nav);
+    expect(result).toBe(1);
+  });
+
+  test("k clamps at 0", () => {
+    let result = -1;
+    const nav = makeNav({
+      selectedIndex: 0,
+      setSelectedIndex: mock((fn: (i: number) => number) => {
+        result = fn(0);
+      }),
+    });
+    handleClaudeInput("k", baseKey, nav);
+    expect(result).toBe(0);
+  });
 });
 
 describe("handleClaudeInput deny reason mode", () => {
