@@ -6,6 +6,7 @@
  *   simple        (default) — handshake + turn/completed, clean exit
  *   approval      — handshake + turn + commandExecution approval request + turn/completed
  *   crash-after-turn — handshake + turn/completed + exit code 2
+ *   silent        — handshake + turn/start response, then no events (for watchdog testing)
  */
 import { createInterface } from "node:readline";
 
@@ -70,6 +71,8 @@ function scheduleEvents(): void {
       sendTurnCompleted();
       setTimeout(() => process.exit(2), 50);
     }, 30);
+  } else if (mode === "silent") {
+    // No events after turn/start — process stays alive but silent (for watchdog testing)
   } else {
     // simple
     setTimeout(() => sendTurnCompleted(), 30);
