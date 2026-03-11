@@ -191,14 +191,12 @@ describe("ClaudeServer", () => {
     expect(content[0].text).toContain("Unknown session");
   });
 
-  test("worker db:upsert event persists session to SQLite", async () => {
+  test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
-    await server.start();
-
-    // Call the private handleWorkerEvent directly to test DB routing
+    // Call the private handleWorkerEvent directly to test DB routing (no start() needed)
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
       type: "db:upsert",
@@ -212,12 +210,10 @@ describe("ClaudeServer", () => {
     expect(row?.model).toBe("claude-sonnet-4-6");
   });
 
-  test("worker db:state event updates session state", async () => {
+  test("worker db:state event updates session state", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s2", state: "connecting" } });
@@ -227,12 +223,10 @@ describe("ClaudeServer", () => {
     expect(row?.state).toBe("active");
   });
 
-  test("worker db:cost event updates cost and tokens", async () => {
+  test("worker db:cost event updates cost and tokens", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s3", state: "active" } });
@@ -243,12 +237,10 @@ describe("ClaudeServer", () => {
     expect(row?.totalTokens).toBe(1500);
   });
 
-  test("worker db:end event marks session as ended", async () => {
+  test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s4", state: "active" } });
@@ -259,22 +251,18 @@ describe("ClaudeServer", () => {
     expect(row?.endedAt).not.toBeNull();
   });
 
-  test("hasActiveSessions() returns false initially", async () => {
+  test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     expect(server.hasActiveSessions()).toBe(false);
   });
 
-  test("hasActiveSessions() returns true after db:upsert, false after db:end", async () => {
+  test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s-active", state: "connecting" } });
@@ -286,12 +274,10 @@ describe("ClaudeServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
   });
 
-  test("hasActiveSessions() tracks multiple sessions independently", async () => {
+  test("hasActiveSessions() tracks multiple sessions independently", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s1", state: "connecting" } });
@@ -558,12 +544,10 @@ describe("ClaudeServer", () => {
 
   // ── pruneDeadSessions ──
 
-  test("pruneDeadSessions removes sessions with dead PIDs", async () => {
+  test("pruneDeadSessions removes sessions with dead PIDs", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     // Use a PID that definitely doesn't exist
@@ -577,12 +561,10 @@ describe("ClaudeServer", () => {
     expect(row?.state).toBe("ended");
   });
 
-  test("pruneDeadSessions keeps sessions with live PIDs", async () => {
+  test("pruneDeadSessions keeps sessions with live PIDs", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     // Use our own PID — definitely alive
@@ -594,12 +576,10 @@ describe("ClaudeServer", () => {
     expect(server.hasActiveSessions()).toBe(true);
   });
 
-  test("pruneDeadSessions handles sessions without PIDs (no prune)", async () => {
+  test("pruneDeadSessions handles sessions without PIDs (no prune)", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     // Session without PID — should not be pruned (no PID to check)
@@ -613,12 +593,10 @@ describe("ClaudeServer", () => {
 
   // ── onActivity callback ──
 
-  test("onActivity is called on db:upsert, db:state, and db:cost events", async () => {
+  test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     let activityCount = 0;
     server.onActivity = () => {
@@ -766,12 +744,10 @@ describe("ClaudeServer", () => {
 
   // ── PID-less session TTL ──
 
-  test("pruneDeadSessions prunes pid-less sessions after TTL expires", async () => {
+  test("pruneDeadSessions prunes pid-less sessions after TTL expires", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     // Session without PID
