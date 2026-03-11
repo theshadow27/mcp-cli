@@ -147,6 +147,31 @@ describe("parseCodexSpawnArgs", () => {
     const result = parseCodexSpawnArgs(["--task", "x"]);
     expect(result.json).toBe(false);
   });
+
+  test("parses --worktree with name", () => {
+    const result = parseCodexSpawnArgs(["--worktree", "my-branch", "--task", "x"]);
+    expect(result.worktree).toBe("my-branch");
+  });
+
+  test("parses -w shorthand with name", () => {
+    const result = parseCodexSpawnArgs(["-w", "my-branch", "--task", "x"]);
+    expect(result.worktree).toBe("my-branch");
+  });
+
+  test("auto-generates worktree name when no value given", () => {
+    const result = parseCodexSpawnArgs(["--worktree", "--task", "x"]);
+    expect(result.worktree).toMatch(/^codex-/);
+  });
+
+  test("auto-generates worktree name at end of args", () => {
+    const result = parseCodexSpawnArgs(["--task", "x", "-w"]);
+    expect(result.worktree).toMatch(/^codex-/);
+  });
+
+  test("worktree defaults to undefined", () => {
+    const result = parseCodexSpawnArgs(["--task", "x"]);
+    expect(result.worktree).toBeUndefined();
+  });
 });
 
 // ── cmdCodex — subcommand dispatch ──
@@ -333,6 +358,20 @@ describe("codex spawn", () => {
       console.error = origErr;
     }
   });
+
+  test("passes worktree name to daemon when no hooks or branchPrefix config", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdCodex(["spawn", "--task", "x", "--worktree", "my-wt"], deps);
+      expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-wt" }));
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── ls ──
@@ -477,7 +516,7 @@ describe("codex bye", () => {
     const deps = makeDeps({
       callTool: mock(async (tool: string) => {
         if (tool === "codex_session_list") return toolResult(SESSION_LIST);
-        return toolResult({ sessionId: SESSION_LIST[0].sessionId, worktree: null, cwd: null });
+        return toolResult({ ended: true, worktree: null, cwd: null, repoRoot: null });
       }),
     });
     const origLog = console.log;
@@ -494,6 +533,43 @@ describe("codex bye", () => {
     const deps = makeDeps();
     await expect(cmdCodex(["bye"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+
+  test("triggers worktree cleanup when bye returns worktree metadata", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: "my-wt", cwd: "/tmp/wt/my-wt", repoRoot: "/tmp/repo" });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdCodex(["bye", "abc12345"], deps);
+      // exec should have been called for worktree cleanup (git status --porcelain at minimum)
+      expect(deps.exec).toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("skips worktree cleanup when bye returns null worktree", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: null, cwd: null, repoRoot: null });
+      }),
+    });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdCodex(["bye", "abc12345"], deps);
+      // exec should NOT have been called — no worktree cleanup needed
+      expect(deps.exec).not.toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 

@@ -177,6 +177,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
       allowedTools: args.allowedTools as string[] | undefined,
       disallowedTools: args.disallowedTools as string[] | undefined,
       worktree: args.worktree as string | undefined,
+      repoRoot: args.repoRoot as string | undefined,
     };
 
     const sid = sessionId;
@@ -297,8 +298,21 @@ function handleBye(args: Record<string, unknown>): {
   if (!session) {
     return { content: [{ type: "text", text: `Unknown session: ${sessionId}` }], isError: true };
   }
+  const info = session.getInfo();
   session.terminate();
-  return { content: [{ type: "text", text: JSON.stringify({ ended: true }) }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          ended: true,
+          worktree: info.worktree,
+          cwd: info.cwd,
+          repoRoot: info.repoRoot,
+        }),
+      },
+    ],
+  };
 }
 
 function handleTranscript(args: Record<string, unknown>): {

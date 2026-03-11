@@ -902,7 +902,7 @@ export function parseByeResult(result: unknown): ByeResult {
 }
 
 /** Clean up a worktree after session ends: remove if clean, warn if dirty. */
-export function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps, repoRoot?: string | null): void {
+export function cleanupWorktree(worktree: string, cwd: string, d: SharedSessionDeps, repoRoot?: string | null): void {
   // repoRoot is stored in session metadata at spawn time and returned by bye.
   // For hook-based worktrees, cwd is the worktree path (not repo root), so repoRoot is required.
   // For non-hook worktrees, cwd from bye IS the repo root — use it as fallback.

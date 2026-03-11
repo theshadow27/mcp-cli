@@ -47,6 +47,8 @@ export interface CodexSessionConfig {
   disallowedTools?: readonly string[];
   /** Worktree path (for session info). */
   worktree?: string;
+  /** Repository root for worktree cleanup. */
+  repoRoot?: string;
   /** Override the codex command. */
   command?: string[];
   /** Extra environment variables. */
@@ -264,7 +266,7 @@ export class CodexSession {
       pendingPermissions: this.pendingPermissions.size,
       pendingPermissionDetails: [...this.pendingPermissions.values()],
       worktree: this.config.worktree ?? null,
-      repoRoot: null,
+      repoRoot: this.config.repoRoot ?? null,
       processAlive: this.proc?.alive ?? false,
     };
   }
