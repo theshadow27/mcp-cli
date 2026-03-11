@@ -238,9 +238,11 @@ export class ServerPool {
     const conn = this.connections.get(name);
     if (!conn) throw new Error(`Server "${name}" not found`);
 
-    // Failed virtual servers have no recoverable config — surface the startup error
-    if (conn.virtual && conn.state === "error" && !conn.client) {
-      throw new Error(`Virtual server "${name}" failed to start: ${conn.lastError ?? "unknown error"}`);
+    // Virtual servers cannot be reconnected via config — they must be
+    // re-registered by the daemon code that manages them (e.g., ClaudeServer, AliasServer).
+    if (conn.virtual && !conn.client) {
+      const detail = conn.lastError ?? "server was disconnected and cannot be auto-reconnected";
+      throw new Error(`Virtual server "${name}" failed to start: ${detail}`);
     }
 
     if (conn.state === "connected" && conn.client) {
@@ -568,8 +570,10 @@ export class ServerPool {
       await this.disconnect(name);
       await this.ensureConnected(name);
     } else {
-      // Restart all connected servers in parallel
-      const connected = [...this.connections.entries()].filter(([, c]) => c.state === "connected");
+      // Restart all connected non-virtual servers in parallel.
+      // Virtual servers cannot be reconnected via config — they must be
+      // re-registered by the daemon code that manages them.
+      const connected = [...this.connections.entries()].filter(([, c]) => c.state === "connected" && !c.virtual);
       const results = await Promise.allSettled(
         connected.map(async ([serverName]) => {
           await this.disconnect(serverName);
