@@ -72,24 +72,34 @@ export function itemToTranscript(item: ThreadItem, timestamp?: number): Transcri
       ];
 
     case "fileChange": {
-      const files = item.changes?.map((c) => c.path) ?? [];
-      const diffContent = item.changes?.map((c) => c.diff).join("\n") ?? "";
-      return [
-        {
-          role: "tool_use",
-          tool: "Write",
-          content: files.join(", "),
-          input: { files },
-          timestamp: ts,
-        },
-        {
-          role: "tool_result",
-          tool: "Write",
-          content: `Updated ${files.length} file(s)`,
-          diff: diffContent,
-          timestamp: ts,
-        },
-      ];
+      const changes = item.changes ?? [];
+      if (changes.length === 0) {
+        return [
+          { role: "tool_use", tool: "Write", content: "", input: { files: [] }, timestamp: ts },
+          { role: "tool_result", tool: "Write", content: "Updated 0 file(s)", timestamp: ts },
+        ];
+      }
+      const entries: TranscriptEntry[] = [];
+      for (const change of changes) {
+        const tool = change.kind === "delete" ? "Delete" : "Write";
+        entries.push(
+          {
+            role: "tool_use",
+            tool,
+            content: change.path,
+            input: { file: change.path, kind: change.kind },
+            timestamp: ts,
+          },
+          {
+            role: "tool_result",
+            tool,
+            content: change.kind === "delete" ? `Deleted ${change.path}` : `Updated ${change.path}`,
+            diff: change.diff,
+            timestamp: ts,
+          },
+        );
+      }
+      return entries;
     }
 
     // Reasoning, reviewMode entries: not transcribed
