@@ -100,20 +100,19 @@ export interface LiveSpan {
   traceparent(): string;
 }
 
+export interface StartSpanOptions {
+  parentTraceparent?: string;
+  /** Callback invoked when parentTraceparent is present but invalid, causing a root span. */
+  onFallback?: () => void;
+  logger?: Logger;
+}
+
 /**
  * Start a new span. If parentTraceparent is provided, inherits traceId and
  * records parentSpanId. If absent or invalid, creates a root span.
- *
- * @param onFallback - Optional callback invoked when parentTraceparent is
- *   present but invalid, causing a root span to be created instead. Use for
- *   metrics (e.g. incrementing mcpd_trace_fallback_root_total).
  */
-export function startSpan(
-  name: string,
-  parentTraceparent?: string,
-  onFallback?: () => void,
-  logger: Logger = consoleLogger,
-): LiveSpan {
+export function startSpan(name: string, opts?: StartSpanOptions): LiveSpan {
+  const { parentTraceparent, onFallback, logger = consoleLogger } = opts ?? {};
   let traceId: string;
   let parentSpanId: string | undefined;
   let traceFlags = TRACE_FLAGS_SAMPLED;
@@ -125,7 +124,7 @@ export function startSpan(
       parentSpanId = parsed.parentId;
       traceFlags = parsed.flags;
     } else {
-      logger.error("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
+      logger.warn("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
       onFallback?.();
       traceId = generateTraceId();
     }

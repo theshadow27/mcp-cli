@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { silentLogger } from "./logger";
 import {
   TRACE_FLAGS_SAMPLED,
   TRACE_VERSION,
@@ -108,40 +109,40 @@ describe("startSpan", () => {
     const parentId = generateSpanId();
     const tp = formatTraceparent(traceId, parentId);
 
-    const span = startSpan("test.child", tp);
+    const span = startSpan("test.child", { parentTraceparent: tp });
     expect(span.traceId).toBe(traceId);
     expect(span.parentSpanId).toBe(parentId);
     expect(span.spanId).not.toBe(parentId);
   });
 
   test("creates root span from invalid traceparent", () => {
-    const span = startSpan("test.fallback", "garbage");
+    const span = startSpan("test.fallback", { parentTraceparent: "garbage", logger: silentLogger });
     expect(span.traceId).toHaveLength(32);
     expect(span.parentSpanId).toBeUndefined();
   });
 
   test("calls onFallback when traceparent is invalid", () => {
     const onFallback = mock();
-    startSpan("test.fallback_cb", "garbage", onFallback);
+    startSpan("test.fallback_cb", { parentTraceparent: "garbage", onFallback, logger: silentLogger });
     expect(onFallback).toHaveBeenCalledTimes(1);
   });
 
   test("does not call onFallback when traceparent is valid", () => {
     const onFallback = mock();
     const tp = formatTraceparent(generateTraceId(), generateSpanId());
-    startSpan("test.no_fallback", tp, onFallback);
+    startSpan("test.no_fallback", { parentTraceparent: tp, onFallback });
     expect(onFallback).toHaveBeenCalledTimes(0);
   });
 
   test("does not call onFallback when traceparent is absent", () => {
     const onFallback = mock();
-    startSpan("test.no_parent", undefined, onFallback);
+    startSpan("test.no_parent", { onFallback });
     expect(onFallback).toHaveBeenCalledTimes(0);
   });
 
   test("preserves trace flags from parent", () => {
     const tp = formatTraceparent(generateTraceId(), generateSpanId(), "00");
-    const span = startSpan("test.flags", tp);
+    const span = startSpan("test.flags", { parentTraceparent: tp });
     expect(span.traceFlags).toBe("00");
   });
 });

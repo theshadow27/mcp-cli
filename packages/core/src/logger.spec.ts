@@ -1,25 +1,82 @@
-import { describe, expect, test } from "bun:test";
-import { consoleLogger, silentLogger } from "./logger";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { capturingLogger, consoleLogger, silentLogger } from "./logger";
 
-describe("Logger", () => {
-  test("consoleLogger has all methods", () => {
-    expect(typeof consoleLogger.error).toBe("function");
-    expect(typeof consoleLogger.warn).toBe("function");
-    expect(typeof consoleLogger.info).toBe("function");
-    expect(typeof consoleLogger.debug).toBe("function");
+describe("consoleLogger", () => {
+  afterEach(() => mock.restore());
+
+  test("error routes to console.error", () => {
+    const spy = mock(() => {});
+    console.error = spy;
+    consoleLogger.error("boom");
+    expect(spy).toHaveBeenCalledWith("boom");
   });
 
-  test("silentLogger has all methods", () => {
-    expect(typeof silentLogger.error).toBe("function");
-    expect(typeof silentLogger.warn).toBe("function");
-    expect(typeof silentLogger.info).toBe("function");
-    expect(typeof silentLogger.debug).toBe("function");
+  test("warn routes to console.warn", () => {
+    const spy = mock(() => {});
+    console.warn = spy;
+    consoleLogger.warn("careful");
+    expect(spy).toHaveBeenCalledWith("careful");
   });
 
-  test("silentLogger methods are no-ops (do not throw)", () => {
-    expect(() => silentLogger.error("test")).not.toThrow();
-    expect(() => silentLogger.warn("test")).not.toThrow();
-    expect(() => silentLogger.info("test")).not.toThrow();
-    expect(() => silentLogger.debug("test")).not.toThrow();
+  test("info routes to console.info", () => {
+    const spy = mock(() => {});
+    console.info = spy;
+    consoleLogger.info("fyi");
+    expect(spy).toHaveBeenCalledWith("fyi");
+  });
+
+  test("debug routes to console.debug", () => {
+    const spy = mock(() => {});
+    console.debug = spy;
+    consoleLogger.debug("verbose");
+    expect(spy).toHaveBeenCalledWith("verbose");
+  });
+});
+
+describe("silentLogger", () => {
+  afterEach(() => mock.restore());
+
+  test("does not call console.error", () => {
+    const spy = mock(() => {});
+    console.error = spy;
+    silentLogger.error("should be swallowed");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("does not call console.warn", () => {
+    const spy = mock(() => {});
+    console.warn = spy;
+    silentLogger.warn("should be swallowed");
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("capturingLogger", () => {
+  test("captures messages with level tags", () => {
+    const { logger, messages } = capturingLogger();
+    logger.error("err msg");
+    logger.warn("warn msg");
+    logger.info("info msg");
+    logger.debug("debug msg");
+
+    expect(messages).toHaveLength(4);
+    expect(messages[0]).toEqual({ level: "error", args: ["err msg"] });
+    expect(messages[1]).toEqual({ level: "warn", args: ["warn msg"] });
+    expect(messages[2]).toEqual({ level: "info", args: ["info msg"] });
+    expect(messages[3]).toEqual({ level: "debug", args: ["debug msg"] });
+  });
+
+  test("texts array contains string representations", () => {
+    const { logger, texts } = capturingLogger();
+    logger.error("something broke");
+    logger.info("started");
+
+    expect(texts).toEqual(["something broke", "started"]);
+  });
+
+  test("captures multiple args", () => {
+    const { logger, messages } = capturingLogger();
+    logger.error("prefix", { detail: 42 });
+    expect(messages[0].args).toEqual(["prefix", { detail: 42 }]);
   });
 });

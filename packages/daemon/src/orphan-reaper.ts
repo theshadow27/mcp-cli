@@ -29,7 +29,7 @@ export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger
     if (pid !== null) {
       try {
         process.kill(pid, "SIGTERM");
-        logger.error(`[mcpd] Reaped orphaned claude process pid=${pid} (session ${sessionId})`);
+        logger.warn(`[mcpd] Reaped orphaned claude process pid=${pid} (session ${sessionId})`);
         reaped++;
       } catch {
         // Process already dead — nothing to do

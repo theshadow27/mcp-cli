@@ -192,7 +192,7 @@ export class IpcServer {
     // Restrict socket to owner-only access (0600)
     hardenFile(socketPath);
 
-    this.logger.error(`[ipc] Listening on ${socketPath}`);
+    this.logger.info(`[ipc] Listening on ${socketPath}`);
   }
 
   /** Stop listening and clean up socket */
@@ -225,9 +225,10 @@ export class IpcServer {
     }
 
     // Create a per-request span (child of caller's traceparent, or root)
-    const span = startSpan(`ipc.${request.method}`, request.traceparent, () =>
-      metrics.counter("mcpd_trace_fallback_root_total").inc(),
-    );
+    const span = startSpan(`ipc.${request.method}`, {
+      parentTraceparent: request.traceparent,
+      onFallback: () => metrics.counter("mcpd_trace_fallback_root_total").inc(),
+    });
     span.setAttribute("ipc.method", request.method);
     const ctx: RequestContext = { span };
 

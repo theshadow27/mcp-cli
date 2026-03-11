@@ -201,7 +201,7 @@ export class ServerPool {
         if (existing.state === "connected" && !this.reconnecting.has(name)) {
           const reconnectPromise = this.disconnect(name)
             .then(() => {
-              this.logger.error(`[pool] Reconnecting "${name}" after config change`);
+              this.logger.info(`[pool] Reconnecting "${name}" after config change`);
               return this.ensureConnected(name);
             })
             .then(() => {})
@@ -299,7 +299,7 @@ export class ServerPool {
 
           if (attempt < maxRetries && isRetryableError(err)) {
             const delay = Math.min(CONNECT_INITIAL_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);
-            this.logger.error(
+            this.logger.warn(
               `[mcpd] Connection to "${name}" failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${lastErr.message}`,
             );
             await new Promise((r) => setTimeout(r, delay));
@@ -388,7 +388,7 @@ export class ServerPool {
   private attachTransportLifecycle(name: string, transport: Transport, conn: ServerConnection): void {
     const reset = (reason: string) => {
       if (conn.state === "connected") {
-        this.logger.error(`[pool] Server "${name}" transport ${reason}, resetting connection state`);
+        this.logger.warn(`[pool] Server "${name}" transport ${reason}, resetting connection state`);
         conn.state = "disconnected";
         conn.client = null;
         conn.transport = null;

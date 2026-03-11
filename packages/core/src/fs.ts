@@ -19,7 +19,7 @@ export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
   try {
     const dirMode = statSync(options.MCP_CLI_DIR).mode & 0o777;
     if (dirMode & 0o077) {
-      logger.error(
+      logger.warn(
         `[security] Warning: ${options.MCP_CLI_DIR} has mode 0${dirMode.toString(8)}, expected 0700 — run: chmod 700 ${options.MCP_CLI_DIR}`,
       );
     }
@@ -31,7 +31,7 @@ export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
     try {
       const fileMode = statSync(filePath).mode & 0o777;
       if (fileMode & 0o077) {
-        logger.error(
+        logger.warn(
           `[security] Warning: ${filePath} has mode 0${fileMode.toString(8)}, expected 0600 — run: chmod 600 ${filePath}`,
         );
       }

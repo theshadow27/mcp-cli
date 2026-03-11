@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
 import { auditRuntimePermissions, ensureStateDir, hardenFile } from "./fs";
+import { capturingLogger } from "./logger";
 
 describe("hardenFile", () => {
   test("sets file permissions to 0600", () => {
@@ -57,17 +58,9 @@ describe("auditRuntimePermissions", () => {
     using opts = testOptions();
     mkdirSync(opts.MCP_CLI_DIR, { recursive: true, mode: 0o700 });
 
-    const errors: string[] = [];
-    const origError = console.error;
-    console.error = mock((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      auditRuntimePermissions();
-      expect(errors.filter((e) => e.includes("[security]"))).toHaveLength(0);
-    } finally {
-      console.error = origError;
-    }
+    const { logger, texts } = capturingLogger();
+    auditRuntimePermissions(logger);
+    expect(texts.filter((t) => t.includes("[security]"))).toHaveLength(0);
   });
 
   test("warns when directory has group/other bits set", () => {
@@ -75,20 +68,14 @@ describe("auditRuntimePermissions", () => {
     mkdirSync(opts.MCP_CLI_DIR, { recursive: true });
     chmodSync(opts.MCP_CLI_DIR, 0o777);
 
-    const errors: string[] = [];
-    const origError = console.error;
-    console.error = mock((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      auditRuntimePermissions();
-      const warnings = errors.filter((e) => e.includes("[security]"));
-      expect(warnings.length).toBeGreaterThanOrEqual(1);
-      expect(warnings[0]).toContain("0777");
-      expect(warnings[0]).toContain("expected 0700");
-    } finally {
-      console.error = origError;
-    }
+    const { logger, messages, texts } = capturingLogger();
+    auditRuntimePermissions(logger);
+    const warnings = texts.filter((t) => t.includes("[security]"));
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings[0]).toContain("0777");
+    expect(warnings[0]).toContain("expected 0700");
+    // Security warnings should be at warn level
+    expect(messages.filter((m) => m.level === "warn").length).toBeGreaterThanOrEqual(1);
   });
 
   test("warns when file has group/other bits set", () => {
@@ -97,39 +84,22 @@ describe("auditRuntimePermissions", () => {
     writeFileSync(opts.DB_PATH, "db");
     chmodSync(opts.DB_PATH, 0o644);
 
-    const errors: string[] = [];
-    const origError = console.error;
-    console.error = mock((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      auditRuntimePermissions();
-      const warnings = errors.filter((e) => e.includes("[security]"));
-      expect(warnings.length).toBeGreaterThanOrEqual(1);
-      expect(warnings.some((w) => w.includes("0644"))).toBe(true);
-      expect(warnings.some((w) => w.includes("expected 0600"))).toBe(true);
-    } finally {
-      console.error = origError;
-    }
+    const { logger, messages, texts } = capturingLogger();
+    auditRuntimePermissions(logger);
+    const warnings = texts.filter((t) => t.includes("[security]"));
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings.some((w) => w.includes("0644"))).toBe(true);
+    expect(warnings.some((w) => w.includes("expected 0600"))).toBe(true);
+    expect(messages.filter((m) => m.level === "warn").length).toBeGreaterThanOrEqual(1);
   });
 
   test("does not warn for nonexistent dir or files", () => {
     using opts = testOptions();
-    // testOptions sets MCP_CLI_DIR to temp dir, but no DB_PATH or SOCKET_PATH files exist
-    // Remove the MCP_CLI_DIR so even the directory stat fails
     const { rmSync } = require("node:fs");
     rmSync(opts.MCP_CLI_DIR, { recursive: true, force: true });
 
-    const errors: string[] = [];
-    const origError = console.error;
-    console.error = mock((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      auditRuntimePermissions();
-      expect(errors.filter((e) => e.includes("[security]"))).toHaveLength(0);
-    } finally {
-      console.error = origError;
-    }
+    const { logger, texts } = capturingLogger();
+    auditRuntimePermissions(logger);
+    expect(texts.filter((t) => t.includes("[security]"))).toHaveLength(0);
   });
 });

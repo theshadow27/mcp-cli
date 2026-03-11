@@ -104,7 +104,7 @@ export class ConfigWatcher {
     }
     this.pollTimer = setInterval(() => this.pollCheck(), this.pollIntervalMs);
 
-    this.logger.error(`[config-watcher] Watching ${paths.length} config paths`);
+    this.logger.info(`[config-watcher] Watching ${paths.length} config paths`);
   }
 
   /** Stop all watchers and cancel pending debounce. */
@@ -226,7 +226,7 @@ export class ConfigWatcher {
       const { added, removed, changed } = ConfigWatcher.diffServers(this.previousServers, config.servers);
       this.currentHash = hash;
       this.previousServers = config.servers;
-      this.logger.error(
+      this.logger.info(
         `[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`,
       );
       this.callback({ added, removed, changed, config, hash });

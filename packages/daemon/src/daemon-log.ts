@@ -22,23 +22,36 @@ let logBackupPath: string = options.DAEMON_LOG_BACKUP_PATH;
 let logMaxBytes: number = DAEMON_LOG_MAX_BYTES;
 let logWriteCount = 0;
 
-/** Intercept console.error to capture daemon logs. Call once at startup. */
+/**
+ * Intercept all console log methods to capture daemon logs. Call once at startup.
+ *
+ * The daemon reserves stdout for the ready signal — all log output must go to stderr.
+ * This patches console.error, console.warn, console.info, and console.debug to:
+ * 1. Capture to the ring buffer
+ * 2. Forward to stderr (via the original console.error)
+ * 3. Write to the persistent log file
+ */
 export function installDaemonLogCapture(): void {
   if (installed) return;
   installed = true;
 
-  const original = console.error.bind(console);
+  const originalError = console.error.bind(console);
 
-  console.error = (...args: unknown[]) => {
+  const intercept = (...args: unknown[]) => {
     const line = args.map(String).join(" ");
     buffer.push(DAEMON_KEY, line);
     try {
-      original(...args);
+      originalError(...args);
     } catch {
       // EPIPE: parent terminal disconnected — silently swallow
     }
     writeToLogFile(line);
   };
+
+  console.error = intercept;
+  console.warn = intercept;
+  console.info = intercept;
+  console.debug = intercept;
 }
 
 /**
