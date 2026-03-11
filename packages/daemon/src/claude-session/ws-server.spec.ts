@@ -2020,7 +2020,7 @@ describe("ClaudeWsServer", () => {
   test("waitForEvent repoRoot filter: mismatched event is detectable", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
-    const port = server.start();
+    const port = await server.start();
 
     server.prepareSession("s-mismatch", { prompt: "Hello", repoRoot: "/repo/other" });
     server.spawnClaude("s-mismatch");
@@ -2051,7 +2051,7 @@ describe("ClaudeWsServer", () => {
   test("waitForEvent repoRoot filter: matching event passes through", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
-    const port = server.start();
+    const port = await server.start();
 
     server.prepareSession("s-match", { prompt: "Hello", repoRoot: "/repo/mine" });
     server.spawnClaude("s-match");
@@ -2080,7 +2080,7 @@ describe("ClaudeWsServer", () => {
   test("waitForEvent repoRoot filter: event without repoRoot passes through", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
-    const port = server.start();
+    const port = await server.start();
 
     server.prepareSession("s-none", { prompt: "Hello" }); // no repoRoot
     server.spawnClaude("s-none");
@@ -2109,7 +2109,7 @@ describe("ClaudeWsServer", () => {
   test("waitForEventsSince repoRoot filter: filters events by repoRoot", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
-    const port = server.start();
+    const port = await server.start();
 
     // Set up session A with repoRoot /repo/a
     server.prepareSession("s-a", { prompt: "A", repoRoot: "/repo/a" });
