@@ -72,8 +72,16 @@ describe("determineBump", () => {
     expect(determineBump(["fix: patch", "feat: feature"])).toBe("minor");
   });
 
-  test("non-conventional commits count as patch", () => {
-    expect(determineBump(["random commit message"])).toBe("patch");
+  test("non-conventional commits are skipped", () => {
+    expect(determineBump(["random commit message"])).toBeNull();
+  });
+
+  test("non-conventional commits don't prevent release from conventional ones", () => {
+    expect(determineBump(["random commit", "fix: real fix"])).toBe("patch");
+  });
+
+  test("unknown prefixes are skipped", () => {
+    expect(determineBump(["banana: weird prefix"])).toBeNull();
   });
 
   test("release prefix is skipped", () => {

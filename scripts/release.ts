@@ -50,8 +50,7 @@ export function determineBump(subjects: string[], bodies: string[] = []): "major
   for (let i = 0; i < subjects.length; i++) {
     const parsed = parseCommitPrefix(subjects[i]);
     if (!parsed) {
-      // Non-conventional commit — treat as patch-worthy
-      hasReleasable = true;
+      // Non-conventional commit — skip, don't release for unstructured messages
       continue;
     }
 
@@ -71,10 +70,8 @@ export function determineBump(subjects: string[], bodies: string[] = []): "major
 
     if (RELEASABLE_PREFIXES.has(parsed.prefix)) {
       hasReleasable = true;
-    } else if (!SKIP_PREFIXES.has(parsed.prefix)) {
-      // Unknown prefix — treat as releasable to be safe
-      hasReleasable = true;
     }
+    // Unknown prefix — skip, only explicit releasable prefixes trigger releases
   }
 
   if (hasBreaking) return "major";
@@ -121,7 +118,10 @@ async function getCommitsSince(ref: string | null): Promise<{ subjects: string[]
   const range = ref ? `${ref}..HEAD` : "HEAD";
   // Use %x00 as delimiter between subject and body, %x01 between commits
   const format = "%s%x00%b%x01";
-  const proc = Bun.spawn(["git", "log", range, `--format=${format}`], {
+  const args = ["git", "log", range, `--format=${format}`];
+  // Cap history scan when no prior tag exists to avoid reading entire repo
+  if (!ref) args.push("--max-count=100");
+  const proc = Bun.spawn(args, {
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -171,6 +171,7 @@ export async function release(packageJsonPath?: string): Promise<ReleaseResult> 
 
 // CLI entry point
 if (import.meta.main) {
+  const createTag = process.argv.includes("--tag");
   try {
     const result = await release();
     if (result.version) {
@@ -178,6 +179,20 @@ if (import.meta.main) {
       console.log(result.version);
       // Log bump type to stderr for human debugging
       console.error(`Bumped ${result.bump}: ${result.version}`);
+
+      if (createTag) {
+        const tag = `v${result.version}`;
+        const tagProc = Bun.spawn(["git", "tag", tag], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const tagCode = await tagProc.exited;
+        if (tagCode !== 0) {
+          const stderr = await new Response(tagProc.stderr).text();
+          throw new Error(`Failed to create tag ${tag}: ${stderr.trim()}`);
+        }
+        console.error(`Created tag: ${tag}`);
+      }
     } else {
       console.error("No releasable commits since last tag — skipping release");
     }
