@@ -146,6 +146,8 @@ interface WsSession {
   clearing: boolean;
   /** Claude Code's own session ID (from system/init), used for JSONL file lookup. */
   claudeSessionId: string | null;
+  /** Captured stderr lines from the spawned process (ring buffer, last 50 lines). */
+  stderrLines: string[];
 }
 
 interface WsData {
@@ -268,6 +270,7 @@ export class ClaudeWsServer {
       keepAliveTimer: null,
       clearing: false,
       claudeSessionId: null,
+      stderrLines: [],
     });
   }
 
@@ -327,14 +330,25 @@ export class ClaudeWsServer {
     session.proc = proc;
     session.spawnAlive = true;
 
+    // Drain stderr immediately to prevent pipe buffer deadlock.
+    // On macOS the pipe buffer is 64KB — if the child writes more than that
+    // without the parent reading, the child blocks on the write syscall.
+    // This is the root cause of #546: hook-created worktrees in complex repos
+    // (git-crypt, large projects) produce enough stderr during Claude startup
+    // to fill the buffer, blocking Claude before it connects via WebSocket.
+    if (proc.stderr) {
+      drainStderr(proc.stderr, session.stderrLines).catch(() => {
+        /* stream closed — expected on process exit */
+      });
+    }
+
     // Watch for process exit — mark spawn as dead but don't terminate the session
-    proc.exited.then(async () => {
+    proc.exited.then(() => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      const stderrText = proc.stderr ? (await new Response(proc.stderr).text()).trim() : "";
-      const suffix = stderrText ? `: ${stderrText}` : "";
+      const suffix = session.stderrLines.length > 0 ? `: ${session.stderrLines.join("\n")}` : "";
       this.logger.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
       // Move to disconnected state regardless of WS — spawn is gone
       const events = session.state.disconnect("spawn exited");
@@ -495,8 +509,9 @@ export class ClaudeWsServer {
     // Update config prompt to empty — next sendPrompt() will carry real work
     session.config.prompt = "";
 
-    // Clear transcript for fresh start
+    // Clear transcript and stderr for fresh start
     session.transcript.length = 0;
+    session.stderrLines.length = 0;
 
     // Respawn
     this.spawnClaude(sessionId);
@@ -1231,12 +1246,55 @@ export function readJsonlTranscript(
   }
 }
 
+// ── Stderr drain ──
+
+const MAX_STDERR_LINES = 50;
+
+/**
+ * Actively consume a stderr ReadableStream into a ring buffer of lines.
+ *
+ * CRITICAL: Without this, piped stderr fills the OS pipe buffer (64KB on macOS)
+ * and the child process blocks on the next write — deadlocking before it can
+ * connect via WebSocket. This is the fix for #546.
+ */
+async function drainStderr(stream: ReadableStream<Uint8Array>, lines: string[]): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let partial = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      partial += decoder.decode(value, { stream: true });
+      const parts = partial.split("\n");
+      partial = parts.pop() ?? "";
+      for (const line of parts) {
+        if (line.length === 0) continue;
+        lines.push(line);
+        if (lines.length > MAX_STDERR_LINES) lines.shift();
+      }
+    }
+    // Flush any remaining partial line
+    if (partial.length > 0) {
+      lines.push(partial);
+      if (lines.length > MAX_STDERR_LINES) lines.shift();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // ── Default spawn ──
 
 function defaultSpawn(
   cmd: string[],
   opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
-): { pid: number; exited: Promise<number>; kill: (signal?: number) => void } {
+): {
+  pid: number;
+  exited: Promise<number>;
+  kill: (signal?: number) => void;
+  stderr?: ReadableStream<Uint8Array> | null;
+} {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
   const env = { ...process.env };
@@ -1253,5 +1311,6 @@ function defaultSpawn(
     pid: proc.pid,
     exited: proc.exited,
     kill: (signal?: number) => proc.kill(signal),
+    stderr: proc.stderr,
   };
 }
