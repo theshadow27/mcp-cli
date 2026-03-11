@@ -53,7 +53,7 @@ describe("itemToTranscript", () => {
     });
   });
 
-  test("fileChange → tool_use + tool_result pair", () => {
+  test("fileChange → one tool_use + tool_result pair per change", () => {
     const item: ThreadItem = {
       id: "4",
       type: "fileChange",
@@ -64,21 +64,77 @@ describe("itemToTranscript", () => {
       ],
     };
     const entries = itemToTranscript(item, ts);
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(4);
     expect(entries[0]).toEqual({
       role: "tool_use",
       tool: "Write",
-      content: "src/foo.ts, src/bar.ts",
-      input: { files: ["src/foo.ts", "src/bar.ts"] },
+      content: "src/foo.ts",
+      input: { file: "src/foo.ts", kind: "modify" },
       timestamp: ts,
     });
     expect(entries[1]).toEqual({
       role: "tool_result",
       tool: "Write",
-      content: "Updated 2 file(s)",
-      diff: "--- a/src/foo.ts\n+++ b/src/foo.ts\n+new file",
+      content: "Updated src/foo.ts",
+      diff: "--- a/src/foo.ts\n+++ b/src/foo.ts",
       timestamp: ts,
     });
+    expect(entries[2]).toEqual({
+      role: "tool_use",
+      tool: "Write",
+      content: "src/bar.ts",
+      input: { file: "src/bar.ts", kind: "add" },
+      timestamp: ts,
+    });
+    expect(entries[3]).toEqual({
+      role: "tool_result",
+      tool: "Write",
+      content: "Updated src/bar.ts",
+      diff: "+new file",
+      timestamp: ts,
+    });
+  });
+
+  test("fileChange with delete → uses Delete tool", () => {
+    const item: ThreadItem = {
+      id: "4b",
+      type: "fileChange",
+      status: "completed",
+      changes: [{ path: "src/old.ts", kind: "delete", diff: "-removed" }],
+    };
+    const entries = itemToTranscript(item, ts);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toEqual({
+      role: "tool_use",
+      tool: "Delete",
+      content: "src/old.ts",
+      input: { file: "src/old.ts", kind: "delete" },
+      timestamp: ts,
+    });
+    expect(entries[1]).toEqual({
+      role: "tool_result",
+      tool: "Delete",
+      content: "Deleted src/old.ts",
+      diff: "-removed",
+      timestamp: ts,
+    });
+  });
+
+  test("fileChange with mixed kinds → correct tool per change", () => {
+    const item: ThreadItem = {
+      id: "4c",
+      type: "fileChange",
+      status: "completed",
+      changes: [
+        { path: "src/new.ts", kind: "add", diff: "+added" },
+        { path: "src/gone.ts", kind: "delete", diff: "-removed" },
+      ],
+    };
+    const entries = itemToTranscript(item, ts);
+    expect(entries).toHaveLength(4);
+    expect(entries[0]?.tool).toBe("Write");
+    expect(entries[2]?.tool).toBe("Delete");
+    expect(entries[3]?.content).toBe("Deleted src/gone.ts");
   });
 
   test("reasoning → empty (not transcribed)", () => {
