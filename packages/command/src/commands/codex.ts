@@ -98,6 +98,7 @@ interface CodexSpawnArgs {
   timeout: number | undefined;
   model: string | undefined;
   wait: boolean;
+  json: boolean;
   error: string | undefined;
 }
 
@@ -107,12 +108,15 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
   let timeout: number | undefined;
   let model: string | undefined;
   let wait = false;
+  let json = false;
   const allow: string[] = [];
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--task" || arg === "-t") {
+    if (arg === "--json") {
+      json = true;
+    } else if (arg === "--task" || arg === "-t") {
       task = args[++i];
       if (!task) error = "--task requires a value";
     } else if (arg === "--allow") {
@@ -145,7 +149,7 @@ export function parseCodexSpawnArgs(args: string[]): CodexSpawnArgs {
     }
   }
 
-  return { task, allow, cwd, timeout, model, wait, error };
+  return { task, allow, cwd, timeout, model, wait, json, error };
 }
 
 async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
@@ -169,7 +173,23 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   if (parsed.wait) toolArgs.wait = true;
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
-  console.log(formatToolResult(result));
+  const text = formatToolResult(result);
+
+  if (parsed.json) {
+    console.log(text);
+    return;
+  }
+
+  // Human-friendly: extract sessionId from JSON result when possible
+  try {
+    const data = JSON.parse(text) as { sessionId?: string };
+    if (data.sessionId) {
+      console.error(`Codex session started: ${data.sessionId.slice(0, 8)}`);
+    }
+  } catch {
+    // Not JSON — fall through
+  }
+  console.log(text);
 }
 
 // ── List ──
@@ -416,6 +436,7 @@ function printCodexUsage(): void {
 
 Usage:
   mcx codex spawn --task "description"    Start a new Codex session (non-blocking)
+  mcx codex spawn --task "..." --json     Machine-parseable JSON output
   mcx codex spawn "description"           Shorthand (positional task)
   mcx codex ls                            List active Codex sessions
   mcx codex send <session> <message>      Send follow-up prompt (non-blocking)
@@ -429,6 +450,7 @@ Usage:
 
 Spawn options:
   --task, -t "description"    Task prompt for Codex
+  --json                      Output raw JSON (for scripting/orchestration)
   --wait                      Block until Codex produces a result
   --model, -m <name>          Model to use (default: provider default)
   --allow <tools...>          Pre-approved tool patterns
