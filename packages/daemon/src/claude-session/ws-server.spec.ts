@@ -2573,3 +2573,143 @@ describe("stderr drain", () => {
     expect(ms.lastCmd).not.toContain("--worktree");
   });
 });
+
+// ── restoreSessions ──
+
+describe("restoreSessions", () => {
+  let server: ClaudeWsServer;
+
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  test("restores sessions into disconnected state", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    const count = server.restoreSessions([
+      {
+        sessionId: "restored-1",
+        pid: 9999,
+        state: "idle",
+        model: "claude-opus-4-6",
+        cwd: "/test/dir",
+        worktree: null,
+        totalCost: 0.05,
+        totalTokens: 1500,
+      },
+    ]);
+
+    expect(count).toBe(1);
+    expect(server.sessionCount).toBe(1);
+
+    const sessions = server.listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].sessionId).toBe("restored-1");
+    expect(sessions[0].state).toBe("disconnected");
+    expect(sessions[0].model).toBe("claude-opus-4-6");
+    expect(sessions[0].cwd).toBe("/test/dir");
+    expect(sessions[0].cost).toBe(0.05);
+    expect(sessions[0].tokens).toBe(1500);
+    expect(sessions[0].processAlive).toBe(false);
+    expect(sessions[0].wsConnected).toBe(false);
+  });
+
+  test("skips sessions already in the map", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    // Prepare a session normally
+    server.prepareSession("existing-1", { prompt: "hello" });
+
+    // Try to restore the same session ID
+    const count = server.restoreSessions([
+      {
+        sessionId: "existing-1",
+        pid: null,
+        state: "connecting",
+        model: null,
+        cwd: null,
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    expect(count).toBe(0);
+    // Original session still there, only 1 total
+    expect(server.sessionCount).toBe(1);
+  });
+
+  test("restored session accepts WS reconnection", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "reconnect-1",
+        pid: null,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    // Simulate Claude CLI reconnecting
+    const ws = await connectMockClaude(port, "reconnect-1");
+    const msg = await waitForMessage(ws);
+    expect(msg).toBeTruthy(); // Should receive the initial user message
+
+    // Session should transition from disconnected → connecting
+    const sessions = server.listSessions();
+    const session = sessions.find((s) => s.sessionId === "reconnect-1");
+    expect(session).toBeDefined();
+    // After WS open, state transitions from disconnected → connecting (via reconnect())
+    // then the initial user message is sent
+    expect(session?.state).not.toBe("disconnected");
+
+    ws.close();
+  });
+
+  test("restores multiple sessions", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    const count = server.restoreSessions([
+      {
+        sessionId: "multi-1",
+        pid: 1001,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/a",
+        worktree: null,
+        totalCost: 0.01,
+        totalTokens: 100,
+      },
+      {
+        sessionId: "multi-2",
+        pid: 1002,
+        state: "active",
+        model: "claude-opus-4-6",
+        cwd: "/b",
+        worktree: "/b-wt",
+        totalCost: 0.1,
+        totalTokens: 5000,
+      },
+    ]);
+
+    expect(count).toBe(2);
+    expect(server.sessionCount).toBe(2);
+
+    const sessions = server.listSessions();
+    const s1 = sessions.find((s) => s.sessionId === "multi-1");
+    const s2 = sessions.find((s) => s.sessionId === "multi-2");
+    expect(s1?.state).toBe("disconnected");
+    expect(s2?.state).toBe("disconnected");
+    expect(s2?.worktree).toBe("/b-wt");
+  });
+});

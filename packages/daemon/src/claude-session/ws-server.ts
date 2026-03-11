@@ -283,6 +283,59 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Restore sessions from persisted state (e.g., after daemon restart).
+   * Creates session entries in `disconnected` state with no WS or process.
+   * When Claude CLI reconnects to `/session/{id}`, the existing handleOpen()
+   * will transition the session back to `connecting`.
+   */
+  restoreSessions(
+    sessions: Array<{
+      sessionId: string;
+      pid: number | null;
+      state: string;
+      model: string | null;
+      cwd: string | null;
+      worktree: string | null;
+      totalCost: number;
+      totalTokens: number;
+    }>,
+  ): number {
+    let restored = 0;
+    for (const s of sessions) {
+      // Skip sessions already in the map (shouldn't happen, but be safe)
+      if (this.sessions.has(s.sessionId)) continue;
+
+      const state = new SessionState(s.sessionId);
+      state.state = "disconnected";
+      state.model = s.model;
+      state.cwd = s.cwd;
+      state.cost = s.totalCost;
+      state.tokens = s.totalTokens;
+
+      const router = new PermissionRouter("auto");
+
+      this.sessions.set(s.sessionId, {
+        state,
+        router,
+        ws: null,
+        transcript: [],
+        config: { prompt: "", worktree: s.worktree ?? undefined },
+        pid: s.pid,
+        proc: null,
+        spawnAlive: false,
+        worktree: s.worktree,
+        resultWaiters: [],
+        keepAliveTimer: null,
+        clearing: false,
+        claudeSessionId: null,
+      });
+      restored++;
+      this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
+    }
+    return restored;
+  }
+
+  /**
    * Prepare a session for an incoming Claude CLI connection.
    * Call this before spawning the Claude process.
    */
