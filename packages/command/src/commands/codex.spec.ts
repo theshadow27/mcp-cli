@@ -16,6 +16,7 @@ function makeDeps(overrides?: Partial<CodexDeps>): CodexDeps {
     getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ttyOpen: mock(async () => {}),
+    getGitRoot: mock(() => null),
     ...overrides,
   };
 }

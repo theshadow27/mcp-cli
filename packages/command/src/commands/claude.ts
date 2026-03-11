@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   buildHookEnv,
   fixCoreBare,
@@ -45,6 +45,8 @@ export interface ClaudeDeps {
   ) => { stdout: string; stderr: string; exitCode: number };
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
   ttyOpen: (args: string[]) => Promise<void>;
+  /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
+  getGitRoot: () => string | null;
 }
 
 /** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
@@ -113,6 +115,31 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus
   }
 }
 
+/**
+ * Resolve the git repo root for the current working directory.
+ * Uses --git-common-dir to resolve to the main repo root, not a worktree.
+ * Returns null if not inside a git repo.
+ */
+function getGitRoot(): string | null {
+  try {
+    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    if (result.exitCode !== 0) return null;
+    const commonDir = result.stdout.toString().trim();
+    if (!commonDir) return null;
+    // --git-common-dir returns the .git dir (e.g. /repo/.git or /repo/.git/worktrees/foo/../../)
+    // Resolve to the parent to get the repo root
+    const resolved = resolve(commonDir);
+    // If it ends with .git, take the parent; otherwise it's already the repo root
+    return resolved.endsWith(".git") ? dirname(resolved) : resolved;
+  } catch {
+    return null;
+  }
+}
+
 const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
@@ -136,6 +163,7 @@ const defaultDeps: ClaudeDeps = {
     };
   },
   ttyOpen: (args) => ttyOpen(args),
+  getGitRoot,
 };
 
 // ── Entry point ──
@@ -719,6 +747,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
   const showPr = args.includes("--pr");
+  const showAll = args.includes("--all") || args.includes("-a");
   const result = await d.callTool("claude_session_list", {});
   const text = formatToolResult(result);
 
@@ -727,12 +756,20 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
-  let sessions: SessionInfo[];
+  let sessions: (SessionInfo & { repoRoot?: string | null })[];
   try {
     sessions = JSON.parse(text);
   } catch {
     console.log(text);
     return;
+  }
+
+  // Scope to current repo unless --all
+  if (!showAll) {
+    const gitRoot = d.getGitRoot();
+    if (gitRoot) {
+      sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === gitRoot);
+    }
   }
 
   if (sessions.length === 0) {
@@ -1085,6 +1122,7 @@ export interface WaitArgs {
   timeout: number | undefined;
   afterSeq: number | undefined;
   short: boolean;
+  all: boolean;
   error: string | undefined;
 }
 
@@ -1093,6 +1131,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   let timeout: number | undefined;
   let afterSeq: number | undefined;
   let short = false;
+  let all = false;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -1115,12 +1154,14 @@ export function parseWaitArgs(args: string[]): WaitArgs {
       }
     } else if (arg === "--short") {
       short = true;
+    } else if (arg === "--all" || arg === "-a") {
+      all = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, timeout, afterSeq, short, error };
+  return { sessionPrefix, timeout, afterSeq, short, all, error };
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1130,6 +1171,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     d.printError(parsed.error);
     d.exit(1);
   }
+
+  // Determine repo-root filter (only when no explicit session and no --all)
+  const repoFilter = !parsed.all && !parsed.sessionPrefix ? d.getGitRoot() : null;
 
   const toolArgs: Record<string, unknown> = {};
 
@@ -1148,6 +1192,38 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   const text = formatToolResult(result);
 
   if (!parsed.short) {
+    // For non-short JSON output, filter cursor-based events by repo
+    if (repoFilter) {
+      try {
+        const data = JSON.parse(text);
+        if (Array.isArray(data)) {
+          // Timeout fallback: session list
+          const filtered = data.filter((s: Record<string, unknown>) => !s.repoRoot || s.repoRoot === repoFilter);
+          console.log(JSON.stringify(filtered, null, 2));
+          return;
+        }
+        if (data && typeof data === "object" && "events" in data && Array.isArray(data.events)) {
+          // Cursor-based: filter events by session's repoRoot
+          data.events = data.events.filter((e: Record<string, unknown>) => {
+            const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
+            return !repo || repo === repoFilter;
+          });
+          console.log(JSON.stringify(data, null, 2));
+          return;
+        }
+        // Single event (legacy): check session snapshot
+        if (data && typeof data === "object" && data.session) {
+          const sessionRepo = (data.session as Record<string, unknown>).repoRoot;
+          if (sessionRepo && sessionRepo !== repoFilter) {
+            // Event is for a different repo — treat as empty
+            console.log("[]");
+            return;
+          }
+        }
+      } catch {
+        // Not JSON, fall through
+      }
+    }
     console.log(text);
     return;
   }
@@ -1163,21 +1239,61 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
 
   // Timeout fallback returns a session list array
   if (Array.isArray(data)) {
-    for (const s of data as Array<{
+    let sessions = data as Array<{
       sessionId: string;
       state: string;
       model?: string | null;
       cost?: number | null;
       tokens?: number;
       numTurns?: number;
-    }>) {
+      repoRoot?: string | null;
+    }>;
+    if (repoFilter) {
+      sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoFilter);
+    }
+    for (const s of sessions) {
       console.log(formatSessionShort(s));
     }
     return;
   }
 
+  // Cursor-based result with events array
+  if (data && typeof data === "object" && "events" in data) {
+    const waitResult = data as { seq: number; events: Array<Record<string, unknown>> };
+    let events = waitResult.events;
+    if (repoFilter) {
+      events = events.filter((e) => {
+        const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
+        return !repo || repo === repoFilter;
+      });
+    }
+    for (const e of events) {
+      const session = e.session as Record<string, unknown> | undefined;
+      const id = session?.sessionId ? String(session.sessionId).slice(0, 8) : "—";
+      const event = (e.event as string) ?? "—";
+      const cost = session?.cost && (session.cost as number) > 0 ? `$${(session.cost as number).toFixed(4)}` : "—";
+      const turns = session?.numTurns !== undefined ? String(session.numTurns) : "—";
+      const preview = (e.result as string) ? (e.result as string).slice(0, 100) : "";
+      console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+    }
+    return;
+  }
+
   // Normal event result: SESSION EVENT COST TURNS RESULT_PREVIEW
-  const evt = data as { sessionId?: string; event?: string; cost?: number; numTurns?: number; result?: string };
+  const evt = data as {
+    sessionId?: string;
+    event?: string;
+    cost?: number;
+    numTurns?: number;
+    result?: string;
+    session?: { repoRoot?: string | null };
+  };
+
+  // Skip events from other repos
+  if (repoFilter && evt.session && evt.session.repoRoot !== repoFilter) {
+    return;
+  }
+
   const id = evt.sessionId ? evt.sessionId.slice(0, 8) : "—";
   const event = evt.event ?? "—";
   const cost = evt.cost && evt.cost > 0 ? `$${evt.cost.toFixed(4)}` : "—";
@@ -1414,9 +1530,9 @@ Usage:
   mcx claude resume <worktree> <session>   Resume specific session (--resume <id>)
   mcx claude resume <worktree> --fresh     Resume with git-context prompt (no history)
   mcx claude resume --all                  Resume all orphaned worktrees
-  mcx claude ls [--pr]                     List active sessions (--pr shows PR number/status)
+  mcx claude ls [--pr] [--all]             List sessions (scoped to current repo by default)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
-  mcx claude wait [session]                Block until a session event occurs
+  mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
   mcx claude log <session> [--last N]      View session transcript
@@ -1447,6 +1563,9 @@ Resume options:
 
 Send options:
   --wait                      Block until Claude produces a result
+
+List/Wait options:
+  --all, -a                   Show all sessions (bypass repo scoping)
 
 Wait options:
   --after <seq>               Sequence cursor for race-free polling (from previous response)

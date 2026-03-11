@@ -57,6 +57,7 @@ const defaultDeps: CodexDeps = {
     };
   },
   ttyOpen: async () => {},
+  getGitRoot: () => null,
 };
 
 // ── Entry point ──
