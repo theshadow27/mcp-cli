@@ -114,6 +114,7 @@ const daemonWorkers = [
   "packages/daemon/src/alias-server-worker.ts",
   "packages/daemon/src/alias-worker.ts",
   "packages/daemon/src/claude-session-worker.ts",
+  "packages/daemon/src/codex-session-worker.ts",
 ];
 
 interface BinaryBuildConfig {

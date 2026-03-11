@@ -29,6 +29,7 @@ import {
 } from "@mcp-cli/core";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
+import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
@@ -181,6 +182,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const aliasServer = new AliasServer(db, daemonId);
   const claudeServer = new ClaudeServer(db, daemonId, undefined, logger);
 
+  // Codex server: only created if `codex` binary is installed
+  const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
+
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
   const serversTotal = metrics.gauge("mcpd_servers_total");
@@ -189,7 +194,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Periodically prune sessions whose processes have exited (every 30s).
   // This ensures dead sessions are cleaned up promptly, not just at idle-timeout boundary.
-  const pruneInterval = setInterval(() => claudeServer.pruneDeadSessions(), 30_000);
+  const pruneInterval = setInterval(() => {
+    claudeServer.pruneDeadSessions();
+    codexServer?.pruneDeadSessions();
+  }, 30_000);
 
   // Update uptime and server gauges periodically
   const metricsInterval = setInterval(() => {
@@ -219,7 +227,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       }
       // Prune sessions whose processes have exited before checking
       claudeServer.pruneDeadSessions();
-      if (claudeServer.hasActiveSessions()) {
+      codexServer?.pruneDeadSessions();
+      if (claudeServer.hasActiveSessions() || codexServer?.hasActiveSessions()) {
         logger.debug("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
         return;
@@ -271,8 +280,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   ipcServer.start();
 
-  // Reset idle timer on Claude session worker events (db:upsert, db:state, db:cost)
+  // Reset idle timer on Claude/Codex session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
+  if (codexServer) {
+    codexServer.onActivity = () => resetIdleTimer();
+  }
 
   // Start idle timer
   resetIdleTimer();
@@ -316,6 +328,28 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         };
       })(),
     );
+
+    if (codexServer) {
+      pool.registerPendingVirtualServer(
+        "_codex",
+        (async () => {
+          try {
+            const { client: codexClient, transport: codexTransport } = await codexServer.start();
+            const codexTools = buildCodexToolCache();
+            pool.registerVirtualServer("_codex", codexClient, codexTransport, codexTools);
+            logger.info("[mcpd] Codex session server started");
+          } catch (err) {
+            logger.error(`[mcpd] Failed to start Codex session server: ${err}`);
+          }
+
+          codexServer.onRestarted = (client, transport) => {
+            const codexTools = buildCodexToolCache();
+            pool.registerVirtualServer("_codex", client, transport, codexTools);
+            logger.info("[mcpd] Codex session server re-registered after crash recovery");
+          };
+        })(),
+      );
+    }
   }
 
   // Graceful shutdown — re-entrant safe
@@ -333,6 +367,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // Wait for any in-progress virtual server startups before stopping them
       await pool.awaitPendingServers();
       await claudeServer.stop();
+      if (codexServer) await codexServer.stop();
       await aliasServer.stop();
       await pool.closeAll();
       db.close();
