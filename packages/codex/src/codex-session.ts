@@ -21,6 +21,9 @@ import { CodexRpcClient } from "./codex-rpc";
 import { type TranscriptEntry, itemToTranscript } from "./codex-transcript";
 import type { InitializeResult, Thread, ThreadItem, Turn } from "./schemas";
 
+/** Default watchdog timeout: 5 minutes with no events kills the process. */
+export const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface CodexSessionConfig {
   /** Working directory for the codex process. */
   cwd: string;
@@ -48,6 +51,8 @@ export interface CodexSessionConfig {
   command?: string[];
   /** Extra environment variables. */
   env?: Record<string, string>;
+  /** Watchdog timeout in ms. Defaults to WATCHDOG_TIMEOUT_MS (5 min). Set 0 to disable. */
+  watchdogTimeoutMs?: number;
 }
 
 export type SessionEventHandler = (event: AgentSessionEvent) => void;
@@ -66,6 +71,8 @@ export class CodexSession {
   private readonly transcript: TranscriptEntry[] = [];
   private model: string | null = null;
   private readonly eventHandler: SessionEventHandler;
+  private readonly watchdogTimeoutMs: number;
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Resolvers for waitForResult/waitForEvent. */
   private resultWaiters: Array<(event: AgentSessionEvent) => void> = [];
@@ -77,6 +84,7 @@ export class CodexSession {
     this.eventHandler = onEvent;
     this.eventState = createEventMapState();
     this.rules = buildRules(config.allowedTools, config.disallowedTools);
+    this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? WATCHDOG_TIMEOUT_MS;
   }
 
   /** Start the session: spawn process, handshake, start thread and first turn. */
@@ -191,6 +199,7 @@ export class CodexSession {
 
   /** Terminate the session. */
   terminate(): void {
+    this.clearWatchdog();
     this.proc?.kill();
     this.rpc?.rejectAll("Session terminated");
     this.setState("ended");
@@ -284,6 +293,7 @@ export class CodexSession {
     })) as Turn;
 
     this.currentTurn = turnResult;
+    this.resetWatchdog();
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
@@ -294,6 +304,7 @@ export class CodexSession {
   private handleNotification(method: string, params: Record<string, unknown>): void {
     // Skip legacy duplicate events
     if (isLegacyEvent(method)) return;
+    this.resetWatchdog();
 
     // Track item metadata for transcript
     if (method === "item/completed") {
@@ -309,9 +320,11 @@ export class CodexSession {
     for (const event of events) {
       // Update state based on event type
       if (event.type === "session:result") {
+        this.clearWatchdog();
         this.setState("idle");
         this.currentTurn = null;
       } else if (event.type === "session:error") {
+        this.clearWatchdog();
         this.setState("idle");
         this.currentTurn = null;
       }
@@ -320,6 +333,7 @@ export class CodexSession {
   }
 
   private handleServerRequest(id: number | string, method: string, params: Record<string, unknown>): void {
+    this.resetWatchdog();
     // Map approval requests to permission requests
     const permission = mapApprovalToPermission(method, params, this.eventState);
     if (!permission) {
@@ -358,6 +372,7 @@ export class CodexSession {
   }
 
   private handleExit(code: number | null, _signal: string | null): void {
+    this.clearWatchdog();
     this.rpc?.rejectAll("Process exited");
 
     if (this.state !== "ended") {
@@ -383,6 +398,33 @@ export class CodexSession {
     const endedEvent: AgentSessionEvent = { type: "session:ended" };
     for (const w of rw) w(endedEvent);
     for (const w of ew) w(endedEvent);
+  }
+
+  private resetWatchdog(): void {
+    if (this.watchdogTimeoutMs <= 0) return;
+    this.clearWatchdog();
+    this.watchdogTimer = setTimeout(() => {
+      this.watchdogTimer = null;
+      this.proc?.kill();
+      this.rpc?.rejectAll("Watchdog timeout");
+      if (this.state !== "ended") {
+        this.setState("ended");
+        this.emit({
+          type: "session:error",
+          errors: [`Codex process watchdog timeout — no events for ${Math.round(this.watchdogTimeoutMs / 1000)}s`],
+          cost: null,
+        });
+        this.emit({ type: "session:ended" });
+      }
+      this.rejectAllWaiters("Watchdog timeout");
+    }, this.watchdogTimeoutMs);
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdogTimer !== null) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
   }
 
   private setState(newState: AgentSessionState): void {

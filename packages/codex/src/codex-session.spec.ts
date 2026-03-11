@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
-import { CodexSession } from "./codex-session";
+import { CodexSession, WATCHDOG_TIMEOUT_MS } from "./codex-session";
 
 const FAKE_SERVER = join(import.meta.dirname, "fake-codex-server.ts");
 const TEST_CWD = process.cwd();
@@ -356,5 +356,85 @@ describe("CodexSession (with fake codex server)", () => {
 
     // currentTurn is null after turn/completed
     await expect(session.interrupt()).resolves.toBeUndefined();
+  });
+});
+
+// ── Watchdog tests ─────────────────────────────────────────────────────────
+
+describe("CodexSession watchdog", () => {
+  test("WATCHDOG_TIMEOUT_MS is 5 minutes", () => {
+    expect(WATCHDOG_TIMEOUT_MS).toBe(5 * 60 * 1000);
+  });
+
+  test("watchdog fires when process goes silent", async () => {
+    const { session, events } = makeSession({
+      command: fakeCommand("silent"),
+      watchdogTimeoutMs: 200, // 200ms for testing
+    });
+
+    const resultPromise = session.waitForResult(5000);
+    await session.start();
+    const result = await resultPromise;
+
+    // Should have fired watchdog → session:error + session:ended
+    expect(result.type).toBe("session:error");
+    if (result.type === "session:error") {
+      expect(result.errors[0]).toMatch(/watchdog timeout/i);
+    }
+    expect(session.currentState).toBe("ended");
+    expect(events.some((e) => e.type === "session:ended")).toBe(true);
+  });
+
+  test("watchdog does not fire when events arrive in time", async () => {
+    const { session, events } = makeSession({
+      command: fakeCommand("simple"),
+      watchdogTimeoutMs: 5000, // generous — turn completes in ~30ms
+    });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+
+    expect(result.type).toBe("session:result");
+    // No watchdog error
+    expect(events.some((e) => e.type === "session:error")).toBe(false);
+  });
+
+  test("watchdog disabled when watchdogTimeoutMs is 0", async () => {
+    const { session, events } = makeSession({
+      command: fakeCommand("silent"),
+      watchdogTimeoutMs: 0,
+    });
+
+    await session.start();
+
+    // Wait a bit — watchdog should NOT fire
+    await Bun.sleep(100);
+
+    expect(session.currentState).not.toBe("ended");
+    expect(events.some((e) => e.type === "session:error")).toBe(false);
+
+    // Cleanup
+    session.terminate();
+  });
+
+  test("terminate() clears watchdog without firing", async () => {
+    const { session, events } = makeSession({
+      command: fakeCommand("silent"),
+      watchdogTimeoutMs: 200,
+    });
+
+    await session.start();
+    // Terminate before watchdog fires
+    session.terminate();
+
+    // Wait past the watchdog timeout
+    await Bun.sleep(300);
+
+    // Should only have the terminate-caused events, no watchdog error
+    const errorEvents = events.filter(
+      (e): e is Extract<AgentSessionEvent, { type: "session:error" }> => e.type === "session:error",
+    );
+    expect(errorEvents.some((e) => e.errors[0]?.includes("watchdog"))).toBe(false);
   });
 });
