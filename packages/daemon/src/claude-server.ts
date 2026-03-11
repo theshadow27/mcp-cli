@@ -92,17 +92,20 @@ interface ReadyMessage {
 
 type WorkerEvent = DbUpsert | DbState | DbCost | DbDisconnected | DbEnd | DbMetric | DbHistogram | ReadyMessage;
 
+/** Compile-time exhaustiveness: TS errors if a WorkerEvent["type"] member is missing. */
+const WORKER_EVENT_TYPE_MAP: Record<WorkerEvent["type"], true> = {
+  ready: true,
+  "db:upsert": true,
+  "db:state": true,
+  "db:cost": true,
+  "db:disconnected": true,
+  "db:end": true,
+  "metrics:inc": true,
+  "metrics:observe": true,
+};
+
 /** Explicit set of known worker event types — prevents ambiguous routing with MCP messages. */
-const WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<WorkerEvent["type"]>([
-  "ready",
-  "db:upsert",
-  "db:state",
-  "db:cost",
-  "db:disconnected",
-  "db:end",
-  "metrics:inc",
-  "metrics:observe",
-]);
+export const WORKER_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(WORKER_EVENT_TYPE_MAP));
 
 export function isWorkerEvent(data: unknown): data is WorkerEvent {
   return (

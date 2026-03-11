@@ -2,8 +2,38 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { silentLogger } from "@mcp-cli/core";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
-import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
+import {
+  CLAUDE_SERVER_NAME,
+  ClaudeServer,
+  WORKER_EVENT_TYPES,
+  buildClaudeToolCache,
+  isWorkerEvent,
+} from "./claude-server";
 import { StateDb } from "./db/state";
+
+// ── WORKER_EVENT_TYPES exhaustiveness ──
+
+describe("WORKER_EVENT_TYPES", () => {
+  test("covers all WorkerEvent type literals", () => {
+    // This list must be updated when new WorkerEvent types are added.
+    // The Record<WorkerEvent["type"], true> in claude-server.ts provides
+    // compile-time enforcement; this test catches runtime drift.
+    const expected: string[] = [
+      "ready",
+      "db:upsert",
+      "db:state",
+      "db:cost",
+      "db:disconnected",
+      "db:end",
+      "metrics:inc",
+      "metrics:observe",
+    ];
+    expect(WORKER_EVENT_TYPES.size).toBe(expected.length);
+    for (const t of expected) {
+      expect(WORKER_EVENT_TYPES.has(t)).toBe(true);
+    }
+  });
+});
 
 // ── isWorkerEvent ──
 
