@@ -51,7 +51,16 @@ export const CLAUDE_TOOLS = [
   {
     name: "claude_session_list",
     description: "List all active Claude Code sessions with their status, model, cost, and token usage.",
-    inputSchema: { type: "object" as const, properties: {} },
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        repoRoot: {
+          type: "string",
+          description:
+            "Filter sessions to those belonging to this repo root (sessions with null repoRoot pass through)",
+        },
+      },
+    },
   },
   {
     name: "claude_session_status",
@@ -112,6 +121,11 @@ export const CLAUDE_TOOLS = [
         afterSeq: {
           type: "number",
           description: "Sequence cursor: return events after this seq number (enables race-free long-poll)",
+        },
+        repoRoot: {
+          type: "string",
+          description:
+            "Filter results to sessions belonging to this repo root (sessions with null repoRoot pass through)",
         },
       },
     },
