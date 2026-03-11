@@ -48,7 +48,10 @@ export class CodexRpcClient {
       case "response": {
         const id = msg.id as number | string;
         const pending = this.pending.get(id);
-        if (!pending) return; // orphaned response
+        if (!pending) {
+          console.warn(`[codex-rpc] Orphaned response for id ${id} — request may have timed out`);
+          return;
+        }
         this.pending.delete(id);
         clearTimeout(pending.timer);
         if ("error" in msg && msg.error) {
