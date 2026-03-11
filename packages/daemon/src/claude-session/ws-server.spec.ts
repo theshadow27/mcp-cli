@@ -2191,3 +2191,163 @@ describe("getTranscript JSONL fallback", () => {
     ws.close();
   });
 });
+
+// ── Stderr drain (pipe buffer deadlock prevention, #546) ──
+
+describe("stderr drain", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(() => {
+    server?.stop();
+    server = undefined;
+  });
+
+  /**
+   * Create a mock spawn that returns a ReadableStream for stderr.
+   * The returned `writeStderr` function pushes text into the stream.
+   * Call `closeStderr` to close the stream (simulates process exit).
+   */
+  function mockSpawnWithStderr(): {
+    spawn: SpawnFn;
+    exitResolve: (code: number) => void;
+    writeStderr: (text: string) => void;
+    closeStderr: () => void;
+    killed: boolean;
+    lastCmd: string[];
+    lastOpts: { cwd?: string };
+  } {
+    let exitResolve: (code: number) => void = () => {};
+    let stderrController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const encoder = new TextEncoder();
+    const state = {
+      spawn: ((cmd: string[], opts: { cwd?: string }) => {
+        state.lastCmd = cmd;
+        state.lastOpts = { cwd: opts.cwd };
+        const stderrStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            stderrController = controller;
+          },
+        });
+        return {
+          pid: 99999,
+          exited: new Promise<number>((r) => {
+            exitResolve = r;
+          }),
+          kill: () => {
+            state.killed = true;
+            exitResolve(143);
+          },
+          stderr: stderrStream,
+        };
+      }) as SpawnFn,
+      exitResolve: (code: number) => exitResolve(code),
+      writeStderr: (text: string) => stderrController?.enqueue(encoder.encode(text)),
+      closeStderr: () => stderrController?.close(),
+      killed: false,
+      lastCmd: [] as string[],
+      lastOpts: {} as { cwd?: string },
+    };
+    return state;
+  }
+
+  test("stderr is drained and captured — session transitions to disconnected on exit", async () => {
+    const errors: string[] = [];
+    const capturingLogger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args.join(" ")) };
+    const ms = mockSpawnWithStderr();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: capturingLogger });
+    server.start();
+
+    server.prepareSession("stderr-test", { prompt: "Hello", cwd: "/test/worktree" });
+    server.spawnClaude("stderr-test");
+
+    // Write some stderr lines
+    ms.writeStderr("line 1\nline 2\nline 3\n");
+
+    // Close stderr and exit process — drain completes before exit handler reads buffer
+    ms.closeStderr();
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
+
+    // Session should have transitioned to disconnected (not stuck in connecting)
+    const sessions = server.listSessions();
+    expect(sessions[0].state).toBe("disconnected");
+
+    // Stderr lines should appear in the exit log
+    const exitLog = errors.find((e) => e.includes("Spawn exited"));
+    expect(exitLog).toContain("line 1");
+    expect(exitLog).toContain("line 3");
+  });
+
+  test("stderr drain prevents pipe buffer deadlock with large output", async () => {
+    const ms = mockSpawnWithStderr();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.start();
+
+    server.prepareSession("large-stderr", { prompt: "Hello", cwd: "/test/worktree" });
+    server.spawnClaude("large-stderr");
+
+    // Simulate >64KB of stderr (would deadlock without drain)
+    const bigLine = "X".repeat(1000);
+    for (let i = 0; i < 100; i++) {
+      ms.writeStderr(`${bigLine}\n`);
+    }
+
+    // Close stderr and resolve exit — if drain wasn't consuming, the writes above
+    // would have blocked (deadlock). Reaching this point proves the drain works.
+    ms.closeStderr();
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
+  });
+
+  test("stderrLines ring buffer limits to 50 lines", async () => {
+    const errors: string[] = [];
+    const capturingLogger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args.join(" ")) };
+    const ms = mockSpawnWithStderr();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: capturingLogger });
+    server.start();
+
+    server.prepareSession("ring-buffer-test", { prompt: "Hello" });
+    server.spawnClaude("ring-buffer-test");
+
+    // Write 80 lines — only last 50 should be kept
+    for (let i = 0; i < 80; i++) {
+      ms.writeStderr(`line ${i}\n`);
+    }
+
+    ms.closeStderr();
+    ms.exitResolve(1);
+    await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
+
+    // The exit handler logs all buffered stderr lines — verify ring buffer behavior
+    const exitLog = errors.find((e) => e.includes("Spawn exited"));
+    expect(exitLog).toBeDefined();
+    // Should NOT contain early lines (0-29) — they were evicted
+    expect(exitLog).not.toContain("line 0\n");
+    expect(exitLog).not.toContain("line 29\n");
+    // Should contain the last 50 lines (30-79)
+    expect(exitLog).toContain("line 30");
+    expect(exitLog).toContain("line 79");
+    // Count the lines in the logged suffix (after ": ")
+    const suffix = exitLog?.split(": ").slice(1).join(": ") ?? "";
+    const lineCount = suffix.split("\n").filter((l: string) => l.startsWith("line ")).length;
+    expect(lineCount).toBe(50);
+  });
+
+  test("spawnClaude passes cwd to spawn for hook-created worktrees", () => {
+    const ms = mockSpawnWithStderr();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.start();
+
+    server.prepareSession("cwd-test", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: "/external/worktree/my-tree",
+    });
+    server.spawnClaude("cwd-test");
+
+    // Verify cwd was passed to the spawn function
+    expect(ms.lastOpts.cwd).toBe("/external/worktree/my-tree");
+    // --worktree should NOT be in the command (hook pre-created)
+    expect(ms.lastCmd).not.toContain("--worktree");
+  });
+});
