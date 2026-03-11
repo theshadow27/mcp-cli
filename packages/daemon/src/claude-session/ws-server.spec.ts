@@ -1106,6 +1106,38 @@ describe("ClaudeWsServer", () => {
     expect(result).toEqual({ worktree: "claude-test1", cwd: "/repo" });
   });
 
+  test("spawnClaude omits --worktree when both cwd and worktree are set (hook pre-created)", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("hook-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: "/tmp/worktrees/my-tree",
+    });
+    server.spawnClaude("hook-session");
+
+    // cwd should be passed (as spawn option), but --worktree should NOT be in the command
+    expect(ms.lastCmd).not.toContain("--worktree");
+    expect(ms.lastCmd).not.toContain("my-tree");
+  });
+
+  test("spawnClaude passes --worktree when only worktree is set (no cwd)", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server.start();
+
+    server.prepareSession("wt-only-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+    });
+    server.spawnClaude("wt-only-session");
+
+    expect(ms.lastCmd).toContain("--worktree");
+    expect(ms.lastCmd).toContain("my-tree");
+  });
+
   test("bye returns null worktree for non-worktree session", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

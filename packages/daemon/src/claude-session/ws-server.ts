@@ -299,7 +299,11 @@ export class ClaudeWsServer {
     if (session.config.allowedTools?.length) {
       cmd.push("--allowedTools", ...session.config.allowedTools);
     }
-    if (session.config.worktree) {
+    if (session.config.worktree && !session.config.cwd) {
+      // Only pass --worktree when cwd is not set. When both are present,
+      // the worktree was pre-created by a lifecycle hook and cwd already
+      // points to it — passing --worktree would make Claude try to create
+      // another worktree.
       cmd.push("--worktree", session.config.worktree);
     }
     if (session.config.resumeSessionId) {

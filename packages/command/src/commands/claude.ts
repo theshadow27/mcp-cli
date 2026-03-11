@@ -6,7 +6,17 @@
  */
 
 import { join } from "node:path";
-import { fixCoreBare, ipcCall, resolveModelName } from "@mcp-cli/core";
+import {
+  fixCoreBare,
+  hasWorktreeHooks,
+  ipcCall,
+  readWorktreeConfig,
+  resolveModelName,
+  resolveWorktreeBase,
+  resolveWorktreePath,
+  substituteHookVars,
+} from "@mcp-cli/core";
+import type { WorktreeHooksConfig } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -298,12 +308,38 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     prompt: parsed.task ?? "Continue from where you left off.",
   };
   if (parsed.resume) toolArgs.sessionId = parsed.resume;
-  if (parsed.worktree) toolArgs.worktree = parsed.worktree;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
+
+  // Handle worktree with lifecycle hooks: pre-create via hook,
+  // then pass cwd (not --worktree) so Claude doesn't try to create another.
+  if (parsed.worktree) {
+    const repoRoot = process.cwd();
+    const wtConfig = readWorktreeConfig(repoRoot);
+
+    if (hasWorktreeHooks(wtConfig)) {
+      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
+      const hookCmd = substituteHookVars(wtConfig.setup, {
+        branch: parsed.worktree,
+        path: worktreePath,
+        cwd: repoRoot,
+      });
+      const { exitCode, stdout } = d.exec(["sh", "-c", hookCmd]);
+      if (exitCode !== 0) {
+        d.printError(`Worktree setup hook failed: ${stdout}`);
+        d.exit(1);
+      }
+      // Pass cwd + worktree name — daemon will use cwd but skip --worktree flag
+      toolArgs.cwd = worktreePath;
+      toolArgs.worktree = parsed.worktree;
+      d.printError(`Created worktree via hook: ${worktreePath}`);
+    } else {
+      toolArgs.worktree = parsed.worktree;
+    }
+  }
 
   const result = await d.callTool("claude_prompt", toolArgs);
   console.log(formatToolResult(result));
@@ -323,19 +359,35 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   let cwd = parsed.cwd;
   if (parsed.worktree) {
     const repoRoot = process.cwd();
-    const worktreePath = join(repoRoot, ".claude", "worktrees", parsed.worktree);
-    const { exitCode, stdout } = d.exec([
-      "git",
-      "worktree",
-      "add",
-      worktreePath,
-      "-b",
-      `headed/${parsed.worktree}`,
-      "HEAD",
-    ]);
-    if (exitCode !== 0) {
-      d.printError(`Failed to create worktree: ${stdout}`);
-      d.exit(1);
+    const wtConfig = readWorktreeConfig(repoRoot);
+    const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
+
+    if (hasWorktreeHooks(wtConfig)) {
+      // Run the setup hook instead of git worktree add
+      const hookCmd = substituteHookVars(wtConfig.setup, {
+        branch: parsed.worktree,
+        path: worktreePath,
+        cwd: repoRoot,
+      });
+      const { exitCode, stdout } = d.exec(["sh", "-c", hookCmd]);
+      if (exitCode !== 0) {
+        d.printError(`Worktree setup hook failed: ${stdout}`);
+        d.exit(1);
+      }
+    } else {
+      const { exitCode, stdout } = d.exec([
+        "git",
+        "worktree",
+        "add",
+        worktreePath,
+        "-b",
+        `headed/${parsed.worktree}`,
+        "HEAD",
+      ]);
+      if (exitCode !== 0) {
+        d.printError(`Failed to create worktree: ${stdout}`);
+        d.exit(1);
+      }
     }
     cwd = worktreePath;
     d.printError(`Created worktree: ${worktreePath}`);
@@ -504,6 +556,8 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const cwd = process.cwd();
+  const wtConfig = readWorktreeConfig(cwd);
+  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
 
   // List all worktrees
   const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
@@ -513,7 +567,6 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const allWorktrees = parseWorktreeList(wtOutput);
-  const worktreeParent = join(cwd, ".claude", "worktrees");
   const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
 
   // Get active sessions to find orphaned worktrees
@@ -774,11 +827,19 @@ function parseByeResult(result: unknown): ByeResult {
 
 /** Clean up a worktree after session ends: remove if clean, warn if dirty. */
 function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
-  const expectedParent = join(cwd, ".claude", "worktrees");
-  const worktreePath = join(expectedParent, worktree);
+  // For hook-based worktrees, `cwd` from the bye result is the worktree path
+  // itself (not the repo root), so we use process.cwd() for config lookup.
+  // For non-hook worktrees, `cwd` from bye IS the repo root.
+  const configRoot = process.cwd();
+  const wtConfig = readWorktreeConfig(configRoot);
+  // When hooks are configured, resolve paths from the mcx invocation directory.
+  // Otherwise, use the cwd from bye result (the repo root) for backwards compat.
+  const repoRoot = hasWorktreeHooks(wtConfig) ? configRoot : cwd;
+  const worktreeBase = resolveWorktreeBase(repoRoot, wtConfig);
+  const worktreePath = join(worktreeBase, worktree);
 
   // Guard against path traversal (worktree name comes from daemon response)
-  if (!worktreePath.startsWith(`${expectedParent}/`)) return;
+  if (!worktreePath.startsWith(`${worktreeBase}/`)) return;
 
   // Check for uncommitted changes in the worktree
   const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
@@ -788,21 +849,36 @@ function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
     // Capture branch name before removing worktree (removal deletes the .git link)
     const { stdout: branch } = d.exec(["git", "-C", worktreePath, "branch", "--show-current"]);
 
-    // Clean — remove the worktree
-    const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", worktreePath]);
-    if (removeExit === 0) {
-      if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
-      d.printError(`Removed worktree: ${worktreePath}`);
-      // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
-      if (branch) {
-        const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", branch]);
-        if (branchExit === 0) {
-          d.printError(`Deleted branch: ${branch} (merged)`);
-        }
-        // If -d fails the branch is unmerged — silently keep it
+    if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
+      // Run teardown hook instead of git worktree remove
+      const hookCmd = substituteHookVars(wtConfig.teardown, {
+        branch: worktree,
+        path: worktreePath,
+        cwd: repoRoot,
+      });
+      const { exitCode: hookExit } = d.exec(["sh", "-c", hookCmd]);
+      if (hookExit === 0) {
+        d.printError(`Removed worktree via hook: ${worktreePath}`);
+      } else {
+        d.printError(`Worktree teardown hook failed for: ${worktreePath}`);
       }
     } else {
-      d.printError(`Failed to remove worktree: ${worktreePath}`);
+      // Default: git worktree remove
+      const { exitCode: removeExit } = d.exec(["git", "-C", repoRoot, "worktree", "remove", worktreePath]);
+      if (removeExit === 0) {
+        if (fixCoreBare(repoRoot, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
+        d.printError(`Removed worktree: ${worktreePath}`);
+        // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
+        if (branch) {
+          const { exitCode: branchExit } = d.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
+          if (branchExit === 0) {
+            d.printError(`Deleted branch: ${branch} (merged)`);
+          }
+          // If -d fails the branch is unmerged — silently keep it
+        }
+      } else {
+        d.printError(`Failed to remove worktree: ${worktreePath}`);
+      }
     }
   } else {
     // Dirty — warn the user
@@ -1050,7 +1126,8 @@ export function parseWorktreeList(output: string): Array<{ path: string; branch:
 async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
   const prune = args.includes("--prune");
   const cwd = process.cwd();
-  const worktreeParent = join(cwd, ".claude", "worktrees");
+  const wtConfig = readWorktreeConfig(cwd);
+  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
 
   // Get all git worktrees
   const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
@@ -1125,16 +1202,29 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
       if (statusExit !== 0 || status !== "") continue; // gone or dirty — skip
 
       // Remove worktree
-      const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
-      if (removeExit === 0) {
-        if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
-        d.printError(`Removed worktree: ${wt.path}`);
-        pruned++;
-        // Delete branch only if git branch -d succeeds
-        if (wt.branch) {
-          const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
-          if (branchExit === 0) {
-            d.printError(`Deleted branch: ${wt.branch} (merged)`);
+      if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
+        const hookCmd = substituteHookVars(wtConfig.teardown, {
+          branch: wtName,
+          path: wt.path,
+          cwd,
+        });
+        const { exitCode: hookExit } = d.exec(["sh", "-c", hookCmd]);
+        if (hookExit === 0) {
+          d.printError(`Removed worktree via hook: ${wt.path}`);
+          pruned++;
+        }
+      } else {
+        const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
+        if (removeExit === 0) {
+          if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
+          d.printError(`Removed worktree: ${wt.path}`);
+          pruned++;
+          // Delete branch only if git branch -d succeeds
+          if (wt.branch) {
+            const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
+            if (branchExit === 0) {
+              d.printError(`Deleted branch: ${wt.branch} (merged)`);
+            }
           }
         }
       }
