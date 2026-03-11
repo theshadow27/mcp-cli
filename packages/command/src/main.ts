@@ -37,7 +37,7 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
-import { ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import { getStaleDaemonWarning, ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -485,13 +485,19 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     throw err;
   }
 
+  const staleWarning = getStaleDaemonWarning();
+
   if (json) {
-    console.log(JSON.stringify(status, null, 2));
+    const output = staleWarning ? { ...status, staleBuild: true, staleWarning } : status;
+    console.log(JSON.stringify(output, null, 2));
   } else {
     console.log(`Daemon PID: ${status.pid}`);
     console.log(`Uptime: ${Math.round(status.uptime)}s`);
     console.log(`Database: ${status.dbPath}\n`);
     printServerList(status.servers);
+    if (staleWarning) {
+      console.error(`\n⚠ ${staleWarning}`);
+    }
   }
 }
 
