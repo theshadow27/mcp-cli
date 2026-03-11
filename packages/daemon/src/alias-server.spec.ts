@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { ALIAS_SERVER_NAME, AliasServer, buildAliasToolCache } from "./alias-server";
 import { StateDb } from "./db/state";
@@ -20,7 +21,7 @@ function makeMockClient() {
 
 describe("ServerPool.registerVirtualServer", () => {
   test("virtual server appears in listServers with transport 'virtual'", () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
     pool.registerVirtualServer("_test", makeMockClient() as never, makeMockTransport() as never);
 
     const servers = pool.listServers();
@@ -33,7 +34,7 @@ describe("ServerPool.registerVirtualServer", () => {
   });
 
   test("virtual server with pre-populated tools reports toolCount", () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
     const tools = new Map([
       ["my-tool", { name: "my-tool", server: "_test", description: "test tool", inputSchema: {} }],
     ]);
@@ -45,7 +46,7 @@ describe("ServerPool.registerVirtualServer", () => {
   });
 
   test("virtual server survives updateConfig that removes all config servers", () => {
-    const pool = new ServerPool(makeConfig({ real: { command: "echo" } }));
+    const pool = new ServerPool(makeConfig({ real: { command: "echo" } }), undefined, undefined, silentLogger);
     pool.registerVirtualServer("_test", makeMockClient() as never, makeMockTransport() as never);
 
     // Remove all config servers
@@ -59,7 +60,7 @@ describe("ServerPool.registerVirtualServer", () => {
   });
 
   test("virtual server is not listed in updateConfig added/removed/changed", () => {
-    const pool = new ServerPool(makeConfig({}));
+    const pool = new ServerPool(makeConfig({}), undefined, undefined, silentLogger);
     pool.registerVirtualServer("_test", makeMockClient() as never, makeMockTransport() as never);
 
     const result = pool.updateConfig(makeConfig({ new: { command: "cat" } }));

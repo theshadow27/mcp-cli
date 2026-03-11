@@ -15,11 +15,13 @@
 
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Logger } from "@mcp-cli/core";
 import {
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   PROTOCOL_VERSION,
   auditRuntimePermissions,
+  consoleLogger,
   ensureStateDir,
   fixCoreBare,
   generateSpanId,
@@ -37,7 +39,7 @@ import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
 /** Remove worktrees from ended sessions that are clean and have no active session. */
-export function pruneOrphanedWorktrees(db: StateDb): void {
+export function pruneOrphanedWorktrees(db: StateDb, logger: Logger = consoleLogger): void {
   try {
     const activeSessions = db.listSessions(true);
     const activeWorktrees = new Set(activeSessions.filter((s) => s.worktree).map((s) => s.worktree));
@@ -76,25 +78,25 @@ export function pruneOrphanedWorktrees(db: StateDb): void {
           return { stdout: r.stdout.toString().trim(), exitCode: r.exitCode };
         };
         if (fixCoreBare(session.cwd, gitExec)) {
-          console.error("[mcpd] Fixed core.bare=true after worktree removal");
+          logger.error("[mcpd] Fixed core.bare=true after worktree removal");
         }
         pruned++;
-        console.error(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
+        logger.error(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
         // Delete merged branch
         if (branch) {
           const branchDelete = Bun.spawnSync(["git", "-C", session.cwd, "branch", "-d", branch], gitOpts);
           if (branchDelete.exitCode === 0) {
-            console.error(`[mcpd] Deleted branch: ${branch} (merged)`);
+            logger.error(`[mcpd] Deleted branch: ${branch} (merged)`);
           }
         }
       }
     }
 
     if (pruned > 0) {
-      console.error(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
+      logger.error(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
     }
   } catch (err) {
-    console.error(`[mcpd] Worktree prune failed: ${err}`);
+    logger.error(`[mcpd] Worktree prune failed: ${err}`);
   }
 }
 
@@ -121,6 +123,8 @@ export interface StartDaemonOptions {
   skipLogSetup?: boolean;
   /** Skip booting virtual servers (_aliases, _claude). */
   skipVirtualServers?: boolean;
+  /** Logger for daemon output. Defaults to consoleLogger. */
+  logger?: Logger;
 }
 
 /**
@@ -128,6 +132,8 @@ export interface StartDaemonOptions {
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
 export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
+  const logger = opts?.logger ?? consoleLogger;
+
   if (!opts?.skipLogSetup) {
     installDaemonLogCapture();
     installDaemonLogFile();
@@ -139,7 +145,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Load config
   const config = await loadConfig();
   const serverNames = [...config.servers.keys()];
-  console.error(`[mcpd] Loaded config: ${serverNames.length} servers (${serverNames.join(", ")})`);
+  logger.error(`[mcpd] Loaded config: ${serverNames.length} servers (${serverNames.join(", ")})`);
 
   // Generate daemon instance ID for trace context (stable for daemon lifetime)
   const daemonId = generateSpanId();
@@ -157,23 +163,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
-  console.error(`[mcpd] Database: ${options.DB_PATH}`);
+  logger.error(`[mcpd] Database: ${options.DB_PATH}`);
 
   // Reap any claude processes orphaned by a previous unclean daemon exit
-  const reaped = reapOrphanedSessions(db);
+  const reaped = reapOrphanedSessions(db, logger);
   if (reaped > 0) {
-    console.error(`[mcpd] Reaped ${reaped} orphaned claude process(es) from previous run`);
+    logger.error(`[mcpd] Reaped ${reaped} orphaned claude process(es) from previous run`);
   }
 
   // Warn if runtime state permissions have been loosened
-  auditRuntimePermissions();
+  auditRuntimePermissions(logger);
 
   // Create server pool
-  const pool = new ServerPool(config, db);
+  const pool = new ServerPool(config, db, undefined, logger);
 
   // Create virtual servers (started lazily after IPC socket is ready)
   const aliasServer = new AliasServer(db, daemonId);
-  const claudeServer = new ClaudeServer(db, daemonId);
+  const claudeServer = new ClaudeServer(db, daemonId, undefined, logger);
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -202,23 +208,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
       if (inFlightCount > 0) {
-        console.error(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
+        logger.error(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
         resetIdleTimer();
         return;
       }
       if (pool.hasPendingServers()) {
-        console.error("[mcpd] Idle timeout deferred: virtual server(s) still starting");
+        logger.error("[mcpd] Idle timeout deferred: virtual server(s) still starting");
         resetIdleTimer();
         return;
       }
       // Prune sessions whose processes have exited before checking
       claudeServer.pruneDeadSessions();
       if (claudeServer.hasActiveSessions()) {
-        console.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
+        logger.error("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
         return;
       }
-      console.error("[mcpd] Idle timeout reached, shutting down");
+      logger.error("[mcpd] Idle timeout reached, shutting down");
       shutdown("idle timeout");
     }, idleTimeoutMs);
   }
@@ -231,9 +237,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     if (removed.length) parts.push(`removed: ${removed.join(", ")}`);
     if (changed.length) parts.push(`changed: ${changed.join(", ")}`);
     if (parts.length) {
-      console.error(`[mcpd] Config reloaded: ${parts.join("; ")}`);
+      logger.error(`[mcpd] Config reloaded: ${parts.join("; ")}`);
     } else {
-      console.error("[mcpd] Config reloaded (no server changes)");
+      logger.error("[mcpd] Config reloaded (no server changes)");
     }
     // Update PID file with new hash
     const updatedPid = {
@@ -261,6 +267,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     },
     onShutdown: () => shutdown("IPC shutdown request"),
     onReloadConfig: () => watcher.forceReload(),
+    logger,
   });
   ipcServer.start();
 
@@ -282,9 +289,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           const { client, transport } = await aliasServer.start();
           const cachedTools = buildAliasToolCache(db);
           pool.registerVirtualServer("_aliases", client, transport, cachedTools);
-          console.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
+          logger.error(`[mcpd] Alias server started (${cachedTools.size} tools)`);
         } catch (err) {
-          console.error(`[mcpd] Failed to start alias server: ${err}`);
+          logger.error(`[mcpd] Failed to start alias server: ${err}`);
         }
       })(),
     );
@@ -296,16 +303,16 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
           const claudeTools = buildClaudeToolCache();
           pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
-          console.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
+          logger.error(`[mcpd] Claude session server started (port ${claudeServer.port})`);
         } catch (err) {
-          console.error(`[mcpd] Failed to start Claude session server: ${err}`);
+          logger.error(`[mcpd] Failed to start Claude session server: ${err}`);
         }
 
         // Re-register _claude virtual server after crash recovery
         claudeServer.onRestarted = (client, transport) => {
           const claudeTools = buildClaudeToolCache();
           pool.registerVirtualServer("_claude", client, transport, claudeTools);
-          console.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
+          logger.error(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
         };
       })(),
     );
@@ -316,7 +323,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   async function shutdown(reason?: ShutdownReason): Promise<void> {
     if (_isShuttingDown) return;
     _isShuttingDown = true;
-    console.error(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
+    logger.error(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
     try {
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
@@ -333,7 +340,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         closeDaemonLogFile();
       }
     } catch (cleanupErr) {
-      console.error("[mcpd] Error during shutdown cleanup:", cleanupErr);
+      logger.error("[mcpd] Error during shutdown cleanup:", cleanupErr);
     }
     try {
       unlinkSync(options.PID_PATH);

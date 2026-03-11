@@ -5,6 +5,9 @@
  * header formatting per https://www.w3.org/TR/trace-context/.
  */
 
+import type { Logger } from "./logger";
+import { consoleLogger } from "./logger";
+
 const HEX_REGEX = /^[0-9a-f]+$/;
 
 /** Generate a 128-bit trace ID (32 lowercase hex chars). */
@@ -105,7 +108,12 @@ export interface LiveSpan {
  *   present but invalid, causing a root span to be created instead. Use for
  *   metrics (e.g. incrementing mcpd_trace_fallback_root_total).
  */
-export function startSpan(name: string, parentTraceparent?: string, onFallback?: () => void): LiveSpan {
+export function startSpan(
+  name: string,
+  parentTraceparent?: string,
+  onFallback?: () => void,
+  logger: Logger = consoleLogger,
+): LiveSpan {
   let traceId: string;
   let parentSpanId: string | undefined;
   let traceFlags = TRACE_FLAGS_SAMPLED;
@@ -117,7 +125,7 @@ export function startSpan(name: string, parentTraceparent?: string, onFallback?:
       parentSpanId = parsed.parentId;
       traceFlags = parsed.flags;
     } else {
-      console.error("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
+      logger.error("[trace] invalid traceparent, starting root span", { name, input: parentTraceparent });
       onFallback?.();
       traceId = generateTraceId();
     }

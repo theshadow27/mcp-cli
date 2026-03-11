@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
-import { IPC_ERROR, PROTOCOL_VERSION, options } from "@mcp-cli/core";
+import { IPC_ERROR, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { installDaemonLogCapture } from "./daemon-log";
 import { IpcServer } from "./ipc-server";
@@ -70,7 +70,13 @@ function opts(overrides?: {
   onShutdown?: () => void;
   onReloadConfig?: () => Promise<void>;
 }) {
-  return { daemonId: TEST_DAEMON_ID, startedAt: TEST_STARTED_AT, onActivity: () => {}, ...overrides };
+  return {
+    daemonId: TEST_DAEMON_ID,
+    startedAt: TEST_STARTED_AT,
+    onActivity: () => {},
+    logger: silentLogger,
+    ...overrides,
+  };
 }
 
 describe("IpcServer HTTP transport", () => {

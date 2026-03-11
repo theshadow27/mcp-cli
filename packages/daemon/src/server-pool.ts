@@ -12,8 +12,16 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import type { JsonSchema, ResolvedConfig, ResolvedServer, ServerConfig, ServerStatus, ToolInfo } from "@mcp-cli/core";
-import { formatToolSignature } from "@mcp-cli/core";
+import type {
+  JsonSchema,
+  Logger,
+  ResolvedConfig,
+  ResolvedServer,
+  ServerConfig,
+  ServerStatus,
+  ToolInfo,
+} from "@mcp-cli/core";
+import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import {
   CONNECT_INITIAL_DELAY_MS,
   CONNECT_MAX_DELAY_MS,
@@ -64,11 +72,13 @@ export class ServerPool {
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
   private connectFn: ConnectFn;
+  private logger: Logger;
 
-  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn) {
+  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger) {
     this.config = config;
     this.db = db ?? null;
     this.connectFn = connectFn ?? defaultConnect;
+    this.logger = logger ?? consoleLogger;
     // Pre-populate connection entries (disconnected, with cached tools if available)
     for (const [name, resolved] of config.servers) {
       const cachedTools = new Map<string, ToolInfo>();
@@ -130,7 +140,7 @@ export class ServerPool {
     });
     const tracked = Promise.race([startPromise, timeout])
       .catch((err) => {
-        console.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
+        this.logger.error(`[pool] Pending virtual server "${name}" failed: ${err}`);
         // Create a placeholder connection so listServers() shows the error state
         this.connections.set(name, {
           name,
@@ -191,12 +201,12 @@ export class ServerPool {
         if (existing.state === "connected" && !this.reconnecting.has(name)) {
           const reconnectPromise = this.disconnect(name)
             .then(() => {
-              console.error(`[pool] Reconnecting "${name}" after config change`);
+              this.logger.error(`[pool] Reconnecting "${name}" after config change`);
               return this.ensureConnected(name);
             })
             .then(() => {})
             .catch((err) => {
-              console.error(`[pool] Failed to reconnect "${name}" after config change: ${err}`);
+              this.logger.error(`[pool] Failed to reconnect "${name}" after config change: ${err}`);
             })
             .finally(() => {
               this.reconnecting.delete(name);
@@ -289,7 +299,7 @@ export class ServerPool {
 
           if (attempt < maxRetries && isRetryableError(err)) {
             const delay = Math.min(CONNECT_INITIAL_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);
-            console.error(
+            this.logger.error(
               `[mcpd] Connection to "${name}" failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${lastErr.message}`,
             );
             await new Promise((r) => setTimeout(r, delay));
@@ -333,7 +343,7 @@ export class ServerPool {
         this.db.cacheTools(conn.name, [...conn.tools.values()]);
       }
     } catch (err) {
-      console.error(`[pool] Failed to list tools for "${conn.name}": ${err}`);
+      this.logger.error(`[pool] Failed to list tools for "${conn.name}": ${err}`);
     }
   }
 
@@ -378,7 +388,7 @@ export class ServerPool {
   private attachTransportLifecycle(name: string, transport: Transport, conn: ServerConnection): void {
     const reset = (reason: string) => {
       if (conn.state === "connected") {
-        console.error(`[pool] Server "${name}" transport ${reason}, resetting connection state`);
+        this.logger.error(`[pool] Server "${name}" transport ${reason}, resetting connection state`);
         conn.state = "disconnected";
         conn.client = null;
         conn.transport = null;
@@ -506,7 +516,7 @@ export class ServerPool {
       // Surface non-transient errors immediately (auth, config, etc.)
       if (!isTransientCallError(err)) throw err;
 
-      console.error(
+      this.logger.error(
         `[mcpd] callTool "${toolName}" on "${serverName}" failed with transient error, reconnecting: ${err instanceof Error ? err.message : String(err)}`,
       );
 
@@ -568,7 +578,7 @@ export class ServerPool {
       );
       for (const [i, result] of results.entries()) {
         if (result.status === "rejected") {
-          console.error(`[pool] Failed to restart "${connected[i][0]}": ${result.reason}`);
+          this.logger.error(`[pool] Failed to restart "${connected[i][0]}": ${result.reason}`);
         }
       }
     }

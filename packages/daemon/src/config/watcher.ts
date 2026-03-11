@@ -7,8 +7,8 @@
 
 import { type FSWatcher, existsSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
-import type { ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
-import { options, projectConfigPath } from "@mcp-cli/core";
+import type { Logger, ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
+import { consoleLogger, options, projectConfigPath } from "@mcp-cli/core";
 import { configHash, loadConfig as defaultLoadConfig } from "./loader";
 
 const DEBOUNCE_MS = 300;
@@ -27,6 +27,7 @@ export type ConfigChangeCallback = (event: ConfigChangeEvent) => void;
 export interface ConfigWatcherOptions {
   pollIntervalMs?: number;
   loadConfig?: (cwd: string) => Promise<ResolvedConfig>;
+  logger?: Logger;
 }
 
 export class ConfigWatcher {
@@ -41,6 +42,7 @@ export class ConfigWatcher {
   private cwd: string;
   private callback: ConfigChangeCallback;
   private stopped = false;
+  private logger: Logger;
 
   constructor(
     initialConfig: ResolvedConfig,
@@ -54,6 +56,7 @@ export class ConfigWatcher {
     this.cwd = cwd;
     this.pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.loadConfigFn = opts?.loadConfig ?? defaultLoadConfig;
+    this.logger = opts?.logger ?? consoleLogger;
   }
 
   /** Compare two server maps and return the diff. */
@@ -101,7 +104,7 @@ export class ConfigWatcher {
     }
     this.pollTimer = setInterval(() => this.pollCheck(), this.pollIntervalMs);
 
-    console.error(`[config-watcher] Watching ${paths.length} config paths`);
+    this.logger.error(`[config-watcher] Watching ${paths.length} config paths`);
   }
 
   /** Stop all watchers and cancel pending debounce. */
@@ -187,7 +190,7 @@ export class ConfigWatcher {
         this.scheduleReload();
       }
     } catch (err) {
-      console.error(`[config-watcher] Poll check failed: ${err}`);
+      this.logger.error(`[config-watcher] Poll check failed: ${err}`);
     }
   }
 
@@ -223,7 +226,9 @@ export class ConfigWatcher {
       const { added, removed, changed } = ConfigWatcher.diffServers(this.previousServers, config.servers);
       this.currentHash = hash;
       this.previousServers = config.servers;
-      console.error(`[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`);
+      this.logger.error(
+        `[config-watcher] Config changed (${previousHash.slice(0, 8)} → ${hash.slice(0, 8)}), reloading`,
+      );
       this.callback({ added, removed, changed, config, hash });
 
       // Refresh mtimes so the polling fallback doesn't redundantly trigger
@@ -236,7 +241,7 @@ export class ConfigWatcher {
         }
       }
     } catch (err) {
-      console.error(`[config-watcher] Failed to reload config: ${err}`);
+      this.logger.error(`[config-watcher] Failed to reload config: ${err}`);
     }
   }
 }
