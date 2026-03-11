@@ -16,6 +16,12 @@ export interface WorktreeHooksConfig {
   teardown?: string;
   /** Base directory for worktrees (absolute or relative to repo root). Defaults to `.claude/worktrees`. */
   base?: string;
+  /**
+   * Whether to prepend a prefix to worktree branch names (`claude/` for headless, `headed/` for headed).
+   * Set to `false` to use branch names exactly as provided.
+   * Defaults to `true` (prefixes applied).
+   */
+  branchPrefix?: boolean;
 }
 
 /** Config file shape */
