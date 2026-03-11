@@ -14,6 +14,8 @@ interface ClaudeSessionListProps {
   transcriptError: string | null;
   transcriptSelectedEntry: string | null;
   transcriptExpandedEntries: ReadonlySet<string>;
+  transcriptScrollOffset: number;
+  transcriptViewHeight: number;
 }
 
 const stateColor: Record<SessionStateEnum, string> = {
@@ -70,6 +72,8 @@ export function ClaudeSessionList({
   transcriptError,
   transcriptSelectedEntry,
   transcriptExpandedEntries,
+  transcriptScrollOffset,
+  transcriptViewHeight,
 }: ClaudeSessionListProps) {
   if (loading && sessions.length === 0) {
     return (
@@ -163,6 +167,8 @@ export function ClaudeSessionList({
                 error={transcriptError}
                 selectedEntry={transcriptSelectedEntry}
                 expandedEntries={transcriptExpandedEntries}
+                scrollOffset={transcriptScrollOffset}
+                height={transcriptViewHeight}
               />
             )}
           </Box>

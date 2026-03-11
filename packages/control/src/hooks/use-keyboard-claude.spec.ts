@@ -44,6 +44,9 @@ function makeNav(overrides: Partial<ClaudeNav> = {}): ClaudeNav {
     transcriptEntries: [],
     expandedEntries: new Set(),
     setExpandedEntries: mock(() => {}),
+    transcriptScrollOffset: 0,
+    setTranscriptScrollOffset: mock(() => {}),
+    transcriptViewHeight: 15,
     ...overrides,
   };
 }
@@ -241,5 +244,72 @@ describe("handleClaudeInput transcript navigation (expanded session)", () => {
     const consumed = handleClaudeInput("", { ...baseKey, return: true }, nav);
     expect(consumed).toBe(true);
     expect(nav.setExpandedEntries).not.toHaveBeenCalled();
+  });
+
+  test("j adjusts scroll offset when cursor moves past viewport", () => {
+    // 20 entries, viewport height 3, cursor at entry 2 (index 2), scroll at 0
+    const manyEntries = Array.from({ length: 20 }, (_, i) => ({
+      direction: "inbound" as const,
+      timestamp: i,
+      message: { type: "result", result: `entry-${i}` },
+    }));
+    let scrollResult = -1;
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: manyEntries,
+      transcriptCursor: "2-inbound", // at index 2
+      transcriptScrollOffset: 0,
+      transcriptViewHeight: 3,
+      setTranscriptScrollOffset: mock((fn: (o: number) => number) => {
+        scrollResult = fn(0);
+      }),
+    });
+    handleClaudeInput("j", baseKey, nav);
+    // cursor moves to index 3, which is >= offset(0) + height(3), so scroll should advance
+    expect(scrollResult).toBe(1);
+  });
+
+  test("k adjusts scroll offset when cursor moves above viewport", () => {
+    const manyEntries = Array.from({ length: 20 }, (_, i) => ({
+      direction: "inbound" as const,
+      timestamp: i,
+      message: { type: "result", result: `entry-${i}` },
+    }));
+    let scrollResult = -1;
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: manyEntries,
+      transcriptCursor: "5-inbound", // at index 5
+      transcriptScrollOffset: 5,
+      transcriptViewHeight: 3,
+      setTranscriptScrollOffset: mock((fn: (o: number) => number) => {
+        scrollResult = fn(5);
+      }),
+    });
+    handleClaudeInput("k", baseKey, nav);
+    // cursor moves to index 4, which is < offset(5), so scroll should move to 4
+    expect(scrollResult).toBe(4);
+  });
+
+  test("scroll offset unchanged when cursor stays in viewport", () => {
+    const manyEntries = Array.from({ length: 20 }, (_, i) => ({
+      direction: "inbound" as const,
+      timestamp: i,
+      message: { type: "result", result: `entry-${i}` },
+    }));
+    let scrollResult = -1;
+    const nav = makeNav({
+      expandedSession: "sess-1",
+      transcriptEntries: manyEntries,
+      transcriptCursor: "1-inbound", // at index 1
+      transcriptScrollOffset: 0,
+      transcriptViewHeight: 5,
+      setTranscriptScrollOffset: mock((fn: (o: number) => number) => {
+        scrollResult = fn(0);
+      }),
+    });
+    handleClaudeInput("j", baseKey, nav);
+    // cursor moves to index 2, still within viewport [0..5), so no scroll change
+    expect(scrollResult).toBe(0);
   });
 });

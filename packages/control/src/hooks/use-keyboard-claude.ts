@@ -25,6 +25,9 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     transcriptEntries,
     expandedEntries: _expandedEntries,
     setExpandedEntries,
+    transcriptScrollOffset: _transcriptScrollOffset,
+    setTranscriptScrollOffset,
+    transcriptViewHeight,
   } = nav;
 
   // -- Deny reason mode: capture text for denial message --
@@ -73,6 +76,13 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
         const next = Math.max(0, (idx === -1 ? 0 : idx) - 1);
         return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
       });
+      // Keep cursor visible in viewport
+      setTranscriptScrollOffset((offset) => {
+        const idx = transcriptCursor ? transcriptEntries.findIndex((e) => entryKey(e) === transcriptCursor) : 0;
+        const next = Math.max(0, (idx === -1 ? 0 : idx) - 1);
+        if (next < offset) return next;
+        return offset;
+      });
       return true;
     }
     if (key.downArrow || input === "j") {
@@ -80,6 +90,13 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
         const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : -1;
         const next = Math.min(transcriptEntries.length - 1, (idx === -1 ? -1 : idx) + 1);
         return transcriptEntries[next] ? entryKey(transcriptEntries[next]) : cur;
+      });
+      // Keep cursor visible in viewport
+      setTranscriptScrollOffset((offset) => {
+        const idx = transcriptCursor ? transcriptEntries.findIndex((e) => entryKey(e) === transcriptCursor) : -1;
+        const next = Math.min(transcriptEntries.length - 1, (idx === -1 ? -1 : idx) + 1);
+        if (next >= offset + transcriptViewHeight) return next - transcriptViewHeight + 1;
+        return offset;
       });
       return true;
     }

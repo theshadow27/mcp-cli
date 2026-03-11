@@ -76,6 +76,9 @@ export interface ClaudeNav {
   transcriptEntries: TranscriptEntry[];
   expandedEntries: ReadonlySet<string>;
   setExpandedEntries: (fn: (prev: ReadonlySet<string>) => ReadonlySet<string>) => void;
+  transcriptScrollOffset: number;
+  setTranscriptScrollOffset: (fn: (offset: number) => number) => void;
+  transcriptViewHeight: number;
 }
 
 export interface StatsNav {
