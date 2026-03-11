@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   buildHookEnv,
   fixCoreBare,
@@ -117,16 +117,24 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus
 
 /**
  * Resolve the git repo root for the current working directory.
+ * Uses --git-common-dir to resolve to the main repo root, not a worktree.
  * Returns null if not inside a git repo.
  */
 function getGitRoot(): string | null {
   try {
-    const result = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
+    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
       stdout: "pipe",
       stderr: "ignore",
+      timeout: 5000,
     });
     if (result.exitCode !== 0) return null;
-    return result.stdout.toString().trim() || null;
+    const commonDir = result.stdout.toString().trim();
+    if (!commonDir) return null;
+    // --git-common-dir returns the .git dir (e.g. /repo/.git or /repo/.git/worktrees/foo/../../)
+    // Resolve to the parent to get the repo root
+    const resolved = resolve(commonDir);
+    // If it ends with .git, take the parent; otherwise it's already the repo root
+    return resolved.endsWith(".git") ? dirname(resolved) : resolved;
   } catch {
     return null;
   }
@@ -760,7 +768,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   if (!showAll) {
     const gitRoot = d.getGitRoot();
     if (gitRoot) {
-      sessions = sessions.filter((s) => s.repoRoot === gitRoot);
+      sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === gitRoot);
     }
   }
 
@@ -1190,21 +1198,23 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
         const data = JSON.parse(text);
         if (Array.isArray(data)) {
           // Timeout fallback: session list
-          const filtered = data.filter((s: Record<string, unknown>) => s.repoRoot === repoFilter);
+          const filtered = data.filter((s: Record<string, unknown>) => !s.repoRoot || s.repoRoot === repoFilter);
           console.log(JSON.stringify(filtered, null, 2));
           return;
         }
         if (data && typeof data === "object" && "events" in data && Array.isArray(data.events)) {
           // Cursor-based: filter events by session's repoRoot
-          data.events = data.events.filter(
-            (e: Record<string, unknown>) => e.session && (e.session as Record<string, unknown>).repoRoot === repoFilter,
-          );
+          data.events = data.events.filter((e: Record<string, unknown>) => {
+            const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
+            return !repo || repo === repoFilter;
+          });
           console.log(JSON.stringify(data, null, 2));
           return;
         }
         // Single event (legacy): check session snapshot
         if (data && typeof data === "object" && data.session) {
-          if ((data.session as Record<string, unknown>).repoRoot !== repoFilter) {
+          const sessionRepo = (data.session as Record<string, unknown>).repoRoot;
+          if (sessionRepo && sessionRepo !== repoFilter) {
             // Event is for a different repo — treat as empty
             console.log("[]");
             return;
@@ -1239,7 +1249,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       repoRoot?: string | null;
     }>;
     if (repoFilter) {
-      sessions = sessions.filter((s) => s.repoRoot === repoFilter);
+      sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoFilter);
     }
     for (const s of sessions) {
       console.log(formatSessionShort(s));
@@ -1252,7 +1262,10 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     const waitResult = data as { seq: number; events: Array<Record<string, unknown>> };
     let events = waitResult.events;
     if (repoFilter) {
-      events = events.filter((e) => e.session && (e.session as Record<string, unknown>).repoRoot === repoFilter);
+      events = events.filter((e) => {
+        const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
+        return !repo || repo === repoFilter;
+      });
     }
     for (const e of events) {
       const session = e.session as Record<string, unknown> | undefined;

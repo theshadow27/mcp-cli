@@ -1016,6 +1016,28 @@ describe("mcx claude ls", () => {
       console.log = origLog;
     }
   });
+
+  test("sessions with null repoRoot are visible when filtering by repo", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: null },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      // Header + 2 sessions (null repoRoot passes through)
+      expect(logSpy.mock.calls.length).toBe(3);
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── formatSessionShort ──
