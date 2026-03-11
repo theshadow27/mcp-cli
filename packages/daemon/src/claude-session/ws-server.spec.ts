@@ -1937,6 +1937,201 @@ describe("ClaudeWsServer", () => {
       ws.close();
     }
   });
+
+  // ── repoRoot filtering (#607) ──
+
+  test("listSessions includes repoRoot from session config", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.start();
+
+    server.prepareSession("s-repo", { prompt: "Hello", repoRoot: "/projects/my-repo" });
+    server.prepareSession("s-norepo", { prompt: "World" });
+
+    const sessions = server.listSessions();
+    const sRepo = sessions.find((s) => s.sessionId === "s-repo");
+    const sNoRepo = sessions.find((s) => s.sessionId === "s-norepo");
+
+    expect(sRepo?.repoRoot).toBe("/projects/my-repo");
+    expect(sNoRepo?.repoRoot).toBeNull();
+  });
+
+  test("listSessions repoRoot filter: matching and non-matching sessions", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.start();
+
+    server.prepareSession("s1", { prompt: "A", repoRoot: "/repo/a" });
+    server.prepareSession("s2", { prompt: "B", repoRoot: "/repo/b" });
+    server.prepareSession("s3", { prompt: "C" }); // no repoRoot
+
+    const allSessions = server.listSessions();
+    expect(allSessions).toHaveLength(3);
+
+    // Apply the same filter predicate used in handleSessionList
+    const repoRoot = "/repo/a";
+    const filtered = allSessions.filter((s) => !s.repoRoot || s.repoRoot === repoRoot);
+
+    // Should include s1 (matching repoRoot) and s3 (no repoRoot), but NOT s2
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((s) => s.sessionId).sort()).toEqual(["s1", "s3"]);
+  });
+
+  test("listSessions repoRoot filter: no filter returns all sessions", () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.start();
+
+    server.prepareSession("s1", { prompt: "A", repoRoot: "/repo/a" });
+    server.prepareSession("s2", { prompt: "B", repoRoot: "/repo/b" });
+
+    const allSessions = server.listSessions();
+    // Without repoRoot filter, all sessions should be returned
+    expect(allSessions).toHaveLength(2);
+  });
+
+  test("waitForEvent repoRoot filter: mismatched event is detectable", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = server.start();
+
+    server.prepareSession("s-mismatch", { prompt: "Hello", repoRoot: "/repo/other" });
+    server.spawnClaude("s-mismatch");
+
+    const ws = await connectMockClaude(port, "s-mismatch");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("s-mismatch"));
+      ws.send(resultMessage("s-mismatch"));
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+      // waitForEvent resolves immediately since session is idle
+      const event = await server.waitForEvent("s-mismatch", 1000);
+      expect(event.session?.repoRoot).toBe("/repo/other");
+
+      // Apply the legacy path filter from handleWait:
+      // if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot)
+      const requestedRepoRoot = "/repo/mine";
+      const isMismatch =
+        Boolean(requestedRepoRoot) && Boolean(event.session?.repoRoot) && event.session?.repoRoot !== requestedRepoRoot;
+      expect(isMismatch).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent repoRoot filter: matching event passes through", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = server.start();
+
+    server.prepareSession("s-match", { prompt: "Hello", repoRoot: "/repo/mine" });
+    server.spawnClaude("s-match");
+
+    const ws = await connectMockClaude(port, "s-match");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("s-match"));
+      ws.send(resultMessage("s-match"));
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+      const event = await server.waitForEvent("s-match", 1000);
+      expect(event.session?.repoRoot).toBe("/repo/mine");
+
+      // Same repoRoot — should NOT be filtered
+      const requestedRepoRoot = "/repo/mine";
+      const isMismatch =
+        Boolean(requestedRepoRoot) && Boolean(event.session?.repoRoot) && event.session?.repoRoot !== requestedRepoRoot;
+      expect(isMismatch).toBe(false);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEvent repoRoot filter: event without repoRoot passes through", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = server.start();
+
+    server.prepareSession("s-none", { prompt: "Hello" }); // no repoRoot
+    server.spawnClaude("s-none");
+
+    const ws = await connectMockClaude(port, "s-none");
+    try {
+      await waitForMessage(ws);
+
+      ws.send(systemInitMessage("s-none"));
+      ws.send(resultMessage("s-none"));
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+      const event = await server.waitForEvent("s-none", 1000);
+      expect(event.session?.repoRoot).toBeNull();
+
+      // Null repoRoot on event — should NOT be filtered (passes through)
+      const requestedRepoRoot = "/repo/mine";
+      const isMismatch =
+        Boolean(requestedRepoRoot) && Boolean(event.session?.repoRoot) && event.session?.repoRoot !== requestedRepoRoot;
+      expect(isMismatch).toBe(false);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince repoRoot filter: filters events by repoRoot", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = server.start();
+
+    // Set up session A with repoRoot /repo/a
+    server.prepareSession("s-a", { prompt: "A", repoRoot: "/repo/a" });
+    server.spawnClaude("s-a");
+
+    const wsA = await connectMockClaude(port, "s-a");
+    try {
+      await waitForMessage(wsA);
+      wsA.send(systemInitMessage("s-a"));
+      wsA.send(resultMessage("s-a"));
+      await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "s-a" && s.state === "idle"));
+
+      // Set up session B with repoRoot /repo/b
+      server.prepareSession("s-b", { prompt: "B", repoRoot: "/repo/b" });
+      server.spawnClaude("s-b");
+
+      const wsB = await connectMockClaude(port, "s-b");
+      try {
+        await waitForMessage(wsB);
+        wsB.send(systemInitMessage("s-b"));
+        wsB.send(resultMessage("s-b"));
+        await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "s-b" && s.state === "idle"));
+
+        // Get all events via cursor-based wait
+        const result: WaitResult = await server.waitForEventsSince(null, 0, 5000);
+        expect(result.events.length).toBeGreaterThan(0);
+
+        // Apply the same filter from handleWait cursor path:
+        // result.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot)
+        const repoRoot = "/repo/a";
+        const filtered = result.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+
+        // Only events from s-a should remain (or events without repoRoot)
+        for (const e of filtered) {
+          if (e.session?.repoRoot) {
+            expect(e.session.repoRoot).toBe("/repo/a");
+          }
+        }
+
+        // Events from s-b should have been filtered out
+        const sBEvents = filtered.filter((e) => e.session?.repoRoot === "/repo/b");
+        expect(sBEvents).toHaveLength(0);
+      } finally {
+        wsB.close();
+      }
+    } finally {
+      wsA.close();
+    }
+  });
 });
 
 // ── summarizeInput ──
