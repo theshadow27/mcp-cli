@@ -6,6 +6,7 @@ import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
+import { MailViewer } from "./components/mail-viewer.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
@@ -14,6 +15,7 @@ import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
+import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
@@ -39,6 +41,9 @@ export function App() {
   const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
   const [statsScrollOffset, setStatsScrollOffset] = useState(0);
+  const [mailSelectedIndex, setMailSelectedIndex] = useState(0);
+  const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
+  const [mailScrollOffset, setMailScrollOffset] = useState(0);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -60,6 +65,7 @@ export function App() {
     setSource: setLogSource,
   } = useLogs(servers, { enabled: view === "logs" });
 
+  const { messages: mailMessages } = useMail({ enabled: view === "mail" });
   const { unreadCount: unreadMailCount } = useUnreadMail();
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
@@ -93,6 +99,11 @@ export function App() {
   useEffect(() => {
     setClaudeSelectedIndex((i) => Math.min(i, Math.max(0, sessions.length - 1)));
   }, [sessions.length]);
+
+  // Clamp mailSelectedIndex when messages list shrinks
+  useEffect(() => {
+    setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
+  }, [mailMessages.length]);
 
   // Clamp permission index when selected session or permission count changes
   const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;
@@ -165,6 +176,15 @@ export function App() {
       setScrollOffset: setStatsScrollOffset,
       lineCount: statsLineCount,
     },
+    mailNav: {
+      messages: mailMessages,
+      selectedIndex: mailSelectedIndex,
+      setSelectedIndex: setMailSelectedIndex,
+      expandedMessage,
+      setExpandedMessage,
+      scrollOffset: mailScrollOffset,
+      setScrollOffset: setMailScrollOffset,
+    },
   });
 
   if (loading && !status) return <Loading />;
@@ -226,9 +246,12 @@ export function App() {
           height={STATS_VIEW_HEIGHT}
         />
       ) : (
-        <Box marginTop={1}>
-          <Text dimColor>Coming soon</Text>
-        </Box>
+        <MailViewer
+          messages={mailMessages}
+          selectedIndex={mailSelectedIndex}
+          expandedMessage={expandedMessage}
+          scrollOffset={mailScrollOffset}
+        />
       )}
       <Footer
         view={view}
@@ -237,6 +260,7 @@ export function App() {
         denyReasonMode={denyReasonMode}
         denyReasonText={denyReasonText}
         transcriptExpanded={expandedSession !== null}
+        mailExpanded={expandedMessage !== null}
       />
     </Box>
   );
