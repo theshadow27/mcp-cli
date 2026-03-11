@@ -68,7 +68,7 @@ async function handleToolCall(
       case "claude_prompt":
         return await handlePrompt(server, args);
       case "claude_session_list":
-        return handleSessionList(server);
+        return handleSessionList(server, args);
       case "claude_session_status":
         return handleSessionStatus(server, args);
       case "claude_interrupt":
@@ -177,8 +177,15 @@ async function handlePrompt(
   };
 }
 
-function handleSessionList(server: ClaudeWsServer): { content: Array<{ type: "text"; text: string }> } {
-  const sessions = server.listSessions();
+function handleSessionList(
+  server: ClaudeWsServer,
+  args: Record<string, unknown>,
+): { content: Array<{ type: "text"; text: string }> } {
+  let sessions = server.listSessions();
+  const repoRoot = args.repoRoot as string | undefined;
+  if (repoRoot) {
+    sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoRoot);
+  }
   return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
 }
 
@@ -254,10 +261,14 @@ async function handleWait(
   const sessionId = (args.sessionId as string | undefined) ?? null;
   const timeoutMs = (args.timeout as number) ?? 300_000;
   const afterSeq = args.afterSeq as number | undefined;
+  const repoRoot = args.repoRoot as string | undefined;
 
   // Cursor-based path: use waitForEventsSince (errors propagate — no session-list fallback)
   if (afterSeq !== undefined) {
     const result: WaitResult = await server.waitForEventsSince(sessionId, afterSeq, timeoutMs);
+    if (repoRoot) {
+      result.events = result.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+    }
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
@@ -266,13 +277,17 @@ async function handleWait(
   // Legacy path: single-event wait
   try {
     const event = await server.waitForEvent(sessionId, timeoutMs);
+    // Filter single event by repoRoot — if mismatched, return empty array (same as timeout)
+    if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot) {
+      return handleSessionList(server, { repoRoot });
+    }
     return {
       content: [{ type: "text", text: JSON.stringify(event, null, 2) }],
     };
   } catch (err) {
     if (err instanceof WaitTimeoutError) {
       // On timeout, fall back to session list instead of erroring
-      return handleSessionList(server);
+      return handleSessionList(server, { repoRoot });
     }
     throw err;
   }
