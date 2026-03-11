@@ -691,7 +691,7 @@ describe("ClaudeWsServer", () => {
     await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     const result = await server.bye("test-session");
-    expect(result).toEqual({ worktree: "my-tree", cwd: null });
+    expect(result).toEqual({ worktree: "my-tree", cwd: null, repoRoot: null });
     expect(server.sessionCount).toBe(0);
   });
 
@@ -1099,11 +1099,16 @@ describe("ClaudeWsServer", () => {
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     server.start();
 
-    server.prepareSession("wt-session", { prompt: "Hello", worktree: "claude-test1", cwd: "/repo" });
+    server.prepareSession("wt-session", {
+      prompt: "Hello",
+      worktree: "claude-test1",
+      cwd: "/repo",
+      repoRoot: "/original-repo",
+    });
     server.spawnClaude("wt-session");
 
     const result = await server.bye("wt-session");
-    expect(result).toEqual({ worktree: "claude-test1", cwd: "/repo" });
+    expect(result).toEqual({ worktree: "claude-test1", cwd: "/repo", repoRoot: "/original-repo" });
   });
 
   test("spawnClaude omits --worktree when both cwd and worktree are set (hook pre-created)", () => {
@@ -1147,7 +1152,7 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("plain-session");
 
     const result = await server.bye("plain-session");
-    expect(result).toEqual({ worktree: null, cwd: null });
+    expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
   });
 
   test("sessionCount tracks active sessions", async () => {

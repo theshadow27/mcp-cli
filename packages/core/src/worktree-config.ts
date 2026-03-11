@@ -16,8 +16,6 @@ export interface WorktreeHooksConfig {
   teardown?: string;
   /** Base directory for worktrees (absolute or relative to repo root). Defaults to `.claude/worktrees`. */
   base?: string;
-  /** Whether to prefix branch names (default true for non-hook, irrelevant when hooks manage branches). */
-  branchPrefix?: boolean;
 }
 
 /** Config file shape */
@@ -40,7 +38,8 @@ export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null
     const text = readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(text) as WorktreeConfigFile;
     return parsed.worktree ?? null;
-  } catch {
+  } catch (err) {
+    console.error(`Warning: failed to parse ${configPath}: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 }
@@ -65,18 +64,17 @@ export function resolveWorktreePath(repoRoot: string, name: string, config: Work
 }
 
 /**
- * Substitute template variables in a hook command string.
+ * Build environment variables for hook execution.
  *
- * Supported variables:
- * - `{branch}` — the worktree/branch name
- * - `{path}` — the resolved worktree path
- * - `{cwd}` — the repo root
+ * Passes context as env vars instead of string interpolation to prevent shell injection.
+ * Hook commands use `$MCX_BRANCH`, `$MCX_PATH`, `$MCX_CWD` instead of template syntax.
  */
-export function substituteHookVars(template: string, vars: { branch: string; path: string; cwd: string }): string {
-  return template
-    .replace(/\{branch\}/g, vars.branch)
-    .replace(/\{path\}/g, vars.path)
-    .replace(/\{cwd\}/g, vars.cwd);
+export function buildHookEnv(vars: { branch: string; path: string; cwd: string }): Record<string, string> {
+  return {
+    MCX_BRANCH: vars.branch,
+    MCX_PATH: vars.path,
+    MCX_CWD: vars.cwd,
+  };
 }
 
 /**

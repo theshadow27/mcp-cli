@@ -5,8 +5,10 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
+  buildHookEnv,
   fixCoreBare,
   hasWorktreeHooks,
   ipcCall,
@@ -14,7 +16,6 @@ import {
   resolveModelName,
   resolveWorktreeBase,
   resolveWorktreePath,
-  substituteHookVars,
 } from "@mcp-cli/core";
 import type { WorktreeHooksConfig } from "@mcp-cli/core";
 import { applyJqFilter } from "../jq/index";
@@ -37,8 +38,11 @@ export interface ClaudeDeps {
   exit: (code: number) => never;
   getDiffStats: (worktreePath: string) => Promise<string | null>;
   getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
-  /** Run a command and return stdout + exit code. Used for git operations in `bye`. */
-  exec: (cmd: string[]) => { stdout: string; exitCode: number };
+  /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
+  exec: (
+    cmd: string[],
+    opts?: { env?: Record<string, string> },
+  ) => { stdout: string; stderr: string; exitCode: number };
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
   ttyOpen: (args: string[]) => Promise<void>;
 }
@@ -119,9 +123,17 @@ const defaultDeps: ClaudeDeps = {
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
   getPrStatus: defaultGetPrStatus,
-  exec: (cmd) => {
-    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-    return { stdout: result.stdout.toString().trim(), exitCode: result.exitCode };
+  exec: (cmd, opts) => {
+    const result = Bun.spawnSync(cmd, {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
+    });
+    return {
+      stdout: result.stdout.toString().trim(),
+      stderr: result.stderr.toString().trim(),
+      exitCode: result.exitCode,
+    };
   },
   ttyOpen: (args) => ttyOpen(args),
 };
@@ -322,19 +334,20 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
     if (hasWorktreeHooks(wtConfig)) {
       const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const hookCmd = substituteHookVars(wtConfig.setup, {
-        branch: parsed.worktree,
-        path: worktreePath,
-        cwd: repoRoot,
-      });
-      const { exitCode, stdout } = d.exec(["sh", "-c", hookCmd]);
+      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
+      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
       if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stdout}`);
+        d.printError(`Worktree setup hook failed: ${stderr}`);
         d.exit(1);
       }
-      // Pass cwd + worktree name — daemon will use cwd but skip --worktree flag
+      if (!existsSync(worktreePath)) {
+        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
+        d.exit(1);
+      }
+      // Pass cwd + worktree name + repoRoot — daemon will use cwd but skip --worktree flag
       toolArgs.cwd = worktreePath;
       toolArgs.worktree = parsed.worktree;
+      toolArgs.repoRoot = repoRoot;
       d.printError(`Created worktree via hook: ${worktreePath}`);
     } else {
       toolArgs.worktree = parsed.worktree;
@@ -364,14 +377,14 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
 
     if (hasWorktreeHooks(wtConfig)) {
       // Run the setup hook instead of git worktree add
-      const hookCmd = substituteHookVars(wtConfig.setup, {
-        branch: parsed.worktree,
-        path: worktreePath,
-        cwd: repoRoot,
-      });
-      const { exitCode, stdout } = d.exec(["sh", "-c", hookCmd]);
+      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
+      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
       if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stdout}`);
+        d.printError(`Worktree setup hook failed: ${stderr}`);
+        d.exit(1);
+      }
+      if (!existsSync(worktreePath)) {
+        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
         d.exit(1);
       }
     } else {
@@ -805,37 +818,35 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 
   if (byeResult.worktree && byeResult.cwd) {
-    cleanupWorktree(byeResult.worktree, byeResult.cwd, d);
+    cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
   }
 }
 
 interface ByeResult {
   worktree: string | null;
   cwd: string | null;
+  repoRoot: string | null;
 }
 
 function parseByeResult(result: unknown): ByeResult {
   const r = result as { content?: Array<{ text?: string }> };
   const text = r?.content?.[0]?.text;
-  if (!text) return { worktree: null, cwd: null };
+  if (!text) return { worktree: null, cwd: null, repoRoot: null };
   try {
     return JSON.parse(text) as ByeResult;
   } catch {
-    return { worktree: null, cwd: null };
+    return { worktree: null, cwd: null, repoRoot: null };
   }
 }
 
 /** Clean up a worktree after session ends: remove if clean, warn if dirty. */
-function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
-  // For hook-based worktrees, `cwd` from the bye result is the worktree path
-  // itself (not the repo root), so we use process.cwd() for config lookup.
-  // For non-hook worktrees, `cwd` from bye IS the repo root.
-  const configRoot = process.cwd();
-  const wtConfig = readWorktreeConfig(configRoot);
-  // When hooks are configured, resolve paths from the mcx invocation directory.
-  // Otherwise, use the cwd from bye result (the repo root) for backwards compat.
-  const repoRoot = hasWorktreeHooks(wtConfig) ? configRoot : cwd;
-  const worktreeBase = resolveWorktreeBase(repoRoot, wtConfig);
+function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps, repoRoot?: string | null): void {
+  // repoRoot is stored in session metadata at spawn time and returned by bye.
+  // For hook-based worktrees, cwd is the worktree path (not repo root), so repoRoot is required.
+  // For non-hook worktrees, cwd from bye IS the repo root — use it as fallback.
+  const effectiveRoot = repoRoot ?? cwd;
+  const wtConfig = readWorktreeConfig(effectiveRoot);
+  const worktreeBase = resolveWorktreeBase(effectiveRoot, wtConfig);
   const worktreePath = join(worktreeBase, worktree);
 
   // Guard against path traversal (worktree name comes from daemon response)
@@ -851,26 +862,29 @@ function cleanupWorktree(worktree: string, cwd: string, d: ClaudeDeps): void {
 
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       // Run teardown hook instead of git worktree remove
-      const hookCmd = substituteHookVars(wtConfig.teardown, {
-        branch: worktree,
-        path: worktreePath,
-        cwd: repoRoot,
-      });
-      const { exitCode: hookExit } = d.exec(["sh", "-c", hookCmd]);
+      const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
+      const { exitCode: hookExit, stderr: hookStderr } = d.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
       if (hookExit === 0) {
         d.printError(`Removed worktree via hook: ${worktreePath}`);
+        // Clean up the branch (same as non-hook path)
+        if (branch) {
+          const { exitCode: branchExit } = d.exec(["git", "-C", effectiveRoot, "branch", "-d", branch]);
+          if (branchExit === 0) {
+            d.printError(`Deleted branch: ${branch} (merged)`);
+          }
+        }
       } else {
-        d.printError(`Worktree teardown hook failed for: ${worktreePath}`);
+        d.printError(`Worktree teardown hook failed for: ${worktreePath}: ${hookStderr}`);
       }
     } else {
       // Default: git worktree remove
-      const { exitCode: removeExit } = d.exec(["git", "-C", repoRoot, "worktree", "remove", worktreePath]);
+      const { exitCode: removeExit } = d.exec(["git", "-C", effectiveRoot, "worktree", "remove", worktreePath]);
       if (removeExit === 0) {
-        if (fixCoreBare(repoRoot, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
+        if (fixCoreBare(effectiveRoot, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
         d.printError(`Removed worktree: ${worktreePath}`);
         // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
         if (branch) {
-          const { exitCode: branchExit } = d.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
+          const { exitCode: branchExit } = d.exec(["git", "-C", effectiveRoot, "branch", "-d", branch]);
           if (branchExit === 0) {
             d.printError(`Deleted branch: ${branch} (merged)`);
           }
@@ -1203,15 +1217,20 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
 
       // Remove worktree
       if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
-        const hookCmd = substituteHookVars(wtConfig.teardown, {
-          branch: wtName,
-          path: wt.path,
-          cwd,
-        });
-        const { exitCode: hookExit } = d.exec(["sh", "-c", hookCmd]);
+        const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd });
+        const { exitCode: hookExit, stderr: hookStderr } = d.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
         if (hookExit === 0) {
           d.printError(`Removed worktree via hook: ${wt.path}`);
           pruned++;
+          // Clean up the branch
+          if (wt.branch) {
+            const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
+            if (branchExit === 0) {
+              d.printError(`Deleted branch: ${wt.branch} (merged)`);
+            }
+          }
+        } else {
+          d.printError(`Worktree teardown hook failed for: ${wt.path}: ${hookStderr}`);
         }
       } else {
         const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);

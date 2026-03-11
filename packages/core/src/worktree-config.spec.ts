@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 import {
   WORKTREE_CONFIG_FILENAME,
+  buildHookEnv,
   hasWorktreeHooks,
   readWorktreeConfig,
   resolveWorktreeBase,
   resolveWorktreePath,
-  substituteHookVars,
 } from "./worktree-config";
 
 function makeTempDir(): string {
@@ -22,9 +22,10 @@ describe("readWorktreeConfig", () => {
     expect(readWorktreeConfig(dir)).toBeNull();
   });
 
-  test("returns null on malformed JSON", () => {
+  test("returns null on malformed JSON and logs warning", () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), "not json{{{");
+    // Should return null without throwing
     expect(readWorktreeConfig(dir)).toBeNull();
   });
 
@@ -38,8 +39,8 @@ describe("readWorktreeConfig", () => {
     const dir = makeTempDir();
     const config = {
       worktree: {
-        setup: "./scripts/setup.sh {branch}",
-        teardown: "./scripts/teardown.sh {path}",
+        setup: "./scripts/setup.sh $MCX_BRANCH",
+        teardown: "./scripts/teardown.sh $MCX_PATH",
         base: "../worktrees/myproject",
       },
     };
@@ -49,9 +50,9 @@ describe("readWorktreeConfig", () => {
 
   test("returns config with only setup (no teardown/base)", () => {
     const dir = makeTempDir();
-    const config = { worktree: { setup: "echo {branch}" } };
+    const config = { worktree: { setup: "echo $MCX_BRANCH" } };
     writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify(config));
-    expect(readWorktreeConfig(dir)).toEqual({ setup: "echo {branch}" });
+    expect(readWorktreeConfig(dir)).toEqual({ setup: "echo $MCX_BRANCH" });
   });
 });
 
@@ -83,32 +84,28 @@ describe("resolveWorktreePath", () => {
   });
 });
 
-describe("substituteHookVars", () => {
-  test("replaces all variables", () => {
-    const result = substituteHookVars("./setup.sh -b {branch} -p {path} -c {cwd}", {
+describe("buildHookEnv", () => {
+  test("returns env vars with MCX_ prefix", () => {
+    const env = buildHookEnv({
       branch: "fix-123",
       path: "/tmp/wt/fix-123",
       cwd: "/repo",
     });
-    expect(result).toBe("./setup.sh -b fix-123 -p /tmp/wt/fix-123 -c /repo");
+    expect(env).toEqual({
+      MCX_BRANCH: "fix-123",
+      MCX_PATH: "/tmp/wt/fix-123",
+      MCX_CWD: "/repo",
+    });
   });
 
-  test("replaces multiple occurrences of same variable", () => {
-    const result = substituteHookVars("{branch}/{branch}", {
-      branch: "main",
-      path: "/p",
-      cwd: "/c",
+  test("handles special characters safely (no interpolation)", () => {
+    const env = buildHookEnv({
+      branch: "foo; rm -rf ~",
+      path: "/tmp/wt/foo",
+      cwd: "/repo",
     });
-    expect(result).toBe("main/main");
-  });
-
-  test("leaves template unchanged when no variables match", () => {
-    const result = substituteHookVars("echo hello", {
-      branch: "x",
-      path: "/p",
-      cwd: "/c",
-    });
-    expect(result).toBe("echo hello");
+    // Values are stored as-is, no shell interpretation
+    expect(env.MCX_BRANCH).toBe("foo; rm -rf ~");
   });
 });
 

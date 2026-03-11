@@ -137,6 +137,7 @@ async function handlePrompt(
       worktree: args.worktree as string | undefined,
       model: args.model ? resolveModelName(args.model as string) : undefined,
       resumeSessionId: args.resumeSessionId as string | undefined,
+      repoRoot: args.repoRoot as string | undefined,
     });
 
     // Post DB upsert
@@ -206,8 +207,8 @@ async function handleBye(
 ): Promise<{
   content: Array<{ type: "text"; text: string }>;
 }> {
-  const { worktree, cwd } = await server.bye(args.sessionId as string);
-  return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd }) }] };
+  const { worktree, cwd, repoRoot } = await server.bye(args.sessionId as string);
+  return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd, repoRoot }) }] };
 }
 
 function handleTranscript(

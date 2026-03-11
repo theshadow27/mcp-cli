@@ -30,6 +30,7 @@ export const CLAUDE_TOOLS = [
           description: "Tool patterns to auto-approve (e.g. 'Read', 'Bash(git *)')",
         },
         worktree: { type: "string", description: "Git worktree name for isolation" },
+        repoRoot: { type: "string", description: "Original repo root (for worktree hook config lookup at teardown)" },
         model: {
           type: "string",
           description: "Model to use: shortname (opus, sonnet, haiku) or full ID (e.g. claude-opus-4-6)",
