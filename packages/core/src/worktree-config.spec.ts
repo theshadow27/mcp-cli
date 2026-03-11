@@ -54,6 +54,25 @@ describe("readWorktreeConfig", () => {
     writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify(config));
     expect(readWorktreeConfig(dir)).toEqual({ setup: "echo $MCX_BRANCH" });
   });
+
+  test("parses branchPrefix: false", () => {
+    const dir = makeTempDir();
+    const config = { worktree: { branchPrefix: false } };
+    writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify(config));
+    expect(readWorktreeConfig(dir)).toEqual({ branchPrefix: false });
+  });
+
+  test("parses branchPrefix: true with other fields", () => {
+    const dir = makeTempDir();
+    const config = {
+      worktree: {
+        setup: "./scripts/setup.sh",
+        branchPrefix: true,
+      },
+    };
+    writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify(config));
+    expect(readWorktreeConfig(dir)).toEqual(config.worktree);
+  });
 });
 
 describe("resolveWorktreeBase", () => {

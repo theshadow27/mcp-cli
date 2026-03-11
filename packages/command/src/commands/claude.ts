@@ -377,6 +377,18 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
       toolArgs.worktree = parsed.worktree;
       toolArgs.repoRoot = repoRoot;
       d.printError(`Created worktree via hook: ${worktreePath}`);
+    } else if (wtConfig?.branchPrefix === false) {
+      // branchPrefix: false — pre-create worktree with raw branch name (no claude/ prefix)
+      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
+      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", parsed.worktree, "HEAD"]);
+      if (exitCode !== 0) {
+        d.printError(`Failed to create worktree: ${stdout}`);
+        d.exit(1);
+      }
+      toolArgs.cwd = worktreePath;
+      toolArgs.worktree = parsed.worktree;
+      toolArgs.repoRoot = repoRoot;
+      d.printError(`Created worktree: ${worktreePath}`);
     } else {
       toolArgs.worktree = parsed.worktree;
     }
@@ -416,15 +428,8 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
         d.exit(1);
       }
     } else {
-      const { exitCode, stdout } = d.exec([
-        "git",
-        "worktree",
-        "add",
-        worktreePath,
-        "-b",
-        `headed/${parsed.worktree}`,
-        "HEAD",
-      ]);
+      const branchName = wtConfig?.branchPrefix === false ? parsed.worktree : `headed/${parsed.worktree}`;
+      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", branchName, "HEAD"]);
       if (exitCode !== 0) {
         d.printError(`Failed to create worktree: ${stdout}`);
         d.exit(1);

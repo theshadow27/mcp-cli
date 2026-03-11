@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
 import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
@@ -678,6 +681,96 @@ describe("mcx claude spawn --headed", () => {
       const ttyArgs = ttyOpen.mock.calls[0] as unknown as [string[]];
       expect(ttyArgs[0][0]).toContain("cd ");
       expect(ttyArgs[0][0]).toContain("my-feat");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("headed --worktree uses headed/ prefix by default", async () => {
+    const ttyOpen = mock(async () => {});
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const deps = makeDeps({ ttyOpen, exec });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--headed", "--task", "x", "--worktree", "my-feat"], deps);
+      const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
+      const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
+      expect(wtCall?.[0]).toContain("headed/my-feat");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("headed --worktree skips prefix when branchPrefix: false", async () => {
+    const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
+    writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
+    try {
+      const ttyOpen = mock(async () => {});
+      const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+      const deps = makeDeps({ ttyOpen, exec });
+
+      const origLog = console.log;
+      console.log = mock(() => {});
+      try {
+        await cmdClaude(["spawn", "--headed", "--task", "x", "--worktree", "my-feat"], deps);
+        const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
+        const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
+        // Branch name should be "my-feat" without prefix
+        expect(wtCall?.[0]).toContain("my-feat");
+        expect(wtCall?.[0]).not.toContain("headed/my-feat");
+      } finally {
+        console.log = origLog;
+      }
+    } finally {
+      if (existsSync(configPath)) unlinkSync(configPath);
+    }
+  });
+});
+
+describe("mcx claude spawn --worktree branchPrefix", () => {
+  test("headless --worktree pre-creates worktree without prefix when branchPrefix: false", async () => {
+    const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
+    writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
+    try {
+      const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+      const callTool = mock(async () => toolResult({ sessionId: "s1" }));
+      const deps = makeDeps({ exec, callTool });
+
+      const origLog = console.log;
+      console.log = mock(() => {});
+      try {
+        await cmdClaude(["spawn", "--task", "x", "--worktree", "my-feat"], deps);
+        // Verify git worktree add was called with raw branch name
+        const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
+        const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
+        expect(wtCall).toBeDefined();
+        expect(wtCall?.[0]).toContain("my-feat");
+        // Verify cwd was set (pre-created worktree path passed as cwd)
+        const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+        expect(toolCalls[0][1].cwd).toBeDefined();
+        expect(toolCalls[0][1].worktree).toBe("my-feat");
+      } finally {
+        console.log = origLog;
+      }
+    } finally {
+      if (existsSync(configPath)) unlinkSync(configPath);
+    }
+  });
+
+  test("headless --worktree delegates to daemon when branchPrefix is not false", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "s1" }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--worktree", "my-feat"], deps);
+      // Should pass worktree to daemon (no cwd pre-creation)
+      const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+      expect(toolCalls[0][1].worktree).toBe("my-feat");
+      expect(toolCalls[0][1].cwd).toBeUndefined();
     } finally {
       console.log = origLog;
     }
