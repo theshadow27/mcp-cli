@@ -21,6 +21,7 @@ export function buildBadges(opts: {
   sessionCount: number;
   pendingPermissionCount: number;
   errorServerCount: number;
+  unreadMailCount?: number;
 }): Partial<Record<View, TabBadge>> {
   const badges: Partial<Record<View, TabBadge>> = {};
   if (opts.sessionCount > 0) {
@@ -29,6 +30,9 @@ export function buildBadges(opts: {
   }
   if (opts.errorServerCount > 0) {
     badges.servers = { count: opts.errorServerCount, color: "red" };
+  }
+  if (opts.unreadMailCount && opts.unreadMailCount > 0) {
+    badges.mail = { count: opts.unreadMailCount, color: "yellow" };
   }
   return badges;
 }
