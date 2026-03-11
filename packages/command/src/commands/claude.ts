@@ -765,6 +765,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   // Scope to current repo unless --all
+  const totalBeforeFilter = sessions.length;
   if (!showAll) {
     const gitRoot = d.getGitRoot();
     if (gitRoot) {
@@ -773,7 +774,12 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (sessions.length === 0) {
-    console.error("No active sessions.");
+    const hidden = totalBeforeFilter - sessions.length;
+    if (hidden > 0) {
+      console.error(`(${hidden} session${hidden === 1 ? "" : "s"} in other repos — use --all to see them)`);
+    } else {
+      console.error("No active sessions.");
+    }
     return;
   }
 
@@ -1200,15 +1206,25 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
           // Timeout fallback: session list
           const filtered = data.filter((s: Record<string, unknown>) => !s.repoRoot || s.repoRoot === repoFilter);
           console.log(JSON.stringify(filtered, null, 2));
+          if (filtered.length === 0 && data.length > 0) {
+            const n = data.length;
+            console.error(`(${n} session${n === 1 ? "" : "s"} in other repos — use --all to see them)`);
+          }
           return;
         }
         if (data && typeof data === "object" && "events" in data && Array.isArray(data.events)) {
           // Cursor-based: filter events by session's repoRoot
+          const totalEvents = data.events.length;
           data.events = data.events.filter((e: Record<string, unknown>) => {
             const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
             return !repo || repo === repoFilter;
           });
           console.log(JSON.stringify(data, null, 2));
+          if (data.events.length === 0 && totalEvents > 0) {
+            console.error(
+              `(${totalEvents} event${totalEvents === 1 ? "" : "s"} in other repos — use --all to see them)`,
+            );
+          }
           return;
         }
         // Single event (legacy): check session snapshot
@@ -1217,6 +1233,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
           if (sessionRepo && sessionRepo !== repoFilter) {
             // Event is for a different repo — treat as empty
             console.log("[]");
+            console.error("(1 event in other repos — use --all to see them)");
             return;
           }
         }
@@ -1248,11 +1265,16 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       numTurns?: number;
       repoRoot?: string | null;
     }>;
+    const totalBeforeFilter = sessions.length;
     if (repoFilter) {
       sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoFilter);
     }
     for (const s of sessions) {
       console.log(formatSessionShort(s));
+    }
+    if (sessions.length === 0 && totalBeforeFilter > 0 && repoFilter) {
+      const n = totalBeforeFilter;
+      console.error(`(${n} session${n === 1 ? "" : "s"} in other repos — use --all to see them)`);
     }
     return;
   }
@@ -1261,6 +1283,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   if (data && typeof data === "object" && "events" in data) {
     const waitResult = data as { seq: number; events: Array<Record<string, unknown>> };
     let events = waitResult.events;
+    const totalEventsBeforeFilter = events.length;
     if (repoFilter) {
       events = events.filter((e) => {
         const repo = e.session && (e.session as Record<string, unknown>).repoRoot;
@@ -1275,6 +1298,10 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       const turns = session?.numTurns !== undefined ? String(session.numTurns) : "—";
       const preview = (e.result as string) ? (e.result as string).slice(0, 100) : "";
       console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+    }
+    if (events.length === 0 && totalEventsBeforeFilter > 0 && repoFilter) {
+      const n = totalEventsBeforeFilter;
+      console.error(`(${n} event${n === 1 ? "" : "s"} in other repos — use --all to see them)`);
     }
     return;
   }
