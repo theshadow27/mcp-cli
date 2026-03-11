@@ -1,11 +1,13 @@
 import type { MetricsSnapshot } from "@mcp-cli/core";
 import { Box, Text } from "ink";
-import React from "react";
+import type React from "react";
 
 interface StatsViewProps {
   metrics: MetricsSnapshot | null;
   loading: boolean;
   error: string | null;
+  scrollOffset: number;
+  height: number;
 }
 
 /** Find a counter value by name and optional label match. */
@@ -118,30 +120,16 @@ function formatUptime(seconds: number): string {
   return `${h}h ${m}m`;
 }
 
-export function StatsView({ metrics, loading, error }: StatsViewProps) {
-  if (loading && !metrics) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>Loading metrics...</Text>
-      </Box>
-    );
-  }
-
-  if (error && !metrics) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text color="red">Error: {error}</Text>
-      </Box>
-    );
-  }
-
+/** Build all stats lines as a flat array of React elements. */
+export function buildStatsLines(metrics: MetricsSnapshot, error: string | null): React.ReactElement[] {
+  const lines: React.ReactElement[] = [];
   const staleError = error && metrics;
 
-  if (!metrics) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>No metrics available.</Text>
-      </Box>
+  if (staleError) {
+    lines.push(
+      <Box key="stale" marginLeft={2}>
+        <Text color="yellow">⚠ stale data — {error}</Text>
+      </Box>,
     );
   }
 
@@ -155,7 +143,6 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
   const serversConnected = findGauge(metrics, "mcpd_servers_connected");
   const activeSessions = findGauge(metrics, "mcpd_active_sessions");
 
-  // Aggregate tool call duration histogram for p50/p99
   let totalHistCount = 0;
   const mergedBuckets = new Map<number, number>();
   for (const h of metrics.histograms) {
@@ -173,91 +160,147 @@ export function StatsView({ metrics, loading, error }: StatsViewProps) {
   const p50 = percentile(sortedBuckets, totalHistCount, 0.5);
   const p99 = percentile(sortedBuckets, totalHistCount, 0.99);
 
+  // Dashboard header
+  lines.push(
+    <Box key="dash-hdr" marginLeft={2}>
+      <Text bold color="cyan">
+        Dashboard
+      </Text>
+    </Box>,
+  );
+  lines.push(
+    <Box key="dash-1" marginLeft={4}>
+      <Text>
+        <Text dimColor>uptime:</Text> {formatUptime(uptime)}
+        {"  "}
+        <Text dimColor>servers:</Text> {serversConnected}/{serversTotal}
+        {"  "}
+        <Text dimColor>sessions:</Text> {activeSessions}
+      </Text>
+    </Box>,
+  );
+  lines.push(
+    <Box key="dash-2" marginLeft={4}>
+      <Text>
+        <Text dimColor>tool calls:</Text> {totalCalls}
+        {"  "}
+        <Text dimColor>errors:</Text> <Text color={totalErrors > 0 ? "red" : undefined}>{totalErrors}</Text>
+        {"  "}
+        <Text dimColor>success:</Text>{" "}
+        {successRate === null ? (
+          <Text dimColor>—</Text>
+        ) : (
+          <Text color={successRate >= 99 ? "green" : successRate >= 90 ? "yellow" : "red"}>{fmt(successRate)}%</Text>
+        )}
+      </Text>
+    </Box>,
+  );
+  lines.push(
+    <Box key="dash-3" marginLeft={4}>
+      <Text>
+        <Text dimColor>p50:</Text> {fmt(p50)}ms{"  "}
+        <Text dimColor>p99:</Text> {fmt(p99)}ms{"  "}
+        <Text dimColor>ipc reqs:</Text> {ipcRequests}
+        {"  "}
+        <Text dimColor>ipc errs:</Text> {ipcErrors}
+      </Text>
+    </Box>,
+  );
+
+  // Per-server breakdown
   const serverStats = aggregateByServer(metrics);
+  if (serverStats.length > 0) {
+    lines.push(<Box key="srv-spacer" />);
+    lines.push(
+      <Box key="srv-hdr" marginLeft={2}>
+        <Text bold color="cyan">
+          Servers
+        </Text>
+      </Box>,
+    );
+    for (const s of serverStats) {
+      lines.push(
+        <Box key={`srv-${s.server}`} marginLeft={4}>
+          <Text>
+            <Text bold>{s.server}</Text>
+            {"  "}
+            <Text dimColor>calls:</Text> {s.calls}
+            {"  "}
+            <Text dimColor>errors:</Text> <Text color={s.errors > 0 ? "red" : undefined}>{s.errors}</Text>
+            {"  "}
+            <Text dimColor>avg:</Text> {fmt(s.avgMs)}ms
+          </Text>
+        </Box>,
+      );
+    }
+  }
+
+  // Top tools
   const topToolsList = topTools(metrics, 8);
+  if (topToolsList.length > 0) {
+    lines.push(<Box key="tool-spacer" />);
+    lines.push(
+      <Box key="tool-hdr" marginLeft={2}>
+        <Text bold color="cyan">
+          Top Tools
+        </Text>
+      </Box>,
+    );
+    for (const t of topToolsList) {
+      lines.push(
+        <Box key={`tool-${t.server}:${t.tool}`} marginLeft={4}>
+          <Text>
+            <Text dimColor>{t.server}/</Text>
+            <Text>{t.tool}</Text>
+            {"  "}
+            <Text dimColor>{t.calls} calls</Text>
+          </Text>
+        </Box>,
+      );
+    }
+  }
+
+  return lines;
+}
+
+export function StatsView({ metrics, loading, error, scrollOffset, height }: StatsViewProps) {
+  if (loading && !metrics) {
+    return (
+      <Box marginLeft={2} marginTop={1}>
+        <Text dimColor>Loading metrics...</Text>
+      </Box>
+    );
+  }
+
+  if (error && !metrics) {
+    return (
+      <Box marginLeft={2} marginTop={1}>
+        <Text color="red">Error: {error}</Text>
+      </Box>
+    );
+  }
+
+  if (!metrics) {
+    return (
+      <Box marginLeft={2} marginTop={1}>
+        <Text dimColor>No metrics available.</Text>
+      </Box>
+    );
+  }
+
+  const allLines = buildStatsLines(metrics, error);
+  const maxOffset = Math.max(0, allLines.length - height);
+  const effectiveOffset = Math.min(scrollOffset, maxOffset);
+  const visible = allLines.slice(effectiveOffset, effectiveOffset + height);
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      {staleError && (
+      {visible}
+      {allLines.length > height && (
         <Box marginLeft={2}>
-          <Text color="yellow">⚠ stale data — {error}</Text>
-        </Box>
-      )}
-      {/* Aggregate dashboard */}
-      <Box marginLeft={2} flexDirection="column">
-        <Text bold color="cyan">
-          Dashboard
-        </Text>
-        <Box marginLeft={2} flexDirection="column">
-          <Text>
-            <Text dimColor>uptime:</Text> {formatUptime(uptime)}
-            {"  "}
-            <Text dimColor>servers:</Text> {serversConnected}/{serversTotal}
-            {"  "}
-            <Text dimColor>sessions:</Text> {activeSessions}
+          <Text dimColor>
+            [{effectiveOffset + 1}-{Math.min(effectiveOffset + height, allLines.length)}/{allLines.length}]
           </Text>
-          <Text>
-            <Text dimColor>tool calls:</Text> {totalCalls}
-            {"  "}
-            <Text dimColor>errors:</Text> <Text color={totalErrors > 0 ? "red" : undefined}>{totalErrors}</Text>
-            {"  "}
-            <Text dimColor>success:</Text>{" "}
-            {successRate === null ? (
-              <Text dimColor>—</Text>
-            ) : (
-              <Text color={successRate >= 99 ? "green" : successRate >= 90 ? "yellow" : "red"}>
-                {fmt(successRate)}%
-              </Text>
-            )}
-          </Text>
-          <Text>
-            <Text dimColor>p50:</Text> {fmt(p50)}ms{"  "}
-            <Text dimColor>p99:</Text> {fmt(p99)}ms{"  "}
-            <Text dimColor>ipc reqs:</Text> {ipcRequests}
-            {"  "}
-            <Text dimColor>ipc errs:</Text> {ipcErrors}
-          </Text>
-        </Box>
-      </Box>
-
-      {/* Per-server breakdown */}
-      {serverStats.length > 0 && (
-        <Box marginLeft={2} marginTop={1} flexDirection="column">
-          <Text bold color="cyan">
-            Servers
-          </Text>
-          {serverStats.map((s) => (
-            <Box key={s.server} marginLeft={2}>
-              <Text>
-                <Text bold>{s.server}</Text>
-                {"  "}
-                <Text dimColor>calls:</Text> {s.calls}
-                {"  "}
-                <Text dimColor>errors:</Text> <Text color={s.errors > 0 ? "red" : undefined}>{s.errors}</Text>
-                {"  "}
-                <Text dimColor>avg:</Text> {fmt(s.avgMs)}ms
-              </Text>
-            </Box>
-          ))}
-        </Box>
-      )}
-
-      {/* Top tools */}
-      {topToolsList.length > 0 && (
-        <Box marginLeft={2} marginTop={1} flexDirection="column">
-          <Text bold color="cyan">
-            Top Tools
-          </Text>
-          {topToolsList.map((t) => (
-            <Box key={`${t.server}:${t.tool}`} marginLeft={2}>
-              <Text>
-                <Text dimColor>{t.server}/</Text>
-                <Text>{t.tool}</Text>
-                {"  "}
-                <Text dimColor>{t.calls} calls</Text>
-              </Text>
-            </Box>
-          ))}
         </Box>
       )}
     </Box>

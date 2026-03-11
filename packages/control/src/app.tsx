@@ -7,7 +7,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { ServerList } from "./components/server-list.js";
-import { StatsView } from "./components/stats-view.js";
+import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemon } from "./hooks/use-daemon.js";
@@ -17,6 +17,7 @@ import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 
 const LOG_VIEW_HEIGHT = 20;
+const STATS_VIEW_HEIGHT = 20;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
@@ -33,6 +34,7 @@ export function App() {
   const [permissionIndex, setPermissionIndex] = useState(0);
   const [denyReasonMode, setDenyReasonMode] = useState(false);
   const [denyReasonText, setDenyReasonText] = useState("");
+  const [statsScrollOffset, setStatsScrollOffset] = useState(0);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -53,6 +55,10 @@ export function App() {
   } = useLogs(servers, { enabled: view === "logs" });
 
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
+  const statsLineCount = useMemo(
+    () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
+    [metricsData, metricsError],
+  );
   const prevFilterRef = useRef(filterText);
 
   // Auto-scroll: follow new lines at the tail, or force-jump when filter changes
@@ -134,6 +140,11 @@ export function App() {
       denyReasonText,
       setDenyReasonText,
     },
+    statsNav: {
+      scrollOffset: statsScrollOffset,
+      setScrollOffset: setStatsScrollOffset,
+      lineCount: statsLineCount,
+    },
   });
 
   if (loading && !status) return <Loading />;
@@ -177,7 +188,13 @@ export function App() {
           permissionIndex={permissionIndex}
         />
       ) : view === "stats" ? (
-        <StatsView metrics={metricsData} loading={metricsLoading} error={metricsError} />
+        <StatsView
+          metrics={metricsData}
+          loading={metricsLoading}
+          error={metricsError}
+          scrollOffset={statsScrollOffset}
+          height={STATS_VIEW_HEIGHT}
+        />
       ) : (
         <Box marginTop={1}>
           <Text dimColor>Coming soon</Text>
