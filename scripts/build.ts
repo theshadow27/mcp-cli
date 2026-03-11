@@ -111,8 +111,7 @@ await $`mkdir -p dist`;
 
 // mcpd worker entrypoints — must be listed explicitly for bun build --compile
 const daemonWorkers = [
-  "packages/daemon/src/alias-server-worker.ts",
-  "packages/daemon/src/alias-worker.ts",
+  "packages/daemon/src/alias-executor.ts",
   "packages/daemon/src/claude-session-worker.ts",
   "packages/daemon/src/codex-session-worker.ts",
 ];

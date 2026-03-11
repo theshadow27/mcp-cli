@@ -166,6 +166,16 @@ export class StateDb {
     } catch {
       /* column already exists */
     }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN bundled_js TEXT");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN source_hash TEXT");
+    } catch {
+      /* column already exists */
+    }
 
     // -- Trace context columns on usage_stats --
     try {
@@ -566,11 +576,28 @@ export class StateDb {
       }));
   }
 
-  getAlias(name: string): { name: string; description: string; filePath: string; aliasType: AliasType } | undefined {
+  getAlias(name: string):
+    | {
+        name: string;
+        description: string;
+        filePath: string;
+        aliasType: AliasType;
+        bundledJs?: string;
+        sourceHash?: string;
+      }
+    | undefined {
     const row = this.db
-      .query<{ name: string; description: string | null; file_path: string; alias_type: string }, [string]>(
-        "SELECT name, description, file_path, alias_type FROM aliases WHERE name = ?",
-      )
+      .query<
+        {
+          name: string;
+          description: string | null;
+          file_path: string;
+          alias_type: string;
+          bundled_js: string | null;
+          source_hash: string | null;
+        },
+        [string]
+      >("SELECT name, description, file_path, alias_type, bundled_js, source_hash FROM aliases WHERE name = ?")
       .get(name);
     if (!row) return undefined;
     return {
@@ -578,6 +605,8 @@ export class StateDb {
       description: row.description ?? "",
       filePath: row.file_path,
       aliasType: row.alias_type as AliasType,
+      ...(row.bundled_js ? { bundledJs: row.bundled_js } : {}),
+      ...(row.source_hash ? { sourceHash: row.source_hash } : {}),
     };
   }
 
@@ -588,18 +617,31 @@ export class StateDb {
     aliasType: AliasType = "freeform",
     inputSchemaJson?: string,
     outputSchemaJson?: string,
+    bundledJs?: string,
+    sourceHash?: string,
   ): void {
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
        ON CONFLICT(name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
          alias_type = excluded.alias_type,
          input_schema_json = excluded.input_schema_json,
          output_schema_json = excluded.output_schema_json,
+         bundled_js = excluded.bundled_js,
+         source_hash = excluded.source_hash,
          updated_at = unixepoch()`,
-      [name, filePath, description ?? null, aliasType, inputSchemaJson ?? null, outputSchemaJson ?? null],
+      [
+        name,
+        filePath,
+        description ?? null,
+        aliasType,
+        inputSchemaJson ?? null,
+        outputSchemaJson ?? null,
+        bundledJs ?? null,
+        sourceHash ?? null,
+      ],
     );
   }
 

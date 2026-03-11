@@ -1,0 +1,248 @@
+/**
+ * Alias bundling and execution via Bun.build + AsyncFunction eval.
+ *
+ * Replaces the Worker + bun.plugin() virtual module approach with:
+ * 1. Bun.build to bundle alias scripts (externalizing "mcp-cli")
+ * 2. stripMcpCliImport to remove the external import from bundled output
+ * 3. AsyncFunction eval with injected dependencies
+ *
+ * This eliminates segfaults caused by concurrent import() with cache-busting
+ * from worker threads (#577).
+ */
+
+import { z } from "zod/v4";
+import type { AliasContext, AliasDefinition, McpProxy } from "./alias";
+
+/** Stub MCP proxy — returns undefined for any server.tool() call. */
+export const stubProxy: McpProxy = new Proxy({} as McpProxy, {
+  get() {
+    return new Proxy(
+      {},
+      {
+        get() {
+          return () => Promise.resolve(undefined);
+        },
+      },
+    );
+  },
+});
+
+/** Metadata extracted from a defineAlias script at save-time. */
+export interface AliasMetadata {
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+}
+
+/** Result of bundling an alias source file. */
+export interface BundleResult {
+  js: string;
+  sourceHash: string;
+}
+
+/**
+ * Bundle an alias source file using Bun.build.
+ * Externalizes "mcp-cli" so the import statement can be stripped and
+ * dependencies injected at eval time.
+ */
+export async function bundleAlias(sourcePath: string): Promise<BundleResult> {
+  // Read source once for hashing — Bun.build re-reads from path (unavoidable with path-based API)
+  const sourceContent = await Bun.file(sourcePath).arrayBuffer();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(sourceContent);
+  const sourceHash = hasher.digest("hex");
+
+  const result = await Bun.build({
+    entrypoints: [sourcePath],
+    external: ["mcp-cli"],
+    target: "bun",
+  });
+
+  if (!result.success) {
+    const msgs = result.logs.map((l) => l.message ?? String(l)).join("\n");
+    throw new Error(`Failed to bundle alias: ${msgs}`);
+  }
+
+  const js = await result.outputs[0].text();
+
+  return { js, sourceHash };
+}
+
+/**
+ * Compute a SHA-256 hash of the source file for cache invalidation.
+ */
+export async function computeSourceHash(sourcePath: string): Promise<string> {
+  const content = await Bun.file(sourcePath).arrayBuffer();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(content);
+  return hasher.digest("hex");
+}
+
+/**
+ * Strip the "mcp-cli" import/require from Bun.build output.
+ *
+ * Bun.build with external: ["mcp-cli"] produces either:
+ * - ESM: import { defineAlias, z, ... } from "mcp-cli";
+ * - CJS: var/const { ... } = require("mcp-cli");
+ *
+ * We remove these lines so the bundled code can be eval'd with
+ * injected dependencies.
+ */
+export function stripMcpCliImport(bundledJs: string): string {
+  // ESM: import { ... } from "mcp-cli";  or  import ... from "mcp-cli";
+  // Uses [^;]*? to handle multi-line imports from Bun.build (e.g. import {\n  defineAlias,\n  z\n} from "mcp-cli";)
+  const esmPattern = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
+  // CJS: var/const/let { ... } = require("mcp-cli");
+  const cjsPattern = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
+
+  return bundledJs.replace(esmPattern, "").replace(cjsPattern, "");
+}
+
+/**
+ * Eval bundled alias JS with injected context, capturing any defineAlias call.
+ *
+ * Shared core for extractMetadata and executeAliasBundled.
+ * Returns the captured AliasDefinition, or null for freeform scripts.
+ */
+async function evalBundledJs(
+  bundledJs: string,
+  ctx: {
+    mcp: McpProxy;
+    args: Record<string, string>;
+    file: (p: string) => Promise<string>;
+    json: (p: string) => Promise<unknown>;
+  },
+  timeoutMs?: number,
+): Promise<AliasDefinition | null> {
+  const stripped = stripMcpCliImport(bundledJs);
+
+  let captured: AliasDefinition | null = null;
+
+  const injected = {
+    defineAlias: (defOrFactory: AliasDefinition | ((dctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
+      if (typeof defOrFactory === "function") {
+        captured = defOrFactory({ mcp: ctx.mcp, z });
+      } else {
+        captured = defOrFactory;
+      }
+    },
+    z,
+    mcp: ctx.mcp,
+    args: ctx.args,
+    file: ctx.file,
+    json: ctx.json,
+  };
+
+  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
+  const fn = new AsyncFunction("__mcp_inject__", code);
+
+  if (timeoutMs !== undefined) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      fn(injected),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  } else {
+    await fn(injected);
+  }
+
+  return captured;
+}
+
+/**
+ * Extract metadata from bundled defineAlias JS without executing the handler.
+ *
+ * Evaluates the bundled code with a capture-only defineAlias function that
+ * records the definition and extracts JSON Schemas from Zod types.
+ */
+export async function extractMetadata(bundledJs: string, timeoutMs = 5_000): Promise<AliasMetadata> {
+  const captured = await evalBundledJs(
+    bundledJs,
+    { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
+    timeoutMs,
+  );
+
+  if (!captured) {
+    throw new Error("Script did not call defineAlias()");
+  }
+
+  const meta: AliasMetadata = {
+    name: captured.name,
+    description: captured.description ?? "",
+  };
+
+  try {
+    if (captured.input) {
+      meta.inputSchema = z.toJSONSchema(captured.input) as Record<string, unknown>;
+    }
+  } catch {
+    /* schema conversion failed — skip */
+  }
+
+  try {
+    if (captured.output) {
+      meta.outputSchema = z.toJSONSchema(captured.output) as Record<string, unknown>;
+    }
+  } catch {
+    /* schema conversion failed — skip */
+  }
+
+  return meta;
+}
+
+/**
+ * Execute bundled alias JS with injected context.
+ *
+ * For defineAlias scripts: captures the definition, validates input,
+ * calls the handler, validates output.
+ *
+ * For freeform scripts: side effects execute during eval.
+ */
+export async function executeAliasBundled(
+  bundledJs: string,
+  input: unknown,
+  ctx: AliasContext,
+  isDefineAlias: boolean,
+): Promise<unknown> {
+  const captured = await evalBundledJs(bundledJs, ctx);
+
+  if (!isDefineAlias) {
+    // Freeform: side effects already executed during eval
+    return undefined;
+  }
+
+  if (!captured) {
+    throw new Error("Script did not call defineAlias()");
+  }
+
+  // Validate input
+  let parsedInput = input;
+  if (captured.input) {
+    const result = captured.input.safeParse(input);
+    if (!result.success) {
+      throw new Error(`Invalid input: ${result.error.message}`);
+    }
+    parsedInput = result.data;
+  }
+
+  const output = await captured.fn(parsedInput, ctx);
+
+  // Validate output
+  if (captured.output) {
+    const result = captured.output.safeParse(output);
+    if (!result.success) {
+      throw new Error(`Invalid output: ${result.error.message}`);
+    }
+    return result.data;
+  }
+
+  return output;
+}
+
+// AsyncFunction constructor (not directly accessible as a global)
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+  ...args: string[]
+) => (...args: unknown[]) => Promise<unknown>;

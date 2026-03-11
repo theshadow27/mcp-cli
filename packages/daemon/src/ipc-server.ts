@@ -38,6 +38,7 @@ import {
   SendMailParamsSchema,
   TriggerAuthParamsSchema,
   WaitForMailParamsSchema,
+  bundleAlias,
   consoleLogger,
   hardenFile,
   isDefineAlias,
@@ -54,7 +55,6 @@ import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import type { ServerPool } from "./server-pool";
-import { workerPath } from "./worker-path";
 
 /** Per-request context passed to every handler (fixes race condition on shared state). */
 export interface RequestContext {
@@ -485,10 +485,13 @@ export class IpcServer {
 
       const aliasType = isStructured ? "defineAlias" : "freeform";
 
-      // For defineAlias scripts, extract metadata via worker
-      if (isStructured) {
-        try {
-          const meta = await extractAliasMetadata(filePath);
+      // Bundle the alias and extract metadata
+      try {
+        const { js, sourceHash } = await bundleAlias(filePath);
+
+        if (isStructured) {
+          if (!this.aliasServer) throw new Error("Alias server not initialized");
+          const meta = await this.aliasServer.extractMetadataInSubprocess(js);
           this.db.saveAlias(
             name,
             filePath,
@@ -496,12 +499,14 @@ export class IpcServer {
             aliasType,
             meta.inputSchema ? JSON.stringify(meta.inputSchema) : undefined,
             meta.outputSchema ? JSON.stringify(meta.outputSchema) : undefined,
+            js,
+            sourceHash,
           );
-        } catch {
-          // Worker extraction failed — save with sentinel-detected type only
-          this.db.saveAlias(name, filePath, description, aliasType);
+        } else {
+          this.db.saveAlias(name, filePath, description, aliasType, undefined, undefined, js, sourceHash);
         }
-      } else {
+      } catch {
+        // Bundle/extraction failed — save without bundle
         this.db.saveAlias(name, filePath, description, aliasType);
       }
 
@@ -648,43 +653,6 @@ export class IpcServer {
 }
 
 // -- Helpers --
-
-interface AliasMetadata {
-  name: string;
-  description: string;
-  inputSchema?: Record<string, unknown>;
-  outputSchema?: Record<string, unknown>;
-}
-
-/** Extract metadata from a defineAlias script using a Bun Worker */
-function extractAliasMetadata(aliasPath: string): Promise<AliasMetadata> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(workerPath("alias-worker.ts"));
-    const timeout = setTimeout(() => {
-      worker.terminate();
-      reject(new Error("Alias metadata extraction timed out"));
-    }, 5_000);
-
-    worker.onmessage = (event: MessageEvent) => {
-      clearTimeout(timeout);
-      worker.terminate();
-      const data = event.data as AliasMetadata | { error: string };
-      if ("error" in data) {
-        reject(new Error(data.error));
-      } else {
-        resolve(data);
-      }
-    };
-
-    worker.onerror = (err) => {
-      clearTimeout(timeout);
-      worker.terminate();
-      reject(err);
-    };
-
-    worker.postMessage({ aliasPath });
-  });
-}
 
 function toIpcError(err: unknown): IpcError {
   if (err instanceof z.ZodError) {
