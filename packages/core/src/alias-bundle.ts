@@ -99,7 +99,7 @@ export function stripMcpCliImport(bundledJs: string): string {
  * Evaluates the bundled code with a capture-only defineAlias function that
  * records the definition and extracts JSON Schemas from Zod types.
  */
-export async function extractMetadata(bundledJs: string): Promise<AliasMetadata> {
+export async function extractMetadata(bundledJs: string, timeoutMs = 5_000): Promise<AliasMetadata> {
   const stripped = stripMcpCliImport(bundledJs);
 
   let captured: AliasDefinition | null = null;
@@ -119,9 +119,12 @@ export async function extractMetadata(bundledJs: string): Promise<AliasMetadata>
     json: () => Promise.resolve(null),
   };
 
-  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp__;\n${stripped}`;
-  const fn = new AsyncFunction("__mcp__", code);
-  await fn(injected);
+  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
+  const fn = new AsyncFunction("__mcp_inject__", code);
+  await Promise.race([
+    fn(injected),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs)),
+  ]);
 
   if (!captured) {
     throw new Error("Script did not call defineAlias()");
@@ -185,8 +188,8 @@ export async function executeAliasBundled(
     json: ctx.json,
   };
 
-  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp__;\n${stripped}`;
-  const fn = new AsyncFunction("__mcp__", code);
+  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
+  const fn = new AsyncFunction("__mcp_inject__", code);
   await fn(injected);
 
   if (!isDefineAlias) {

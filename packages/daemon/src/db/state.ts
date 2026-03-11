@@ -548,8 +548,6 @@ export class StateDb {
     aliasType: AliasType;
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
-    bundledJs?: string;
-    sourceHash?: string;
   }> {
     return this.db
       .query<
@@ -561,12 +559,10 @@ export class StateDb {
           alias_type: string;
           input_schema_json: string | null;
           output_schema_json: string | null;
-          bundled_js: string | null;
-          source_hash: string | null;
         },
         []
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash FROM aliases ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json FROM aliases ORDER BY name",
       )
       .all()
       .map((row) => ({
@@ -577,8 +573,6 @@ export class StateDb {
         aliasType: row.alias_type as AliasType,
         ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
         ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
-        ...(row.bundled_js ? { bundledJs: row.bundled_js } : {}),
-        ...(row.source_hash ? { sourceHash: row.source_hash } : {}),
       }));
   }
 

@@ -124,13 +124,16 @@ export class AliasServer {
 
   /** Execute an alias in a subprocess for fault isolation. */
   private async executeInSubprocess(aliasDef: AliasToolDef, args: Record<string, unknown>): Promise<unknown> {
-    let bundledJs = aliasDef.bundledJs;
+    // Load bundled JS lazily from DB (not held in memory on tool list)
+    const dbAlias = this.db.getAlias(aliasDef.name);
+    let bundledJs = dbAlias?.bundledJs;
+    const sourceHash = dbAlias?.sourceHash;
 
     // Re-bundle if source hash doesn't match (file was edited outside save)
-    if (bundledJs && aliasDef.sourceHash) {
+    if (bundledJs && sourceHash) {
       try {
         const currentHash = await computeSourceHash(aliasDef.filePath);
-        if (currentHash !== aliasDef.sourceHash) {
+        if (currentHash !== sourceHash) {
           bundledJs = undefined; // Force re-bundle below
         }
       } catch {
@@ -143,6 +146,22 @@ export class AliasServer {
       const { bundleAlias } = await import("@mcp-cli/core");
       const result = await bundleAlias(aliasDef.filePath);
       bundledJs = result.js;
+
+      // Persist re-bundled JS back to DB so future calls use the cache
+      try {
+        this.db.saveAlias(
+          aliasDef.name,
+          aliasDef.filePath,
+          aliasDef.description,
+          aliasDef.isDefineAlias ? "defineAlias" : "freeform",
+          aliasDef.inputSchema ? JSON.stringify(aliasDef.inputSchema) : undefined,
+          aliasDef.outputSchema ? JSON.stringify(aliasDef.outputSchema) : undefined,
+          bundledJs,
+          result.sourceHash,
+        );
+      } catch {
+        // Non-fatal: DB persist failed, bundle still usable in-memory
+      }
     }
 
     const input = JSON.stringify({
@@ -151,7 +170,7 @@ export class AliasServer {
       isDefineAlias: aliasDef.isDefineAlias,
     });
 
-    const proc = Bun.spawn(["bun", this.executorPath], {
+    const proc = Bun.spawn([process.execPath, this.executorPath], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -160,18 +179,35 @@ export class AliasServer {
     proc.stdin.write(input);
     proc.stdin.end();
 
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
+    // Kill subprocess after 30s timeout
+    const killTimeout = setTimeout(() => {
+      proc.kill("SIGKILL");
+    }, 30_000);
+
+    // Read stdout and stderr concurrently to prevent pipe buffer deadlock
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    clearTimeout(killTimeout);
 
     if (exitCode !== 0) {
-      // Try to parse error from stdout first
-      try {
-        const parsed = JSON.parse(stdout) as { error?: string };
-        if (parsed.error) throw new Error(parsed.error);
-      } catch (e) {
-        if (e instanceof Error && e.message !== stdout) throw e;
+      // Try to parse structured error from stdout
+      if (stdout) {
+        try {
+          const parsed = JSON.parse(stdout) as { error?: string };
+          if (parsed.error) throw new Error(parsed.error);
+        } catch (e) {
+          // Re-throw structured errors from the executor; swallow JSON parse failures
+          if (e instanceof SyntaxError) {
+            // JSON.parse failed — fall through to stderr/generic error
+          } else {
+            throw e;
+          }
+        }
       }
-      const stderr = await new Response(proc.stderr).text();
       throw new Error(stderr || `Alias executor exited with code ${exitCode}`);
     }
 
@@ -197,8 +233,7 @@ export class AliasServer {
         inputSchema,
         outputSchema: alias.outputSchemaJson,
         filePath: alias.filePath,
-        bundledJs: alias.bundledJs,
-        sourceHash: alias.sourceHash,
+        // bundledJs/sourceHash loaded lazily via getAlias() at execution time
         isDefineAlias: true,
       });
     }
