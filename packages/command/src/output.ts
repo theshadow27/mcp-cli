@@ -246,6 +246,21 @@ export function printRegistryList(entries: RegistryEntry[]): void {
   console.log(`\n${entries.length} server(s)`);
 }
 
+/**
+ * Extract a useful error message from an error object.
+ * Handles Bun's ShellError (which has stderr containing the real error)
+ * via duck-typing to avoid importing internal Bun types.
+ */
+export function extractErrorMessage(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // Bun ShellError: has .stderr (Buffer) and .exitCode (number)
+  if ("stderr" in err && "exitCode" in err) {
+    const stderr = (err as Error & { stderr: { toString(): string } }).stderr?.toString()?.trim();
+    if (stderr) return stderr;
+  }
+  return err.message;
+}
+
 /** Print an error to stderr */
 export function printError(message: string): void {
   console.error(`${c.red}Error${c.reset}: ${message}`);

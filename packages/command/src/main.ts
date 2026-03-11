@@ -42,6 +42,7 @@ import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
+  extractErrorMessage,
   formatToolResult,
   printError,
   printRegistryList,
@@ -279,7 +280,7 @@ async function main(): Promise<void> {
       printError(err.message);
       process.exit(2);
     }
-    printError(err instanceof Error ? err.message : String(err));
+    printError(extractErrorMessage(err));
     if (process.env.MCX_DEBUG === "1" && err instanceof IpcCallError && err.remoteStack) {
       console.error("\nRemote stack trace:");
       console.error(err.remoteStack);
