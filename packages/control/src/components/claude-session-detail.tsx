@@ -124,8 +124,8 @@ function ExpandedContent({ entry }: { entry: TranscriptEntry }) {
 
   return (
     <Box marginLeft={3} flexDirection="column">
-      {shown.map((line) => (
-        <Text key={`${entry.timestamp}-${line.slice(0, 40)}`} dimColor wrap="truncate">
+      {shown.map((line, idx) => (
+        <Text key={`${entry.timestamp}-${idx}`} dimColor wrap="truncate">
           {line}
         </Text>
       ))}

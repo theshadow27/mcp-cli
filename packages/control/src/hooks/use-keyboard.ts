@@ -1,7 +1,7 @@
 import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
-import { useCallback, useState } from "react";
+import { useCallback, useRef } from "react";
 import type { AuthStatus } from "../components/auth-banner";
 import type { TranscriptEntry } from "../components/claude-session-detail";
 import { formatFullEntry, summarizeEntry } from "../components/claude-session-detail";
@@ -122,53 +122,54 @@ export function useKeyboard({ view, setView, serversNav, logsNav, claudeNav }: U
     setExpandedEntries,
   } = claudeNav;
   const { exit } = useApp();
-  const [pagerBusy, setPagerBusy] = useState(false);
+  const pagerBusyRef = useRef(false);
 
-  const openPager = useCallback(
-    async (sessionId: string) => {
-      if (pagerBusy) return;
-      setPagerBusy(true);
+  const openPager = useCallback(async (sessionId: string) => {
+    if (pagerBusyRef.current) return;
+    pagerBusyRef.current = true;
+    try {
+      const result = await ipcCall("callTool", {
+        server: "_claude",
+        tool: "claude_transcript",
+        arguments: { sessionId, limit: 500 },
+      });
+      const text = extractToolText(result);
+      if (!text) return;
+      const entries = JSON.parse(text) as TranscriptEntry[];
+      const formatted = entries
+        .map((e) => {
+          const dir = e.direction === "outbound" ? "→" : "←";
+          const ts = new Date(e.timestamp).toISOString();
+          const summary = summarizeEntry(e);
+          const full = formatFullEntry(e);
+          return `${ts} ${dir} ${summary}\n${full}`;
+        })
+        .join("\n\n---\n\n");
+
+      const tmpFile = `/tmp/mcpctl-log-${sessionId.slice(0, 8)}.txt`;
+      await Bun.write(tmpFile, formatted);
+
+      const pagerEnv = process.env.PAGER || "less";
+      const pagerArgs = pagerEnv.split(/\s+/).filter(Boolean);
+      // Temporarily exit raw mode for the pager
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+      process.stdout.write("\x1b[?1049l"); // exit alt screen
       try {
-        const result = await ipcCall("callTool", {
-          server: "_claude",
-          tool: "claude_transcript",
-          arguments: { sessionId, limit: 500 },
-        });
-        const text = extractToolText(result);
-        if (!text) return;
-        const entries = JSON.parse(text) as TranscriptEntry[];
-        const formatted = entries
-          .map((e) => {
-            const dir = e.direction === "outbound" ? "→" : "←";
-            const ts = new Date(e.timestamp).toISOString();
-            const summary = summarizeEntry(e);
-            const full = formatFullEntry(e);
-            return `${ts} ${dir} ${summary}\n${full}`;
-          })
-          .join("\n\n---\n\n");
-
-        const tmpFile = `/tmp/mcpctl-log-${sessionId.slice(0, 8)}.txt`;
-        await Bun.write(tmpFile, formatted);
-
-        const pager = process.env.PAGER || "less";
-        // Temporarily exit raw mode for the pager
-        if (process.stdin.isTTY) {
-          process.stdin.setRawMode(false);
-        }
-        process.stdout.write("\x1b[?1049l"); // exit alt screen
-        Bun.spawnSync([pager, tmpFile], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+        Bun.spawnSync([...pagerArgs, tmpFile], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+      } finally {
         process.stdout.write("\x1b[?1049h"); // re-enter alt screen
         if (process.stdin.isTTY) {
           process.stdin.setRawMode(true);
         }
-      } catch {
-        // Pager errors are non-fatal
-      } finally {
-        setPagerBusy(false);
       }
-    },
-    [pagerBusy],
-  );
+    } catch {
+      // Pager errors are non-fatal
+    } finally {
+      pagerBusyRef.current = false;
+    }
+  }, []);
 
   useInput((input, key) => {
     // -- Deny reason mode: capture text for denial message --
