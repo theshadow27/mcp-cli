@@ -12,6 +12,7 @@
 
 import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, McpProxy } from "./alias";
+import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
 export const stubProxy: McpProxy = new Proxy({} as McpProxy, {
@@ -132,9 +133,10 @@ async function evalBundledJs(
     args: ctx.args,
     file: ctx.file,
     json: ctx.json,
+    parsePythonRepr,
   };
 
-  const code = `const { defineAlias, z, mcp, args, file, json } = __mcp_inject__;\n${stripped}`;
+  const code = `const { defineAlias, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
   const fn = new AsyncFunction("__mcp_inject__", code);
 
   if (timeoutMs !== undefined) {

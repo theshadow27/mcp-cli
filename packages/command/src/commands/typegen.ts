@@ -49,6 +49,7 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "  export const args: Record<string, string>;",
     "  export function file(path: string): Promise<string>;",
     "  export function json(path: string): Promise<unknown>;",
+    "  export function parsePythonRepr(raw: unknown): unknown;",
     "",
     "  // -- defineAlias API --",
     "  interface AliasContext {",
