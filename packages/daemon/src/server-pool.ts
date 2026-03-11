@@ -595,6 +595,13 @@ export class ServerPool {
     }
   }
 
+  /** Get cached tools for a server without connecting. Returns undefined if server not found. */
+  getCachedTools(name: string): ToolInfo[] | undefined {
+    const conn = this.connections.get(name);
+    if (!conn) return undefined;
+    return [...conn.tools.values()];
+  }
+
   /** Get the URL of a remote server, or undefined for stdio */
   getServerUrl(name: string): string | undefined {
     const conn = this.connections.get(name);

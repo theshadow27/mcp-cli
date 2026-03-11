@@ -437,6 +437,14 @@ export class StateDb {
     return tokens;
   }
 
+  /** Get the raw absolute expiry timestamp (ms) for a server's token, or null if no expiry / no token */
+  getTokenExpiry(serverName: string): number | null {
+    const row = this.db
+      .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM auth_tokens WHERE server_name = ?")
+      .get(serverName);
+    return row?.expires_at ?? null;
+  }
+
   saveTokens(serverName: string, tokens: OAuthTokens): void {
     // Convert relative expires_in to absolute ms timestamp for storage
     const expiresAt = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null;
@@ -459,14 +467,6 @@ export class StateDb {
         tokens.scope ?? null,
       ],
     );
-  }
-
-  /** Get the raw absolute expires_at timestamp (ms) for a server's token, or null if no expiry / no token. */
-  getTokenExpiry(serverName: string): number | null {
-    const row = this.db
-      .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM auth_tokens WHERE server_name = ?")
-      .get(serverName);
-    return row?.expires_at ?? null;
   }
 
   deleteTokens(serverName: string): void {

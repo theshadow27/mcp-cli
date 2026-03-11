@@ -438,9 +438,6 @@ export class IpcServer {
       const poolDb = this.pool.getDb();
       const results: ServerAuthStatus[] = [];
 
-      // Collect stdio servers that need tool discovery (only if already connected)
-      const stdioChecks: Array<{ index: number; name: string }> = [];
-
       for (const srv of filtered) {
         const serverUrl = this.pool.getServerUrl(srv.name);
         let authSupport: ServerAuthStatus["authSupport"] = "none";
@@ -477,11 +474,12 @@ export class IpcServer {
             }
           }
         } else if (srv.transport !== "virtual") {
-          // Stdio server — only check already-connected servers to avoid spawning processes
-          if (srv.state === "connected") {
-            stdioChecks.push({ index: results.length, name: srv.name });
+          // Stdio server — only check cached tools, never spawn the process
+          const cachedTools = this.pool.getCachedTools(srv.name);
+          if (cachedTools?.some((t) => t.name === "auth")) {
+            authSupport = "auth_tool";
+            status = "unknown"; // can't check without calling it
           }
-          // authSupport stays "none" until we check tools (updated below)
         }
 
         results.push({
@@ -491,18 +489,6 @@ export class IpcServer {
           status,
           ...(expiresAt !== undefined && { expiresAt }),
         });
-      }
-
-      // Check stdio servers for auth tools in parallel (only already-connected ones)
-      if (stdioChecks.length > 0) {
-        const toolResults = await Promise.allSettled(stdioChecks.map(({ name }) => this.pool.listTools(name)));
-        for (let i = 0; i < stdioChecks.length; i++) {
-          const outcome = toolResults[i];
-          if (outcome.status === "fulfilled" && outcome.value.some((t) => t.name === "auth")) {
-            results[stdioChecks[i].index].authSupport = "auth_tool";
-            results[stdioChecks[i].index].status = "unknown";
-          }
-        }
       }
 
       return { servers: results };
