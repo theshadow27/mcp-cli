@@ -2,8 +2,22 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-/** CLI version — updated on release */
-export const VERSION = "0.1.0";
+/**
+ * CLI version.
+ * Compiled binaries: injected at build time via --define from package.json.
+ * Dev mode: reads package.json at runtime.
+ */
+declare const __VERSION__: string;
+export const VERSION: string = typeof __VERSION__ !== "undefined" ? __VERSION__ : readDevVersion();
+
+function readDevVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "../../../package.json"), "utf-8"));
+    return pkg.version;
+  } catch {
+    return "0.0.0-dev";
+  }
+}
 
 /**
  * IPC protocol version — content hash of ipc.ts.
@@ -15,12 +29,12 @@ export const PROTOCOL_VERSION: string =
   typeof __PROTOCOL_HASH__ !== "undefined" ? __PROTOCOL_HASH__ : computeDevProtocolHash();
 
 /**
- * Build version — VERSION with a build suffix.
- * Compiled binaries: injected at build time as "yyyyMMdd" → e.g. "0.1.0-20260308".
- * Dev mode (bun dev:mcx): falls back to "0.1.0-dev".
+ * Build version identifier.
+ * Compiled binaries: just VERSION (the git tag IS the identifier).
+ * Dev mode: VERSION-dev suffix.
  */
-declare const __BUILD_DATE__: string;
-export const BUILD_VERSION: string = `${VERSION}-${typeof __BUILD_DATE__ !== "undefined" ? __BUILD_DATE__ : "dev"}`;
+declare const __COMPILED__: boolean;
+export const BUILD_VERSION: string = typeof __COMPILED__ !== "undefined" ? VERSION : `${VERSION}-dev`;
 
 function computeDevProtocolHash(): string {
   try {

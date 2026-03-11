@@ -1,4 +1,5 @@
 name: Release
+
 on:
   push:
     tags: ["v*"]
@@ -31,6 +32,16 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      - name: Inject version from tag into package.json
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          bun -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
+            pkg.version = process.env.RELEASE_VERSION.replace(/^v/, '');
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
       - run: bun scripts/build.ts --release --target=${{ matrix.target }}
       - name: Create tarball
         run: |
@@ -45,7 +56,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -56,6 +66,7 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt

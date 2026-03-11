@@ -1,0 +1,32 @@
+name: Version
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history for git describe
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Determine version and create tag
+        run: |
+          NEW_VERSION=$(bun scripts/release.ts --tag)
+          if [ -z "$NEW_VERSION" ]; then
+            echo "No releasable commits — skipping"
+            exit 0
+          fi
+          git push origin "v${NEW_VERSION}"

@@ -13,6 +13,12 @@ const args = process.argv.slice(2);
 const releaseMode = args.includes("--release");
 const targetArg = args.find((a) => a.startsWith("--target="))?.split("=")[1];
 
+// Read version from package.json
+const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+const version: string = pkg.version;
+const versionFlag = `--define=__VERSION__="${version}"`;
+console.log(`Version: ${version}`);
+
 // Compute protocol version hash from IPC contract definition
 const ipcSource = readFileSync("packages/core/src/ipc.ts", "utf-8");
 const hasher = new Bun.CryptoHasher("sha256");
@@ -21,12 +27,6 @@ const protocolHash = hasher.digest("hex").slice(0, 12);
 const defineFlag = `--define=__PROTOCOL_HASH__="${protocolHash}"`;
 const compiledFlag = "--define=__COMPILED__=true";
 console.log(`Protocol hash: ${protocolHash}`);
-
-// Compute build date for version stamping (yyyyMMdd)
-const now = new Date();
-const buildDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-const buildDateFlag = `--define=__BUILD_DATE__="${buildDate}"`;
-console.log(`Build date: ${buildDate}`);
 
 // ── jq-web build plugin ──
 // Patches jq-web's Emscripten loader at build time:
@@ -146,7 +146,11 @@ async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: 
     minify: true,
     target: (target as "bun") ?? "bun",
     plugins: config.plugins,
-    define: { __PROTOCOL_HASH__: JSON.stringify(protocolHash), __BUILD_DATE__: JSON.stringify(buildDate) },
+    define: {
+      __PROTOCOL_HASH__: JSON.stringify(protocolHash),
+      __VERSION__: JSON.stringify(version),
+      __COMPILED__: "true",
+    },
   });
   if (!result.success) {
     console.error(`${config.label} build failed:`);
@@ -179,7 +183,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -189,7 +193,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${buildDateFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
