@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { parseInstallArgs } from "./install";
+import { describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import type { McpConfigFile } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options";
+import type { RegistryResponse } from "../registry/client";
+import { type InstallDeps, cmdInstall, parseInstallArgs } from "./install";
 
 describe("parseInstallArgs", () => {
   test("parses slug only", () => {
@@ -76,5 +80,151 @@ describe("parseInstallArgs", () => {
   test("parses --no-cache flag", () => {
     const result = parseInstallArgs(["sentry", "--no-cache"]);
     expect(result.noCache).toBe(true);
+  });
+});
+
+// -- cmdInstall handler tests --
+
+/** Build a fake registry response for a server with a streamable-http remote. */
+function fakeRegistryResponse(slug: string, url: string): RegistryResponse {
+  return {
+    servers: [
+      {
+        server: {
+          name: slug,
+          title: slug,
+          description: `The ${slug} server`,
+          version: "1.0.0",
+          remotes: [{ type: "streamable-http", url }],
+        },
+        _meta: {
+          "com.anthropic.api/mcp-registry": {
+            slug,
+            displayName: slug.charAt(0).toUpperCase() + slug.slice(1),
+            oneLiner: `${slug} integration`,
+            isAuthless: true,
+          },
+        },
+      },
+    ],
+    metadata: { count: 1 },
+  };
+}
+
+function makeDeps(response: RegistryResponse): InstallDeps {
+  return { searchRegistry: async () => response };
+}
+
+describe("cmdInstall", () => {
+  test("installs http server from registry", async () => {
+    using opts = testOptions();
+    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
+
+    await cmdInstall(["sentry"], deps);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.sentry).toEqual({ type: "http", url: "https://mcp.sentry.io" });
+  });
+
+  test("uses --as name for server key", async () => {
+    using opts = testOptions();
+    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
+
+    await cmdInstall(["sentry", "--as", "my-sentry"], deps);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-sentry"]).toEqual({ type: "http", url: "https://mcp.sentry.io" });
+    expect(config.mcpServers?.sentry).toBeUndefined();
+  });
+
+  test("throws when slug not found in registry", async () => {
+    using _opts = testOptions();
+    const deps = makeDeps({ servers: [], metadata: { count: 0 } });
+
+    await expect(cmdInstall(["nonexistent"], deps)).rejects.toThrow('Server "nonexistent" not found');
+  });
+
+  test("overwrites existing server", async () => {
+    using opts = testOptions({
+      files: { "servers.json": { mcpServers: { sentry: { command: "old" } } } },
+    });
+    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
+
+    await cmdInstall(["sentry"], deps);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.sentry).toEqual({ type: "http", url: "https://mcp.sentry.io" });
+  });
+
+  test("installs stdio server from package", async () => {
+    using opts = testOptions();
+    const response: RegistryResponse = {
+      servers: [
+        {
+          server: {
+            name: "filesystem",
+            title: "Filesystem",
+            description: "File system access",
+            version: "1.0.0",
+            packages: [
+              {
+                registryType: "npm",
+                identifier: "@modelcontextprotocol/server-filesystem",
+                runtimeHint: "npx",
+                transport: { type: "stdio" },
+              },
+            ],
+          },
+          _meta: {
+            "com.anthropic.api/mcp-registry": {
+              slug: "filesystem",
+              displayName: "Filesystem",
+              oneLiner: "File system access",
+              isAuthless: true,
+            },
+          },
+        },
+      ],
+      metadata: { count: 1 },
+    };
+    const deps = makeDeps(response);
+
+    await cmdInstall(["filesystem"], deps);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.filesystem).toEqual({
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem"],
+    });
+  });
+
+  test("exits with 1 on empty args", async () => {
+    using _opts = testOptions();
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    try {
+      await expect(cmdInstall([])).rejects.toThrow("process.exit");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  test("outputs JSON when --json flag is used", async () => {
+    using opts = testOptions();
+    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      await cmdInstall(["sentry", "--json"], deps);
+
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      const output = JSON.parse(logSpy.mock.calls[0][0] as string);
+      expect(output.name).toBe("sentry");
+      expect(output.config).toEqual({ type: "http", url: "https://mcp.sentry.io" });
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

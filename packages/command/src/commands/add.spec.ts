@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { buildServerConfig, parseAddArgs } from "./add";
+import { testOptions } from "../../../../test/test-options";
+import { buildServerConfig, cmdAdd, cmdAddJson, parseAddArgs } from "./add";
 import {
   addServerToConfig,
   readConfigFile,
@@ -536,5 +537,130 @@ describe("parseRemoveArgs edge cases", () => {
     const result = parseRemoveArgs(["-s", "local", "my-server"]);
     expect(result.scope).toBe("local");
     expect(result.name).toBe("my-server");
+  });
+});
+
+// -- cmdAdd handler tests --
+
+describe("cmdAdd", () => {
+  test("writes http server config to servers.json", async () => {
+    using opts = testOptions();
+    await cmdAdd(["--transport", "http", "my-server", "https://example.com/mcp"]);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-server"]).toEqual({ type: "http", url: "https://example.com/mcp" });
+  });
+
+  test("writes stdio server config with command and args", async () => {
+    using opts = testOptions();
+    await cmdAdd(["--transport", "stdio", "my-stdio", "--", "npx", "-y", "some-pkg"]);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-stdio"]).toEqual({
+      command: "npx",
+      args: ["-y", "some-pkg"],
+    });
+  });
+
+  test("writes http server with env vars and headers", async () => {
+    using opts = testOptions();
+    await cmdAdd([
+      "--transport",
+      "http",
+      "--env",
+      "API_KEY=secret",
+      "--header",
+      "Authorization: Bearer tok",
+      "my-server",
+      "https://example.com",
+    ]);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-server"]).toEqual({
+      type: "http",
+      url: "https://example.com",
+      headers: { Authorization: "Bearer tok" },
+    });
+  });
+
+  test("overwrites existing server and preserves others", async () => {
+    using opts = testOptions({
+      files: {
+        "servers.json": { mcpServers: { existing: { command: "old" }, "my-server": { command: "old-cmd" } } },
+      },
+    });
+
+    await cmdAdd(["--transport", "http", "my-server", "https://new.com"]);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-server"]).toEqual({ type: "http", url: "https://new.com" });
+    expect(config.mcpServers?.existing).toEqual({ command: "old" });
+  });
+
+  test("exits with 1 on empty args", async () => {
+    using _opts = testOptions();
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    try {
+      await expect(cmdAdd([])).rejects.toThrow("process.exit");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+});
+
+// -- cmdAddJson handler tests --
+
+describe("cmdAddJson", () => {
+  test("writes server config from raw JSON", async () => {
+    using opts = testOptions();
+    await cmdAddJson(["my-server", '{"type":"http","url":"https://example.com"}']);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-server"]).toEqual({ type: "http", url: "https://example.com" });
+  });
+
+  test("writes stdio config from raw JSON", async () => {
+    using opts = testOptions();
+    await cmdAddJson(["my-stdio", '{"command":"node","args":["server.js"]}']);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-stdio"]).toEqual({ command: "node", args: ["server.js"] });
+  });
+
+  test("respects --scope flag", async () => {
+    using opts = testOptions();
+    // User scope writes to USER_SERVERS_PATH
+    await cmdAddJson(["my-server", '{"command":"cmd"}', "--scope", "user"]);
+
+    const config = JSON.parse(readFileSync(opts.USER_SERVERS_PATH, "utf-8")) as McpConfigFile;
+    expect(config.mcpServers?.["my-server"]).toEqual({ command: "cmd" });
+  });
+
+  test("throws on invalid JSON", async () => {
+    using _opts = testOptions();
+    await expect(cmdAddJson(["name", "not-json"])).rejects.toThrow("Invalid JSON");
+  });
+
+  test("throws on config without command or url", async () => {
+    using _opts = testOptions();
+    await expect(cmdAddJson(["name", '{"type":"unknown"}'])).rejects.toThrow(
+      "must have either 'command' (stdio) or 'url' (http/sse)",
+    );
+  });
+
+  test("exits with 1 on insufficient args", async () => {
+    using _opts = testOptions();
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    try {
+      await expect(cmdAddJson(["only-name"])).rejects.toThrow("process.exit");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 });

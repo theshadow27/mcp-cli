@@ -7,9 +7,15 @@
 
 import { printError } from "../output";
 import { extractJsonFlag, parseEnvVar, parseScope } from "../parse";
-import { searchRegistry } from "../registry/client";
+import { type RegistryOpts, type RegistryResponse, searchRegistry as realSearchRegistry } from "../registry/client";
 import { buildConfigFromSelection, selectTransport } from "../registry/transport";
 import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
+
+export interface InstallDeps {
+  searchRegistry: (query: string, opts?: RegistryOpts) => Promise<RegistryResponse>;
+}
+
+const defaultDeps: InstallDeps = { searchRegistry: realSearchRegistry };
 
 export interface ParsedInstallArgs {
   slug: string;
@@ -57,7 +63,8 @@ export function parseInstallArgs(args: string[]): ParsedInstallArgs {
   return { slug, name, scope, env, json, noCache };
 }
 
-export async function cmdInstall(args: string[]): Promise<void> {
+export async function cmdInstall(args: string[], deps?: InstallDeps): Promise<void> {
+  const d = deps ?? defaultDeps;
   if (args.length === 0) {
     printError("Usage: mcx install <slug> [--as name] [--scope user|project] [--env KEY=VALUE]");
     process.exit(1);
@@ -66,7 +73,7 @@ export async function cmdInstall(args: string[]): Promise<void> {
   const parsed = parseInstallArgs(args);
 
   // Search registry for exact slug match
-  const result = await searchRegistry(parsed.slug, { noCache: parsed.noCache });
+  const result = await d.searchRegistry(parsed.slug, { noCache: parsed.noCache });
   const entry = result.servers.find((s) => s._meta["com.anthropic.api/mcp-registry"].slug === parsed.slug);
 
   if (!entry) {
