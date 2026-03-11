@@ -768,6 +768,57 @@ describe("ClaudeServer", () => {
     await expect(server.start()).rejects.toThrow("start() called while worker is already running");
   });
 
+  // ── repoRoot filtering (#607) ──
+
+  test("db:upsert with repoRoot persists to SQLite", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "repo-1", state: "active", repoRoot: "/projects/my-repo" },
+    });
+
+    const row = db.getSession("repo-1");
+    expect(row).not.toBeNull();
+    expect(row?.repoRoot).toBe("/projects/my-repo");
+  });
+
+  test("db:upsert without repoRoot stores null", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "repo-2", state: "active" },
+    });
+
+    const row = db.getSession("repo-2");
+    expect(row).not.toBeNull();
+    // repoRoot should be null/undefined when not set
+    expect(row?.repoRoot ?? null).toBeNull();
+  });
+
+  test("claude_session_list returns empty array with repoRoot filter when no sessions", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "claude_session_list",
+      arguments: { repoRoot: "/some/repo" },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const sessions = JSON.parse(content[0].text);
+
+    expect(sessions).toEqual([]);
+  });
+
   // ── stop() ends sessions in DB (#495) ──
 
   test("stop() calls db.endSession() for all active sessions", async () => {
