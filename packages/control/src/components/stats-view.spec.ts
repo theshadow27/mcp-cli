@@ -272,6 +272,49 @@ describe("StatsView", () => {
     expect(output).not.toContain("Top Tools");
   });
 
+  it("shows daemon restart banner when restartedAt is set", () => {
+    const snap = makeSnapshot({
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 10 }],
+    });
+
+    const restartedAt = Date.now() - 120_000; // 2 minutes ago
+    const { lastFrame } = render(
+      React.createElement(StatsView, {
+        metrics: snap,
+        loading: false,
+        error: null,
+        scrollOffset: 0,
+        height: 20,
+        restartedAt,
+      }),
+    );
+    const output = lastFrame() ?? "";
+
+    expect(output).toContain("daemon restarted");
+    expect(output).toContain("ago");
+    expect(output).toContain("counters reset");
+  });
+
+  it("does not show restart banner when restartedAt is null", () => {
+    const snap = makeSnapshot({
+      gauges: [{ name: "mcpd_uptime_seconds", labels: {}, value: 10 }],
+    });
+
+    const { lastFrame } = render(
+      React.createElement(StatsView, {
+        metrics: snap,
+        loading: false,
+        error: null,
+        scrollOffset: 0,
+        height: 20,
+        restartedAt: null,
+      }),
+    );
+    const output = lastFrame() ?? "";
+
+    expect(output).not.toContain("daemon restarted");
+  });
+
   it("scrolls content when offset is applied", () => {
     const snap = makeSnapshot({
       counters: Array.from({ length: 20 }, (_, i) => ({

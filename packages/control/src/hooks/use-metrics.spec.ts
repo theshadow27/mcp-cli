@@ -20,6 +20,7 @@ interface HookState {
   metrics: MetricsSnapshot | null;
   error: string | null;
   loading: boolean;
+  restartedAt: number | null;
 }
 
 const Harness: FC<{ opts: UseMetricsOptions; stateRef: { current: HookState } }> = ({ opts, stateRef }) => {
@@ -44,7 +45,7 @@ describe("useMetrics", () => {
 
   function mount(opts: UseMetricsOptions) {
     const stateRef: { current: HookState } = {
-      current: { metrics: null, error: null, loading: true },
+      current: { metrics: null, error: null, loading: true, restartedAt: null },
     };
     const instance = render(React.createElement(Harness, { opts, stateRef }));
     instances.push(instance);
@@ -93,6 +94,45 @@ describe("useMetrics", () => {
 
     await flush(50);
     expect(callCount).toBe(0);
+  });
+
+  it("detects daemon restart when daemonId changes", async () => {
+    let callNum = 0;
+    const ipcCallFn = async () => {
+      callNum++;
+      return {
+        ...emptySnapshot(),
+        daemonId: callNum <= 2 ? "daemon-aaa" : "daemon-bbb",
+      };
+    };
+
+    const { stateRef } = mount({
+      intervalMs: 20,
+      ipcCallFn: ipcCallFn as UseMetricsOptions["ipcCallFn"],
+    });
+
+    // First poll — no restart yet
+    await flush(10);
+    expect(stateRef.current.restartedAt).toBeNull();
+
+    // Wait for subsequent polls to pick up the new daemonId
+    await flush(80);
+    expect(typeof stateRef.current.restartedAt).toBe("number");
+    expect(stateRef.current.restartedAt).toBeGreaterThan(0);
+  });
+
+  it("does not flag restart on first poll", async () => {
+    const ipcCallFn = async () => ({
+      ...emptySnapshot(),
+      daemonId: "daemon-xyz",
+    });
+
+    const { stateRef } = mount({
+      ipcCallFn: ipcCallFn as UseMetricsOptions["ipcCallFn"],
+    });
+
+    await flush();
+    expect(stateRef.current.restartedAt).toBeNull();
   });
 
   it("cleanup stops polling on unmount", async () => {

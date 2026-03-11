@@ -48,6 +48,7 @@ export function App() {
     metrics: metricsData,
     error: metricsError,
     loading: metricsLoading,
+    restartedAt: metricsRestartedAt,
   } = useMetrics({ enabled: view === "stats" });
   const {
     lines: logLines,
@@ -199,6 +200,7 @@ export function App() {
           metrics={metricsData}
           loading={metricsLoading}
           error={metricsError}
+          restartedAt={metricsRestartedAt}
           scrollOffset={statsScrollOffset}
           height={STATS_VIEW_HEIGHT}
         />
