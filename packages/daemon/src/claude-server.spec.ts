@@ -457,7 +457,7 @@ describe("ClaudeServer", () => {
     expect(notificationReceived).toBe(true);
   });
 
-  test("handleWorkerCrash debounces concurrent crashes", async () => {
+  test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
@@ -473,10 +473,10 @@ describe("ClaudeServer", () => {
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
 
-    // Fire two crashes concurrently — only one should restart
+    // Fire two crashes concurrently — second queues behind the first, both restart
     await Promise.all([crash("crash A"), crash("crash B")]);
 
-    expect(restartCount).toBe(1);
+    expect(restartCount).toBe(2);
   });
 
   test("handleWorkerCrash gives up after too many crashes in window", async () => {
