@@ -141,6 +141,16 @@ describe("parseCodexSpawnArgs", () => {
     const result = parseCodexSpawnArgs(["--task", "x"]);
     expect(result.wait).toBe(false);
   });
+
+  test("parses --json flag", () => {
+    const result = parseCodexSpawnArgs(["--task", "fix bug", "--json"]);
+    expect(result.json).toBe(true);
+  });
+
+  test("json defaults to false", () => {
+    const result = parseCodexSpawnArgs(["--task", "x"]);
+    expect(result.json).toBe(false);
+  });
 });
 
 // ── cmdCodex — subcommand dispatch ──
@@ -270,6 +280,62 @@ describe("codex spawn", () => {
     const deps = makeDeps();
     await expect(cmdCodex(["spawn", "--timeout", "abc"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith("--timeout must be a number");
+  });
+
+  test("--json outputs raw JSON to stdout", async () => {
+    const spawnResult = { sessionId: "s1-full-uuid", state: "active" };
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(spawnResult)),
+    });
+    const logCalls: string[] = [];
+    const origLog = console.log;
+    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["spawn", "--task", "do stuff", "--json"], deps);
+      const output = logCalls.join("");
+      const parsed = JSON.parse(output);
+      expect(parsed.sessionId).toBe("s1-full-uuid");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--json suppresses human-friendly stderr", async () => {
+    const spawnResult = { sessionId: "s1-full-uuid", state: "active" };
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(spawnResult)),
+    });
+    const errCalls: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = mock(() => {});
+    console.error = mock((...args: unknown[]) => errCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["spawn", "--task", "do stuff", "--json"], deps);
+      expect(errCalls.filter((l) => l.includes("Codex session started"))).toHaveLength(0);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+  });
+
+  test("without --json prints human-friendly session info to stderr", async () => {
+    const spawnResult = { sessionId: "abc12345-full-uuid", state: "active" };
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(spawnResult)),
+    });
+    const errCalls: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = mock(() => {});
+    console.error = mock((...args: unknown[]) => errCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["spawn", "--task", "do stuff"], deps);
+      expect(errCalls.some((l) => l.includes("abc12345"))).toBe(true);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
   });
 });
 
