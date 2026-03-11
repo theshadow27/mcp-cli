@@ -31,7 +31,11 @@ async function mcx(
   });
 
   const timeout = opts?.timeout ?? 30_000;
-  const timer = setTimeout(() => proc.kill(), timeout);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, timeout);
 
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
@@ -40,7 +44,12 @@ async function mcx(
   ]);
 
   clearTimeout(timer);
-  return { exitCode, stdout, stderr };
+
+  return {
+    exitCode,
+    stdout,
+    stderr: timedOut ? `[TIMEOUT after ${timeout}ms] ${stderr}` : stderr,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -99,17 +108,17 @@ describe("S2: Concurrent CLI tool calls", () => {
   test("20 concurrent mcx call requests return correct results", async () => {
     const count = 20;
 
+    // Use a generous timeout — spawning 20 concurrent bun processes is CPU-heavy
     const results = await Promise.all(
       Array.from({ length: count }, (_, i) =>
-        mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: 1000 })]),
+        mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: 1000 })], { timeout: 60_000 }),
       ),
     );
 
     for (let i = 0; i < count; i++) {
-      expect(results[i].exitCode).toBe(0);
-      // stdout should contain the JSON result with the sum
-      const output = results[i].stdout.trim();
-      expect(output).toContain(String(i + 1000));
+      const r = results[i];
+      expect(r.exitCode, `call ${i} failed (stderr: ${r.stderr.slice(0, 200)})`).toBe(0);
+      expect(r.stdout.trim()).toContain(String(i + 1000));
     }
   });
 
@@ -176,9 +185,11 @@ describe("S4: Resilience after errors", () => {
   });
 
   test("daemon stays healthy after a burst of error calls", async () => {
-    // Fire 5 calls to non-existent servers concurrently
+    // Fire 5 calls to non-existent servers concurrently — generous timeout for process spawning
     const errorResults = await Promise.all(
-      Array.from({ length: 5 }, (_, i) => mcx(daemon.dir, ["call", `ghost-${i}`, "anything", "{}"])),
+      Array.from({ length: 5 }, (_, i) =>
+        mcx(daemon.dir, ["call", `ghost-${i}`, "anything", "{}"], { timeout: 60_000 }),
+      ),
     );
 
     // All should fail (non-zero exit)
@@ -193,22 +204,24 @@ describe("S4: Resilience after errors", () => {
   });
 
   test("interleaved success and failure calls all resolve correctly", async () => {
+    // Use generous timeout — 10 concurrent bun processes under load
     const results = await Promise.all(
       Array.from({ length: 10 }, (_, i) => {
         if (i % 3 === 0) {
           // Every 3rd call targets a non-existent server
-          return mcx(daemon.dir, ["call", "ghost", "nope", "{}"]);
+          return mcx(daemon.dir, ["call", "ghost", "nope", "{}"], { timeout: 60_000 });
         }
-        return mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: i })]);
+        return mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: i })], { timeout: 60_000 });
       }),
     );
 
     for (let i = 0; i < 10; i++) {
+      const r = results[i];
       if (i % 3 === 0) {
-        expect(results[i].exitCode).not.toBe(0);
+        expect(r.exitCode).not.toBe(0);
       } else {
-        expect(results[i].exitCode).toBe(0);
-        expect(results[i].stdout).toContain(String(i + i));
+        expect(r.exitCode, `call ${i} failed (stderr: ${r.stderr.slice(0, 200)})`).toBe(0);
+        expect(r.stdout).toContain(String(i + i));
       }
     }
   });
