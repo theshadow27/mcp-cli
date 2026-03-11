@@ -8,6 +8,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
+  PROMPT_IPC_TIMEOUT_MS,
   buildHookEnv,
   fixCoreBare,
   hasWorktreeHooks,
@@ -49,9 +50,6 @@ export interface ClaudeDeps {
   /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
   getGitRoot: () => string | null;
 }
-
-/** IPC timeout for blocking claude_prompt calls (5 min + buffer). Other tools use default 60s. */
-const PROMPT_IPC_TIMEOUT_MS = 330_000;
 
 /**
  * Parse `git diff --shortstat` output into a compact diff summary.

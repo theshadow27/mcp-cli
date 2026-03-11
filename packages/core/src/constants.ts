@@ -197,3 +197,6 @@ export const DAEMON_BINARY_NAME = "mcpd";
 
 /** Daemon dev-mode script path (relative to workspace root) */
 export const DAEMON_DEV_SCRIPT = "packages/daemon/src/main.ts";
+
+/** IPC timeout for prompt-like commands (claude send/wait, codex) that may take minutes (ms) */
+export const PROMPT_IPC_TIMEOUT_MS = 330_000;
