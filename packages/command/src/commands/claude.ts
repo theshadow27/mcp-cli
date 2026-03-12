@@ -841,8 +841,16 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   const byeResult = parseByeResult(result);
   console.log(formatToolResult(result));
 
-  if (byeResult.worktree && byeResult.cwd) {
-    cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
+  if (byeResult.worktree) {
+    if (byeResult.cwd) {
+      cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
+    } else {
+      // Daemon-created worktrees: cwd is null — resolve from local repo root
+      const repoRoot = process.cwd();
+      const wtConfig = readWorktreeConfig(repoRoot);
+      const cwd = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
+      cleanupWorktree(byeResult.worktree, cwd, d, repoRoot);
+    }
   }
 }
 
