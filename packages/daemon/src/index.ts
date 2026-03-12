@@ -32,17 +32,17 @@ import {
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
-import { AliasServer, buildAliasToolCache } from "./alias-server";
-import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
-import { CodexServer, buildCodexToolCache } from "./codex-server";
+import { ALIAS_SERVER_NAME, AliasServer, buildAliasToolCache } from "./alias-server";
+import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache } from "./claude-server";
+import { CODEX_SERVER_NAME, CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
-import { MailServer, buildMailToolCache } from "./mail-server";
+import { MAIL_SERVER_NAME, MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
-import { MetricsServer } from "./metrics-server";
+import { METRICS_SERVER_NAME, MetricsServer } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
@@ -382,12 +382,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Boot virtual servers in the background — commands that need them will await
   if (!opts?.skipVirtualServers) {
     pool.registerPendingVirtualServer(
-      "_aliases",
+      ALIAS_SERVER_NAME,
       (async () => {
         try {
           const { client, transport } = await aliasServer.start();
           const cachedTools = buildAliasToolCache(db);
-          pool.registerVirtualServer("_aliases", client, transport, cachedTools);
+          pool.registerVirtualServer(ALIAS_SERVER_NAME, client, transport, cachedTools);
           logger.info(`[mcpd] Alias server started (${cachedTools.size} tools)`);
         } catch (err) {
           logger.error(`[mcpd] Failed to start alias server: ${err}`);
@@ -396,12 +396,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     );
 
     pool.registerPendingVirtualServer(
-      "_claude",
+      CLAUDE_SERVER_NAME,
       (async () => {
         try {
           const { client: claudeClient, transport: claudeTransport } = await claudeServer.start();
           const claudeTools = buildClaudeToolCache();
-          pool.registerVirtualServer("_claude", claudeClient, claudeTransport, claudeTools);
+          pool.registerVirtualServer(CLAUDE_SERVER_NAME, claudeClient, claudeTransport, claudeTools);
           logger.info(`[mcpd] Claude session server started (port ${claudeServer.port})`);
         } catch (err) {
           logger.error(`[mcpd] Failed to start Claude session server: ${err}`);
@@ -410,7 +410,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         // Re-register _claude virtual server after crash recovery
         claudeServer.onRestarted = (client, transport) => {
           const claudeTools = buildClaudeToolCache();
-          pool.registerVirtualServer("_claude", client, transport, claudeTools);
+          pool.registerVirtualServer(CLAUDE_SERVER_NAME, client, transport, claudeTools);
           logger.info(`[mcpd] Claude session server re-registered after crash recovery (port ${claudeServer.port})`);
         };
       })(),
@@ -418,12 +418,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
     if (codexServer) {
       pool.registerPendingVirtualServer(
-        "_codex",
+        CODEX_SERVER_NAME,
         (async () => {
           try {
             const { client: codexClient, transport: codexTransport } = await codexServer.start();
             const codexTools = buildCodexToolCache();
-            pool.registerVirtualServer("_codex", codexClient, codexTransport, codexTools);
+            pool.registerVirtualServer(CODEX_SERVER_NAME, codexClient, codexTransport, codexTools);
             logger.info("[mcpd] Codex session server started");
           } catch (err) {
             logger.error(`[mcpd] Failed to start Codex session server: ${err}`);
@@ -431,7 +431,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           codexServer.onRestarted = (client, transport) => {
             const codexTools = buildCodexToolCache();
-            pool.registerVirtualServer("_codex", client, transport, codexTools);
+            pool.registerVirtualServer(CODEX_SERVER_NAME, client, transport, codexTools);
             logger.info("[mcpd] Codex session server re-registered after crash recovery");
           };
         })(),
@@ -439,7 +439,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }
 
     pool.registerPendingVirtualServer(
-      "_metrics",
+      METRICS_SERVER_NAME,
       (async () => {
         try {
           const {
@@ -447,7 +447,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             transport: metricsTransport,
             tools: metricsTools,
           } = await metricsServer.start();
-          pool.registerVirtualServer("_metrics", metricsClient, metricsTransport, metricsTools);
+          pool.registerVirtualServer(METRICS_SERVER_NAME, metricsClient, metricsTransport, metricsTools);
           logger.info("[mcpd] Metrics server started");
         } catch (err) {
           logger.error(`[mcpd] Failed to start metrics server: ${err}`);
@@ -489,11 +489,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     // Stop each virtual server individually so one failure doesn't leak the rest
     const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
       opts?._virtualServers ?? [
-        ["_claude", claudeServer],
-        ["_codex", codexServer],
-        ["_aliases", aliasServer],
-        ["_metrics", metricsServer],
-        ["_mail", mailServer],
+        [CLAUDE_SERVER_NAME, claudeServer],
+        [CODEX_SERVER_NAME, codexServer],
+        [ALIAS_SERVER_NAME, aliasServer],
+        [METRICS_SERVER_NAME, metricsServer],
+        [MAIL_SERVER_NAME, mailServer],
       ];
     for (const [name, server] of virtualServers) {
       try {

@@ -22,6 +22,7 @@ import { CodexSession, type CodexSessionConfig } from "@mcp-cli/codex";
 import type { AgentSessionEvent } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CODEX_SERVER_NAME } from "./codex-server";
 import { CODEX_TOOLS } from "./codex-session/tools";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
@@ -401,7 +402,7 @@ function handleDeny(args: Record<string, unknown>): {
 // ── Server startup ──
 
 async function startServer(): Promise<void> {
-  mcpServer = new Server({ name: "_codex", version: "0.1.0" }, { capabilities: { tools: {} } });
+  mcpServer = new Server({ name: CODEX_SERVER_NAME, version: "0.1.0" }, { capabilities: { tools: {} } });
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: CODEX_TOOLS.map((t) => ({

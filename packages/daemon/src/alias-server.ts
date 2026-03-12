@@ -85,7 +85,7 @@ export class AliasServer {
     this.clientTransport = clientTransport;
 
     // Create MCP server
-    this.server = new Server({ name: "_aliases", version: "0.1.0" }, { capabilities: { tools: {} } });
+    this.server = new Server({ name: ALIAS_SERVER_NAME, version: "0.1.0" }, { capabilities: { tools: {} } });
 
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: this.currentAliases.map((a) => ({

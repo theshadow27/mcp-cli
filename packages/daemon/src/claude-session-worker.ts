@@ -17,6 +17,7 @@
 import { generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CLAUDE_SERVER_NAME } from "./claude-server";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -368,7 +369,7 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   wsServer.onSessionEvent = forwardSessionEvent;
 
   // Start MCP Server
-  mcpServer = new Server({ name: "_claude", version: "0.1.0" }, { capabilities: { tools: {} } });
+  mcpServer = new Server({ name: CLAUDE_SERVER_NAME, version: "0.1.0" }, { capabilities: { tools: {} } });
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: CLAUDE_TOOLS.map((t) => ({
