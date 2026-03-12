@@ -123,6 +123,18 @@ export class ServerPool {
   }
 
   /**
+   * Remove a virtual server from the pool without closing its client.
+   * Use this when the virtual server's own stop() method handles cleanup,
+   * so that closeAll() won't attempt a redundant close.
+   */
+  unregisterVirtualServer(name: string): void {
+    const conn = this.connections.get(name);
+    if (conn?.virtual) {
+      this.connections.delete(name);
+    }
+  }
+
+  /**
    * Register a virtual server that is still starting up.
    * The promise resolves when the server is ready and registered via registerVirtualServer().
    * Commands that need this server will await the promise; others proceed immediately.

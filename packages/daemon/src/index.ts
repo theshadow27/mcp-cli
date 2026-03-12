@@ -424,9 +424,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // Wait for any in-progress virtual server startups before stopping them
       await pool.awaitPendingServers();
       await claudeServer.stop();
-      if (codexServer) await codexServer.stop();
+      pool.unregisterVirtualServer("_claude");
+      if (codexServer) {
+        await codexServer.stop();
+        pool.unregisterVirtualServer("_codex");
+      }
       await aliasServer.stop();
+      pool.unregisterVirtualServer("_aliases");
       await metricsServer.stop();
+      pool.unregisterVirtualServer("_metrics");
       await pool.closeAll();
       db.close();
       if (!opts?.skipLogSetup) {

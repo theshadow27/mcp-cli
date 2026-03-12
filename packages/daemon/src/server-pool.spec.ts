@@ -1185,6 +1185,46 @@ describe("ServerPool.restart", () => {
     await expect(pool.callTool("_test", "some-tool", {})).rejects.toThrow(/Virtual server "_test" failed to start/);
   });
 
+  test("unregisterVirtualServer removes virtual server without closing client", async () => {
+    const closeMock = mock(() => Promise.resolve());
+    const client = makeMockClient();
+    (client as Record<string, unknown>).close = closeMock;
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
+
+    pool.registerVirtualServer("_test", client as unknown as Client, makeMockTransport() as unknown as Transport);
+    expect(pool.listServers().some((s) => s.name === "_test")).toBe(true);
+
+    pool.unregisterVirtualServer("_test");
+    expect(pool.listServers().some((s) => s.name === "_test")).toBe(false);
+    expect(closeMock).not.toHaveBeenCalled();
+  });
+
+  test("unregisterVirtualServer is a no-op for non-virtual servers", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({ real: { command: "echo" } }), undefined, connectFn, silentLogger);
+    await pool.listTools("real");
+
+    pool.unregisterVirtualServer("real");
+    // Non-virtual server should still be present
+    expect(pool.listServers().some((s) => s.name === "real")).toBe(true);
+  });
+
+  test("unregisterVirtualServer prevents closeAll from double-closing", async () => {
+    const closeMock = mock(() => Promise.resolve());
+    const client = makeMockClient();
+    (client as Record<string, unknown>).close = closeMock;
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
+
+    pool.registerVirtualServer("_test", client as unknown as Client, makeMockTransport() as unknown as Transport);
+    pool.unregisterVirtualServer("_test");
+    await pool.closeAll();
+
+    // close should never have been called — unregister removed it before closeAll
+    expect(closeMock).not.toHaveBeenCalled();
+  });
+
   test("restart logs errors for failed servers but does not throw", async () => {
     let firstConnect = true;
     const connectFn: ConnectFn = mock((name: string) => {
