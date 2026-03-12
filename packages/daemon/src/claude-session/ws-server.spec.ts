@@ -437,6 +437,35 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("transcript excludes keep_alive messages", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      // Send keep_alive messages — these should be filtered out
+      ws.send(`${JSON.stringify({ type: "keep_alive" })}\n`);
+      ws.send(`${JSON.stringify({ type: "keep_alive" })}\n`);
+      ws.send(assistantMessage("test-session"));
+
+      // Wait for the assistant message to appear (outbound user + system/init + assistant = 3)
+      await pollUntil(() => (server?.getTranscript("test-session")?.length ?? 0) >= 3);
+
+      const transcript = server.getTranscript("test-session");
+      // Should have user, system/init, assistant — but NO keep_alive entries
+      expect(transcript.every((e) => e.message.type !== "keep_alive")).toBe(true);
+      expect(transcript.length).toBe(3);
+    } finally {
+      ws.close();
+    }
+  });
+
   test("waitForResult rejects on timeout", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
