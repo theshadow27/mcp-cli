@@ -1235,6 +1235,7 @@ export class ClaudeWsServer {
   }
 
   private addTranscript(session: WsSession, direction: "inbound" | "outbound", message: NdjsonMessage): void {
+    if (message.type === "keep_alive") return;
     session.transcript.push({ timestamp: Date.now(), direction, message });
     if (session.transcript.length > MAX_TRANSCRIPT) {
       session.transcript.shift();
