@@ -153,16 +153,32 @@ export function isProcessMcpd(pid: number): boolean {
   }
 }
 
-/** Send shutdown command to a running daemon and clean up stale files */
+/** Send shutdown command to a running daemon and wait for it to exit */
 export async function stopDaemon(): Promise<void> {
+  // Read the PID before sending shutdown so we can wait for the process to exit
+  const pidData = readLivePidData();
   verifiedMcpdPid = null;
   try {
     await rawFetch({ id: nextId(), method: "shutdown" }, PING_TIMEOUT_MS);
-    // Wait briefly for the daemon process to exit
-    await Bun.sleep(200);
   } catch {
     // Daemon may already be unreachable — fall through to clean up
   }
+
+  // Wait for the daemon process to actually exit before cleaning up files.
+  // Without this, the next `ensureDaemon()` call may see no PID file, spawn
+  // a new daemon, and race with the old one for the socket (EEXIST).
+  if (pidData) {
+    const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pidData.pid, 0); // probe — throws if dead
+        await Bun.sleep(50);
+      } catch {
+        break; // process is gone
+      }
+    }
+  }
+
   cleanStaleFiles();
 }
 

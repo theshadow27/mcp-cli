@@ -13,7 +13,7 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
@@ -44,6 +44,37 @@ import { metrics } from "./metrics";
 import { MetricsServer } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
+
+/**
+ * Kill the previous daemon process (from PID file) if it's still running.
+ * Prevents duplicate daemons from sharing the Unix socket after unclean restarts.
+ */
+function killStaleDaemons(logger: Logger): void {
+  try {
+    const data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
+    const pid = typeof data.pid === "number" ? data.pid : null;
+    if (pid == null || pid === process.pid) return;
+
+    // Check if it's still alive
+    process.kill(pid, 0);
+
+    // It's alive — send SIGTERM and wait briefly for it to exit
+    process.kill(pid, "SIGTERM");
+    logger.warn(`[mcpd] Killed previous daemon pid=${pid}`);
+
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+        Bun.sleepSync(50);
+      } catch {
+        break; // process exited
+      }
+    }
+  } catch {
+    // No PID file, unreadable, or process already dead — all fine
+  }
+}
 
 /** Git operations interface for dependency injection (testable without real git). */
 export interface PruneGitOps {
@@ -186,6 +217,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const serverNames = [...config.servers.keys()];
   logger.info(`[mcpd] Loaded config: ${serverNames.length} servers (${serverNames.join(", ")})`);
 
+  // Kill any stale daemon processes from previous runs. Without this, duplicate
+  // daemons accumulate (e.g., after unclean restarts) and share the Unix socket,
+  // causing requests to round-robin across daemons with different idle timer state.
+  killStaleDaemons(logger);
+
   // Generate daemon instance ID for trace context (stable for daemon lifetime)
   const daemonId = generateSpanId();
 
@@ -205,10 +241,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const db = new StateDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
 
-  // Reap any claude processes orphaned by a previous unclean daemon exit
-  const reaped = reapOrphanedSessions(db, logger);
-  if (reaped > 0) {
-    logger.warn(`[mcpd] Reaped ${reaped} orphaned claude process(es) from previous run`);
+  // Clean up DB records for sessions whose processes are dead.
+  // Alive processes are preserved for restoreActiveSessions() to pick up.
+  const cleaned = reapOrphanedSessions(db, logger);
+  if (cleaned > 0) {
+    logger.info(`[mcpd] Cleaned up ${cleaned} stale session(s) from previous run`);
   }
 
   // Warn if runtime state permissions have been loosened
@@ -254,9 +291,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   let idleTimer: Timer | null = null;
   let inFlightCount = 0;
 
+  let lastIdleReset = Date.now();
+
   function resetIdleTimer(): void {
+    lastIdleReset = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      const sinceLast = Date.now() - lastIdleReset;
+      logger.debug(`[mcpd] Idle timer fired (${Math.round(sinceLast / 1000)}s since last reset)`);
+
       if (inFlightCount > 0) {
         logger.debug(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
         resetIdleTimer();
