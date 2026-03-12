@@ -13,6 +13,7 @@
 import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
 import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { closeClientWithTimeout } from "./close-timeout";
 import { CODEX_TOOLS } from "./codex-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
@@ -240,11 +241,7 @@ export class CodexServer {
   async stop(): Promise<void> {
     this.stopped = true;
     this.onRestarted = undefined;
-    try {
-      await this.client?.close();
-    } catch {
-      // ignore close errors
-    }
+    await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);
       this.worker.terminate();
@@ -326,11 +323,7 @@ export class CodexServer {
 
     const orphanedSessions = new Set(this.activeSessions);
 
-    try {
-      await this.client?.close();
-    } catch {
-      // ignore
-    }
+    await closeClientWithTimeout(this.client);
 
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);
