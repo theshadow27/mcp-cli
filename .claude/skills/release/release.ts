@@ -127,12 +127,19 @@ function main(): void {
   // 1. Update package.json
   updatePackageJson(version);
 
-  // 2. Commit
-  run(["git", "add", "package.json"]);
-  run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
+  try {
+    // 2. Commit (--no-verify: release is a meta-operation, not a code change)
+    run(["git", "add", "package.json"]);
+    run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
 
-  // 3. Tag
-  run(["git", "tag", tag]);
+    // 3. Tag
+    run(["git", "tag", tag]);
+  } catch (e) {
+    // Restore package.json so the dirty-tree guard doesn't block retries
+    console.error("Release failed — restoring package.json");
+    run(["git", "checkout", "--", "package.json"]);
+    throw e;
+  }
 
   // 4. Push branch + tag
   run(["git", "push", "origin", branch, tag]);
