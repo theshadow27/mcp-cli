@@ -8,7 +8,7 @@
  *   4. Worker sends MCP JSON-RPC responses + DB event messages back
  *
  * DB event messages (worker → parent) for SQLite persistence:
- *   { type: "db:upsert", session: { sessionId, pid?, state?, model?, cwd?, worktree? } }
+ *   { type: "db:upsert", session: { sessionId, pid?, pidStartTime?, state?, model?, cwd?, worktree? } }
  *   { type: "db:state", sessionId, state }
  *   { type: "db:cost", sessionId, cost, tokens }
  *   { type: "db:end", sessionId }
@@ -21,6 +21,7 @@ import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer, type WaitResult, WaitTimeoutError } from "./claude-session/ws-server";
+import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -174,10 +175,14 @@ async function handlePrompt(
 
     const pid = server.spawnClaude(sessionId);
 
-    // Update DB with PID
+    // Capture pidStartTime here in the worker thread (off the main event loop)
+    // so the parent doesn't need to do a blocking ps(1) call per session.
+    const pidStartTime = getProcessStartTime(pid);
+
+    // Update DB with PID and start time
     self.postMessage({
       type: "db:upsert",
-      session: { sessionId, pid },
+      session: { sessionId, pid, pidStartTime },
     });
   }
 
