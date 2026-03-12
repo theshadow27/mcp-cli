@@ -7,6 +7,9 @@
  *   4. Push branch + tag
  *   5. Create GitHub release with notes
  *
+ * Each step has idempotency checks (skip if already done) and
+ * prints exact recovery commands on partial failure.
+ *
  * Usage:
  *   bun .claude/skills/release/release.ts --version 0.3.1 --notes release-notes.md
  *   bun .claude/skills/release/release.ts --version 0.3.1 --notes release-notes.md --dry-run
@@ -76,6 +79,41 @@ function run(
   return { stdout, exitCode: result.exitCode };
 }
 
+/** Build recovery commands for a given failure point. */
+function recoveryCommands(
+  step: "version" | "commit" | "tag" | "push" | "gh-release",
+  tag: string,
+  branch: string,
+  notesFile: string,
+): string[] {
+  const cmds: string[] = [];
+  switch (step) {
+    case "version":
+      // package.json was staged but nothing else happened
+      cmds.push("git reset HEAD package.json");
+      cmds.push("git checkout -- package.json");
+      break;
+    case "commit":
+      // package.json committed but no tag — undo the commit
+      cmds.push(`git reset --soft HEAD~1`);
+      cmds.push("git checkout -- package.json");
+      break;
+    case "tag":
+      // commit exists but tag failed — just retry tagging
+      cmds.push(`git tag ${tag}`);
+      break;
+    case "push":
+      // local commit + tag exist, push failed — retry push
+      cmds.push(`git push origin ${branch} ${tag}`);
+      break;
+    case "gh-release":
+      // everything pushed, GitHub release failed — retry
+      cmds.push(`gh release create ${tag} --title ${tag} --notes-file ${notesFile}`);
+      break;
+  }
+  return cmds;
+}
+
 function updatePackageJson(version: string): void {
   const pkgPath = resolve("package.json");
   const raw = readFileSync(pkgPath, "utf-8");
@@ -141,7 +179,14 @@ function main(): void {
   if (currentPkg.version === version) {
     console.error(`package.json already at ${version}, skipping update`);
   } else {
-    updatePackageJson(version);
+    try {
+      updatePackageJson(version);
+    } catch (err) {
+      console.error(`\nFailed at step 1 (update package.json): ${(err as Error).message}`);
+      console.error("Recovery: no cleanup needed, package.json may have been partially written.");
+      console.error("  git checkout -- package.json");
+      process.exit(1);
+    }
   }
 
   // 2. Commit (idempotent — skip if HEAD is already the release commit)
@@ -152,9 +197,18 @@ function main(): void {
   if (headMsg === `release: ${tag}`) {
     console.error(`Release commit already exists, skipping commit`);
   } else {
-    run(["git", "add", "package.json"]);
-    // --no-verify: release is a meta-operation, not a code change
-    run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
+    try {
+      run(["git", "add", "package.json"]);
+      // --no-verify: release is a meta-operation, not a code change
+      run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
+    } catch (err) {
+      console.error(`\nFailed at step 2 (commit): ${(err as Error).message}`);
+      console.error("Recovery — unstage and restore package.json:");
+      for (const cmd of recoveryCommands("version", tag, branch, notesFile)) {
+        console.error(`  ${cmd}`);
+      }
+      process.exit(1);
+    }
   }
 
   // 3. Tag (idempotent — skip if tag exists and points to HEAD)
@@ -172,11 +226,38 @@ function main(): void {
       `Tag ${tag} exists but points to ${tagSha.slice(0, 8)}, not HEAD (${headSha.slice(0, 8)}). Delete the tag manually to retry.`,
     );
   } else {
-    run(["git", "tag", tag]);
+    try {
+      run(["git", "tag", tag]);
+    } catch (err) {
+      console.error(`\nFailed at step 3 (tag): ${(err as Error).message}`);
+      console.error("Recovery — retry tagging:");
+      for (const cmd of recoveryCommands("tag", tag, branch, notesFile)) {
+        console.error(`  ${cmd}`);
+      }
+      console.error("Or rollback:");
+      for (const cmd of recoveryCommands("commit", tag, branch, notesFile)) {
+        console.error(`  ${cmd}`);
+      }
+      process.exit(1);
+    }
   }
 
   // 4. Push branch + tag
-  run(["git", "push", "origin", branch, tag]);
+  try {
+    run(["git", "push", "origin", branch, tag]);
+  } catch (err) {
+    console.error(`\nFailed at step 4 (push): ${(err as Error).message}`);
+    console.error("Recovery — retry push:");
+    for (const cmd of recoveryCommands("push", tag, branch, notesFile)) {
+      console.error(`  ${cmd}`);
+    }
+    console.error("Or rollback:");
+    console.error(`  git tag -d ${tag}`);
+    for (const cmd of recoveryCommands("commit", tag, branch, notesFile)) {
+      console.error(`  ${cmd}`);
+    }
+    process.exit(1);
+  }
 
   // 5. Create GitHub release (idempotent — skip if release already exists)
   const { exitCode: releaseExists } = run(
@@ -186,16 +267,26 @@ function main(): void {
   if (releaseExists === 0) {
     console.error(`GitHub release ${tag} already exists, skipping`);
   } else {
-    run([
-      "gh",
-      "release",
-      "create",
-      tag,
-      "--title",
-      tag,
-      "--notes",
-      notes,
-    ]);
+    try {
+      run([
+        "gh",
+        "release",
+        "create",
+        tag,
+        "--title",
+        tag,
+        "--notes",
+        notes,
+      ]);
+    } catch (err) {
+      console.error(`\nFailed at step 5 (GitHub release): ${(err as Error).message}`);
+      console.error("The tag is already pushed — CI may be building.");
+      console.error("Recovery — retry creating the release:");
+      for (const cmd of recoveryCommands("gh-release", tag, branch, notesFile)) {
+        console.error(`  ${cmd}`);
+      }
+      process.exit(1);
+    }
   }
 
   console.error(`\nReleased ${tag}`);
@@ -205,4 +296,4 @@ if (import.meta.main) {
   main();
 }
 
-export { parseArgs, updatePackageJson };
+export { parseArgs, updatePackageJson, recoveryCommands };

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { parseArgs, updatePackageJson } from "./release.ts";
+import { parseArgs, updatePackageJson, recoveryCommands } from "./release.ts";
 
 describe("parseArgs", () => {
   it("parses --version and --notes", () => {
@@ -61,5 +61,40 @@ describe("updatePackageJson", () => {
     const raw = readFileSync(join(tmpDir, "package.json"), "utf-8");
     expect(raw.endsWith("\n")).toBe(true);
     expect(raw.endsWith("\n\n")).toBe(false);
+  });
+});
+
+describe("recoveryCommands", () => {
+  const tag = "v1.0.0";
+  const branch = "main";
+  const notes = "release notes";
+
+  it("returns unstage + checkout for version failure", () => {
+    const cmds = recoveryCommands("version", tag, branch, notes);
+    expect(cmds).toEqual(["git reset HEAD package.json", "git checkout -- package.json"]);
+  });
+
+  it("returns reset + checkout for commit failure", () => {
+    const cmds = recoveryCommands("commit", tag, branch, notes);
+    expect(cmds).toHaveLength(2);
+    expect(cmds[0]).toContain("git reset --soft HEAD~1");
+    expect(cmds[1]).toContain("git checkout -- package.json");
+  });
+
+  it("returns tag command for tag failure", () => {
+    const cmds = recoveryCommands("tag", tag, branch, notes);
+    expect(cmds).toEqual([`git tag ${tag}`]);
+  });
+
+  it("returns push command for push failure", () => {
+    const cmds = recoveryCommands("push", tag, branch, notes);
+    expect(cmds).toEqual([`git push origin ${branch} ${tag}`]);
+  });
+
+  it("returns gh release command for gh-release failure", () => {
+    const cmds = recoveryCommands("gh-release", tag, branch, notes);
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]).toContain("gh release create");
+    expect(cmds[0]).toContain(tag);
   });
 });
