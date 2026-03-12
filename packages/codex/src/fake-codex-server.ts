@@ -28,6 +28,22 @@ rl.on("line", (line) => {
   } else if (method === "thread/start") {
     respond(msg.id, { id: "thread-1", status: "active" });
   } else if (method === "turn/start") {
+    // In validate-input mode, assert that input is an array of elements
+    if (mode === "validate-input") {
+      const params = msg.params as Record<string, unknown> | undefined;
+      const input = params?.input;
+      if (!Array.isArray(input)) {
+        respond(msg.id, null);
+        process.stderr.write(`FAIL: input must be array, got ${JSON.stringify(input)}\n`);
+        process.exit(1);
+      }
+      const elem = input[0] as Record<string, unknown> | undefined;
+      if (!elem || elem.type !== "text" || typeof elem.text !== "string") {
+        respond(msg.id, null);
+        process.stderr.write(`FAIL: input[0] must be {type:"text",text:string}, got ${JSON.stringify(elem)}\n`);
+        process.exit(1);
+      }
+    }
     respond(msg.id, { id: "turn-1", status: "active" });
     scheduleEvents();
   } else if (method === "turn/interrupt") {
@@ -71,6 +87,9 @@ function scheduleEvents(): void {
       sendTurnCompleted();
       setTimeout(() => process.exit(2), 50);
     }, 30);
+  } else if (mode === "validate-input") {
+    // input already validated above — complete like simple
+    setTimeout(() => sendTurnCompleted(), 30);
   } else if (mode === "silent") {
     // No events after turn/start — process stays alive but silent (for watchdog testing)
   } else {
