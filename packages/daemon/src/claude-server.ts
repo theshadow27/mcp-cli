@@ -349,6 +349,9 @@ export class ClaudeServer {
     });
 
     this.logger.info(`[claude-server] Restored ${restorable.length} session(s) from SQLite for WS reconnection`);
+
+    // Reset idle timer — restored sessions should prevent idle shutdown
+    this.onActivity?.();
   }
 
   /** Stop the worker and clean up. Prevents auto-restart after crash. */

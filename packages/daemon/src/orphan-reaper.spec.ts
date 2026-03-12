@@ -41,12 +41,12 @@ describe("reapOrphanedSessions", () => {
     expect(result).toBe(0);
   });
 
-  test("marks sessions as ended even if pid is null", () => {
+  test("marks sessions as ended when pid is null", () => {
     const db = createDb();
     db.upsertSession({ sessionId: "sess-no-pid", state: "connecting", pid: undefined });
 
     const result = reapOrphanedSessions(db, silentLogger);
-    expect(result).toBe(0);
+    expect(result).toBe(1);
 
     // Session should be ended in DB
     const sessions = db.listSessions(true);
@@ -55,80 +55,64 @@ describe("reapOrphanedSessions", () => {
     expect(ended.find((s) => s.sessionId === "sess-no-pid")).toBeTruthy();
   });
 
-  test("kills alive process and marks session ended", () => {
+  test("preserves alive process — does NOT end session", () => {
     const db = createDb();
-    const fakePid = 99999;
-    db.upsertSession({ sessionId: "sess-alive", state: "running", pid: fakePid });
-
-    const killCalls: Array<[number, number | string | undefined]> = [];
-    const origKill = process.kill.bind(process);
-    process.kill = (pid: number, signal?: number | string): true => {
-      killCalls.push([pid, signal]);
-      return true;
-    };
+    // Use current process PID so it's definitely alive
+    const alivePid = process.pid;
+    db.upsertSession({ sessionId: "sess-alive", state: "running", pid: alivePid });
 
     const { logger, messages } = capturingLogger();
     const result = reapOrphanedSessions(db, logger);
-    process.kill = origKill;
 
-    expect(result).toBe(1);
-    expect(killCalls).toHaveLength(1);
-    expect(killCalls[0]).toEqual([fakePid, "SIGTERM"]);
+    // Should NOT have ended the session — it has a live process
+    expect(result).toBe(0);
 
-    // Verify reap was logged at warn level
-    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("Reaped"))).toBe(true);
-
-    // Session should be ended
+    // Session should still be active in DB
     const active = db.listSessions(true);
-    expect(active).toHaveLength(0);
+    expect(active).toHaveLength(1);
+    expect(active[0]?.sessionId).toBe("sess-alive");
+
+    // Should log that it's preserving the session
+    expect(messages.some((m) => m.level === "info" && String(m.args[0]).includes("Preserving"))).toBe(true);
   });
 
-  test("skips kill for already-dead process, still marks session ended", () => {
+  test("cleans up dead process — marks session ended", () => {
     const db = createDb();
     const deadPid = 88888;
     db.upsertSession({ sessionId: "sess-dead", state: "running", pid: deadPid });
 
-    const origKill = process.kill.bind(process);
-    // Mock process.kill: SIGTERM throws ESRCH (process not found)
-    process.kill = (_pid: number, _signal?: number | string): true => {
-      throw new Error("ESRCH");
-    };
-
     const result = reapOrphanedSessions(db, silentLogger);
-    process.kill = origKill;
 
-    expect(result).toBe(0);
+    expect(result).toBe(1);
 
-    // Session should still be ended in DB
+    // Session should be ended in DB
     const active = db.listSessions(true);
     expect(active).toHaveLength(0);
   });
 
-  test("handles multiple sessions: kills alive, skips dead", () => {
+  test("handles multiple sessions: preserves alive, cleans dead", () => {
     const db = createDb();
-    const alivePid = 77777;
-    const deadPid = 66666;
+    const alivePid = process.pid; // definitely alive
+    const deadPid = 88888; // definitely dead
 
-    db.upsertSession({ sessionId: "sess-1", state: "running", pid: alivePid });
-    db.upsertSession({ sessionId: "sess-2", state: "running", pid: deadPid });
-    db.upsertSession({ sessionId: "sess-3", state: "connecting", pid: undefined });
-
-    const origKill = process.kill.bind(process);
-    process.kill = (pid: number, _signal?: number | string): true => {
-      if (pid === deadPid) throw new Error("ESRCH");
-      return true;
-    };
+    db.upsertSession({ sessionId: "sess-alive", state: "running", pid: alivePid });
+    db.upsertSession({ sessionId: "sess-dead", state: "running", pid: deadPid });
+    db.upsertSession({ sessionId: "sess-no-pid", state: "connecting", pid: undefined });
 
     const result = reapOrphanedSessions(db, silentLogger);
-    process.kill = origKill;
 
-    expect(result).toBe(1);
-    // All sessions should be ended
-    expect(db.listSessions(true)).toHaveLength(0);
-    expect(db.listSessions(false)).toHaveLength(3);
+    // Only dead + no-pid sessions should be cleaned
+    expect(result).toBe(2);
+    // Alive session should still be active
+    const active = db.listSessions(true);
+    expect(active).toHaveLength(1);
+    expect(active[0]?.sessionId).toBe("sess-alive");
+    // Dead + no-pid sessions should be ended
+    const ended = db.listSessions(false);
+    expect(ended).toHaveLength(2);
   });
 
-  test("skips kill when PID has been recycled (pidStartTime mismatch)", () => {
+  test("cleans up session when PID has been recycled (pidStartTime mismatch)", () => {
     const db = createDb();
     const recycledPid = 44444;
     const storedStartTime = 1000000;
@@ -136,62 +120,35 @@ describe("reapOrphanedSessions", () => {
     // a different process now occupying this PID (start time mismatch, not dead PID).
     db.upsertSession({ sessionId: "sess-recycled", state: "running", pid: recycledPid, pidStartTime: storedStartTime });
 
-    const origKill = process.kill.bind(process);
-    let killCalled = false;
-    process.kill = (): true => {
-      killCalled = true;
-      return true;
-    };
-
-    // Track what args isOurProcess was called with to prove start time comparison fired.
-    const capturedCalls: Array<{ pid: number; startTime: number }> = [];
-    const fakeIsOurProcess = (pid: number, pidStartTimeMs: number): boolean => {
-      capturedCalls.push({ pid, startTime: pidStartTimeMs });
-      // Simulate a recycled PID: a process IS alive at this PID, but its start time
-      // differs from our stored one — it's a different process. Return false.
-      return false;
-    };
-
     const { logger, messages } = capturingLogger();
-    const result = reapOrphanedSessions(db, logger, { isOurProcess: fakeIsOurProcess });
-    process.kill = origKill;
+    const result = reapOrphanedSessions(db, logger);
 
-    // isOurProcess must have been called with the exact PID and stored start time,
-    // proving the start time comparison logic fired (not just a dead-PID null check).
-    expect(capturedCalls).toHaveLength(1);
-    expect(capturedCalls[0]?.pid).toBe(recycledPid);
-    expect(capturedCalls[0]?.startTime).toBe(storedStartTime);
+    // Should have cleaned up the stale session
+    expect(result).toBe(1);
 
-    // Should NOT have killed the process (PID was recycled)
-    expect(result).toBe(0);
-    expect(killCalled).toBe(false);
+    // Should have logged a warning about dead/recycled PID
+    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("dead or recycled"))).toBe(true);
 
-    // Should have logged a warning about recycled PID
-    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("recycled"))).toBe(true);
-
-    // Session should still be ended in DB
+    // Session should be ended in DB
     expect(db.listSessions(true)).toHaveLength(0);
   });
 
-  test("kills process when pidStartTime is null (legacy session)", () => {
+  test("preserves alive process with matching pidStartTime", () => {
     const db = createDb();
-    const fakePid = 33333;
-    // Legacy session without pidStartTime — should fall back to bare kill
-    db.upsertSession({ sessionId: "sess-legacy", state: "running", pid: fakePid });
+    // Use current process PID with a start time that matches
+    const pid = process.pid;
+    // getProcessStartTime derives from ps -o etime=, we need a plausible start time
+    // Use Date.now() - process.uptime()*1000 as approximate start time
+    const approxStartTime = Math.round(Date.now() - process.uptime() * 1000);
+    db.upsertSession({ sessionId: "sess-verified", state: "running", pid, pidStartTime: approxStartTime });
 
-    const killCalls: Array<[number, number | string | undefined]> = [];
-    const origKill = process.kill.bind(process);
-    process.kill = (pid: number, signal?: number | string): true => {
-      killCalls.push([pid, signal]);
-      return true;
-    };
+    const { logger, messages } = capturingLogger();
+    const result = reapOrphanedSessions(db, logger);
 
-    const result = reapOrphanedSessions(db, silentLogger);
-    process.kill = origKill;
-
-    expect(result).toBe(1);
-    expect(killCalls).toHaveLength(1);
-    expect(killCalls[0]).toEqual([fakePid, "SIGTERM"]);
+    // Should preserve the session
+    expect(result).toBe(0);
+    expect(db.listSessions(true)).toHaveLength(1);
+    expect(messages.some((m) => m.level === "info" && String(m.args[0]).includes("Preserving"))).toBe(true);
   });
 
   test("already-ended sessions are not touched", () => {
@@ -199,17 +156,8 @@ describe("reapOrphanedSessions", () => {
     db.upsertSession({ sessionId: "sess-old", state: "ended", pid: 55555 });
     db.endSession("sess-old");
 
-    const origKill = process.kill.bind(process);
-    let killCalled = false;
-    process.kill = (): true => {
-      killCalled = true;
-      return true;
-    };
-
     const result = reapOrphanedSessions(db, silentLogger);
-    process.kill = origKill;
 
     expect(result).toBe(0);
-    expect(killCalled).toBe(false);
   });
 });

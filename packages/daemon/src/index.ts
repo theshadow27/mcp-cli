@@ -205,10 +205,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const db = new StateDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
 
-  // Reap any claude processes orphaned by a previous unclean daemon exit
-  const reaped = reapOrphanedSessions(db, logger);
-  if (reaped > 0) {
-    logger.warn(`[mcpd] Reaped ${reaped} orphaned claude process(es) from previous run`);
+  // Clean up DB records for sessions whose processes are dead.
+  // Alive processes are preserved for restoreActiveSessions() to pick up.
+  const cleaned = reapOrphanedSessions(db, logger);
+  if (cleaned > 0) {
+    logger.info(`[mcpd] Cleaned up ${cleaned} stale session(s) from previous run`);
   }
 
   // Warn if runtime state permissions have been loosened
