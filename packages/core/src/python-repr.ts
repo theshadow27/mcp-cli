@@ -2,12 +2,11 @@
  * Converts Python repr strings to valid JSON.
  *
  * Handles: single-quoted strings, True/False/None, tuple syntax (,) → arrays,
- * nested structures. Uses a character-level tokenizer to avoid regex pitfalls
- * with embedded quotes (e.g., `{'msg': "it's broken"}`).
+ * nested structures, and Python string prefixes (b'', r'', u'', f'', br'', etc.).
+ * Uses a character-level tokenizer to avoid regex pitfalls with embedded quotes
+ * (e.g., `{'msg': "it's broken"}`).
  *
  * Limitations:
- * - Python string prefixes (b'', r'', u'', f'') are not supported and will
- *   produce invalid JSON, causing silent fallback to the raw string.
  * - Octal escapes (\177) are not converted and will produce invalid JSON.
  */
 
@@ -60,12 +59,35 @@ export function pythonReprToJson(input: string): string {
       continue;
     }
 
+    // String prefix detection — b'', r'', f'', u'', br'', rb'', fr'', rf'', etc.
+    // Must be checked before the word handler to avoid emitting the prefix as a bare word.
+    const prefix = tryStringPrefix(input, i, len);
+    if (prefix) {
+      i = prefix.quotePos;
+      // Fall through — i now points at the quote, handled below
+    }
+
+    const isRaw = prefix?.isRaw ?? false;
+
     // Single-quoted string → double-quoted JSON string
-    if (ch === "'") {
+    if (input[i] === "'") {
       i++;
       const str: string[] = [];
       while (i < len && input[i] !== "'") {
         if (input[i] === "\\") {
+          if (isRaw) {
+            // Raw strings: backslashes are literal, except \' which ends the string
+            if (i + 1 < len && input[i + 1] === "'") {
+              // \' in raw string — literal apostrophe
+              str.push("'");
+              i += 2;
+            } else {
+              // Literal backslash — must be escaped for JSON
+              str.push("\\\\");
+              i++;
+            }
+            continue;
+          }
           i++;
           if (i >= len) break;
           const esc = input[i];
@@ -148,16 +170,23 @@ export function pythonReprToJson(input: string): string {
     }
 
     // Double-quoted string — pass through (already JSON-compatible)
-    if (ch === '"') {
+    // Note: uses input[i] not ch, because prefix detection may have advanced i
+    if (input[i] === '"') {
       out.push('"');
       i++;
       while (i < len && input[i] !== '"') {
         if (input[i] === "\\") {
-          out.push(input[i]);
-          i++;
-          if (i < len) {
+          if (isRaw) {
+            // Raw strings: backslashes are literal
+            out.push("\\\\");
+            i++;
+          } else {
             out.push(input[i]);
             i++;
+            if (i < len) {
+              out.push(input[i]);
+              i++;
+            }
           }
         } else {
           out.push(input[i]);
@@ -234,6 +263,39 @@ export function pythonReprToJson(input: string): string {
   }
 
   return out.join("");
+}
+
+const STRING_PREFIX_CHARS = new Set(["b", "B", "r", "R", "u", "U", "f", "F"]);
+
+/**
+ * Check if position `i` starts a Python string prefix (b, r, u, f, br, rb, fr, rf, etc.)
+ * immediately followed by a quote character (' or ").
+ * Returns the quote position and whether it's a raw string, or null if not a prefix.
+ */
+function tryStringPrefix(input: string, i: number, len: number): { quotePos: number; isRaw: boolean } | null {
+  if (i >= len || !STRING_PREFIX_CHARS.has(input[i])) return null;
+
+  const c1 = input[i];
+  // Two-character prefix (br, rb, fr, rf)
+  if (i + 2 < len && STRING_PREFIX_CHARS.has(input[i + 1])) {
+    const c2 = input[i + 1];
+    const quote = input[i + 2];
+    if (quote === "'" || quote === '"') {
+      const pair = (c1 + c2).toLowerCase();
+      // Valid two-char prefixes: br, rb, fr, rf
+      if (pair === "br" || pair === "rb" || pair === "fr" || pair === "rf") {
+        return { quotePos: i + 2, isRaw: pair.includes("r") };
+      }
+    }
+  }
+  // Single-character prefix
+  if (i + 1 < len) {
+    const quote = input[i + 1];
+    if (quote === "'" || quote === '"') {
+      return { quotePos: i + 1, isRaw: c1 === "r" || c1 === "R" };
+    }
+  }
+  return null;
 }
 
 function isWordChar(ch: string): boolean {

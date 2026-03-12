@@ -1349,6 +1349,37 @@ describe("mcx claude bye", () => {
     }
   });
 
+  test("resolves cwd from worktree name when daemon returns null cwd", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      // Daemon-created worktree: cwd and repoRoot are null
+      return toolResult({ ended: true, worktree: "claude-abc123", cwd: null, repoRoot: null });
+    });
+    const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["bye", "def"], deps);
+      // Should still attempt cleanup by resolving cwd from process.cwd()
+      const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
+        (c[0] as string[]).includes("remove"),
+      );
+      expect(removeCalls.length).toBe(1);
+      // The worktree path should contain the worktree name
+      expect(removeCalls[0][0].join(" ")).toContain("claude-abc123");
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("warns about dirty worktree after bye", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
