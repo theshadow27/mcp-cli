@@ -47,6 +47,10 @@ function makeNav(overrides: Partial<ClaudeNav> = {}): ClaudeNav {
     transcriptScrollOffset: 0,
     setTranscriptScrollOffset: mock(() => {}),
     transcriptViewHeight: 15,
+    promptMode: false,
+    setPromptMode: mock(() => {}),
+    promptText: "",
+    setPromptText: mock(() => {}),
     ...overrides,
   };
 }
@@ -184,6 +188,67 @@ describe("handleClaudeInput deny reason mode", () => {
     expect(consumed).toBe(true);
     // setDenyReasonText should not be called with text append
     expect(nav.setDenyReasonText).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleClaudeInput prompt mode", () => {
+  test("p enters prompt mode when session selected", () => {
+    const nav = makeNav();
+    const consumed = handleClaudeInput("p", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptMode).toHaveBeenCalledWith(true);
+  });
+
+  test("p does nothing when no sessions", () => {
+    const nav = makeNav({ sessions: [] as unknown as ClaudeNav["sessions"] });
+    const consumed = handleClaudeInput("p", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptMode).not.toHaveBeenCalled();
+  });
+
+  test("captures text input in prompt mode", () => {
+    const nav = makeNav({ promptMode: true });
+    const consumed = handleClaudeInput("h", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptText).toHaveBeenCalled();
+  });
+
+  test("backspace deletes last char in prompt mode", () => {
+    const nav = makeNav({ promptMode: true, promptText: "abc" });
+    const consumed = handleClaudeInput("", { ...baseKey, backspace: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptText).toHaveBeenCalled();
+  });
+
+  test("escape cancels prompt mode", () => {
+    const nav = makeNav({ promptMode: true, promptText: "test" });
+    const consumed = handleClaudeInput("", { ...baseKey, escape: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptText).toHaveBeenCalledWith("");
+    expect(nav.setPromptMode).toHaveBeenCalledWith(false);
+  });
+
+  test("Enter sends prompt and exits mode", () => {
+    const nav = makeNav({ promptMode: true, promptText: "do something" });
+    const consumed = handleClaudeInput("", { ...baseKey, return: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptText).toHaveBeenCalledWith("");
+    expect(nav.setPromptMode).toHaveBeenCalledWith(false);
+  });
+
+  test("Enter with empty text does not send", () => {
+    const nav = makeNav({ promptMode: true, promptText: "" });
+    const consumed = handleClaudeInput("", { ...baseKey, return: true }, nav);
+    expect(consumed).toBe(true);
+    // Still exits mode
+    expect(nav.setPromptMode).toHaveBeenCalledWith(false);
+  });
+
+  test("ignores ctrl+key combos in prompt mode", () => {
+    const nav = makeNav({ promptMode: true });
+    const consumed = handleClaudeInput("c", { ...baseKey, ctrl: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setPromptText).not.toHaveBeenCalled();
   });
 });
 

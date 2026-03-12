@@ -39,6 +39,8 @@ export function App() {
   const [permissionIndex, setPermissionIndex] = useState(0);
   const [denyReasonMode, setDenyReasonMode] = useState(false);
   const [denyReasonText, setDenyReasonText] = useState("");
+  const [promptMode, setPromptMode] = useState(false);
+  const [promptText, setPromptText] = useState("");
   const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<ReadonlySet<string>>(new Set());
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0);
@@ -185,6 +187,10 @@ export function App() {
       transcriptScrollOffset,
       setTranscriptScrollOffset,
       transcriptViewHeight: TRANSCRIPT_VIEW_HEIGHT,
+      promptMode,
+      setPromptMode,
+      promptText,
+      setPromptText,
     },
     statsNav: {
       scrollOffset: statsScrollOffset,
@@ -276,6 +282,8 @@ export function App() {
         filterText={filterText}
         denyReasonMode={denyReasonMode}
         denyReasonText={denyReasonText}
+        promptMode={promptMode}
+        promptText={promptText}
         transcriptExpanded={expandedSession !== null}
         mailExpanded={expandedMessage !== null}
       />
