@@ -452,9 +452,18 @@ export class ClaudeServer {
       this.db.updateSessionState(sessionId, "disconnected");
     }
 
-    // Snapshot pre-crash session IDs — after restart they can no longer reconnect
-    // to the new WS server (new worker instance).
-    const orphanedSessions = new Set(this.activeSessions);
+    // Snapshot pre-crash session IDs for cleanup after restart.
+    // When configuredWsPort is set, the new worker binds to the same port,
+    // so CLI processes CAN reconnect — no need to orphan them.
+    const orphanedSessions = this.configuredWsPort !== undefined ? null : new Set(this.activeSessions);
+
+    // Clear tracking sets BEFORE start() so restoreActiveSessions() can
+    // repopulate them from SQLite. Without this, the has() guard in
+    // restoreActiveSessions skips every session (they're still in the set).
+    this.activeSessions.clear();
+    this.sessionPids.clear();
+    this.sessionAddedAt.clear();
+    metrics.gauge("mcpd_active_sessions").set(0);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
     try {
@@ -480,6 +489,8 @@ export class ClaudeServer {
       );
       this.stopped = true;
       this.restartInProgress = false;
+      // activeSessions already cleared above; end any that restoreActiveSessions
+      // may have repopulated (shouldn't happen since start() wasn't called, but be safe)
       for (const sessionId of this.activeSessions) {
         this.db.endSession(sessionId);
       }
@@ -515,14 +526,17 @@ export class ClaudeServer {
           this.logger.info(`[claude-server] Worker restarted successfully (port ${this.wsPort})`);
 
           // End sessions orphaned by the old worker — they can no longer reconnect
-          // to the new WS server. Skip any already ended via db:end.
-          for (const sessionId of orphanedSessions) {
-            if (!this.activeSessions.has(sessionId)) continue;
-            this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
-            this.activeSessions.delete(sessionId);
-            this.sessionPids.delete(sessionId);
-            this.sessionAddedAt.delete(sessionId);
-            this.db.endSession(sessionId);
+          // to the new WS server. When configuredWsPort is set, the port is stable
+          // so sessions can reconnect; skip orphan cleanup in that case.
+          if (orphanedSessions) {
+            for (const sessionId of orphanedSessions) {
+              if (!this.activeSessions.has(sessionId)) continue;
+              this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
+              this.activeSessions.delete(sessionId);
+              this.sessionPids.delete(sessionId);
+              this.sessionAddedAt.delete(sessionId);
+              this.db.endSession(sessionId);
+            }
           }
           metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
 
