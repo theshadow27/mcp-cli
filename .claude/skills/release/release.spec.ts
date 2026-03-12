@@ -69,9 +69,9 @@ describe("recoveryCommands", () => {
   const branch = "main";
   const notes = "release notes";
 
-  it("returns checkout for version failure", () => {
+  it("returns unstage + checkout for version failure", () => {
     const cmds = recoveryCommands("version", tag, branch, notes);
-    expect(cmds).toEqual(["git checkout -- package.json"]);
+    expect(cmds).toEqual(["git reset HEAD package.json", "git checkout -- package.json"]);
   });
 
   it("returns reset + checkout for commit failure", () => {
