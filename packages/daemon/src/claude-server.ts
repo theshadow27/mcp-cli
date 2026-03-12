@@ -15,7 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
-import { findDeadPids, getProcessStartTime, isOurProcess } from "./process-identity";
+import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurProcess } from "./process-identity";
 import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -160,6 +160,7 @@ export class ClaudeServer {
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
     private readonly configuredWsPort?: number,
+    private readonly getProcessStartTimeFn: (pid: number) => number | null = defaultGetProcessStartTime,
   ) {
     this.db = db;
     this.clientFactory =
@@ -634,7 +635,7 @@ export class ClaudeServer {
         if (event.session.pid != null) {
           this.sessionPids.set(event.session.sessionId, event.session.pid);
           // Capture process start time for PID reuse detection
-          const startTime = getProcessStartTime(event.session.pid);
+          const startTime = this.getProcessStartTimeFn(event.session.pid);
           if (startTime != null) {
             this.sessionPidStartTimes.set(event.session.sessionId, startTime);
             upsertData.pidStartTime = startTime;

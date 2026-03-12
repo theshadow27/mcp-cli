@@ -212,6 +212,53 @@ describe("ClaudeServer", () => {
     expect(row?.model).toBe("claude-sonnet-4-6");
   });
 
+  test("db:upsert captures pidStartTime and persists it to SQLite", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const fakeStartTime = 1_700_000_000_000;
+    // Inject a getProcessStartTime that returns a known value for any PID
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => fakeStartTime);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "pid-time-1", pid: 12345, state: "active" },
+    });
+
+    const row = db.getSession("pid-time-1");
+    expect(row).not.toBeNull();
+    // pidStartTime must be persisted to SQLite for orphan reaper PID reuse protection
+    expect(row?.pidStartTime).toBe(fakeStartTime);
+
+    // Also verify it's tracked in the in-memory map for pruneDeadSessions
+    const pidStartTimes = (server as unknown as { sessionPidStartTimes: Map<string, number> }).sessionPidStartTimes;
+    expect(pidStartTimes.get("pid-time-1")).toBe(fakeStartTime);
+  });
+
+  test("db:upsert logs warning and increments metric when getProcessStartTime returns null", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const { logger, messages } = capturingLogger();
+    // Inject a getProcessStartTime that always returns null (simulates PID lookup failure)
+    server = new ClaudeServer(db, undefined, undefined, logger, 10_000, undefined, () => null);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "pid-null-1", pid: 88888, state: "active" },
+    });
+
+    // Should have warned about missing PID protection
+    expect(
+      messages.some((m) => m.level === "warn" && String(m.args[0]).includes("PID reuse protection disabled")),
+    ).toBe(true);
+
+    // Session should still be upserted, but without pidStartTime
+    const row = db.getSession("pid-null-1");
+    expect(row).not.toBeNull();
+    expect(row?.pidStartTime ?? null).toBeNull();
+  });
+
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
@@ -591,6 +638,33 @@ describe("ClaudeServer", () => {
     server.pruneDeadSessions();
 
     expect(server.hasActiveSessions()).toBe(true);
+  });
+
+  test("pruneDeadSessions uses sessionPidStartTimes via findDeadPids for dead PID", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const fakeStartTime = 1_700_000_000_000;
+    // Inject getProcessStartTime to return a value at db:upsert time so the session
+    // is tracked in sessionPidStartTimes. The dead PID (999999) won't actually exist,
+    // so findDeadPids's batch ps call will not find it — correctly reporting it as dead.
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => fakeStartTime);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // 999999 is a dead PID — injected getProcessStartTime returns a value at upsert time,
+    // but findDeadPids (via getProcessStartTimesBatch) will see the process is gone.
+    handle({ type: "db:upsert", session: { sessionId: "pst-dead-1", pid: 999999, state: "active" } });
+
+    // Confirm sessionPidStartTimes was populated (proving this takes the batch path)
+    const pidStartTimes = (server as unknown as { sessionPidStartTimes: Map<string, number> }).sessionPidStartTimes;
+    expect(pidStartTimes.has("pst-dead-1")).toBe(true);
+    expect(server.hasActiveSessions()).toBe(true);
+
+    server.pruneDeadSessions();
+
+    // Dead PID detected via findDeadPids (sessionPidStartTimes path) — session pruned
+    expect(server.hasActiveSessions()).toBe(false);
+    const row = db.getSession("pst-dead-1");
+    expect(row?.state).toBe("ended");
   });
 
   test("pruneDeadSessions handles sessions without PIDs (no prune)", () => {

@@ -10,7 +10,12 @@
 import type { Logger } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { StateDb } from "./db/state";
-import { isOurProcess } from "./process-identity";
+import { isOurProcess as defaultIsOurProcess } from "./process-identity";
+
+interface ReaperDeps {
+  /** Injectable for testing — defaults to the real isOurProcess. */
+  isOurProcess?: (pid: number, storedStartTimeMs: number) => boolean;
+}
 
 /**
  * Kill any orphaned claude processes from the previous daemon run.
@@ -21,7 +26,8 @@ import { isOurProcess } from "./process-identity";
  *
  * Returns the count of processes actually killed (process existed and was signaled).
  */
-export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger): number {
+export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger, deps?: ReaperDeps): number {
+  const checkIsOurProcess = deps?.isOurProcess ?? defaultIsOurProcess;
   const activeSessions = db.listSessions(true); // active = ended_at IS NULL
   let reaped = 0;
 
@@ -32,7 +38,7 @@ export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger
       // If we have a stored start time, verify the PID hasn't been recycled
       // before sending SIGTERM. Without this check, a recycled PID could
       // cause us to kill an unrelated process (nginx, database, etc.).
-      if (pidStartTime != null && !isOurProcess(pid, pidStartTime)) {
+      if (pidStartTime != null && !checkIsOurProcess(pid, pidStartTime)) {
         logger.warn(`[mcpd] Skipping orphan reap for session ${sessionId} — pid ${pid} has been recycled`);
       } else {
         try {
