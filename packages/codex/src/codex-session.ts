@@ -291,7 +291,7 @@ export class CodexSession {
 
     const turnResult = (await this.rpc.request("turn/start", {
       threadId: this.thread.id,
-      input: { text, text_elements: [] },
+      input: [{ type: "text", text, text_elements: [] }],
     })) as Turn;
 
     this.currentTurn = turnResult;

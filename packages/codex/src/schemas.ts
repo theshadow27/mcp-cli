@@ -91,10 +91,12 @@ export interface ThreadStatusChangedParams {
 
 export interface TurnStartParams {
   threadId: string;
-  input: TurnInput;
+  /** Array of input elements. The Codex app-server expects a sequence, not a single object. */
+  input: TurnInputElement[];
 }
 
-export interface TurnInput {
+export interface TurnInputElement {
+  type: "text";
   text: string;
   text_elements?: unknown[];
 }
