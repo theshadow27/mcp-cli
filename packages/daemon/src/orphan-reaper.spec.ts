@@ -128,6 +128,55 @@ describe("reapOrphanedSessions", () => {
     expect(db.listSessions(false)).toHaveLength(3);
   });
 
+  test("skips kill when PID has been recycled (pidStartTime mismatch)", () => {
+    const db = createDb();
+    const recycledPid = 44444;
+    // Store a session with a start time far in the past — the PID "belongs" to a different process now
+    db.upsertSession({ sessionId: "sess-recycled", state: "running", pid: recycledPid, pidStartTime: 1000000 });
+
+    const origKill = process.kill.bind(process);
+    let killCalled = false;
+    process.kill = (): true => {
+      killCalled = true;
+      return true;
+    };
+
+    const { logger, messages } = capturingLogger();
+    const result = reapOrphanedSessions(db, logger);
+    process.kill = origKill;
+
+    // Should NOT have killed the process (PID was recycled)
+    expect(result).toBe(0);
+    expect(killCalled).toBe(false);
+
+    // Should have logged a warning about recycled PID
+    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("recycled"))).toBe(true);
+
+    // Session should still be ended in DB
+    expect(db.listSessions(true)).toHaveLength(0);
+  });
+
+  test("kills process when pidStartTime is null (legacy session)", () => {
+    const db = createDb();
+    const fakePid = 33333;
+    // Legacy session without pidStartTime — should fall back to bare kill
+    db.upsertSession({ sessionId: "sess-legacy", state: "running", pid: fakePid });
+
+    const killCalls: Array<[number, number | string | undefined]> = [];
+    const origKill = process.kill.bind(process);
+    process.kill = (pid: number, signal?: number | string): true => {
+      killCalls.push([pid, signal]);
+      return true;
+    };
+
+    const result = reapOrphanedSessions(db, silentLogger);
+    process.kill = origKill;
+
+    expect(result).toBe(1);
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0]).toEqual([fakePid, "SIGTERM"]);
+  });
+
   test("already-ended sessions are not touched", () => {
     const db = createDb();
     db.upsertSession({ sessionId: "sess-old", state: "ended", pid: 55555 });
