@@ -291,9 +291,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   let idleTimer: Timer | null = null;
   let inFlightCount = 0;
 
+  let lastIdleReset = Date.now();
+
   function resetIdleTimer(): void {
+    lastIdleReset = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      const sinceLast = Date.now() - lastIdleReset;
+      logger.debug(`[mcpd] Idle timer fired (${Math.round(sinceLast / 1000)}s since last reset)`);
+
       if (inFlightCount > 0) {
         logger.debug(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
         resetIdleTimer();
