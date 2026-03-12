@@ -42,6 +42,8 @@ interface DbUpsert {
   session: {
     sessionId: string;
     pid?: number;
+    /** Captured by the worker at spawn time (off main thread) to avoid blocking ps(1) call on main. */
+    pidStartTime?: number | null;
     state?: string;
     model?: string;
     cwd?: string;
@@ -631,11 +633,17 @@ export class ClaudeServer {
         break;
       case "db:upsert": {
         this.activeSessions.add(event.session.sessionId);
-        const upsertData: Parameters<StateDb["upsertSession"]>[0] = { ...event.session };
+        // Exclude pidStartTime from spread — we set it explicitly below after null-check.
+        const { pidStartTime: _workerPidStartTime, ...sessionFields } = event.session;
+        const upsertData: Parameters<StateDb["upsertSession"]>[0] = { ...sessionFields };
         if (event.session.pid != null) {
           this.sessionPids.set(event.session.sessionId, event.session.pid);
-          // Capture process start time for PID reuse detection
-          const startTime = this.getProcessStartTimeFn(event.session.pid);
+          // Use pidStartTime provided by the worker (captured off-main-thread at spawn time).
+          // Fall back to getProcessStartTimeFn only if the worker didn't supply it.
+          const startTime =
+            event.session.pidStartTime !== undefined
+              ? event.session.pidStartTime
+              : this.getProcessStartTimeFn(event.session.pid);
           if (startTime != null) {
             this.sessionPidStartTimes.set(event.session.sessionId, startTime);
             upsertData.pidStartTime = startTime;

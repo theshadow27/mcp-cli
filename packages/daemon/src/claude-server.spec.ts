@@ -259,6 +259,73 @@ describe("ClaudeServer", () => {
     expect(row?.pidStartTime ?? null).toBeNull();
   });
 
+  test("db:upsert uses worker-provided pidStartTime without calling getProcessStartTimeFn", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    let fnCallCount = 0;
+    // getProcessStartTimeFn should NOT be called when pidStartTime is provided by worker
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => {
+      fnCallCount++;
+      return 99999;
+    });
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const workerPidStartTime = 1_700_111_111_000;
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "worker-pst-1", pid: 12345, pidStartTime: workerPidStartTime, state: "active" },
+    });
+
+    // Worker-provided pidStartTime is used directly — no ps(1) call on main thread
+    expect(fnCallCount).toBe(0);
+    const row = db.getSession("worker-pst-1");
+    expect(row?.pidStartTime).toBe(workerPidStartTime);
+    const pidStartTimes = (server as unknown as { sessionPidStartTimes: Map<string, number> }).sessionPidStartTimes;
+    expect(pidStartTimes.get("worker-pst-1")).toBe(workerPidStartTime);
+  });
+
+  test("db:upsert falls back to getProcessStartTimeFn when worker omits pidStartTime", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const fallbackStartTime = 1_700_222_222_000;
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => fallbackStartTime);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    // pidStartTime omitted (undefined) → falls back to getProcessStartTimeFn
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "worker-pst-omit", pid: 12345, state: "active" },
+    });
+
+    const row = db.getSession("worker-pst-omit");
+    expect(row?.pidStartTime).toBe(fallbackStartTime);
+  });
+
+  test("db:upsert with worker pidStartTime: null disables PID protection (no fallback)", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const { logger, messages } = capturingLogger();
+    let fnCallCount = 0;
+    server = new ClaudeServer(db, undefined, undefined, logger, 10_000, undefined, () => {
+      fnCallCount++;
+      return 99999;
+    });
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "worker-pst-null", pid: 12345, pidStartTime: null, state: "active" },
+    });
+
+    // Worker explicitly signaled null — do not call getProcessStartTimeFn (would still hit main thread)
+    expect(fnCallCount).toBe(0);
+    expect(
+      messages.some((m) => m.level === "warn" && String(m.args[0]).includes("PID reuse protection disabled")),
+    ).toBe(true);
+    const row = db.getSession("worker-pst-null");
+    expect(row?.pidStartTime ?? null).toBeNull();
+  });
+
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
