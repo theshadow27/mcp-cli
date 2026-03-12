@@ -82,6 +82,54 @@ describe("pythonReprToJson", () => {
     expect(result).toEqual({ bell: "\u0007", vt: "\u000b", null: "\u0000" });
   });
 
+  it("strips b'' prefix and parses byte string as regular string", () => {
+    expect(pythonReprToJson("{'data': b'hello'}")).toBe('{"data": "hello"}');
+  });
+
+  it("strips B'' prefix (uppercase)", () => {
+    expect(pythonReprToJson("B'hello'")).toBe('"hello"');
+  });
+
+  it("strips u'' prefix", () => {
+    expect(pythonReprToJson("{'name': u'Alice'}")).toBe('{"name": "Alice"}');
+  });
+
+  it("strips f'' prefix", () => {
+    expect(pythonReprToJson("f'formatted'")).toBe('"formatted"');
+  });
+
+  it("handles r'' raw string — backslashes are literal", () => {
+    const result = pythonReprToJson("r'\\path\\to\\file'");
+    expect(JSON.parse(result)).toBe("\\path\\to\\file");
+  });
+
+  it("handles r'' raw string with Windows path", () => {
+    const result = pythonReprToJson("{'path': r'C:\\Users\\test\\file.txt'}");
+    expect(JSON.parse(result)).toEqual({ path: "C:\\Users\\test\\file.txt" });
+  });
+
+  it("handles br'' two-character prefix", () => {
+    expect(pythonReprToJson("br'hello'")).toBe('"hello"');
+  });
+
+  it("handles rb'' two-character prefix", () => {
+    expect(pythonReprToJson("rb'hello'")).toBe('"hello"');
+  });
+
+  it("handles rb'' raw mode — backslashes literal", () => {
+    const result = pythonReprToJson("rb'\\n\\t'");
+    expect(JSON.parse(result)).toBe("\\n\\t");
+  });
+
+  it("handles prefix on double-quoted strings", () => {
+    expect(pythonReprToJson('b"hello"')).toBe('"hello"');
+  });
+
+  it("handles r prefix on double-quoted strings", () => {
+    const result = pythonReprToJson('r"C:\\Users\\test"');
+    expect(JSON.parse(result)).toBe("C:\\Users\\test");
+  });
+
   it("does not infinite loop on bare + or -", () => {
     const input = "{'a': +, 'b': -}";
     // Should complete without hanging — output may not be valid JSON
@@ -123,6 +171,14 @@ describe("parsePythonRepr", () => {
       total: 1,
       has_more: true,
     });
+  });
+
+  it("parses dict with byte string values", () => {
+    expect(parsePythonRepr("{'data': b'hello'}")).toEqual({ data: "hello" });
+  });
+
+  it("parses dict with raw string path", () => {
+    expect(parsePythonRepr("{'path': r'C:\\Users\\test'}")).toEqual({ path: "C:\\Users\\test" });
   });
 
   it("returns original string on unparseable input", () => {
