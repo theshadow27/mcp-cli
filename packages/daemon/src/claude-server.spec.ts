@@ -310,6 +310,21 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
+  test("stop() nulls onRestarted to prevent post-shutdown re-registration", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+    server.onRestarted = () => {
+      throw new Error("onRestarted should not fire after stop()");
+    };
+
+    await server.stop();
+    expect(server.onRestarted).toBeUndefined();
+    server = undefined; // prevent double stop
+  });
+
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);

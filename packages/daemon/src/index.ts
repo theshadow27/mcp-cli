@@ -423,16 +423,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       ipcServer.stop();
       // Wait for any in-progress virtual server startups before stopping them
       await pool.awaitPendingServers();
-      await claudeServer.stop();
-      pool.unregisterVirtualServer("_claude");
-      if (codexServer) {
-        await codexServer.stop();
-        pool.unregisterVirtualServer("_codex");
+      // Stop each virtual server individually so one failure doesn't leak the rest
+      for (const [name, server] of [
+        ["_claude", claudeServer],
+        ["_codex", codexServer],
+        ["_aliases", aliasServer],
+        ["_metrics", metricsServer],
+      ] as const) {
+        try {
+          if (server) {
+            await server.stop();
+            pool.unregisterVirtualServer(name);
+          }
+        } catch (err) {
+          logger.error(`[mcpd] Error stopping ${name}: ${err}`);
+          pool.unregisterVirtualServer(name);
+        }
       }
-      await aliasServer.stop();
-      pool.unregisterVirtualServer("_aliases");
-      await metricsServer.stop();
-      pool.unregisterVirtualServer("_metrics");
       await pool.closeAll();
       db.close();
       if (!opts?.skipLogSetup) {
