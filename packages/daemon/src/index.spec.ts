@@ -207,6 +207,39 @@ describe("daemon index.ts", () => {
       expect(threw).toBe(true);
     });
 
+    test("shutdown loop continues after one server stop() throws", async () => {
+      opts = testOptions();
+      const stopCalls: string[] = [];
+      handle = await startTestDaemonInProcess({
+        _virtualServers: [
+          [
+            "_failing",
+            {
+              stop: async () => {
+                stopCalls.push("_failing");
+                throw new Error("simulated stop failure");
+              },
+            },
+          ],
+          [
+            "_after",
+            {
+              stop: async () => {
+                stopCalls.push("_after");
+              },
+            },
+          ],
+        ],
+      });
+
+      await handle.shutdown("SIGTERM");
+
+      // Both servers attempted — loop did not abort after the first failure
+      expect(stopCalls).toEqual(["_failing", "_after"]);
+      // Shutdown completed — pool.closeAll() and db.close() ran (no throw)
+      expect(handle.isShuttingDown).toBe(true);
+    });
+
     test("double shutdown is idempotent (no crash)", async () => {
       opts = testOptions();
       handle = await startTestDaemonInProcess();

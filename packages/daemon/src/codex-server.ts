@@ -239,6 +239,7 @@ export class CodexServer {
   /** Stop the worker and clean up. Prevents auto-restart after crash. */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.onRestarted = undefined;
     try {
       await this.client?.close();
     } catch {
