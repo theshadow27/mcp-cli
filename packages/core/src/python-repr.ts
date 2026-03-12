@@ -214,8 +214,16 @@ export function pythonReprToJson(input: string): string {
       continue;
     }
 
+    // Closing braces/brackets — trim trailing commas before emitting
+    if (ch === "}" || ch === "]") {
+      trimTrailingComma(out);
+      out.push(ch);
+      i++;
+      continue;
+    }
+
     // Structural characters — pass through
-    if (ch === "{" || ch === "}" || ch === "[" || ch === "]" || ch === ":" || ch === ",") {
+    if (ch === "{" || ch === "[" || ch === ":" || ch === ",") {
       out.push(ch);
       i++;
       continue;
