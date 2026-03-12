@@ -417,40 +417,52 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     if (_isShuttingDown) return;
     _isShuttingDown = true;
     logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
+    if (idleTimer) clearTimeout(idleTimer);
+    clearInterval(pruneInterval);
+    clearInterval(metricsInterval);
+    watcher.stop();
+    ipcServer.stop();
+    // Wait for any in-progress virtual server startups before stopping them
     try {
-      if (idleTimer) clearTimeout(idleTimer);
-      clearInterval(pruneInterval);
-      clearInterval(metricsInterval);
-      watcher.stop();
-      ipcServer.stop();
-      // Wait for any in-progress virtual server startups before stopping them
       await pool.awaitPendingServers();
-      // Stop each virtual server individually so one failure doesn't leak the rest
-      const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
-        opts?._virtualServers ?? [
-          ["_claude", claudeServer],
-          ["_codex", codexServer],
-          ["_aliases", aliasServer],
-          ["_metrics", metricsServer],
-        ];
-      for (const [name, server] of virtualServers) {
-        try {
-          if (server) {
-            await server.stop();
-            pool.unregisterVirtualServer(name);
-          }
-        } catch (err) {
-          logger.error(`[mcpd] Error stopping ${name}: ${err}`);
+    } catch (err) {
+      logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
+    }
+    // Stop each virtual server individually so one failure doesn't leak the rest
+    const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
+      opts?._virtualServers ?? [
+        ["_claude", claudeServer],
+        ["_codex", codexServer],
+        ["_aliases", aliasServer],
+        ["_metrics", metricsServer],
+      ];
+    for (const [name, server] of virtualServers) {
+      try {
+        if (server) {
+          await server.stop();
           pool.unregisterVirtualServer(name);
         }
+      } catch (err) {
+        logger.error(`[mcpd] Error stopping ${name}: ${err}`);
+        pool.unregisterVirtualServer(name);
       }
+    }
+    try {
       await pool.closeAll();
+    } catch (err) {
+      logger.error(`[mcpd] Error closing server pool: ${err}`);
+    }
+    try {
       db.close();
-      if (!opts?.skipLogSetup) {
+    } catch (err) {
+      logger.error(`[mcpd] Error closing database: ${err}`);
+    }
+    if (!opts?.skipLogSetup) {
+      try {
         closeDaemonLogFile();
+      } catch (err) {
+        logger.error(`[mcpd] Error closing log file: ${err}`);
       }
-    } catch (cleanupErr) {
-      logger.error("[mcpd] Error during shutdown cleanup:", cleanupErr);
     }
     try {
       unlinkSync(options.PID_PATH);
