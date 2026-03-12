@@ -8,6 +8,8 @@ interface FooterProps {
   filterText: string;
   denyReasonMode: boolean;
   denyReasonText: string;
+  promptMode: boolean;
+  promptText: string;
   transcriptExpanded: boolean;
   mailExpanded?: boolean;
 }
@@ -18,6 +20,8 @@ export function Footer({
   filterText,
   denyReasonMode,
   denyReasonText,
+  promptMode,
+  promptText,
   transcriptExpanded,
   mailExpanded,
 }: FooterProps) {
@@ -29,6 +33,20 @@ export function Footer({
           <Text dimColor>█</Text>
           {"  "}
           <Text dimColor>enter</Text> deny{"  "}
+          <Text dimColor>esc</Text> cancel
+        </Text>
+      </Box>
+    );
+  }
+
+  if (promptMode) {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text color="cyan">prompt:</Text> {promptText}
+          <Text dimColor>█</Text>
+          {"  "}
+          <Text dimColor>enter</Text> send{"  "}
           <Text dimColor>esc</Text> cancel
         </Text>
       </Box>
@@ -102,6 +120,7 @@ export function Footer({
           <Text dimColor>ctrl+o</Text> pager{"  "}
           <Text dimColor>a</Text> approve{"  "}
           <Text dimColor>d</Text> deny{"  "}
+          <Text dimColor>p</Text> prompt{"  "}
           <Text dimColor>x</Text> end session{"  "}
           <Text dimColor>esc</Text> {transcriptExpanded ? "collapse" : "back"}
           {"  "}

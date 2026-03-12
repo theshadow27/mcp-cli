@@ -81,6 +81,10 @@ export interface ClaudeNav {
   transcriptScrollOffset: number;
   setTranscriptScrollOffset: (fn: (offset: number) => number) => void;
   transcriptViewHeight: number;
+  promptMode: boolean;
+  setPromptMode: (mode: boolean) => void;
+  promptText: string;
+  setPromptText: (fn: string | ((prev: string) => string)) => void;
 }
 
 export interface StatsNav {
@@ -177,7 +181,7 @@ export function useKeyboard({
   useInput((input, key) => {
     // Modal input modes are handled by their respective view handlers first,
     // before global keys, so they can capture all input.
-    if (view === "claude" && claudeNav.denyReasonMode) {
+    if (view === "claude" && (claudeNav.denyReasonMode || claudeNav.promptMode)) {
       handleClaudeInput(input, key, claudeNav);
       return;
     }

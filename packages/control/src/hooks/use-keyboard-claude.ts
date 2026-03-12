@@ -20,6 +20,10 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     setDenyReasonMode,
     denyReasonText,
     setDenyReasonText,
+    promptMode,
+    setPromptMode,
+    promptText,
+    setPromptText,
     transcriptCursor,
     setTranscriptCursor,
     transcriptEntries,
@@ -62,6 +66,36 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     }
     if (input && !key.ctrl && !key.meta) {
       setDenyReasonText((prev) => prev + input);
+    }
+    return true;
+  }
+
+  // -- Prompt input mode: capture text for follow-up prompt --
+  if (promptMode) {
+    if (key.return) {
+      const session = sessions[selectedIndex];
+      if (session && promptText) {
+        ipcCall("callTool", {
+          server: "_claude",
+          tool: "claude_prompt",
+          arguments: { sessionId: session.sessionId, prompt: promptText },
+        }).catch(() => {});
+      }
+      setPromptText("");
+      setPromptMode(false);
+      return true;
+    }
+    if (key.escape) {
+      setPromptText("");
+      setPromptMode(false);
+      return true;
+    }
+    if (key.backspace || key.delete) {
+      setPromptText((prev) => prev.slice(0, -1));
+      return true;
+    }
+    if (input && !key.ctrl && !key.meta) {
+      setPromptText((prev) => prev + input);
     }
     return true;
   }
@@ -166,6 +200,14 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
     if (perm) {
       setDenyReasonMode(true);
+    }
+    return true;
+  }
+
+  // Send follow-up prompt to selected session
+  if (input === "p") {
+    if (selectedSession) {
+      setPromptMode(true);
     }
     return true;
   }

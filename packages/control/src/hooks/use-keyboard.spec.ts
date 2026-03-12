@@ -141,6 +141,10 @@ describe("exported nav interfaces", () => {
       transcriptScrollOffset: 0,
       setTranscriptScrollOffset: () => 0,
       transcriptViewHeight: 15,
+      promptMode: false,
+      setPromptMode: () => {},
+      promptText: "",
+      setPromptText: () => {},
     };
     expect(nav.sessions).toBeArray();
     expect(nav.expandedSession).toBeNull();
