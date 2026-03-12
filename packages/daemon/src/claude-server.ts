@@ -15,7 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
-import { getProcessStartTime, isOurProcess } from "./process-identity";
+import { findDeadPids, getProcessStartTime, isOurProcess } from "./process-identity";
 import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -399,17 +399,40 @@ export class ClaudeServer {
    * @param now - Current timestamp in ms (injectable for testing). Defaults to Date.now().
    */
   pruneDeadSessions(now: number = Date.now()): void {
-    // Prune sessions with PIDs whose process is no longer alive or has been recycled
+    // Batch all PIDs with stored start times into a single ps call
+    const pidStartTimes = new Map<number, number>();
+    const legacyPids = new Map<string, number>(); // sessions without start times
+
     for (const [sessionId, pid] of this.sessionPids) {
       const storedStartTime = this.sessionPidStartTimes.get(sessionId);
-      const isDead =
-        storedStartTime != null
-          ? !isOurProcess(pid, storedStartTime) // PID recycled or dead
-          : !isProcessAlive(pid); // Legacy fallback: bare liveness check
-      if (isDead) {
+      if (storedStartTime != null) {
+        pidStartTimes.set(pid, storedStartTime);
+      } else {
+        legacyPids.set(sessionId, pid);
+      }
+    }
+
+    // One ps call for all sessions with start times
+    const deadPids = findDeadPids(pidStartTimes);
+
+    // Check sessions with start times (batch result)
+    for (const [sessionId, pid] of this.sessionPids) {
+      if (!this.sessionPidStartTimes.has(sessionId)) continue;
+      if (!deadPids.has(pid)) continue;
+      this.activeSessions.delete(sessionId);
+      this.sessionPids.delete(sessionId);
+      this.sessionPidStartTimes.delete(sessionId);
+      this.sessionAddedAt.delete(sessionId);
+      this.db.endSession(sessionId);
+      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+      this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
+    }
+
+    // Legacy fallback for sessions without start times
+    for (const [sessionId, pid] of legacyPids) {
+      if (!isProcessAlive(pid)) {
         this.activeSessions.delete(sessionId);
         this.sessionPids.delete(sessionId);
-        this.sessionPidStartTimes.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
@@ -615,6 +638,12 @@ export class ClaudeServer {
           if (startTime != null) {
             this.sessionPidStartTimes.set(event.session.sessionId, startTime);
             upsertData.pidStartTime = startTime;
+          } else {
+            this.logger.warn(
+              `[claude-server] Could not capture pid start time for session ${event.session.sessionId} ` +
+                `pid=${event.session.pid} — PID reuse protection disabled for this session`,
+            );
+            metrics.counter("mcpd_sessions_without_pid_protection").inc();
           }
         }
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
