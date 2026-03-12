@@ -1176,4 +1176,47 @@ describe("session persistence", () => {
     // Ended sessions should not be restored
     expect(server.hasActiveSessions()).toBe(false);
   });
+
+  test("start() calls onActivity when sessions are restored (resets idle timer)", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    db.upsertSession({
+      sessionId: "idle-reset-1",
+      pid: process.pid,
+      state: "idle",
+      cwd: "/test/idle-reset",
+    });
+
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    let activityCount = 0;
+    server.onActivity = () => {
+      activityCount++;
+    };
+
+    await server.start();
+
+    // onActivity must have been called — this resets the idle timer
+    expect(activityCount).toBeGreaterThan(0);
+    expect(server.hasActiveSessions()).toBe(true);
+  });
+
+  test("start() does NOT call onActivity when no sessions are restored", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+
+    // No sessions in DB
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    let activityCount = 0;
+    server.onActivity = () => {
+      activityCount++;
+    };
+
+    await server.start();
+
+    expect(activityCount).toBe(0);
+    expect(server.hasActiveSessions()).toBe(false);
+  });
 });
