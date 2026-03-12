@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
+import { isOurProcess } from "../process-identity";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -138,6 +139,8 @@ interface WsSession {
   transcript: TranscriptEntry[];
   config: SessionConfig;
   pid: number | null;
+  /** Process start time (epoch ms) — used to detect PID reuse before sending signals. */
+  pidStartTime: number | null;
   proc: { kill: (signal?: number) => void; exited: Promise<number> } | null;
   spawnAlive: boolean;
   worktree: string | null;
@@ -292,6 +295,7 @@ export class ClaudeWsServer {
     sessions: Array<{
       sessionId: string;
       pid: number | null;
+      pidStartTime?: number | null;
       state: string;
       model: string | null;
       cwd: string | null;
@@ -321,6 +325,7 @@ export class ClaudeWsServer {
         transcript: [],
         config: { prompt: "", worktree: s.worktree ?? undefined },
         pid: s.pid,
+        pidStartTime: s.pidStartTime ?? null,
         proc: null,
         spawnAlive: false,
         worktree: s.worktree,
@@ -350,6 +355,7 @@ export class ClaudeWsServer {
       transcript: [],
       config,
       pid: null,
+      pidStartTime: null,
       proc: null,
       spawnAlive: false,
       worktree: config.worktree ?? null,
@@ -513,8 +519,20 @@ export class ClaudeWsServer {
    * Kill a raw PID (no proc handle) with SIGTERM → SIGKILL escalation.
    * Used for restored sessions where we only have the PID from SQLite, not
    * a Bun Subprocess handle. Polls process.kill(pid, 0) to detect exit.
+   *
+   * If pidStartTime is provided, verifies the PID still belongs to our
+   * process before sending any signals. This prevents SIGTERM to an
+   * unrelated process when the PID has been recycled by the OS.
    */
-  private async killRawPid(pid: number): Promise<void> {
+  private async killRawPid(pid: number, pidStartTime?: number | null): Promise<void> {
+    // Verify PID ownership before sending signals
+    if (pidStartTime != null) {
+      if (!isOurProcess(pid, pidStartTime)) {
+        this.logger.warn(`[_claude] PID ${pid} has been recycled — skipping kill`);
+        return;
+      }
+    }
+
     try {
       process.kill(pid, "SIGTERM");
     } catch {
@@ -1331,7 +1349,8 @@ export class ClaudeWsServer {
     } else if (session.pid) {
       // Restored sessions have no proc ref but may still have a live process.
       // Use killRawPid for SIGTERM → SIGKILL escalation (matches killAndAwaitProc behavior).
-      await this.killRawPid(session.pid);
+      // Pass pidStartTime to verify the PID hasn't been recycled by the OS.
+      await this.killRawPid(session.pid, session.pidStartTime);
     }
 
     // Remove from map

@@ -41,6 +41,7 @@ interface RestoreSessionsMessage {
   sessions: Array<{
     sessionId: string;
     pid: number | null;
+    pidStartTime?: number | null;
     state: string;
     model: string | null;
     cwd: string | null;

@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
+import { findDeadPids, getProcessStartTime, isOurProcess } from "./process-identity";
 import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -131,6 +132,8 @@ export class ClaudeServer {
   private readonly clientFactory: ClientFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionPids = new Map<string, number>();
+  /** Process start time (epoch ms) for each session's PID — used to detect PID reuse. */
+  private readonly sessionPidStartTimes = new Map<string, number>();
   /** Timestamp (ms) when each session was added to activeSessions — used to TTL pid-less zombies. */
   private readonly sessionAddedAt = new Map<string, number>();
   private restartInProgress = false;
@@ -287,13 +290,25 @@ export class ClaudeServer {
       if (this.activeSessions.has(row.sessionId)) return false;
       // Skip sessions already in ended state in the DB
       if (row.state === "ended") return false;
-      // If the session has a PID, check if the process is still alive
-      if (row.pid != null && !isProcessAlive(row.pid)) {
-        this.logger.warn(
-          `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is no longer alive`,
-        );
-        this.db.endSession(row.sessionId);
-        return false;
+      // If the session has a PID, verify the process is still our original one
+      if (row.pid != null) {
+        if (row.pidStartTime != null) {
+          // We have a stored start time — verify PID hasn't been recycled
+          if (!isOurProcess(row.pid, row.pidStartTime)) {
+            this.logger.warn(
+              `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is dead or recycled`,
+            );
+            this.db.endSession(row.sessionId);
+            return false;
+          }
+        } else if (!isProcessAlive(row.pid)) {
+          // Legacy session without start time — fall back to bare liveness check
+          this.logger.warn(
+            `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is no longer alive`,
+          );
+          this.db.endSession(row.sessionId);
+          return false;
+        }
       }
       return true;
     });
@@ -306,6 +321,9 @@ export class ClaudeServer {
       this.activeSessions.add(row.sessionId);
       if (row.pid != null) {
         this.sessionPids.set(row.sessionId, row.pid);
+        if (row.pidStartTime != null) {
+          this.sessionPidStartTimes.set(row.sessionId, row.pidStartTime);
+        }
       }
       this.sessionAddedAt.set(row.sessionId, now);
       // Mark as disconnected in DB — they'll transition back when CLI reconnects
@@ -319,6 +337,7 @@ export class ClaudeServer {
       sessions: restorable.map((row) => ({
         sessionId: row.sessionId,
         pid: row.pid,
+        pidStartTime: row.pidStartTime,
         state: "disconnected",
         model: row.model,
         cwd: row.cwd,
@@ -357,6 +376,7 @@ export class ClaudeServer {
     }
     this.activeSessions.clear();
     this.sessionPids.clear();
+    this.sessionPidStartTimes.clear();
     this.sessionAddedAt.clear();
     if (this.crashTimestamps.length > 0) {
       this.logger.error(`[claude-server] Cleared ${this.crashTimestamps.length} crash timestamp(s) on stop`);
@@ -379,8 +399,37 @@ export class ClaudeServer {
    * @param now - Current timestamp in ms (injectable for testing). Defaults to Date.now().
    */
   pruneDeadSessions(now: number = Date.now()): void {
-    // Prune sessions with PIDs whose process is no longer alive
+    // Batch all PIDs with stored start times into a single ps call
+    const pidStartTimes = new Map<number, number>();
+    const legacyPids = new Map<string, number>(); // sessions without start times
+
     for (const [sessionId, pid] of this.sessionPids) {
+      const storedStartTime = this.sessionPidStartTimes.get(sessionId);
+      if (storedStartTime != null) {
+        pidStartTimes.set(pid, storedStartTime);
+      } else {
+        legacyPids.set(sessionId, pid);
+      }
+    }
+
+    // One ps call for all sessions with start times
+    const deadPids = findDeadPids(pidStartTimes);
+
+    // Check sessions with start times (batch result)
+    for (const [sessionId, pid] of this.sessionPids) {
+      if (!this.sessionPidStartTimes.has(sessionId)) continue;
+      if (!deadPids.has(pid)) continue;
+      this.activeSessions.delete(sessionId);
+      this.sessionPids.delete(sessionId);
+      this.sessionPidStartTimes.delete(sessionId);
+      this.sessionAddedAt.delete(sessionId);
+      this.db.endSession(sessionId);
+      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+      this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
+    }
+
+    // Legacy fallback for sessions without start times
+    for (const [sessionId, pid] of legacyPids) {
       if (!isProcessAlive(pid)) {
         this.activeSessions.delete(sessionId);
         this.sessionPids.delete(sessionId);
@@ -497,6 +546,7 @@ export class ClaudeServer {
       }
       this.activeSessions.clear();
       this.sessionPids.clear();
+      this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
       metrics.gauge("mcpd_active_sessions").set(0);
       metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
@@ -535,6 +585,7 @@ export class ClaudeServer {
               this.logger.warn(`[claude-server] Ending orphaned session ${sessionId} (old worker, new WS port)`);
               this.activeSessions.delete(sessionId);
               this.sessionPids.delete(sessionId);
+              this.sessionPidStartTimes.delete(sessionId);
               this.sessionAddedAt.delete(sessionId);
               this.db.endSession(sessionId);
             }
@@ -557,6 +608,7 @@ export class ClaudeServer {
       this.stopped = true;
       this.activeSessions.clear();
       this.sessionPids.clear();
+      this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
       metrics.gauge("mcpd_active_sessions").set(0);
     } finally {
@@ -576,17 +628,31 @@ export class ClaudeServer {
       case "ready":
         // Already handled during start(), ignore subsequent
         break;
-      case "db:upsert":
+      case "db:upsert": {
         this.activeSessions.add(event.session.sessionId);
+        const upsertData: Parameters<StateDb["upsertSession"]>[0] = { ...event.session };
         if (event.session.pid != null) {
           this.sessionPids.set(event.session.sessionId, event.session.pid);
+          // Capture process start time for PID reuse detection
+          const startTime = getProcessStartTime(event.session.pid);
+          if (startTime != null) {
+            this.sessionPidStartTimes.set(event.session.sessionId, startTime);
+            upsertData.pidStartTime = startTime;
+          } else {
+            this.logger.warn(
+              `[claude-server] Could not capture pid start time for session ${event.session.sessionId} ` +
+                `pid=${event.session.pid} — PID reuse protection disabled for this session`,
+            );
+            metrics.counter("mcpd_sessions_without_pid_protection").inc();
+          }
         }
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
-        this.db.upsertSession(event.session);
+        this.db.upsertSession(upsertData);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         metrics.counter("mcpd_sessions_total").inc();
         this.onActivity?.();
         break;
+      }
       case "db:state":
         this.db.updateSessionState(event.sessionId, event.state);
         this.onActivity?.();
@@ -604,6 +670,7 @@ export class ClaudeServer {
       case "db:end":
         this.activeSessions.delete(event.sessionId);
         this.sessionPids.delete(event.sessionId);
+        this.sessionPidStartTimes.delete(event.sessionId);
         this.sessionAddedAt.delete(event.sessionId);
         this.db.endSession(event.sessionId);
         metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
