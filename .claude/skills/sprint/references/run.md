@@ -14,6 +14,19 @@ Determine what to run, in priority order:
 
 If using a sprint plan, announce: "Running sprint {N}: {goal}. Batch 1: #X, #Y, #Z..."
 
+## Pre-flight
+
+Before spawning any sessions, ensure the daemon is running the latest build:
+
+```bash
+bun run build                          # compile latest binaries
+mcx claude ls --short 2>/dev/null      # if no sessions active, safe to restart
+mcx status                             # verify daemon is up and running new code
+```
+
+If the daemon was started before the latest `bun run build`, restart it — otherwise
+sessions will run against stale code. Only restart when no sessions are active.
+
 ## Pipeline
 
 For each issue, run the full lifecycle:
@@ -146,5 +159,8 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    the last sessions to complete. This overlaps planning with execution.
 2. After all sessions complete: report what merged, what failed, what's in progress
 3. Pull main and rebuild: `git checkout main && git pull && bun run build`
-4. Run `/sprint review` to cut a release
-5. Run `/sprint retro` to capture learnings
+4. Restart the daemon so it picks up the new build: verify no sessions active
+   with `mcx claude ls`, then restart. This ensures the next sprint runs on
+   the latest code (including any daemon fixes merged during this sprint).
+5. Run `/sprint review` to cut a release
+6. Run `/sprint retro` to capture learnings

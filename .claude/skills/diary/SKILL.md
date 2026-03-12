@@ -17,7 +17,7 @@ Generate diary entries from Claude Code session JSONL transcripts stored in
 
 1. Run the extraction script to produce per-date text extracts
 2. Spawn one Sonnet agent per date (in parallel, foreground) to analyze and write entries
-3. Never overwrite existing diary entries
+3. Multiple entries per day are supported (YYYYMMDD.md, YYYYMMDD.1.md, YYYYMMDD.2.md, etc.)
 
 ## Step 1: Run the extraction script
 
@@ -31,14 +31,15 @@ the extract files are. Parse it.
 ## Step 2: Spawn analysis agents
 
 For each date in the manifest, spawn a Sonnet agent (NOT background — foreground, but
-all in parallel in a single message) with this prompt template:
+all in parallel in a single message) with this prompt template. Use `diaryFilename`
+from the manifest for the output path — it handles the `.N.md` suffix automatically.
 
 ```
 You are analyzing Claude Code session transcripts from the mcp-cli project.
 Read the file {extract_path} which contains extracted text from sessions on {date}.
 Also read {diary_dir}/20260310.md for the format/style reference.
 
-Write a diary entry to {diary_dir}/{date_compact}.md following this format:
+Write a diary entry to {diary_dir}/{diaryFilename} following this format:
 - # {formatted_date} — Title (short thematic title)
 - ## What was done (PRs, features, fixes — with issue/PR numbers where visible)
 - ## What worked well
