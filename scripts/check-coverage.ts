@@ -1,10 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Coverage threshold enforcement.
+ * Coverage threshold enforcement + per-file test timing.
  *
  * Parses `bun test --coverage` text output and exits non-zero if:
  *   1. Overall coverage drops below global thresholds (ratchet)
  *   2. Any individual file drops below per-file minimum (unless excluded)
+ *   3. Any single test file exceeds the per-file time budget
+ *
+ * After the coverage run, profiles each test file individually (in parallel)
+ * to collect per-file timing and reports the top 10 slowest.
  *
  * Usage:  bun scripts/check-coverage.ts
  *
@@ -17,6 +21,21 @@
 const GLOBAL_THRESHOLDS = {
   functions: 72,
   lines: 69,
+};
+
+/** Per-file test time budget in milliseconds — no single file should exceed this */
+const PER_FILE_TIME_BUDGET_MS = 5_000;
+
+/** Number of test files to profile concurrently — kept low to avoid FS/network contention inflating times */
+const PROFILE_CONCURRENCY = 4;
+
+/**
+ * Test files excluded from the per-file time budget.
+ * These are intentionally slow integration/stress tests that spawn real daemons.
+ */
+const TIMING_EXCLUSIONS: Record<string, string> = {
+  "test/daemon-integration.spec.ts": "Full daemon lifecycle integration tests",
+  "test/stress.spec.ts": "Stress tests spawning real CLI processes",
 };
 
 /**
@@ -78,8 +97,48 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
+import { Glob } from "bun";
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
+
+/** Discover all test files in the project */
+async function findTestFiles(): Promise<string[]> {
+  const files: string[] = [];
+  for await (const path of new Glob("**/*.spec.{ts,tsx}").scan({ cwd: ".", onlyFiles: true })) {
+    files.push(path);
+  }
+  return files.sort();
+}
+
+/** Run a single test file and return its wall-clock duration in ms */
+async function timeTestFile(file: string): Promise<{ file: string; ms: number }> {
+  const start = performance.now();
+  const p = Bun.spawn(["bun", "test", file, "--timeout", "30000"], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  await p.exited;
+  return { file, ms: Math.round(performance.now() - start) };
+}
+
+/** Profile all test files with bounded concurrency, return sorted results */
+async function profileTestFiles(files: string[], concurrency: number): Promise<{ file: string; ms: number }[]> {
+  const results: { file: string; ms: number }[] = [];
+  const queue = [...files];
+
+  async function worker(): Promise<void> {
+    let file = queue.shift();
+    while (file) {
+      results.push(await timeTestFile(file));
+      file = queue.shift();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, files.length) }, () => worker());
+  await Promise.all(workers);
+
+  return results.sort((a, b) => b.ms - a.ms);
+}
 
 // Ensure deps are installed (fast no-op when already present)
 const installProc = Bun.spawn(["bun", "install"], { stdout: "ignore", stderr: "ignore" });
@@ -183,6 +242,41 @@ if (noiseLines.length > NOISE_THRESHOLD) {
   if (noiseLines.length > 20) {
     console.error(`  ... and ${noiseLines.length - 20} more`);
   }
+  failed = true;
+}
+
+// --- Per-file test timing ---
+
+console.log("\n--- Test Timing Profile ---");
+const testFiles = await findTestFiles();
+const profileStart = performance.now();
+const timings = await profileTestFiles(testFiles, PROFILE_CONCURRENCY);
+const profileDuration = Math.round(performance.now() - profileStart);
+const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
+
+console.log(
+  `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s (sequential sum: ${(sequentialSum / 1000).toFixed(1)}s)`,
+);
+console.log(
+  `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
+);
+for (const { file, ms } of timings.slice(0, 10)) {
+  const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
+  const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
+  console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
+}
+
+const overBudget = timings.filter((t) => {
+  if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
+  const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
+  return !excluded;
+});
+if (overBudget.length > 0) {
+  console.error(`\nFAIL: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
+  for (const { file, ms } of overBudget) {
+    console.error(`  ${ms}ms  ${file}`);
+  }
+  console.error("\nExtract pure logic into unit tests or split the file. See CLAUDE.md test budget rule.");
   failed = true;
 }
 

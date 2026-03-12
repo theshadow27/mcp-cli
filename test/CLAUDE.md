@@ -91,6 +91,16 @@ This pattern also works for asserting state changes, event emissions, or any con
 
 **Exception:** A standalone sleep is acceptable when asserting that something does NOT happen within a time window (negative assertions). For example, testing that a debounced callback does not fire prematurely.
 
+## Test Time Budget
+
+No single test file should take more than **5 seconds** in isolation. The pre-commit hook (`scripts/check-coverage.ts`) profiles every test file and fails if any exceeds this budget.
+
+If a test file is too slow:
+1. **Extract pure logic** — state machines, hash functions, diffing algorithms can be unit-tested without spinning up real servers or workers
+2. **Reduce sleep budgets** — if testing a 300ms debounce, use `TEST_DEBOUNCE_MS = 50` in tests
+3. **Split the file** — separate fast unit tests from slow integration tests (e.g., `foo.spec.ts` for units, `foo.integration.spec.ts` for integration)
+4. **Use `pollUntil`** instead of fixed sleeps — exits as soon as the condition is met
+
 ## Summary
 
 Every `Bun.sleep` or `setTimeout` in a test is a potential flake. If you must sleep, it should be inside a retry/poll loop with a deadline — never as "wait and hope". The two acceptable standalone sleeps are: short backoff between retry attempts, and negative assertions (verifying something does NOT happen).
