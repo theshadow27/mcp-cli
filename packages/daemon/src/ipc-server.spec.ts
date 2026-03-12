@@ -904,7 +904,7 @@ describe("IpcServer HTTP transport", () => {
     const waitReq = rpc("/rpc", { id: "wm-drain", method: "waitForMail", params: { recipient: "mgr", timeout: 30 } });
 
     // Give it a moment to enter the poll loop
-    await Bun.sleep(100);
+    await Bun.sleep(50);
 
     // Trigger shutdown — this should cause waitForMail to return early
     const shutdownRes = await rpc("/rpc", { id: "sd-wm", method: "shutdown" });

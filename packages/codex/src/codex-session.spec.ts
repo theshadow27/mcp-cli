@@ -433,7 +433,7 @@ describe("CodexSession watchdog", () => {
   test("terminate() clears watchdog without firing", async () => {
     const { session, events } = makeSession({
       command: fakeCommand("silent"),
-      watchdogTimeoutMs: 200,
+      watchdogTimeoutMs: 100,
     });
 
     await session.start();
@@ -441,7 +441,7 @@ describe("CodexSession watchdog", () => {
     session.terminate();
 
     // Wait past the watchdog timeout
-    await Bun.sleep(300);
+    await Bun.sleep(150);
 
     // Should only have the terminate-caused events, no watchdog error
     const errorEvents = events.filter(
