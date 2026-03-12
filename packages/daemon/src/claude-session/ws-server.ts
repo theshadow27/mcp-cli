@@ -199,8 +199,8 @@ export class ClaudeWsServer {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
-    this.portRetryCount = deps?.portRetryCount ?? 5;
-    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 200;
+    this.portRetryCount = deps?.portRetryCount ?? 10;
+    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 500;
   }
 
   /** Current event sequence number (monotonically increasing). */
