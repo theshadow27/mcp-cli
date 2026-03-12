@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
   AbortPlanParamsSchema,
+  AbortPlanResultSchema,
   AdvancePlanParamsSchema,
+  AdvancePlanResultSchema,
   GetPlanMetricsParamsSchema,
   GetPlanMetricsResultSchema,
   GetPlanParamsSchema,
   GetPlanResultSchema,
+  ListPlansParamsSchema,
   ListPlansResultSchema,
   PlanCapabilitySchema,
   PlanGateSchema,
   PlanMetricsSchema,
+  PlanProtocolCapabilitySchema,
   PlanSchema,
   PlanStatusSchema,
   PlanStepSchema,
@@ -17,13 +21,19 @@ import {
 
 describe("PlanStatusSchema", () => {
   test("accepts valid statuses", () => {
-    for (const s of ["pending", "active", "gated", "complete", "aborted"] as const) {
+    for (const s of ["pending", "active", "gated", "complete", "aborted", "failed"] as const) {
       expect(PlanStatusSchema.parse(s)).toBe(s);
     }
   });
 
-  test("rejects invalid status", () => {
-    expect(() => PlanStatusSchema.parse("running")).toThrow();
+  test("accepts unknown status strings (forward compat)", () => {
+    expect(PlanStatusSchema.parse("paused")).toBe("paused");
+    expect(PlanStatusSchema.parse("running")).toBe("running");
+  });
+
+  test("rejects non-string values", () => {
+    expect(() => PlanStatusSchema.parse(42)).toThrow();
+    expect(() => PlanStatusSchema.parse(null)).toThrow();
   });
 });
 
@@ -100,6 +110,32 @@ describe("PlanSchema", () => {
     });
     expect(plan.activeStepId).toBeUndefined();
   });
+
+  test("rejects activeStepId that doesn't reference an existing step", () => {
+    expect(() =>
+      PlanSchema.parse({
+        id: "p3",
+        name: "Bad",
+        status: "active",
+        server: "local",
+        steps: [{ id: "s1", name: "Build", status: "active" }],
+        activeStepId: "step-999",
+      }),
+    ).toThrow("activeStepId must reference an existing step");
+  });
+
+  test("allows activeStepId matching a step id", () => {
+    expect(() =>
+      PlanSchema.parse({
+        id: "p4",
+        name: "Ok",
+        status: "active",
+        server: "local",
+        steps: [{ id: "s1", name: "Build", status: "active" }],
+        activeStepId: "s1",
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("PlanCapabilitySchema", () => {
@@ -110,7 +146,35 @@ describe("PlanCapabilitySchema", () => {
   });
 });
 
+describe("PlanProtocolCapabilitySchema", () => {
+  test("parses capability array", () => {
+    const cap = PlanProtocolCapabilitySchema.parse({ capabilities: ["list", "get"] });
+    expect(cap.capabilities).toEqual(["list", "get"]);
+  });
+
+  test("round-trips through JSON.stringify/parse", () => {
+    const cap = { capabilities: ["list", "get", "advance"] as const };
+    const serialized = JSON.stringify(cap);
+    const parsed = PlanProtocolCapabilitySchema.parse(JSON.parse(serialized));
+    expect(parsed.capabilities).toEqual(["list", "get", "advance"]);
+  });
+
+  test("rejects non-array", () => {
+    expect(() => PlanProtocolCapabilitySchema.parse({ capabilities: "list" })).toThrow();
+  });
+});
+
 describe("IPC param/result schemas", () => {
+  test("ListPlansParamsSchema — no filter", () => {
+    const params = ListPlansParamsSchema.parse({});
+    expect(params.server).toBeUndefined();
+  });
+
+  test("ListPlansParamsSchema — server filter", () => {
+    const params = ListPlansParamsSchema.parse({ server: "ci" });
+    expect(params.server).toBe("ci");
+  });
+
   test("ListPlansResultSchema", () => {
     const result = ListPlansResultSchema.parse({
       plans: [{ id: "p1", name: "X", status: "pending", server: "s", steps: [] }],
@@ -139,9 +203,23 @@ describe("IPC param/result schemas", () => {
     expect(params2.stepId).toBe("s1");
   });
 
+  test("AdvancePlanResultSchema", () => {
+    const result = AdvancePlanResultSchema.parse({
+      plan: { id: "p1", name: "X", status: "active", server: "s", steps: [] },
+    });
+    expect(result.plan.id).toBe("p1");
+  });
+
   test("AbortPlanParamsSchema", () => {
     const params = AbortPlanParamsSchema.parse({ server: "ci", planId: "p1", reason: "timeout" });
     expect(params.reason).toBe("timeout");
+  });
+
+  test("AbortPlanResultSchema", () => {
+    const result = AbortPlanResultSchema.parse({
+      plan: { id: "p1", name: "X", status: "aborted", server: "s", steps: [] },
+    });
+    expect(result.plan.status).toBe("aborted");
   });
 
   test("GetPlanMetricsParamsSchema", () => {
