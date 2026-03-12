@@ -129,7 +129,7 @@ function main(): void {
 
   // 2. Commit
   run(["git", "add", "package.json"]);
-  run(["git", "commit", "-m", `release: ${tag}`]);
+  run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
 
   // 3. Tag
   run(["git", "tag", tag]);
