@@ -40,6 +40,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
+import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
 import { MetricsServer } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
@@ -255,6 +256,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const pool = new ServerPool(config, db, undefined, logger);
 
   // Create virtual servers (started lazily after IPC socket is ready)
+  const mailServer = new MailServer(db);
   const aliasServer = new AliasServer(db, daemonId);
   const cliConfig = readCliConfig();
   const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
@@ -452,6 +454,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         }
       })(),
     );
+
+    pool.registerPendingVirtualServer(
+      "_mail",
+      (async () => {
+        try {
+          const { client: mailClient, transport: mailTransport, tools: mailTools } = await mailServer.start();
+          pool.registerVirtualServer("_mail", mailClient, mailTransport, mailTools);
+          logger.info("[mcpd] Mail server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start mail server: ${err}`);
+        }
+      })(),
+    );
   }
 
   // Graceful shutdown — re-entrant safe
@@ -478,6 +493,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         ["_codex", codexServer],
         ["_aliases", aliasServer],
         ["_metrics", metricsServer],
+        ["_mail", mailServer],
       ];
     for (const [name, server] of virtualServers) {
       try {
