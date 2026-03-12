@@ -131,8 +131,10 @@ describe("reapOrphanedSessions", () => {
   test("skips kill when PID has been recycled (pidStartTime mismatch)", () => {
     const db = createDb();
     const recycledPid = 44444;
-    // Store a session with a start time far in the past — the PID "belongs" to a different process now
-    db.upsertSession({ sessionId: "sess-recycled", state: "running", pid: recycledPid, pidStartTime: 1000000 });
+    const storedStartTime = 1000000;
+    // Store a session with a specific start time — we'll inject isOurProcess to simulate
+    // a different process now occupying this PID (start time mismatch, not dead PID).
+    db.upsertSession({ sessionId: "sess-recycled", state: "running", pid: recycledPid, pidStartTime: storedStartTime });
 
     const origKill = process.kill.bind(process);
     let killCalled = false;
@@ -141,9 +143,24 @@ describe("reapOrphanedSessions", () => {
       return true;
     };
 
+    // Track what args isOurProcess was called with to prove start time comparison fired.
+    const capturedCalls: Array<{ pid: number; startTime: number }> = [];
+    const fakeIsOurProcess = (pid: number, pidStartTimeMs: number): boolean => {
+      capturedCalls.push({ pid, startTime: pidStartTimeMs });
+      // Simulate a recycled PID: a process IS alive at this PID, but its start time
+      // differs from our stored one — it's a different process. Return false.
+      return false;
+    };
+
     const { logger, messages } = capturingLogger();
-    const result = reapOrphanedSessions(db, logger);
+    const result = reapOrphanedSessions(db, logger, { isOurProcess: fakeIsOurProcess });
     process.kill = origKill;
+
+    // isOurProcess must have been called with the exact PID and stored start time,
+    // proving the start time comparison logic fired (not just a dead-PID null check).
+    expect(capturedCalls).toHaveLength(1);
+    expect(capturedCalls[0]?.pid).toBe(recycledPid);
+    expect(capturedCalls[0]?.startTime).toBe(storedStartTime);
 
     // Should NOT have killed the process (PID was recycled)
     expect(result).toBe(0);
