@@ -10,7 +10,7 @@
  */
 
 import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
-import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import { consoleLogger, formatToolSignature, silentLogger } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import type { StateDb } from "./db/state";
@@ -209,7 +209,12 @@ export class ClaudeServer {
         if (cleanup()) reject(new Error(`Claude session worker error: ${msg}`));
       };
       // Send init to start the worker
-      worker.postMessage({ type: "init", daemonId: this.daemonId, wsPort: this.configuredWsPort });
+      worker.postMessage({
+        type: "init",
+        daemonId: this.daemonId,
+        wsPort: this.configuredWsPort,
+        quiet: this.logger === silentLogger,
+      });
     });
 
     // Set up MCP transport and connect — if anything throws, terminate the worker
