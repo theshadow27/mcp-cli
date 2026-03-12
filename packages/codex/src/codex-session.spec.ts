@@ -328,6 +328,18 @@ describe("CodexSession (with fake codex server)", () => {
     expect(session.getInfo().numTurns).toBe(2);
   });
 
+  test("turn/start sends input as an array with type discriminator (regression #666)", async () => {
+    // The Codex app-server expects input: [{type:"text", text, text_elements}]
+    // This test uses fake-codex-server's validate-input mode which exits(1) if input is not an array.
+    const { session } = makeSession({ command: fakeCommand("validate-input") });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+
+    expect(result.type).toBe("session:result");
+  });
+
   test("send() before start throws 'No active thread'", async () => {
     const { session } = makeSession();
     await expect(session.send("msg")).rejects.toThrow("No active thread");
