@@ -1210,6 +1210,33 @@ describe("ServerPool.restart", () => {
     expect(pool.listServers().some((s) => s.name === "real")).toBe(true);
   });
 
+  test("registerVirtualServer is a no-op after closeAll (stopped pool)", async () => {
+    const closeOld = mock(() => Promise.resolve());
+    const oldClient = makeMockClient();
+    (oldClient as Record<string, unknown>).close = closeOld;
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({}), undefined, connectFn, silentLogger);
+
+    pool.registerVirtualServer("_test", oldClient as unknown as Client, makeMockTransport() as unknown as Transport);
+    await pool.closeAll(); // sets stopped = true, closes old client
+
+    const closeNew = mock(() => Promise.resolve());
+    const newClient = makeMockClient();
+    (newClient as Record<string, unknown>).close = closeNew;
+
+    // Simulate crash-restart calling registerVirtualServer after shutdown
+    pool.registerVirtualServer("_test", newClient as unknown as Client, makeMockTransport() as unknown as Transport);
+
+    // The entry remains disconnected (leftover from closeAll) — not reconnected with the new client
+    const servers = pool.listServers();
+    const entry = servers.find((s) => s.name === "_test");
+    expect(entry?.state).toBe("disconnected");
+
+    // Old client should have been closed once by closeAll; new client never touched
+    expect(closeOld).toHaveBeenCalledTimes(1);
+    expect(closeNew).not.toHaveBeenCalled();
+  });
+
   test("unregisterVirtualServer prevents closeAll from double-closing", async () => {
     const closeMock = mock(() => Promise.resolve());
     const client = makeMockClient();

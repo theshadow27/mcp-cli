@@ -73,6 +73,8 @@ export class ServerPool {
   private stderrBuffer = new StderrRingBuffer();
   private connectFn: ConnectFn;
   private logger: Logger;
+  /** Set to true by closeAll() to prevent re-registration during shutdown. */
+  private stopped = false;
 
   constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger) {
     this.config = config;
@@ -104,6 +106,11 @@ export class ServerPool {
    * Virtual servers survive updateConfig() and are reported with transport "virtual".
    */
   registerVirtualServer(name: string, client: Client, transport: Transport, tools?: Map<string, ToolInfo>): void {
+    // Bail out if the pool is shutting down — closeAll() owns cleanup from here.
+    // This prevents a double-close race where a crash-restarted virtual server
+    // tries to close the old client while shutdown is also closing it (#691).
+    if (this.stopped) return;
+
     // Disconnect existing connection if present
     const existing = this.connections.get(name);
     if (existing) {
@@ -602,6 +609,7 @@ export class ServerPool {
 
   /** Disconnect all servers */
   async closeAll(): Promise<void> {
+    this.stopped = true;
     for (const name of this.connections.keys()) {
       await this.disconnect(name);
     }
