@@ -35,6 +35,22 @@ describe("pythonReprToJson", () => {
     expect(JSON.parse(result)).toEqual(["single"]);
   });
 
+  it("handles trailing comma in dicts", () => {
+    const result = pythonReprToJson("{'a': 1, 'b': 2,}");
+    expect(JSON.parse(result)).toEqual({ a: 1, b: 2 });
+  });
+
+  it("handles trailing comma in lists", () => {
+    const result = pythonReprToJson("[1, 2, 3,]");
+    expect(JSON.parse(result)).toEqual([1, 2, 3]);
+  });
+
+  it("handles trailing commas in nested structures", () => {
+    const input = "{'users': [{'id': 1, 'active': True,},], 'count': 1,}";
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({ users: [{ id: 1, active: true }], count: 1 });
+  });
+
   it("handles nested structures", () => {
     const input = "{'users': [{'name': 'Alice', 'active': True}, {'name': 'Bob', 'active': False}]}";
     const result = JSON.parse(pythonReprToJson(input));
@@ -123,6 +139,14 @@ describe("parsePythonRepr", () => {
       total: 1,
       has_more: true,
     });
+  });
+
+  it("parses dicts with trailing commas", () => {
+    expect(parsePythonRepr("{'a': 1,}")).toEqual({ a: 1 });
+  });
+
+  it("parses lists with trailing commas", () => {
+    expect(parsePythonRepr("[1, 2,]")).toEqual([1, 2]);
   });
 
   it("returns original string on unparseable input", () => {
