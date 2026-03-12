@@ -162,6 +162,8 @@ export interface StartDaemonOptions {
   skipVirtualServers?: boolean;
   /** Logger for daemon output. Defaults to consoleLogger. */
   logger?: Logger;
+  /** Override virtual servers used in the shutdown loop (test injection only). */
+  _virtualServers?: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]>;
 }
 
 /**
@@ -424,12 +426,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // Wait for any in-progress virtual server startups before stopping them
       await pool.awaitPendingServers();
       // Stop each virtual server individually so one failure doesn't leak the rest
-      for (const [name, server] of [
-        ["_claude", claudeServer],
-        ["_codex", codexServer],
-        ["_aliases", aliasServer],
-        ["_metrics", metricsServer],
-      ] as const) {
+      const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
+        opts?._virtualServers ?? [
+          ["_claude", claudeServer],
+          ["_codex", codexServer],
+          ["_aliases", aliasServer],
+          ["_metrics", metricsServer],
+        ];
+      for (const [name, server] of virtualServers) {
         try {
           if (server) {
             await server.stop();
