@@ -1,3 +1,4 @@
+import { CLAUDE_SERVER_NAME } from "@mcp-cli/core";
 import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
@@ -125,7 +126,7 @@ export function useKeyboard({
     const tmpFile = join(options.MCP_CLI_DIR, `mcpctl-log-${sessionId}.txt`);
     try {
       const result = await ipcCall("callTool", {
-        server: "_claude",
+        server: CLAUDE_SERVER_NAME,
         tool: "claude_transcript",
         arguments: { sessionId, limit: 500 },
       });

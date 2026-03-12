@@ -12,6 +12,7 @@
  *   `call` — invoke any tool by server/tool path
  */
 
+import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod, ToolInfo } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -65,7 +66,7 @@ export function parseMcpTools(env: string | undefined): CuratedTool[] {
       name = tool;
     } else if (!entry.includes("/")) {
       // Alias — resolve as _aliases/<name>
-      server = "_aliases";
+      server = ALIAS_SERVER_NAME;
       tool = entry;
       name = entry;
     } else {

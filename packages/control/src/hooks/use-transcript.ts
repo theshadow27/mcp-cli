@@ -1,4 +1,4 @@
-import { ipcCall } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 import type { TranscriptEntry } from "../components/claude-session-detail.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
@@ -33,7 +33,7 @@ export function useTranscript(
     async function poll() {
       try {
         const result = await ipcCallFn("callTool", {
-          server: "_claude",
+          server: CLAUDE_SERVER_NAME,
           tool: "claude_transcript",
           arguments: { sessionId, limit: MAX_ENTRIES },
         });

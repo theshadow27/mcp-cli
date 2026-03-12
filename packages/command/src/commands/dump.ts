@@ -20,7 +20,7 @@ import type {
   MetricsSnapshot,
   SessionInfo,
 } from "@mcp-cli/core";
-import { MCP_CLI_DIR, PING_TIMEOUT_MS, ProtocolMismatchError } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, MCP_CLI_DIR, PING_TIMEOUT_MS, ProtocolMismatchError } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError as defaultPrintError } from "../output";
 
@@ -196,7 +196,7 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
   try {
     const result = await d.ipcCall(
       "callTool",
-      { server: "_claude", tool: "claude_session_list", arguments: {} },
+      { server: CLAUDE_SERVER_NAME, tool: "claude_session_list", arguments: {} },
       { timeoutMs: PING_TIMEOUT_MS },
     );
 
@@ -214,7 +214,7 @@ async function gatherSessions(d: DumpDeps, includeTranscripts: boolean): Promise
           .ipcCall(
             "callTool",
             {
-              server: "_claude",
+              server: CLAUDE_SERVER_NAME,
               tool: "claude_session_log",
               arguments: { sessionId: session.sessionId, last: 50 },
             },
