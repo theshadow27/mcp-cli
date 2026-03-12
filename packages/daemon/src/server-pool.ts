@@ -15,6 +15,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type {
   JsonSchema,
   Logger,
+  PlanCapability,
+  PlanProtocolCapability,
   ResolvedConfig,
   ResolvedServer,
   ServerConfig,
@@ -52,6 +54,8 @@ interface ServerConnection {
   stderrCleanup?: () => void;
   /** Virtual servers are not managed by config and survive updateConfig(). */
   virtual?: boolean;
+  /** Plan protocol capabilities detected from tool names, if any. */
+  planCapabilities?: PlanProtocolCapability;
 }
 
 /**
@@ -117,15 +121,17 @@ export class ServerPool {
       existing.client?.close().catch(() => {});
     }
 
+    const toolMap = tools ?? new Map();
     this.connections.set(name, {
       name,
       resolved: { name, config: { command: "__virtual__" }, source: { file: "built-in", scope: "mcp-cli" } },
       client,
       transport,
-      tools: tools ?? new Map(),
+      tools: toolMap,
       state: "connected",
       lastUsed: Date.now(),
       virtual: true,
+      planCapabilities: detectPlanCapabilities(toolMap),
     });
   }
 
@@ -363,6 +369,8 @@ export class ServerPool {
       if (this.db) {
         this.db.cacheTools(conn.name, [...conn.tools.values()]);
       }
+      // Detect plan protocol capabilities from tool names
+      conn.planCapabilities = detectPlanCapabilities(conn.tools);
     } catch (err) {
       this.logger.error(`[pool] Failed to list tools for "${conn.name}": ${err}`);
     }
@@ -442,6 +450,7 @@ export class ServerPool {
         lastError: conn.lastError,
         source: conn.resolved.source.file,
         recentStderr,
+        planCapabilities: conn.planCapabilities,
       };
     });
 
@@ -918,6 +927,34 @@ function searchRegex(pattern: string): RegExp {
     .replace(/\*/g, ".*")
     .replace(/\?/g, ".");
   return new RegExp(escaped, "i");
+}
+
+/**
+ * Scan a server's tool map for plan protocol tool names and return the
+ * detected capabilities. Returns `undefined` if no plan tools are found
+ * (server does not speak the plan protocol at all).
+ *
+ * Tool-to-capability mapping:
+ *   list_plans      → "list"
+ *   get_plan        → "get"
+ *   get_plan_step   → "get"
+ *   advance_plan    → "advance"
+ *   abort_plan      → "abort"
+ *   get_plan_metrics→ "metrics"
+ *
+ * @internal Exported for testing only.
+ */
+export function detectPlanCapabilities(tools: Map<string, ToolInfo>): PlanProtocolCapability | undefined {
+  const capSet = new Set<PlanCapability>();
+
+  if (tools.has("list_plans")) capSet.add("list");
+  if (tools.has("get_plan") || tools.has("get_plan_step")) capSet.add("get");
+  if (tools.has("advance_plan")) capSet.add("advance");
+  if (tools.has("abort_plan")) capSet.add("abort");
+  if (tools.has("get_plan_metrics")) capSet.add("metrics");
+
+  if (capSet.size === 0) return undefined;
+  return { capabilities: [...capSet] };
 }
 
 /** Check if a tool passes allowedTools/disabledTools glob filters.

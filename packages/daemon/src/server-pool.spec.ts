@@ -8,6 +8,7 @@ import {
   type ConnectFn,
   ServerPool,
   buildChildEnv,
+  detectPlanCapabilities,
   isRetryableError,
   isTransientCallError,
   safeStderrWrite,
@@ -1276,5 +1277,130 @@ describe("ServerPool.restart", () => {
 
     // Should not throw despite server "b" failing on restart
     await pool.restart();
+  });
+});
+
+// -- helpers --
+
+function toolMap(
+  ...names: string[]
+): Map<string, { name: string; server: string; description: string; inputSchema: Record<string, unknown> }> {
+  const m = new Map();
+  for (const name of names) m.set(name, { name, server: "test", description: "", inputSchema: {} });
+  return m;
+}
+
+describe("detectPlanCapabilities", () => {
+  test("returns undefined for empty tool map", () => {
+    expect(detectPlanCapabilities(new Map())).toBeUndefined();
+  });
+
+  test("returns undefined for non-plan tools", () => {
+    expect(detectPlanCapabilities(toolMap("search", "write_file", "list_files"))).toBeUndefined();
+  });
+
+  test("list_plans → list capability", () => {
+    const result = detectPlanCapabilities(toolMap("list_plans"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("list");
+    expect(result?.capabilities).not.toContain("advance");
+  });
+
+  test("get_plan → get capability", () => {
+    const result = detectPlanCapabilities(toolMap("get_plan"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("get");
+  });
+
+  test("get_plan_step → get capability", () => {
+    const result = detectPlanCapabilities(toolMap("get_plan_step"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("get");
+  });
+
+  test("advance_plan → advance capability", () => {
+    const result = detectPlanCapabilities(toolMap("advance_plan"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("advance");
+  });
+
+  test("abort_plan → abort capability", () => {
+    const result = detectPlanCapabilities(toolMap("abort_plan"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("abort");
+  });
+
+  test("get_plan_metrics → metrics capability", () => {
+    const result = detectPlanCapabilities(toolMap("get_plan_metrics"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("metrics");
+  });
+
+  test("read-only server: list_plans + get_plan → list and get, no advance/abort", () => {
+    const result = detectPlanCapabilities(toolMap("list_plans", "get_plan"));
+    expect(result).toBeDefined();
+    expect(result?.capabilities).toContain("list");
+    expect(result?.capabilities).toContain("get");
+    expect(result?.capabilities).not.toContain("advance");
+    expect(result?.capabilities).not.toContain("abort");
+  });
+
+  test("full plan server: all tools → all capabilities", () => {
+    const result = detectPlanCapabilities(
+      toolMap("list_plans", "get_plan", "get_plan_step", "advance_plan", "abort_plan", "get_plan_metrics"),
+    );
+    expect(result).toBeDefined();
+    const caps = result?.capabilities;
+    expect(caps).toContain("list");
+    expect(caps).toContain("get");
+    expect(caps).toContain("advance");
+    expect(caps).toContain("abort");
+    expect(caps).toContain("metrics");
+    expect(caps).toHaveLength(5);
+  });
+
+  test("get_plan and get_plan_step deduplicate to a single get capability", () => {
+    const result = detectPlanCapabilities(toolMap("get_plan", "get_plan_step"));
+    expect(result?.capabilities.filter((c) => c === "get")).toHaveLength(1);
+  });
+
+  test("listServers includes planCapabilities for plan-aware server after connect", async () => {
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient({
+          listTools: () =>
+            Promise.resolve({
+              tools: [
+                { name: "list_plans", inputSchema: {} },
+                { name: "get_plan", inputSchema: {} },
+                { name: "advance_plan", inputSchema: {} },
+              ],
+            }),
+        }) as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(makeConfig({ planner: { command: "echo" } }), undefined, connectFn, silentLogger);
+    await pool.listTools("planner");
+
+    const [status] = pool.listServers();
+    expect(status.planCapabilities).toBeDefined();
+    expect(status.planCapabilities?.capabilities).toContain("list");
+    expect(status.planCapabilities?.capabilities).toContain("get");
+    expect(status.planCapabilities?.capabilities).toContain("advance");
+  });
+
+  test("listServers has no planCapabilities for non-plan server", async () => {
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(makeConfig({ plain: { command: "echo" } }), undefined, connectFn, silentLogger);
+    await pool.listTools("plain");
+
+    const [status] = pool.listServers();
+    expect(status.planCapabilities).toBeUndefined();
   });
 });

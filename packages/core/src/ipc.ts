@@ -7,6 +7,7 @@
 
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
+import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
 
 // -- Methods --
@@ -182,6 +183,8 @@ export interface ServerStatus {
   callCount?: number;
   errorCount?: number;
   avgDurationMs?: number;
+  /** Plan protocol capabilities detected from tool names, if any. */
+  planCapabilities?: PlanProtocolCapability;
 }
 
 export interface ToolInfo {
