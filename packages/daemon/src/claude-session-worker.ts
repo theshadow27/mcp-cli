@@ -14,7 +14,7 @@
  *   { type: "db:end", sessionId }
  */
 
-import { generateSpanId, resolveModelName } from "@mcp-cli/core";
+import { generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -31,6 +31,8 @@ interface InitMessage {
   type: "init";
   daemonId?: string;
   wsPort?: number;
+  /** Suppress worker-side console logging (used in tests). */
+  quiet?: boolean;
 }
 
 interface ToolsChangedMessage {
@@ -359,9 +361,9 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 
 // ── Server startup ──
 
-async function startServer(wsPort?: number): Promise<number> {
+async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // Start WebSocket server
-  wsServer = new ClaudeWsServer();
+  wsServer = new ClaudeWsServer({ logger: quiet ? silentLogger : undefined });
   const port = await wsServer.start(wsPort);
   wsServer.onSessionEvent = forwardSessionEvent;
 
@@ -411,7 +413,7 @@ self.onmessage = async (event: MessageEvent) => {
     daemonId = data.daemonId;
     workerId = generateSpanId();
     try {
-      const port = await startServer(data.wsPort);
+      const port = await startServer(data.wsPort, data.quiet);
       self.postMessage({ type: "ready", port });
     } catch (err) {
       // Clean up partially-initialized resources

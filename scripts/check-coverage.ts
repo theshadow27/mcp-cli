@@ -44,7 +44,7 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
  * Matches daemon log prefixes ([mcpd], [_claude], [_aliases]) and
  * production signals (MCPD_READY). Ratchet this down toward zero.
  */
-const NOISE_THRESHOLD = 22;
+const NOISE_THRESHOLD = 14;
 
 /** Per-file minimum coverage — every file must meet this unless excluded */
 const PER_FILE_MIN_LINES = 80;
