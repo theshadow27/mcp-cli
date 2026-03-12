@@ -54,7 +54,10 @@ function parseArgs(argv: string[]): ReleaseArgs {
   return { version, notesFile, dryRun };
 }
 
-function run(cmd: string[], opts?: { quiet?: boolean }): string {
+function run(
+  cmd: string[],
+  opts?: { quiet?: boolean; allowFailure?: boolean },
+): { stdout: string; exitCode: number } {
   const result = Bun.spawnSync(cmd, {
     stdout: "pipe",
     stderr: "pipe",
@@ -62,7 +65,7 @@ function run(cmd: string[], opts?: { quiet?: boolean }): string {
   });
   const stdout = result.stdout.toString().trim();
   const stderr = result.stderr.toString().trim();
-  if (result.exitCode !== 0) {
+  if (result.exitCode !== 0 && !opts?.allowFailure) {
     throw new Error(
       `Command failed: ${cmd.join(" ")}\n${stderr || stdout}`,
     );
@@ -70,7 +73,7 @@ function run(cmd: string[], opts?: { quiet?: boolean }): string {
   if (!opts?.quiet && stdout) {
     console.error(stdout);
   }
-  return stdout;
+  return { stdout, exitCode: result.exitCode };
 }
 
 function updatePackageJson(version: string): void {
@@ -101,16 +104,22 @@ function main(): void {
   }
 
   // Guard: must be on main
-  const branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
-    quiet: true,
-  });
+  const { stdout: branch } = run(
+    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+    { quiet: true },
+  );
   if (branch !== "main") {
     throw new Error(`Must release from main, currently on: ${branch}`);
   }
 
-  // Guard: working tree must be clean
-  const status = run(["git", "status", "--porcelain"], { quiet: true });
-  if (status) {
+  // Guard: working tree must be clean (ignore package.json for retry case)
+  const { stdout: status } = run(["git", "status", "--porcelain"], {
+    quiet: true,
+  });
+  const nonPkgChanges = status
+    .split("\n")
+    .filter((l) => l.trim() && !l.includes("package.json"));
+  if (nonPkgChanges.length > 0) {
     throw new Error(
       `Working tree is dirty — commit or stash changes first:\n${status}`,
     );
@@ -120,32 +129,74 @@ function main(): void {
 
   if (dryRun) {
     console.error("\nDry run — skipping all mutations.");
-    console.error(`Would update package.json, commit, tag ${tag}, push, and create GitHub release.`);
+    console.error(
+      `Would update package.json, commit, tag ${tag}, push, and create GitHub release.`,
+    );
     return;
   }
 
-  // 1. Update package.json
-  updatePackageJson(version);
+  // 1. Update package.json (idempotent — skip if already at target version)
+  const pkgPath = resolve("package.json");
+  const currentPkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  if (currentPkg.version === version) {
+    console.error(`package.json already at ${version}, skipping update`);
+  } else {
+    updatePackageJson(version);
+  }
 
-  try {
-    // 2. Commit (--no-verify: release is a meta-operation, not a code change)
+  // 2. Commit (idempotent — skip if HEAD is already the release commit)
+  const { stdout: headMsg } = run(
+    ["git", "log", "-1", "--format=%s"],
+    { quiet: true },
+  );
+  if (headMsg === `release: ${tag}`) {
+    console.error(`Release commit already exists, skipping commit`);
+  } else {
     run(["git", "add", "package.json"]);
+    // --no-verify: release is a meta-operation, not a code change
     run(["git", "commit", "--no-verify", "-m", `release: ${tag}`]);
+  }
 
-    // 3. Tag
+  // 3. Tag (idempotent — skip if tag exists and points to HEAD)
+  const { stdout: headSha } = run(["git", "rev-parse", "HEAD"], {
+    quiet: true,
+  });
+  const { stdout: tagSha, exitCode: tagExitCode } = run(
+    ["git", "rev-parse", `refs/tags/${tag}`],
+    { quiet: true, allowFailure: true },
+  );
+  if (tagExitCode === 0 && tagSha === headSha) {
+    console.error(`Tag ${tag} already exists at HEAD, skipping`);
+  } else if (tagExitCode === 0 && tagSha !== headSha) {
+    throw new Error(
+      `Tag ${tag} exists but points to ${tagSha.slice(0, 8)}, not HEAD (${headSha.slice(0, 8)}). Delete the tag manually to retry.`,
+    );
+  } else {
     run(["git", "tag", tag]);
-  } catch (e) {
-    // Restore package.json so the dirty-tree guard doesn't block retries
-    console.error("Release failed — restoring package.json");
-    run(["git", "checkout", "--", "package.json"]);
-    throw e;
   }
 
   // 4. Push branch + tag
   run(["git", "push", "origin", branch, tag]);
 
-  // 5. Create GitHub release
-  run(["gh", "release", "create", tag, "--title", tag, "--notes", notes]);
+  // 5. Create GitHub release (idempotent — skip if release already exists)
+  const { exitCode: releaseExists } = run(
+    ["gh", "release", "view", tag],
+    { quiet: true, allowFailure: true },
+  );
+  if (releaseExists === 0) {
+    console.error(`GitHub release ${tag} already exists, skipping`);
+  } else {
+    run([
+      "gh",
+      "release",
+      "create",
+      tag,
+      "--title",
+      tag,
+      "--notes",
+      notes,
+    ]);
+  }
 
   console.error(`\nReleased ${tag}`);
 }
