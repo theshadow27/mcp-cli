@@ -13,6 +13,7 @@ import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
 import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
+import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurProcess } from "./process-identity";
@@ -355,11 +356,7 @@ export class ClaudeServer {
   async stop(): Promise<void> {
     this.stopped = true;
     this.onRestarted = undefined;
-    try {
-      await this.client?.close();
-    } catch {
-      // ignore close errors
-    }
+    await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);
       this.worker.terminate();
@@ -517,11 +514,7 @@ export class ClaudeServer {
     metrics.gauge("mcpd_active_sessions").set(0);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
-    try {
-      await this.client?.close();
-    } catch {
-      // ignore close errors — worker may already be dead
-    }
+    await closeClientWithTimeout(this.client);
 
     // Clean up event handlers and terminate the dead worker to release resources
     if (this.worker) {
