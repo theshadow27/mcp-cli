@@ -649,6 +649,73 @@ describe("ClaudeServer", () => {
     expect(row?.state).toBe("ended");
   });
 
+  // ── Crash recovery with configuredWsPort (#643) ──
+
+  test("handleWorkerCrash restores sessions when configuredWsPort is set", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    // Use port 0 to let the OS pick, but the configuredWsPort parameter being set
+    // is what matters — it signals that sessions can reconnect to the same port.
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, 0);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "ws-crash-1", pid: process.pid, state: "active" },
+    });
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "ws-crash-2", pid: process.pid, state: "idle" },
+    });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash with configuredWsPort");
+
+    // Sessions should be RESTORED (not ended) because configuredWsPort is set —
+    // the CLI can reconnect to the same WS port.
+    expect(server.hasActiveSessions()).toBe(true);
+
+    const row1 = db.getSession("ws-crash-1");
+    expect(row1?.state).toBe("disconnected");
+    expect(row1?.endedAt).toBeNull();
+
+    const row2 = db.getSession("ws-crash-2");
+    expect(row2?.state).toBe("disconnected");
+    expect(row2?.endedAt).toBeNull();
+  });
+
+  test("handleWorkerCrash without configuredWsPort ends orphaned sessions", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    // No configuredWsPort — sessions can't reconnect to the new random port
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    await server.start();
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "db:upsert",
+      session: { sessionId: "no-ws-1", pid: process.pid, state: "active" },
+    });
+    expect(server.hasActiveSessions()).toBe(true);
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash without configuredWsPort");
+
+    // Without configuredWsPort, orphaned sessions should be ended
+    const row = db.getSession("no-ws-1");
+    expect(row?.state).toBe("ended");
+    expect(row?.endedAt).not.toBeNull();
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
   // ── isWorkerEvent routing ──
 
   test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
