@@ -134,7 +134,7 @@ describe("buildAliasToolCache", () => {
     expect(tool).toBeDefined();
 
     expect(tool?.name).toBe("greet");
-    expect(tool?.server).toBe("_aliases");
+    expect(tool?.server).toBe(ALIAS_SERVER_NAME);
     expect(tool?.description).toBe("Greet someone");
     expect(tool?.inputSchema).toEqual(inputSchema);
     expect(tool?.signature).toBeDefined();
