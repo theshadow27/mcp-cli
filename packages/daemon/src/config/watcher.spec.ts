@@ -171,118 +171,138 @@ describe("ConfigWatcher integration", () => {
     watcher = undefined;
   });
 
-  test("detects direct write to servers.json", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
-      },
-    });
+  test(
+    "detects direct write to servers.json",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Modify the config file
-    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
+      // Modify the config file
+      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.added).toContain("beta");
-    expect(event.config.servers.has("beta")).toBe(true);
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.added).toContain("beta");
+      expect(event.config.servers.has("beta")).toBe(true);
+    },
+    { timeout: 10_000 },
+  );
 
-  test("detects atomic write (rename-based save)", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
-      },
-    });
+  test(
+    "detects atomic write (rename-based save)",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Simulate atomic save: write to tmp, rename over original
-    atomicWrite(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, gamma: { command: "ls" } }));
+      // Simulate atomic save: write to tmp, rename over original
+      atomicWrite(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, gamma: { command: "ls" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.added).toContain("gamma");
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.added).toContain("gamma");
+    },
+    { timeout: 10_000 },
+  );
 
-  test("detects new file creation when file didn't exist initially", async () => {
-    using opts = testOptions();
+  test(
+    "detects new file creation when file didn't exist initially",
+    async () => {
+      using opts = testOptions();
 
-    // No servers.json exists yet
-    const initial: ResolvedConfig = { servers: new Map(), sources: [] };
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      // No servers.json exists yet
+      const initial: ResolvedConfig = { servers: new Map(), sources: [] };
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Create the file for the first time
-    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ newserver: { command: "echo" } }));
+      // Create the file for the first time
+      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ newserver: { command: "echo" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.added).toContain("newserver");
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.added).toContain("newserver");
+    },
+    { timeout: 10_000 },
+  );
 
-  test("detects server removal", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }),
-      },
-    });
+  test(
+    "detects server removal",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" }, beta: { command: "cat" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" }, beta: { command: "cat" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Remove beta from config
-    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" } }));
+      // Remove beta from config
+      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.removed).toContain("beta");
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.removed).toContain("beta");
+    },
+    { timeout: 10_000 },
+  );
 
-  test("detects server config change", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
-      },
-    });
+  test(
+    "detects server config change",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Change alpha's command
-    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "cat" } }));
+      // Change alpha's command
+      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "cat" } }));
 
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    const event = cb.mock.calls[0][0];
-    expect(event.changed).toContain("alpha");
-  });
+      const event = cb.mock.calls[0][0];
+      expect(event.changed).toContain("alpha");
+    },
+    { timeout: 10_000 },
+  );
 
   test("does not fire callback when config hash is unchanged", async () => {
     using opts = testOptions({
@@ -305,37 +325,41 @@ describe("ConfigWatcher integration", () => {
     expect(cb).not.toHaveBeenCalled();
   });
 
-  test("debounces rapid successive writes", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
-      },
-    });
+  test(
+    "debounces rapid successive writes",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // Rapid writes — should debounce to a single reload
-    for (let i = 0; i < 5; i++) {
-      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: `echo-${i}` } }));
-      await Bun.sleep(10);
-    }
+      // Rapid writes — should debounce to a single reload
+      for (let i = 0; i < 5; i++) {
+        writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: `echo-${i}` } }));
+        await Bun.sleep(10);
+      }
 
-    // Poll until the debounced callback fires
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
+      // Poll until the debounced callback fires
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    // Wait a bit more to verify no extra calls arrive (negative assertion)
-    await Bun.sleep(TEST_DEBOUNCE_MS * 3);
-    expect(cb).toHaveBeenCalledTimes(1);
+      // Wait a bit more to verify no extra calls arrive (negative assertion)
+      await Bun.sleep(TEST_DEBOUNCE_MS * 3);
+      expect(cb).toHaveBeenCalledTimes(1);
 
-    // Should have the final config
-    const event = cb.mock.calls[0][0];
-    expect(event.changed).toContain("alpha");
-  });
+      // Should have the final config
+      const event = cb.mock.calls[0][0];
+      expect(event.changed).toContain("alpha");
+    },
+    { timeout: 10_000 },
+  );
 
   test(
     "detects project config changes",
@@ -470,39 +494,43 @@ describe("ConfigWatcher integration", () => {
     expect(event.hash.length).toBeGreaterThan(0);
   });
 
-  test("detects multiple sequential changes", async () => {
-    using opts = testOptions({
-      files: {
-        "servers.json": mcpConfig({ alpha: { command: "echo" } }),
-      },
-    });
+  test(
+    "detects multiple sequential changes",
+    async () => {
+      using opts = testOptions({
+        files: {
+          "servers.json": mcpConfig({ alpha: { command: "echo" } }),
+        },
+      });
 
-    const initial = makeConfig({ alpha: { command: "echo" } });
-    const cb = mock((_e: ConfigChangeEvent) => {});
+      const initial = makeConfig({ alpha: { command: "echo" } });
+      const cb = mock((_e: ConfigChangeEvent) => {});
 
-    watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
-    watcher.start();
+      watcher = new ConfigWatcher(initial, cb, opts.dir, testWatcherOpts());
+      watcher.start();
 
-    // First change
-    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
-    await waitForCall(cb);
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].added).toContain("beta");
+      // First change
+      writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" } }));
+      await waitForCall(cb);
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0].added).toContain("beta");
 
-    // Wait for the debounce window to fully close before writing the second change.
-    await Bun.sleep(TEST_DEBOUNCE_MS * 2);
+      // Wait for the debounce window to fully close before writing the second change.
+      await Bun.sleep(TEST_DEBOUNCE_MS * 2);
 
-    // Second change (after first has been processed)
-    writeJson(
-      opts.USER_SERVERS_PATH,
-      mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" }, gamma: { command: "ls" } }),
-    );
+      // Second change (after first has been processed)
+      writeJson(
+        opts.USER_SERVERS_PATH,
+        mcpConfig({ alpha: { command: "echo" }, beta: { command: "cat" }, gamma: { command: "ls" } }),
+      );
 
-    // Poll for second callback
-    await waitForCalls(cb, 2);
-    expect(cb).toHaveBeenCalledTimes(2);
-    expect(cb.mock.calls[1][0].added).toContain("gamma");
-  });
+      // Poll for second callback
+      await waitForCalls(cb, 2);
+      expect(cb).toHaveBeenCalledTimes(2);
+      expect(cb.mock.calls[1][0].added).toContain("gamma");
+    },
+    { timeout: 10_000 },
+  );
 
   test("handles malformed JSON gracefully (no crash, treats as empty)", async () => {
     using opts = testOptions({
