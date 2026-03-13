@@ -77,6 +77,7 @@ export class IpcServer {
   private shutdownScheduled = false;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
+  private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
@@ -95,6 +96,8 @@ export class IpcServer {
       onShutdown?: () => void;
       onReloadConfig?: () => Promise<void>;
       logger?: Logger;
+      /** Returns the current and expected WS port for status reporting. */
+      getWsPortInfo?: () => { actual: number | null; expected: number };
     },
   ) {
     this.daemonId = options.daemonId;
@@ -105,6 +108,7 @@ export class IpcServer {
     this.onReloadConfig = options.onReloadConfig ?? null;
     this.aliasServer = aliasServer;
     this.logger = options.logger ?? consoleLogger;
+    this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.registerHandlers();
   }
 
@@ -281,6 +285,7 @@ export class IpcServer {
         }
       }
 
+      const wsPortInfo = this.getWsPortInfo?.();
       return {
         pid: process.pid,
         uptime: process.uptime(),
@@ -289,6 +294,8 @@ export class IpcServer {
         servers,
         dbPath: options.DB_PATH,
         usageStats,
+        wsPort: wsPortInfo?.actual ?? null,
+        wsPortExpected: wsPortInfo?.expected,
       };
     });
 

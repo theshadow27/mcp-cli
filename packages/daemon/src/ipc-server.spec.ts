@@ -438,6 +438,35 @@ describe("IpcServer HTTP transport", () => {
     expect(result.usageStats).toEqual([]);
   });
 
+  test("status response includes wsPort info when getWsPortInfo is provided", async () => {
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      getWsPortInfo: () => ({ actual: 54321, expected: 19275 }),
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "ws1", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { wsPort: number | null; wsPortExpected: number };
+    expect(result.wsPort).toBe(54321);
+    expect(result.wsPortExpected).toBe(19275);
+  });
+
+  test("status response has null wsPort when getWsPortInfo is not provided", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "ws2", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { wsPort: number | null; wsPortExpected?: number };
+    expect(result.wsPort).toBeNull();
+    expect(result.wsPortExpected).toBeUndefined();
+  });
+
   test("status with usage data aggregates per-server stats onto ServerStatus", async () => {
     socketPath = tmpSocket();
     const pool = Object.assign(mockPool(), {

@@ -369,6 +369,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     onShutdown: () => shutdown("IPC shutdown request"),
     onReloadConfig: () => watcher.forceReload(),
     logger,
+    getWsPortInfo: () => ({ actual: claudeServer.port, expected: wsPort }),
   });
   ipcServer.start();
 
