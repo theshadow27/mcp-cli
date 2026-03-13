@@ -38,7 +38,14 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
-import { getStaleDaemonWarning, ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import {
+  ShutdownRefusedError,
+  getStaleDaemonWarning,
+  ipcCall,
+  isDaemonInitializing,
+  isDaemonRunning,
+  stopDaemon,
+} from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -581,14 +588,23 @@ async function cmdDaemon(args: string[]): Promise<void> {
   const sub = args[0];
   if (sub === "restart") {
     // Directly stop — does not go through ensureDaemon (avoids ProtocolMismatchError)
+    // restart is intentionally destructive — force:true bypasses active session guard
     console.error("Stopping daemon...");
-    await stopDaemon();
+    await stopDaemon({ force: true });
     // Next ipcCall auto-starts a fresh daemon with current code
     await ipcCall("ping");
     console.error("Daemon restarted.");
   } else if (sub === "shutdown" || sub === "stop") {
     const force = args.includes("--force");
-    await stopDaemon({ force });
+    try {
+      await stopDaemon({ force });
+    } catch (err) {
+      if (err instanceof ShutdownRefusedError) {
+        printError(err.message);
+        process.exit(1);
+      }
+      throw err;
+    }
     console.error("Daemon shut down.");
   } else {
     printError("Usage: mcx daemon restart|shutdown [--force]");

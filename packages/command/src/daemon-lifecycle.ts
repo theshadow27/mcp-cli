@@ -8,17 +8,6 @@
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
-
-/** Thrown when shutdown is refused because active sessions exist. */
-export class ShutdownRefusedError extends Error {
-  constructor(
-    message: string,
-    public readonly activeSessions: number,
-  ) {
-    super(message);
-    this.name = "ShutdownRefusedError";
-  }
-}
 import {
   BUILD_VERSION,
   DAEMON_BINARY_NAME,
@@ -39,6 +28,17 @@ import {
   pingDaemon,
   rawFetch,
 } from "@mcp-cli/core";
+
+/** Thrown when shutdown is refused because active sessions exist. */
+export class ShutdownRefusedError extends Error {
+  constructor(
+    message: string,
+    public readonly activeSessions: number,
+  ) {
+    super(message);
+    this.name = "ShutdownRefusedError";
+  }
+}
 
 /** Timestamp of the last failed daemon start attempt (0 = no recent failure) */
 let lastStartFailureAt = 0;

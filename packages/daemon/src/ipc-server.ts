@@ -717,13 +717,16 @@ export class IpcServer {
 
     this.handlers.set("shutdown", async (params, _ctx) => {
       const { force } = ShutdownParamsSchema.parse(params ?? {});
-      const activeSessions = this.db.listSessions(true);
-      if (activeSessions.length > 0 && !force) {
-        return {
-          ok: false,
-          activeSessions: activeSessions.length,
-          message: `${activeSessions.length} active session(s). Use --force to shut down anyway.`,
-        };
+      // Check force BEFORE querying DB — --force is the escape hatch when DB is degraded
+      if (!force) {
+        const activeSessions = this.db.listSessions(true);
+        if (activeSessions.length > 0) {
+          return {
+            ok: false,
+            activeSessions: activeSessions.length,
+            message: `${activeSessions.length} active session(s). Use --force to shut down anyway.`,
+          };
+        }
       }
       // Enter drain mode — onShutdown fires after all in-flight responses are sent
       this.draining = true;
