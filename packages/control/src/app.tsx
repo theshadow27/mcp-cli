@@ -7,6 +7,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { MailViewer } from "./components/mail-viewer.js";
+import { PlansTab } from "./components/plans-tab.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
@@ -17,6 +18,7 @@ import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
+import { usePlans } from "./hooks/use-plans.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -48,6 +50,9 @@ export function App() {
   const [mailSelectedIndex, setMailSelectedIndex] = useState(0);
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
+  const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
+  const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
+  const [selectedStep, setSelectedStep] = useState(0);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -73,6 +78,12 @@ export function App() {
 
   const { messages: mailMessages } = useMail({ enabled: view === "mail" });
   const { unreadCount: unreadMailCount } = useUnreadMail({ enabled: view !== "mail" });
+  const {
+    plans: plansData,
+    loading: plansLoading,
+    error: plansError,
+    disconnected: plansDisconnected,
+  } = usePlans({ enabled: view === "plans", intervalMs: view === "plans" ? 10_000 : 30_000 });
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
     () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
@@ -118,6 +129,19 @@ export function App() {
       setExpandedMessage(null);
     }
   }, [mailMessages, expandedMessage]);
+
+  // Clamp plansSelectedIndex when plans list shrinks
+  useEffect(() => {
+    setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plansData.length - 1)));
+  }, [plansData.length]);
+
+  // Clear orphaned expandedPlan when the plan disappears
+  useEffect(() => {
+    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan)) {
+      setExpandedPlan(null);
+      setSelectedStep(0);
+    }
+  }, [plansData, expandedPlan]);
 
   // Clamp permission index when selected session or permission count changes
   const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;
@@ -206,6 +230,15 @@ export function App() {
       scrollOffset: mailScrollOffset,
       setScrollOffset: setMailScrollOffset,
     },
+    plansNav: {
+      plans: plansData,
+      selectedIndex: plansSelectedIndex,
+      setSelectedIndex: setPlansSelectedIndex,
+      expandedPlan,
+      setExpandedPlan,
+      selectedStep,
+      setSelectedStep,
+    },
   });
 
   if (loading && !status) return <Loading />;
@@ -268,12 +301,22 @@ export function App() {
           scrollOffset={statsScrollOffset}
           height={STATS_VIEW_HEIGHT}
         />
-      ) : (
+      ) : view === "mail" ? (
         <MailViewer
           messages={mailMessages}
           selectedIndex={mailSelectedIndex}
           expandedMessage={expandedMessage}
           scrollOffset={mailScrollOffset}
+        />
+      ) : (
+        <PlansTab
+          plans={plansData}
+          loading={plansLoading}
+          error={plansError}
+          selectedIndex={plansSelectedIndex}
+          expandedPlan={expandedPlan}
+          selectedStep={selectedStep}
+          disconnected={plansDisconnected}
         />
       )}
       <Footer
@@ -286,6 +329,7 @@ export function App() {
         promptText={promptText}
         transcriptExpanded={expandedSession !== null}
         mailExpanded={expandedMessage !== null}
+        planExpanded={expandedPlan !== null}
       />
     </Box>
   );
