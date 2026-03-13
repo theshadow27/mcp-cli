@@ -50,6 +50,16 @@ export function Header({ status, error }: HeaderProps) {
         <Text color="red">Daemon: {error}</Text>
       ) : null}
 
+      {status?.wsPort != null && status.wsPortExpected != null && status.wsPort !== status.wsPortExpected && (
+        <Text color="yellow">
+          {"⚠ WS on port "}
+          {status.wsPort}
+          {" (expected "}
+          {status.wsPortExpected}
+          {") — CLI sessions may not reconnect after restart"}
+        </Text>
+      )}
+
       <Text>
         <Text dimColor>Servers: </Text>
         {servers.length === 0 ? (
