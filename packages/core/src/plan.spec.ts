@@ -144,6 +144,16 @@ describe("PlanCapabilitySchema", () => {
       expect(PlanCapabilitySchema.parse(c)).toBe(c);
     }
   });
+
+  test("accepts unknown capability strings (forward compat)", () => {
+    expect(PlanCapabilitySchema.parse("subscribe")).toBe("subscribe");
+    expect(PlanCapabilitySchema.parse("cancel")).toBe("cancel");
+  });
+
+  test("rejects non-string values", () => {
+    expect(() => PlanCapabilitySchema.parse(42)).toThrow();
+    expect(() => PlanCapabilitySchema.parse(null)).toThrow();
+  });
 });
 
 describe("PlanProtocolCapabilitySchema", () => {
@@ -157,6 +167,11 @@ describe("PlanProtocolCapabilitySchema", () => {
     const serialized = JSON.stringify(cap);
     const parsed = PlanProtocolCapabilitySchema.parse(JSON.parse(serialized));
     expect(parsed.capabilities).toEqual(["list", "get", "advance"]);
+  });
+
+  test("accepts unknown capabilities (forward compat)", () => {
+    const cap = PlanProtocolCapabilitySchema.parse({ capabilities: ["list", "subscribe"] });
+    expect(cap.capabilities).toEqual(["list", "subscribe"]);
   });
 
   test("rejects non-array", () => {
