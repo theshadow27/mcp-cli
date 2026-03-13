@@ -11,11 +11,13 @@ import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
 import type { MailNav } from "./use-keyboard-mail";
 import { handleMailInput } from "./use-keyboard-mail";
+import type { PlansNav } from "./use-keyboard-plans";
+import { handlePlansInput } from "./use-keyboard-plans";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
+export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail", "plans"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
@@ -95,6 +97,7 @@ export interface StatsNav {
 }
 
 export type { MailNav } from "./use-keyboard-mail";
+export type { PlansNav } from "./use-keyboard-plans";
 
 interface UseKeyboardOptions {
   view: View;
@@ -104,6 +107,7 @@ interface UseKeyboardOptions {
   claudeNav: ClaudeNav;
   statsNav: StatsNav;
   mailNav: MailNav;
+  plansNav: PlansNav;
 }
 
 export function useKeyboard({
@@ -114,6 +118,7 @@ export function useKeyboard({
   claudeNav,
   statsNav,
   mailNav,
+  plansNav,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
@@ -210,7 +215,7 @@ export function useKeyboard({
       return;
     }
 
-    // Global: number keys 1-5 jump to tab
+    // Global: number keys jump to tab
     const tabNum = Number(input);
     if (tabNum >= 1 && tabNum <= ALL_TABS.length) {
       const target = tabByNumber(tabNum);
@@ -243,6 +248,11 @@ export function useKeyboard({
         mailNav.setScrollOffset(() => 0);
         return;
       }
+      if (view === "plans" && plansNav.expandedPlan !== null) {
+        plansNav.setExpandedPlan(null);
+        plansNav.setSelectedStep(() => 0);
+        return;
+      }
       if (view === "logs") logsNav.setFilterText("");
       setView("servers");
       return;
@@ -266,6 +276,8 @@ export function useKeyboard({
       handleStatsInput(input, key, statsNav);
     } else if (view === "mail") {
       handleMailInput(input, key, mailNav);
+    } else if (view === "plans") {
+      handlePlansInput(input, key, plansNav);
     } else if (view === "servers") {
       handleServersInput(input, key, serversNav);
     }
