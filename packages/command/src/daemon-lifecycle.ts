@@ -8,6 +8,17 @@
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
+
+/** Thrown when shutdown is refused because active sessions exist. */
+export class ShutdownRefusedError extends Error {
+  constructor(
+    message: string,
+    public readonly activeSessions: number,
+  ) {
+    super(message);
+    this.name = "ShutdownRefusedError";
+  }
+}
 import {
   BUILD_VERSION,
   DAEMON_BINARY_NAME,
@@ -153,14 +164,20 @@ export function isProcessMcpd(pid: number): boolean {
   }
 }
 
-/** Send shutdown command to a running daemon and wait for it to exit */
-export async function stopDaemon(): Promise<void> {
+/** Send shutdown command to a running daemon and wait for it to exit.
+ *  If force is false and active sessions exist, throws with the refusal message. */
+export async function stopDaemon(opts?: { force?: boolean }): Promise<void> {
   // Read the PID before sending shutdown so we can wait for the process to exit
   const pidData = readLivePidData();
   verifiedMcpdPid = null;
   try {
-    await rawFetch({ id: nextId(), method: "shutdown" }, PING_TIMEOUT_MS);
-  } catch {
+    const res = await rawFetch({ id: nextId(), method: "shutdown", params: { force: opts?.force } }, PING_TIMEOUT_MS);
+    const body = (await res.json()) as { result?: { ok: boolean; activeSessions?: number; message?: string } };
+    if (body.result && !body.result.ok) {
+      throw new ShutdownRefusedError(body.result.message ?? "Shutdown refused", body.result.activeSessions ?? 0);
+    }
+  } catch (err) {
+    if (err instanceof ShutdownRefusedError) throw err;
     // Daemon may already be unreachable — fall through to clean up
   }
 

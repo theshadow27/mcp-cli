@@ -240,10 +240,16 @@ async function main(): Promise<void> {
         await cmdDaemon(args.slice(1));
         break;
 
-      case "shutdown":
-        await ipcCall("shutdown");
+      case "shutdown": {
+        const force = args.includes("--force");
+        const result = await ipcCall("shutdown", { force });
+        if (!result.ok) {
+          printError(result.message ?? "Shutdown refused");
+          process.exit(1);
+        }
         console.error("Daemon shut down.");
         break;
+      }
 
       default: {
         // Check if it looks like "mcx server/tool" (slash notation shorthand)
@@ -581,11 +587,11 @@ async function cmdDaemon(args: string[]): Promise<void> {
     await ipcCall("ping");
     console.error("Daemon restarted.");
   } else if (sub === "shutdown" || sub === "stop") {
-    // Direct stop — no ensureDaemon needed
-    await stopDaemon();
+    const force = args.includes("--force");
+    await stopDaemon({ force });
     console.error("Daemon shut down.");
   } else {
-    printError("Usage: mcx daemon restart|shutdown");
+    printError("Usage: mcx daemon restart|shutdown [--force]");
     process.exit(1);
   }
 }
@@ -702,8 +708,8 @@ Usage:
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
   mcx daemon restart                  Restart the daemon (kills sessions)
-  mcx daemon shutdown                 Stop the daemon
-  mcx shutdown                        Stop the daemon (legacy)
+  mcx daemon shutdown [--force]        Stop the daemon (--force if sessions active)
+  mcx shutdown [--force]              Stop the daemon (legacy)
 
 Aliases:
   mcx alias ls                        List saved aliases
