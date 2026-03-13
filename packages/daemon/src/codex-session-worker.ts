@@ -19,10 +19,9 @@
  */
 
 import { CodexSession, type CodexSessionConfig } from "@mcp-cli/codex";
-import type { AgentSessionEvent } from "@mcp-cli/core";
+import { type AgentSessionEvent, CODEX_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { CODEX_SERVER_NAME } from "./codex-server";
 import { CODEX_TOOLS } from "./codex-session/tools";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";

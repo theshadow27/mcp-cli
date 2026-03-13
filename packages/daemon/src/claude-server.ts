@@ -10,7 +10,7 @@
  */
 
 import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
-import { consoleLogger, formatToolSignature, silentLogger } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { closeClientWithTimeout } from "./close-timeout";
@@ -20,8 +20,6 @@ import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurP
 import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
-
-export const CLAUDE_SERVER_NAME = "_claude";
 
 /** Check if a process is still running (signal 0 = existence check). */
 function isProcessAlive(pid: number): boolean {

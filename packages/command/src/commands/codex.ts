@@ -8,6 +8,7 @@
 
 import { existsSync } from "node:fs";
 import {
+  CODEX_SERVER_NAME,
   PROMPT_IPC_TIMEOUT_MS,
   buildHookEnv,
   hasWorktreeHooks,
@@ -46,7 +47,7 @@ const defaultDeps: CodexDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "codex_prompt" && args.wait) || tool === "codex_wait";
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: "_codex", tool, arguments: args }, { timeoutMs });
+    return ipcCall("callTool", { server: CODEX_SERVER_NAME, tool, arguments: args }, { timeoutMs });
   },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { MAIL_SERVER_NAME } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
-import { MAIL_SERVER_NAME, MailServer, buildMailToolCache } from "./mail-server";
+import { MailServer, buildMailToolCache } from "./mail-server";
 
 describe("MAIL_SERVER_NAME", () => {
   test("is _mail", () => {

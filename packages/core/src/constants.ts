@@ -217,3 +217,10 @@ export const PROMPT_IPC_TIMEOUT_MS = 330_000;
  * 19275 is not assigned by IANA and is unlikely to conflict with other services.
  */
 export const DEFAULT_CLAUDE_WS_PORT = 19275;
+
+/** Virtual MCP server names — used in IPC callTool requests and daemon registration */
+export const CLAUDE_SERVER_NAME = "_claude";
+export const CODEX_SERVER_NAME = "_codex";
+export const ALIAS_SERVER_NAME = "_aliases";
+export const METRICS_SERVER_NAME = "_metrics";
+export const MAIL_SERVER_NAME = "_mail";

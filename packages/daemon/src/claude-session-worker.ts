@@ -14,10 +14,9 @@
  *   { type: "db:end", sessionId }
  */
 
-import { generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { CLAUDE_SERVER_NAME } from "./claude-server";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";

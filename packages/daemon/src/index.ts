@@ -17,10 +17,15 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
+  ALIAS_SERVER_NAME,
   BUILD_VERSION,
+  CLAUDE_SERVER_NAME,
+  CODEX_SERVER_NAME,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   DEFAULT_CLAUDE_WS_PORT,
+  MAIL_SERVER_NAME,
+  METRICS_SERVER_NAME,
   PROTOCOL_VERSION,
   auditRuntimePermissions,
   consoleLogger,
@@ -32,17 +37,17 @@ import {
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
-import { ALIAS_SERVER_NAME, AliasServer, buildAliasToolCache } from "./alias-server";
-import { CLAUDE_SERVER_NAME, ClaudeServer, buildClaudeToolCache } from "./claude-server";
-import { CODEX_SERVER_NAME, CodexServer, buildCodexToolCache } from "./codex-server";
+import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
+import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
-import { MAIL_SERVER_NAME, MailServer, buildMailToolCache } from "./mail-server";
+import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
-import { METRICS_SERVER_NAME, MetricsServer } from "./metrics-server";
+import { MetricsServer } from "./metrics-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
@@ -456,11 +461,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     );
 
     pool.registerPendingVirtualServer(
-      "_mail",
+      MAIL_SERVER_NAME,
       (async () => {
         try {
           const { client: mailClient, transport: mailTransport, tools: mailTools } = await mailServer.start();
-          pool.registerVirtualServer("_mail", mailClient, mailTransport, mailTools);
+          pool.registerVirtualServer(MAIL_SERVER_NAME, mailClient, mailTransport, mailTools);
           logger.info("[mcpd] Mail server started");
         } catch (err) {
           logger.error(`[mcpd] Failed to start mail server: ${err}`);

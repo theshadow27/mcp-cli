@@ -76,7 +76,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
       const session = sessions[selectedIndex];
       if (session && promptText) {
         ipcCall("callTool", {
-          server: "_claude",
+          server: CLAUDE_SERVER_NAME,
           tool: "claude_prompt",
           arguments: { sessionId: session.sessionId, prompt: promptText },
         }).catch(() => {});

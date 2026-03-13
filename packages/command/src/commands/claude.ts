@@ -8,6 +8,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
+  CLAUDE_SERVER_NAME,
   PROMPT_IPC_TIMEOUT_MS,
   buildHookEnv,
   fixCoreBare,
@@ -150,7 +151,7 @@ const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: "_claude", tool, arguments: args }, { timeoutMs });
+    return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
   },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),

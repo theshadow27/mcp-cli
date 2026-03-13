@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { silentLogger } from "@mcp-cli/core";
+import { ALIAS_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { ALIAS_SERVER_NAME, AliasServer, buildAliasToolCache } from "./alias-server";
+import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { StateDb } from "./db/state";
 import { ServerPool } from "./server-pool";
 import { makeConfig, makeMockTransport } from "./test-helpers";
