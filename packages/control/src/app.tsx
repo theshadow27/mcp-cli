@@ -11,6 +11,7 @@ import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
+import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
@@ -26,6 +27,7 @@ const TRANSCRIPT_VIEW_HEIGHT = 15;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
+  const daemonProcessCount = useDaemonProcessCount();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -222,7 +224,7 @@ export function App() {
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Header status={status} error={error} />
+      <Header status={status} error={error} daemonProcessCount={daemonProcessCount} />
       <TabBar activeTab={view} badges={badges} />
       {view === "servers" ? (
         <>

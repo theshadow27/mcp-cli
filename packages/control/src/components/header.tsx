@@ -5,6 +5,7 @@ import React from "react";
 interface HeaderProps {
   status: DaemonStatus | null;
   error: string | null;
+  daemonProcessCount?: number;
 }
 
 export function formatUptime(seconds: number): string {
@@ -19,7 +20,7 @@ export function formatUptime(seconds: number): string {
   return parts.join(" ");
 }
 
-export function Header({ status, error }: HeaderProps) {
+export function Header({ status, error, daemonProcessCount }: HeaderProps) {
   const servers = status?.servers ?? [];
   const connected = servers.filter((s) => s.state === "connected").length;
   const errored = servers.filter((s) => s.state === "error").length;
@@ -113,6 +114,13 @@ export function Header({ status, error }: HeaderProps) {
               <Text color={totalErrors === 0 ? "green" : "yellow"}>{successRate}% success</Text>
             </Text>
           )}
+        </Text>
+      )}
+
+      {(daemonProcessCount ?? 0) > 1 && (
+        <Text color="yellow">
+          {"⚠"} {daemonProcessCount} mcpd processes running — daemon may behave erratically. Run `killall mcpd && mcx
+          status` to clean up.
         </Text>
       )}
 

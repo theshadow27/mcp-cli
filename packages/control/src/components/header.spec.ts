@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { formatUptime } from "./header";
+import type { DaemonStatus } from "@mcp-cli/core";
+import { render } from "ink-testing-library";
+import React from "react";
+import { Header, formatUptime } from "./header";
+
+function daemonStatus(overrides: Partial<DaemonStatus> = {}): DaemonStatus {
+  return {
+    pid: 1234,
+    uptime: 100,
+    servers: [],
+    usageStats: [],
+    ...overrides,
+  } as DaemonStatus;
+}
 
 describe("formatUptime", () => {
   it("formats seconds only", () => {
@@ -24,5 +37,28 @@ describe("formatUptime", () => {
 
   it("handles zero", () => {
     expect(formatUptime(0)).toBe("0s");
+  });
+});
+
+describe("Header", () => {
+  it("does not show duplicate daemon warning when count is 0 or 1", () => {
+    const { lastFrame } = render(
+      React.createElement(Header, { status: daemonStatus(), error: null, daemonProcessCount: 1 }),
+    );
+    expect(lastFrame()).not.toContain("mcpd processes running");
+  });
+
+  it("does not show duplicate daemon warning when count is omitted", () => {
+    const { lastFrame } = render(React.createElement(Header, { status: daemonStatus(), error: null }));
+    expect(lastFrame()).not.toContain("mcpd processes running");
+  });
+
+  it("shows duplicate daemon warning when count > 1", () => {
+    const { lastFrame } = render(
+      React.createElement(Header, { status: daemonStatus(), error: null, daemonProcessCount: 4 }),
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("4 mcpd processes running");
+    expect(frame).toContain("killall mcpd");
   });
 });
