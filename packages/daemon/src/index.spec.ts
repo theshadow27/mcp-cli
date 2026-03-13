@@ -197,14 +197,9 @@ describe("daemon index.ts", () => {
 
       await handle.shutdown("SIGTERM");
 
-      // IPC should no longer respond
-      let threw = false;
-      try {
-        await rpc(socketPath, "ping");
-      } catch {
-        threw = true;
-      }
-      expect(threw).toBe(true);
+      // IPC should no longer respond — use expect().rejects to properly
+      // chain the rejection so it doesn't leak as an unhandled error (#658)
+      await expect(rpc(socketPath, "ping")).rejects.toThrow();
     });
 
     test("shutdown loop continues after one server stop() throws", async () => {
