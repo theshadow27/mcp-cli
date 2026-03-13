@@ -104,6 +104,15 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
 
   // When transcript is expanded, j/k navigate within transcript entries
   if (expandedSession) {
+    // Escape or left arrow: collapse transcript back to session list
+    if (key.escape || key.leftArrow) {
+      setExpandedSession(null);
+      setTranscriptCursor(() => null);
+      setTranscriptScrollOffset(() => 0);
+      setExpandedEntries(() => new Set());
+      return true;
+    }
+
     if (key.upArrow || input === "k") {
       setTranscriptCursor((cur) => {
         const idx = cur ? transcriptEntries.findIndex((e) => entryKey(e) === cur) : 0;
