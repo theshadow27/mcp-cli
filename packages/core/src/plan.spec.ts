@@ -183,6 +183,8 @@ describe("IPC param/result schemas", () => {
   test("ListPlansParamsSchema — no filter", () => {
     const params = ListPlansParamsSchema.parse({});
     expect(params.server).toBeUndefined();
+    expect(params.limit).toBeUndefined();
+    expect(params.cursor).toBeUndefined();
   });
 
   test("ListPlansParamsSchema — server filter", () => {
@@ -190,11 +192,28 @@ describe("IPC param/result schemas", () => {
     expect(params.server).toBe("ci");
   });
 
+  test("ListPlansParamsSchema — pagination params", () => {
+    const params = ListPlansParamsSchema.parse({ server: "ci", limit: 10, cursor: "abc123" });
+    expect(params.server).toBe("ci");
+    expect(params.limit).toBe(10);
+    expect(params.cursor).toBe("abc123");
+  });
+
   test("ListPlansResultSchema", () => {
     const result = ListPlansResultSchema.parse({
       plans: [{ id: "p1", name: "X", status: "pending", server: "s", steps: [] }],
     });
     expect(result.plans).toHaveLength(1);
+    expect(result.cursor).toBeUndefined();
+  });
+
+  test("ListPlansResultSchema — with cursor", () => {
+    const result = ListPlansResultSchema.parse({
+      plans: [{ id: "p1", name: "X", status: "pending", server: "s", steps: [] }],
+      cursor: "next-page",
+    });
+    expect(result.plans).toHaveLength(1);
+    expect(result.cursor).toBe("next-page");
   });
 
   test("GetPlanParamsSchema", () => {
