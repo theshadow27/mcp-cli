@@ -5,6 +5,7 @@
  * Provider-specific flags are handled by callers via the `extra` hook.
  */
 
+import { resolve } from "node:path";
 import { resolveModelName } from "@mcp-cli/core";
 
 export interface SharedSpawnArgs {
@@ -58,8 +59,12 @@ export function parseSharedSpawnArgs(
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";
     } else if (arg === "--cwd") {
-      cwd = args[++i];
-      if (!cwd) error = "--cwd requires a path";
+      const rawCwd = args[++i];
+      if (!rawCwd) {
+        error = "--cwd requires a path";
+      } else {
+        cwd = resolve(rawCwd);
+      }
     } else if (arg === "--timeout") {
       const val = args[++i];
       if (!val) {
