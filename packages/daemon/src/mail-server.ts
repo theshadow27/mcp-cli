@@ -6,14 +6,13 @@
  */
 
 import type { ToolInfo } from "@mcp-cli/core";
+import { MAIL_SERVER_NAME } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
-
-export const MAIL_SERVER_NAME = "_mail";
 
 const TOOLS = [
   {

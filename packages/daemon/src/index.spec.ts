@@ -12,7 +12,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
+import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
@@ -145,15 +145,15 @@ describe("daemon index.ts", () => {
       while (!found && Date.now() < deadline) {
         const check = await rpc(socketPath, "listServers");
         const svrs = check.result as Array<{ name: string }>;
-        found = svrs.some((s) => s.name === "_aliases") && svrs.some((s) => s.name === "_claude");
+        found = svrs.some((s) => s.name === ALIAS_SERVER_NAME) && svrs.some((s) => s.name === CLAUDE_SERVER_NAME);
         if (!found) await Bun.sleep(50);
       }
       expect(found).toBe(true);
 
       const res = await rpc(socketPath, "listServers");
       const servers = res.result as Array<{ name: string }>;
-      expect(servers.some((s) => s.name === "_aliases")).toBe(true);
-      expect(servers.some((s) => s.name === "_claude")).toBe(true);
+      expect(servers.some((s) => s.name === ALIAS_SERVER_NAME)).toBe(true);
+      expect(servers.some((s) => s.name === CLAUDE_SERVER_NAME)).toBe(true);
     });
   });
 

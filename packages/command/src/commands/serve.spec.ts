@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
 import {
   CALL_TOOL,
@@ -40,8 +41,8 @@ describe("parseMcpTools", () => {
   test("parses alias entries (no slash) as _aliases", () => {
     const result = parseMcpTools("deploy-pr,run-tests");
     expect(result).toEqual([
-      { name: "deploy-pr", server: "_aliases", tool: "deploy-pr" },
-      { name: "run-tests", server: "_aliases", tool: "run-tests" },
+      { name: "deploy-pr", server: ALIAS_SERVER_NAME, tool: "deploy-pr" },
+      { name: "run-tests", server: ALIAS_SERVER_NAME, tool: "run-tests" },
     ]);
   });
 
@@ -49,7 +50,7 @@ describe("parseMcpTools", () => {
     const result = parseMcpTools("atlassian/search,deploy-pr");
     expect(result).toEqual([
       { name: "search", server: "atlassian", tool: "search" },
-      { name: "deploy-pr", server: "_aliases", tool: "deploy-pr" },
+      { name: "deploy-pr", server: ALIAS_SERVER_NAME, tool: "deploy-pr" },
     ]);
   });
 

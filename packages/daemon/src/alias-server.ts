@@ -6,7 +6,7 @@
  */
 
 import type { AliasMetadata, JsonSchema, ToolInfo } from "@mcp-cli/core";
-import { bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
+import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -14,8 +14,6 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
 import { workerPath } from "./worker-path";
-
-export const ALIAS_SERVER_NAME = "_aliases";
 
 /** Max concurrent subprocess executions to prevent fork-bomb scenarios. */
 const MAX_CONCURRENT_SUBPROCESSES = 8;
@@ -85,7 +83,7 @@ export class AliasServer {
     this.clientTransport = clientTransport;
 
     // Create MCP server
-    this.server = new Server({ name: "_aliases", version: "0.1.0" }, { capabilities: { tools: {} } });
+    this.server = new Server({ name: ALIAS_SERVER_NAME, version: "0.1.0" }, { capabilities: { tools: {} } });
 
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: this.currentAliases.map((a) => ({

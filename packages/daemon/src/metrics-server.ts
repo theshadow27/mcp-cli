@@ -6,14 +6,13 @@
  */
 
 import type { ToolInfo } from "@mcp-cli/core";
+import { METRICS_SERVER_NAME } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { MetricsCollector } from "./metrics";
-
-export const METRICS_SERVER_NAME = "_metrics";
 
 const TOOLS = [
   {

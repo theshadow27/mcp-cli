@@ -11,7 +11,7 @@
  */
 
 import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
-import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import { CODEX_SERVER_NAME, consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import { CODEX_TOOLS } from "./codex-session/tools";
@@ -19,8 +19,6 @@ import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
-
-export const CODEX_SERVER_NAME = "_codex";
 
 // ── DB event messages from worker (same protocol as claude-server) ──
 

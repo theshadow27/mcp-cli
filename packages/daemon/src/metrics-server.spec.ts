@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { METRICS_SERVER_NAME } from "@mcp-cli/core";
 import { MetricsCollector } from "./metrics";
-import { METRICS_SERVER_NAME, MetricsServer } from "./metrics-server";
+import { MetricsServer } from "./metrics-server";
 
 describe("METRICS_SERVER_NAME", () => {
   test("is _metrics", () => {

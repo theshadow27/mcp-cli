@@ -1,4 +1,4 @@
-import { ipcCall } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
 import { entryKey } from "../components/claude-session-detail";
 import type { ClaudeNav } from "./use-keyboard";
@@ -46,7 +46,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
         };
         if (denyReasonText) args.message = denyReasonText;
         ipcCall("callTool", {
-          server: "_claude",
+          server: CLAUDE_SERVER_NAME,
           tool: "claude_deny",
           arguments: args,
         }).catch(() => {});
@@ -76,7 +76,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
       const session = sessions[selectedIndex];
       if (session && promptText) {
         ipcCall("callTool", {
-          server: "_claude",
+          server: CLAUDE_SERVER_NAME,
           tool: "claude_prompt",
           arguments: { sessionId: session.sessionId, prompt: promptText },
         }).catch(() => {});
@@ -187,7 +187,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
     if (perm) {
       ipcCall("callTool", {
-        server: "_claude",
+        server: CLAUDE_SERVER_NAME,
         tool: "claude_approve",
         arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
       }).catch(() => {});
@@ -216,7 +216,7 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
   if (input === "x") {
     if (selectedSession) {
       ipcCall("callTool", {
-        server: "_claude",
+        server: CLAUDE_SERVER_NAME,
         tool: "claude_bye",
         arguments: { sessionId: selectedSession.sessionId },
       }).catch(() => {});

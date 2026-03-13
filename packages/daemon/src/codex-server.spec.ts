@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { CODEX_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
-import { CODEX_SERVER_NAME, CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
+import { CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
 import { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 

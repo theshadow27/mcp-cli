@@ -1,4 +1,4 @@
-import { ipcCall } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
 import type { SessionInfo } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
@@ -31,7 +31,7 @@ export function useClaudeSessions(opts: UseClaudeSessionsOptions = {}): UseClaud
       if (cancelled) return;
       try {
         const result = await ipcCallFn("callTool", {
-          server: "_claude",
+          server: CLAUDE_SERVER_NAME,
           tool: "claude_session_list",
           arguments: {},
         });

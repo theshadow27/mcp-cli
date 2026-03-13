@@ -1,15 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { capturingLogger, silentLogger } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, capturingLogger, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
-import {
-  CLAUDE_SERVER_NAME,
-  ClaudeServer,
-  WORKER_EVENT_TYPES,
-  buildClaudeToolCache,
-  isWorkerEvent,
-} from "./claude-server";
+import { ClaudeServer, WORKER_EVENT_TYPES, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 
