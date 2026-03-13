@@ -73,12 +73,15 @@ export type PlanProtocolCapability = z.infer<typeof PlanProtocolCapabilitySchema
 
 export const ListPlansParamsSchema = z.object({
   server: z.string().optional(),
+  limit: z.number().optional(),
+  cursor: z.string().optional(),
 });
 
 export type ListPlansParams = z.infer<typeof ListPlansParamsSchema>;
 
 export const ListPlansResultSchema = z.object({
   plans: z.array(PlanSchema),
+  cursor: z.string().optional(),
 });
 
 export type ListPlansResult = z.infer<typeof ListPlansResultSchema>;
