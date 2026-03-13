@@ -54,3 +54,12 @@ Batch 2 carries forward #230 and #138 from sprint 11 (deferred due to quota). Th
 rest are follow-up issues filed by adversarial reviews during sprints 10-11: shutdown
 safety (#676, #691, #692), process identity hardening (#693, #694, #695), and test
 noise (#678, #680).
+
+## Results
+
+- **Released**: v0.5.0
+- **PRs merged**: 14 (#708–#711, #714, #724–#731, #733)
+- **Issues closed**: 13/13 planned + 2 unplanned (#712 P0 regression, #723 --cwd escape)
+- **Issues dropped**: 0
+- **New issues filed**: 2 (#712, #723)
+- **Note**: Sprint was spiked mid-execution by P0 #712 (daemon idle timeout killing active sessions). All planned issues had already been completed in prior sessions. Sprint execution discovered and fixed the P0, plus the --cwd absolute path bug (#723/#733).
