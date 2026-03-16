@@ -63,7 +63,7 @@ export function extractTodosFromTranscript(entries: ReadonlyArray<TranscriptEntr
 /**
  * Convert TodoWrite items into a Plan.
  */
-export function todosToplan(todos: TodoItem[], sessionId: string): Plan {
+export function todosToPlan(todos: TodoItem[], sessionId: string): Plan {
   const steps: PlanStep[] = todos.map((todo) => ({
     id: todo.id,
     name: todo.content,
@@ -126,18 +126,16 @@ export function parseClaudePlanMarkdown(markdown: string, planId: string, sessio
   const phases = parsePhases(markdown);
   if (phases.length === 0) return null;
 
-  const steps: PlanStep[] = phases.map((phase, i) => {
-    const total = phase.tasks.length;
+  const steps: PlanStep[] = phases.map((phase) => {
     const done = phase.tasks.filter((t) => t.checked).length;
 
     let status: PlanStatus;
-    if (total === 0) status = "pending";
-    else if (done === total) status = "complete";
+    if (done === phase.tasks.length) status = "complete";
     else if (done > 0) status = "active";
     else status = "pending";
 
     return {
-      id: `phase-${i}`,
+      id: `phase-${phase.name.toLowerCase().replace(/\s+/g, "-").slice(0, 32)}`,
       name: phase.name,
       status,
     };
@@ -190,10 +188,40 @@ function parsePhases(markdown: string): ParsedPhase[] {
 }
 
 /**
- * Check if a markdown string looks like a plan (has headings + checkboxes).
+ * Check if a markdown string looks like a plan.
+ * Requires headings with plan-like keywords (phase, step, task, stage)
+ * or at least 2 headings each followed by checkboxes, to avoid false
+ * positives on PR checklists, README excerpts, etc.
  */
 export function looksLikePlan(markdown: string): boolean {
-  return /^#{1,3}\s+/m.test(markdown) && /^[\s]*[-*]\s+\[[ xX]\]/m.test(markdown);
+  const hasCheckboxes = /^[\s]*[-*]\s+\[[ xX]\]/m.test(markdown);
+  if (!hasCheckboxes) return false;
+
+  const headings = markdown.match(/^#{1,3}\s+(.+)/gm);
+  if (!headings || headings.length === 0) return false;
+
+  // If any heading contains plan-like keywords, one heading is enough
+  const planKeywords = /\b(phase|step|task|stage)\b/i;
+  if (headings.some((h) => planKeywords.test(h))) return true;
+
+  // Otherwise require at least 2 headings with checkboxes underneath
+  const lines = markdown.split("\n");
+  let sectionsWithCheckboxes = 0;
+  let inSection = false;
+  let sectionHasCheckbox = false;
+
+  for (const line of lines) {
+    if (/^#{1,3}\s+/.test(line)) {
+      if (inSection && sectionHasCheckbox) sectionsWithCheckboxes++;
+      inSection = true;
+      sectionHasCheckbox = false;
+    } else if (inSection && /^[\s]*[-*]\s+\[[ xX]\]/.test(line)) {
+      sectionHasCheckbox = true;
+    }
+  }
+  if (inSection && sectionHasCheckbox) sectionsWithCheckboxes++;
+
+  return sectionsWithCheckboxes >= 2;
 }
 
 // ── Combined extraction ──
@@ -207,7 +235,7 @@ export function extractPlansFromTranscript(entries: ReadonlyArray<TranscriptEntr
   // Strategy 1: TodoWrite structured data (preferred)
   const todos = extractTodosFromTranscript(entries);
   if (todos && todos.length > 0) {
-    return todosToplan(todos, sessionId);
+    return todosToPlan(todos, sessionId);
   }
 
   // Strategy 2: Scan assistant text blocks for markdown plans

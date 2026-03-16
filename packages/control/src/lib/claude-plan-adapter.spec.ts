@@ -5,7 +5,7 @@ import {
   extractTodosFromTranscript,
   looksLikePlan,
   parseClaudePlanMarkdown,
-  todosToplan,
+  todosToPlan,
 } from "./claude-plan-adapter";
 
 // ── helpers ──
@@ -93,9 +93,9 @@ describe("extractTodosFromTranscript", () => {
   });
 });
 
-// ── todosToplan ──
+// ── todosToPlan ──
 
-describe("todosToplan", () => {
+describe("todosToPlan", () => {
   it("converts todos to a Plan with correct statuses", () => {
     const todos = [
       { id: "1", content: "Setup", status: "completed" as const },
@@ -103,7 +103,7 @@ describe("todosToplan", () => {
       { id: "3", content: "Test", status: "pending" as const },
     ];
 
-    const plan = todosToplan(todos, "session-abc123");
+    const plan = todosToPlan(todos, "session-abc123");
     expect(plan.id).toBe("claude-session-abc123");
     expect(plan.name).toBe("Session session-");
     expect(plan.server).toBe("_claude");
@@ -121,7 +121,7 @@ describe("todosToplan", () => {
       { id: "2", content: "Also done", status: "completed" as const },
     ];
 
-    const plan = todosToplan(todos, "sess-1");
+    const plan = todosToPlan(todos, "sess-1");
     expect(plan.status).toBe("complete");
     expect(plan.activeStepId).toBeUndefined();
   });
@@ -132,7 +132,7 @@ describe("todosToplan", () => {
       { id: "2", content: "Also not started", status: "pending" as const },
     ];
 
-    const plan = todosToplan(todos, "sess-2");
+    const plan = todosToPlan(todos, "sess-2");
     expect(plan.status).toBe("pending");
   });
 });
@@ -218,6 +218,18 @@ Just regular text here.`;
     expect(plan?.status).toBe("complete");
   });
 
+  it("generates content-based step IDs", () => {
+    const md = `## Phase 1: Setup
+- [x] Task A
+
+## Phase 2: Implementation
+- [ ] Task B`;
+
+    const plan = parseClaudePlanMarkdown(md, "plan-1", "sess");
+    expect(plan?.steps[0].id).toBe("phase-phase-1:-setup");
+    expect(plan?.steps[1].id).toBe("phase-phase-2:-implementation");
+  });
+
   it("skips headings without checkbox tasks", () => {
     const md = `## Intro
 Some context here.
@@ -238,8 +250,21 @@ More text.`;
 // ── looksLikePlan ──
 
 describe("looksLikePlan", () => {
-  it("returns true for markdown with headings and checkboxes", () => {
-    expect(looksLikePlan("## Phase\n- [x] Done")).toBe(true);
+  it("returns true for markdown with plan-keyword headings and checkboxes", () => {
+    expect(looksLikePlan("## Phase 1\n- [x] Done")).toBe(true);
+  });
+
+  it("returns true for step keyword in heading", () => {
+    expect(looksLikePlan("## Step 1: Setup\n- [ ] Do something")).toBe(true);
+  });
+
+  it("returns true for task keyword in heading", () => {
+    expect(looksLikePlan("## Task: Build\n- [x] Done")).toBe(true);
+  });
+
+  it("returns true for multiple sections with checkboxes (no keywords)", () => {
+    const md = "## Section A\n- [x] Done\n## Section B\n- [ ] Pending";
+    expect(looksLikePlan(md)).toBe(true);
   });
 
   it("returns false for plain text", () => {
@@ -252,6 +277,14 @@ describe("looksLikePlan", () => {
 
   it("returns false for checkboxes without headings", () => {
     expect(looksLikePlan("- [x] Task one\n- [ ] Task two")).toBe(false);
+  });
+
+  it("returns false for single non-keyword heading with checkboxes (PR checklist)", () => {
+    expect(looksLikePlan("## Checklist\n- [x] Tests pass\n- [ ] Reviewed")).toBe(false);
+  });
+
+  it("returns false for README-style content with one heading and checkboxes", () => {
+    expect(looksLikePlan("## Requirements\n- [x] Node 18+\n- [ ] Bun runtime")).toBe(false);
   });
 });
 
@@ -276,11 +309,13 @@ describe("extractPlansFromTranscript", () => {
   });
 
   it("falls back to markdown when no TodoWrite blocks exist", () => {
-    const entries = [assistantEntry([textBlock("## Phase 1\n- [x] Task A\n- [ ] Task B")])];
+    const entries = [
+      assistantEntry([textBlock("## Phase 1: Setup\n- [x] Task A\n- [ ] Task B\n\n## Phase 2: Build\n- [ ] Task C")]),
+    ];
 
     const plan = extractPlansFromTranscript(entries, "sess-1");
     expect(plan).not.toBeNull();
-    expect(plan?.steps[0].name).toBe("Phase 1");
+    expect(plan?.steps[0].name).toBe("Phase 1: Setup");
   });
 
   it("returns null when transcript has no plan data", () => {
@@ -290,13 +325,13 @@ describe("extractPlansFromTranscript", () => {
 
   it("uses the last markdown plan when multiple exist", () => {
     const entries = [
-      assistantEntry([textBlock("## Old Phase\n- [ ] Old task")]),
-      assistantEntry([textBlock("## New Phase\n- [x] New task")]),
+      assistantEntry([textBlock("## Phase 1: Old\n- [ ] Old task\n\n## Phase 2: Also old\n- [ ] Another")]),
+      assistantEntry([textBlock("## Phase 1: New\n- [x] New task\n\n## Phase 2: Also new\n- [ ] Pending")]),
     ];
 
     const plan = extractPlansFromTranscript(entries, "sess-1");
     expect(plan).not.toBeNull();
-    expect(plan?.steps[0].name).toBe("New Phase");
+    expect(plan?.steps[0].name).toBe("Phase 1: New");
     expect(plan?.steps[0].status).toBe("complete");
   });
 });

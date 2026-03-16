@@ -7,8 +7,8 @@ import {
 } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useEffect, useRef, useState } from "react";
-import type { TranscriptEntry } from "../components/claude-plan-adapter.js";
-import { extractPlansFromTranscript } from "../components/claude-plan-adapter.js";
+import type { TranscriptEntry } from "../lib/claude-plan-adapter.js";
+import { extractPlansFromTranscript } from "../lib/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
 // -- Claude plan helpers --
@@ -16,11 +16,14 @@ import { extractToolText } from "./ipc-tool-helpers.js";
 /** Max transcript entries to scan for plan data per session. */
 const CLAUDE_TRANSCRIPT_LIMIT = 100;
 
+/** Session states worth scanning for plan data. */
+const LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
+
 /**
  * Fetch plans from active Claude Code sessions by scanning transcripts
  * for TodoWrite tool calls or plan-like markdown.
  */
-async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelled: boolean): Promise<Plan[]> {
+async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelRef: { current: boolean }): Promise<Plan[]> {
   try {
     // Get session list from _claude virtual server
     const listResult = await ipcCallFn("callTool", {
@@ -28,14 +31,13 @@ async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelled: boolean): 
       tool: "claude_session_list",
       arguments: {},
     });
-    if (cancelled) return [];
+    if (cancelRef.current) return [];
 
     const listText = extractToolText(listResult);
     if (!listText) return [];
 
     const sessions = JSON.parse(listText) as Array<{ sessionId: string; state: string }>;
-    // Only scan active/idle sessions (skip ended/disconnected)
-    const liveSessions = sessions.filter((s) => s.state !== "ended" && s.state !== "disconnected");
+    const liveSessions = sessions.filter((s) => LIVE_STATES.has(s.state));
     if (liveSessions.length === 0) return [];
 
     const plans: Plan[] = [];
@@ -48,7 +50,7 @@ async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelled: boolean): 
             tool: "claude_transcript",
             arguments: { sessionId: session.sessionId, limit: CLAUDE_TRANSCRIPT_LIMIT },
           });
-          if (cancelled) return;
+          if (cancelRef.current) return;
 
           const transcriptText = extractToolText(transcriptResult);
           if (!transcriptText) return;
@@ -64,9 +66,14 @@ async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelled: boolean): 
       }),
     );
 
+    // Sort by sessionId for deterministic ordering across polls
+    plans.sort((a, b) => a.id.localeCompare(b.id));
     return plans;
-  } catch {
-    // _claude server not available — not an error, just no Claude plans
+  } catch (err) {
+    // _claude server not available is expected — only log unexpected errors
+    if (!(err instanceof Error && err.message.includes("not found"))) {
+      process.stderr.write(`[use-plans] fetchClaudePlans failed: ${err}\n`);
+    }
     return [];
   }
 }
@@ -102,12 +109,12 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   useEffect(() => {
     if (!enabled) return;
 
-    let cancelled = false;
+    const cancelRef = { current: false };
 
     async function poll() {
       try {
         const status = await ipcCallFn("status");
-        if (cancelled) return;
+        if (cancelRef.current) return;
 
         const planServers = status.servers.filter(
           (s: ServerStatus) => s.state === "connected" && s.planCapabilities?.capabilities.includes("list"),
@@ -116,32 +123,32 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         const allPlans: Plan[] = [];
         let successCount = 0;
 
-        await Promise.allSettled(
-          planServers.map(async (srv: ServerStatus) => {
-            try {
-              const result = await ipcCallFn("callTool", {
-                server: srv.name,
-                tool: "list_plans",
-                arguments: {},
-              });
-              const text = extractToolText(result);
-              if (!text) return;
-              const parsed = ListPlansResultSchema.safeParse(JSON.parse(text));
-              if (parsed.success) {
-                successCount++;
-                allPlans.push(...parsed.data.plans);
+        // Fetch server plans and Claude session plans in parallel
+        const [_serverResults, claudePlans] = await Promise.all([
+          Promise.allSettled(
+            planServers.map(async (srv: ServerStatus) => {
+              try {
+                const result = await ipcCallFn("callTool", {
+                  server: srv.name,
+                  tool: "list_plans",
+                  arguments: {},
+                });
+                const text = extractToolText(result);
+                if (!text) return;
+                const parsed = ListPlansResultSchema.safeParse(JSON.parse(text));
+                if (parsed.success) {
+                  successCount++;
+                  allPlans.push(...parsed.data.plans);
+                }
+              } catch {
+                // One server failing doesn't break the whole list
               }
-            } catch {
-              // One server failing doesn't break the whole list
-            }
-          }),
-        );
+            }),
+          ),
+          fetchClaudePlans(ipcCallFn, cancelRef),
+        ]);
 
-        if (cancelled) return;
-
-        // Also fetch Claude session plans (read-only)
-        const claudePlans = await fetchClaudePlans(ipcCallFn, cancelled);
-        if (cancelled) return;
+        if (cancelRef.current) return;
         allPlans.push(...claudePlans);
 
         const allFailed = planServers.length > 0 && successCount === 0;
@@ -150,7 +157,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         setDisconnected(allFailed);
         setLoading(false);
       } catch (err) {
-        if (cancelled) return;
+        if (cancelRef.current) return;
         setError(err instanceof Error ? err.message : String(err));
         setDisconnected(true);
         setLoading(false);
@@ -161,7 +168,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
 
     async function scheduleNext() {
       await poll();
-      if (!cancelled) {
+      if (!cancelRef.current) {
         timerId = setTimeout(scheduleNext, intervalMs);
       }
     }
@@ -169,7 +176,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
     scheduleNext();
 
     return () => {
-      cancelled = true;
+      cancelRef.current = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
   }, [intervalMs, enabled, ipcCallFn]);

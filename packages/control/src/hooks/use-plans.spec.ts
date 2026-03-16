@@ -365,6 +365,34 @@ describe("usePlans — Claude plan integration", () => {
     expect(stateRef.current.error).toBeNull();
   });
 
+  it("skips connecting/init Claude sessions", async () => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([]);
+
+      const p = params as { tool?: string };
+      if (p.tool === "claude_session_list") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([
+                { sessionId: "sess-connecting", state: "connecting" },
+                { sessionId: "sess-init", state: "init" },
+              ]),
+            },
+          ],
+        };
+      }
+      throw new Error("Should not fetch transcript for connecting/init session");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(claudePlans).toHaveLength(0);
+  });
+
   it("skips ended/disconnected Claude sessions", async () => {
     const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([]);
