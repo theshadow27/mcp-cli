@@ -14,8 +14,11 @@ const Harness: FC<{ opts: UseDaemonProcessCountOptions; stateRef: { current: num
   return React.createElement(Text, null, `count:${count}`);
 };
 
-async function flush(ms = 20) {
-  await Bun.sleep(ms);
+async function waitFor(predicate: () => boolean, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (!predicate() && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
 }
 
 describe("countDaemonProcesses", () => {
@@ -45,7 +48,7 @@ describe("useDaemonProcessCount", () => {
     const countFn = async () => 3;
     const { stateRef } = mount({ countFn });
 
-    await flush();
+    await waitFor(() => stateRef.current === 3);
     expect(stateRef.current).toBe(3);
   });
 
@@ -67,10 +70,10 @@ describe("useDaemonProcessCount", () => {
 
     const { stateRef } = mount({ countFn, intervalMs: 30 });
 
-    await flush();
+    await waitFor(() => stateRef.current >= 1);
     expect(stateRef.current).toBe(1);
 
-    await flush(50);
+    await waitFor(() => stateRef.current > 1);
     expect(stateRef.current).toBeGreaterThan(1);
   });
 
@@ -82,16 +85,16 @@ describe("useDaemonProcessCount", () => {
     };
 
     const { instance } = mount({ countFn, intervalMs: 30 });
-    await flush(50);
+    await waitFor(() => callCount >= 1);
 
     instance.unmount();
     instances.pop();
     // Allow any in-flight poll to complete
-    await flush(20);
+    await Bun.sleep(20);
     const countAfterUnmount = callCount;
 
-    // No new polls should fire after unmount settles
-    await flush(100);
+    // No new polls should fire after unmount settles (negative assertion — sleep is correct)
+    await Bun.sleep(100);
     expect(callCount).toBe(countAfterUnmount);
   });
 });
