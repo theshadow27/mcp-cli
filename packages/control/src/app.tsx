@@ -14,6 +14,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
+import type { ExpandedPlanKey } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -53,7 +54,7 @@ export function App() {
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
-  const [expandedPlan, setExpandedPlan] = useState<{ id: string; server: string } | null>(null);
+  const [expandedPlan, setExpandedPlan] = useState<ExpandedPlanKey | null>(null);
   const [selectedStep, setSelectedStep] = useState(0);
 
   const servers = status?.servers ?? [];

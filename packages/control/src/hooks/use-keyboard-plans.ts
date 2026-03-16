@@ -41,7 +41,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
       return true;
     }
     if (key.rightArrow) {
-      nav.setSelectedStep((i) => Math.min(plan.steps.length - 1, i + 1));
+      nav.setSelectedStep((i) => Math.min(Math.max(0, plan.steps.length - 1), i + 1));
       return true;
     }
   }
