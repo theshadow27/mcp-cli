@@ -1,6 +1,7 @@
 import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
+import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
@@ -10,7 +11,7 @@ interface PlansTabProps {
   loading: boolean;
   error: string | null;
   selectedIndex: number;
-  expandedPlan: string | null;
+  expandedPlan: ExpandedPlanKey | null;
   selectedStep: number;
   disconnected?: boolean;
 }
@@ -32,7 +33,9 @@ export function PlansTab({
     return <Text color="red">Error: {error}</Text>;
   }
 
-  const expanded = expandedPlan ? plans.find((p) => p.id === expandedPlan) : null;
+  const expanded = expandedPlan
+    ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+    : null;
   const currentStep = expanded?.steps[selectedStep];
 
   return (

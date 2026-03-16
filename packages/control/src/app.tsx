@@ -53,7 +53,7 @@ export function App() {
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
-  const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
+  const [expandedPlan, setExpandedPlan] = useState<{ id: string; server: string } | null>(null);
   const [selectedStep, setSelectedStep] = useState(0);
 
   const servers = status?.servers ?? [];
@@ -139,9 +139,18 @@ export function App() {
 
   // Clear orphaned expandedPlan when the plan disappears
   useEffect(() => {
-    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan)) {
+    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)) {
       setExpandedPlan(null);
       setSelectedStep(0);
+    }
+  }, [plansData, expandedPlan]);
+
+  // Clamp selectedStep when expanded plan's step count changes
+  useEffect(() => {
+    if (expandedPlan === null) return;
+    const expanded = plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
+    if (expanded) {
+      setSelectedStep((i) => Math.min(i, Math.max(0, expanded.steps.length - 1)));
     }
   }, [plansData, expandedPlan]);
 

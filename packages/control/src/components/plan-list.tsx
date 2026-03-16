@@ -1,12 +1,13 @@
 import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
+import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
 import { statusIndicator } from "./step-pipeline.js";
 
 interface PlanListProps {
   plans: Plan[];
   selectedIndex: number;
-  expandedPlan: string | null;
+  expandedPlan: ExpandedPlanKey | null;
 }
 
 export function PlanList({ plans, selectedIndex, expandedPlan }: PlanListProps) {
@@ -18,7 +19,7 @@ export function PlanList({ plans, selectedIndex, expandedPlan }: PlanListProps) 
     <Box flexDirection="column">
       {plans.map((plan, i) => {
         const isSelected = i === selectedIndex;
-        const isExpanded = expandedPlan === plan.id;
+        const isExpanded = expandedPlan !== null && expandedPlan.id === plan.id && expandedPlan.server === plan.server;
         const { symbol, color } = statusIndicator(plan.status);
         const prefix = isSelected ? ">" : " ";
         const completedSteps = plan.steps.filter((s) => s.status === "complete").length;
@@ -26,7 +27,7 @@ export function PlanList({ plans, selectedIndex, expandedPlan }: PlanListProps) 
         const progress = totalSteps > 0 ? `${completedSteps}/${totalSteps}` : "";
 
         return (
-          <Box key={plan.id} flexDirection="column">
+          <Box key={`${plan.server}\0${plan.id}`} flexDirection="column">
             <Text bold={isSelected}>
               <Text color={isSelected ? "cyan" : undefined}>{prefix} </Text>
               <Text color={color}>{symbol}</Text>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Plan } from "@mcp-cli/core";
 import type { Key } from "ink";
-import { type PlansNav, handlePlansInput } from "./use-keyboard-plans";
+import { type ExpandedPlanKey, type PlansNav, handlePlansInput } from "./use-keyboard-plans";
 
 function makePlan(overrides: Partial<Plan> & { id: string }): Plan {
   return {
@@ -48,9 +48,9 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     setSelectedIndex: (fn) => {
       state.selectedIndex = fn(state.selectedIndex as number);
     },
-    expandedPlan: state.expandedPlan as string | null,
-    setExpandedPlan: (id) => {
-      state.expandedPlan = id;
+    expandedPlan: state.expandedPlan as ExpandedPlanKey | null,
+    setExpandedPlan: (key) => {
+      state.expandedPlan = key;
     },
     selectedStep: state.selectedStep as number,
     setSelectedStep: (fn) => {
@@ -99,10 +99,10 @@ describe("handlePlansInput", () => {
     expect(nav.state.selectedIndex).toBe(2);
   });
 
-  it("expands plan on enter", () => {
+  it("expands plan on enter with composite key", () => {
     const nav = makeNav();
     handlePlansInput("", { ...baseKey, return: true }, nav);
-    expect(nav.state.expandedPlan).toBe("p1");
+    expect(nav.state.expandedPlan).toEqual({ id: "p1", server: "test-server" });
   });
 
   it("sets selected step to active step on expand", () => {
@@ -113,32 +113,32 @@ describe("handlePlansInput", () => {
   });
 
   it("collapses plan on enter when already expanded", () => {
-    const nav = makeNav({ expandedPlan: "p1" });
+    const nav = makeNav({ expandedPlan: { id: "p1", server: "test-server" } });
     handlePlansInput("", { ...baseKey, return: true }, nav);
     expect(nav.state.expandedPlan).toBeNull();
     expect(nav.state.selectedStep).toBe(0);
   });
 
   it("navigates steps left when expanded", () => {
-    const nav = makeNav({ expandedPlan: "p1", selectedStep: 2 });
+    const nav = makeNav({ expandedPlan: { id: "p1", server: "test-server" }, selectedStep: 2 });
     handlePlansInput("", { ...baseKey, leftArrow: true }, nav);
     expect(nav.state.selectedStep).toBe(1);
   });
 
   it("navigates steps right when expanded", () => {
-    const nav = makeNav({ expandedPlan: "p1", selectedStep: 0 });
+    const nav = makeNav({ expandedPlan: { id: "p1", server: "test-server" }, selectedStep: 0 });
     handlePlansInput("", { ...baseKey, rightArrow: true }, nav);
     expect(nav.state.selectedStep).toBe(1);
   });
 
   it("clamps step at left boundary", () => {
-    const nav = makeNav({ expandedPlan: "p1", selectedStep: 0 });
+    const nav = makeNav({ expandedPlan: { id: "p1", server: "test-server" }, selectedStep: 0 });
     handlePlansInput("", { ...baseKey, leftArrow: true }, nav);
     expect(nav.state.selectedStep).toBe(0);
   });
 
   it("clamps step at right boundary", () => {
-    const nav = makeNav({ expandedPlan: "p1", selectedStep: 2 });
+    const nav = makeNav({ expandedPlan: { id: "p1", server: "test-server" }, selectedStep: 2 });
     handlePlansInput("", { ...baseKey, rightArrow: true }, nav);
     expect(nav.state.selectedStep).toBe(2);
   });
@@ -160,5 +160,25 @@ describe("handlePlansInput", () => {
     const nav = makeNav({ plans });
     handlePlansInput("", { ...baseKey, return: true }, nav);
     expect(nav.state.selectedStep).toBe(0);
+  });
+
+  it("distinguishes plans with same id on different servers", () => {
+    const plans = [makePlan({ id: "deploy", server: "server-a" }), makePlan({ id: "deploy", server: "server-b" })];
+    const nav = makeNav({ plans, selectedIndex: 1 });
+    handlePlansInput("", { ...baseKey, return: true }, nav);
+    expect(nav.state.expandedPlan).toEqual({ id: "deploy", server: "server-b" });
+  });
+
+  it("does not collapse plan from different server with same id", () => {
+    const plans = [makePlan({ id: "deploy", server: "server-a" }), makePlan({ id: "deploy", server: "server-b" })];
+    // Expanded plan is server-a's "deploy", selected index is 1 (server-b's "deploy")
+    const nav = makeNav({
+      plans,
+      selectedIndex: 1,
+      expandedPlan: { id: "deploy", server: "server-a" },
+    });
+    handlePlansInput("", { ...baseKey, return: true }, nav);
+    // Should expand server-b's deploy, not collapse server-a's
+    expect(nav.state.expandedPlan).toEqual({ id: "deploy", server: "server-b" });
   });
 });
