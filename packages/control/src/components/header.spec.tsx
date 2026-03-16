@@ -82,4 +82,24 @@ describe("Header", () => {
     const { lastFrame } = render(<Header status={status()} error={null} />);
     expect(lastFrame() ?? "").not.toContain("WS on port");
   });
+
+  it("shows port holder when wsPortHolder is provided", () => {
+    const { lastFrame } = render(
+      <Header
+        status={status({ wsPort: 54321, wsPortExpected: 19275, wsPortHolder: "mcpd (PID 38291)" })}
+        error={null}
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Port 19275 held by: mcpd (PID 38291)");
+  });
+
+  it("does not show port holder line when wsPortHolder is null", () => {
+    const { lastFrame } = render(
+      <Header status={status({ wsPort: 54321, wsPortExpected: 19275, wsPortHolder: null })} error={null} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("WS on port 54321");
+    expect(frame).not.toContain("held by");
+  });
 });

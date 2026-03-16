@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { extractFullFlag, extractJqFlag, extractTimeoutFlag, parseEnvVar, parseScope, splitServerTool } from "./parse";
+import {
+  extractDryRunFlag,
+  extractFullFlag,
+  extractJqFlag,
+  extractTimeoutFlag,
+  extractVerboseFlag,
+  parseEnvVar,
+  parseScope,
+  splitServerTool,
+} from "./parse";
 
 describe("splitServerTool", () => {
   test("splits server/tool into tuple", () => {
@@ -177,5 +186,63 @@ describe("extractTimeoutFlag", () => {
       timeoutMs: undefined,
       rest: ["--timeout", "0"],
     });
+  });
+});
+
+describe("extractVerboseFlag", () => {
+  test("extracts --verbose flag", () => {
+    expect(extractVerboseFlag(["call", "server", "tool", "--verbose"])).toEqual({
+      verbose: true,
+      rest: ["call", "server", "tool"],
+    });
+  });
+
+  test("extracts -V flag", () => {
+    expect(extractVerboseFlag(["-V", "ls"])).toEqual({
+      verbose: true,
+      rest: ["ls"],
+    });
+  });
+
+  test("returns verbose=false when no flag present", () => {
+    expect(extractVerboseFlag(["call", "server", "tool"])).toEqual({
+      verbose: false,
+      rest: ["call", "server", "tool"],
+    });
+  });
+
+  test("returns verbose=false for empty args", () => {
+    expect(extractVerboseFlag([])).toEqual({ verbose: false, rest: [] });
+  });
+
+  test("does not match -v (reserved for --version)", () => {
+    expect(extractVerboseFlag(["-v"])).toEqual({ verbose: false, rest: ["-v"] });
+  });
+});
+
+describe("extractDryRunFlag", () => {
+  test("extracts --dry-run flag", () => {
+    expect(extractDryRunFlag(["call", "server", "tool", "--dry-run"])).toEqual({
+      dryRun: true,
+      rest: ["call", "server", "tool"],
+    });
+  });
+
+  test("does not match -n (reserved for other commands like logs, claude)", () => {
+    expect(extractDryRunFlag(["-n", "call", "server", "tool"])).toEqual({
+      dryRun: false,
+      rest: ["-n", "call", "server", "tool"],
+    });
+  });
+
+  test("returns dryRun=false when no flag present", () => {
+    expect(extractDryRunFlag(["call", "server", "tool"])).toEqual({
+      dryRun: false,
+      rest: ["call", "server", "tool"],
+    });
+  });
+
+  test("returns dryRun=false for empty args", () => {
+    expect(extractDryRunFlag([])).toEqual({ dryRun: false, rest: [] });
   });
 });

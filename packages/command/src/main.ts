@@ -60,14 +60,19 @@ import {
   printToolResult,
 } from "./output";
 import {
+  extractDryRunFlag,
   extractFullFlag,
   extractJqFlag,
   extractJsonFlag,
   extractTimeoutFlag,
+  extractVerboseFlag,
   readStdinJson,
   splitServerTool,
 } from "./parse";
 import { searchRegistry } from "./registry/client";
+
+/** Module-level dry-run flag — avoids env var propagation to child processes (Bun.spawn inherits env) */
+let _dryRun = false;
 
 async function main(): Promise<void> {
   checkDeprecatedName(process.argv[1] ?? "");
@@ -83,30 +88,47 @@ async function main(): Promise<void> {
     return;
   }
 
-  const command = args[0];
+  // Extract global flags before command dispatch
+  const { verbose, rest: afterVerbose } = extractVerboseFlag(args);
+  const { dryRun, rest: cleanArgs } = extractDryRunFlag(afterVerbose);
+  _dryRun = dryRun;
+  if (verbose) process.env.MCX_VERBOSE = "1";
+
+  const command = cleanArgs[0];
+
+  // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
+  if (dryRun && command && command !== "call") {
+    const isShorthand =
+      !command.startsWith("-") &&
+      (splitServerTool(command) !== null || (cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")));
+    if (!isShorthand) {
+      printError(`--dry-run is only supported for the 'call' command, not '${command}'`);
+      process.exit(1);
+    }
+  }
 
   try {
     switch (command) {
       case "ls":
       case "list":
       case "tools":
-        await cmdLs(args.slice(1));
+        await cmdLs(cleanArgs.slice(1));
         break;
 
       case "call":
-        await cmdCall(args.slice(1));
+        await cmdCall(cleanArgs.slice(1));
         break;
 
       case "info":
-        await cmdInfo(args.slice(1));
+        await cmdInfo(cleanArgs.slice(1));
         break;
 
       case "grep":
-        await cmdGrep(args.slice(1));
+        await cmdGrep(cleanArgs.slice(1));
         break;
 
       case "search": {
-        const { json: searchJson, rest: searchRest } = extractJsonFlag(args.slice(1));
+        const { json: searchJson, rest: searchRest } = extractJsonFlag(cleanArgs.slice(1));
         const searchPattern = searchRest.join(" ");
         if (!searchPattern) {
           printError("Usage: mcx search <query>");
@@ -140,99 +162,99 @@ async function main(): Promise<void> {
       }
 
       case "import":
-        await cmdImport(args.slice(1));
+        await cmdImport(cleanArgs.slice(1));
         break;
 
       case "export":
-        await cmdExport(args.slice(1));
+        await cmdExport(cleanArgs.slice(1));
         break;
 
       case "install":
-        await cmdInstall(args.slice(1));
+        await cmdInstall(cleanArgs.slice(1));
         break;
 
       case "registry":
-        await cmdRegistryDispatch(args.slice(1));
+        await cmdRegistryDispatch(cleanArgs.slice(1));
         break;
 
       case "version":
-        await cmdVersion(args.slice(1));
+        await cmdVersion(cleanArgs.slice(1));
         break;
 
       case "status":
-        await cmdStatus(args.slice(1));
+        await cmdStatus(cleanArgs.slice(1));
         break;
 
       case "metrics":
-        await cmdMetrics(args.slice(1));
+        await cmdMetrics(cleanArgs.slice(1));
         break;
 
       case "dump":
-        await cmdDump(args.slice(1));
+        await cmdDump(cleanArgs.slice(1));
         break;
 
       case "config":
-        await cmdConfig(args.slice(1));
+        await cmdConfig(cleanArgs.slice(1));
         break;
 
       case "add":
-        await cmdAdd(args.slice(1));
+        await cmdAdd(cleanArgs.slice(1));
         break;
 
       case "add-json":
-        await cmdAddJson(args.slice(1));
+        await cmdAddJson(cleanArgs.slice(1));
         break;
 
       case "remove":
-        await cmdRemove(args.slice(1));
+        await cmdRemove(cleanArgs.slice(1));
         break;
 
       case "get":
-        await cmdGet(args.slice(1));
+        await cmdGet(cleanArgs.slice(1));
         break;
 
       case "auth":
-        await cmdAuth(args.slice(1));
+        await cmdAuth(cleanArgs.slice(1));
         break;
 
       case "alias":
-        await cmdAlias(args.slice(1));
+        await cmdAlias(cleanArgs.slice(1));
         break;
 
       case "run":
-        await cmdRun(args.slice(1));
+        await cmdRun(cleanArgs.slice(1));
         break;
 
       case "logs":
-        await cmdLogs(args.slice(1));
+        await cmdLogs(cleanArgs.slice(1));
         break;
 
       case "spans":
-        await cmdSpans(args.slice(1));
+        await cmdSpans(cleanArgs.slice(1));
         break;
 
       case "mail":
-        await cmdMail(args.slice(1));
+        await cmdMail(cleanArgs.slice(1));
         break;
 
       case "typegen":
-        await cmdTypegen(args.slice(1));
+        await cmdTypegen(cleanArgs.slice(1));
         break;
 
       case "completions":
-        await cmdCompletions(args.slice(1));
+        await cmdCompletions(cleanArgs.slice(1));
         break;
 
       case "tty":
-        await cmdTty(args.slice(1));
+        await cmdTty(cleanArgs.slice(1));
         break;
 
       case "claude":
-        await cmdClaude(args.slice(1));
+        await cmdClaude(cleanArgs.slice(1));
         break;
 
       case "codex":
-        await cmdCodex(args.slice(1));
+        await cmdCodex(cleanArgs.slice(1));
         break;
 
       case "serve":
@@ -240,15 +262,15 @@ async function main(): Promise<void> {
         break;
 
       case "restart":
-        await cmdRestart(args.slice(1));
+        await cmdRestart(cleanArgs.slice(1));
         break;
 
       case "daemon":
-        await cmdDaemon(args.slice(1));
+        await cmdDaemon(cleanArgs.slice(1));
         break;
 
       case "shutdown": {
-        const force = args.includes("--force");
+        const force = cleanArgs.includes("--force");
         const result = await ipcCall("shutdown", { force });
         if (!result.ok) {
           printError(result.message ?? "Shutdown refused");
@@ -261,14 +283,14 @@ async function main(): Promise<void> {
       default: {
         // Check if it looks like "mcx server/tool" (slash notation shorthand)
         if (!command.startsWith("-") && splitServerTool(command)) {
-          await cmdCall(args);
+          await cmdCall(cleanArgs);
           break;
         }
 
         // Check if it looks like "mcx server tool" (missing "call")
-        if (!command.startsWith("-") && args.length >= 2 && !args[1].startsWith("-")) {
+        if (!command.startsWith("-") && cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")) {
           // Treat as shorthand: mcx <server> <tool> [args]
-          await cmdCall(args);
+          await cmdCall(cleanArgs);
           break;
         }
 
@@ -278,7 +300,7 @@ async function main(): Promise<void> {
           const alias = await ipcCall("getAlias", { name: command });
           if (alias) {
             const { runAlias } = await import("./alias-runner.js");
-            const { jsonInput, cliArgs } = parseRunArgs(args.slice(1));
+            const { jsonInput, cliArgs } = parseRunArgs(cleanArgs.slice(1));
             await runAlias(alias.filePath, cliArgs, jsonInput);
             break;
           }
@@ -354,6 +376,20 @@ async function cmdCall(args: string[]): Promise<void> {
 
   // IPC layer timeout must exceed the MCP SDK timeout; default to MCP_TOOL_TIMEOUT_MS + 5s buffer
   const toolTimeoutMs = timeoutMs ?? MCP_TOOL_TIMEOUT_MS;
+
+  // --dry-run: show what would be called without executing
+  if (_dryRun) {
+    const call = {
+      method: "callTool" as const,
+      server,
+      tool,
+      arguments: toolArgs,
+      timeoutMs: toolTimeoutMs,
+    };
+    console.log(JSON.stringify(call, null, 2));
+    return;
+  }
+
   const result = await ipcCall(
     "callTool",
     { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs },
@@ -740,6 +776,8 @@ Options:
   --format json, -j                 Machine-readable JSON output (ls, info, grep, status)
   --jq '<filter>'                   Apply jq filter to call output (client-side)
   --full, -f                        Bypass output size protection (call)
+  --verbose, -V                     Show IPC requests/responses and debug info (stderr)
+  --dry-run                         Show what would be executed without running it (call)
 
 Examples:
   mcx ls atlassian

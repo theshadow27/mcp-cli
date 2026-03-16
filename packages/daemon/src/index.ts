@@ -208,6 +208,8 @@ export interface StartDaemonOptions {
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
 export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
+  // Allow env-based override for subprocess integration tests
+  const skipVirtualServers = opts?.skipVirtualServers ?? process.env.MCP_DAEMON_SKIP_VIRTUAL_SERVERS === "1";
   const logger = opts?.logger ?? consoleLogger;
 
   if (!opts?.skipLogSetup) {
@@ -386,7 +388,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   console.log(DAEMON_READY_SIGNAL);
 
   // Boot virtual servers in the background — commands that need them will await
-  if (!opts?.skipVirtualServers) {
+  if (!skipVirtualServers) {
     pool.registerPendingVirtualServer(
       ALIAS_SERVER_NAME,
       (async () => {

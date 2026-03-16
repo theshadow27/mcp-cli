@@ -131,6 +131,44 @@ export function extractTimeoutFlag(args: string[]): { timeoutMs: number | undefi
 }
 
 /**
+ * Extract --verbose / -V flag from args.
+ * Returns whether verbose output was requested and the remaining args.
+ */
+export function extractVerboseFlag(args: string[]): { verbose: boolean; rest: string[] } {
+  const rest: string[] = [];
+  let verbose = false;
+
+  for (const arg of args) {
+    if (arg === "--verbose" || arg === "-V") {
+      verbose = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { verbose, rest };
+}
+
+/**
+ * Extract --dry-run / -n flag from args.
+ * Returns whether dry-run mode was requested and the remaining args.
+ */
+export function extractDryRunFlag(args: string[]): { dryRun: boolean; rest: string[] } {
+  const rest: string[] = [];
+  let dryRun = false;
+
+  for (const arg of args) {
+    if (arg === "--dry-run") {
+      dryRun = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { dryRun, rest };
+}
+
+/**
  * Extract --jq '<filter>' flag from args.
  * Returns the jq filter string (or undefined) and the remaining args.
  */

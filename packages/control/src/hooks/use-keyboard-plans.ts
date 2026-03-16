@@ -31,7 +31,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
 
   if (plans.length === 0) return false;
 
-  // When a plan is expanded, ←/→ navigate steps
+  // When a plan is expanded, left/right navigate steps
   if (expandedPlan !== null) {
     const plan = findExpanded(plans, expandedPlan);
     if (!plan) return false;
@@ -46,7 +46,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
     }
   }
 
-  // ↑/↓ or j/k navigate plan list
+  // up/down or j/k navigate plan list
   if (key.upArrow || input === "k") {
     nav.setSelectedIndex((i) => Math.max(0, i - 1));
     return true;

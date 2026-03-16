@@ -57,6 +57,7 @@ import { McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
+import { getPortHolder } from "./port-holder";
 import type { ServerPool } from "./server-pool";
 
 /** Per-request context passed to every handler (fixes race condition on shared state). */
@@ -287,6 +288,8 @@ export class IpcServer {
       }
 
       const wsPortInfo = this.getWsPortInfo?.();
+      const hasMismatch = wsPortInfo != null && wsPortInfo.actual != null && wsPortInfo.actual !== wsPortInfo.expected;
+      const wsPortHolder = hasMismatch ? await getPortHolder(wsPortInfo.expected) : null;
       return {
         pid: process.pid,
         uptime: process.uptime(),
@@ -297,6 +300,7 @@ export class IpcServer {
         usageStats,
         wsPort: wsPortInfo?.actual ?? null,
         wsPortExpected: wsPortInfo?.expected,
+        wsPortHolder,
       };
     });
 

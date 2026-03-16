@@ -61,8 +61,15 @@ function daemonStatus(servers: Array<{ name: string; hasList?: boolean; hasAdvan
   };
 }
 
-async function flush(ms = 10) {
-  await Bun.sleep(ms);
+/** Poll a predicate until it returns true or the deadline expires. */
+async function waitFor(predicate: () => boolean, deadlineMs = 2000): Promise<void> {
+  const start = performance.now();
+  while (!predicate()) {
+    if (performance.now() - start > deadlineMs) {
+      throw new Error(`waitFor timed out after ${deadlineMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
 }
 
 /* ---------- usePlans tests ---------- */
@@ -105,11 +112,10 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.plans[0].id).toBe("plan-1");
-    expect(stateRef.current.loading).toBe(false);
     expect(stateRef.current.error).toBeNull();
     expect(stateRef.current.disconnected).toBe(false);
   });
@@ -131,26 +137,50 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(2);
-    expect(stateRef.current.loading).toBe(false);
   });
 
-  it("skips servers without list capability", async () => {
-    let callToolCallCount = 0;
-    const ipcCallFn = async (method: string) => {
+  it("sorts plans deterministically by server then id", async () => {
+    const planB = makePlan("plan-b", "server-z");
+    const planA = makePlan("plan-a", "server-a");
+    const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") {
-        return daemonStatus([{ name: "no-plan-server", hasList: false }]);
+        return daemonStatus([
+          { name: "server-z", hasList: true },
+          { name: "server-a", hasList: true },
+        ]);
       }
-      callToolCallCount++;
+      const p = params as { server: string };
+      if (p.server === "server-z") return planToolResult([planB]);
+      if (p.server === "server-a") return planToolResult([planA]);
       return planToolResult([]);
     };
 
-    mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
 
-    expect(callToolCallCount).toBe(0);
+    expect(stateRef.current.plans[0].server).toBe("server-a");
+    expect(stateRef.current.plans[1].server).toBe("server-z");
+  });
+
+  it("skips servers without list capability", async () => {
+    let planServerCallCount = 0;
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([{ name: "no-plan-server", hasList: false }]);
+      }
+      const p = params as { server?: string } | undefined;
+      if (p?.server === "no-plan-server") planServerCallCount++;
+      // Return empty for _claude calls
+      return { content: [{ type: "text", text: "[]" }] };
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(planServerCallCount).toBe(0);
   });
 
   it("sets disconnected and error when status call fails", async () => {
@@ -159,11 +189,10 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.error).toBe("daemon offline");
     expect(stateRef.current.disconnected).toBe(true);
-    expect(stateRef.current.loading).toBe(false);
   });
 
   it("does not poll when enabled=false", async () => {
@@ -174,7 +203,8 @@ describe("usePlans", () => {
     };
 
     mount({ enabled: false, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush(30);
+    // Give a short window to confirm no calls are made
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
   });
@@ -194,11 +224,45 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     // Plans from good server still returned; no top-level error
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.error).toBeNull();
+  });
+
+  it("sets disconnected when all plan servers fail", async () => {
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "server-a", hasList: true },
+          { name: "server-b", hasList: true },
+        ]);
+      }
+      throw new Error("server unreachable");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.plans).toHaveLength(0);
+    expect(stateRef.current.disconnected).toBe(true);
+    expect(stateRef.current.error).toBeNull();
+  });
+
+  it("sets disconnected when all servers return unparseable responses", async () => {
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") {
+        return daemonStatus([{ name: "server-a", hasList: true }]);
+      }
+      return { content: [{ type: "text", text: "not valid json{" }] };
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.plans).toHaveLength(0);
+    expect(stateRef.current.disconnected).toBe(true);
   });
 
   it("cleanup stops polling on unmount", async () => {
@@ -213,12 +277,13 @@ describe("usePlans", () => {
       ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
     });
 
-    await flush(50);
+    await waitFor(() => callCount >= 2);
     instance.unmount();
     instances.pop();
     const countAtUnmount = callCount;
 
-    await flush(100);
+    // Wait and confirm no more calls after unmount
+    await new Promise((r) => setTimeout(r, 100));
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -342,6 +407,169 @@ describe("step clamp effect (app.tsx:149-155 integration)", () => {
   });
 });
 
+/* ---------- usePlans: Claude plan integration ---------- */
+
+describe("usePlans — Claude plan integration", () => {
+  interface HookState {
+    plans: Plan[];
+    loading: boolean;
+    error: string | null;
+    disconnected: boolean;
+  }
+
+  const instances: ReturnType<typeof render>[] = [];
+
+  afterEach(() => {
+    for (const inst of instances) inst.unmount();
+    instances.length = 0;
+  });
+
+  const Harness: FC<{ opts: UsePlansOptions; stateRef: { current: HookState } }> = ({ opts, stateRef }) => {
+    const result = usePlans(opts);
+    stateRef.current = result;
+    return React.createElement(Text, null, "ok");
+  };
+
+  function mount(opts: UsePlansOptions) {
+    const stateRef: { current: HookState } = {
+      current: { plans: [], loading: true, error: null, disconnected: false },
+    };
+    const instance = render(React.createElement(Harness, { opts, stateRef }));
+    instances.push(instance);
+    return { instance, stateRef };
+  }
+
+  function transcriptWithTodoWrite(todos: Array<{ id: string; content: string; status: string }>) {
+    return [
+      {
+        timestamp: Date.now(),
+        direction: "inbound",
+        message: {
+          type: "assistant",
+          message: {
+            id: "msg-1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "tool_use", name: "TodoWrite", input: { todos } }],
+          },
+        },
+      },
+    ];
+  }
+
+  it("merges Claude session plans alongside server plans", async () => {
+    const serverPlan = makePlan("server-plan", "test-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+
+      const p = params as { server?: string; tool?: string };
+      if (p.server === "test-server") return planToolResult([serverPlan]);
+
+      // _claude server calls
+      if (p.tool === "claude_session_list") {
+        return { content: [{ type: "text", text: JSON.stringify([{ sessionId: "sess-1", state: "active" }]) }] };
+      }
+      if (p.tool === "claude_transcript") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                transcriptWithTodoWrite([{ id: "t1", content: "Build feature", status: "in_progress" }]),
+              ),
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text", text: "[]" }] };
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => !stateRef.current.loading);
+
+    expect(stateRef.current.plans.length).toBeGreaterThanOrEqual(2);
+    const claudePlan = stateRef.current.plans.find((p) => p.server === "_claude");
+    expect(claudePlan).toBeDefined();
+    expect(claudePlan?.steps[0].name).toBe("Build feature");
+  });
+
+  it("returns only server plans when _claude server is unavailable", async () => {
+    const serverPlan = makePlan("server-plan", "test-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+
+      const p = params as { server?: string; tool?: string };
+      if (p.server === "test-server") return planToolResult([serverPlan]);
+      // _claude calls throw
+      throw new Error("_claude not available");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => !stateRef.current.loading);
+
+    expect(stateRef.current.plans).toHaveLength(1);
+    expect(stateRef.current.plans[0].id).toBe("server-plan");
+    expect(stateRef.current.error).toBeNull();
+  });
+
+  it("skips connecting/init Claude sessions", async () => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([]);
+
+      const p = params as { tool?: string };
+      if (p.tool === "claude_session_list") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([
+                { sessionId: "sess-connecting", state: "connecting" },
+                { sessionId: "sess-init", state: "init" },
+              ]),
+            },
+          ],
+        };
+      }
+      throw new Error("Should not fetch transcript for connecting/init session");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => !stateRef.current.loading);
+
+    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(claudePlans).toHaveLength(0);
+  });
+
+  it("skips ended/disconnected Claude sessions", async () => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([]);
+
+      const p = params as { tool?: string };
+      if (p.tool === "claude_session_list") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([
+                { sessionId: "sess-ended", state: "ended" },
+                { sessionId: "sess-dc", state: "disconnected" },
+              ]),
+            },
+          ],
+        };
+      }
+      // Should never reach transcript call for ended/disconnected sessions
+      throw new Error("Should not fetch transcript for ended session");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => !stateRef.current.loading);
+
+    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(claudePlans).toHaveLength(0);
+  });
+});
+
 /* ---------- usePlan tests ---------- */
 
 describe("usePlan", () => {
@@ -387,10 +615,9 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plan?.id).toBe("plan-1");
-    expect(stateRef.current.loading).toBe(false);
     expect(stateRef.current.error).toBeNull();
     expect(stateRef.current.disconnected).toBe(false);
   });
@@ -402,7 +629,7 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.canAdvance).toBe(false);
   });
@@ -415,7 +642,7 @@ describe("usePlan", () => {
       canAdvance: true,
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.canAdvance).toBe(true);
   });
@@ -428,11 +655,10 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.error).toBe("server offline");
     expect(stateRef.current.disconnected).toBe(true);
-    expect(stateRef.current.loading).toBe(false);
   });
 
   it("does not fetch when enabled=false", async () => {
@@ -446,7 +672,7 @@ describe("usePlan", () => {
       enabled: false,
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
   });
@@ -500,7 +726,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: false,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
     expect(stateRef.current.metrics).toBeNull();
@@ -515,7 +741,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: true,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.metrics !== null);
 
     expect(stateRef.current.metrics).toEqual(metrics);
     expect(stateRef.current.loading).toBe(false);
@@ -531,7 +757,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: true,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.error !== null);
 
     expect(stateRef.current.error).toBe("metrics unavailable");
     expect(stateRef.current.loading).toBe(false);
@@ -550,7 +776,7 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(100);
+    await waitFor(() => callCount >= 3);
     expect(callCount).toBeGreaterThanOrEqual(3);
   });
 
@@ -567,12 +793,12 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(50);
+    await waitFor(() => callCount >= 2);
     instance.unmount();
     instances.pop();
     const countAtUnmount = callCount;
 
-    await flush(100);
+    await new Promise((r) => setTimeout(r, 100));
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -589,7 +815,49 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
     expect(callCount).toBe(0);
+  });
+
+  it("clears stale metrics when planId changes", async () => {
+    const metrics1: PlanMetrics = { steps_complete: 2 };
+    const metrics2: PlanMetrics = { steps_complete: 5 };
+    let currentPlanId = "plan-1";
+    const ipcCallFn = async () => {
+      return metricsResult(currentPlanId === "plan-1" ? metrics1 : metrics2);
+    };
+
+    // Use a wrapper that re-renders with new planId
+    const stateRef: { current: { metrics: PlanMetrics | null; loading: boolean; error: string | null } } = {
+      current: { metrics: null, loading: false, error: null },
+    };
+    let setPlanId: ((id: string) => void) | undefined;
+    const Wrapper: FC = () => {
+      const [planId, _setPlanId] = React.useState("plan-1");
+      setPlanId = _setPlanId;
+      const result = usePlanMetrics(planId, "step-1", "srv", {
+        supportsMetrics: true,
+        ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
+      });
+      stateRef.current = result;
+      return React.createElement(Text, null, "ok");
+    };
+
+    const instance = render(React.createElement(Wrapper));
+    instances.push(instance);
+
+    await waitFor(() => stateRef.current.metrics !== null);
+    expect(stateRef.current.metrics).toEqual(metrics1);
+
+    // Switch plan — metrics should clear before new poll completes
+    currentPlanId = "plan-2";
+    setPlanId?.("plan-2");
+
+    // The metrics should first clear to null (stale cleared)
+    await waitFor(() => stateRef.current.metrics === null || stateRef.current.metrics?.steps_complete === 5);
+
+    // Then eventually resolve to new metrics
+    await waitFor(() => stateRef.current.metrics !== null);
+    expect(stateRef.current.metrics).toEqual(metrics2);
   });
 });

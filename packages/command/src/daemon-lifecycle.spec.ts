@@ -7,13 +7,84 @@ import { DaemonStartCooldownError } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
   _buildStaleDaemonWarning,
+  _isTransientConnectionError,
   _resetStartCooldown,
   getStaleDaemonWarning,
   isDaemonInitializing,
   isDaemonRunning,
   isProcessMcpd,
+  redactSecrets,
   resolveDaemonCommand,
+  verboseLog,
 } from "./daemon-lifecycle";
+
+// -- verboseLog --
+
+describe("verboseLog", () => {
+  const origVerbose = process.env.MCX_VERBOSE;
+  afterEach(() => {
+    if (origVerbose === undefined) Reflect.deleteProperty(process.env, "MCX_VERBOSE");
+    else process.env.MCX_VERBOSE = origVerbose;
+  });
+
+  test("writes to stderr when MCX_VERBOSE=1", () => {
+    process.env.MCX_VERBOSE = "1";
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => lines.push(String(args[0]));
+    try {
+      verboseLog("test message");
+      expect(lines).toEqual(["[mcx] test message"]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("does nothing when MCX_VERBOSE is not set", () => {
+    process.env.MCX_VERBOSE = undefined;
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => lines.push(String(args[0]));
+    try {
+      verboseLog("should not appear");
+      expect(lines).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+  });
+});
+
+// -- redactSecrets --
+
+describe("redactSecrets", () => {
+  test("passes through primitives unchanged", () => {
+    expect(redactSecrets("hello")).toBe("hello");
+    expect(redactSecrets(42)).toBe(42);
+    expect(redactSecrets(null)).toBeNull();
+    expect(redactSecrets(undefined)).toBeUndefined();
+  });
+
+  test("redacts keys matching sensitive patterns", () => {
+    expect(redactSecrets({ apiKey: "sk-123", name: "test" })).toEqual({
+      apiKey: "[REDACTED]",
+      name: "test",
+    });
+    expect(redactSecrets({ token: "abc", password: "secret" })).toEqual({
+      token: "[REDACTED]",
+      password: "[REDACTED]",
+    });
+  });
+
+  test("redacts nested sensitive keys", () => {
+    expect(redactSecrets({ config: { authToken: "xyz", host: "localhost" } })).toEqual({
+      config: { authToken: "[REDACTED]", host: "localhost" },
+    });
+  });
+
+  test("handles arrays", () => {
+    expect(redactSecrets([{ secret: "x" }, { name: "y" }])).toEqual([{ secret: "[REDACTED]" }, { name: "y" }]);
+  });
+});
 
 // -- isProcessMcpd --
 
@@ -373,5 +444,35 @@ describe("getStaleDaemonWarning", () => {
     mkdirSync(dirname(opts.PID_PATH), { recursive: true });
     writeFileSync(opts.PID_PATH, "not json{{{");
     expect(getStaleDaemonWarning()).toBeNull();
+  });
+});
+
+// -- _isTransientConnectionError --
+
+describe("_isTransientConnectionError", () => {
+  test("returns false for non-Error values", () => {
+    expect(_isTransientConnectionError(null)).toBe(false);
+    expect(_isTransientConnectionError("ECONNREFUSED")).toBe(false);
+    expect(_isTransientConnectionError(42)).toBe(false);
+    expect(_isTransientConnectionError(undefined)).toBe(false);
+  });
+
+  test("returns true for ECONNREFUSED errors", () => {
+    expect(_isTransientConnectionError(new Error("connect ECONNREFUSED /tmp/test.sock"))).toBe(true);
+  });
+
+  test("returns true for ENOENT errors", () => {
+    expect(_isTransientConnectionError(new Error("connect ENOENT /tmp/missing.sock"))).toBe(true);
+  });
+
+  test("returns true for ConnectionRefused errors", () => {
+    expect(_isTransientConnectionError(new Error("ConnectionRefused"))).toBe(true);
+  });
+
+  test("returns false for unrelated errors", () => {
+    expect(_isTransientConnectionError(new Error("EACCES permission denied"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("timeout"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("ETIMEDOUT"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("some random error"))).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
+import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { ClaudeSessionList } from "./components/claude-session-list.js";
 import { Footer } from "./components/footer.js";
@@ -20,7 +21,7 @@ import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
-import { usePlans } from "./hooks/use-plans.js";
+import { usePlanMetrics, usePlans } from "./hooks/use-plans.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -56,6 +57,9 @@ export function App() {
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
   const [expandedPlan, setExpandedPlan] = useState<ExpandedPlanKey | null>(null);
   const [selectedStep, setSelectedStep] = useState(0);
+  /** Track which plan is selected by identity so refreshes don't shift selection. */
+  const plansSelectionIdRef = useRef<{ server: string; id: string } | null>(null);
+  const plansRef = useRef<Plan[]>([]);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -81,12 +85,37 @@ export function App() {
 
   const { messages: mailMessages } = useMail({ enabled: view === "mail" });
   const { unreadCount: unreadMailCount } = useUnreadMail({ enabled: view !== "mail" });
+
+  // Plans: poll list on plans tab, poll metrics only when visible and metrics-capable
+  const plansEnabled = view === "plans";
   const {
-    plans: plansData,
+    plans,
     loading: plansLoading,
     error: plansError,
     disconnected: plansDisconnected,
-  } = usePlans({ enabled: view === "plans", intervalMs: view === "plans" ? 10_000 : 30_000 });
+  } = usePlans({ enabled: plansEnabled });
+  plansRef.current = plans;
+  const setPlansSelectedIndexTracked = useCallback((updater: number | ((i: number) => number)) => {
+    setPlansSelectedIndex((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      const plan = plansRef.current[next];
+      if (plan) plansSelectionIdRef.current = { server: plan.server, id: plan.id };
+      return next;
+    });
+  }, []);
+  const selectedPlan = plans[plansSelectedIndex] ?? null;
+  const selectedPlanServer = selectedPlan?.server ?? "";
+  const supportsMetrics =
+    servers.find((s) => s.name === selectedPlanServer)?.planCapabilities?.capabilities.includes("metrics") ?? false;
+  const { metrics: planMetrics, loading: planMetricsLoading } = usePlanMetrics(
+    selectedPlan?.id ?? "",
+    selectedPlan?.activeStepId,
+    selectedPlanServer,
+    {
+      enabled: plansEnabled && !!selectedPlan,
+      supportsMetrics,
+    },
+  );
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
     () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
@@ -126,6 +155,19 @@ export function App() {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
 
+  // Restore selection by identity when plans list refreshes, fall back to clamp
+  useEffect(() => {
+    const id = plansSelectionIdRef.current;
+    if (id && plans.length > 0) {
+      const idx = plans.findIndex((p) => p.server === id.server && p.id === id.id);
+      if (idx >= 0) {
+        setPlansSelectedIndex(idx);
+        return;
+      }
+    }
+    setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plans.length - 1)));
+  }, [plans]);
+
   // Clear orphaned expandedMessage when the message disappears from the list
   useEffect(() => {
     if (expandedMessage !== null && !mailMessages.some((m) => m.id === expandedMessage)) {
@@ -133,27 +175,22 @@ export function App() {
     }
   }, [mailMessages, expandedMessage]);
 
-  // Clamp plansSelectedIndex when plans list shrinks
-  useEffect(() => {
-    setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plansData.length - 1)));
-  }, [plansData.length]);
-
   // Clear orphaned expandedPlan when the plan disappears
   useEffect(() => {
-    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)) {
+    if (expandedPlan !== null && !plans.some((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)) {
       setExpandedPlan(null);
       setSelectedStep(0);
     }
-  }, [plansData, expandedPlan]);
+  }, [plans, expandedPlan]);
 
   // Clamp selectedStep when expanded plan's step count changes
   useEffect(() => {
     if (expandedPlan === null) return;
-    const expanded = plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
+    const expanded = plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
     if (expanded) {
       setSelectedStep((i) => Math.min(i, Math.max(0, expanded.steps.length - 1)));
     }
-  }, [plansData, expandedPlan]);
+  }, [plans, expandedPlan]);
 
   // Clamp permission index when selected session or permission count changes
   const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;
@@ -233,6 +270,15 @@ export function App() {
       setScrollOffset: setStatsScrollOffset,
       lineCount: statsLineCount,
     },
+    plansNav: {
+      plans,
+      selectedIndex: plansSelectedIndex,
+      setSelectedIndex: setPlansSelectedIndexTracked,
+      expandedPlan,
+      setExpandedPlan,
+      selectedStep,
+      setSelectedStep,
+    },
     mailNav: {
       messages: mailMessages,
       selectedIndex: mailSelectedIndex,
@@ -241,15 +287,6 @@ export function App() {
       setExpandedMessage,
       scrollOffset: mailScrollOffset,
       setScrollOffset: setMailScrollOffset,
-    },
-    plansNav: {
-      plans: plansData,
-      selectedIndex: plansSelectedIndex,
-      setSelectedIndex: setPlansSelectedIndex,
-      expandedPlan,
-      setExpandedPlan,
-      selectedStep,
-      setSelectedStep,
     },
   });
 
@@ -313,22 +350,24 @@ export function App() {
           scrollOffset={statsScrollOffset}
           height={STATS_VIEW_HEIGHT}
         />
-      ) : view === "mail" ? (
+      ) : view === "plans" ? (
+        <PlansTab
+          plans={plans}
+          loading={plansLoading}
+          error={plansError}
+          disconnected={plansDisconnected}
+          selectedIndex={plansSelectedIndex}
+          expandedPlan={expandedPlan}
+          selectedStep={selectedStep}
+          metrics={planMetrics}
+          metricsLoading={planMetricsLoading}
+        />
+      ) : (
         <MailViewer
           messages={mailMessages}
           selectedIndex={mailSelectedIndex}
           expandedMessage={expandedMessage}
           scrollOffset={mailScrollOffset}
-        />
-      ) : (
-        <PlansTab
-          plans={plansData}
-          loading={plansLoading}
-          error={plansError}
-          selectedIndex={plansSelectedIndex}
-          expandedPlan={expandedPlan}
-          selectedStep={selectedStep}
-          disconnected={plansDisconnected}
         />
       )}
       <Footer

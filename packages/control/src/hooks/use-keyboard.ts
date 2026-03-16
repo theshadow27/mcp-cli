@@ -17,7 +17,7 @@ import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail", "plans"] as const;
+export const ALL_TABS = ["servers", "logs", "claude", "stats", "plans", "mail"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
@@ -106,8 +106,8 @@ interface UseKeyboardOptions {
   logsNav: LogsNav;
   claudeNav: ClaudeNav;
   statsNav: StatsNav;
-  mailNav: MailNav;
   plansNav: PlansNav;
+  mailNav: MailNav;
 }
 
 export function useKeyboard({
@@ -117,8 +117,8 @@ export function useKeyboard({
   logsNav,
   claudeNav,
   statsNav,
-  mailNav,
   plansNav,
+  mailNav,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
@@ -147,7 +147,7 @@ export function useKeyboard({
       }
       const formatted = entries
         .map((e) => {
-          const dir = e.direction === "outbound" ? "→" : "←";
+          const dir = e.direction === "outbound" ? "\u2192" : "\u2190";
           const ts = new Date(e.timestamp).toISOString();
           const summary = summarizeEntry(e);
           const full = formatFullEntry(e);
@@ -274,10 +274,10 @@ export function useKeyboard({
       handleClaudeInput(input, key, claudeNav);
     } else if (view === "stats") {
       handleStatsInput(input, key, statsNav);
-    } else if (view === "mail") {
-      handleMailInput(input, key, mailNav);
     } else if (view === "plans") {
       handlePlansInput(input, key, plansNav);
+    } else if (view === "mail") {
+      handleMailInput(input, key, mailNav);
     } else if (view === "servers") {
       handleServersInput(input, key, serversNav);
     }

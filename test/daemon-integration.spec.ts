@@ -69,10 +69,13 @@ describe("P1: Daemon lifecycle", () => {
   });
 
   test("idle timeout fires and process exits", async () => {
-    daemon = await startTestDaemon({}, { idleTimeout: 2_000 });
+    // Skip virtual servers — their variable startup time defers the idle timer
+    // via hasPendingServers(), which was the root cause of the 15s margin (#492).
+    daemon = await startTestDaemon({}, { idleTimeout: 2_000, skipVirtualServers: true });
 
-    // Daemon should exit within a reasonable window (2s idle + generous margin for loaded CI)
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(15_000).then(() => "timeout" as const)]);
+    // With no virtual servers, idle timer starts immediately on daemon ready.
+    // 2s idle + 3s margin = 5s total should be plenty, even on slow CI.
+    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(5_000).then(() => "timeout" as const)]);
     expect(exitCode).toBe(0);
     daemon = undefined;
   });

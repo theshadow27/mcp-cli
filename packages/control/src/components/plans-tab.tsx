@@ -1,8 +1,9 @@
-import type { Plan } from "@mcp-cli/core";
+import type { Plan, PlanMetrics } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
+import { MetricsPanel } from "./metrics-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
 
@@ -14,6 +15,8 @@ interface PlansTabProps {
   expandedPlan: ExpandedPlanKey | null;
   selectedStep: number;
   disconnected?: boolean;
+  metrics: PlanMetrics | null;
+  metricsLoading: boolean;
 }
 
 export function PlansTab({
@@ -24,6 +27,8 @@ export function PlansTab({
   expandedPlan,
   selectedStep,
   disconnected,
+  metrics,
+  metricsLoading,
 }: PlansTabProps) {
   if (loading && plans.length === 0) {
     return <Text dimColor>Loading plans...</Text>;
@@ -53,6 +58,12 @@ export function PlansTab({
             <GatePanel gates={currentStep.gates} stepName={currentStep.name} />
           ) : null}
         </Box>
+      ) : null}
+      {metrics && !metricsLoading ? (
+        <MetricsPanel
+          label={plans[selectedIndex]?.steps.find((s) => s.id === plans[selectedIndex]?.activeStepId)?.name ?? plans[selectedIndex]?.name ?? ""}
+          metrics={metrics}
+        />
       ) : null}
     </Box>
   );

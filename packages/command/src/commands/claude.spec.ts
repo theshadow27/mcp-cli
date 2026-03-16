@@ -464,6 +464,27 @@ describe("cmdClaude", () => {
 // ── spawn ──
 
 describe("mcx claude spawn", () => {
+  test("--help prints usage and does not call tool", async () => {
+    const callTool = mock(async () => toolResult({ success: true }));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["spawn", "--help"], deps);
+      expect(callTool).not.toHaveBeenCalled();
+      const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
+      expect(output).toContain("mcx claude spawn");
+      expect(output).toContain("--task");
+      expect(output).toContain("--worktree");
+      expect(output).toContain("--allow");
+      expect(output).toContain("Examples:");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("calls claude_prompt with task", async () => {
     const callTool = mock(async () => toolResult({ sessionId: "abc", success: true, cost: 0.01 }));
     const deps = makeDeps({ callTool });
