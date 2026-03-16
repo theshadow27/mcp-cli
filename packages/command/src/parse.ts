@@ -158,7 +158,7 @@ export function extractDryRunFlag(args: string[]): { dryRun: boolean; rest: stri
   let dryRun = false;
 
   for (const arg of args) {
-    if (arg === "--dry-run" || arg === "-n") {
+    if (arg === "--dry-run") {
       dryRun = true;
     } else {
       rest.push(arg);

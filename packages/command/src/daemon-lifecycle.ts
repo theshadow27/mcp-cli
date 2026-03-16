@@ -48,6 +48,20 @@ export function _resetStartCooldown(): void {
   lastStartFailureAt = 0;
 }
 
+/** Keys whose values must be redacted in verbose output to prevent secret leakage */
+const REDACTED_KEY_PATTERN = /token|secret|key|password|credential|auth|apikey/i;
+
+/** Redact sensitive values from an object before logging */
+export function redactSecrets(obj: unknown): unknown {
+  if (obj === null || obj === undefined || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(redactSecrets);
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[k] = REDACTED_KEY_PATTERN.test(k) ? "[REDACTED]" : redactSecrets(v);
+  }
+  return result;
+}
+
 /** Log a verbose message to stderr when MCX_VERBOSE=1 */
 export function verboseLog(message: string): void {
   if (process.env.MCX_VERBOSE === "1") {
@@ -67,7 +81,7 @@ export async function ipcCall<M extends IpcMethod>(
   await ensureDaemon();
   const verbose = process.env.MCX_VERBOSE === "1";
   if (verbose) {
-    const paramStr = params !== undefined ? ` ${JSON.stringify(params)}` : "";
+    const paramStr = params !== undefined ? ` ${JSON.stringify(redactSecrets(params))}` : "";
     const timeoutStr = opts?.timeoutMs ? ` (timeout: ${opts.timeoutMs}ms)` : "";
     console.error(`[mcx] ipc → ${method}${paramStr}${timeoutStr}`);
   }

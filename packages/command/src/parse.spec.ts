@@ -228,10 +228,10 @@ describe("extractDryRunFlag", () => {
     });
   });
 
-  test("extracts -n flag", () => {
+  test("does not match -n (reserved for other commands like logs, claude)", () => {
     expect(extractDryRunFlag(["-n", "call", "server", "tool"])).toEqual({
-      dryRun: true,
-      rest: ["call", "server", "tool"],
+      dryRun: false,
+      rest: ["-n", "call", "server", "tool"],
     });
   });
 

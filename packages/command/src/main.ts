@@ -71,6 +71,9 @@ import {
 } from "./parse";
 import { searchRegistry } from "./registry/client";
 
+/** Module-level dry-run flag — avoids env var propagation to child processes (Bun.spawn inherits env) */
+let _dryRun = false;
+
 async function main(): Promise<void> {
   checkDeprecatedName(process.argv[1] ?? "");
   const args = process.argv.slice(2);
@@ -88,10 +91,21 @@ async function main(): Promise<void> {
   // Extract global flags before command dispatch
   const { verbose, rest: afterVerbose } = extractVerboseFlag(args);
   const { dryRun, rest: cleanArgs } = extractDryRunFlag(afterVerbose);
+  _dryRun = dryRun;
   if (verbose) process.env.MCX_VERBOSE = "1";
-  if (dryRun) process.env.MCX_DRY_RUN = "1";
 
   const command = cleanArgs[0];
+
+  // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
+  if (dryRun && command && command !== "call") {
+    const isShorthand =
+      !command.startsWith("-") &&
+      (splitServerTool(command) !== null || (cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")));
+    if (!isShorthand) {
+      printError(`--dry-run is only supported for the 'call' command, not '${command}'`);
+      process.exit(1);
+    }
+  }
 
   try {
     switch (command) {
@@ -364,7 +378,7 @@ async function cmdCall(args: string[]): Promise<void> {
   const toolTimeoutMs = timeoutMs ?? MCP_TOOL_TIMEOUT_MS;
 
   // --dry-run: show what would be called without executing
-  if (process.env.MCX_DRY_RUN === "1") {
+  if (_dryRun) {
     const call = {
       method: "callTool" as const,
       server,
@@ -763,7 +777,7 @@ Options:
   --jq '<filter>'                   Apply jq filter to call output (client-side)
   --full, -f                        Bypass output size protection (call)
   --verbose, -V                     Show IPC requests/responses and debug info (stderr)
-  --dry-run, -n                     Show what would be executed without running it (call)
+  --dry-run                         Show what would be executed without running it (call)
 
 Examples:
   mcx ls atlassian

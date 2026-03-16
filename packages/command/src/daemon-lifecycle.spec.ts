@@ -12,6 +12,7 @@ import {
   isDaemonInitializing,
   isDaemonRunning,
   isProcessMcpd,
+  redactSecrets,
   resolveDaemonCommand,
   verboseLog,
 } from "./daemon-lifecycle";
@@ -21,7 +22,7 @@ import {
 describe("verboseLog", () => {
   const origVerbose = process.env.MCX_VERBOSE;
   afterEach(() => {
-    if (origVerbose === undefined) process.env.MCX_VERBOSE = undefined;
+    if (origVerbose === undefined) Reflect.deleteProperty(process.env, "MCX_VERBOSE");
     else process.env.MCX_VERBOSE = origVerbose;
   });
 
@@ -49,6 +50,38 @@ describe("verboseLog", () => {
     } finally {
       console.error = origError;
     }
+  });
+});
+
+// -- redactSecrets --
+
+describe("redactSecrets", () => {
+  test("passes through primitives unchanged", () => {
+    expect(redactSecrets("hello")).toBe("hello");
+    expect(redactSecrets(42)).toBe(42);
+    expect(redactSecrets(null)).toBeNull();
+    expect(redactSecrets(undefined)).toBeUndefined();
+  });
+
+  test("redacts keys matching sensitive patterns", () => {
+    expect(redactSecrets({ apiKey: "sk-123", name: "test" })).toEqual({
+      apiKey: "[REDACTED]",
+      name: "test",
+    });
+    expect(redactSecrets({ token: "abc", password: "secret" })).toEqual({
+      token: "[REDACTED]",
+      password: "[REDACTED]",
+    });
+  });
+
+  test("redacts nested sensitive keys", () => {
+    expect(redactSecrets({ config: { authToken: "xyz", host: "localhost" } })).toEqual({
+      config: { authToken: "[REDACTED]", host: "localhost" },
+    });
+  });
+
+  test("handles arrays", () => {
+    expect(redactSecrets([{ secret: "x" }, { name: "y" }])).toEqual([{ secret: "[REDACTED]" }, { name: "y" }]);
   });
 });
 
