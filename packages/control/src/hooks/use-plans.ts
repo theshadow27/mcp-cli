@@ -12,8 +12,8 @@ export interface UsePlansResult {
   error: string | null;
   /** True when the last poll failed (stale data is shown). */
   disconnected: boolean;
-  /** Force an immediate re-poll. */
-  refresh: () => void;
+  /** Force an immediate re-poll. Accepts optional completion callback. */
+  refresh: (onComplete?: () => void) => void;
 }
 
 export interface UsePlansOptions {

@@ -195,7 +195,7 @@ export function useKeyboard({
       handleLogsInput(input, key, logsNav, serversNav.servers);
       return;
     }
-    if (view === "plans" && plansNav.confirmAbort) {
+    if (view === "plans" && plansNav.confirmAbort && input !== "q" && input !== "s") {
       handlePlansInput(input, key, plansNav);
       return;
     }

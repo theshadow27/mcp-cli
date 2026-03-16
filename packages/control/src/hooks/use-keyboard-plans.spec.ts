@@ -61,6 +61,7 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     statusMessage: overrides.statusMessage ?? null,
     statusType: overrides.statusType ?? null,
     inflight: overrides.inflight ?? false,
+    refreshing: overrides.refreshing ?? false,
   };
 
   return {
@@ -93,6 +94,10 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     inflight: state.inflight as boolean,
     setInflight: (v) => {
       state.inflight = v;
+    },
+    refreshing: state.refreshing as boolean,
+    setRefreshing: (v) => {
+      state.refreshing = v;
     },
     refresh: overrides.refresh ?? (() => {}),
     ipcCallFn: overrides.ipcCallFn,
@@ -435,7 +440,7 @@ describe("handlePlansInput", () => {
   it("r is debounced while already refreshing", () => {
     let refreshCount = 0;
     const nav = makeNav({
-      statusMessage: "Refreshing...",
+      refreshing: true,
       refresh: () => {
         refreshCount++;
       },
@@ -444,7 +449,7 @@ describe("handlePlansInput", () => {
     expect(refreshCount).toBe(0);
   });
 
-  it("r passes completion callback that clears status", () => {
+  it("r passes completion callback that clears status and refreshing flag", () => {
     let onComplete: (() => void) | undefined;
     const nav = makeNav({
       refresh: (cb) => {
@@ -453,10 +458,12 @@ describe("handlePlansInput", () => {
     });
     handlePlansInput("r", baseKey, nav);
     expect(nav.state.statusMessage).toBe("Refreshing...");
+    expect(nav.state.refreshing).toBe(true);
     // Simulate refresh completion
     onComplete?.();
     expect(nav.state.statusMessage).toBeNull();
     expect(nav.state.statusType).toBeNull();
+    expect(nav.state.refreshing).toBe(false);
   });
 
   // -- Unrecognized input --
@@ -469,14 +476,18 @@ describe("handlePlansInput", () => {
 });
 
 describe("clearPlansState", () => {
-  it("clears confirmAbort, statusMessage, and statusType", () => {
+  it("clears confirmAbort, inflight, refreshing, statusMessage, and statusType", () => {
     const nav = makeNav({
       confirmAbort: true,
+      inflight: true,
+      refreshing: true,
       statusMessage: "Abort plan?",
       statusType: "warning",
     });
     clearPlansState(nav);
     expect(nav.state.confirmAbort).toBe(false);
+    expect(nav.state.inflight).toBe(false);
+    expect(nav.state.refreshing).toBe(false);
     expect(nav.state.statusMessage).toBeNull();
     expect(nav.state.statusType).toBeNull();
   });

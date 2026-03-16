@@ -34,6 +34,9 @@ export interface PlansNav {
   setInflight: (v: boolean) => void;
   /** Callback to force-refresh plan data. Accepts optional completion callback. */
   refresh: (onComplete?: () => void) => void;
+  /** Whether a refresh is currently in progress (debounce guard). */
+  refreshing: boolean;
+  setRefreshing: (v: boolean) => void;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
@@ -70,6 +73,8 @@ function setStatus(nav: PlansNav, message: string | null, type: StatusType | nul
 /** Clear all plans-specific modal state (confirmAbort, status, inflight). */
 export function clearPlansState(nav: PlansNav): void {
   nav.setConfirmAbort(false);
+  nav.setInflight(false);
+  nav.setRefreshing(false);
   setStatus(nav, null, null);
 }
 
@@ -128,7 +133,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
             return;
           }
           setStatus(nav, "Plan aborted", "success");
-          nav.refresh();
+          nav.refresh(() => setStatus(nav, null, null));
         })
         .catch((err: unknown) => {
           setStatus(nav, `Abort failed: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -182,7 +187,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
           return;
         }
         setStatus(nav, "Plan advanced", "success");
-        nav.refresh();
+        nav.refresh(() => setStatus(nav, null, null));
       })
       .catch((err: unknown) => {
         setStatus(nav, `Advance failed: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -209,9 +214,13 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
 
   // `r` — Force refresh (debounced: ignore if already refreshing)
   if (input === "r") {
-    if (nav.statusMessage === "Refreshing...") return true;
+    if (nav.refreshing) return true;
+    nav.setRefreshing(true);
     setStatus(nav, "Refreshing...", "info");
-    nav.refresh(() => setStatus(nav, null, null));
+    nav.refresh(() => {
+      nav.setRefreshing(false);
+      setStatus(nav, null, null);
+    });
     return true;
   }
 

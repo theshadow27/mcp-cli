@@ -60,6 +60,7 @@ export function App() {
   const [planStatusMessage, setPlanStatusMessage] = useState<string | null>(null);
   const [planStatusType, setPlanStatusType] = useState<StatusType | null>(null);
   const [planInflight, setPlanInflight] = useState(false);
+  const [planRefreshing, setPlanRefreshing] = useState(false);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -264,6 +265,8 @@ export function App() {
       setStatusType: setPlanStatusType,
       inflight: planInflight,
       setInflight: setPlanInflight,
+      refreshing: planRefreshing,
+      setRefreshing: setPlanRefreshing,
       refresh: plansRefresh,
     },
   });
