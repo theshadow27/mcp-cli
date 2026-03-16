@@ -127,8 +127,8 @@ describe("buildLogSources", () => {
 });
 
 describe("tab navigation", () => {
-  it("ALL_TABS has 5 entries in correct order", () => {
-    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "stats", "mail"]);
+  it("ALL_TABS has 6 entries in correct order", () => {
+    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "stats", "plans", "mail"]);
   });
 
   it("nextTab cycles forward", () => {
@@ -143,17 +143,18 @@ describe("tab navigation", () => {
     expect(prevTab("claude")).toBe("logs");
   });
 
-  it("tabByNumber maps 1-5 to tabs", () => {
+  it("tabByNumber maps 1-6 to tabs", () => {
     expect(tabByNumber(1)).toBe("servers");
     expect(tabByNumber(2)).toBe("logs");
     expect(tabByNumber(3)).toBe("claude");
     expect(tabByNumber(4)).toBe("stats");
-    expect(tabByNumber(5)).toBe("mail");
+    expect(tabByNumber(5)).toBe("plans");
+    expect(tabByNumber(6)).toBe("mail");
   });
 
   it("tabByNumber returns undefined for out-of-range", () => {
     expect(tabByNumber(0)).toBeUndefined();
-    expect(tabByNumber(6)).toBeUndefined();
+    expect(tabByNumber(7)).toBeUndefined();
   });
 });
 

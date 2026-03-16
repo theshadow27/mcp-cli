@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
-import type { View } from "../hooks/use-keyboard.js";
+import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
 
 interface FooterProps {
   view: View;
@@ -70,7 +70,7 @@ export function Footer({
   const tabHints = (
     <>
       <Text dimColor>tab</Text> next{"  "}
-      <Text dimColor>1-5</Text> jump{"  "}
+      <Text dimColor>1-{ALL_TABS.length}</Text> jump{"  "}
     </>
   );
 
@@ -137,6 +137,20 @@ export function Footer({
         <Text>
           {tabHints}
           <Text dimColor>j/k</Text> scroll{"  "}
+          <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>s</Text> shutdown
+        </Text>
+      </Box>
+    );
+  }
+
+  if (view === "plans") {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          {tabHints}
+          <Text dimColor>j/k</Text> navigate{"  "}
           <Text dimColor>esc</Text> back{"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
