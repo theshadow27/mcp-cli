@@ -1,8 +1,8 @@
 import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
-import { hasCapability } from "../hooks/use-keyboard-plans.js";
+import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans.js";
+import { isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
@@ -17,8 +17,16 @@ interface PlansTabProps {
   disconnected?: boolean;
   servers: ServerStatus[];
   statusMessage?: string | null;
+  statusType?: StatusType | null;
   confirmAbort?: boolean;
 }
+
+const STATUS_COLORS: Record<StatusType, string> = {
+  error: "red",
+  success: "green",
+  warning: "yellow",
+  info: "green",
+};
 
 export function PlansTab({
   plans,
@@ -30,6 +38,7 @@ export function PlansTab({
   disconnected,
   servers,
   statusMessage,
+  statusType,
   confirmAbort,
 }: PlansTabProps) {
   if (loading && plans.length === 0) {
@@ -47,10 +56,10 @@ export function PlansTab({
 
   // Check if the selected/expanded plan's server is read-only
   const targetPlan = expanded ?? plans[selectedIndex];
-  const readOnly =
-    targetPlan &&
-    !hasCapability(servers, targetPlan.server, "advance") &&
-    !hasCapability(servers, targetPlan.server, "abort");
+  const readOnly = targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+
+  // Determine status message color from semantic type
+  const statusColor = confirmAbort ? "yellow" : statusType ? STATUS_COLORS[statusType] : "green";
 
   return (
     <Box flexDirection="column">
@@ -77,17 +86,7 @@ export function PlansTab({
       ) : null}
       {statusMessage ? (
         <Box marginTop={readOnly ? 0 : 1}>
-          <Text
-            color={
-              confirmAbort
-                ? "yellow"
-                : statusMessage.startsWith("Gates blocking") || statusMessage.includes("failed")
-                  ? "red"
-                  : "green"
-            }
-          >
-            {statusMessage}
-          </Text>
+          <Text color={statusColor}>{statusMessage}</Text>
         </Box>
       ) : null}
     </Box>

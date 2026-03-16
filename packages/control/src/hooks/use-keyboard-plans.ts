@@ -1,12 +1,14 @@
 import type { Plan, PlanCapability, ServerStatus } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
-import { extractToolText } from "./ipc-tool-helpers.js";
+import { extractToolText } from "./ipc-tool-helpers";
 
 export interface ExpandedPlanKey {
   id: string;
   server: string;
 }
+
+export type StatusType = "error" | "success" | "warning" | "info";
 
 export interface PlansNav {
   plans: Plan[];
@@ -24,8 +26,14 @@ export interface PlansNav {
   /** Inline status/error message shown after actions. */
   statusMessage: string | null;
   setStatusMessage: (msg: string | null) => void;
-  /** Callback to force-refresh plan data. */
-  refresh: () => void;
+  /** Semantic type for status message coloring. */
+  statusType: StatusType | null;
+  setStatusType: (type: StatusType | null) => void;
+  /** Whether an IPC action (advance/abort) is in flight. */
+  inflight: boolean;
+  setInflight: (v: boolean) => void;
+  /** Callback to force-refresh plan data. Accepts optional completion callback. */
+  refresh: (onComplete?: () => void) => void;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
@@ -42,10 +50,49 @@ export function hasCapability(servers: ServerStatus[], serverName: string, cap: 
   return srv?.planCapabilities?.capabilities.includes(cap) ?? false;
 }
 
+/** Check whether a plan's server is read-only (lacks both advance and abort). */
+export function isPlanReadOnly(servers: ServerStatus[], plan: Plan): boolean {
+  return !hasCapability(servers, plan.server, "advance") && !hasCapability(servers, plan.server, "abort");
+}
+
 /** Get the currently selected plan (or expanded plan). */
 function getTargetPlan(nav: PlansNav): Plan | undefined {
   if (nav.expandedPlan) return findExpanded(nav.plans, nav.expandedPlan);
   return nav.plans[nav.selectedIndex];
+}
+
+/** Set both status message and type atomically. */
+function setStatus(nav: PlansNav, message: string | null, type: StatusType | null = null): void {
+  nav.setStatusMessage(message);
+  nav.setStatusType(type);
+}
+
+/** Clear all plans-specific modal state (confirmAbort, status, inflight). */
+export function clearPlansState(nav: PlansNav): void {
+  nav.setConfirmAbort(false);
+  setStatus(nav, null, null);
+}
+
+/** Type-narrow a tool response text for error detection. */
+interface ToolErrorResponse {
+  error: string;
+  blockedGates?: Array<{ name: string }>;
+}
+
+function parseToolError(text: string | null): ToolErrorResponse | null {
+  if (!text) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+      const obj = parsed as Record<string, unknown>;
+      const error = typeof obj.error === "string" ? obj.error : String(obj.error);
+      const blockedGates = Array.isArray(obj.blockedGates) ? (obj.blockedGates as Array<{ name: string }>) : undefined;
+      return { error, blockedGates };
+    }
+  } catch {
+    // not JSON
+  }
+  return null;
 }
 
 /**
@@ -60,39 +107,41 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
   if (nav.confirmAbort) {
     if (input === "y" || input === "Y") {
       const plan = getTargetPlan(nav);
-      if (plan && hasCapability(servers, plan.server, "abort")) {
-        nav.setStatusMessage("Aborting...");
-        callFn("callTool", {
-          server: plan.server,
-          tool: "abort_plan",
-          arguments: { planId: plan.id },
-        })
-          .then((result) => {
-            const text = extractToolText(result);
-            if (text) {
-              try {
-                const parsed = JSON.parse(text);
-                if (parsed.error) {
-                  nav.setStatusMessage(`Abort failed: ${parsed.error}`);
-                  return;
-                }
-              } catch {
-                // not JSON error — treat as success
-              }
-            }
-            nav.setStatusMessage("Plan aborted");
-            nav.refresh();
-          })
-          .catch((err: unknown) => {
-            nav.setStatusMessage(`Abort failed: ${err instanceof Error ? err.message : String(err)}`);
-          });
+      if (!plan || !hasCapability(servers, plan.server, "abort")) {
+        // Plan disappeared or lost capability while confirming
+        nav.setConfirmAbort(false);
+        setStatus(nav, plan ? "Abort failed: capability lost" : "Abort failed: plan no longer exists", "error");
+        return true;
       }
+      setStatus(nav, "Aborting...", "info");
+      nav.setInflight(true);
+      callFn("callTool", {
+        server: plan.server,
+        tool: "abort_plan",
+        arguments: { planId: plan.id },
+      })
+        .then((result) => {
+          const text = extractToolText(result);
+          const err = parseToolError(text);
+          if (err) {
+            setStatus(nav, `Abort failed: ${err.error}`, "error");
+            return;
+          }
+          setStatus(nav, "Plan aborted", "success");
+          nav.refresh();
+        })
+        .catch((err: unknown) => {
+          setStatus(nav, `Abort failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+        })
+        .finally(() => {
+          nav.setInflight(false);
+        });
       nav.setConfirmAbort(false);
       return true;
     }
     // Any other key cancels the confirmation
     nav.setConfirmAbort(false);
-    nav.setStatusMessage(null);
+    setStatus(nav, null, null);
     return true;
   }
 
@@ -100,13 +149,15 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
 
   // `a` — Advance plan
   if (input === "a") {
+    if (nav.inflight) return true; // guard against double-fire
     const plan = getTargetPlan(nav);
     if (!plan) return true;
     if (!hasCapability(servers, plan.server, "advance")) {
-      nav.setStatusMessage("Read-only: server does not support advance_plan");
+      setStatus(nav, "Read-only: server does not support advance_plan", "warning");
       return true;
     }
-    nav.setStatusMessage("Advancing...");
+    setStatus(nav, "Advancing...", "info");
+    nav.setInflight(true);
     const args: Record<string, string> = { planId: plan.id };
     // If a specific step is selected in expanded view, pass it
     if (expandedPlan) {
@@ -120,51 +171,47 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
     })
       .then((result) => {
         const text = extractToolText(result);
-        if (text) {
-          try {
-            const parsed = JSON.parse(text);
-            if (parsed.error) {
-              // Gate error — show which gates are blocking
-              if (parsed.blockedGates && Array.isArray(parsed.blockedGates)) {
-                const gateNames = parsed.blockedGates.map((g: { name: string }) => g.name).join(", ");
-                nav.setStatusMessage(`Gates blocking: ${gateNames}`);
-              } else {
-                nav.setStatusMessage(`Advance failed: ${parsed.error}`);
-              }
-              return;
-            }
-          } catch {
-            // not JSON error — treat as success
+        const err = parseToolError(text);
+        if (err) {
+          if (err.blockedGates && err.blockedGates.length > 0) {
+            const gateNames = err.blockedGates.map((g) => g.name).join(", ");
+            setStatus(nav, `Gates blocking: ${gateNames}`, "error");
+          } else {
+            setStatus(nav, `Advance failed: ${err.error}`, "error");
           }
+          return;
         }
-        nav.setStatusMessage("Plan advanced");
+        setStatus(nav, "Plan advanced", "success");
         nav.refresh();
       })
       .catch((err: unknown) => {
-        nav.setStatusMessage(`Advance failed: ${err instanceof Error ? err.message : String(err)}`);
+        setStatus(nav, `Advance failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      })
+      .finally(() => {
+        nav.setInflight(false);
       });
     return true;
   }
 
   // `x` — Abort plan (enter confirmation mode)
   if (input === "x") {
+    if (nav.inflight) return true; // guard against starting abort while action in flight
     const plan = getTargetPlan(nav);
     if (!plan) return true;
     if (!hasCapability(servers, plan.server, "abort")) {
-      nav.setStatusMessage("Read-only: server does not support abort_plan");
+      setStatus(nav, "Read-only: server does not support abort_plan", "warning");
       return true;
     }
-    nav.setStatusMessage(`Abort plan "${plan.name}"? (y/n)`);
+    setStatus(nav, `Abort plan "${plan.name}"? (y/n)`, "warning");
     nav.setConfirmAbort(true);
     return true;
   }
 
-  // `r` — Force refresh
+  // `r` — Force refresh (debounced: ignore if already refreshing)
   if (input === "r") {
-    nav.setStatusMessage("Refreshing...");
-    nav.refresh();
-    // Clear message after a short delay (the refresh callback will update data)
-    setTimeout(() => nav.setStatusMessage(null), 1000);
+    if (nav.statusMessage === "Refreshing...") return true;
+    setStatus(nav, "Refreshing...", "info");
+    nav.refresh(() => setStatus(nav, null, null));
     return true;
   }
 

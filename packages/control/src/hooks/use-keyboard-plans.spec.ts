@@ -1,7 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import type { Plan, ServerStatus } from "@mcp-cli/core";
 import type { Key } from "ink";
-import { type ExpandedPlanKey, type PlansNav, handlePlansInput, hasCapability } from "./use-keyboard-plans";
+import {
+  type ExpandedPlanKey,
+  type PlansNav,
+  type StatusType,
+  clearPlansState,
+  handlePlansInput,
+  hasCapability,
+  isPlanReadOnly,
+} from "./use-keyboard-plans";
 
 function makePlan(overrides: Partial<Plan> & { id: string }): Plan {
   return {
@@ -51,6 +59,8 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     selectedStep: overrides.selectedStep ?? 0,
     confirmAbort: overrides.confirmAbort ?? false,
     statusMessage: overrides.statusMessage ?? null,
+    statusType: overrides.statusType ?? null,
+    inflight: overrides.inflight ?? false,
   };
 
   return {
@@ -76,11 +86,28 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     setStatusMessage: (msg) => {
       state.statusMessage = msg;
     },
+    statusType: state.statusType as StatusType | null,
+    setStatusType: (type) => {
+      state.statusType = type;
+    },
+    inflight: state.inflight as boolean,
+    setInflight: (v) => {
+      state.inflight = v;
+    },
     refresh: overrides.refresh ?? (() => {}),
     ipcCallFn: overrides.ipcCallFn,
     state,
     ...overrides,
   };
+}
+
+/** Poll for a condition with a deadline instead of fixed delay. */
+async function pollUntil(fn: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fn()) return;
+    await Bun.sleep(1);
+  }
 }
 
 describe("handlePlansInput", () => {
@@ -222,6 +249,7 @@ describe("handlePlansInput", () => {
     const consumed = handlePlansInput("a", baseKey, nav);
     expect(consumed).toBe(true);
     expect(nav.state.statusMessage).toBe("Advancing...");
+    expect(nav.state.statusType).toBe("info");
     expect(callArgs).toEqual([
       "callTool",
       { server: "test-server", tool: "advance_plan", arguments: { planId: "p1" } },
@@ -254,6 +282,7 @@ describe("handlePlansInput", () => {
     const consumed = handlePlansInput("a", baseKey, nav);
     expect(consumed).toBe(true);
     expect(nav.state.statusMessage).toBe("Read-only: server does not support advance_plan");
+    expect(nav.state.statusType).toBe("warning");
   });
 
   it("advance shows gate error from server response", async () => {
@@ -272,9 +301,34 @@ describe("handlePlansInput", () => {
 
     const nav = makeNav({ ipcCallFn: mockIpc });
     handlePlansInput("a", baseKey, nav);
-    // Wait for the async handler
-    await new Promise((r) => setTimeout(r, 10));
+    // Poll for the async handler to complete
+    await pollUntil(() => nav.state.statusMessage === "Gates blocking: approval, tests");
     expect(nav.state.statusMessage).toBe("Gates blocking: approval, tests");
+    expect(nav.state.statusType).toBe("error");
+  });
+
+  it("advance is blocked while inflight", () => {
+    let called = false;
+    const mockIpc = (() => {
+      called = true;
+      return Promise.resolve({ content: [{ type: "text", text: "{}" }] });
+    }) as PlansNav["ipcCallFn"];
+
+    const nav = makeNav({ ipcCallFn: mockIpc, inflight: true });
+    const consumed = handlePlansInput("a", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(called).toBe(false);
+  });
+
+  it("advance sets and clears inflight", async () => {
+    const mockIpc = (() =>
+      Promise.resolve({ content: [{ type: "text", text: '{"plan":{}}' }] })) as PlansNav["ipcCallFn"];
+
+    const nav = makeNav({ ipcCallFn: mockIpc });
+    handlePlansInput("a", baseKey, nav);
+    expect(nav.state.inflight).toBe(true);
+    await pollUntil(() => !(nav.state.inflight as boolean));
+    expect(nav.state.inflight).toBe(false);
   });
 
   // -- Abort (x) --
@@ -286,6 +340,7 @@ describe("handlePlansInput", () => {
     expect(nav.state.confirmAbort).toBe(true);
     expect(nav.state.statusMessage).toContain("Abort plan");
     expect(nav.state.statusMessage).toContain("(y/n)");
+    expect(nav.state.statusType).toBe("warning");
   });
 
   it("x shows read-only message when server lacks abort capability", () => {
@@ -295,6 +350,14 @@ describe("handlePlansInput", () => {
     handlePlansInput("x", baseKey, nav);
     expect(nav.state.confirmAbort).toBe(false);
     expect(nav.state.statusMessage).toBe("Read-only: server does not support abort_plan");
+    expect(nav.state.statusType).toBe("warning");
+  });
+
+  it("x is blocked while inflight", () => {
+    const nav = makeNav({ inflight: true });
+    const consumed = handlePlansInput("x", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.state.confirmAbort).toBe(false);
   });
 
   it("y confirms abort and calls ipc", () => {
@@ -311,12 +374,22 @@ describe("handlePlansInput", () => {
     expect(callArgs).toEqual(["callTool", { server: "test-server", tool: "abort_plan", arguments: { planId: "p1" } }]);
   });
 
+  it("y handles missing plan gracefully", () => {
+    const nav = makeNav({ confirmAbort: true, plans: [] });
+    const consumed = handlePlansInput("y", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.state.confirmAbort).toBe(false);
+    expect(nav.state.statusMessage).toContain("no longer exists");
+    expect(nav.state.statusType).toBe("error");
+  });
+
   it("n cancels abort confirmation", () => {
     const nav = makeNav({ confirmAbort: true });
     const consumed = handlePlansInput("n", baseKey, nav);
     expect(consumed).toBe(true);
     expect(nav.state.confirmAbort).toBe(false);
     expect(nav.state.statusMessage).toBeNull();
+    expect(nav.state.statusType).toBeNull();
   });
 
   it("any key other than y cancels abort confirmation", () => {
@@ -332,6 +405,17 @@ describe("handlePlansInput", () => {
     expect(nav.state.selectedIndex).toBe(0);
   });
 
+  it("abort sets and clears inflight", async () => {
+    const mockIpc = (() =>
+      Promise.resolve({ content: [{ type: "text", text: '{"plan":{}}' }] })) as PlansNav["ipcCallFn"];
+
+    const nav = makeNav({ confirmAbort: true, ipcCallFn: mockIpc });
+    handlePlansInput("y", baseKey, nav);
+    expect(nav.state.inflight).toBe(true);
+    await pollUntil(() => !(nav.state.inflight as boolean));
+    expect(nav.state.inflight).toBe(false);
+  });
+
   // -- Refresh (r) --
 
   it("r calls refresh callback", () => {
@@ -345,6 +429,34 @@ describe("handlePlansInput", () => {
     expect(consumed).toBe(true);
     expect(refreshed).toBe(true);
     expect(nav.state.statusMessage).toBe("Refreshing...");
+    expect(nav.state.statusType).toBe("info");
+  });
+
+  it("r is debounced while already refreshing", () => {
+    let refreshCount = 0;
+    const nav = makeNav({
+      statusMessage: "Refreshing...",
+      refresh: () => {
+        refreshCount++;
+      },
+    });
+    handlePlansInput("r", baseKey, nav);
+    expect(refreshCount).toBe(0);
+  });
+
+  it("r passes completion callback that clears status", () => {
+    let onComplete: (() => void) | undefined;
+    const nav = makeNav({
+      refresh: (cb) => {
+        onComplete = cb;
+      },
+    });
+    handlePlansInput("r", baseKey, nav);
+    expect(nav.state.statusMessage).toBe("Refreshing...");
+    // Simulate refresh completion
+    onComplete?.();
+    expect(nav.state.statusMessage).toBeNull();
+    expect(nav.state.statusType).toBeNull();
   });
 
   // -- Unrecognized input --
@@ -353,6 +465,20 @@ describe("handlePlansInput", () => {
     const nav = makeNav();
     const consumed = handlePlansInput("z", baseKey, nav);
     expect(consumed).toBe(false);
+  });
+});
+
+describe("clearPlansState", () => {
+  it("clears confirmAbort, statusMessage, and statusType", () => {
+    const nav = makeNav({
+      confirmAbort: true,
+      statusMessage: "Abort plan?",
+      statusType: "warning",
+    });
+    clearPlansState(nav);
+    expect(nav.state.confirmAbort).toBe(false);
+    expect(nav.state.statusMessage).toBeNull();
+    expect(nav.state.statusType).toBeNull();
   });
 });
 
@@ -375,5 +501,25 @@ describe("hasCapability", () => {
   it("returns false when server has no planCapabilities", () => {
     const servers = [makeServer("srv")];
     expect(hasCapability(servers, "srv", "advance")).toBe(false);
+  });
+});
+
+describe("isPlanReadOnly", () => {
+  it("returns true when server lacks both advance and abort", () => {
+    const servers = [makeServer("srv", ["list", "get"])];
+    const plan = makePlan({ id: "p1", server: "srv" });
+    expect(isPlanReadOnly(servers, plan)).toBe(true);
+  });
+
+  it("returns false when server has advance", () => {
+    const servers = [makeServer("srv", ["list", "advance"])];
+    const plan = makePlan({ id: "p1", server: "srv" });
+    expect(isPlanReadOnly(servers, plan)).toBe(false);
+  });
+
+  it("returns false when server has abort", () => {
+    const servers = [makeServer("srv", ["list", "abort"])];
+    const plan = makePlan({ id: "p1", server: "srv" });
+    expect(isPlanReadOnly(servers, plan)).toBe(false);
   });
 });

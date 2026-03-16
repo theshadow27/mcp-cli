@@ -34,8 +34,10 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   const [error, setError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
   const [tick, setTick] = useState(0);
+  const refreshCallbackRef = useRef<(() => void) | null>(null);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((onComplete?: () => void) => {
+    refreshCallbackRef.current = onComplete ?? null;
     setTick((t) => t + 1);
   }, []);
 
@@ -83,11 +85,19 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         setError(null);
         setDisconnected(false);
         setLoading(false);
+        if (refreshCallbackRef.current) {
+          refreshCallbackRef.current();
+          refreshCallbackRef.current = null;
+        }
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
         setDisconnected(true);
         setLoading(false);
+        if (refreshCallbackRef.current) {
+          refreshCallbackRef.current();
+          refreshCallbackRef.current = null;
+        }
       }
     }
 

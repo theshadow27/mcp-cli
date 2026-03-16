@@ -14,7 +14,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
-import { type ExpandedPlanKey, hasCapability } from "./hooks/use-keyboard-plans.js";
+import { type ExpandedPlanKey, type StatusType, isPlanReadOnly } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -58,6 +58,8 @@ export function App() {
   const [selectedStep, setSelectedStep] = useState(0);
   const [planConfirmAbort, setPlanConfirmAbort] = useState(false);
   const [planStatusMessage, setPlanStatusMessage] = useState<string | null>(null);
+  const [planStatusType, setPlanStatusType] = useState<StatusType | null>(null);
+  const [planInflight, setPlanInflight] = useState(false);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -258,6 +260,10 @@ export function App() {
       setConfirmAbort: setPlanConfirmAbort,
       statusMessage: planStatusMessage,
       setStatusMessage: setPlanStatusMessage,
+      statusType: planStatusType,
+      setStatusType: setPlanStatusType,
+      inflight: planInflight,
+      setInflight: setPlanInflight,
       refresh: plansRefresh,
     },
   });
@@ -340,6 +346,7 @@ export function App() {
           disconnected={plansDisconnected}
           servers={servers}
           statusMessage={planStatusMessage}
+          statusType={planStatusType}
           confirmAbort={planConfirmAbort}
         />
       )}
@@ -359,10 +366,7 @@ export function App() {
           const targetPlan = expandedPlan
             ? plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
             : plansData[plansSelectedIndex];
-          return targetPlan
-            ? !hasCapability(servers, targetPlan.server, "advance") &&
-                !hasCapability(servers, targetPlan.server, "abort")
-            : false;
+          return targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
         })()}
       />
     </Box>
