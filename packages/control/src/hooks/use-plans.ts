@@ -13,8 +13,13 @@ import { extractToolText } from "./ipc-tool-helpers.js";
 
 // -- Claude plan helpers --
 
-/** Max transcript entries to scan for plan data per session. */
-const CLAUDE_TRANSCRIPT_LIMIT = 100;
+/**
+ * Max transcript entries to scan for plan data per session.
+ * Must be large enough to capture TodoWrite calls from early in a session —
+ * the daemon returns the tail (most recent N), so a low limit silently
+ * misses old TodoWrites and falls back to the markdown heuristic.
+ */
+const CLAUDE_TRANSCRIPT_LIMIT = 500;
 
 /** Session states worth scanning for plan data. */
 const LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
@@ -72,7 +77,7 @@ async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelRef: { current:
   } catch (err) {
     // _claude server not available is expected — only log unexpected errors
     if (!(err instanceof Error && err.message.includes("not found"))) {
-      process.stderr.write(`[use-plans] fetchClaudePlans failed: ${err}\n`);
+      console.error("[use-plans] fetchClaudePlans failed:", err);
     }
     return [];
   }
@@ -106,6 +111,10 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   const [error, setError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
 
+  // Store ipcCallFn in a ref so callers don't need to memoize it
+  const ipcCallRef = useRef(ipcCallFn);
+  ipcCallRef.current = ipcCallFn;
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -113,7 +122,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
 
     async function poll() {
       try {
-        const status = await ipcCallFn("status");
+        const status = await ipcCallRef.current("status");
         if (cancelRef.current) return;
 
         const planServers = status.servers.filter(
@@ -128,7 +137,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
           Promise.allSettled(
             planServers.map(async (srv: ServerStatus) => {
               try {
-                const result = await ipcCallFn("callTool", {
+                const result = await ipcCallRef.current("callTool", {
                   server: srv.name,
                   tool: "list_plans",
                   arguments: {},
@@ -145,7 +154,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
               }
             }),
           ),
-          fetchClaudePlans(ipcCallFn, cancelRef),
+          fetchClaudePlans(ipcCallRef.current, cancelRef),
         ]);
 
         if (cancelRef.current) return;
@@ -179,7 +188,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
       cancelRef.current = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [intervalMs, enabled, ipcCallFn]);
+  }, [intervalMs, enabled]);
 
   return { plans, loading, error, disconnected };
 }
@@ -218,6 +227,9 @@ export function usePlan(planId: string, server: string, opts: UsePlanOptions = {
   const [error, setError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
 
+  const ipcCallRef = useRef(ipcCallFn);
+  ipcCallRef.current = ipcCallFn;
+
   useEffect(() => {
     if (!enabled || !planId || !server) return;
 
@@ -225,7 +237,7 @@ export function usePlan(planId: string, server: string, opts: UsePlanOptions = {
 
     async function fetch() {
       try {
-        const result = await ipcCallFn("callTool", {
+        const result = await ipcCallRef.current("callTool", {
           server,
           tool: "get_plan",
           arguments: { planId },
@@ -254,7 +266,7 @@ export function usePlan(planId: string, server: string, opts: UsePlanOptions = {
     return () => {
       cancelled = true;
     };
-  }, [planId, server, enabled, ipcCallFn]);
+  }, [planId, server, enabled]);
 
   return { plan, loading, error, canAdvance, disconnected };
 }
@@ -295,9 +307,11 @@ export function usePlanMetrics(
   const [loading, setLoading] = useState(supportsMetrics);
   const [error, setError] = useState<string | null>(null);
 
-  // Track supportsMetrics in a ref so the effect can read the latest value
+  // Track in refs so callers don't need to memoize
   const supportsRef = useRef(supportsMetrics);
   supportsRef.current = supportsMetrics;
+  const ipcCallRef = useRef(ipcCallFn);
+  ipcCallRef.current = ipcCallFn;
 
   useEffect(() => {
     if (!enabled || !supportsMetrics || !planId || !server) {
@@ -309,7 +323,7 @@ export function usePlanMetrics(
 
     async function poll() {
       try {
-        const result = await ipcCallFn("callTool", {
+        const result = await ipcCallRef.current("callTool", {
           server,
           tool: "get_plan_metrics",
           arguments: stepId ? { planId, stepId } : { planId },
@@ -346,7 +360,7 @@ export function usePlanMetrics(
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [planId, stepId, server, intervalMs, enabled, supportsMetrics, ipcCallFn]);
+  }, [planId, stepId, server, intervalMs, enabled, supportsMetrics]);
 
   return { metrics, loading, error };
 }

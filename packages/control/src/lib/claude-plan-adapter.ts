@@ -126,7 +126,7 @@ export function parseClaudePlanMarkdown(markdown: string, planId: string, sessio
   const phases = parsePhases(markdown);
   if (phases.length === 0) return null;
 
-  const steps: PlanStep[] = phases.map((phase) => {
+  const steps: PlanStep[] = phases.map((phase, index) => {
     const done = phase.tasks.filter((t) => t.checked).length;
 
     let status: PlanStatus;
@@ -135,13 +135,13 @@ export function parseClaudePlanMarkdown(markdown: string, planId: string, sessio
     else status = "pending";
 
     return {
-      id: `phase-${phase.name.toLowerCase().replace(/\s+/g, "-").slice(0, 32)}`,
+      id: `phase-${index}`,
       name: phase.name,
       status,
     };
   });
 
-  const activeStep = steps.find((s) => s.status === "active") ?? steps.find((s) => s.status === "pending");
+  const activeStep = steps.find((s) => s.status === "active");
   const allComplete = steps.every((s) => s.status === "complete");
   const anyActive = steps.some((s) => s.status === "active");
 

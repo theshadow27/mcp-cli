@@ -206,6 +206,18 @@ Just regular text here.`;
     expect(plan?.steps[0].status).toBe("active");
   });
 
+  it("does not set activeStepId when all steps are pending", () => {
+    const md = `## Phase 1
+- [ ] Task A
+
+## Phase 2
+- [ ] Task B`;
+
+    const plan = parseClaudePlanMarkdown(md, "plan-1", "sess");
+    expect(plan?.activeStepId).toBeUndefined();
+    expect(plan?.status).toBe("pending");
+  });
+
   it("sets plan status to complete when all phases are complete", () => {
     const md = `## Phase 1
 - [x] Task A
@@ -218,7 +230,7 @@ Just regular text here.`;
     expect(plan?.status).toBe("complete");
   });
 
-  it("generates content-based step IDs", () => {
+  it("generates positional step IDs", () => {
     const md = `## Phase 1: Setup
 - [x] Task A
 
@@ -226,8 +238,8 @@ Just regular text here.`;
 - [ ] Task B`;
 
     const plan = parseClaudePlanMarkdown(md, "plan-1", "sess");
-    expect(plan?.steps[0].id).toBe("phase-phase-1:-setup");
-    expect(plan?.steps[1].id).toBe("phase-phase-2:-implementation");
+    expect(plan?.steps[0].id).toBe("phase-0");
+    expect(plan?.steps[1].id).toBe("phase-1");
   });
 
   it("skips headings without checkbox tasks", () => {
