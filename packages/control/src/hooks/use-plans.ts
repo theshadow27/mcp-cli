@@ -1,7 +1,7 @@
 import type { Plan, PlanMetrics, ServerStatus } from "@mcp-cli/core";
 import { GetPlanMetricsResultSchema, GetPlanResultSchema, ListPlansResultSchema } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
 // -- usePlans --
@@ -72,6 +72,8 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
 
         if (cancelled) return;
         const allFailed = planServers.length > 0 && successCount === 0;
+        // Sort deterministically so Promise.allSettled arrival order doesn't shift the list
+        allPlans.sort((a, b) => a.server.localeCompare(b.server) || a.id.localeCompare(b.id));
         setPlans(allPlans);
         setError(null);
         setDisconnected(allFailed);
@@ -215,15 +217,16 @@ export function usePlanMetrics(
   const [loading, setLoading] = useState(supportsMetrics);
   const [error, setError] = useState<string | null>(null);
 
-  // Track supportsMetrics in a ref so the effect can read the latest value
-  const supportsRef = useRef(supportsMetrics);
-  supportsRef.current = supportsMetrics;
-
   useEffect(() => {
     if (!enabled || !supportsMetrics || !planId || !server) {
+      setMetrics(null);
       setLoading(false);
       return;
     }
+
+    // Clear stale metrics from the previous plan/step before polling the new one
+    setMetrics(null);
+    setLoading(true);
 
     let cancelled = false;
 

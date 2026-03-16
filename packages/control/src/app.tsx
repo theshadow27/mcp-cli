@@ -1,5 +1,6 @@
+import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { ClaudeSessionList } from "./components/claude-session-list.js";
 import { Footer } from "./components/footer.js";
@@ -53,6 +54,9 @@ export function App() {
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
+  /** Track which plan is selected by identity so refreshes don't shift selection. */
+  const plansSelectionIdRef = useRef<{ server: string; id: string } | null>(null);
+  const plansRef = useRef<Plan[]>([]);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -87,6 +91,15 @@ export function App() {
     error: plansError,
     disconnected: plansDisconnected,
   } = usePlans({ enabled: plansEnabled });
+  plansRef.current = plans;
+  const setPlansSelectedIndexTracked = useCallback((updater: number | ((i: number) => number)) => {
+    setPlansSelectedIndex((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      const plan = plansRef.current[next];
+      if (plan) plansSelectionIdRef.current = { server: plan.server, id: plan.id };
+      return next;
+    });
+  }, []);
   const selectedPlan = plans[plansSelectedIndex] ?? null;
   const selectedPlanServer = selectedPlan?.server ?? "";
   const supportsMetrics =
@@ -139,10 +152,18 @@ export function App() {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
 
-  // Clamp plansSelectedIndex when plans list shrinks
+  // Restore selection by identity when plans list refreshes, fall back to clamp
   useEffect(() => {
+    const id = plansSelectionIdRef.current;
+    if (id && plans.length > 0) {
+      const idx = plans.findIndex((p) => p.server === id.server && p.id === id.id);
+      if (idx >= 0) {
+        setPlansSelectedIndex(idx);
+        return;
+      }
+    }
     setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plans.length - 1)));
-  }, [plans.length]);
+  }, [plans]);
 
   // Clear orphaned expandedMessage when the message disappears from the list
   useEffect(() => {
@@ -231,7 +252,7 @@ export function App() {
     },
     plansNav: {
       selectedIndex: plansSelectedIndex,
-      setSelectedIndex: setPlansSelectedIndex,
+      setSelectedIndex: setPlansSelectedIndexTracked,
       planCount: plans.length,
     },
     mailNav: {
