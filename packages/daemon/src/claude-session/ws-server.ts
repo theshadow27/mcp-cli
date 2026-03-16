@@ -1474,6 +1474,12 @@ function defaultSpawn(
   // it's a nested session and refuse to start.
   const env = { ...process.env };
   env.CLAUDECODE = undefined;
+  // Shells set PWD on cd; Bun.spawn only does chdir(). Without this,
+  // the spawned process inherits the daemon's PWD and tools that read
+  // $PWD (instead of getcwd()) operate in the wrong directory.
+  if (opts.cwd) {
+    env.PWD = opts.cwd;
+  }
 
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,

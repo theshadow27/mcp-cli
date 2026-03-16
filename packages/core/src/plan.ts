@@ -58,9 +58,12 @@ export type Plan = z.infer<typeof PlanSchema>;
 // -- Capability --
 
 export const PlanCapabilityValues = ["list", "get", "advance", "abort", "metrics"] as const;
-export type PlanCapability = (typeof PlanCapabilityValues)[number];
 
-export const PlanCapabilitySchema = z.enum(PlanCapabilityValues);
+// Open union: known capabilities are typed; unknown strings from newer daemons pass through
+// instead of throwing, preventing CLI crashes when daemon adds new capabilities.
+export type PlanCapability = (typeof PlanCapabilityValues)[number] | string;
+
+export const PlanCapabilitySchema = z.enum(PlanCapabilityValues).or(z.string());
 
 // Array (not Set) so JSON.stringify works correctly over IPC.
 export const PlanProtocolCapabilitySchema = z.object({
@@ -73,12 +76,15 @@ export type PlanProtocolCapability = z.infer<typeof PlanProtocolCapabilitySchema
 
 export const ListPlansParamsSchema = z.object({
   server: z.string().optional(),
+  limit: z.number().optional(),
+  cursor: z.string().optional(),
 });
 
 export type ListPlansParams = z.infer<typeof ListPlansParamsSchema>;
 
 export const ListPlansResultSchema = z.object({
   plans: z.array(PlanSchema),
+  cursor: z.string().optional(),
 });
 
 export type ListPlansResult = z.infer<typeof ListPlansResultSchema>;

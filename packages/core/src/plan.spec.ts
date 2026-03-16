@@ -144,6 +144,16 @@ describe("PlanCapabilitySchema", () => {
       expect(PlanCapabilitySchema.parse(c)).toBe(c);
     }
   });
+
+  test("accepts unknown capability strings (forward compat)", () => {
+    expect(PlanCapabilitySchema.parse("subscribe")).toBe("subscribe");
+    expect(PlanCapabilitySchema.parse("cancel")).toBe("cancel");
+  });
+
+  test("rejects non-string values", () => {
+    expect(() => PlanCapabilitySchema.parse(42)).toThrow();
+    expect(() => PlanCapabilitySchema.parse(null)).toThrow();
+  });
 });
 
 describe("PlanProtocolCapabilitySchema", () => {
@@ -159,6 +169,11 @@ describe("PlanProtocolCapabilitySchema", () => {
     expect(parsed.capabilities).toEqual(["list", "get", "advance"]);
   });
 
+  test("accepts unknown capabilities (forward compat)", () => {
+    const cap = PlanProtocolCapabilitySchema.parse({ capabilities: ["list", "subscribe"] });
+    expect(cap.capabilities).toEqual(["list", "subscribe"]);
+  });
+
   test("rejects non-array", () => {
     expect(() => PlanProtocolCapabilitySchema.parse({ capabilities: "list" })).toThrow();
   });
@@ -168,6 +183,8 @@ describe("IPC param/result schemas", () => {
   test("ListPlansParamsSchema — no filter", () => {
     const params = ListPlansParamsSchema.parse({});
     expect(params.server).toBeUndefined();
+    expect(params.limit).toBeUndefined();
+    expect(params.cursor).toBeUndefined();
   });
 
   test("ListPlansParamsSchema — server filter", () => {
@@ -175,11 +192,28 @@ describe("IPC param/result schemas", () => {
     expect(params.server).toBe("ci");
   });
 
+  test("ListPlansParamsSchema — pagination params", () => {
+    const params = ListPlansParamsSchema.parse({ server: "ci", limit: 10, cursor: "abc123" });
+    expect(params.server).toBe("ci");
+    expect(params.limit).toBe(10);
+    expect(params.cursor).toBe("abc123");
+  });
+
   test("ListPlansResultSchema", () => {
     const result = ListPlansResultSchema.parse({
       plans: [{ id: "p1", name: "X", status: "pending", server: "s", steps: [] }],
     });
     expect(result.plans).toHaveLength(1);
+    expect(result.cursor).toBeUndefined();
+  });
+
+  test("ListPlansResultSchema — with cursor", () => {
+    const result = ListPlansResultSchema.parse({
+      plans: [{ id: "p1", name: "X", status: "pending", server: "s", steps: [] }],
+      cursor: "next-page",
+    });
+    expect(result.plans).toHaveLength(1);
+    expect(result.cursor).toBe("next-page");
   });
 
   test("GetPlanParamsSchema", () => {

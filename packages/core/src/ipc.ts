@@ -204,6 +204,10 @@ export interface DaemonStatus {
   servers: ServerStatus[];
   dbPath: string;
   usageStats: UsageStat[];
+  /** Actual WebSocket port the daemon is listening on (null if not started). */
+  wsPort?: number | null;
+  /** The well-known port the daemon was configured to use. */
+  wsPortExpected?: number;
 }
 
 export interface GetConfigResult {
@@ -328,8 +332,16 @@ export interface ReloadConfigResult {
   ok: true;
 }
 
+export const ShutdownParamsSchema = z.object({
+  force: z.boolean().optional(),
+});
+
 export interface ShutdownResult {
-  ok: true;
+  ok: boolean;
+  /** Present when ok=false — number of active sessions blocking shutdown */
+  activeSessions?: number;
+  /** Present when ok=false — human-readable refusal message */
+  message?: string;
 }
 
 export interface MetricsSnapshot {

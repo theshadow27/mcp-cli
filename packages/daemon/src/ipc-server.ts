@@ -38,6 +38,7 @@ import {
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
   SendMailParamsSchema,
+  ShutdownParamsSchema,
   TriggerAuthParamsSchema,
   WaitForMailParamsSchema,
   bundleAlias,
@@ -77,6 +78,7 @@ export class IpcServer {
   private shutdownScheduled = false;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
+  private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
@@ -95,6 +97,8 @@ export class IpcServer {
       onShutdown?: () => void;
       onReloadConfig?: () => Promise<void>;
       logger?: Logger;
+      /** Returns the current and expected WS port for status reporting. */
+      getWsPortInfo?: () => { actual: number | null; expected: number };
     },
   ) {
     this.daemonId = options.daemonId;
@@ -105,6 +109,7 @@ export class IpcServer {
     this.onReloadConfig = options.onReloadConfig ?? null;
     this.aliasServer = aliasServer;
     this.logger = options.logger ?? consoleLogger;
+    this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.registerHandlers();
   }
 
@@ -281,6 +286,7 @@ export class IpcServer {
         }
       }
 
+      const wsPortInfo = this.getWsPortInfo?.();
       return {
         pid: process.pid,
         uptime: process.uptime(),
@@ -289,6 +295,8 @@ export class IpcServer {
         servers,
         dbPath: options.DB_PATH,
         usageStats,
+        wsPort: wsPortInfo?.actual ?? null,
+        wsPortExpected: wsPortInfo?.expected,
       };
     });
 
@@ -714,7 +722,19 @@ export class IpcServer {
       return { pruned: this.db.pruneSpans(before) };
     });
 
-    this.handlers.set("shutdown", async (_params, _ctx) => {
+    this.handlers.set("shutdown", async (params, _ctx) => {
+      const { force } = ShutdownParamsSchema.parse(params ?? {});
+      // Check force BEFORE querying DB — --force is the escape hatch when DB is degraded
+      if (!force) {
+        const activeSessions = this.db.listSessions(true);
+        if (activeSessions.length > 0) {
+          return {
+            ok: false,
+            activeSessions: activeSessions.length,
+            message: `${activeSessions.length} active session(s). Use --force to shut down anyway.`,
+          };
+        }
+      }
       // Enter drain mode — onShutdown fires after all in-flight responses are sent
       this.draining = true;
       return { ok: true };

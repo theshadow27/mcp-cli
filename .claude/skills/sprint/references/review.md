@@ -16,11 +16,11 @@ vs actual — note what was dropped or added.
 
 Follow [Semantic Versioning](https://semver.org/):
 
-- **Major** (X.0.0): Breaking changes to CLI interface, IPC protocol, config format
-- **Minor** (0.X.0): New features, commands, flags, config options
-- **Patch** (0.0.X): Bug fixes, performance, internal refactors, tests, docs
+- **Major** (X.0.0): Backwards-incompatible change to a top-level command (renamed, removed, changed semantics)
+- **Minor** (0.X.0): New top-level command or new package
+- **Patch** (0.0.X): Everything else — new flags, features, bug fixes, refactors, tests, docs
 
-Think about what the *user* experiences, not commit prefixes.
+Most releases will be patches. Minor is rare (new `mcx <command>`). Major is exceptional.
 
 ## Step 3: Write release notes
 

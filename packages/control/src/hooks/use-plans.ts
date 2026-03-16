@@ -69,6 +69,8 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         );
 
         if (cancelled) return;
+        // Deterministic order: sort by server + id to prevent list jumps across polls
+        allPlans.sort((a, b) => a.server.localeCompare(b.server) || a.id.localeCompare(b.id));
         setPlans(allPlans);
         setError(null);
         setDisconnected(false);

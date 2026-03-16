@@ -12,7 +12,9 @@ import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
+import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
+import type { ExpandedPlanKey } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -28,6 +30,7 @@ const TRANSCRIPT_VIEW_HEIGHT = 15;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
+  const daemonProcessCount = useDaemonProcessCount();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -51,7 +54,7 @@ export function App() {
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
-  const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
+  const [expandedPlan, setExpandedPlan] = useState<ExpandedPlanKey | null>(null);
   const [selectedStep, setSelectedStep] = useState(0);
 
   const servers = status?.servers ?? [];
@@ -137,9 +140,18 @@ export function App() {
 
   // Clear orphaned expandedPlan when the plan disappears
   useEffect(() => {
-    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan)) {
+    if (expandedPlan !== null && !plansData.some((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)) {
       setExpandedPlan(null);
       setSelectedStep(0);
+    }
+  }, [plansData, expandedPlan]);
+
+  // Clamp selectedStep when expanded plan's step count changes
+  useEffect(() => {
+    if (expandedPlan === null) return;
+    const expanded = plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
+    if (expanded) {
+      setSelectedStep((i) => Math.min(i, Math.max(0, expanded.steps.length - 1)));
     }
   }, [plansData, expandedPlan]);
 
@@ -255,7 +267,7 @@ export function App() {
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Header status={status} error={error} />
+      <Header status={status} error={error} daemonProcessCount={daemonProcessCount} />
       <TabBar activeTab={view} badges={badges} />
       {view === "servers" ? (
         <>

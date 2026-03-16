@@ -38,7 +38,14 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
-import { getStaleDaemonWarning, ipcCall, isDaemonInitializing, isDaemonRunning, stopDaemon } from "./daemon-lifecycle";
+import {
+  ShutdownRefusedError,
+  getStaleDaemonWarning,
+  ipcCall,
+  isDaemonInitializing,
+  isDaemonRunning,
+  stopDaemon,
+} from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
@@ -240,10 +247,16 @@ async function main(): Promise<void> {
         await cmdDaemon(args.slice(1));
         break;
 
-      case "shutdown":
-        await ipcCall("shutdown");
+      case "shutdown": {
+        const force = args.includes("--force");
+        const result = await ipcCall("shutdown", { force });
+        if (!result.ok) {
+          printError(result.message ?? "Shutdown refused");
+          process.exit(1);
+        }
         console.error("Daemon shut down.");
         break;
+      }
 
       default: {
         // Check if it looks like "mcx server/tool" (slash notation shorthand)
@@ -575,17 +588,26 @@ async function cmdDaemon(args: string[]): Promise<void> {
   const sub = args[0];
   if (sub === "restart") {
     // Directly stop — does not go through ensureDaemon (avoids ProtocolMismatchError)
+    // restart is intentionally destructive — force:true bypasses active session guard
     console.error("Stopping daemon...");
-    await stopDaemon();
+    await stopDaemon({ force: true });
     // Next ipcCall auto-starts a fresh daemon with current code
     await ipcCall("ping");
     console.error("Daemon restarted.");
   } else if (sub === "shutdown" || sub === "stop") {
-    // Direct stop — no ensureDaemon needed
-    await stopDaemon();
+    const force = args.includes("--force");
+    try {
+      await stopDaemon({ force });
+    } catch (err) {
+      if (err instanceof ShutdownRefusedError) {
+        printError(err.message);
+        process.exit(1);
+      }
+      throw err;
+    }
     console.error("Daemon shut down.");
   } else {
-    printError("Usage: mcx daemon restart|shutdown");
+    printError("Usage: mcx daemon restart|shutdown [--force]");
     process.exit(1);
   }
 }
@@ -702,8 +724,8 @@ Usage:
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
   mcx daemon restart                  Restart the daemon (kills sessions)
-  mcx daemon shutdown                 Stop the daemon
-  mcx shutdown                        Stop the daemon (legacy)
+  mcx daemon shutdown [--force]        Stop the daemon (--force if sessions active)
+  mcx shutdown [--force]              Stop the daemon (legacy)
 
 Aliases:
   mcx alias ls                        List saved aliases

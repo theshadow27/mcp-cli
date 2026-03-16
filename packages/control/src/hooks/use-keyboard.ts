@@ -238,6 +238,9 @@ export function useKeyboard({
     if (key.escape && view !== "servers") {
       if (escAction(view, claudeNav.expandedSession) === "collapse-transcript") {
         claudeNav.setExpandedSession(null);
+        claudeNav.setTranscriptCursor(() => null);
+        claudeNav.setTranscriptScrollOffset(() => 0);
+        claudeNav.setExpandedEntries(() => new Set());
         return;
       }
       if (view === "mail" && mailNav.expandedMessage !== null) {

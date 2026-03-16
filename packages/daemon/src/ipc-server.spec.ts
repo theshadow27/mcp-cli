@@ -49,6 +49,7 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     deleteAlias: () => {},
     getServerLogs: () => [],
     getCachedTools: () => [],
+    listSessions: () => [],
     ...overrides,
   } as never;
 }
@@ -424,6 +425,50 @@ describe("IpcServer HTTP transport", () => {
     expect(closeAllCalled).toBe(true);
   });
 
+  test("shutdown refuses when active sessions exist and force is not set", async () => {
+    socketPath = tmpSocket();
+    const dbWithSessions = mockDb({
+      listSessions: () => [{ sessionId: "s1" }, { sessionId: "s2" }],
+    });
+    server = new IpcServer(mockPool() as never, mockConfig(), dbWithSessions, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "sd-refuse", method: "shutdown" });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.result).toEqual({
+      ok: false,
+      activeSessions: 2,
+      message: "2 active session(s). Use --force to shut down anyway.",
+    });
+  });
+
+  test("shutdown proceeds with force when active sessions exist", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    const dbWithSessions = mockDb({
+      listSessions: () => [{ sessionId: "s1" }],
+    });
+    server = new IpcServer(
+      mockPool() as never,
+      mockConfig(),
+      dbWithSessions,
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+      }),
+    );
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "sd-force", method: "shutdown", params: { force: true } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.result).toEqual({ ok: true });
+
+    await pollUntil(() => shutdownCalled);
+    expect(shutdownCalled).toBe(true);
+  });
+
   test("status response includes usageStats field", async () => {
     startServer();
 
@@ -436,6 +481,35 @@ describe("IpcServer HTTP transport", () => {
     const result = json.result as { usageStats: unknown[] };
     expect(Array.isArray(result.usageStats)).toBe(true);
     expect(result.usageStats).toEqual([]);
+  });
+
+  test("status response includes wsPort info when getWsPortInfo is provided", async () => {
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      getWsPortInfo: () => ({ actual: 54321, expected: 19275 }),
+    });
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "ws1", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { wsPort: number | null; wsPortExpected: number };
+    expect(result.wsPort).toBe(54321);
+    expect(result.wsPortExpected).toBe(19275);
+  });
+
+  test("status response has null wsPort when getWsPortInfo is not provided", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", { id: "ws2", method: "status" });
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as IpcResponse;
+    const result = json.result as { wsPort: number | null; wsPortExpected?: number };
+    expect(result.wsPort).toBeNull();
+    expect(result.wsPortExpected).toBeUndefined();
   });
 
   test("status with usage data aggregates per-server stats onto ServerStatus", async () => {

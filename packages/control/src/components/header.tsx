@@ -5,12 +5,13 @@ import React from "react";
 interface HeaderProps {
   status: DaemonStatus | null;
   error: string | null;
+  daemonProcessCount?: number;
 }
 
 export function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  const s = Math.floor(seconds % 60);
 
   const parts: string[] = [];
   if (h > 0) parts.push(`${h}h`);
@@ -19,7 +20,7 @@ export function formatUptime(seconds: number): string {
   return parts.join(" ");
 }
 
-export function Header({ status, error }: HeaderProps) {
+export function Header({ status, error, daemonProcessCount }: HeaderProps) {
   const servers = status?.servers ?? [];
   const connected = servers.filter((s) => s.state === "connected").length;
   const errored = servers.filter((s) => s.state === "error").length;
@@ -49,6 +50,16 @@ export function Header({ status, error }: HeaderProps) {
       ) : error ? (
         <Text color="red">Daemon: {error}</Text>
       ) : null}
+
+      {status?.wsPort != null && status.wsPortExpected != null && status.wsPort !== status.wsPortExpected && (
+        <Text color="yellow">
+          {"⚠ WS on port "}
+          {status.wsPort}
+          {" (expected "}
+          {status.wsPortExpected}
+          {") — CLI sessions may not reconnect after restart"}
+        </Text>
+      )}
 
       <Text>
         <Text dimColor>Servers: </Text>
@@ -103,6 +114,13 @@ export function Header({ status, error }: HeaderProps) {
               <Text color={totalErrors === 0 ? "green" : "yellow"}>{successRate}% success</Text>
             </Text>
           )}
+        </Text>
+      )}
+
+      {(daemonProcessCount ?? 0) > 1 && (
+        <Text color="yellow">
+          {"⚠"} {daemonProcessCount} mcpd processes running — daemon may behave erratically. Run `killall mcpd && mcx
+          status` to clean up.
         </Text>
       )}
 
