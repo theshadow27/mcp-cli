@@ -52,13 +52,23 @@ export function Header({ status, error, daemonProcessCount }: HeaderProps) {
       ) : null}
 
       {status?.wsPort != null && status.wsPortExpected != null && status.wsPort !== status.wsPortExpected && (
-        <Text color="yellow">
-          {"⚠ WS on port "}
-          {status.wsPort}
-          {" (expected "}
-          {status.wsPortExpected}
-          {") — CLI sessions may not reconnect after restart"}
-        </Text>
+        <Box flexDirection="column">
+          <Text color="yellow">
+            {"⚠ WS on port "}
+            {status.wsPort}
+            {" (expected "}
+            {status.wsPortExpected}
+            {") — CLI sessions may not reconnect after restart"}
+          </Text>
+          {status.wsPortHolder && (
+            <Text color="yellow">
+              {"  Port "}
+              {status.wsPortExpected}
+              {" held by: "}
+              {status.wsPortHolder}
+            </Text>
+          )}
+        </Box>
       )}
 
       <Text>
