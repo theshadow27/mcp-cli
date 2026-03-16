@@ -13,7 +13,44 @@ import {
   isDaemonRunning,
   isProcessMcpd,
   resolveDaemonCommand,
+  verboseLog,
 } from "./daemon-lifecycle";
+
+// -- verboseLog --
+
+describe("verboseLog", () => {
+  const origVerbose = process.env.MCX_VERBOSE;
+  afterEach(() => {
+    if (origVerbose === undefined) process.env.MCX_VERBOSE = undefined;
+    else process.env.MCX_VERBOSE = origVerbose;
+  });
+
+  test("writes to stderr when MCX_VERBOSE=1", () => {
+    process.env.MCX_VERBOSE = "1";
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => lines.push(String(args[0]));
+    try {
+      verboseLog("test message");
+      expect(lines).toEqual(["[mcx] test message"]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("does nothing when MCX_VERBOSE is not set", () => {
+    process.env.MCX_VERBOSE = undefined;
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => lines.push(String(args[0]));
+    try {
+      verboseLog("should not appear");
+      expect(lines).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+  });
+});
 
 // -- isProcessMcpd --
 

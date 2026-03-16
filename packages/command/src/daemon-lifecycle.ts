@@ -48,6 +48,13 @@ export function _resetStartCooldown(): void {
   lastStartFailureAt = 0;
 }
 
+/** Log a verbose message to stderr when MCX_VERBOSE=1 */
+export function verboseLog(message: string): void {
+  if (process.env.MCX_VERBOSE === "1") {
+    console.error(`[mcx] ${message}`);
+  }
+}
+
 /**
  * Send a single request to the daemon, auto-starting it if needed.
  * Wraps core's ipcCall with ensureDaemon for CLI use.
@@ -58,7 +65,21 @@ export async function ipcCall<M extends IpcMethod>(
   opts?: { timeoutMs?: number },
 ): Promise<IpcMethodResult[M]> {
   await ensureDaemon();
-  return coreIpcCall(method, params, opts);
+  const verbose = process.env.MCX_VERBOSE === "1";
+  if (verbose) {
+    const paramStr = params !== undefined ? ` ${JSON.stringify(params)}` : "";
+    const timeoutStr = opts?.timeoutMs ? ` (timeout: ${opts.timeoutMs}ms)` : "";
+    console.error(`[mcx] ipc → ${method}${paramStr}${timeoutStr}`);
+  }
+  const start = verbose ? performance.now() : 0;
+  const result = await coreIpcCall(method, params, opts);
+  if (verbose) {
+    const elapsed = (performance.now() - start).toFixed(1);
+    const resultStr = JSON.stringify(result);
+    const preview = resultStr.length > 200 ? `${resultStr.slice(0, 200)}…` : resultStr;
+    console.error(`[mcx] ipc ← ${method} (${elapsed}ms) ${preview}`);
+  }
+  return result;
 }
 
 /**
@@ -67,7 +88,10 @@ export async function ipcCall<M extends IpcMethod>(
  */
 export async function ensureDaemon(): Promise<void> {
   // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
-  if (await isDaemonRunning()) return;
+  if (await isDaemonRunning()) {
+    verboseLog("daemon already running");
+    return;
+  }
 
   // Daemon is alive but its IPC socket isn't ready yet — wait for it, don't spawn a second one.
   if (isDaemonInitializing()) {
@@ -97,6 +121,7 @@ export async function ensureDaemon(): Promise<void> {
     // Double-check after acquiring lock (daemon may have started between our check and lock)
     if (await isDaemonRunning()) return;
 
+    verboseLog("starting daemon...");
     await startDaemon();
   } catch (err) {
     // Only cooldown on actual start failures, not protocol mismatches
