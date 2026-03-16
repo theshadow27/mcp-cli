@@ -221,6 +221,125 @@ describe("usePlans", () => {
     await flush(100);
     expect(callCount).toBe(countAtUnmount);
   });
+
+  it("sorts plans by server then id (deterministic order)", async () => {
+    const planB = makePlan("b-plan", "z-server");
+    const planA = makePlan("a-plan", "a-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "z-server", hasList: true },
+          { name: "a-server", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "z-server") return planToolResult([planB]);
+      if (p.server === "a-server") return planToolResult([planA]);
+      return planToolResult([]);
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    expect(stateRef.current.plans[0].server).toBe("a-server");
+    expect(stateRef.current.plans[1].server).toBe("z-server");
+  });
+});
+
+/* ---------- step clamp integration test ---------- */
+
+describe("step clamp effect (app.tsx:149-155 integration)", () => {
+  /**
+   * This tests the critical #748 fix: when a poll returns fewer steps for an
+   * expanded plan, the selectedStep must be clamped to the new bounds.
+   * We replicate the useEffect from app.tsx in a minimal harness.
+   */
+  const instances: ReturnType<typeof render>[] = [];
+
+  afterEach(() => {
+    for (const inst of instances) inst.unmount();
+    instances.length = 0;
+  });
+
+  interface ClampState {
+    plans: Plan[];
+    selectedStep: number;
+  }
+
+  const ClampHarness: FC<{
+    opts: UsePlansOptions;
+    expandedPlan: { id: string; server: string };
+    initialStep: number;
+    stateRef: { current: ClampState };
+  }> = ({ opts, expandedPlan, initialStep, stateRef }) => {
+    const { plans: plansData } = usePlans(opts);
+    const [selectedStep, setSelectedStep] = React.useState(initialStep);
+
+    // This is the exact clamp effect from app.tsx:149-155
+    React.useEffect(() => {
+      if (expandedPlan === null) return;
+      const expanded = plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
+      if (expanded) {
+        setSelectedStep((i) => Math.min(i, Math.max(0, expanded.steps.length - 1)));
+      }
+    }, [plansData, expandedPlan]);
+
+    stateRef.current = { plans: plansData, selectedStep };
+    return React.createElement(Text, null, `step:${selectedStep}`);
+  };
+
+  it("clamps selectedStep when plan steps shrink on re-poll", async () => {
+    const threeStepPlan: Plan = {
+      id: "plan-1",
+      name: "Test Plan",
+      status: "active",
+      server: "srv",
+      steps: [
+        { id: "s1", name: "Step 1", status: "complete" },
+        { id: "s2", name: "Step 2", status: "complete" },
+        { id: "s3", name: "Step 3", status: "active" },
+      ],
+      activeStepId: "s3",
+    };
+    const oneStepPlan: Plan = {
+      ...threeStepPlan,
+      steps: [{ id: "s1", name: "Step 1", status: "complete" }],
+      activeStepId: "s1",
+    };
+
+    let pollCount = 0;
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") return daemonStatus([{ name: "srv", hasList: true }]);
+      pollCount++;
+      // First poll: 3 steps; subsequent polls: 1 step
+      return planToolResult([pollCount <= 1 ? threeStepPlan : oneStepPlan]);
+    };
+
+    const stateRef: { current: ClampState } = {
+      current: { plans: [], selectedStep: 2 },
+    };
+
+    const instance = render(
+      React.createElement(ClampHarness, {
+        opts: { intervalMs: 40, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] },
+        expandedPlan: { id: "plan-1", server: "srv" },
+        initialStep: 2, // pointing at step index 2 (the third step)
+        stateRef,
+      }),
+    );
+    instances.push(instance);
+
+    // Wait for first poll — selectedStep stays at 2 (valid for 3-step plan)
+    await flush(20);
+    expect(stateRef.current.plans).toHaveLength(1);
+    expect(stateRef.current.selectedStep).toBe(2);
+
+    // Wait for second poll — plan now has 1 step, selectedStep must clamp to 0
+    await flush(80);
+    expect(pollCount).toBeGreaterThanOrEqual(2);
+    expect(stateRef.current.plans[0].steps).toHaveLength(1);
+    expect(stateRef.current.selectedStep).toBe(0);
+  });
 });
 
 /* ---------- usePlan tests ---------- */

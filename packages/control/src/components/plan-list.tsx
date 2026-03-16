@@ -27,7 +27,7 @@ export function PlanList({ plans, selectedIndex, expandedPlan }: PlanListProps) 
         const progress = totalSteps > 0 ? `${completedSteps}/${totalSteps}` : "";
 
         return (
-          <Box key={`${plan.server}\0${plan.id}`} flexDirection="column">
+          <Box key={`${plan.server}::${plan.id}`} flexDirection="column">
             <Text bold={isSelected}>
               <Text color={isSelected ? "cyan" : undefined}>{prefix} </Text>
               <Text color={color}>{symbol}</Text>

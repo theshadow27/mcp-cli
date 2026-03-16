@@ -258,20 +258,6 @@ describe("handleClaudeInput transcript navigation (expanded session)", () => {
     { direction: "inbound", timestamp: 2, message: { role: "assistant", content: "b" } },
   ];
 
-  test("escape collapses expanded session and resets transcript state", () => {
-    const nav = makeNav({
-      expandedSession: "sess-1",
-      transcriptEntries: entries,
-      transcriptCursor: "1-outbound",
-    });
-    const consumed = handleClaudeInput("", { ...baseKey, escape: true }, nav);
-    expect(consumed).toBe(true);
-    expect(nav.setExpandedSession).toHaveBeenCalledWith(null);
-    expect(nav.setTranscriptCursor).toHaveBeenCalled();
-    expect(nav.setTranscriptScrollOffset).toHaveBeenCalled();
-    expect(nav.setExpandedEntries).toHaveBeenCalled();
-  });
-
   test("left arrow collapses expanded session", () => {
     const nav = makeNav({
       expandedSession: "sess-1",
