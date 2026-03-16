@@ -208,6 +208,8 @@ export interface DaemonStatus {
   wsPort?: number | null;
   /** The well-known port the daemon was configured to use. */
   wsPortExpected?: number;
+  /** Process holding the expected WS port when there's a mismatch (e.g. "mcpd (PID 38291)"). */
+  wsPortHolder?: string | null;
 }
 
 export interface GetConfigResult {
