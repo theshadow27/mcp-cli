@@ -7,6 +7,7 @@ import { DaemonStartCooldownError } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
   _buildStaleDaemonWarning,
+  _isTransientConnectionError,
   _resetStartCooldown,
   getStaleDaemonWarning,
   isDaemonInitializing,
@@ -443,5 +444,35 @@ describe("getStaleDaemonWarning", () => {
     mkdirSync(dirname(opts.PID_PATH), { recursive: true });
     writeFileSync(opts.PID_PATH, "not json{{{");
     expect(getStaleDaemonWarning()).toBeNull();
+  });
+});
+
+// -- _isTransientConnectionError --
+
+describe("_isTransientConnectionError", () => {
+  test("returns false for non-Error values", () => {
+    expect(_isTransientConnectionError(null)).toBe(false);
+    expect(_isTransientConnectionError("ECONNREFUSED")).toBe(false);
+    expect(_isTransientConnectionError(42)).toBe(false);
+    expect(_isTransientConnectionError(undefined)).toBe(false);
+  });
+
+  test("returns true for ECONNREFUSED errors", () => {
+    expect(_isTransientConnectionError(new Error("connect ECONNREFUSED /tmp/test.sock"))).toBe(true);
+  });
+
+  test("returns true for ENOENT errors", () => {
+    expect(_isTransientConnectionError(new Error("connect ENOENT /tmp/missing.sock"))).toBe(true);
+  });
+
+  test("returns true for ConnectionRefused errors", () => {
+    expect(_isTransientConnectionError(new Error("ConnectionRefused"))).toBe(true);
+  });
+
+  test("returns false for unrelated errors", () => {
+    expect(_isTransientConnectionError(new Error("EACCES permission denied"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("timeout"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("ETIMEDOUT"))).toBe(false);
+    expect(_isTransientConnectionError(new Error("some random error"))).toBe(false);
   });
 });
