@@ -15,7 +15,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
-import type { ExpandedPlanKey } from "./hooks/use-keyboard-plans.js";
+import { type ExpandedPlanKey, type StatusType, isPlanReadOnly } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -60,6 +60,11 @@ export function App() {
   /** Track which plan is selected by identity so refreshes don't shift selection. */
   const plansSelectionIdRef = useRef<{ server: string; id: string } | null>(null);
   const plansRef = useRef<Plan[]>([]);
+  const [planConfirmAbort, setPlanConfirmAbort] = useState(false);
+  const [planStatusMessage, setPlanStatusMessage] = useState<string | null>(null);
+  const [planStatusType, setPlanStatusType] = useState<StatusType | null>(null);
+  const [planInflight, setPlanInflight] = useState(false);
+  const [planRefreshing, setPlanRefreshing] = useState(false);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -93,6 +98,7 @@ export function App() {
     loading: plansLoading,
     error: plansError,
     disconnected: plansDisconnected,
+    refresh: plansRefresh,
   } = usePlans({ enabled: plansEnabled });
   plansRef.current = plans;
   const setPlansSelectedIndexTracked = useCallback((updater: number | ((i: number) => number)) => {
@@ -278,6 +284,18 @@ export function App() {
       setExpandedPlan,
       selectedStep,
       setSelectedStep,
+      servers,
+      confirmAbort: planConfirmAbort,
+      setConfirmAbort: setPlanConfirmAbort,
+      statusMessage: planStatusMessage,
+      setStatusMessage: setPlanStatusMessage,
+      statusType: planStatusType,
+      setStatusType: setPlanStatusType,
+      inflight: planInflight,
+      setInflight: setPlanInflight,
+      refreshing: planRefreshing,
+      setRefreshing: setPlanRefreshing,
+      refresh: plansRefresh,
     },
     mailNav: {
       messages: mailMessages,
@@ -359,8 +377,10 @@ export function App() {
           selectedIndex={plansSelectedIndex}
           expandedPlan={expandedPlan}
           selectedStep={selectedStep}
-          metrics={planMetrics}
-          metricsLoading={planMetricsLoading}
+          servers={servers}
+          statusMessage={planStatusMessage}
+          statusType={planStatusType}
+          confirmAbort={planConfirmAbort}
         />
       ) : (
         <MailViewer
@@ -381,6 +401,13 @@ export function App() {
         transcriptExpanded={expandedSession !== null}
         mailExpanded={expandedMessage !== null}
         planExpanded={expandedPlan !== null}
+        planConfirmAbort={planConfirmAbort}
+        planReadOnly={(() => {
+          const targetPlan = expandedPlan
+            ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+            : plans[plansSelectedIndex];
+          return targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+        })()}
       />
     </Box>
   );

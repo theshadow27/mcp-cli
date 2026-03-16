@@ -1,9 +1,9 @@
-import type { Plan, PlanMetrics } from "@mcp-cli/core";
+import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
+import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans.js";
+import { isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
-import { MetricsPanel } from "./metrics-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
 
@@ -15,9 +15,18 @@ interface PlansTabProps {
   expandedPlan: ExpandedPlanKey | null;
   selectedStep: number;
   disconnected?: boolean;
-  metrics: PlanMetrics | null;
-  metricsLoading: boolean;
+  servers: ServerStatus[];
+  statusMessage?: string | null;
+  statusType?: StatusType | null;
+  confirmAbort?: boolean;
 }
+
+const STATUS_COLORS: Record<StatusType, string> = {
+  error: "red",
+  success: "green",
+  warning: "yellow",
+  info: "green",
+};
 
 export function PlansTab({
   plans,
@@ -27,8 +36,10 @@ export function PlansTab({
   expandedPlan,
   selectedStep,
   disconnected,
-  metrics,
-  metricsLoading,
+  servers,
+  statusMessage,
+  statusType,
+  confirmAbort,
 }: PlansTabProps) {
   if (loading && plans.length === 0) {
     return <Text dimColor>Loading plans...</Text>;
@@ -42,6 +53,13 @@ export function PlansTab({
     ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
     : null;
   const currentStep = expanded?.steps[selectedStep];
+
+  // Check if the selected/expanded plan's server is read-only
+  const targetPlan = expanded ?? plans[selectedIndex];
+  const readOnly = targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+
+  // Determine status message color from semantic type
+  const statusColor = confirmAbort ? "yellow" : statusType ? STATUS_COLORS[statusType] : "green";
 
   return (
     <Box flexDirection="column">
@@ -59,15 +77,17 @@ export function PlansTab({
           ) : null}
         </Box>
       ) : null}
-      {metrics && !metricsLoading ? (
-        <MetricsPanel
-          label={
-            plans[selectedIndex]?.steps.find((s) => s.id === plans[selectedIndex]?.activeStepId)?.name ??
-            plans[selectedIndex]?.name ??
-            ""
-          }
-          metrics={metrics}
-        />
+      {readOnly ? (
+        <Box marginTop={1}>
+          <Text color="yellow" dimColor>
+            (read-only)
+          </Text>
+        </Box>
+      ) : null}
+      {statusMessage ? (
+        <Box marginTop={readOnly ? 0 : 1}>
+          <Text color={statusColor}>{statusMessage}</Text>
+        </Box>
       ) : null}
     </Box>
   );

@@ -12,7 +12,7 @@ import { handleLogsInput } from "./use-keyboard-logs";
 import type { MailNav } from "./use-keyboard-mail";
 import { handleMailInput } from "./use-keyboard-mail";
 import type { PlansNav } from "./use-keyboard-plans";
-import { handlePlansInput } from "./use-keyboard-plans";
+import { clearPlansState, handlePlansInput } from "./use-keyboard-plans";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
@@ -195,6 +195,10 @@ export function useKeyboard({
       handleLogsInput(input, key, logsNav, serversNav.servers);
       return;
     }
+    if (view === "plans" && plansNav.confirmAbort && input !== "q" && input !== "s") {
+      handlePlansInput(input, key, plansNav);
+      return;
+    }
 
     // Global: shutdown daemon
     if (input === "s") {
@@ -209,8 +213,14 @@ export function useKeyboard({
       return;
     }
 
+    // Helper: clear plans modal state when navigating away
+    const leavePlansView = () => {
+      if (view === "plans") clearPlansState(plansNav);
+    };
+
     // Global: Tab / Shift+Tab cycle tabs
     if (key.tab) {
+      leavePlansView();
       setView(key.shift ? prevTab(view) : nextTab(view));
       return;
     }
@@ -219,7 +229,10 @@ export function useKeyboard({
     const tabNum = Number(input);
     if (tabNum >= 1 && tabNum <= ALL_TABS.length) {
       const target = tabByNumber(tabNum);
-      if (target) setView(target);
+      if (target) {
+        leavePlansView();
+        setView(target);
+      }
       return;
     }
 
@@ -229,6 +242,7 @@ export function useKeyboard({
         logsNav.setFilterText("");
         setView("servers");
       } else {
+        leavePlansView();
         setView("logs");
       }
       return;
@@ -254,6 +268,7 @@ export function useKeyboard({
         return;
       }
       if (view === "logs") logsNav.setFilterText("");
+      leavePlansView();
       setView("servers");
       return;
     }
