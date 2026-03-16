@@ -1,5 +1,6 @@
+import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
 import { ClaudeSessionList } from "./components/claude-session-list.js";
 import { Footer } from "./components/footer.js";
@@ -7,6 +8,7 @@ import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { MailViewer } from "./components/mail-viewer.js";
+import { PlansTab } from "./components/plans-tab.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
@@ -18,6 +20,7 @@ import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
+import { usePlanMetrics, usePlans } from "./hooks/use-plans.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -50,6 +53,10 @@ export function App() {
   const [mailSelectedIndex, setMailSelectedIndex] = useState(0);
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
+  const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
+  /** Track which plan is selected by identity so refreshes don't shift selection. */
+  const plansSelectionIdRef = useRef<{ server: string; id: string } | null>(null);
+  const plansRef = useRef<Plan[]>([]);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -75,6 +82,37 @@ export function App() {
 
   const { messages: mailMessages } = useMail({ enabled: view === "mail" });
   const { unreadCount: unreadMailCount } = useUnreadMail({ enabled: view !== "mail" });
+
+  // Plans: poll list on plans tab, poll metrics only when visible and metrics-capable
+  const plansEnabled = view === "plans";
+  const {
+    plans,
+    loading: plansLoading,
+    error: plansError,
+    disconnected: plansDisconnected,
+  } = usePlans({ enabled: plansEnabled });
+  plansRef.current = plans;
+  const setPlansSelectedIndexTracked = useCallback((updater: number | ((i: number) => number)) => {
+    setPlansSelectedIndex((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      const plan = plansRef.current[next];
+      if (plan) plansSelectionIdRef.current = { server: plan.server, id: plan.id };
+      return next;
+    });
+  }, []);
+  const selectedPlan = plans[plansSelectedIndex] ?? null;
+  const selectedPlanServer = selectedPlan?.server ?? "";
+  const supportsMetrics =
+    servers.find((s) => s.name === selectedPlanServer)?.planCapabilities?.capabilities.includes("metrics") ?? false;
+  const { metrics: planMetrics, loading: planMetricsLoading } = usePlanMetrics(
+    selectedPlan?.id ?? "",
+    selectedPlan?.activeStepId,
+    selectedPlanServer,
+    {
+      enabled: plansEnabled && !!selectedPlan,
+      supportsMetrics,
+    },
+  );
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
     () => (metricsData ? buildStatsLines(metricsData, metricsError).length : 0),
@@ -113,6 +151,19 @@ export function App() {
   useEffect(() => {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
+
+  // Restore selection by identity when plans list refreshes, fall back to clamp
+  useEffect(() => {
+    const id = plansSelectionIdRef.current;
+    if (id && plans.length > 0) {
+      const idx = plans.findIndex((p) => p.server === id.server && p.id === id.id);
+      if (idx >= 0) {
+        setPlansSelectedIndex(idx);
+        return;
+      }
+    }
+    setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plans.length - 1)));
+  }, [plans]);
 
   // Clear orphaned expandedMessage when the message disappears from the list
   useEffect(() => {
@@ -199,6 +250,11 @@ export function App() {
       setScrollOffset: setStatsScrollOffset,
       lineCount: statsLineCount,
     },
+    plansNav: {
+      selectedIndex: plansSelectedIndex,
+      setSelectedIndex: setPlansSelectedIndexTracked,
+      planCount: plans.length,
+    },
     mailNav: {
       messages: mailMessages,
       selectedIndex: mailSelectedIndex,
@@ -269,6 +325,16 @@ export function App() {
           restartedAt={metricsRestartedAt}
           scrollOffset={statsScrollOffset}
           height={STATS_VIEW_HEIGHT}
+        />
+      ) : view === "plans" ? (
+        <PlansTab
+          plans={plans}
+          loading={plansLoading}
+          error={plansError}
+          disconnected={plansDisconnected}
+          selectedIndex={plansSelectedIndex}
+          metrics={planMetrics}
+          metricsLoading={planMetricsLoading}
         />
       ) : (
         <MailViewer
