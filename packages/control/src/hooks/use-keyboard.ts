@@ -11,11 +11,12 @@ import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
 import type { MailNav } from "./use-keyboard-mail";
 import { handleMailInput } from "./use-keyboard-mail";
+import { handlePlansInput } from "./use-keyboard-plans";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "claude", "stats", "mail"] as const;
+export const ALL_TABS = ["servers", "logs", "claude", "stats", "plans", "mail"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
@@ -94,6 +95,12 @@ export interface StatsNav {
   lineCount: number;
 }
 
+export interface PlansNav {
+  selectedIndex: number;
+  setSelectedIndex: (fn: (i: number) => number) => void;
+  planCount: number;
+}
+
 export type { MailNav } from "./use-keyboard-mail";
 
 interface UseKeyboardOptions {
@@ -103,6 +110,7 @@ interface UseKeyboardOptions {
   logsNav: LogsNav;
   claudeNav: ClaudeNav;
   statsNav: StatsNav;
+  plansNav: PlansNav;
   mailNav: MailNav;
 }
 
@@ -113,6 +121,7 @@ export function useKeyboard({
   logsNav,
   claudeNav,
   statsNav,
+  plansNav,
   mailNav,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
@@ -264,6 +273,8 @@ export function useKeyboard({
       handleClaudeInput(input, key, claudeNav);
     } else if (view === "stats") {
       handleStatsInput(input, key, statsNav);
+    } else if (view === "plans") {
+      handlePlansInput(input, key, plansNav);
     } else if (view === "mail") {
       handleMailInput(input, key, mailNav);
     } else if (view === "servers") {

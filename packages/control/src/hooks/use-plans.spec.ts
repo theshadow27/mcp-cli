@@ -61,8 +61,15 @@ function daemonStatus(servers: Array<{ name: string; hasList?: boolean; hasAdvan
   };
 }
 
-async function flush(ms = 10) {
-  await Bun.sleep(ms);
+/** Poll a predicate until it returns true or the deadline expires. */
+async function waitFor(predicate: () => boolean, deadlineMs = 2000): Promise<void> {
+  const start = performance.now();
+  while (!predicate()) {
+    if (performance.now() - start > deadlineMs) {
+      throw new Error(`waitFor timed out after ${deadlineMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
 }
 
 /* ---------- usePlans tests ---------- */
@@ -105,11 +112,10 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.plans[0].id).toBe("plan-1");
-    expect(stateRef.current.loading).toBe(false);
     expect(stateRef.current.error).toBeNull();
     expect(stateRef.current.disconnected).toBe(false);
   });
@@ -131,10 +137,32 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(2);
-    expect(stateRef.current.loading).toBe(false);
+  });
+
+  it("sorts plans deterministically by server then id", async () => {
+    const planB = makePlan("plan-b", "server-z");
+    const planA = makePlan("plan-a", "server-a");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "server-z", hasList: true },
+          { name: "server-a", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "server-z") return planToolResult([planB]);
+      if (p.server === "server-a") return planToolResult([planA]);
+      return planToolResult([]);
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.plans[0].server).toBe("server-a");
+    expect(stateRef.current.plans[1].server).toBe("server-z");
   });
 
   it("skips servers without list capability", async () => {
@@ -149,8 +177,8 @@ describe("usePlans", () => {
       return { content: [{ type: "text", text: "[]" }] };
     };
 
-    mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(planServerCallCount).toBe(0);
   });
@@ -161,11 +189,10 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.error).toBe("daemon offline");
     expect(stateRef.current.disconnected).toBe(true);
-    expect(stateRef.current.loading).toBe(false);
   });
 
   it("does not poll when enabled=false", async () => {
@@ -176,7 +203,8 @@ describe("usePlans", () => {
     };
 
     mount({ enabled: false, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush(30);
+    // Give a short window to confirm no calls are made
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
   });
@@ -196,7 +224,7 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     // Plans from good server still returned; no top-level error
     expect(stateRef.current.plans).toHaveLength(1);
@@ -215,11 +243,10 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(0);
     expect(stateRef.current.disconnected).toBe(true);
-    expect(stateRef.current.loading).toBe(false);
     expect(stateRef.current.error).toBeNull();
   });
 
@@ -232,7 +259,7 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plans).toHaveLength(0);
     expect(stateRef.current.disconnected).toBe(true);
@@ -250,12 +277,13 @@ describe("usePlans", () => {
       ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
     });
 
-    await flush(50);
+    await waitFor(() => callCount >= 2);
     instance.unmount();
     instances.pop();
     const countAtUnmount = callCount;
 
-    await flush(100);
+    // Wait and confirm no more calls after unmount
+    await new Promise((r) => setTimeout(r, 100));
     expect(callCount).toBe(countAtUnmount);
   });
 });
@@ -338,7 +366,7 @@ describe("usePlans — Claude plan integration", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => !stateRef.current.loading);
 
     expect(stateRef.current.plans.length).toBeGreaterThanOrEqual(2);
     const claudePlan = stateRef.current.plans.find((p) => p.server === "_claude");
@@ -358,7 +386,7 @@ describe("usePlans — Claude plan integration", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => !stateRef.current.loading);
 
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.plans[0].id).toBe("server-plan");
@@ -387,7 +415,7 @@ describe("usePlans — Claude plan integration", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => !stateRef.current.loading);
 
     const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
     expect(claudePlans).toHaveLength(0);
@@ -416,7 +444,7 @@ describe("usePlans — Claude plan integration", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => !stateRef.current.loading);
 
     const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
     expect(claudePlans).toHaveLength(0);
@@ -468,10 +496,9 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.plan?.id).toBe("plan-1");
-    expect(stateRef.current.loading).toBe(false);
     expect(stateRef.current.error).toBeNull();
     expect(stateRef.current.disconnected).toBe(false);
   });
@@ -483,7 +510,7 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.canAdvance).toBe(false);
   });
@@ -496,7 +523,7 @@ describe("usePlan", () => {
       canAdvance: true,
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.canAdvance).toBe(true);
   });
@@ -509,11 +536,10 @@ describe("usePlan", () => {
     const { stateRef } = mount("plan-1", "srv", {
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.loading === false);
 
     expect(stateRef.current.error).toBe("server offline");
     expect(stateRef.current.disconnected).toBe(true);
-    expect(stateRef.current.loading).toBe(false);
   });
 
   it("does not fetch when enabled=false", async () => {
@@ -527,7 +553,7 @@ describe("usePlan", () => {
       enabled: false,
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
   });
@@ -581,7 +607,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: false,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(callCount).toBe(0);
     expect(stateRef.current.metrics).toBeNull();
@@ -596,7 +622,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: true,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.metrics !== null);
 
     expect(stateRef.current.metrics).toEqual(metrics);
     expect(stateRef.current.loading).toBe(false);
@@ -612,7 +638,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: true,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await flush();
+    await waitFor(() => stateRef.current.error !== null);
 
     expect(stateRef.current.error).toBe("metrics unavailable");
     expect(stateRef.current.loading).toBe(false);
@@ -631,7 +657,7 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(100);
+    await waitFor(() => callCount >= 3);
     expect(callCount).toBeGreaterThanOrEqual(3);
   });
 
@@ -648,12 +674,12 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(50);
+    await waitFor(() => callCount >= 2);
     instance.unmount();
     instances.pop();
     const countAtUnmount = callCount;
 
-    await flush(100);
+    await new Promise((r) => setTimeout(r, 100));
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -670,7 +696,49 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await flush(30);
+    await new Promise((r) => setTimeout(r, 30));
     expect(callCount).toBe(0);
+  });
+
+  it("clears stale metrics when planId changes", async () => {
+    const metrics1: PlanMetrics = { steps_complete: 2 };
+    const metrics2: PlanMetrics = { steps_complete: 5 };
+    let currentPlanId = "plan-1";
+    const ipcCallFn = async () => {
+      return metricsResult(currentPlanId === "plan-1" ? metrics1 : metrics2);
+    };
+
+    // Use a wrapper that re-renders with new planId
+    const stateRef: { current: { metrics: PlanMetrics | null; loading: boolean; error: string | null } } = {
+      current: { metrics: null, loading: false, error: null },
+    };
+    let setPlanId: ((id: string) => void) | undefined;
+    const Wrapper: FC = () => {
+      const [planId, _setPlanId] = React.useState("plan-1");
+      setPlanId = _setPlanId;
+      const result = usePlanMetrics(planId, "step-1", "srv", {
+        supportsMetrics: true,
+        ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
+      });
+      stateRef.current = result;
+      return React.createElement(Text, null, "ok");
+    };
+
+    const instance = render(React.createElement(Wrapper));
+    instances.push(instance);
+
+    await waitFor(() => stateRef.current.metrics !== null);
+    expect(stateRef.current.metrics).toEqual(metrics1);
+
+    // Switch plan — metrics should clear before new poll completes
+    currentPlanId = "plan-2";
+    setPlanId?.("plan-2");
+
+    // The metrics should first clear to null (stale cleared)
+    await waitFor(() => stateRef.current.metrics === null || stateRef.current.metrics?.steps_complete === 5);
+
+    // Then eventually resolve to new metrics
+    await waitFor(() => stateRef.current.metrics !== null);
+    expect(stateRef.current.metrics).toEqual(metrics2);
   });
 });

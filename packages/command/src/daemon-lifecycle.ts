@@ -72,6 +72,11 @@ export function verboseLog(message: string): void {
 /**
  * Send a single request to the daemon, auto-starting it if needed.
  * Wraps core's ipcCall with ensureDaemon for CLI use.
+ *
+ * Retries on transient connection errors (ECONNREFUSED, ENOENT) that can occur
+ * in the brief window between ensureDaemon() confirming the daemon is up and
+ * the actual IPC call — e.g. when multiple CLI processes connect simultaneously
+ * right after daemon startup.
  */
 export async function ipcCall<M extends IpcMethod>(
   method: M,
@@ -79,6 +84,7 @@ export async function ipcCall<M extends IpcMethod>(
   opts?: { timeoutMs?: number },
 ): Promise<IpcMethodResult[M]> {
   await ensureDaemon();
+
   const verbose = process.env.MCX_VERBOSE === "1";
   if (verbose) {
     const paramStr = params !== undefined ? ` ${JSON.stringify(redactSecrets(params))}` : "";
@@ -86,14 +92,33 @@ export async function ipcCall<M extends IpcMethod>(
     console.error(`[mcx] ipc → ${method}${paramStr}${timeoutStr}`);
   }
   const start = verbose ? performance.now() : 0;
-  const result = await coreIpcCall(method, params, opts);
-  if (verbose) {
-    const elapsed = (performance.now() - start).toFixed(1);
-    const resultStr = JSON.stringify(result);
-    const preview = resultStr.length > 200 ? `${resultStr.slice(0, 200)}…` : resultStr;
-    console.error(`[mcx] ipc ← ${method} (${elapsed}ms) ${preview}`);
+
+  const maxRetries = 3;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await coreIpcCall(method, params, opts);
+      if (verbose) {
+        const elapsed = (performance.now() - start).toFixed(1);
+        const resultStr = JSON.stringify(result);
+        const preview = resultStr.length > 200 ? `${resultStr.slice(0, 200)}…` : resultStr;
+        console.error(`[mcx] ipc ← ${method} (${elapsed}ms) ${preview}`);
+      }
+      return result;
+    } catch (err) {
+      if (attempt < maxRetries && _isTransientConnectionError(err)) {
+        await Bun.sleep(100 * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
   }
-  return result;
+}
+
+/** Check if an error is a transient connection failure (socket not ready yet) — exported for testing */
+export function _isTransientConnectionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return msg.includes("ECONNREFUSED") || msg.includes("ENOENT") || msg.includes("ConnectionRefused");
 }
 
 /**
@@ -154,11 +179,21 @@ export async function ensureDaemon(): Promise<void> {
   }
 }
 
-/** Wait for another process to finish starting the daemon */
+/**
+ * Wait for another process to finish starting the daemon.
+ *
+ * Uses 2x DAEMON_START_TIMEOUT_MS because waiters start their countdown before
+ * the lock winner even begins spawning the daemon. Under CI load, the daemon
+ * spawn + init can consume most of the timeout window.
+ *
+ * Uses isDaemonReachable() instead of isDaemonRunning() to avoid destructive
+ * cleanStaleFiles() calls during the startup window — a failed isProcessMcpd()
+ * check (e.g. slow `ps` in CI) would otherwise delete files the daemon just created.
+ */
 async function waitForDaemon(): Promise<void> {
-  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS * 2;
   while (Date.now() < deadline) {
-    if (await isDaemonRunning()) return;
+    if (await isDaemonReachable()) return;
     await Bun.sleep(100);
   }
   // Lock may be stale — clean it up and try once more
@@ -167,8 +202,8 @@ async function waitForDaemon(): Promise<void> {
   } catch {
     /* already gone */
   }
-  if (await isDaemonRunning()) return;
-  throw new Error(`Timed out waiting for daemon to start (${DAEMON_START_TIMEOUT_MS}ms)`);
+  if (await isDaemonReachable()) return;
+  throw new Error(`Timed out waiting for daemon to start (${DAEMON_START_TIMEOUT_MS * 2}ms)`);
 }
 
 /** Remove stale PID and socket files so a fresh daemon can start */
@@ -283,6 +318,20 @@ export function isDaemonInitializing(): boolean {
   if (!data) return false;
   // Socket absent means daemon is still booting
   return !existsSync(options.SOCKET_PATH);
+}
+
+/**
+ * Non-destructive daemon reachability check for polling during startup.
+ *
+ * Unlike isDaemonRunning(), this never calls cleanStaleFiles(). During the
+ * concurrent auto-start window, multiple CLI processes poll in waitForDaemon().
+ * If isProcessMcpd() transiently fails (slow `ps` under CI load), a destructive
+ * check would delete the PID/socket files the daemon just created, making it
+ * permanently unreachable.
+ */
+async function isDaemonReachable(): Promise<boolean> {
+  if (!existsSync(options.SOCKET_PATH)) return false;
+  return pingDaemon();
 }
 
 /**

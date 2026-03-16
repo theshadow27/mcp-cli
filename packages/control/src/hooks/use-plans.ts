@@ -161,6 +161,8 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         allPlans.push(...claudePlans);
 
         const allFailed = planServers.length > 0 && successCount === 0;
+        // Sort deterministically so Promise.allSettled arrival order doesn't shift the list
+        allPlans.sort((a, b) => a.server.localeCompare(b.server) || a.id.localeCompare(b.id));
         setPlans(allPlans);
         setError(null);
         setDisconnected(allFailed);
@@ -307,23 +309,22 @@ export function usePlanMetrics(
   const [loading, setLoading] = useState(supportsMetrics);
   const [error, setError] = useState<string | null>(null);
 
-  // Track in refs so callers don't need to memoize
-  const supportsRef = useRef(supportsMetrics);
-  supportsRef.current = supportsMetrics;
-  const ipcCallRef = useRef(ipcCallFn);
-  ipcCallRef.current = ipcCallFn;
-
   useEffect(() => {
     if (!enabled || !supportsMetrics || !planId || !server) {
+      setMetrics(null);
       setLoading(false);
       return;
     }
+
+    // Clear stale metrics from the previous plan/step before polling the new one
+    setMetrics(null);
+    setLoading(true);
 
     let cancelled = false;
 
     async function poll() {
       try {
-        const result = await ipcCallRef.current("callTool", {
+        const result = await ipcCallFn("callTool", {
           server,
           tool: "get_plan_metrics",
           arguments: stepId ? { planId, stepId } : { planId },
@@ -360,7 +361,7 @@ export function usePlanMetrics(
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [planId, stepId, server, intervalMs, enabled, supportsMetrics]);
+  }, [planId, stepId, server, intervalMs, enabled, supportsMetrics, ipcCallFn]);
 
   return { metrics, loading, error };
 }
