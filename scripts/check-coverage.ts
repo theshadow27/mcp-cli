@@ -26,8 +26,8 @@ const GLOBAL_THRESHOLDS = {
 /** Per-file test time budget in milliseconds — no single file should exceed this */
 const PER_FILE_TIME_BUDGET_MS = 5_000;
 
-/** Number of test files to profile concurrently — kept low to avoid FS/network contention inflating times */
-const PROFILE_CONCURRENCY = 4;
+/** Number of test files to profile concurrently — scales with available CPUs */
+const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?? 4, 32));
 
 /**
  * Test files excluded from the per-file time budget.
@@ -256,7 +256,8 @@ const profileDuration = Math.round(performance.now() - profileStart);
 const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
 
 console.log(
-  `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s (sequential sum: ${(sequentialSum / 1000).toFixed(1)}s)`,
+  `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s ` +
+    `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
 );
 console.log(
   `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
