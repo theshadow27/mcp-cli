@@ -294,6 +294,11 @@ function shellQuote(s: string): string {
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    printSpawnUsage();
+    return;
+  }
+
   const parsed = parseSpawnArgs(args);
 
   if (parsed.error) {
@@ -303,6 +308,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
   if (!parsed.task && !parsed.resume) {
     d.printError('Usage: mcx claude spawn --task "description" [--worktree [name]] [--allow tools...]');
+    d.printError('Run "mcx claude spawn --help" for details.');
     d.exit(1);
   }
 
@@ -1439,6 +1445,37 @@ export async function resolveSessionId(
 }
 
 // ── Usage ──
+
+function printSpawnUsage(): void {
+  console.log(`mcx claude spawn — Start a new Claude Code session
+
+Usage:
+  mcx claude spawn --task "description"
+  mcx claude spawn --task "description" --allow Bash Read Write
+  mcx claude spawn --task "description" --worktree my-feature
+  mcx claude spawn --headed --task "description"
+
+Options:
+  --task, -t <string>        Task prompt for the session (required unless --resume)
+  --worktree, -w [name]      Run in a git worktree for branch isolation
+                             Auto-generates a name if omitted
+  --allow <tools...>         Space-separated tool patterns to auto-approve
+                             e.g. Bash Read Write Edit Glob Grep Skill
+                             Supports globs: mcp__grafana__*
+  --headed                   Open in a visible terminal tab (via tty)
+  --resume <id>              Resume a previous session by ID
+  --model, -m <name>         Model: opus, sonnet, haiku, or full ID (default: opus)
+  --cwd <path>               Working directory for the session
+  --wait                     Block until Claude produces a result
+  --timeout <ms>             Max wait time in ms (default: 300000, only with --wait)
+
+Examples:
+  mcx claude spawn --task "run the test suite and fix failures"
+  mcx claude spawn --allow Bash Read Write --task "monitor prod health"
+  mcx claude spawn -w fix-auth -t "fix the auth bug in issue #42"
+  mcx claude spawn --headed --task "interactive debugging session"
+  mcx claude spawn --resume abc123 --task "continue where you left off"`);
+}
 
 function printClaudeUsage(): void {
   console.log(`mcx claude — manage Claude Code sessions
