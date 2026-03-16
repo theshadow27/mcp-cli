@@ -40,7 +40,7 @@ describe("BunStdioServerTransport", () => {
 
     await transport.start();
     // Wait for the read loop to process
-    await Bun.sleep(50);
+    await transport.closed;
 
     expect(received).toHaveLength(1);
     expect((received[0] as Record<string, unknown>).method).toBe("initialize");
@@ -59,7 +59,7 @@ describe("BunStdioServerTransport", () => {
     transport.onmessage = (m) => received.push(m);
 
     await transport.start();
-    await Bun.sleep(50);
+    await transport.closed;
 
     expect(received).toHaveLength(2);
 
@@ -78,7 +78,7 @@ describe("BunStdioServerTransport", () => {
     transport.onmessage = (m) => received.push(m);
 
     await transport.start();
-    await Bun.sleep(50);
+    await transport.closed;
 
     expect(received).toHaveLength(1);
     expect((received[0] as Record<string, unknown>).method).toBe("initialize");
@@ -126,7 +126,7 @@ describe("BunStdioServerTransport", () => {
     transport.onerror = (e) => errors.push(e);
 
     await transport.start();
-    await Bun.sleep(50);
+    await transport.closed;
 
     expect(errors.length).toBeGreaterThanOrEqual(1);
 
@@ -139,7 +139,7 @@ describe("BunStdioServerTransport", () => {
     const transport = new BunStdioServerTransport(stdin, stdout.writer);
 
     await transport.start();
-    expect(transport.start()).rejects.toThrow("already started");
+    await expect(transport.start()).rejects.toThrow("already started");
 
     await transport.close();
   });
@@ -154,7 +154,7 @@ describe("BunStdioServerTransport", () => {
     transport.onmessage = (m) => received.push(m);
 
     await transport.start();
-    await Bun.sleep(50);
+    await transport.closed;
 
     expect(received).toHaveLength(1);
 

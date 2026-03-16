@@ -13,6 +13,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 export class BunStdioServerTransport implements Transport {
   private _started = false;
+  private _closed = false;
   private _reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private _buffer = "";
   private _aborted = false;
@@ -40,7 +41,7 @@ export class BunStdioServerTransport implements Transport {
     }
     this._started = true;
     this._reader = this._stdin.getReader();
-    this._readLoop();
+    this._readLoop().catch((err) => this.onerror?.(err instanceof Error ? err : new Error(String(err))));
   }
 
   private async _readLoop(): Promise<void> {
@@ -56,6 +57,9 @@ export class BunStdioServerTransport implements Transport {
         this._buffer += decoder.decode(value, { stream: true });
         this._processBuffer();
       }
+      // Flush remaining UTF-8 state from the decoder
+      this._buffer += decoder.decode();
+      this._processBuffer();
     } catch (err) {
       if (!this._aborted) {
         this.onerror?.(err instanceof Error ? err : new Error(String(err)));
@@ -88,10 +92,18 @@ export class BunStdioServerTransport implements Transport {
 
   async send(message: JSONRPCMessage): Promise<void> {
     const json = serializeMessage(message);
-    this._stdout.write(json);
+    const result = this._stdout.write(json);
+    // Handle backpressure: if write returns false, wait for drain
+    if (result === false && "once" in this._stdout && typeof this._stdout.once === "function") {
+      await new Promise<void>((resolve) => {
+        (this._stdout as NodeJS.WriteStream).once("drain", resolve);
+      });
+    }
   }
 
   async close(): Promise<void> {
+    if (this._closed) return;
+    this._closed = true;
     this._aborted = true;
     try {
       this._reader?.releaseLock();
