@@ -201,6 +201,41 @@ describe("usePlans", () => {
     expect(stateRef.current.error).toBeNull();
   });
 
+  it("sets disconnected when all plan servers fail", async () => {
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "server-a", hasList: true },
+          { name: "server-b", hasList: true },
+        ]);
+      }
+      throw new Error("server unreachable");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    expect(stateRef.current.plans).toHaveLength(0);
+    expect(stateRef.current.disconnected).toBe(true);
+    expect(stateRef.current.loading).toBe(false);
+    expect(stateRef.current.error).toBeNull();
+  });
+
+  it("sets disconnected when all servers return unparseable responses", async () => {
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") {
+        return daemonStatus([{ name: "server-a", hasList: true }]);
+      }
+      return { content: [{ type: "text", text: "not valid json{" }] };
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    expect(stateRef.current.plans).toHaveLength(0);
+    expect(stateRef.current.disconnected).toBe(true);
+  });
+
   it("cleanup stops polling on unmount", async () => {
     let callCount = 0;
     const ipcCallFn = async () => {
