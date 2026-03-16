@@ -87,7 +87,13 @@ describe("BunStdioServerTransport", () => {
   });
 
   test("sends a JSON-RPC message to stdout", async () => {
-    const stdin = streamFromLines([]);
+    // Use a stream that stays open so close() doesn't race with send()
+    let closeStream!: () => void;
+    const stdin = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeStream = () => controller.close();
+      },
+    });
     const stdout = mockStdout();
     const transport = new BunStdioServerTransport(stdin, stdout.writer);
 
@@ -98,6 +104,7 @@ describe("BunStdioServerTransport", () => {
     const parsed = JSON.parse(stdout.writes[0].trim());
     expect(parsed.result.protocolVersion).toBe("2024-11-05");
 
+    closeStream();
     await transport.close();
   });
 
@@ -142,6 +149,19 @@ describe("BunStdioServerTransport", () => {
     await expect(transport.start()).rejects.toThrow("already started");
 
     await transport.close();
+  });
+
+  test("send() after close() is silently ignored", async () => {
+    const stdin = streamFromLines([]);
+    const stdout = mockStdout();
+    const transport = new BunStdioServerTransport(stdin, stdout.writer);
+
+    await transport.start();
+    await transport.close();
+
+    // Should not throw or write anything
+    await transport.send({ jsonrpc: "2.0", id: 1, result: {} });
+    expect(stdout.writes).toHaveLength(0);
   });
 
   test("handles \\r\\n line endings", async () => {

@@ -58,8 +58,10 @@ export class BunStdioServerTransport implements Transport {
         this._processBuffer();
       }
       // Flush remaining UTF-8 state from the decoder
-      this._buffer += decoder.decode();
-      this._processBuffer();
+      if (!this._aborted) {
+        this._buffer += decoder.decode();
+        this._processBuffer();
+      }
     } catch (err) {
       if (!this._aborted) {
         this.onerror?.(err instanceof Error ? err : new Error(String(err)));
@@ -91,6 +93,7 @@ export class BunStdioServerTransport implements Transport {
   }
 
   async send(message: JSONRPCMessage): Promise<void> {
+    if (this._closed) return;
     const json = serializeMessage(message);
     const result = this._stdout.write(json);
     // Handle backpressure: if write returns false, wait for drain
@@ -106,9 +109,9 @@ export class BunStdioServerTransport implements Transport {
     this._closed = true;
     this._aborted = true;
     try {
-      this._reader?.releaseLock();
+      await this._reader?.cancel();
     } catch {
-      // reader may already be released
+      // reader may already be cancelled
     }
     this._reader = null;
     this._buffer = "";
