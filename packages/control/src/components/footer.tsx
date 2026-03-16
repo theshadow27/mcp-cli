@@ -12,6 +12,7 @@ interface FooterProps {
   promptText: string;
   transcriptExpanded: boolean;
   mailExpanded?: boolean;
+  planExpanded?: boolean;
 }
 
 export function Footer({
@@ -24,6 +25,7 @@ export function Footer({
   promptText,
   transcriptExpanded,
   mailExpanded,
+  planExpanded,
 }: FooterProps) {
   if (denyReasonMode) {
     return (
@@ -70,7 +72,7 @@ export function Footer({
   const tabHints = (
     <>
       <Text dimColor>tab</Text> next{"  "}
-      <Text dimColor>1-5</Text> jump{"  "}
+      <Text dimColor>1-6</Text> jump{"  "}
     </>
   );
 
@@ -138,6 +140,28 @@ export function Footer({
           {tabHints}
           <Text dimColor>j/k</Text> scroll{"  "}
           <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>s</Text> shutdown
+        </Text>
+      </Box>
+    );
+  }
+
+  if (view === "plans") {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          {tabHints}
+          <Text dimColor>j/k</Text> navigate{"  "}
+          <Text dimColor>enter</Text> {planExpanded ? "collapse" : "expand"}
+          {"  "}
+          {planExpanded ? (
+            <>
+              <Text dimColor>←/→</Text> steps{"  "}
+            </>
+          ) : null}
+          <Text dimColor>esc</Text> {planExpanded ? "collapse" : "back"}
+          {"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
         </Text>
