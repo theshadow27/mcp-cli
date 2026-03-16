@@ -138,19 +138,21 @@ describe("usePlans", () => {
   });
 
   it("skips servers without list capability", async () => {
-    let callToolCallCount = 0;
-    const ipcCallFn = async (method: string) => {
+    let planServerCallCount = 0;
+    const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") {
         return daemonStatus([{ name: "no-plan-server", hasList: false }]);
       }
-      callToolCallCount++;
-      return planToolResult([]);
+      const p = params as { server?: string } | undefined;
+      if (p?.server === "no-plan-server") planServerCallCount++;
+      // Return empty for _claude calls
+      return { content: [{ type: "text", text: "[]" }] };
     };
 
     mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
     await flush();
 
-    expect(callToolCallCount).toBe(0);
+    expect(planServerCallCount).toBe(0);
   });
 
   it("sets disconnected and error when status call fails", async () => {
@@ -255,6 +257,141 @@ describe("usePlans", () => {
 
     await flush(100);
     expect(callCount).toBe(countAtUnmount);
+  });
+});
+
+/* ---------- usePlans: Claude plan integration ---------- */
+
+describe("usePlans — Claude plan integration", () => {
+  interface HookState {
+    plans: Plan[];
+    loading: boolean;
+    error: string | null;
+    disconnected: boolean;
+  }
+
+  const instances: ReturnType<typeof render>[] = [];
+
+  afterEach(() => {
+    for (const inst of instances) inst.unmount();
+    instances.length = 0;
+  });
+
+  const Harness: FC<{ opts: UsePlansOptions; stateRef: { current: HookState } }> = ({ opts, stateRef }) => {
+    const result = usePlans(opts);
+    stateRef.current = result;
+    return React.createElement(Text, null, "ok");
+  };
+
+  function mount(opts: UsePlansOptions) {
+    const stateRef: { current: HookState } = {
+      current: { plans: [], loading: true, error: null, disconnected: false },
+    };
+    const instance = render(React.createElement(Harness, { opts, stateRef }));
+    instances.push(instance);
+    return { instance, stateRef };
+  }
+
+  function transcriptWithTodoWrite(todos: Array<{ id: string; content: string; status: string }>) {
+    return [
+      {
+        timestamp: Date.now(),
+        direction: "inbound",
+        message: {
+          type: "assistant",
+          message: {
+            id: "msg-1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "tool_use", name: "TodoWrite", input: { todos } }],
+          },
+        },
+      },
+    ];
+  }
+
+  it("merges Claude session plans alongside server plans", async () => {
+    const serverPlan = makePlan("server-plan", "test-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+
+      const p = params as { server?: string; tool?: string };
+      if (p.server === "test-server") return planToolResult([serverPlan]);
+
+      // _claude server calls
+      if (p.tool === "claude_session_list") {
+        return { content: [{ type: "text", text: JSON.stringify([{ sessionId: "sess-1", state: "active" }]) }] };
+      }
+      if (p.tool === "claude_transcript") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                transcriptWithTodoWrite([{ id: "t1", content: "Build feature", status: "in_progress" }]),
+              ),
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text", text: "[]" }] };
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    expect(stateRef.current.plans.length).toBeGreaterThanOrEqual(2);
+    const claudePlan = stateRef.current.plans.find((p) => p.server === "_claude");
+    expect(claudePlan).toBeDefined();
+    expect(claudePlan?.steps[0].name).toBe("Build feature");
+  });
+
+  it("returns only server plans when _claude server is unavailable", async () => {
+    const serverPlan = makePlan("server-plan", "test-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+
+      const p = params as { server?: string; tool?: string };
+      if (p.server === "test-server") return planToolResult([serverPlan]);
+      // _claude calls throw
+      throw new Error("_claude not available");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    expect(stateRef.current.plans).toHaveLength(1);
+    expect(stateRef.current.plans[0].id).toBe("server-plan");
+    expect(stateRef.current.error).toBeNull();
+  });
+
+  it("skips ended/disconnected Claude sessions", async () => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") return daemonStatus([]);
+
+      const p = params as { tool?: string };
+      if (p.tool === "claude_session_list") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([
+                { sessionId: "sess-ended", state: "ended" },
+                { sessionId: "sess-dc", state: "disconnected" },
+              ]),
+            },
+          ],
+        };
+      }
+      // Should never reach transcript call for ended/disconnected sessions
+      throw new Error("Should not fetch transcript for ended session");
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await flush();
+
+    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(claudePlans).toHaveLength(0);
   });
 });
 

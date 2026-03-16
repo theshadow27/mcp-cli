@@ -1,8 +1,75 @@
 import type { Plan, PlanMetrics, ServerStatus } from "@mcp-cli/core";
-import { GetPlanMetricsResultSchema, GetPlanResultSchema, ListPlansResultSchema } from "@mcp-cli/core";
+import {
+  CLAUDE_SERVER_NAME,
+  GetPlanMetricsResultSchema,
+  GetPlanResultSchema,
+  ListPlansResultSchema,
+} from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useEffect, useRef, useState } from "react";
+import type { TranscriptEntry } from "../components/claude-plan-adapter.js";
+import { extractPlansFromTranscript } from "../components/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
+
+// -- Claude plan helpers --
+
+/** Max transcript entries to scan for plan data per session. */
+const CLAUDE_TRANSCRIPT_LIMIT = 100;
+
+/**
+ * Fetch plans from active Claude Code sessions by scanning transcripts
+ * for TodoWrite tool calls or plan-like markdown.
+ */
+async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelled: boolean): Promise<Plan[]> {
+  try {
+    // Get session list from _claude virtual server
+    const listResult = await ipcCallFn("callTool", {
+      server: CLAUDE_SERVER_NAME,
+      tool: "claude_session_list",
+      arguments: {},
+    });
+    if (cancelled) return [];
+
+    const listText = extractToolText(listResult);
+    if (!listText) return [];
+
+    const sessions = JSON.parse(listText) as Array<{ sessionId: string; state: string }>;
+    // Only scan active/idle sessions (skip ended/disconnected)
+    const liveSessions = sessions.filter((s) => s.state !== "ended" && s.state !== "disconnected");
+    if (liveSessions.length === 0) return [];
+
+    const plans: Plan[] = [];
+
+    await Promise.allSettled(
+      liveSessions.map(async (session) => {
+        try {
+          const transcriptResult = await ipcCallFn("callTool", {
+            server: CLAUDE_SERVER_NAME,
+            tool: "claude_transcript",
+            arguments: { sessionId: session.sessionId, limit: CLAUDE_TRANSCRIPT_LIMIT },
+          });
+          if (cancelled) return;
+
+          const transcriptText = extractToolText(transcriptResult);
+          if (!transcriptText) return;
+
+          const entries = JSON.parse(transcriptText) as TranscriptEntry[];
+          const plan = extractPlansFromTranscript(entries, session.sessionId);
+          if (plan) {
+            plans.push(plan);
+          }
+        } catch {
+          // One session failing doesn't break the whole list
+        }
+      }),
+    );
+
+    return plans;
+  } catch {
+    // _claude server not available — not an error, just no Claude plans
+    return [];
+  }
+}
 
 // -- usePlans --
 
@@ -71,6 +138,12 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         );
 
         if (cancelled) return;
+
+        // Also fetch Claude session plans (read-only)
+        const claudePlans = await fetchClaudePlans(ipcCallFn, cancelled);
+        if (cancelled) return;
+        allPlans.push(...claudePlans);
+
         const allFailed = planServers.length > 0 && successCount === 0;
         setPlans(allPlans);
         setError(null);
