@@ -14,7 +14,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
-import type { ExpandedPlanKey } from "./hooks/use-keyboard-plans.js";
+import { type ExpandedPlanKey, hasCapability } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -56,6 +56,8 @@ export function App() {
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
   const [expandedPlan, setExpandedPlan] = useState<ExpandedPlanKey | null>(null);
   const [selectedStep, setSelectedStep] = useState(0);
+  const [planConfirmAbort, setPlanConfirmAbort] = useState(false);
+  const [planStatusMessage, setPlanStatusMessage] = useState<string | null>(null);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -86,6 +88,7 @@ export function App() {
     loading: plansLoading,
     error: plansError,
     disconnected: plansDisconnected,
+    refresh: plansRefresh,
   } = usePlans({ enabled: view === "plans", intervalMs: view === "plans" ? 10_000 : 30_000 });
   const filteredLogLines = useMemo(() => filterLogLines(logLines, filterText), [logLines, filterText]);
   const statsLineCount = useMemo(
@@ -250,6 +253,12 @@ export function App() {
       setExpandedPlan,
       selectedStep,
       setSelectedStep,
+      servers,
+      confirmAbort: planConfirmAbort,
+      setConfirmAbort: setPlanConfirmAbort,
+      statusMessage: planStatusMessage,
+      setStatusMessage: setPlanStatusMessage,
+      refresh: plansRefresh,
     },
   });
 
@@ -329,6 +338,9 @@ export function App() {
           expandedPlan={expandedPlan}
           selectedStep={selectedStep}
           disconnected={plansDisconnected}
+          servers={servers}
+          statusMessage={planStatusMessage}
+          confirmAbort={planConfirmAbort}
         />
       )}
       <Footer
@@ -342,6 +354,16 @@ export function App() {
         transcriptExpanded={expandedSession !== null}
         mailExpanded={expandedMessage !== null}
         planExpanded={expandedPlan !== null}
+        planConfirmAbort={planConfirmAbort}
+        planReadOnly={(() => {
+          const targetPlan = expandedPlan
+            ? plansData.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+            : plansData[plansSelectedIndex];
+          return targetPlan
+            ? !hasCapability(servers, targetPlan.server, "advance") &&
+                !hasCapability(servers, targetPlan.server, "abort")
+            : false;
+        })()}
       />
     </Box>
   );

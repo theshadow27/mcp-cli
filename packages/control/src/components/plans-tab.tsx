@@ -1,7 +1,8 @@
-import type { Plan } from "@mcp-cli/core";
+import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
+import { hasCapability } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
@@ -14,6 +15,9 @@ interface PlansTabProps {
   expandedPlan: ExpandedPlanKey | null;
   selectedStep: number;
   disconnected?: boolean;
+  servers: ServerStatus[];
+  statusMessage?: string | null;
+  confirmAbort?: boolean;
 }
 
 export function PlansTab({
@@ -24,6 +28,9 @@ export function PlansTab({
   expandedPlan,
   selectedStep,
   disconnected,
+  servers,
+  statusMessage,
+  confirmAbort,
 }: PlansTabProps) {
   if (loading && plans.length === 0) {
     return <Text dimColor>Loading plans...</Text>;
@@ -37,6 +44,13 @@ export function PlansTab({
     ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
     : null;
   const currentStep = expanded?.steps[selectedStep];
+
+  // Check if the selected/expanded plan's server is read-only
+  const targetPlan = expanded ?? plans[selectedIndex];
+  const readOnly =
+    targetPlan &&
+    !hasCapability(servers, targetPlan.server, "advance") &&
+    !hasCapability(servers, targetPlan.server, "abort");
 
   return (
     <Box flexDirection="column">
@@ -52,6 +66,28 @@ export function PlansTab({
           {currentStep?.gates && currentStep.gates.length > 0 ? (
             <GatePanel gates={currentStep.gates} stepName={currentStep.name} />
           ) : null}
+        </Box>
+      ) : null}
+      {readOnly ? (
+        <Box marginTop={1}>
+          <Text color="yellow" dimColor>
+            (read-only)
+          </Text>
+        </Box>
+      ) : null}
+      {statusMessage ? (
+        <Box marginTop={readOnly ? 0 : 1}>
+          <Text
+            color={
+              confirmAbort
+                ? "yellow"
+                : statusMessage.startsWith("Gates blocking") || statusMessage.includes("failed")
+                  ? "red"
+                  : "green"
+            }
+          >
+            {statusMessage}
+          </Text>
         </Box>
       ) : null}
     </Box>

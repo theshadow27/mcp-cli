@@ -195,6 +195,10 @@ export function useKeyboard({
       handleLogsInput(input, key, logsNav, serversNav.servers);
       return;
     }
+    if (view === "plans" && plansNav.confirmAbort) {
+      handlePlansInput(input, key, plansNav);
+      return;
+    }
 
     // Global: shutdown daemon
     if (input === "s") {
