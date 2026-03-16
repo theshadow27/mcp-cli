@@ -47,6 +47,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         );
 
         const allPlans: Plan[] = [];
+        let successCount = 0;
 
         await Promise.allSettled(
           planServers.map(async (srv: ServerStatus) => {
@@ -60,6 +61,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
               if (!text) return;
               const parsed = ListPlansResultSchema.safeParse(JSON.parse(text));
               if (parsed.success) {
+                successCount++;
                 allPlans.push(...parsed.data.plans);
               }
             } catch {
@@ -69,9 +71,10 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         );
 
         if (cancelled) return;
+        const allFailed = planServers.length > 0 && successCount === 0;
         setPlans(allPlans);
         setError(null);
-        setDisconnected(false);
+        setDisconnected(allFailed);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
