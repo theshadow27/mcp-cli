@@ -15,8 +15,8 @@
 import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod, ToolInfo } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { BunStdioServerTransport } from "../bun-stdio-transport";
 import { splitServerTool } from "../parse";
 
 // -- Types --
@@ -290,8 +290,12 @@ export async function cmdServe(): Promise<void> {
     return handleCallTool(name, args as Record<string, unknown> | undefined, curated, ipcCall);
   });
 
-  const transport = new StdioServerTransport();
+  const transport = new BunStdioServerTransport();
   await server.connect(transport);
-  startToolListPoller(server, ipcCall);
+  const stopPoller = startToolListPoller(server, ipcCall);
   console.error("[mcx serve] MCP server running on stdio");
+
+  // Block until stdin closes — prevents main() from calling process.exit()
+  await transport.closed;
+  stopPoller();
 }
