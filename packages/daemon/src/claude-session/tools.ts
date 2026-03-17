@@ -17,7 +17,10 @@ export const CLAUDE_TOOLS = [
       type: "object" as const,
       properties: {
         prompt: { type: "string", description: "The message to send to Claude Code" },
-        sessionId: { type: "string", description: "Existing session ID to continue (omit for new session)" },
+        sessionId: {
+          type: "string",
+          description: "Existing session ID to continue, supports prefix matching (omit for new session)",
+        },
         cwd: { type: "string", description: "Working directory for the Claude process" },
         permissionMode: {
           type: "string",
@@ -68,7 +71,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID to query" },
+        sessionId: { type: "string", description: "Session ID or unique prefix to query" },
       },
       required: ["sessionId"],
     },
@@ -79,7 +82,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID to interrupt" },
+        sessionId: { type: "string", description: "Session ID or unique prefix to interrupt" },
       },
       required: ["sessionId"],
     },
@@ -90,7 +93,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID to end" },
+        sessionId: { type: "string", description: "Session ID or unique prefix to end" },
       },
       required: ["sessionId"],
     },
@@ -101,7 +104,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID to query" },
+        sessionId: { type: "string", description: "Session ID or unique prefix to query" },
         limit: { type: "number", description: "Max entries to return (default: 50)" },
       },
       required: ["sessionId"],
@@ -116,7 +119,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
+        sessionId: { type: "string", description: "Session ID or unique prefix to wait on (omit for any session)" },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
         afterSeq: {
           type: "number",
@@ -136,7 +139,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID containing the permission request" },
+        sessionId: { type: "string", description: "Session ID or unique prefix containing the permission request" },
         requestId: { type: "string", description: "Permission request ID to approve" },
       },
       required: ["sessionId", "requestId"],
@@ -148,7 +151,7 @@ export const CLAUDE_TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {
-        sessionId: { type: "string", description: "Session ID containing the permission request" },
+        sessionId: { type: "string", description: "Session ID or unique prefix containing the permission request" },
         requestId: { type: "string", description: "Permission request ID to deny" },
         message: { type: "string", description: "Denial reason (default: 'Denied by user via mcpctl')" },
       },
