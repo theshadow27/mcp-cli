@@ -304,7 +304,7 @@ describe("usePlans", () => {
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await flush();
+    await waitFor(() => stateRef.current.plans.length >= 2);
 
     expect(stateRef.current.plans[0].server).toBe("a-server");
     expect(stateRef.current.plans[1].server).toBe("z-server");
@@ -395,12 +395,12 @@ describe("step clamp effect (app.tsx:149-155 integration)", () => {
     instances.push(instance);
 
     // Wait for first poll — selectedStep stays at 2 (valid for 3-step plan)
-    await flush(20);
+    await waitFor(() => stateRef.current.plans.length >= 1);
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.selectedStep).toBe(2);
 
-    // Wait for second poll — plan now has 1 step, selectedStep must clamp to 0
-    await flush(80);
+    // Wait for second poll and clamp effect to settle
+    await waitFor(() => stateRef.current.selectedStep === 0);
     expect(pollCount).toBeGreaterThanOrEqual(2);
     expect(stateRef.current.plans[0].steps).toHaveLength(1);
     expect(stateRef.current.selectedStep).toBe(0);

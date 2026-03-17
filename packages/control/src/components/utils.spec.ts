@@ -134,11 +134,11 @@ describe("tab navigation", () => {
   it("nextTab cycles forward", () => {
     expect(nextTab("servers")).toBe("logs");
     expect(nextTab("logs")).toBe("claude");
-    expect(nextTab("plans")).toBe("servers"); // wraps around
+    expect(nextTab("mail")).toBe("servers"); // wraps around
   });
 
   it("prevTab cycles backward", () => {
-    expect(prevTab("servers")).toBe("plans"); // wraps around
+    expect(prevTab("servers")).toBe("mail"); // wraps around
     expect(prevTab("logs")).toBe("servers");
     expect(prevTab("claude")).toBe("logs");
   });

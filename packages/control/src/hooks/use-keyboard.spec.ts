@@ -24,7 +24,7 @@ describe("nextTab", () => {
 
 describe("prevTab", () => {
   test("cycles backward through all tabs", () => {
-    expect(prevTab("servers")).toBe("plans");
+    expect(prevTab("servers")).toBe("mail");
     expect(prevTab("logs")).toBe("servers");
     expect(prevTab("claude")).toBe("logs");
     expect(prevTab("stats")).toBe("claude");

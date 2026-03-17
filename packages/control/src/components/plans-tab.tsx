@@ -61,7 +61,11 @@ export function PlansTab({
       ) : null}
       {metrics && !metricsLoading ? (
         <MetricsPanel
-          label={plans[selectedIndex]?.steps.find((s) => s.id === plans[selectedIndex]?.activeStepId)?.name ?? plans[selectedIndex]?.name ?? ""}
+          label={
+            plans[selectedIndex]?.steps.find((s) => s.id === plans[selectedIndex]?.activeStepId)?.name ??
+            plans[selectedIndex]?.name ??
+            ""
+          }
           metrics={metrics}
         />
       ) : null}

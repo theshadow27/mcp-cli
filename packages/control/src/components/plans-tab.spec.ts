@@ -26,6 +26,8 @@ interface TabProps {
   error?: string | null;
   disconnected?: boolean;
   selectedIndex?: number;
+  expandedPlan?: { id: string; server: string } | null;
+  selectedStep?: number;
   metrics?: PlanMetrics | null;
   metricsLoading?: boolean;
 }
@@ -38,6 +40,8 @@ function renderTab(props: TabProps = {}) {
       error: props.error ?? null,
       disconnected: props.disconnected ?? false,
       selectedIndex: props.selectedIndex ?? 0,
+      expandedPlan: props.expandedPlan ?? null,
+      selectedStep: props.selectedStep ?? 0,
       metrics: props.metrics ?? null,
       metricsLoading: props.metricsLoading ?? false,
     }),
@@ -67,7 +71,7 @@ describe("PlansTab", () => {
     const inst = renderTab();
     const output = inst.lastFrame() ?? "";
     expect(output).toContain("Deploy to prod");
-    expect(output).toContain("[active]");
+    expect(output).toContain("●");
     expect(output).toContain("1/3 steps");
     inst.unmount();
   });
