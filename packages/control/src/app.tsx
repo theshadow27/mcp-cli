@@ -161,8 +161,17 @@ export function App() {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
 
-  // Restore selection by identity when plans list refreshes, fall back to clamp
+  // Restore selection by identity when plans list refreshes, fall back to clamp.
+  // Prioritize snapping to the expanded plan so cursor and detail panel stay in sync.
   useEffect(() => {
+    if (expandedPlan && plans.length > 0) {
+      const idx = plans.findIndex((p) => p.server === expandedPlan.server && p.id === expandedPlan.id);
+      if (idx >= 0) {
+        setPlansSelectedIndex(idx);
+        plansSelectionIdRef.current = { server: expandedPlan.server, id: expandedPlan.id };
+        return;
+      }
+    }
     const id = plansSelectionIdRef.current;
     if (id && plans.length > 0) {
       const idx = plans.findIndex((p) => p.server === id.server && p.id === id.id);
@@ -172,7 +181,7 @@ export function App() {
       }
     }
     setPlansSelectedIndex((i) => Math.min(i, Math.max(0, plans.length - 1)));
-  }, [plans]);
+  }, [plans, expandedPlan]);
 
   // Clear orphaned expandedMessage when the message disappears from the list
   useEffect(() => {
