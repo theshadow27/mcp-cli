@@ -1,30 +1,31 @@
 # Sprint 14
 
-> Planned 2026-03-13. Target: 15 PRs.
+> Planned 2026-03-13, revised 2026-03-16. Target: 14 PRs.
 
 ## Goal
 
-Automatic aliases (ephemeral alias lifecycle) + Plans tab repair + customer-reported help text
+P1 serve bug fix + Plans tab repair + customer help text + DX polish
+
+(Original plan included automatic aliases #696/#697 — deferred mid-sprint to prioritize P1 #754 serve bug.)
 
 ## Issues
 
-| # | Title | Scrutiny | Batch | Model | Category |
-|---|-------|----------|-------|-------|----------|
-| 696 | Ephemeral aliases — auto-save long CLI calls with TTL | high | 1 | opus | goal |
-| 751 | mcx claude spawn --help should show usage docs | low | 1 | opus | goal |
-| 748 | Plans tab — selectedStep clamp + composite expandedPlan key + deterministic order | medium | 1 | opus | goal |
-| 749 | usePlans — silent per-server failures when all plan servers unreachable | low | 1 | opus | goal |
-| 697 | Auto-promote ephemeral aliases to curated based on usage patterns | high | 2 | opus | goal |
-| 705 | Plans tab — advance/abort keyboard actions | medium | 2 | opus | goal |
-| 706 | Plans tab — live metrics panel | medium | 2 | opus | goal |
-| 707 | Plans tab — Claude Code plan integration (read-only) | medium | 2 | opus | goal |
-| 750 | Parallelize test profiler in check-coverage.ts | medium | 1 | opus | filler |
-| 747 | use-daemon-process-count.spec.ts sleep-based assertions (flakiness) | low | 1 | opus | filler |
-| 745 | Show process holding WS port when warning displayed | low | 3 | opus | filler |
-| 90 | Add --verbose and --dry-run flags for debugging | medium | 3 | opus | filler |
-| 616 | Flaky: ConfigWatcher integration tests timeout | low | 3 | opus | filler |
-| 492 | Investigate idle timeout test needing 15s margin | low | 3 | opus | filler |
-| 619 | Flaky: stress.spec.ts concurrent auto-start | low | 3 | opus | filler |
+| # | Title | Scrutiny | Batch | Model | Result |
+|---|-------|----------|-------|-------|--------|
+| **754** | **bug(serve): mcx serve never responds to initialize** | **high** | **1** | **opus** | **merged PR #760** |
+| 751 | mcx claude spawn --help should show usage docs | low | 1 | opus | merged PR #757 |
+| 748 | Plans tab — selectedStep clamp + composite expandedPlan key + deterministic order | high | 1 | opus | merged PR #758 |
+| 749 | usePlans — silent per-server failures when all plan servers unreachable | low | 1 | opus | merged PR #755 |
+| 750 | Parallelize test profiler in check-coverage.ts | low | 1 | opus | merged PR #756 |
+| 747 | use-daemon-process-count.spec.ts sleep-based assertions (flakiness) | low | 1 | opus | merged PR #759 |
+| 705 | Plans tab — advance/abort keyboard actions | high | 2 | opus | merged PR #770 |
+| 706 | Plans tab — live metrics panel | high | 2 | opus | merged PR #771 |
+| 707 | Plans tab — Claude Code plan integration (read-only) | high | 2 | opus | merged PR #773 |
+| 745 | Show process holding WS port when warning displayed | low | 3 | opus | merged PR #768 |
+| 90 | Add --verbose and --dry-run flags for debugging | high | 3 | opus | merged PR #769 |
+| 616 | Flaky: ConfigWatcher integration tests timeout | low | 3 | opus | merged PR #767 |
+| 492 | Investigate idle timeout test needing 15s margin | low | 3 | opus | merged PR #772 |
+| 619 | Flaky: stress.spec.ts concurrent auto-start | low | 3 | opus | merged PR #774 |
 
 ## Batch Plan
 
@@ -51,10 +52,19 @@ The user wants automatic aliases as the primary goal. #696 (ephemeral) and #697 
 
 #751 is a customer-filed issue about missing help text — prioritized as a quick win in batch 1.
 
-Issues considered but excluded:
-- #698 (shared alias registry) — depends on #696 + #697, too much for one sprint
+Issues deferred:
+- #696/#697 (automatic aliases) — deferred to prioritize P1 #754
+- #698 (shared alias registry) — depends on #696 + #697
 - #718 (retry WS port) — complex, standalone spike
 - #699 (auto-update) — large feature, needs design
-- #519/#520 (ACP) — needs spike validation first (#518)
-- #503/#505 (OpenCode) — needs spike validation first
-- #704 — PR #746 open, repair via #748/#749 instead of re-implementing
+
+## Results
+
+- **Released**: v0.6.1 (pending)
+- **PRs merged**: 14
+- **Issues closed**: 14
+- **Issues dropped**: 2 (#696, #697 — deferred, not dropped)
+- **Issues added**: 1 (#754 — customer P1 pulled in mid-sprint)
+- **New issues filed**: 12+ (from adversarial reviews)
+- **Adversarial reviews**: 8 (across #754, #748, #705, #706, #707, #90)
+- **Note**: PR #746 (plans tab foundation) still merging to main — #748 and #705 landed on feature branch
