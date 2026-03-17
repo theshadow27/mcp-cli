@@ -111,6 +111,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
   // Abort confirmation mode — capture y/n, ignore everything else
   if (nav.confirmAbort) {
     if (input === "y" || input === "Y") {
+      if (nav.inflight) return true; // guard against double-fire
       const plan = getTargetPlan(nav);
       if (!plan || !hasCapability(servers, plan.server, "abort")) {
         // Plan disappeared or lost capability while confirming
