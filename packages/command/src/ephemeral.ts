@@ -6,13 +6,13 @@ import { type IpcMethod, type IpcMethodResult, options as coreOptions, readCliCo
 
 /**
  * Generate a short ephemeral alias name from server, tool, and args.
- * Format: {tool-prefix}-{4-char-hash}, e.g. "get_-a83r"
+ * Format: {tool-prefix}-{8-char-hash}, e.g. "get_-a83rf29b"
  */
 export function generateEphemeralName(server: string, tool: string, argsJson: string): string {
   const prefix = tool.slice(0, 4).replace(/[^a-zA-Z0-9_]/g, "");
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(`${server}\0${tool}\0${argsJson}`);
-  const hash = hasher.digest("hex").slice(0, 4);
+  const hash = hasher.digest("hex").slice(0, 8);
   return `${prefix}-${hash}`;
 }
 

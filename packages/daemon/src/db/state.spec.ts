@@ -577,6 +577,71 @@ describe("StateDb", () => {
       expect(db.getAlias("expired")).toBeUndefined();
       db.close();
     });
+
+    test("pruneExpiredAliases cleans up alias files", () => {
+      const db = createDb();
+      const tmpFile = join(tmpdir(), `mcp-cli-test-prune-${Date.now()}.ts`);
+      // Create a real file so unlinkSync has something to delete
+      const { writeFileSync } = require("node:fs");
+      const { existsSync } = require("node:fs");
+      writeFileSync(tmpFile, "// ephemeral alias");
+
+      const past = Date.now() - 1000;
+      db.saveAlias("eph-file", tmpFile, "gone", "freeform", undefined, undefined, undefined, undefined, past);
+
+      expect(existsSync(tmpFile)).toBe(true);
+      db.pruneExpiredAliases();
+      expect(existsSync(tmpFile)).toBe(false);
+      db.close();
+    });
+
+    test("saveAlias with expiresAt refuses to overwrite permanent alias", () => {
+      const db = createDb();
+      // Save a permanent alias
+      db.saveAlias("my-tool", "/tmp/permanent.ts", "user curated");
+      expect(db.getAlias("my-tool")?.expiresAt).toBeNull();
+
+      // Attempt to overwrite with an ephemeral alias
+      const future = Date.now() + 86400000;
+      db.saveAlias(
+        "my-tool",
+        "/tmp/ephemeral.ts",
+        "ephemeral",
+        "freeform",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        future,
+      );
+
+      // Permanent alias should be unchanged
+      const alias = db.getAlias("my-tool");
+      expect(alias?.description).toBe("user curated");
+      expect(alias?.filePath).toBe("/tmp/permanent.ts");
+      expect(alias?.expiresAt).toBeNull();
+      db.close();
+    });
+
+    test("saveAlias without expiresAt can still overwrite permanent alias", () => {
+      const db = createDb();
+      db.saveAlias("my-tool", "/tmp/v1.ts", "version 1");
+      db.saveAlias("my-tool", "/tmp/v2.ts", "version 2");
+      expect(db.getAlias("my-tool")?.description).toBe("version 2");
+      db.close();
+    });
+
+    test("saveAlias with expiresAt can overwrite another ephemeral alias", () => {
+      const db = createDb();
+      const future1 = Date.now() + 86400000;
+      const future2 = Date.now() + 172800000;
+      db.saveAlias("eph-x", "/tmp/e1.ts", "first", "freeform", undefined, undefined, undefined, undefined, future1);
+      db.saveAlias("eph-x", "/tmp/e2.ts", "second", "freeform", undefined, undefined, undefined, undefined, future2);
+      const alias = db.getAlias("eph-x");
+      expect(alias?.description).toBe("second");
+      expect(alias?.expiresAt).toBe(future2);
+      db.close();
+    });
   });
 
   describe("auth_tokens", () => {

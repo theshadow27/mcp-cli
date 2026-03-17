@@ -8,6 +8,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { unlinkSync } from "node:fs";
 import {
   type AliasType,
   type MailMessage,
@@ -650,6 +651,19 @@ export class StateDb {
     sourceHash?: string,
     expiresAt?: number,
   ): void {
+    // If the caller is saving an ephemeral alias (expiresAt set), refuse to
+    // overwrite an existing permanent alias (expires_at IS NULL). This prevents
+    // auto-save hash collisions from clobbering user-curated aliases.
+    if (expiresAt != null) {
+      const existing = this.db
+        .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM aliases WHERE name = ?")
+        .get(name);
+      if (existing && existing.expires_at === null) {
+        // Permanent alias exists — do not overwrite
+        return;
+      }
+    }
+
     this.db.run(
       `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
@@ -689,9 +703,25 @@ export class StateDb {
     );
   }
 
-  /** Delete ephemeral aliases past their TTL. */
+  /** Delete ephemeral aliases past their TTL, cleaning up their files. */
   pruneExpiredAliases(): number {
-    const result = this.db.run("DELETE FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?", [Date.now()]);
+    const now = Date.now();
+    // Fetch file paths before deleting rows so we can clean up the files
+    const expired = this.db
+      .query<{ file_path: string }, [number]>(
+        "SELECT file_path FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?",
+      )
+      .all(now);
+    if (expired.length === 0) return 0;
+
+    for (const row of expired) {
+      try {
+        unlinkSync(row.file_path);
+      } catch {
+        // file already gone, fine
+      }
+    }
+    const result = this.db.run("DELETE FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?", [now]);
     return result.changes;
   }
 

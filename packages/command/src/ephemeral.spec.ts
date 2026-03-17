@@ -10,7 +10,7 @@ afterEach(() => {
 describe("generateEphemeralName", () => {
   test("produces prefix-hash format", () => {
     const name = generateEphemeralName("server", "get_logs", '{"query":"test"}');
-    expect(name).toMatch(/^get_-[0-9a-f]{4}$/);
+    expect(name).toMatch(/^get_-[0-9a-f]{8}$/);
   });
 
   test("same inputs produce same name", () => {
@@ -28,7 +28,7 @@ describe("generateEphemeralName", () => {
   test("strips non-alphanumeric chars from prefix", () => {
     const name = generateEphemeralName("s", "a/b-c", "{}");
     // "a/b-" → prefix should only have alphanumeric + underscore
-    expect(name).toMatch(/^[a-zA-Z0-9_]+-[0-9a-f]{4}$/);
+    expect(name).toMatch(/^[a-zA-Z0-9_]+-[0-9a-f]{8}$/);
   });
 });
 
@@ -63,7 +63,7 @@ describe("maybeAutoSaveEphemeral", () => {
     const callArgs = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[0];
     expect(callArgs[0]).toBe("saveAlias");
     const params = callArgs[1] as Record<string, unknown>;
-    expect(params.name).toMatch(/^get_-[0-9a-f]{4}$/);
+    expect(params.name).toMatch(/^get_-[0-9a-f]{8}$/);
     expect(params.expiresAt).toBeGreaterThan(Date.now());
     expect(params.description).toBe("ephemeral: server/get_logs");
     expect(deps.logError).toHaveBeenCalledTimes(1);
