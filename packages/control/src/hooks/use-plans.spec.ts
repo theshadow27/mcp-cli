@@ -516,6 +516,103 @@ describe("step clamp effect (app.tsx:149-155 integration)", () => {
   });
 });
 
+/* ---------- cursor drift fix (issue #763) ---------- */
+
+describe("cursor snaps to expanded plan on reorder (issue #763)", () => {
+  const instances: ReturnType<typeof render>[] = [];
+
+  afterEach(() => {
+    for (const inst of instances) inst.unmount();
+    instances.length = 0;
+  });
+
+  interface DriftState {
+    plans: Plan[];
+    selectedIndex: number;
+  }
+
+  const DriftHarness: FC<{
+    opts: UsePlansOptions;
+    expandedPlan: { id: string; server: string } | null;
+    stateRef: { current: DriftState };
+  }> = ({ opts, expandedPlan, stateRef }) => {
+    const { plans } = usePlans(opts);
+    const [selectedIndex, setSelectedIndex] = React.useState(0);
+    const plansSelectionIdRef = React.useRef<{ server: string; id: string } | null>(null);
+
+    // Replicate the fixed effect from app.tsx: prioritize expandedPlan
+    React.useEffect(() => {
+      if (expandedPlan && plans.length > 0) {
+        const idx = plans.findIndex((p) => p.server === expandedPlan.server && p.id === expandedPlan.id);
+        if (idx >= 0) {
+          setSelectedIndex(idx);
+          plansSelectionIdRef.current = { server: expandedPlan.server, id: expandedPlan.id };
+          return;
+        }
+      }
+      const id = plansSelectionIdRef.current;
+      if (id && plans.length > 0) {
+        const idx = plans.findIndex((p) => p.server === id.server && p.id === id.id);
+        if (idx >= 0) {
+          setSelectedIndex(idx);
+          return;
+        }
+      }
+      setSelectedIndex((i) => Math.min(i, Math.max(0, plans.length - 1)));
+    }, [plans, expandedPlan]);
+
+    stateRef.current = { plans, selectedIndex };
+    return React.createElement(Text, null, `idx:${selectedIndex}`);
+  };
+
+  it("snaps cursor to expanded plan when a new plan sorts before it", async () => {
+    const planB = makePlan("plan-b", "server-b");
+    const planA = makePlan("plan-a", "server-a");
+
+    let pollRound = 0;
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "server-a", hasList: true },
+          { name: "server-b", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "server-b") {
+        pollRound++;
+        return planToolResult([planB]);
+      }
+      // server-a: empty on first round, returns plan-a on second
+      if (pollRound <= 1) return planToolResult([]);
+      return planToolResult([planA]);
+    };
+
+    const stateRef: { current: DriftState } = {
+      current: { plans: [], selectedIndex: 0 },
+    };
+
+    const instance = render(
+      React.createElement(DriftHarness, {
+        opts: { intervalMs: 40, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] },
+        expandedPlan: { id: "plan-b", server: "server-b" },
+        stateRef,
+      }),
+    );
+    instances.push(instance);
+
+    // Wait for initial load — plan-b is the only plan at index 0
+    await waitFor(() => stateRef.current.plans.length >= 1 && stateRef.current.plans[0].id === "plan-b");
+    expect(stateRef.current.selectedIndex).toBe(0);
+
+    // Wait for re-poll with both plans — plan-a (server-a) sorts before plan-b (server-b)
+    await waitFor(() => stateRef.current.plans.length === 2);
+    // Cursor must follow the expanded plan (plan-b) to its new index (1)
+    expect(stateRef.current.plans[0].id).toBe("plan-a");
+    expect(stateRef.current.plans[1].id).toBe("plan-b");
+    expect(stateRef.current.selectedIndex).toBe(1);
+  });
+});
+
 /* ---------- usePlans: Claude plan integration ---------- */
 
 describe("usePlans — Claude plan integration", () => {
