@@ -162,6 +162,8 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
                 if (parsed.success) {
                   successCount++;
                   allPlans.push(...parsed.data.plans);
+                } else {
+                  console.error(`[usePlans] parse error for server ${srv.name}:`, parsed.error.issues);
                 }
               } catch {
                 // One server failing doesn't break the whole list
@@ -275,6 +277,8 @@ export function usePlan(planId: string, server: string, opts: UsePlanOptions = {
           const parsed = GetPlanResultSchema.safeParse(JSON.parse(text));
           if (parsed.success) {
             setPlan(parsed.data.plan);
+          } else {
+            console.error(`[usePlan] parse error for plan ${planId} on ${server}:`, parsed.error.issues);
           }
         }
         setError(null);
@@ -360,6 +364,8 @@ export function usePlanMetrics(
           const parsed = GetPlanMetricsResultSchema.safeParse(JSON.parse(text));
           if (parsed.success) {
             setMetrics(parsed.data.metrics);
+          } else {
+            console.error(`[usePlanMetrics] parse error for plan ${planId} on ${server}:`, parsed.error.issues);
           }
         }
         setError(null);

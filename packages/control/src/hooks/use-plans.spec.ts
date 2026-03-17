@@ -316,6 +316,33 @@ describe("usePlans", () => {
     expect(stateRef.current.disconnected).toBe(true);
   });
 
+  it("logs console.error when safeParse fails for a server (#762)", async () => {
+    const errors: unknown[][] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+
+    try {
+      const ipcCallFn = async (method: string) => {
+        if (method === "status") {
+          return daemonStatus([{ name: "bad-schema-server", hasList: true }]);
+        }
+        // Valid JSON but wrong shape — safeParse will fail
+        return { content: [{ type: "text", text: JSON.stringify({ wrong: "shape" }) }] };
+      };
+
+      const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+      await waitFor(() => stateRef.current.loading === false);
+
+      const parseErrors = errors.filter(
+        (args) => typeof args[0] === "string" && args[0].includes("[usePlans] parse error"),
+      );
+      expect(parseErrors.length).toBeGreaterThanOrEqual(1);
+      expect(parseErrors[0][0]).toContain("bad-schema-server");
+    } finally {
+      console.error = origError;
+    }
+  });
+
   it("cleanup stops polling on unmount", async () => {
     let callCount = 0;
     const ipcCallFn = async () => {
