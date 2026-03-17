@@ -410,6 +410,21 @@ describe("handlePlansInput", () => {
     expect(nav.state.selectedIndex).toBe(0);
   });
 
+  it("y is blocked while inflight (guard against double-fire)", () => {
+    let called = false;
+    const mockIpc = (() => {
+      called = true;
+      return Promise.resolve({ content: [{ type: "text", text: "{}" }] });
+    }) as PlansNav["ipcCallFn"];
+
+    const nav = makeNav({ confirmAbort: true, ipcCallFn: mockIpc, inflight: true });
+    const consumed = handlePlansInput("y", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(called).toBe(false);
+    // Should remain in confirmAbort mode since no action was taken
+    expect(nav.state.confirmAbort).toBe(true);
+  });
+
   it("abort sets and clears inflight", async () => {
     const mockIpc = (() =>
       Promise.resolve({ content: [{ type: "text", text: '{"plan":{}}' }] })) as PlansNav["ipcCallFn"];
