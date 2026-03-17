@@ -786,14 +786,15 @@ export class ClaudeWsServer {
    * process is stuck. Callers that need a fast return should fire-and-forget this.
    */
   async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null; repoRoot: string | null }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`No session with id ${sessionId}`);
+    const resolvedId = this.resolveSessionId(sessionId);
+    const session = this.sessions.get(resolvedId);
+    if (!session) throw new Error(`No session with id ${resolvedId}`);
     const info = {
       worktree: session.worktree,
       cwd: session.config.cwd ?? null,
       repoRoot: session.config.repoRoot ?? null,
     };
-    await this.terminateSession(sessionId, session, "Session ended by user");
+    await this.terminateSession(resolvedId, session, "Session ended by user");
     return info;
   }
 
@@ -824,9 +825,10 @@ export class ClaudeWsServer {
 
   /** Get detailed status for a session. */
   getStatus(sessionId: string): SessionDetail {
-    const session = this.getSession(sessionId);
+    const resolvedId = this.resolveSessionId(sessionId);
+    const session = this.getSession(resolvedId);
     return {
-      ...this.buildSessionInfo(sessionId, session),
+      ...this.buildSessionInfo(resolvedId, session),
       pendingPermissionIds: [...session.state.pendingPermissions.keys()],
       pid: session.pid,
     };
@@ -872,16 +874,16 @@ export class ClaudeWsServer {
    * with a synthetic event instead of blocking until timeout.
    */
   waitForEvent(sessionId: string | null, timeoutMs: number): Promise<SessionWaitEvent> {
-    const err = this.validateWaitTarget(sessionId);
-    if (err) return Promise.reject(err);
+    const { error, resolvedId } = this.validateWaitTarget(sessionId);
+    if (error) return Promise.reject(error);
 
     // Check if any matching session already has an actionable state
-    const immediate = this.findImmediateEvent(sessionId);
+    const immediate = this.findImmediateEvent(resolvedId);
     if (immediate) return Promise.resolve(immediate);
 
     return new Promise<SessionWaitEvent>((resolve, reject) => {
       const waiter: EventWaiter = {
-        sessionId,
+        sessionId: resolvedId,
         resolve: (e) => {
           clearTimeout(waiter.timer);
           resolve(e);
@@ -906,11 +908,11 @@ export class ClaudeWsServer {
    * On timeout, returns `{ seq: currentSeq, events: [] }` instead of throwing.
    */
   waitForEventsSince(sessionId: string | null, afterSeq: number, timeoutMs: number): Promise<WaitResult> {
-    const err = this.validateWaitTarget(sessionId);
-    if (err) return Promise.reject(err);
+    const { error, resolvedId } = this.validateWaitTarget(sessionId);
+    if (error) return Promise.reject(error);
 
     // Check buffer for events after afterSeq
-    const buffered = this.getBufferedEventsAfter(sessionId, afterSeq);
+    const buffered = this.getBufferedEventsAfter(resolvedId, afterSeq);
     if (buffered.length > 0) {
       return Promise.resolve({ seq: this.eventSeq, events: buffered });
     }
@@ -918,7 +920,7 @@ export class ClaudeWsServer {
     // Block until next matching event
     return new Promise<WaitResult>((resolve, reject) => {
       const waiter: EventWaiter = {
-        sessionId,
+        sessionId: resolvedId,
         resolve: (e) => {
           clearTimeout(waiter.timer);
           resolve({ seq: this.eventSeq, events: [e] });
@@ -1243,17 +1245,24 @@ export class ClaudeWsServer {
   }
 
   /** Validate that a wait target (sessionId or any-session) is valid. Returns null if OK, Error otherwise. */
-  private validateWaitTarget(sessionId: string | null): Error | null {
+  private validateWaitTarget(sessionId: string | null): { error?: Error; resolvedId: string | null } {
     if (sessionId) {
-      const session = this.sessions.get(sessionId);
-      if (!session) return new Error(`Unknown session: ${sessionId}`);
-      if (session.state.state === "ended") return new Error("Session already ended");
-      if (session.state.state === "disconnected") return new Error("Session is disconnected");
+      let resolvedId: string;
+      try {
+        resolvedId = this.resolveSessionId(sessionId);
+      } catch (e) {
+        return { error: e as Error, resolvedId: null };
+      }
+      const session = this.sessions.get(resolvedId);
+      if (session?.state.state === "ended") return { error: new Error("Session already ended"), resolvedId: null };
+      if (session?.state.state === "disconnected")
+        return { error: new Error("Session is disconnected"), resolvedId: null };
+      return { resolvedId };
     }
-    if (!sessionId && this.sessions.size === 0) {
-      return new Error("No active sessions");
+    if (this.sessions.size === 0) {
+      return { error: new Error("No active sessions"), resolvedId: null };
     }
-    return null;
+    return { resolvedId: null };
   }
 
   /** Buffer an event with a monotonic sequence number. Returns the assigned seq. */
@@ -1284,9 +1293,28 @@ export class ClaudeWsServer {
     return events;
   }
 
+  /**
+   * Resolve a session ID or unique prefix to the full session ID.
+   * Throws if zero or multiple sessions match.
+   */
+  resolveSessionId(sessionId: string): string {
+    if (this.sessions.has(sessionId)) return sessionId;
+
+    const matches: string[] = [];
+    for (const id of this.sessions.keys()) {
+      if (id.startsWith(sessionId)) matches.push(id);
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      throw new Error(`Ambiguous session prefix "${sessionId}" — matches: ${matches.join(", ")}`);
+    }
+    throw new Error(`Unknown session: ${sessionId}`);
+  }
+
   private getSession(sessionId: string): WsSession {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    const resolved = this.resolveSessionId(sessionId);
+    const session = this.sessions.get(resolved);
+    if (!session) throw new Error(`Unknown session: ${resolved}`);
     return session;
   }
 

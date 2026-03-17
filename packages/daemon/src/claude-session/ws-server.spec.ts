@@ -2853,4 +2853,48 @@ describe("restoreSessions", () => {
     expect(s2?.state).toBe("disconnected");
     expect(s2?.worktree).toBe("/b-wt");
   });
+
+  // ── Session ID prefix matching ──
+
+  describe("resolveSessionId", () => {
+    test("exact match returns the session ID", async () => {
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      await server.start();
+      server.prepareSession("abc-123-full-id", { prompt: "test" });
+      expect(server.resolveSessionId("abc-123-full-id")).toBe("abc-123-full-id");
+    });
+
+    test("unique prefix resolves to full session ID", async () => {
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      await server.start();
+      server.prepareSession("abc-123-full-id", { prompt: "test" });
+      expect(server.resolveSessionId("abc-1")).toBe("abc-123-full-id");
+      expect(server.resolveSessionId("abc")).toBe("abc-123-full-id");
+    });
+
+    test("ambiguous prefix throws with matching IDs", async () => {
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      await server.start();
+      server.prepareSession("abc-111", { prompt: "test" });
+      server.prepareSession("abc-222", { prompt: "test" });
+      expect(() => server?.resolveSessionId("abc")).toThrow(/Ambiguous session prefix "abc"/);
+    });
+
+    test("no match throws unknown session", async () => {
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      await server.start();
+      server.prepareSession("abc-123", { prompt: "test" });
+      expect(() => server?.resolveSessionId("xyz")).toThrow(/Unknown session: xyz/);
+    });
+
+    test("prefix matching works for getStatus", async () => {
+      server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+      await server.start();
+      server.prepareSession("prefix-test-session-long-id", { prompt: "Hello" });
+
+      // getStatus works with prefix even in "spawning" state
+      const status = server.getStatus("prefix-test");
+      expect(status.sessionId).toBe("prefix-test-session-long-id");
+    });
+  });
 });
