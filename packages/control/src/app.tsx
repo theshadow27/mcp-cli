@@ -15,7 +15,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
-import { type ExpandedPlanKey, type StatusType, isPlanReadOnly } from "./hooks/use-keyboard-plans.js";
+import { type ExpandedPlanKey, type StatusType, hasCapability } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -402,11 +402,17 @@ export function App() {
         mailExpanded={expandedMessage !== null}
         planExpanded={expandedPlan !== null}
         planConfirmAbort={planConfirmAbort}
-        planReadOnly={(() => {
+        canAdvance={(() => {
           const targetPlan = expandedPlan
             ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
             : plans[plansSelectedIndex];
-          return targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+          return targetPlan ? hasCapability(servers, targetPlan.server, "advance") : false;
+        })()}
+        canAbort={(() => {
+          const targetPlan = expandedPlan
+            ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+            : plans[plansSelectedIndex];
+          return targetPlan ? hasCapability(servers, targetPlan.server, "abort") : false;
         })()}
       />
     </Box>
