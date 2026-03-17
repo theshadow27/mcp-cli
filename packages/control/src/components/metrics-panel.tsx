@@ -1,5 +1,5 @@
 import type { PlanMetrics } from "@mcp-cli/core";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import React from "react";
 
 interface MetricsPanelProps {
@@ -25,16 +25,23 @@ function formatValue(value: string | number): string {
  */
 export function MetricsPanel({ label, metrics }: MetricsPanelProps) {
   const entries = Object.entries(metrics);
+  const { stdout } = useStdout();
   if (entries.length === 0) return null;
 
   const separator = "  |  ";
+  // "── Metrics (" = 13 chars, ")" = 1 char, marginLeft=2
+  const prefixLen = 2 + 13 + label.length + 2; // margin + prefix + label + ") "
+  const cols = stdout?.columns ?? 80;
+  const trailCount = Math.max(3, cols - prefixLen);
 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box marginLeft={2}>
         <Text dimColor>{"── Metrics ("}</Text>
         <Text bold>{label}</Text>
-        <Text dimColor>{")"} ──────────────────────────────────</Text>
+        <Text dimColor>
+          {")"} {"─".repeat(trailCount)}
+        </Text>
       </Box>
       <Box marginLeft={3} flexWrap="wrap">
         <Text>
