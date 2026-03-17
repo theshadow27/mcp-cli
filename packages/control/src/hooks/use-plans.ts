@@ -114,6 +114,8 @@ export interface UsePlansResult {
   error: string | null;
   /** True when the last poll failed (stale data is shown). */
   disconnected: boolean;
+  /** Server names that failed to respond during the last poll. */
+  failedServers: string[];
   /** Force an immediate re-poll. Accepts optional completion callback. */
   refresh: (onComplete?: () => void) => void;
 }
@@ -137,6 +139,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
+  const [failedServers, setFailedServers] = useState<string[]>([]);
   const [tick, setTick] = useState(0);
   const refreshCallbackRef = useRef<(() => void) | null>(null);
 
@@ -170,6 +173,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
 
         const allPlans: Plan[] = [];
         let successCount = 0;
+        const failed: string[] = [];
 
         // Fetch server plans and Claude session plans in parallel
         const [_serverResults, claudePlans] = await Promise.all([
@@ -186,16 +190,20 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
                   `list_plans(${srv.name})`,
                 );
                 const text = extractToolText(result);
-                if (!text) return;
+                if (!text) {
+                  failed.push(srv.name);
+                  return;
+                }
                 const parsed = ListPlansResultSchema.safeParse(JSON.parse(text));
                 if (parsed.success) {
                   successCount++;
                   allPlans.push(...parsed.data.plans);
                 } else {
                   console.error(`[usePlans] parse error for server ${srv.name}:`, parsed.error.issues);
+                  failed.push(srv.name);
                 }
               } catch {
-                // One server failing doesn't break the whole list
+                failed.push(srv.name);
               }
             }),
           ),
@@ -211,6 +219,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         setPlans(allPlans);
         setError(null);
         setDisconnected(allFailed);
+        setFailedServers(failed);
         setLoading(false);
         if (refreshCallbackRef.current) {
           refreshCallbackRef.current();
@@ -220,6 +229,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         if (cancelRef.current) return;
         setError(err instanceof Error ? err.message : String(err));
         setDisconnected(true);
+        setFailedServers([]);
         setLoading(false);
         if (refreshCallbackRef.current) {
           refreshCallbackRef.current();
@@ -245,7 +255,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
     };
   }, [intervalMs, enabled, tick]);
 
-  return { plans, loading, error, disconnected, refresh };
+  return { plans, loading, error, disconnected, failedServers, refresh };
 }
 
 // -- usePlan --

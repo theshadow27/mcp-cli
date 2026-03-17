@@ -80,6 +80,7 @@ describe("usePlans", () => {
     loading: boolean;
     error: string | null;
     disconnected: boolean;
+    failedServers: string[];
   }
 
   const instances: ReturnType<typeof render>[] = [];
@@ -97,7 +98,7 @@ describe("usePlans", () => {
 
   function mount(opts: UsePlansOptions) {
     const stateRef: { current: HookState } = {
-      current: { plans: [], loading: true, error: null, disconnected: false },
+      current: { plans: [], loading: true, error: null, disconnected: false, failedServers: [] },
     };
     const instance = render(React.createElement(Harness, { opts, stateRef }));
     instances.push(instance);
@@ -223,7 +224,7 @@ describe("usePlans", () => {
     // Wrapper that lets us toggle enabled
     let setEnabled: ((v: boolean) => void) | undefined;
     const stateRef: { current: HookState } = {
-      current: { plans: [], loading: true, error: null, disconnected: false },
+      current: { plans: [], loading: true, error: null, disconnected: false, failedServers: [] },
     };
     const Wrapper: FC = () => {
       const [enabled, _setEnabled] = React.useState(true);
@@ -280,6 +281,64 @@ describe("usePlans", () => {
     // Plans from good server still returned; no top-level error
     expect(stateRef.current.plans).toHaveLength(1);
     expect(stateRef.current.error).toBeNull();
+  });
+
+  it("reports failedServers when one server fails and another succeeds", async () => {
+    const plan = makePlan("plan-1", "good-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "good-server", hasList: true },
+          { name: "bad-server", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "bad-server") throw new Error("server unreachable");
+      return planToolResult([plan]);
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.failedServers).toEqual(["bad-server"]);
+    expect(stateRef.current.disconnected).toBe(false);
+  });
+
+  it("reports failedServers when a server returns unparseable response", async () => {
+    const plan = makePlan("plan-1", "good-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "good-server", hasList: true },
+          { name: "bad-schema-server", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "bad-schema-server") {
+        return { content: [{ type: "text", text: JSON.stringify({ wrong: "shape" }) }] };
+      }
+      return planToolResult([plan]);
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.failedServers).toEqual(["bad-schema-server"]);
+    expect(stateRef.current.plans).toHaveLength(1);
+    expect(stateRef.current.disconnected).toBe(false);
+  });
+
+  it("clears failedServers when all servers succeed", async () => {
+    const plan = makePlan("plan-1", "server-a");
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") return daemonStatus([{ name: "server-a", hasList: true }]);
+      return planToolResult([plan]);
+    };
+
+    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+    await waitFor(() => stateRef.current.loading === false);
+
+    expect(stateRef.current.failedServers).toEqual([]);
   });
 
   it("treats a hanging server as a failure (per-server IPC timeout)", async () => {
@@ -524,6 +583,7 @@ describe("usePlans — Claude plan integration", () => {
     loading: boolean;
     error: string | null;
     disconnected: boolean;
+    failedServers: string[];
   }
 
   const instances: ReturnType<typeof render>[] = [];
@@ -541,7 +601,7 @@ describe("usePlans — Claude plan integration", () => {
 
   function mount(opts: UsePlansOptions) {
     const stateRef: { current: HookState } = {
-      current: { plans: [], loading: true, error: null, disconnected: false },
+      current: { plans: [], loading: true, error: null, disconnected: false, failedServers: [] },
     };
     const instance = render(React.createElement(Harness, { opts, stateRef }));
     instances.push(instance);

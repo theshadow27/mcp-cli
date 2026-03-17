@@ -98,6 +98,7 @@ export function App() {
     loading: plansLoading,
     error: plansError,
     disconnected: plansDisconnected,
+    failedServers: plansFailedServers,
     refresh: plansRefresh,
   } = usePlans({ enabled: plansEnabled });
   plansRef.current = plans;
@@ -374,6 +375,7 @@ export function App() {
           loading={plansLoading}
           error={plansError}
           disconnected={plansDisconnected}
+          failedServers={plansFailedServers}
           selectedIndex={plansSelectedIndex}
           expandedPlan={expandedPlan}
           selectedStep={selectedStep}
