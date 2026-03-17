@@ -488,6 +488,95 @@ describe("StateDb", () => {
       expect(db.getAlias("evolve")?.aliasType).toBe("defineAlias");
       db.close();
     });
+
+    test("saveAlias with expiresAt stores ephemeral alias", () => {
+      const db = createDb();
+      const future = Date.now() + 86400000;
+      db.saveAlias(
+        "eph-1",
+        "/tmp/eph-1.ts",
+        "ephemeral test",
+        "freeform",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        future,
+      );
+      const alias = db.getAlias("eph-1");
+      expect(alias).toBeDefined();
+      expect(alias?.expiresAt).toBe(future);
+      db.close();
+    });
+
+    test("listAliases excludes expired aliases", () => {
+      const db = createDb();
+      const past = Date.now() - 1000;
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("expired", "/tmp/e.ts", "gone", "freeform", undefined, undefined, undefined, undefined, past);
+      db.saveAlias("alive", "/tmp/a.ts", "still here", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const aliases = db.listAliases();
+      const names = aliases.map((a) => a.name);
+      expect(names).toContain("permanent");
+      expect(names).toContain("alive");
+      expect(names).not.toContain("expired");
+      db.close();
+    });
+
+    test("listAliases returns expiresAt for ephemeral aliases", () => {
+      const db = createDb();
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("ephemeral", "/tmp/e.ts", "temp", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const aliases = db.listAliases();
+      const permanent = aliases.find((a) => a.name === "permanent");
+      const ephemeral = aliases.find((a) => a.name === "ephemeral");
+      expect(permanent?.expiresAt).toBeNull();
+      expect(ephemeral?.expiresAt).toBe(future);
+      db.close();
+    });
+
+    test("touchAliasExpiry resets TTL on ephemeral alias", () => {
+      const db = createDb();
+      const original = Date.now() + 1000;
+      const newExpiry = Date.now() + 86400000;
+      db.saveAlias("eph", "/tmp/eph.ts", "temp", "freeform", undefined, undefined, undefined, undefined, original);
+
+      db.touchAliasExpiry("eph", newExpiry);
+      const alias = db.getAlias("eph");
+      expect(alias?.expiresAt).toBe(newExpiry);
+      db.close();
+    });
+
+    test("touchAliasExpiry does not affect permanent aliases", () => {
+      const db = createDb();
+      db.saveAlias("perm", "/tmp/perm.ts", "permanent");
+
+      db.touchAliasExpiry("perm", Date.now() + 86400000);
+      const alias = db.getAlias("perm");
+      expect(alias?.expiresAt).toBeNull();
+      db.close();
+    });
+
+    test("pruneExpiredAliases removes only expired aliases", () => {
+      const db = createDb();
+      const past = Date.now() - 1000;
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("expired", "/tmp/e.ts", "gone", "freeform", undefined, undefined, undefined, undefined, past);
+      db.saveAlias("alive", "/tmp/a.ts", "still here", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const pruned = db.pruneExpiredAliases();
+      expect(pruned).toBe(1);
+
+      expect(db.getAlias("permanent")).toBeDefined();
+      expect(db.getAlias("alive")).toBeDefined();
+      expect(db.getAlias("expired")).toBeUndefined();
+      db.close();
+    });
   });
 
   describe("auth_tokens", () => {

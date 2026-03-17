@@ -112,6 +112,28 @@ describe("printAliasList", () => {
       console.error = original;
     }
   });
+
+  test("shows ephemeral aliases separately with expiry", () => {
+    const ephemeralEntry = {
+      name: "get_-a83r",
+      description: "ephemeral: server/tool",
+      filePath: "/tmp/get_-a83r.ts",
+      updatedAt: 0,
+      aliasType: "freeform" as const,
+      expiresAt: Date.now() + 2 * 60 * 60 * 1000, // 2 hours from now
+    };
+    const output = captureStdout(() => printAliasList([freeformEntry, ephemeralEntry]));
+    expect(output).toContain("Ephemeral");
+    expect(output).toContain("get_-a83r");
+    expect(output).toContain("expires");
+    expect(output).toContain("1 ephemeral");
+    expect(output).toContain("2 alias(es)");
+  });
+
+  test("permanent aliases not shown in ephemeral section", () => {
+    const output = captureStdout(() => printAliasList([defineAliasEntry, freeformEntry]));
+    expect(output).not.toContain("Ephemeral");
+  });
 });
 
 describe("printAliasDebug", () => {

@@ -47,6 +47,8 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     getAlias: () => null,
     saveAlias: () => {},
     deleteAlias: () => {},
+    touchAliasExpiry: () => {},
+    pruneExpiredAliases: () => 0,
     getServerLogs: () => [],
     getCachedTools: () => [],
     listSessions: () => [],

@@ -6,7 +6,7 @@
  * --key value pairs are passed as CLI args (available in ctx.args).
  */
 
-import { ipcCall } from "@mcp-cli/core";
+import { options as coreOptions, ipcCall, readCliConfig } from "@mcp-cli/core";
 import { runAlias } from "../alias-runner";
 import { printError } from "../output";
 
@@ -23,6 +23,13 @@ export async function cmdRun(args: string[]): Promise<void> {
   if (!aliasInfo) {
     printError(`Alias "${aliasName}" not found`);
     process.exit(1);
+  }
+
+  // Reset TTL on ephemeral aliases when re-run
+  if (aliasInfo.expiresAt) {
+    const config = readCliConfig();
+    const ttlMs = config.ephemeralAliases?.ttlMs ?? coreOptions.EPHEMERAL_ALIAS_TTL_MS;
+    ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch(() => {});
   }
 
   await runAlias(aliasInfo.filePath, cliArgs, jsonInput);

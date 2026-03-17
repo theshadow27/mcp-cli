@@ -39,6 +39,7 @@ import {
   SaveAliasParamsSchema,
   SendMailParamsSchema,
   ShutdownParamsSchema,
+  TouchAliasParamsSchema,
   TriggerAuthParamsSchema,
   WaitForMailParamsSchema,
   bundleAlias,
@@ -112,6 +113,8 @@ export class IpcServer {
     this.logger = options.logger ?? consoleLogger;
     this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.registerHandlers();
+    // Prune expired ephemeral aliases on startup
+    this.db.pruneExpiredAliases();
   }
 
   /** Start listening on the Unix socket */
@@ -547,7 +550,7 @@ export class IpcServer {
     });
 
     this.handlers.set("saveAlias", async (params, _ctx) => {
-      const { name, script, description } = SaveAliasParamsSchema.parse(params);
+      const { name, script, description, expiresAt } = SaveAliasParamsSchema.parse(params);
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
 
@@ -583,13 +586,24 @@ export class IpcServer {
             meta.outputSchema ? JSON.stringify(meta.outputSchema) : undefined,
             js,
             sourceHash,
+            expiresAt,
           );
         } else {
-          this.db.saveAlias(name, filePath, description, aliasType, undefined, undefined, js, sourceHash);
+          this.db.saveAlias(name, filePath, description, aliasType, undefined, undefined, js, sourceHash, expiresAt);
         }
       } catch {
         // Bundle/extraction failed — save without bundle
-        this.db.saveAlias(name, filePath, description, aliasType);
+        this.db.saveAlias(
+          name,
+          filePath,
+          description,
+          aliasType,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          expiresAt,
+        );
       }
 
       // Refresh virtual alias server so new tool is immediately visible
@@ -610,6 +624,12 @@ export class IpcServer {
       }
       // Refresh virtual alias server so deleted tool is removed
       await this.aliasServer?.refresh();
+      return { ok: true };
+    });
+
+    this.handlers.set("touchAlias", async (params, _ctx) => {
+      const { name, expiresAt } = TouchAliasParamsSchema.parse(params);
+      this.db.touchAliasExpiry(name, expiresAt);
       return { ok: true };
     });
 

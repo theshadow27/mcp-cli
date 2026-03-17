@@ -29,6 +29,7 @@ export type IpcMethod =
   | "getAlias"
   | "saveAlias"
   | "deleteAlias"
+  | "touchAlias"
   | "getLogs"
   | "getDaemonLogs"
   | "sendMail"
@@ -107,6 +108,8 @@ export const SaveAliasParamsSchema = z.object({
   aliasType: z.enum(["freeform", "defineAlias"]).optional(),
   inputSchema: z.record(z.string(), z.unknown()).optional(),
   outputSchema: z.record(z.string(), z.unknown()).optional(),
+  /** Absolute ms timestamp when this alias expires (ephemeral aliases only) */
+  expiresAt: z.number().optional(),
 });
 
 export const DeleteAliasParamsSchema = z.object({
@@ -115,6 +118,12 @@ export const DeleteAliasParamsSchema = z.object({
 
 export const GetAliasParamsSchema = z.object({
   name: z.string(),
+});
+
+export const TouchAliasParamsSchema = z.object({
+  name: z.string(),
+  /** New absolute expiry timestamp (ms) */
+  expiresAt: z.number(),
 });
 
 export const GetLogsParamsSchema = z.object({
@@ -131,6 +140,8 @@ export interface AliasInfo {
   aliasType: AliasType;
   inputSchemaJson?: Record<string, unknown>;
   outputSchemaJson?: Record<string, unknown>;
+  /** Absolute ms timestamp when this alias expires (null = permanent) */
+  expiresAt?: number | null;
 }
 
 export interface AliasDetail extends AliasInfo {
@@ -413,6 +424,7 @@ export interface IpcMethodResult {
   getAlias: AliasDetail | null;
   saveAlias: SaveAliasResult;
   deleteAlias: DeleteAliasResult;
+  touchAlias: { ok: true };
   getLogs: GetLogsResult;
   getDaemonLogs: GetDaemonLogsResult;
   sendMail: SendMailResult;

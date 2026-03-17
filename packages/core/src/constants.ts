@@ -115,6 +115,12 @@ const _originalOptions = {
   SPAN_PRUNE_INTERVAL: 100,
   /** Max span rows before pruning oldest entries (regardless of export status) */
   SPANS_MAX_ROWS: 50_000,
+  /** Default TTL for ephemeral aliases (ms) — 48 hours */
+  EPHEMERAL_ALIAS_TTL_MS: 48 * 60 * 60 * 1000,
+  /** Serialized args character threshold to trigger auto-save as ephemeral alias */
+  EPHEMERAL_ALIAS_CHAR_THRESHOLD: 400,
+  /** How many alias operations between expired-alias prune passes */
+  ALIAS_PRUNE_INTERVAL: 20,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
