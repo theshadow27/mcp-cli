@@ -122,8 +122,8 @@ export const GetAliasParamsSchema = z.object({
 
 export const TouchAliasParamsSchema = z.object({
   name: z.string(),
-  /** New absolute expiry timestamp (ms) */
-  expiresAt: z.number(),
+  /** New absolute expiry timestamp (ms) — must be a future timestamp */
+  expiresAt: z.number().positive(),
 });
 
 export const GetLogsParamsSchema = z.object({

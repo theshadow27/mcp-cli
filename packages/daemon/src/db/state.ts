@@ -706,7 +706,11 @@ export class StateDb {
   /** Delete ephemeral aliases past their TTL, cleaning up their files. */
   pruneExpiredAliases(): number {
     const now = Date.now();
-    // Fetch file paths before deleting rows so we can clean up the files
+    // Fetch file paths before deleting rows so we can clean up the files.
+    // The SELECT and DELETE are intentionally not wrapped in a transaction —
+    // all operations are synchronous (including unlinkSync), so no interleaving
+    // can occur. If this is ever refactored to use async unlink, the SELECT and
+    // DELETE must be wrapped in a transaction to prevent races.
     const expired = this.db
       .query<{ file_path: string }, [number]>(
         "SELECT file_path FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?",

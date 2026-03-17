@@ -554,6 +554,15 @@ export class IpcServer {
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
 
+      // Guard: refuse to overwrite a permanent alias with an ephemeral one.
+      // This check must happen BEFORE writeFileSync to protect the file on disk.
+      if (expiresAt != null) {
+        const existing = this.db.getAlias(name);
+        if (existing && existing.expiresAt === null) {
+          return { ok: false, reason: "permanent_alias_exists" };
+        }
+      }
+
       const isStructured = isDefineAlias(script);
 
       let finalScript: string;
