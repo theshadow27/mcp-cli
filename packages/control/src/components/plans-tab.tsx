@@ -21,11 +21,11 @@ interface PlansTabProps {
   confirmAbort?: boolean;
 }
 
-const STATUS_COLORS: Record<StatusType, string> = {
+export const STATUS_COLORS: Record<StatusType, string> = {
   error: "red",
   success: "green",
   warning: "yellow",
-  info: "green",
+  info: "cyan",
 };
 
 export function PlansTab({

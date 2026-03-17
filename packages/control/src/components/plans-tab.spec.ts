@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { render } from "ink-testing-library";
 import React from "react";
-import { PlansTab } from "./plans-tab";
+import { PlansTab, STATUS_COLORS } from "./plans-tab";
 
 function makePlan(overrides: Partial<Plan> = {}): Plan {
   return {
@@ -135,5 +135,27 @@ describe("PlansTab", () => {
     const output = inst.lastFrame() ?? "";
     expect(output).not.toContain("Plan advanced");
     inst.unmount();
+  });
+});
+
+describe("STATUS_COLORS", () => {
+  it("maps info to cyan (distinct from success)", () => {
+    expect(STATUS_COLORS.info).toBe("cyan");
+  });
+
+  it("maps success to green", () => {
+    expect(STATUS_COLORS.success).toBe("green");
+  });
+
+  it("info and success are distinct colors", () => {
+    expect(STATUS_COLORS.info).not.toBe(STATUS_COLORS.success);
+  });
+
+  it("maps error to red", () => {
+    expect(STATUS_COLORS.error).toBe("red");
+  });
+
+  it("maps warning to yellow", () => {
+    expect(STATUS_COLORS.warning).toBe("yellow");
   });
 });

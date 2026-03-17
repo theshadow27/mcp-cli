@@ -37,6 +37,7 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
   "test/daemon-integration.spec.ts": "Full daemon lifecycle integration tests",
   "test/stress.spec.ts": "Stress tests spawning real CLI processes",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
+  "packages/daemon/src/config/watcher.spec.ts": "FS polling integration tests with 8s timeouts",
 };
 
 /**
