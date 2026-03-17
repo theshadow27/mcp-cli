@@ -209,6 +209,57 @@ describe("usePlans", () => {
     expect(callCount).toBe(0);
   });
 
+  it("resets loading=true when enabled transitions false→true (#775)", async () => {
+    const plan = makePlan("plan-1", "test-server");
+    let pollDelay = 0;
+    const ipcCallFn = async (method: string) => {
+      if (method === "status") {
+        if (pollDelay > 0) await new Promise((r) => setTimeout(r, pollDelay));
+        return daemonStatus([{ name: "test-server", hasList: true }]);
+      }
+      return planToolResult([plan]);
+    };
+
+    // Wrapper that lets us toggle enabled
+    let setEnabled: ((v: boolean) => void) | undefined;
+    const stateRef: { current: HookState } = {
+      current: { plans: [], loading: true, error: null, disconnected: false },
+    };
+    const Wrapper: FC = () => {
+      const [enabled, _setEnabled] = React.useState(true);
+      setEnabled = _setEnabled;
+      const result = usePlans({
+        enabled,
+        intervalMs: 60_000,
+        ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
+      });
+      stateRef.current = result;
+      return React.createElement(Text, null, "ok");
+    };
+
+    const instance = render(React.createElement(Wrapper));
+    instances.push(instance);
+
+    // Wait for first poll to complete — loading becomes false
+    await waitFor(() => stateRef.current.loading === false);
+    expect(stateRef.current.plans).toHaveLength(1);
+
+    // Disable — effect cleanup runs
+    setEnabled?.(false);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Make next poll slow so we can observe loading=true before it completes
+    pollDelay = 200;
+
+    // Re-enable — loading should reset to true immediately
+    setEnabled?.(true);
+    await waitFor(() => stateRef.current.loading === true);
+
+    // Eventually poll completes
+    await waitFor(() => stateRef.current.loading === false);
+    expect(stateRef.current.plans).toHaveLength(1);
+  });
+
   it("continues when one server's callTool fails", async () => {
     const plan = makePlan("plan-1", "good-server");
     const ipcCallFn = async (method: string, params?: unknown) => {

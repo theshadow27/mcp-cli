@@ -128,6 +128,10 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   useEffect(() => {
     if (!enabled) return;
 
+    // Reset loading state so stale data isn't shown without a spinner
+    // when the tab is re-enabled after being hidden (#775)
+    setLoading(true);
+
     const cancelRef = { current: false };
 
     async function poll() {
@@ -252,6 +256,9 @@ export function usePlan(planId: string, server: string, opts: UsePlanOptions = {
 
   useEffect(() => {
     if (!enabled || !planId || !server) return;
+
+    // Reset loading when re-enabled so stale data shows a spinner (#775)
+    setLoading(true);
 
     let cancelled = false;
 
