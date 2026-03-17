@@ -15,6 +15,7 @@ interface PlansTabProps {
   expandedPlan: ExpandedPlanKey | null;
   selectedStep: number;
   disconnected?: boolean;
+  failedServers?: string[];
   servers: ServerStatus[];
   statusMessage?: string | null;
   statusType?: StatusType | null;
@@ -36,6 +37,7 @@ export function PlansTab({
   expandedPlan,
   selectedStep,
   disconnected,
+  failedServers,
   servers,
   statusMessage,
   statusType,
@@ -66,6 +68,10 @@ export function PlansTab({
       {disconnected ? (
         <Text color="yellow" dimColor>
           ⚠ Disconnected — showing stale data
+        </Text>
+      ) : failedServers && failedServers.length > 0 ? (
+        <Text color="yellow" dimColor>
+          ⚠ {failedServers.length} server(s) unavailable: {failedServers.join(", ")}
         </Text>
       ) : null}
       <PlanList plans={plans} selectedIndex={selectedIndex} expandedPlan={expandedPlan} />

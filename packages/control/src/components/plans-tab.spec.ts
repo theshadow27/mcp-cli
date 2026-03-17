@@ -34,6 +34,7 @@ interface TabProps {
   loading?: boolean;
   error?: string | null;
   disconnected?: boolean;
+  failedServers?: string[];
   selectedIndex?: number;
   expandedPlan?: { id: string; server: string } | null;
   selectedStep?: number;
@@ -50,6 +51,7 @@ function renderTab(props: TabProps = {}) {
       loading: props.loading ?? false,
       error: props.error ?? null,
       disconnected: props.disconnected ?? false,
+      failedServers: props.failedServers,
       selectedIndex: props.selectedIndex ?? 0,
       expandedPlan: props.expandedPlan ?? null,
       selectedStep: props.selectedStep ?? 0,
@@ -105,6 +107,23 @@ describe("PlansTab", () => {
   it("shows disconnected warning", () => {
     const inst = renderTab({ disconnected: true });
     expect(inst.lastFrame() ?? "").toContain("stale data");
+    inst.unmount();
+  });
+
+  it("shows partial failure warning with failed server names", () => {
+    const inst = renderTab({ failedServers: ["auth-server", "deploy-server"] });
+    const output = inst.lastFrame() ?? "";
+    expect(output).toContain("2 server(s) unavailable");
+    expect(output).toContain("auth-server");
+    expect(output).toContain("deploy-server");
+    inst.unmount();
+  });
+
+  it("prefers disconnected warning over partial failure warning", () => {
+    const inst = renderTab({ disconnected: true, failedServers: ["auth-server"] });
+    const output = inst.lastFrame() ?? "";
+    expect(output).toContain("stale data");
+    expect(output).not.toContain("unavailable");
     inst.unmount();
   });
 
