@@ -11,6 +11,8 @@ import { deserializeMessage, serializeMessage } from "@modelcontextprotocol/sdk/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
+const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB
+
 export class BunStdioServerTransport implements Transport {
   private _started = false;
   private _closed = false;
@@ -56,6 +58,14 @@ export class BunStdioServerTransport implements Transport {
 
         this._buffer += decoder.decode(value, { stream: true });
         this._processBuffer();
+
+        if (this._buffer.length > MAX_BUFFER_SIZE) {
+          this.onerror?.(
+            new Error(`BunStdioServerTransport: buffer exceeded ${MAX_BUFFER_SIZE} bytes — message too large`),
+          );
+          await this.close();
+          return;
+        }
       }
       // Flush remaining UTF-8 state from the decoder
       if (!this._aborted) {
