@@ -6,7 +6,7 @@ import {
   ListPlansResultSchema,
 } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TranscriptEntry } from "../lib/claude-plan-adapter.js";
 import { extractPlansFromTranscript } from "../lib/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
@@ -91,6 +91,8 @@ export interface UsePlansResult {
   error: string | null;
   /** True when the last poll failed (stale data is shown). */
   disconnected: boolean;
+  /** Force an immediate re-poll. Accepts optional completion callback. */
+  refresh: (onComplete?: () => void) => void;
 }
 
 export interface UsePlansOptions {
@@ -110,11 +112,19 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
+  const [tick, setTick] = useState(0);
+  const refreshCallbackRef = useRef<(() => void) | null>(null);
 
   // Store ipcCallFn in a ref so callers don't need to memoize it
   const ipcCallRef = useRef(ipcCallFn);
   ipcCallRef.current = ipcCallFn;
 
+  const refresh = useCallback((onComplete?: () => void) => {
+    refreshCallbackRef.current = onComplete ?? null;
+    setTick((t) => t + 1);
+  }, []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: tick triggers re-poll on refresh()
   useEffect(() => {
     if (!enabled) return;
 
@@ -167,11 +177,19 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
         setError(null);
         setDisconnected(allFailed);
         setLoading(false);
+        if (refreshCallbackRef.current) {
+          refreshCallbackRef.current();
+          refreshCallbackRef.current = null;
+        }
       } catch (err) {
         if (cancelRef.current) return;
         setError(err instanceof Error ? err.message : String(err));
         setDisconnected(true);
         setLoading(false);
+        if (refreshCallbackRef.current) {
+          refreshCallbackRef.current();
+          refreshCallbackRef.current = null;
+        }
       }
     }
 
@@ -190,9 +208,9 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
       cancelRef.current = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [intervalMs, enabled]);
+  }, [intervalMs, enabled, tick]);
 
-  return { plans, loading, error, disconnected };
+  return { plans, loading, error, disconnected, refresh };
 }
 
 // -- usePlan --

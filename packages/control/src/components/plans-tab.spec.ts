@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Plan, PlanMetrics } from "@mcp-cli/core";
+import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { render } from "ink-testing-library";
 import React from "react";
 import { PlansTab } from "./plans-tab";
@@ -20,14 +20,27 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
   };
 }
 
+function makeServer(name: string, capabilities: string[] = []): ServerStatus {
+  return {
+    name,
+    state: "connected",
+    source: "config",
+    planCapabilities: capabilities.length > 0 ? { capabilities } : undefined,
+  } as ServerStatus;
+}
+
 interface TabProps {
   plans?: Plan[];
   loading?: boolean;
   error?: string | null;
   disconnected?: boolean;
   selectedIndex?: number;
-  metrics?: PlanMetrics | null;
-  metricsLoading?: boolean;
+  expandedPlan?: { id: string; server: string } | null;
+  selectedStep?: number;
+  servers?: ServerStatus[];
+  statusMessage?: string | null;
+  statusType?: "error" | "success" | "warning" | "info" | null;
+  confirmAbort?: boolean;
 }
 
 function renderTab(props: TabProps = {}) {
@@ -38,8 +51,12 @@ function renderTab(props: TabProps = {}) {
       error: props.error ?? null,
       disconnected: props.disconnected ?? false,
       selectedIndex: props.selectedIndex ?? 0,
-      metrics: props.metrics ?? null,
-      metricsLoading: props.metricsLoading ?? false,
+      expandedPlan: props.expandedPlan ?? null,
+      selectedStep: props.selectedStep ?? 0,
+      servers: props.servers ?? [makeServer("deploy-server", ["list", "get", "advance", "abort"])],
+      statusMessage: props.statusMessage ?? null,
+      statusType: props.statusType ?? null,
+      confirmAbort: props.confirmAbort ?? false,
     }),
   );
 }
@@ -67,7 +84,7 @@ describe("PlansTab", () => {
     const inst = renderTab();
     const output = inst.lastFrame() ?? "";
     expect(output).toContain("Deploy to prod");
-    expect(output).toContain("[active]");
+    expect(output).toContain("●");
     expect(output).toContain("1/3 steps");
     inst.unmount();
   });
@@ -91,29 +108,32 @@ describe("PlansTab", () => {
     inst.unmount();
   });
 
-  it("renders metrics panel when metrics provided", () => {
-    const metrics: PlanMetrics = { Uptime: "99.9%", Pods: "3/3 ready" };
-    const inst = renderTab({ metrics });
-    const output = inst.lastFrame() ?? "";
-    expect(output).toContain("Metrics");
-    expect(output).toContain("Uptime:");
-    expect(output).toContain("99.9%");
+  it("shows read-only badge when server lacks advance and abort", () => {
+    const inst = renderTab({
+      servers: [makeServer("deploy-server", ["list", "get"])],
+    });
+    expect(inst.lastFrame() ?? "").toContain("read-only");
     inst.unmount();
   });
 
-  it("does not render metrics panel when metrics is null", () => {
-    const inst = renderTab({ metrics: null });
-    const output = inst.lastFrame() ?? "";
-    expect(output).not.toContain("Metrics (");
+  it("does not show read-only badge when server has advance", () => {
+    const inst = renderTab({
+      servers: [makeServer("deploy-server", ["list", "advance"])],
+    });
+    expect(inst.lastFrame() ?? "").not.toContain("read-only");
     inst.unmount();
   });
 
-  it("uses active step name as metrics label", () => {
-    const metrics: PlanMetrics = { status: "ok" };
-    const inst = renderTab({ metrics });
+  it("shows status message when provided", () => {
+    const inst = renderTab({ statusMessage: "Plan advanced" });
+    expect(inst.lastFrame() ?? "").toContain("Plan advanced");
+    inst.unmount();
+  });
+
+  it("does not show status message when null", () => {
+    const inst = renderTab({ statusMessage: null });
     const output = inst.lastFrame() ?? "";
-    // Active step is "Deploy" (step-2)
-    expect(output).toContain("Metrics (Deploy)");
+    expect(output).not.toContain("Plan advanced");
     inst.unmount();
   });
 });

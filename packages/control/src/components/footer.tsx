@@ -12,6 +12,9 @@ interface FooterProps {
   promptText: string;
   transcriptExpanded: boolean;
   mailExpanded?: boolean;
+  planExpanded?: boolean;
+  planConfirmAbort?: boolean;
+  planReadOnly?: boolean;
 }
 
 export function Footer({
@@ -24,6 +27,9 @@ export function Footer({
   promptText,
   transcriptExpanded,
   mailExpanded,
+  planExpanded,
+  planConfirmAbort,
+  planReadOnly,
 }: FooterProps) {
   if (denyReasonMode) {
     return (
@@ -146,12 +152,39 @@ export function Footer({
   }
 
   if (view === "plans") {
+    if (planConfirmAbort) {
+      return (
+        <Box marginTop={1}>
+          <Text>
+            <Text color="yellow">Confirm abort:</Text>
+            {"  "}
+            <Text dimColor>y</Text> confirm{"  "}
+            <Text dimColor>n</Text> cancel
+          </Text>
+        </Box>
+      );
+    }
     return (
       <Box marginTop={1}>
         <Text>
           {tabHints}
           <Text dimColor>j/k</Text> navigate{"  "}
-          <Text dimColor>esc</Text> back{"  "}
+          <Text dimColor>enter</Text> {planExpanded ? "collapse" : "expand"}
+          {"  "}
+          {planExpanded ? (
+            <>
+              <Text dimColor>←/→</Text> steps{"  "}
+            </>
+          ) : null}
+          {!planReadOnly ? (
+            <>
+              <Text dimColor>a</Text> advance{"  "}
+              <Text dimColor>x</Text> abort{"  "}
+            </>
+          ) : null}
+          <Text dimColor>r</Text> refresh{"  "}
+          <Text dimColor>esc</Text> {planExpanded ? "collapse" : "back"}
+          {"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
         </Text>

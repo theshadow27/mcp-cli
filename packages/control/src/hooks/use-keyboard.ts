@@ -11,7 +11,8 @@ import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
 import type { MailNav } from "./use-keyboard-mail";
 import { handleMailInput } from "./use-keyboard-mail";
-import { handlePlansInput } from "./use-keyboard-plans";
+import type { PlansNav } from "./use-keyboard-plans";
+import { clearPlansState, handlePlansInput } from "./use-keyboard-plans";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
@@ -95,13 +96,8 @@ export interface StatsNav {
   lineCount: number;
 }
 
-export interface PlansNav {
-  selectedIndex: number;
-  setSelectedIndex: (fn: (i: number) => number) => void;
-  planCount: number;
-}
-
 export type { MailNav } from "./use-keyboard-mail";
+export type { PlansNav } from "./use-keyboard-plans";
 
 interface UseKeyboardOptions {
   view: View;
@@ -151,7 +147,7 @@ export function useKeyboard({
       }
       const formatted = entries
         .map((e) => {
-          const dir = e.direction === "outbound" ? "→" : "←";
+          const dir = e.direction === "outbound" ? "\u2192" : "\u2190";
           const ts = new Date(e.timestamp).toISOString();
           const summary = summarizeEntry(e);
           const full = formatFullEntry(e);
@@ -199,6 +195,10 @@ export function useKeyboard({
       handleLogsInput(input, key, logsNav, serversNav.servers);
       return;
     }
+    if (view === "plans" && plansNav.confirmAbort && input !== "q" && input !== "s") {
+      handlePlansInput(input, key, plansNav);
+      return;
+    }
 
     // Global: shutdown daemon
     if (input === "s") {
@@ -213,17 +213,26 @@ export function useKeyboard({
       return;
     }
 
+    // Helper: clear plans modal state when navigating away
+    const leavePlansView = () => {
+      if (view === "plans") clearPlansState(plansNav);
+    };
+
     // Global: Tab / Shift+Tab cycle tabs
     if (key.tab) {
+      leavePlansView();
       setView(key.shift ? prevTab(view) : nextTab(view));
       return;
     }
 
-    // Global: number keys 1-5 jump to tab
+    // Global: number keys jump to tab
     const tabNum = Number(input);
     if (tabNum >= 1 && tabNum <= ALL_TABS.length) {
       const target = tabByNumber(tabNum);
-      if (target) setView(target);
+      if (target) {
+        leavePlansView();
+        setView(target);
+      }
       return;
     }
 
@@ -233,6 +242,7 @@ export function useKeyboard({
         logsNav.setFilterText("");
         setView("servers");
       } else {
+        leavePlansView();
         setView("logs");
       }
       return;
@@ -252,7 +262,13 @@ export function useKeyboard({
         mailNav.setScrollOffset(() => 0);
         return;
       }
+      if (view === "plans" && plansNav.expandedPlan !== null) {
+        plansNav.setExpandedPlan(null);
+        plansNav.setSelectedStep(() => 0);
+        return;
+      }
       if (view === "logs") logsNav.setFilterText("");
+      leavePlansView();
       setView("servers");
       return;
     }

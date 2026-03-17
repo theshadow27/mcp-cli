@@ -15,6 +15,7 @@ import { TabBar, buildBadges } from "./components/tab-bar.js";
 import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
+import { type ExpandedPlanKey, type StatusType, isPlanReadOnly } from "./hooks/use-keyboard-plans.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
@@ -54,9 +55,16 @@ export function App() {
   const [expandedMessage, setExpandedMessage] = useState<number | null>(null);
   const [mailScrollOffset, setMailScrollOffset] = useState(0);
   const [plansSelectedIndex, setPlansSelectedIndex] = useState(0);
+  const [expandedPlan, setExpandedPlan] = useState<ExpandedPlanKey | null>(null);
+  const [selectedStep, setSelectedStep] = useState(0);
   /** Track which plan is selected by identity so refreshes don't shift selection. */
   const plansSelectionIdRef = useRef<{ server: string; id: string } | null>(null);
   const plansRef = useRef<Plan[]>([]);
+  const [planConfirmAbort, setPlanConfirmAbort] = useState(false);
+  const [planStatusMessage, setPlanStatusMessage] = useState<string | null>(null);
+  const [planStatusType, setPlanStatusType] = useState<StatusType | null>(null);
+  const [planInflight, setPlanInflight] = useState(false);
+  const [planRefreshing, setPlanRefreshing] = useState(false);
 
   const servers = status?.servers ?? [];
   // Poll faster on claude tab, slower off-tab (badge still updates)
@@ -90,6 +98,7 @@ export function App() {
     loading: plansLoading,
     error: plansError,
     disconnected: plansDisconnected,
+    refresh: plansRefresh,
   } = usePlans({ enabled: plansEnabled });
   plansRef.current = plans;
   const setPlansSelectedIndexTracked = useCallback((updater: number | ((i: number) => number)) => {
@@ -172,6 +181,23 @@ export function App() {
     }
   }, [mailMessages, expandedMessage]);
 
+  // Clear orphaned expandedPlan when the plan disappears
+  useEffect(() => {
+    if (expandedPlan !== null && !plans.some((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)) {
+      setExpandedPlan(null);
+      setSelectedStep(0);
+    }
+  }, [plans, expandedPlan]);
+
+  // Clamp selectedStep when expanded plan's step count changes
+  useEffect(() => {
+    if (expandedPlan === null) return;
+    const expanded = plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server);
+    if (expanded) {
+      setSelectedStep((i) => Math.min(i, Math.max(0, expanded.steps.length - 1)));
+    }
+  }, [plans, expandedPlan]);
+
   // Clamp permission index when selected session or permission count changes
   const selectedSessionId = sessions[claudeSelectedIndex]?.sessionId;
   const permCount = sessions[claudeSelectedIndex]?.pendingPermissionDetails?.length ?? 0;
@@ -251,9 +277,25 @@ export function App() {
       lineCount: statsLineCount,
     },
     plansNav: {
+      plans,
       selectedIndex: plansSelectedIndex,
       setSelectedIndex: setPlansSelectedIndexTracked,
-      planCount: plans.length,
+      expandedPlan,
+      setExpandedPlan,
+      selectedStep,
+      setSelectedStep,
+      servers,
+      confirmAbort: planConfirmAbort,
+      setConfirmAbort: setPlanConfirmAbort,
+      statusMessage: planStatusMessage,
+      setStatusMessage: setPlanStatusMessage,
+      statusType: planStatusType,
+      setStatusType: setPlanStatusType,
+      inflight: planInflight,
+      setInflight: setPlanInflight,
+      refreshing: planRefreshing,
+      setRefreshing: setPlanRefreshing,
+      refresh: plansRefresh,
     },
     mailNav: {
       messages: mailMessages,
@@ -333,8 +375,12 @@ export function App() {
           error={plansError}
           disconnected={plansDisconnected}
           selectedIndex={plansSelectedIndex}
-          metrics={planMetrics}
-          metricsLoading={planMetricsLoading}
+          expandedPlan={expandedPlan}
+          selectedStep={selectedStep}
+          servers={servers}
+          statusMessage={planStatusMessage}
+          statusType={planStatusType}
+          confirmAbort={planConfirmAbort}
         />
       ) : (
         <MailViewer
@@ -354,6 +400,14 @@ export function App() {
         promptText={promptText}
         transcriptExpanded={expandedSession !== null}
         mailExpanded={expandedMessage !== null}
+        planExpanded={expandedPlan !== null}
+        planConfirmAbort={planConfirmAbort}
+        planReadOnly={(() => {
+          const targetPlan = expandedPlan
+            ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+            : plans[plansSelectedIndex];
+          return targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+        })()}
       />
     </Box>
   );

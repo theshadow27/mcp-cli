@@ -1,113 +1,94 @@
-import type { Plan, PlanMetrics } from "@mcp-cli/core";
+import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { MetricsPanel } from "./metrics-panel.js";
-
-/** Status → display color. */
-function statusColor(status: string): string | undefined {
-  switch (status) {
-    case "active":
-      return "cyan";
-    case "complete":
-      return "green";
-    case "gated":
-      return "yellow";
-    case "failed":
-    case "aborted":
-      return "red";
-    default:
-      return undefined;
-  }
-}
+import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans.js";
+import { isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
+import { GatePanel } from "./gate-panel.js";
+import { PlanList } from "./plan-list.js";
+import { StepPipeline } from "./step-pipeline.js";
 
 interface PlansTabProps {
   plans: Plan[];
   loading: boolean;
   error: string | null;
-  disconnected: boolean;
   selectedIndex: number;
-  /** Metrics for the active step of the selected plan (null if unavailable). */
-  metrics: PlanMetrics | null;
-  metricsLoading: boolean;
+  expandedPlan: ExpandedPlanKey | null;
+  selectedStep: number;
+  disconnected?: boolean;
+  servers: ServerStatus[];
+  statusMessage?: string | null;
+  statusType?: StatusType | null;
+  confirmAbort?: boolean;
 }
+
+const STATUS_COLORS: Record<StatusType, string> = {
+  error: "red",
+  success: "green",
+  warning: "yellow",
+  info: "green",
+};
 
 export function PlansTab({
   plans,
   loading,
   error,
-  disconnected,
   selectedIndex,
-  metrics,
-  metricsLoading,
+  expandedPlan,
+  selectedStep,
+  disconnected,
+  servers,
+  statusMessage,
+  statusType,
+  confirmAbort,
 }: PlansTabProps) {
   if (loading && plans.length === 0) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>Loading plans...</Text>
-      </Box>
-    );
+    return <Text dimColor>Loading plans...</Text>;
   }
 
   if (error && plans.length === 0) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text color="red">Error: {error}</Text>
-      </Box>
-    );
+    return <Text color="red">Error: {error}</Text>;
   }
 
-  if (plans.length === 0) {
-    return (
-      <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>No plans available.</Text>
-      </Box>
-    );
-  }
+  const expanded = expandedPlan
+    ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
+    : null;
+  const currentStep = expanded?.steps[selectedStep];
 
-  const selected = plans[selectedIndex];
+  // Check if the selected/expanded plan's server is read-only
+  const targetPlan = expanded ?? plans[selectedIndex];
+  const readOnly = targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
+
+  // Determine status message color from semantic type
+  const statusColor = confirmAbort ? "yellow" : statusType ? STATUS_COLORS[statusType] : "green";
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      {disconnected && (
-        <Box marginLeft={2}>
-          <Text color="yellow">⚠ stale data — connection lost</Text>
+    <Box flexDirection="column">
+      {disconnected ? (
+        <Text color="yellow" dimColor>
+          ⚠ Disconnected — showing stale data
+        </Text>
+      ) : null}
+      <PlanList plans={plans} selectedIndex={selectedIndex} expandedPlan={expandedPlan} />
+      {expanded ? (
+        <Box flexDirection="column" marginTop={1}>
+          <StepPipeline steps={expanded.steps} selectedStep={selectedStep} />
+          {currentStep?.gates && currentStep.gates.length > 0 ? (
+            <GatePanel gates={currentStep.gates} stepName={currentStep.name} />
+          ) : null}
         </Box>
-      )}
-      {plans.map((plan, i) => {
-        const isSelected = i === selectedIndex;
-        const pointer = isSelected ? "▸" : " ";
-        const activeStep = plan.steps.find((s) => s.id === plan.activeStepId);
-        const progress = `${plan.steps.filter((s) => s.status === "complete").length}/${plan.steps.length}`;
-
-        return (
-          <Box key={`${plan.server}:${plan.id}`} marginLeft={2}>
-            <Text>
-              <Text color={isSelected ? "cyan" : undefined}>{pointer} </Text>
-              <Text bold={isSelected}>{plan.name}</Text>
-              {"  "}
-              <Text color={statusColor(plan.status)}>[{plan.status}]</Text>
-              {"  "}
-              <Text dimColor>{progress} steps</Text>
-              {activeStep && (
-                <>
-                  {"  "}
-                  <Text dimColor>→ {activeStep.name}</Text>
-                </>
-              )}
-              {"  "}
-              <Text dimColor>({plan.server})</Text>
-            </Text>
-          </Box>
-        );
-      })}
-
-      {/* Metrics panel for the selected plan's active step */}
-      {selected && metrics && !metricsLoading && (
-        <MetricsPanel
-          label={selected.steps.find((s) => s.id === selected.activeStepId)?.name ?? selected.name}
-          metrics={metrics}
-        />
-      )}
+      ) : null}
+      {readOnly ? (
+        <Box marginTop={1}>
+          <Text color="yellow" dimColor>
+            (read-only)
+          </Text>
+        </Box>
+      ) : null}
+      {statusMessage ? (
+        <Box marginTop={readOnly ? 0 : 1}>
+          <Text color={statusColor}>{statusMessage}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }
