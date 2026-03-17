@@ -14,7 +14,8 @@ interface FooterProps {
   mailExpanded?: boolean;
   planExpanded?: boolean;
   planConfirmAbort?: boolean;
-  planReadOnly?: boolean;
+  canAdvance?: boolean;
+  canAbort?: boolean;
 }
 
 export function Footer({
@@ -29,7 +30,8 @@ export function Footer({
   mailExpanded,
   planExpanded,
   planConfirmAbort,
-  planReadOnly,
+  canAdvance,
+  canAbort,
 }: FooterProps) {
   if (denyReasonMode) {
     return (
@@ -176,9 +178,13 @@ export function Footer({
               <Text dimColor>←/→</Text> steps{"  "}
             </>
           ) : null}
-          {!planReadOnly ? (
+          {canAdvance ? (
             <>
               <Text dimColor>a</Text> advance{"  "}
+            </>
+          ) : null}
+          {canAbort ? (
+            <>
               <Text dimColor>x</Text> abort{"  "}
             </>
           ) : null}
