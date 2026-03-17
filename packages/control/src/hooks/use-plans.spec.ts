@@ -231,6 +231,37 @@ describe("usePlans", () => {
     expect(stateRef.current.error).toBeNull();
   });
 
+  it("treats a hanging server as a failure (per-server IPC timeout)", async () => {
+    const plan = makePlan("plan-1", "fast-server");
+    const ipcCallFn = async (method: string, params?: unknown) => {
+      if (method === "status") {
+        return daemonStatus([
+          { name: "fast-server", hasList: true },
+          { name: "slow-server", hasList: true },
+        ]);
+      }
+      const p = params as { server: string };
+      if (p.server === "slow-server") {
+        // Simulate a server that never responds — will be killed by timeout
+        return new Promise<never>(() => {});
+      }
+      return planToolResult([plan]);
+    };
+
+    // Use a short timeout so the test completes quickly
+    const { stateRef } = mount({
+      timeoutMs: 200,
+      ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
+    });
+    // The fast server should return results even though slow server hangs.
+    // Promise.allSettled waits for all promises, so we need the timeout to kick in.
+    await waitFor(() => stateRef.current.loading === false, 3_000);
+
+    expect(stateRef.current.plans).toHaveLength(1);
+    expect(stateRef.current.plans[0].id).toBe("plan-1");
+    expect(stateRef.current.error).toBeNull();
+  });
+
   it("sets disconnected when all plan servers fail", async () => {
     const ipcCallFn = async (method: string) => {
       if (method === "status") {

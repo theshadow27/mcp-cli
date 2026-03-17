@@ -11,6 +11,17 @@ import type { TranscriptEntry } from "../lib/claude-plan-adapter.js";
 import { extractPlansFromTranscript } from "../lib/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
+/** Per-server IPC timeout to prevent a single hanging server from stalling the poll loop. */
+const IPC_TIMEOUT_MS = 8_000;
+
+/** Races a promise against a timeout. Rejects with a descriptive error on expiry. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label}: timeout after ${ms}ms`)), ms)),
+  ]);
+}
+
 // -- Claude plan helpers --
 
 /**
@@ -28,14 +39,22 @@ const LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
  * Fetch plans from active Claude Code sessions by scanning transcripts
  * for TodoWrite tool calls or plan-like markdown.
  */
-async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelRef: { current: boolean }): Promise<Plan[]> {
+async function fetchClaudePlans(
+  ipcCallFn: typeof ipcCall,
+  cancelRef: { current: boolean },
+  timeoutMs = IPC_TIMEOUT_MS,
+): Promise<Plan[]> {
   try {
     // Get session list from _claude virtual server
-    const listResult = await ipcCallFn("callTool", {
-      server: CLAUDE_SERVER_NAME,
-      tool: "claude_session_list",
-      arguments: {},
-    });
+    const listResult = await withTimeout(
+      ipcCallFn("callTool", {
+        server: CLAUDE_SERVER_NAME,
+        tool: "claude_session_list",
+        arguments: {},
+      }),
+      timeoutMs,
+      "claude_session_list",
+    );
     if (cancelRef.current) return [];
 
     const listText = extractToolText(listResult);
@@ -50,11 +69,15 @@ async function fetchClaudePlans(ipcCallFn: typeof ipcCall, cancelRef: { current:
     await Promise.allSettled(
       liveSessions.map(async (session) => {
         try {
-          const transcriptResult = await ipcCallFn("callTool", {
-            server: CLAUDE_SERVER_NAME,
-            tool: "claude_transcript",
-            arguments: { sessionId: session.sessionId, limit: CLAUDE_TRANSCRIPT_LIMIT },
-          });
+          const transcriptResult = await withTimeout(
+            ipcCallFn("callTool", {
+              server: CLAUDE_SERVER_NAME,
+              tool: "claude_transcript",
+              arguments: { sessionId: session.sessionId, limit: CLAUDE_TRANSCRIPT_LIMIT },
+            }),
+            timeoutMs,
+            `claude_transcript(${session.sessionId})`,
+          );
           if (cancelRef.current) return;
 
           const transcriptText = extractToolText(transcriptResult);
@@ -98,6 +121,8 @@ export interface UsePlansResult {
 export interface UsePlansOptions {
   intervalMs?: number;
   enabled?: boolean;
+  /** Per-server IPC timeout in ms (default 8000). Override for testing. */
+  timeoutMs?: number;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
@@ -107,7 +132,7 @@ export interface UsePlansOptions {
  * Aggregates results across all servers into a single flat list.
  */
 export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
-  const { intervalMs = 30_000, enabled = true, ipcCallFn = ipcCall } = opts;
+  const { intervalMs = 30_000, enabled = true, timeoutMs = IPC_TIMEOUT_MS, ipcCallFn = ipcCall } = opts;
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -147,11 +172,15 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
           Promise.allSettled(
             planServers.map(async (srv: ServerStatus) => {
               try {
-                const result = await ipcCallRef.current("callTool", {
-                  server: srv.name,
-                  tool: "list_plans",
-                  arguments: {},
-                });
+                const result = await withTimeout(
+                  ipcCallRef.current("callTool", {
+                    server: srv.name,
+                    tool: "list_plans",
+                    arguments: {},
+                  }),
+                  timeoutMs,
+                  `list_plans(${srv.name})`,
+                );
                 const text = extractToolText(result);
                 if (!text) return;
                 const parsed = ListPlansResultSchema.safeParse(JSON.parse(text));
@@ -164,7 +193,7 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
               }
             }),
           ),
-          fetchClaudePlans(ipcCallRef.current, cancelRef),
+          fetchClaudePlans(ipcCallRef.current, cancelRef, timeoutMs),
         ]);
 
         if (cancelRef.current) return;
@@ -302,6 +331,8 @@ export interface UsePlanMetricsResult {
 export interface UsePlanMetricsOptions {
   intervalMs?: number;
   enabled?: boolean;
+  /** Per-server IPC timeout in ms (default 8000). Override for testing. */
+  timeoutMs?: number;
   /**
    * Whether the plan server supports `get_plan_metrics`.
    * When false, the hook returns null immediately without polling.
@@ -322,7 +353,13 @@ export function usePlanMetrics(
   server: string,
   opts: UsePlanMetricsOptions = {},
 ): UsePlanMetricsResult {
-  const { intervalMs = 5_000, enabled = true, supportsMetrics = false, ipcCallFn = ipcCall } = opts;
+  const {
+    intervalMs = 5_000,
+    enabled = true,
+    timeoutMs = IPC_TIMEOUT_MS,
+    supportsMetrics = false,
+    ipcCallFn = ipcCall,
+  } = opts;
   const [metrics, setMetrics] = useState<PlanMetrics | null>(null);
   const [loading, setLoading] = useState(supportsMetrics);
   const [error, setError] = useState<string | null>(null);
@@ -342,11 +379,15 @@ export function usePlanMetrics(
 
     async function poll() {
       try {
-        const result = await ipcCallFn("callTool", {
-          server,
-          tool: "get_plan_metrics",
-          arguments: stepId ? { planId, stepId } : { planId },
-        });
+        const result = await withTimeout(
+          ipcCallFn("callTool", {
+            server,
+            tool: "get_plan_metrics",
+            arguments: stepId ? { planId, stepId } : { planId },
+          }),
+          timeoutMs,
+          `get_plan_metrics(${server})`,
+        );
         if (cancelled) return;
         const text = extractToolText(result);
         if (text) {
@@ -379,7 +420,7 @@ export function usePlanMetrics(
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [planId, stepId, server, intervalMs, enabled, supportsMetrics, ipcCallFn]);
+  }, [planId, stepId, server, intervalMs, timeoutMs, enabled, supportsMetrics, ipcCallFn]);
 
   return { metrics, loading, error };
 }
