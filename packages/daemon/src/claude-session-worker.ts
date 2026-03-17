@@ -20,7 +20,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import { ClaudeWsServer, type WaitResult, WaitTimeoutError } from "./claude-session/ws-server";
+import { ClaudeWsServer, type WaitResult, WaitTimeoutError, compactifyEntry } from "./claude-session/ws-server";
 import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
@@ -253,7 +253,14 @@ function handleTranscript(
   content: Array<{ type: "text"; text: string }>;
 } {
   const limit = (args.limit as number) ?? 50;
+  const compact = (args.compact as boolean) ?? false;
   const transcript = server.getTranscript(args.sessionId as string, limit);
+
+  if (compact) {
+    const compacted = transcript.map(compactifyEntry);
+    return { content: [{ type: "text", text: JSON.stringify(compacted, null, 2) }] };
+  }
+
   return { content: [{ type: "text", text: JSON.stringify(transcript, null, 2) }] };
 }
 

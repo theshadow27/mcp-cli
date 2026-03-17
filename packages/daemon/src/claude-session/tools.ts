@@ -103,6 +103,12 @@ export const CLAUDE_TOOLS = [
       properties: {
         sessionId: { type: "string", description: "Session ID to query" },
         limit: { type: "number", description: "Max entries to return (default: 50)" },
+        compact: {
+          type: "boolean",
+          description:
+            "When true, return only timestamp, role, content summary (≤200 chars), " +
+            "and tool name — much smaller for monitoring. Default: false.",
+        },
       },
       required: ["sessionId"],
     },

@@ -66,6 +66,92 @@ export interface TranscriptEntry {
   message: NdjsonMessage;
 }
 
+/** Lightweight transcript entry for monitoring — omits verbose metadata. */
+export interface CompactTranscriptEntry {
+  timestamp: number;
+  role: string;
+  content: string | null;
+  tool?: string;
+}
+
+/** Convert a full TranscriptEntry to compact form. */
+export function compactifyEntry(entry: TranscriptEntry): CompactTranscriptEntry {
+  const type = entry.message.type ?? "unknown";
+
+  // Derive role from message type
+  const role =
+    type === "user"
+      ? "user"
+      : type === "assistant"
+        ? "assistant"
+        : type === "result"
+          ? "result"
+          : type === "system"
+            ? "system"
+            : type;
+
+  let content: string | null = null;
+  let tool: string | undefined;
+
+  if ((type === "user" || type === "assistant") && entry.message.message) {
+    const msg = entry.message.message as { content?: unknown };
+    content = extractContentSummaryPlain(msg.content);
+  } else if (type === "result") {
+    const res = entry.message as { result?: string };
+    content = res.result ?? null;
+  }
+
+  // Truncate to 200 chars
+  if (content && content.length > 200) {
+    content = `${content.slice(0, 200)}…`;
+  }
+
+  // Extract tool name from assistant tool_use blocks
+  if (type === "assistant" && entry.message.message) {
+    const msg = entry.message.message as { content?: unknown };
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_use") {
+          tool = (block as Record<string, unknown>).name as string;
+          break;
+        }
+      }
+    }
+  }
+
+  const result: CompactTranscriptEntry = { timestamp: entry.timestamp, role, content };
+  if (tool) result.tool = tool;
+  return result;
+}
+
+/** Extract content summary without ANSI color codes (for JSON output). */
+function extractContentSummaryPlain(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      parts.push(block);
+    } else if (block && typeof block === "object") {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        parts.push(b.text);
+      } else if (b.type === "tool_use" && typeof b.name === "string") {
+        parts.push(`[tool_use: ${b.name}]`);
+      } else if (b.type === "tool_result") {
+        const rc = b.content;
+        if (typeof rc === "string") {
+          parts.push(rc);
+        } else {
+          parts.push("[tool_result]");
+        }
+      }
+    }
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
 export interface SessionDetail extends SessionInfo {
   pendingPermissionIds: string[];
   pid: number | null;
