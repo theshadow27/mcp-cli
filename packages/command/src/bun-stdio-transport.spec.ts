@@ -164,6 +164,30 @@ describe("BunStdioServerTransport", () => {
     expect(stdout.writes).toHaveLength(0);
   });
 
+  test("calls onerror and closes when buffer exceeds 10 MB", async () => {
+    // Stream a single huge chunk with no newlines so the buffer grows unbounded
+    const huge = new Uint8Array(11 * 1024 * 1024); // 11 MB of zeros
+    const stdin = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(huge);
+        controller.close();
+      },
+    });
+    const stdout = mockStdout();
+    const transport = new BunStdioServerTransport(stdin, stdout.writer);
+
+    const errors: Error[] = [];
+    transport.onerror = (e) => errors.push(e);
+
+    await transport.start();
+    await transport.closed;
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain("buffer exceeded");
+
+    await transport.close();
+  });
+
   test("handles \\r\\n line endings", async () => {
     const msg = { jsonrpc: "2.0", id: 1, method: "initialize", params: {} };
     const stdin = streamFromLines([`${JSON.stringify(msg)}\r\n`]);
