@@ -26,8 +26,8 @@ while IFS= read -r file; do
     *.md | .claude/* | CLAUDE.md)
       # docs-only tier — no action needed
       ;;
-    # Config: JSON files (package.json, tsconfig, etc.)
-    *.json)
+    # Config: JSON files, scripts/, and build tooling (not shipped in binaries)
+    *.json | scripts/*)
       has_config=true
       ;;
     # Everything else is source code
