@@ -5,10 +5,17 @@
  * test files are not re-profiled on every commit.  Budget violations
  * are reported as warnings — they never block commits.
  *
- * Cache file: test-timings.json (committed to the repo).
+ * Cache file: test-timings.json (gitignored, local to each machine).
+ *
+ * **Known limitation**: The content hash covers only the test file itself,
+ * not its transitive imports.  If production code changes (e.g. a function
+ * imported by 40 test files gets slower), those test files will NOT be
+ * re-timed until their own content changes.  Use `--full` to force a
+ * complete re-timing when investigating regressions in imported code.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Glob } from "bun";
 
 /** A single cached timing entry. */
@@ -19,7 +26,15 @@ export interface TimingEntry {
   timeMs: number;
 }
 
-/** Shape of the test-timings.json file. */
+/** Top-level shape of the test-timings.json file. */
+export interface TimingCacheFile {
+  /** Bun version used to generate hashes — cache is invalidated on mismatch */
+  bunVersion: string;
+  /** Per-file timing entries keyed by relative path */
+  entries: Record<string, TimingEntry>;
+}
+
+/** Flat per-file map used internally (the `entries` field). */
 export type TimingCache = Record<string, TimingEntry>;
 
 /** Compute an xxhash64 hex digest for a file's content. */
@@ -34,27 +49,50 @@ export async function hashFile(path: string): Promise<string> {
   return hashFileContent(new Uint8Array(buf));
 }
 
-/** Load timing cache from disk. Returns empty object if missing or corrupt. */
+/**
+ * Load timing cache from disk. Returns empty object if missing, corrupt,
+ * or if the Bun version has changed (hash algorithm may differ).
+ */
 export function loadTimings(cachePath: string): TimingCache {
   if (!existsSync(cachePath)) return {};
   try {
     const raw = readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    return parsed as TimingCache;
+
+    // New schema: { bunVersion, entries }
+    if ("bunVersion" in parsed && "entries" in parsed) {
+      if (parsed.bunVersion !== Bun.version) {
+        // Bun version changed — hashes may not be stable, discard cache
+        return {};
+      }
+      return parsed.entries as TimingCache;
+    }
+
+    // Legacy schema (flat map) — discard since we can't trust the hashes
+    return {};
   } catch {
     return {};
   }
 }
 
-/** Save timing cache to disk as formatted JSON. */
+/**
+ * Save timing cache to disk as formatted JSON.
+ * Uses atomic write (temp file + rename) to prevent cache loss on interrupt.
+ */
 export function saveTimings(cachePath: string, cache: TimingCache): void {
-  // Sort keys for stable diffs
+  // Sort keys for stable output
   const sorted: TimingCache = {};
   for (const key of Object.keys(cache).sort()) {
     sorted[key] = cache[key];
   }
-  writeFileSync(cachePath, `${JSON.stringify(sorted, null, 2)}\n`);
+  const data: TimingCacheFile = {
+    bunVersion: Bun.version,
+    entries: sorted,
+  };
+  const tmpPath = join(dirname(cachePath), `.test-timings.${process.pid}.tmp`);
+  writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
+  renameSync(tmpPath, cachePath);
 }
 
 /** Discover all test files in the project. */

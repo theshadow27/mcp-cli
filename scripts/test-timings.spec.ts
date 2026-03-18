@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type TimingCache,
+  type TimingCacheFile,
   findChangedFiles,
   hashFileContent,
   loadTimings,
@@ -67,8 +68,44 @@ describe("loadTimings / saveTimings", () => {
       "a.spec.ts": { hash: "a", timeMs: 2 },
     });
     const raw = await Bun.file(path).text();
-    const keys = Object.keys(JSON.parse(raw));
+    const parsed = JSON.parse(raw) as TimingCacheFile;
+    const keys = Object.keys(parsed.entries);
     expect(keys).toEqual(["a.spec.ts", "z.spec.ts"]);
+  });
+
+  it("includes bunVersion in saved JSON", async () => {
+    const path = join(dir, "versioned.json");
+    saveTimings(path, { "a.spec.ts": { hash: "aaa", timeMs: 100 } });
+    const raw = await Bun.file(path).text();
+    const parsed = JSON.parse(raw) as TimingCacheFile;
+    expect(parsed.bunVersion).toBe(Bun.version);
+    expect(parsed.entries).toBeDefined();
+  });
+
+  it("discards cache when bunVersion mismatches", () => {
+    const path = join(dir, "stale.json");
+    const data: TimingCacheFile = {
+      bunVersion: "0.0.0-fake",
+      entries: { "a.spec.ts": { hash: "aaa", timeMs: 100 } },
+    };
+    writeFileSync(path, JSON.stringify(data));
+    expect(loadTimings(path)).toEqual({});
+  });
+
+  it("discards legacy flat-map format", () => {
+    const path = join(dir, "legacy.json");
+    // Old format: no bunVersion wrapper
+    writeFileSync(path, JSON.stringify({ "a.spec.ts": { hash: "aaa", timeMs: 100 } }));
+    expect(loadTimings(path)).toEqual({});
+  });
+
+  it("atomic write does not leave temp files on success", () => {
+    const path = join(dir, "atomic.json");
+    saveTimings(path, { "a.spec.ts": { hash: "aaa", timeMs: 100 } });
+    expect(existsSync(path)).toBe(true);
+    // Temp file should have been renamed away
+    const tmpPath = join(dir, `.test-timings.${process.pid}.tmp`);
+    expect(existsSync(tmpPath)).toBe(false);
   });
 });
 

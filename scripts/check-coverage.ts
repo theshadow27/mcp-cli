@@ -7,8 +7,11 @@
  *   2. Any individual file drops below per-file minimum (unless excluded)
  *
  * After the coverage run, profiles test files whose content hash has changed
- * since the last run (stored in test-timings.json).  Budget violations are
- * reported as warnings — they never block commits.
+ * since the last run (stored in test-timings.json, gitignored).  Budget
+ * violations are reported as warnings — they never block commits.
+ *
+ * Note: the hash covers only the test file content, not transitive imports.
+ * Use --full to force re-timing all files after production code changes.
  *
  * Usage:  bun scripts/check-coverage.ts          # incremental timing
  *         bun scripts/check-coverage.ts --full    # re-time all files
@@ -275,13 +278,6 @@ if (filesToTime.length > 0) {
   // Update cache with fresh timings
   for (const { file, ms } of timings) {
     cache[file] = { hash: hashes[file], timeMs: ms };
-  }
-
-  // Ensure unchanged files still have their hashes up to date
-  for (const file of testFiles) {
-    if (cache[file] && hashes[file]) {
-      cache[file].hash = hashes[file];
-    }
   }
 
   saveTimings(TIMING_CACHE_PATH, cache);
