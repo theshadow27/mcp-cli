@@ -52,6 +52,16 @@ export interface McpConfigFile {
   mcpServers?: ServerConfigMap;
 }
 
+/** Configuration for ephemeral (auto-saved) aliases */
+export interface EphemeralAliasConfig {
+  /** Enable auto-saving long CLI calls as ephemeral aliases (default: true) */
+  enabled?: boolean;
+  /** Minimum serialized args length (chars) to trigger auto-save (default: 400) */
+  charThreshold?: number;
+  /** Default TTL in milliseconds (default: 48h = 172800000) */
+  ttlMs?: number;
+}
+
 /** mcp-cli config file (~/.mcp-cli/config.json) */
 export interface CliConfig {
   trustClaude?: boolean;
@@ -59,6 +69,8 @@ export interface CliConfig {
   terminal?: string;
   /** Fixed WebSocket port for Claude SDK sessions (default: 19275). Set 0 for random. */
   wsPort?: number;
+  /** Configuration for ephemeral (auto-saved) aliases */
+  ephemeralAliases?: EphemeralAliasConfig;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

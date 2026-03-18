@@ -165,6 +165,7 @@ export function printAliasList(
     aliasType?: AliasType;
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
+    expiresAt?: number | null;
   }>,
   opts?: { verbose?: boolean },
 ): void {
@@ -173,11 +174,15 @@ export function printAliasList(
     return;
   }
 
-  const maxName = Math.max(...aliases.map((a) => a.name.length));
+  const permanent = aliases.filter((a) => !a.expiresAt);
+  const ephemeral = aliases.filter((a) => a.expiresAt);
+
+  const allForPadding = aliases;
+  const maxName = Math.max(...allForPadding.map((a) => a.name.length));
   const typeLabel = (a: { aliasType?: string }) =>
     a.aliasType === "defineAlias" ? `${c.cyan}defineAlias${c.reset}` : `${c.dim}freeform${c.reset}  `;
 
-  for (const a of aliases) {
+  for (const a of permanent) {
     const desc = a.description ? `  ${a.description}` : "";
     let line = `  ${c.green}${a.name.padEnd(maxName)}${c.reset}  ${typeLabel(a)}${desc}`;
 
@@ -192,7 +197,29 @@ export function printAliasList(
 
     console.log(line);
   }
-  console.log(`\n${aliases.length} alias(es)`);
+
+  if (ephemeral.length > 0) {
+    if (permanent.length > 0) console.log("");
+    console.log(`${c.dim}Ephemeral (auto-expire):${c.reset}`);
+    for (const a of ephemeral) {
+      const desc = a.description ? `  ${a.description}` : "";
+      const expiryStr = formatExpiry(a.expiresAt as number);
+      console.log(`  ${c.dim}${a.name.padEnd(maxName)}  freeform  ${desc}  ${c.yellow}expires ${expiryStr}${c.reset}`);
+    }
+  }
+
+  const ephCount = ephemeral.length > 0 ? ` (${ephemeral.length} ephemeral)` : "";
+  console.log(`\n${aliases.length} alias(es)${ephCount}`);
+}
+
+/** Format an expiry timestamp as a human-readable relative time */
+function formatExpiry(expiresAt: number): string {
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return "expired";
+  const hours = Math.floor(remaining / (60 * 60 * 1000));
+  const mins = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
+  if (hours > 0) return `in ${hours}h ${mins}m`;
+  return `in ${mins}m`;
 }
 
 /** Print alias metadata header for --debug mode */

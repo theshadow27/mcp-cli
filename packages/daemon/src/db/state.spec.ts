@@ -488,6 +488,160 @@ describe("StateDb", () => {
       expect(db.getAlias("evolve")?.aliasType).toBe("defineAlias");
       db.close();
     });
+
+    test("saveAlias with expiresAt stores ephemeral alias", () => {
+      const db = createDb();
+      const future = Date.now() + 86400000;
+      db.saveAlias(
+        "eph-1",
+        "/tmp/eph-1.ts",
+        "ephemeral test",
+        "freeform",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        future,
+      );
+      const alias = db.getAlias("eph-1");
+      expect(alias).toBeDefined();
+      expect(alias?.expiresAt).toBe(future);
+      db.close();
+    });
+
+    test("listAliases excludes expired aliases", () => {
+      const db = createDb();
+      const past = Date.now() - 1000;
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("expired", "/tmp/e.ts", "gone", "freeform", undefined, undefined, undefined, undefined, past);
+      db.saveAlias("alive", "/tmp/a.ts", "still here", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const aliases = db.listAliases();
+      const names = aliases.map((a) => a.name);
+      expect(names).toContain("permanent");
+      expect(names).toContain("alive");
+      expect(names).not.toContain("expired");
+      db.close();
+    });
+
+    test("listAliases returns expiresAt for ephemeral aliases", () => {
+      const db = createDb();
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("ephemeral", "/tmp/e.ts", "temp", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const aliases = db.listAliases();
+      const permanent = aliases.find((a) => a.name === "permanent");
+      const ephemeral = aliases.find((a) => a.name === "ephemeral");
+      expect(permanent?.expiresAt).toBeNull();
+      expect(ephemeral?.expiresAt).toBe(future);
+      db.close();
+    });
+
+    test("touchAliasExpiry resets TTL on ephemeral alias", () => {
+      const db = createDb();
+      const original = Date.now() + 1000;
+      const newExpiry = Date.now() + 86400000;
+      db.saveAlias("eph", "/tmp/eph.ts", "temp", "freeform", undefined, undefined, undefined, undefined, original);
+
+      db.touchAliasExpiry("eph", newExpiry);
+      const alias = db.getAlias("eph");
+      expect(alias?.expiresAt).toBe(newExpiry);
+      db.close();
+    });
+
+    test("touchAliasExpiry does not affect permanent aliases", () => {
+      const db = createDb();
+      db.saveAlias("perm", "/tmp/perm.ts", "permanent");
+
+      db.touchAliasExpiry("perm", Date.now() + 86400000);
+      const alias = db.getAlias("perm");
+      expect(alias?.expiresAt).toBeNull();
+      db.close();
+    });
+
+    test("pruneExpiredAliases removes only expired aliases", () => {
+      const db = createDb();
+      const past = Date.now() - 1000;
+      const future = Date.now() + 86400000;
+      db.saveAlias("permanent", "/tmp/p.ts", "stays");
+      db.saveAlias("expired", "/tmp/e.ts", "gone", "freeform", undefined, undefined, undefined, undefined, past);
+      db.saveAlias("alive", "/tmp/a.ts", "still here", "freeform", undefined, undefined, undefined, undefined, future);
+
+      const pruned = db.pruneExpiredAliases();
+      expect(pruned).toBe(1);
+
+      expect(db.getAlias("permanent")).toBeDefined();
+      expect(db.getAlias("alive")).toBeDefined();
+      expect(db.getAlias("expired")).toBeUndefined();
+      db.close();
+    });
+
+    test("pruneExpiredAliases cleans up alias files", () => {
+      const db = createDb();
+      const tmpFile = join(tmpdir(), `mcp-cli-test-prune-${Date.now()}.ts`);
+      // Create a real file so unlinkSync has something to delete
+      const { writeFileSync } = require("node:fs");
+      const { existsSync } = require("node:fs");
+      writeFileSync(tmpFile, "// ephemeral alias");
+
+      const past = Date.now() - 1000;
+      db.saveAlias("eph-file", tmpFile, "gone", "freeform", undefined, undefined, undefined, undefined, past);
+
+      expect(existsSync(tmpFile)).toBe(true);
+      db.pruneExpiredAliases();
+      expect(existsSync(tmpFile)).toBe(false);
+      db.close();
+    });
+
+    test("saveAlias with expiresAt refuses to overwrite permanent alias", () => {
+      const db = createDb();
+      // Save a permanent alias
+      db.saveAlias("my-tool", "/tmp/permanent.ts", "user curated");
+      expect(db.getAlias("my-tool")?.expiresAt).toBeNull();
+
+      // Attempt to overwrite with an ephemeral alias
+      const future = Date.now() + 86400000;
+      db.saveAlias(
+        "my-tool",
+        "/tmp/ephemeral.ts",
+        "ephemeral",
+        "freeform",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        future,
+      );
+
+      // Permanent alias should be unchanged
+      const alias = db.getAlias("my-tool");
+      expect(alias?.description).toBe("user curated");
+      expect(alias?.filePath).toBe("/tmp/permanent.ts");
+      expect(alias?.expiresAt).toBeNull();
+      db.close();
+    });
+
+    test("saveAlias without expiresAt can still overwrite permanent alias", () => {
+      const db = createDb();
+      db.saveAlias("my-tool", "/tmp/v1.ts", "version 1");
+      db.saveAlias("my-tool", "/tmp/v2.ts", "version 2");
+      expect(db.getAlias("my-tool")?.description).toBe("version 2");
+      db.close();
+    });
+
+    test("saveAlias with expiresAt can overwrite another ephemeral alias", () => {
+      const db = createDb();
+      const future1 = Date.now() + 86400000;
+      const future2 = Date.now() + 172800000;
+      db.saveAlias("eph-x", "/tmp/e1.ts", "first", "freeform", undefined, undefined, undefined, undefined, future1);
+      db.saveAlias("eph-x", "/tmp/e2.ts", "second", "freeform", undefined, undefined, undefined, undefined, future2);
+      const alias = db.getAlias("eph-x");
+      expect(alias?.description).toBe("second");
+      expect(alias?.expiresAt).toBe(future2);
+      db.close();
+    });
   });
 
   describe("auth_tokens", () => {

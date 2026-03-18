@@ -8,6 +8,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { unlinkSync } from "node:fs";
 import {
   type AliasType,
   type MailMessage,
@@ -46,6 +47,7 @@ export class StateDb {
   private db: Database;
   private logInsertCount = new Map<string, number>();
   private mailOpCount = 0;
+  private aliasOpCount = 0;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
@@ -174,6 +176,11 @@ export class StateDb {
     }
     try {
       this.db.exec("ALTER TABLE aliases ADD COLUMN source_hash TEXT");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN expires_at INTEGER");
     } catch {
       /* column already exists */
     }
@@ -562,7 +569,9 @@ export class StateDb {
     aliasType: AliasType;
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
+    expiresAt?: number | null;
   }> {
+    this.maybeRunAliasPrune();
     return this.db
       .query<
         {
@@ -573,12 +582,13 @@ export class StateDb {
           alias_type: string;
           input_schema_json: string | null;
           output_schema_json: string | null;
+          expires_at: number | null;
         },
-        []
+        [number]
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json FROM aliases ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
       )
-      .all()
+      .all(Date.now())
       .map((row) => ({
         name: row.name,
         description: row.description ?? "",
@@ -587,6 +597,7 @@ export class StateDb {
         aliasType: row.alias_type as AliasType,
         ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
         ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
+        expiresAt: row.expires_at,
       }));
   }
 
@@ -598,6 +609,7 @@ export class StateDb {
         aliasType: AliasType;
         bundledJs?: string;
         sourceHash?: string;
+        expiresAt?: number | null;
       }
     | undefined {
     const row = this.db
@@ -609,9 +621,12 @@ export class StateDb {
           alias_type: string;
           bundled_js: string | null;
           source_hash: string | null;
+          expires_at: number | null;
         },
         [string]
-      >("SELECT name, description, file_path, alias_type, bundled_js, source_hash FROM aliases WHERE name = ?")
+      >(
+        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at FROM aliases WHERE name = ?",
+      )
       .get(name);
     if (!row) return undefined;
     return {
@@ -621,6 +636,7 @@ export class StateDb {
       aliasType: row.alias_type as AliasType,
       ...(row.bundled_js ? { bundledJs: row.bundled_js } : {}),
       ...(row.source_hash ? { sourceHash: row.source_hash } : {}),
+      expiresAt: row.expires_at,
     };
   }
 
@@ -633,10 +649,24 @@ export class StateDb {
     outputSchemaJson?: string,
     bundledJs?: string,
     sourceHash?: string,
+    expiresAt?: number,
   ): void {
+    // If the caller is saving an ephemeral alias (expiresAt set), refuse to
+    // overwrite an existing permanent alias (expires_at IS NULL). This prevents
+    // auto-save hash collisions from clobbering user-curated aliases.
+    if (expiresAt != null) {
+      const existing = this.db
+        .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM aliases WHERE name = ?")
+        .get(name);
+      if (existing && existing.expires_at === null) {
+        // Permanent alias exists — do not overwrite
+        return;
+      }
+    }
+
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
        ON CONFLICT(name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
@@ -645,6 +675,7 @@ export class StateDb {
          output_schema_json = excluded.output_schema_json,
          bundled_js = excluded.bundled_js,
          source_hash = excluded.source_hash,
+         expires_at = excluded.expires_at,
          updated_at = unixepoch()`,
       [
         name,
@@ -655,12 +686,54 @@ export class StateDb {
         outputSchemaJson ?? null,
         bundledJs ?? null,
         sourceHash ?? null,
+        expiresAt ?? null,
       ],
     );
   }
 
   deleteAlias(name: string): void {
     this.db.run("DELETE FROM aliases WHERE name = ?", [name]);
+  }
+
+  /** Reset the TTL on an ephemeral alias (called when re-run). */
+  touchAliasExpiry(name: string, expiresAt: number): void {
+    this.db.run(
+      "UPDATE aliases SET expires_at = ?, updated_at = unixepoch() WHERE name = ? AND expires_at IS NOT NULL",
+      [expiresAt, name],
+    );
+  }
+
+  /** Delete ephemeral aliases past their TTL, cleaning up their files. */
+  pruneExpiredAliases(): number {
+    const now = Date.now();
+    // Fetch file paths before deleting rows so we can clean up the files.
+    // The SELECT and DELETE are intentionally not wrapped in a transaction —
+    // all operations are synchronous (including unlinkSync), so no interleaving
+    // can occur. If this is ever refactored to use async unlink, the SELECT and
+    // DELETE must be wrapped in a transaction to prevent races.
+    const expired = this.db
+      .query<{ file_path: string }, [number]>(
+        "SELECT file_path FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?",
+      )
+      .all(now);
+    if (expired.length === 0) return 0;
+
+    for (const row of expired) {
+      try {
+        unlinkSync(row.file_path);
+      } catch {
+        // file already gone, fine
+      }
+    }
+    const result = this.db.run("DELETE FROM aliases WHERE expires_at IS NOT NULL AND expires_at < ?", [now]);
+    return result.changes;
+  }
+
+  private maybeRunAliasPrune(): void {
+    if (++this.aliasOpCount >= options.ALIAS_PRUNE_INTERVAL) {
+      this.aliasOpCount = 0;
+      this.pruneExpiredAliases();
+    }
   }
 
   // -- Server logs (stderr persistence) --

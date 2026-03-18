@@ -47,6 +47,7 @@ import {
   stopDaemon,
 } from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
+import { maybeAutoSaveEphemeral } from "./ephemeral";
 import { readFileWithLimit } from "./file-read";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
@@ -395,6 +396,9 @@ async function cmdCall(args: string[]): Promise<void> {
     { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs },
     { timeoutMs: toolTimeoutMs + 5_000 },
   );
+
+  // Auto-save long calls as ephemeral aliases (best-effort, non-blocking)
+  maybeAutoSaveEphemeral(server, tool, toolArgs, { ipcCall });
 
   // Explicit --jq filter: apply client-side regardless of size/env
   if (jqFilter) {
