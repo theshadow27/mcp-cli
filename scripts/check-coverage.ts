@@ -247,43 +247,43 @@ if (noiseLines.length > NOISE_THRESHOLD) {
   failed = true;
 }
 
-// --- Per-file test timing ---
-
-console.log("\n--- Test Timing Profile ---");
-const testFiles = await findTestFiles();
-const profileStart = performance.now();
-const timings = await profileTestFiles(testFiles, PROFILE_CONCURRENCY);
-const profileDuration = Math.round(performance.now() - profileStart);
-const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
-
-console.log(
-  `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s ` +
-    `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
-);
-console.log(
-  `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
-);
-for (const { file, ms } of timings.slice(0, 10)) {
-  const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
-  const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
-  console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
-}
-
-const overBudget = timings.filter((t) => {
-  if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
-  const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
-  return !excluded;
-});
-if (overBudget.length > 0) {
-  // WARNING only — do not fail the build. The hard-fail mode caused ~$2700 in
-  // wasted compute during Sprint 15 when sessions retried pre-commit hooks in a
-  // loop. See #812 for the hash-based timing cache replacement plan.
-  console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
-  for (const { file, ms } of overBudget) {
-    console.warn(`  ${ms}ms  ${file}`);
-  }
-  console.warn("\nConsider extracting pure logic into unit tests or splitting the file. See #812.");
-}
+// --- Per-file test timing (DISABLED — see #812) ---
+// Profiling adds ~55s of wall time re-running every test file individually.
+// The hard-fail budget caused ~$2700 in wasted compute during Sprint 15.
+// Re-enable once #812 (hash-based timing cache) is implemented.
+//
+// console.log("\n--- Test Timing Profile ---");
+// const testFiles = await findTestFiles();
+// const profileStart = performance.now();
+// const timings = await profileTestFiles(testFiles, PROFILE_CONCURRENCY);
+// const profileDuration = Math.round(performance.now() - profileStart);
+// const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
+//
+// console.log(
+//   `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s ` +
+//     `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
+// );
+// console.log(
+//   `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
+// );
+// for (const { file, ms } of timings.slice(0, 10)) {
+//   const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
+//   const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
+//   console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
+// }
+//
+// const overBudget = timings.filter((t) => {
+//   if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
+//   const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
+//   return !excluded;
+// });
+// if (overBudget.length > 0) {
+//   console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
+//   for (const { file, ms } of overBudget) {
+//     console.warn(`  ${ms}ms  ${file}`);
+//   }
+//   console.warn("\nConsider extracting pure logic into unit tests or splitting the file. See #812.");
+// }
 
 if (failed) {
   process.exit(1);
