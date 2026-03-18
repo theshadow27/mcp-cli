@@ -6,6 +6,7 @@ import {
   looksLikePlan,
   parseClaudePlanMarkdown,
   todosToPlan,
+  validateTranscriptEntries,
 } from "./claude-plan-adapter";
 
 // ── helpers ──
@@ -28,6 +29,75 @@ function todoWriteBlock(todos: Array<{ id: string; content: string; status: stri
 function textBlock(text: string) {
   return { type: "text", text };
 }
+
+// ── validateTranscriptEntries ──
+
+describe("validateTranscriptEntries", () => {
+  it("returns valid entries and skips malformed ones without throwing", () => {
+    const raw = [
+      { timestamp: 1000, direction: "inbound", message: { type: "assistant" } },
+      { timestamp: "not-a-number", direction: "inbound", message: {} }, // bad timestamp
+      null, // completely invalid
+      { timestamp: 2000, direction: "outbound", message: { type: "user" } },
+    ];
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = validateTranscriptEntries(raw, "sess-test");
+      expect(result).toHaveLength(2);
+      expect(result[0].timestamp).toBe(1000);
+      expect(result[1].timestamp).toBe(2000);
+      expect(errors).toHaveLength(2);
+      expect(errors[0]).toContain("sess-test");
+      expect(errors[0]).toContain("entry[1]");
+      expect(errors[1]).toContain("entry[2]");
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("returns empty array and logs when input is not an array", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = validateTranscriptEntries("not-an-array", "sess-bad");
+      expect(result).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("sess-bad");
+      expect(errors[0]).toContain("expected array");
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("rejects entries with invalid direction values", () => {
+    const raw = [{ timestamp: 1000, direction: "sideways", message: {} }];
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = validateTranscriptEntries(raw, "sess-dir");
+      expect(result).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("returns all entries when input is fully valid", () => {
+    const raw = [
+      { timestamp: 1000, direction: "inbound", message: { type: "assistant" } },
+      { timestamp: 2000, direction: "outbound", message: { type: "user" } },
+    ];
+
+    const result = validateTranscriptEntries(raw, "sess-ok");
+    expect(result).toHaveLength(2);
+  });
+});
 
 // ── extractTodosFromTranscript ──
 
