@@ -221,8 +221,9 @@ describe("usePlans", () => {
       return planToolResult([plan]);
     };
 
-    // Wrapper that lets us toggle enabled
+    // Wrapper that lets us toggle enabled and tracks render count
     let setEnabled: ((v: boolean) => void) | undefined;
+    let renderCount = 0;
     const stateRef: { current: HookState } = {
       current: { plans: [], loading: true, error: null, disconnected: false, failedServers: [] },
     };
@@ -235,6 +236,7 @@ describe("usePlans", () => {
         ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
       });
       stateRef.current = result;
+      renderCount++;
       return React.createElement(Text, null, "ok");
     };
 
@@ -245,9 +247,10 @@ describe("usePlans", () => {
     await waitFor(() => stateRef.current.loading === false);
     expect(stateRef.current.plans).toHaveLength(1);
 
-    // Disable — effect cleanup runs
+    // Disable — effect cleanup runs; wait for React to process the update
+    const countBeforeDisable = renderCount;
     setEnabled?.(false);
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => renderCount > countBeforeDisable);
 
     // Make next poll slow so we can observe loading=true before it completes
     pollDelay = 200;
