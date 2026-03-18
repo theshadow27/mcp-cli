@@ -8,6 +8,7 @@ import {
   type IpcCaller,
   type ToolListNotifier,
   checkRecursionGuard,
+  checkTtyStdin,
   computeToolsFingerprint,
   handleCallTool,
   handleListTools,
@@ -90,6 +91,17 @@ describe("parseMcpTools", () => {
   test("skips entries with empty server or tool (bare slash)", () => {
     const result = parseMcpTools("/search,atlassian/,valid/tool");
     expect(result).toEqual([{ name: "tool", server: "valid", tool: "tool" }]);
+  });
+});
+
+// -- TTY stdin check --
+
+describe("checkTtyStdin", () => {
+  test("returns a boolean reflecting Bun.stdin.isTTY", () => {
+    const result = checkTtyStdin();
+    expect(typeof result).toBe("boolean");
+    // In test runner, stdin is typically not a TTY
+    expect(result).toBe(!!process.stdin.isTTY);
   });
 });
 
