@@ -14,19 +14,14 @@
  *   { type: "db:end", sessionId }
  */
 
-import {
-  CLAUDE_SERVER_NAME,
-  extractPlansFromTranscript,
-  generateSpanId,
-  resolveModelName,
-  silentLogger,
-} from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer, type WaitResult, WaitTimeoutError, compactifyEntry } from "./claude-session/ws-server";
+import { aggregatePlans } from "./plan-aggregator";
 import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
@@ -293,28 +288,16 @@ function handleDeny(
   return { content: [{ type: "text", text: JSON.stringify({ denied: true }) }] };
 }
 
-/** Session states worth scanning for plan data. */
-const PLAN_LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
-
 function handleClaudePlans(server: ClaudeWsServer): {
   content: Array<{ type: "text"; text: string }>;
 } {
   const sessions = server.listSessions();
-  const liveSessions = sessions.filter((s) => PLAN_LIVE_STATES.has(s.state));
-
-  const plans = [];
-  for (const session of liveSessions) {
-    try {
-      const transcript = server.getTranscript(session.sessionId);
-      const plan = extractPlansFromTranscript(transcript, session.sessionId);
-      if (plan) plans.push(plan);
-    } catch {
-      // One session failing doesn't break the whole list
-    }
-  }
-
-  // Sort by id for deterministic ordering
-  plans.sort((a, b) => a.id.localeCompare(b.id));
+  // Intentionally reads only the in-memory ring buffer (last ~100 entries)
+  // rather than falling back to JSONL on disk. Reading JSONL for every live
+  // session on every poll cycle would trigger synchronous readFileSync and
+  // stall the WebSocket keepalive loop. For plans, TodoWrite typically
+  // appears in the most recent ~50 entries so the buffer is sufficient.
+  const plans = aggregatePlans(sessions, (id) => server.getTranscript(id));
   return { content: [{ type: "text", text: JSON.stringify(plans) }] };
 }
 
