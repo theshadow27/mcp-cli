@@ -295,7 +295,18 @@ export async function cmdServe(): Promise<void> {
   const stopPoller = startToolListPoller(server, ipcCall);
   console.error("[mcx serve] MCP server running on stdio");
 
+  // Graceful shutdown on SIGTERM/SIGINT — close server and transport so
+  // inflight MCP requests get proper responses before the process exits.
+  const shutdown = async () => {
+    await server.close();
+    await transport.close();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+
   // Block until stdin closes — prevents main() from calling process.exit()
   await transport.closed;
   stopPoller();
+  process.off("SIGTERM", shutdown);
+  process.off("SIGINT", shutdown);
 }
