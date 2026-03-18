@@ -32,7 +32,7 @@ import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
-import { cmdRun, parseRunArgs } from "./commands/run";
+import { cmdRun } from "./commands/run";
 import { cmdServe } from "./commands/serve";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
@@ -222,9 +222,11 @@ async function main(): Promise<void> {
         await cmdAlias(cleanArgs.slice(1));
         break;
 
-      case "run":
-        await cmdRun(cleanArgs.slice(1));
+      case "run": {
+        const { _recordPromise } = await cmdRun(cleanArgs.slice(1));
+        await _recordPromise;
         break;
+      }
 
       case "logs":
         await cmdLogs(cleanArgs.slice(1));
@@ -300,9 +302,8 @@ async function main(): Promise<void> {
         if (!command.startsWith("-") && (await isDaemonRunning())) {
           const alias = await ipcCall("getAlias", { name: command });
           if (alias) {
-            const { runAlias } = await import("./alias-runner.js");
-            const { jsonInput, cliArgs } = parseRunArgs(cleanArgs.slice(1));
-            await runAlias(alias.filePath, cliArgs, jsonInput);
+            const { _recordPromise } = await cmdRun([command, ...cleanArgs.slice(1)]);
+            await _recordPromise;
             break;
           }
         }

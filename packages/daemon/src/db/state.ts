@@ -719,9 +719,10 @@ export class StateDb {
 
   /** Increment run_count and set last_run_at. Returns the new run count. */
   recordAliasRun(name: string): number {
-    this.db.run("UPDATE aliases SET run_count = run_count + 1, last_run_at = unixepoch() WHERE name = ?", [name]);
     const row = this.db
-      .query<{ run_count: number }, [string]>("SELECT run_count FROM aliases WHERE name = ?")
+      .query<{ run_count: number }, [string]>(
+        "UPDATE aliases SET run_count = run_count + 1, last_run_at = unixepoch() WHERE name = ? RETURNING run_count",
+      )
       .get(name);
     return row?.run_count ?? 0;
   }

@@ -28,10 +28,7 @@ const defaultDeps: CmdRunDeps = {
   exit: (code) => process.exit(code),
 };
 
-export async function cmdRun(
-  args: string[],
-  deps?: Partial<CmdRunDeps>,
-): Promise<{ _recordPromise: Promise<void> }> {
+export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promise<{ _recordPromise: Promise<void> }> {
   const d: CmdRunDeps = { ...defaultDeps, ...deps };
   const aliasName = args[0];
   if (!aliasName) {
@@ -62,7 +59,7 @@ export async function cmdRun(
         const config = d.readCliConfig();
         const threshold =
           config.ephemeralAliases?.promotionThreshold ?? coreOptions.EPHEMERAL_ALIAS_PROMOTION_THRESHOLD;
-        if (result.runCount === threshold) {
+        if (result.runCount >= threshold) {
           d.logError(
             `\u{1F4A1} Used ${result.runCount} times \u2014 promote to permanent: mcx alias promote ${aliasName}`,
           );

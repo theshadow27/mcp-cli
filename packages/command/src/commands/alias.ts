@@ -360,15 +360,15 @@ function extractBalancedBraces(s: string, start: number): string | undefined {
   if (s[start] !== "{") return undefined;
   let depth = 0;
   let inString = false;
-  let escape = false;
+  let escaped = false;
   for (let i = start; i < s.length; i++) {
     const ch = s[i];
-    if (escape) {
-      escape = false;
+    if (escaped) {
+      escaped = false;
       continue;
     }
     if (ch === "\\") {
-      escape = true;
+      escaped = true;
       continue;
     }
     if (ch === '"') {
@@ -401,7 +401,14 @@ function inferZodType(value: unknown): string {
 export function generatePromotionScaffold(script: string, description: string | undefined, name: string): string {
   const parsed = parseEphemeralScript(script);
   if (!parsed) {
-    // Can't parse — wrap the original script as-is in a defineAlias shell
+    // Can't parse — wrap the original script as-is in a defineAlias shell.
+    // Strip auto-prepended import lines (freeform scripts get `import { mcp, args, file, json }` prepended)
+    // since top-level imports inside a function body are syntax errors.
+    const bodyLines = script
+      .split("\n")
+      .filter((l) => l.trim() && !/^\s*import\s+/.test(l))
+      .map((l) => `    ${l}`)
+      .join("\n");
     return `import { defineAlias, z } from "mcp-cli";
 
 defineAlias(({ mcp, z }) => ({
@@ -409,11 +416,7 @@ defineAlias(({ mcp, z }) => ({
   description: ${JSON.stringify(description ?? "Promoted alias")},
   input: z.object({}),
   fn: async (_input, { mcp }) => {
-${script
-  .split("\n")
-  .filter((l) => l.trim())
-  .map((l) => `    ${l}`)
-  .join("\n")}
+${bodyLines}
   },
 }));
 `;

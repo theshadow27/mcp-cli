@@ -498,7 +498,8 @@ describe("parseEphemeralScript", () => {
   });
 
   test("parses nested JSON args (brace-balanced)", () => {
-    const script = 'const result = await mcp["server"]["tool"]({"filter":{"type":"bug","severity":"high"},"limit":10});\nconsole.log(result);';
+    const script =
+      'const result = await mcp["server"]["tool"]({"filter":{"type":"bug","severity":"high"},"limit":10});\nconsole.log(result);';
     const parsed = parseEphemeralScript(script);
     expect(parsed).toEqual({
       server: "server",
