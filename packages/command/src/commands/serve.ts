@@ -267,7 +267,17 @@ export async function handleCallTool(
 
 // -- Server --
 
+export function checkTtyStdin(): boolean {
+  return !!process.stdin.isTTY;
+}
+
 export async function cmdServe(): Promise<void> {
+  if (checkTtyStdin()) {
+    console.error("[mcx serve] Error: mcx serve is an MCP stdio server — connect it via stdio, not a terminal.");
+    console.error("[mcx serve] Example: claude mcp add my-server -- mcx serve");
+    process.exit(1);
+  }
+
   if (checkRecursionGuard()) {
     console.error("[mcx serve] Recursion detected (MCX_SERVE=1 already set). Aborting to prevent infinite loop.");
     process.exit(1);
