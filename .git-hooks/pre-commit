@@ -17,25 +17,10 @@ if [ -z "$staged_files" ]; then
 fi
 
 # Classify staged files into tiers
-has_source=false
-has_config=false
-
-while IFS= read -r file; do
-  case "$file" in
-    # Docs: markdown files, .claude/ directory contents, CLAUDE.md
-    *.md | .claude/* | CLAUDE.md)
-      # docs-only tier — no action needed
-      ;;
-    # Config: JSON files, scripts/, build tooling, git hooks (not shipped in binaries)
-    *.json | scripts/* | .git-hooks/*)
-      has_config=true
-      ;;
-    # Everything else is source code
-    *)
-      has_source=true
-      ;;
-  esac
-done <<< "$staged_files"
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=classify.sh
+source "$HOOK_DIR/classify.sh"
+classify_files <<< "$staged_files"
 
 if $has_source; then
   echo "Running pre-commit checks (source changes detected)..."
