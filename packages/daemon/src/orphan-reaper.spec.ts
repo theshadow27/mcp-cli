@@ -116,12 +116,13 @@ describe("reapOrphanedSessions", () => {
     const db = createDb();
     const recycledPid = 44444;
     const storedStartTime = 1000000;
-    // Store a session with a specific start time — we'll inject isOurProcess to simulate
-    // a different process now occupying this PID (start time mismatch, not dead PID).
     db.upsertSession({ sessionId: "sess-recycled", state: "running", pid: recycledPid, pidStartTime: storedStartTime });
 
     const { logger, messages } = capturingLogger();
-    const result = reapOrphanedSessions(db, logger);
+    // Inject isOurProcess that always returns false — simulates PID recycled
+    const result = reapOrphanedSessions(db, logger, {
+      isOurProcess: () => false,
+    });
 
     // Should have cleaned up the stale session
     expect(result).toBe(1);
@@ -135,15 +136,15 @@ describe("reapOrphanedSessions", () => {
 
   test("preserves alive process with matching pidStartTime", () => {
     const db = createDb();
-    // Use current process PID with a start time that matches
     const pid = process.pid;
-    // getProcessStartTime derives from ps -o etime=, we need a plausible start time
-    // Use Date.now() - process.uptime()*1000 as approximate start time
-    const approxStartTime = Math.round(Date.now() - process.uptime() * 1000);
-    db.upsertSession({ sessionId: "sess-verified", state: "running", pid, pidStartTime: approxStartTime });
+    const storedStartTime = 1000000;
+    db.upsertSession({ sessionId: "sess-verified", state: "running", pid, pidStartTime: storedStartTime });
 
     const { logger, messages } = capturingLogger();
-    const result = reapOrphanedSessions(db, logger);
+    // Inject isOurProcess that returns true — deterministic, no timing dependency
+    const result = reapOrphanedSessions(db, logger, {
+      isOurProcess: () => true,
+    });
 
     // Should preserve the session
     expect(result).toBe(0);
