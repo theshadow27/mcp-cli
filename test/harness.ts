@@ -106,7 +106,16 @@ export async function startTestDaemon(
       } catch {
         // already exited
       }
-      await proc.exited;
+      // Bounded wait: if SIGTERM doesn't work within 5s, escalate to SIGKILL
+      const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(5_000).then(() => false)]);
+      if (!exited) {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
+        await Promise.race([proc.exited, Bun.sleep(2_000)]);
+      }
       rmSync(dir, { recursive: true, force: true });
     },
   };

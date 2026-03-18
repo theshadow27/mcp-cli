@@ -2,7 +2,7 @@ import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans.js";
-import { isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
+import { findExpanded, getTargetPlan, isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
 import { GatePanel } from "./gate-panel.js";
 import { PlanList } from "./plan-list.js";
 import { StepPipeline } from "./step-pipeline.js";
@@ -51,13 +51,11 @@ export function PlansTab({
     return <Text color="red">Error: {error}</Text>;
   }
 
-  const expanded = expandedPlan
-    ? plans.find((p) => p.id === expandedPlan.id && p.server === expandedPlan.server)
-    : null;
+  const expanded = findExpanded(plans, expandedPlan) ?? null;
   const currentStep = expanded?.steps[selectedStep];
 
   // Check if the selected/expanded plan's server is read-only
-  const targetPlan = expanded ?? plans[selectedIndex];
+  const targetPlan = getTargetPlan(plans, expandedPlan, selectedIndex);
   const readOnly = targetPlan ? isPlanReadOnly(servers, targetPlan) : false;
 
   // Determine status message color from semantic type

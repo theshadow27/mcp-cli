@@ -42,7 +42,7 @@ export interface PlansNav {
 }
 
 /** Match a plan by composite key (id + server). */
-function findExpanded(plans: Plan[], key: ExpandedPlanKey | null): Plan | undefined {
+export function findExpanded(plans: Plan[], key: ExpandedPlanKey | null): Plan | undefined {
   if (!key) return undefined;
   return plans.find((p) => p.id === key.id && p.server === key.server);
 }
@@ -58,10 +58,14 @@ export function isPlanReadOnly(servers: ServerStatus[], plan: Plan): boolean {
   return !hasCapability(servers, plan.server, "advance") && !hasCapability(servers, plan.server, "abort");
 }
 
-/** Get the currently selected plan (or expanded plan). */
-function getTargetPlan(nav: PlansNav): Plan | undefined {
-  if (nav.expandedPlan) return findExpanded(nav.plans, nav.expandedPlan);
-  return nav.plans[nav.selectedIndex];
+/** Get the currently targeted plan: expanded plan if set, otherwise the selected plan. */
+export function getTargetPlan(
+  plans: Plan[],
+  expandedPlan: ExpandedPlanKey | null,
+  selectedIndex: number,
+): Plan | undefined {
+  if (expandedPlan) return findExpanded(plans, expandedPlan);
+  return plans[selectedIndex];
 }
 
 /** Set both status message and type atomically. */
@@ -112,7 +116,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
   if (nav.confirmAbort) {
     if (input === "y" || input === "Y") {
       if (nav.inflight) return true; // guard against double-fire
-      const plan = getTargetPlan(nav);
+      const plan = getTargetPlan(nav.plans, nav.expandedPlan, nav.selectedIndex);
       if (!plan || !hasCapability(servers, plan.server, "abort")) {
         // Plan disappeared or lost capability while confirming
         nav.setConfirmAbort(false);
@@ -156,7 +160,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
   // `a` — Advance plan
   if (input === "a") {
     if (nav.inflight) return true; // guard against double-fire
-    const plan = getTargetPlan(nav);
+    const plan = getTargetPlan(nav.plans, nav.expandedPlan, nav.selectedIndex);
     if (!plan) return true;
     if (!hasCapability(servers, plan.server, "advance")) {
       setStatus(nav, "Read-only: server does not support advance_plan", "warning");
@@ -202,7 +206,7 @@ export function handlePlansInput(input: string, key: Key, nav: PlansNav): boolea
   // `x` — Abort plan (enter confirmation mode)
   if (input === "x") {
     if (nav.inflight) return true; // guard against starting abort while action in flight
-    const plan = getTargetPlan(nav);
+    const plan = getTargetPlan(nav.plans, nav.expandedPlan, nav.selectedIndex);
     if (!plan) return true;
     if (!hasCapability(servers, plan.server, "abort")) {
       setStatus(nav, "Read-only: server does not support abort_plan", "warning");

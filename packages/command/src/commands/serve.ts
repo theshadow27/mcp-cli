@@ -17,6 +17,7 @@ import type { IpcMethod, ToolInfo } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BunStdioServerTransport } from "../bun-stdio-transport";
+import { extractJqArg, injectJqParam, processJqResult } from "../jq/jq-support";
 import { splitServerTool } from "../parse";
 
 // -- Types --
@@ -111,7 +112,11 @@ export const CALL_TOOL = {
     type: "object" as const,
     properties: {
       tool: { type: "string", description: "Tool path as 'server/tool'" },
-      input: { type: "object", description: "Arguments to pass to the tool" },
+      input: {
+        type: "object",
+        description:
+          "Arguments to pass to the tool. Include a 'jq' key with a filter string to apply server-side filtering.",
+      },
     },
     required: ["tool"],
   },
@@ -196,7 +201,7 @@ export async function handleListTools(
         return {
           name: ct.name,
           description: info.description ?? "",
-          inputSchema: info.inputSchema ?? { type: "object" as const, properties: {} },
+          inputSchema: injectJqParam(info.inputSchema ?? { type: "object" as const, properties: {} }),
         };
       } catch (err) {
         console.error(`[mcx serve] Failed to fetch schema for ${ct.server}/${ct.tool}: ${err}`);
@@ -246,17 +251,21 @@ export async function handleCallTool(
     }
     const [server, tool] = split;
     const input = (args?.input as Record<string, unknown>) ?? {};
-    return (await ipc("callTool", { server, tool, arguments: input })) as ToolCallResult;
+    const { jqFilter, cleanArgs: cleanInput } = extractJqArg(input);
+    const result = (await ipc("callTool", { server, tool, arguments: cleanInput })) as ToolCallResult;
+    return processJqResult(result, jqFilter);
   }
 
   // Curated tool
   const ct = curated.find((c) => c.name === name);
   if (ct) {
-    return (await ipc("callTool", {
+    const { jqFilter, cleanArgs } = extractJqArg(args ?? {});
+    const result = (await ipc("callTool", {
       server: ct.server,
       tool: ct.tool,
-      arguments: args ?? {},
+      arguments: cleanArgs,
     })) as ToolCallResult;
+    return processJqResult(result, jqFilter);
   }
 
   return {
@@ -267,7 +276,17 @@ export async function handleCallTool(
 
 // -- Server --
 
+export function checkTtyStdin(): boolean {
+  return !!process.stdin.isTTY;
+}
+
 export async function cmdServe(): Promise<void> {
+  if (checkTtyStdin()) {
+    console.error("[mcx serve] Error: mcx serve is an MCP stdio server — connect it via stdio, not a terminal.");
+    console.error("[mcx serve] Example: claude mcp add my-server -- mcx serve");
+    process.exit(1);
+  }
+
   if (checkRecursionGuard()) {
     console.error("[mcx serve] Recursion detected (MCX_SERVE=1 already set). Aborting to prevent infinite loop.");
     process.exit(1);
@@ -295,7 +314,18 @@ export async function cmdServe(): Promise<void> {
   const stopPoller = startToolListPoller(server, ipcCall);
   console.error("[mcx serve] MCP server running on stdio");
 
+  // Graceful shutdown on SIGTERM/SIGINT — close server and transport so
+  // inflight MCP requests get proper responses before the process exits.
+  const shutdown = async () => {
+    await server.close();
+    await transport.close();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+
   // Block until stdin closes — prevents main() from calling process.exit()
   await transport.closed;
   stopPoller();
+  process.off("SIGTERM", shutdown);
+  process.off("SIGINT", shutdown);
 }

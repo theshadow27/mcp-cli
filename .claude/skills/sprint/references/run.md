@@ -39,6 +39,8 @@ For each issue, run the full lifecycle:
 ### Implement
 
 Always use opus. For documentation-only issues, use sonnet.
+PRs always target `main` — never feature branches. Feature branch merges caused
+a 44-file conflict nightmare in Sprint 14.
 
 ```bash
 mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
@@ -157,6 +159,10 @@ while issues remain:
     if QA session:
       bye → record result (merged or failed)
 
+  for each active session:
+    if cost > $50: interrupt → bye → file issue about what went wrong
+    (sessions stuck retrying pre-commit hooks can burn $100+/hr unattended)
+
   file issues for any problems observed
 ```
 
@@ -166,13 +172,19 @@ while issues remain:
 - Always `bye` before triaging (need the worktree path for triage.ts)
 - Don't `bye` a session before verifying the PR was pushed
 - Spawn fresh sessions per phase — never reuse across implement/review/QA
-- Reuse worktrees across phases via `--cwd` — never `--worktree` for repair/review/QA
+- Reuse worktrees across phases via `--cwd` — prefer `--cwd`, but use `--worktree` if the worktree was auto-cleaned by `bye`
 - Don't bulk-clean worktrees during a sprint — check `mcx claude ls` first
 - Don't restart the daemon mid-batch — wait for active sessions to idle
 
 **Stop when:**
 - All planned issues are done or failed
 - The user interrupts
+
+**When a session fails to close an issue**, ask the user what to do. Don't silently
+move on. Every failure must be explicit in the retro — what happened, why, and what
+to improve. Possible improvements: refine the issue description, adjust sprint
+planning criteria, update implement instructions, or fix the underlying tooling.
+Something should always get better when an issue doesn't close.
 
 ## Wind-down
 

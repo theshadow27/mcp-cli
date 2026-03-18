@@ -53,6 +53,9 @@ Use this template exactly:
 
 - Specific problem with context (e.g. "session 5c085a stuck in connecting —
   had to kill and respawn, no root cause")
+- **For every failed/rolled issue**: what went wrong, why, and what specific
+  improvement was made (issue refinement, planning criteria, implement
+  instructions, tooling fix). Every failure must produce a concrete change.
 - ...
 
 ## Patterns established
