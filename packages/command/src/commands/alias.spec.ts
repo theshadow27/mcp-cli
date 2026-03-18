@@ -2,7 +2,16 @@ import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail, AliasInfo } from "@mcp-cli/core";
 import { ExitError } from "../test-helpers";
 import type { AliasDeps } from "./alias";
-import { DEFINE_ALIAS_SKELETON, cmdAlias, extractDefinitionName, extractDescription, wrapDefineAlias } from "./alias";
+import {
+  DEFINE_ALIAS_SKELETON,
+  cmdAlias,
+  extractDefinitionName,
+  extractDescription,
+  generatePromotionScaffold,
+  parseEphemeralScript,
+  parsePromoteArgs,
+  wrapDefineAlias,
+} from "./alias";
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 
@@ -444,6 +453,191 @@ describe("cmdAlias rm", () => {
     const deps = makeDeps();
     await expect(cmdAlias(["rm"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias rm <name>");
+  });
+});
+
+/* ── parsePromoteArgs ────────────────────────────────────────────── */
+
+describe("parsePromoteArgs", () => {
+  test("extracts source name", () => {
+    expect(parsePromoteArgs(["my-alias"])).toEqual({ source: "my-alias", target: undefined });
+  });
+
+  test("extracts source and --name target", () => {
+    expect(parsePromoteArgs(["old-name", "--name", "new-name"])).toEqual({
+      source: "old-name",
+      target: "new-name",
+    });
+  });
+
+  test("returns undefined when empty", () => {
+    expect(parsePromoteArgs([])).toEqual({ source: undefined, target: undefined });
+  });
+});
+
+/* ── parseEphemeralScript ────────────────────────────────────────── */
+
+describe("parseEphemeralScript", () => {
+  test("parses ephemeral script format", () => {
+    const script = 'const result = await mcp["my-server"]["my-tool"]({"query":"test"});\nconsole.log(result);';
+    const parsed = parseEphemeralScript(script);
+    expect(parsed).toEqual({
+      server: "my-server",
+      tool: "my-tool",
+      args: { query: "test" },
+    });
+  });
+
+  test("returns undefined for non-ephemeral scripts", () => {
+    expect(parseEphemeralScript("console.log('hello')")).toBeUndefined();
+  });
+
+  test("returns undefined for malformed JSON args", () => {
+    const script = 'mcp["s"]["t"]({broken})';
+    expect(parseEphemeralScript(script)).toBeUndefined();
+  });
+
+  test("parses nested JSON args (brace-balanced)", () => {
+    const script =
+      'const result = await mcp["server"]["tool"]({"filter":{"type":"bug","severity":"high"},"limit":10});\nconsole.log(result);';
+    const parsed = parseEphemeralScript(script);
+    expect(parsed).toEqual({
+      server: "server",
+      tool: "tool",
+      args: { filter: { type: "bug", severity: "high" }, limit: 10 },
+    });
+  });
+
+  test("parses deeply nested JSON args", () => {
+    const script = 'mcp["s"]["t"]({"a":{"b":{"c":1}}})';
+    const parsed = parseEphemeralScript(script);
+    expect(parsed).toEqual({
+      server: "s",
+      tool: "t",
+      args: { a: { b: { c: 1 } } },
+    });
+  });
+});
+
+/* ── generatePromotionScaffold ───────────────────────────────────── */
+
+describe("generatePromotionScaffold", () => {
+  test("generates defineAlias scaffold from ephemeral script", () => {
+    const script =
+      'const result = await mcp["server"]["tool"]({"query":"test","count":5});\nconsole.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));\n';
+    const scaffold = generatePromotionScaffold(script, "ephemeral: server/tool", "my-tool");
+
+    expect(scaffold).toContain('import { defineAlias, z } from "mcp-cli"');
+    expect(scaffold).toContain('"my-tool"');
+    expect(scaffold).toContain("z.string()");
+    expect(scaffold).toContain("z.number()");
+    expect(scaffold).toContain("input.query");
+    expect(scaffold).toContain("input.count");
+    expect(scaffold).toContain('"server/tool"'); // description strips "ephemeral: " prefix
+  });
+
+  test("wraps unparseable script as-is", () => {
+    const scaffold = generatePromotionScaffold("custom code", "desc", "name");
+    expect(scaffold).toContain("defineAlias");
+    expect(scaffold).toContain("custom code");
+    expect(scaffold).toContain('"name"');
+  });
+});
+
+/* ── cmdAlias: promote ───────────────────────────────────────────── */
+
+describe("cmdAlias promote", () => {
+  test("promotes ephemeral alias to permanent", async () => {
+    const ephAlias: AliasDetail = {
+      name: "get_-abc12345",
+      description: "ephemeral: server/tool",
+      filePath: "/tmp/aliases/get_-abc12345.ts",
+      updatedAt: 1,
+      aliasType: "freeform",
+      expiresAt: Date.now() + 86400000,
+      script: 'const result = await mcp["server"]["tool"]({"query":"test"});\nconsole.log(result);',
+    };
+
+    const deps = makeDeps({
+      ipcCall: mock()
+        .mockResolvedValueOnce(ephAlias) // getAlias
+        .mockResolvedValueOnce({ ok: true, filePath: "/tmp/aliases/get_-abc12345.ts" }), // saveAlias
+    });
+
+    await cmdAlias(["promote", "get_-abc12345"], deps);
+
+    const saveCall = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[1];
+    expect(saveCall[0]).toBe("saveAlias");
+    const params = saveCall[1] as { name: string; script: string; description?: string; expiresAt?: number };
+    expect(params.name).toBe("get_-abc12345");
+    expect(params.script).toContain("defineAlias");
+    expect(params.description).toBe("server/tool"); // "ephemeral: " prefix stripped
+    expect(params.expiresAt).toBeUndefined(); // permanent
+    expect(deps.logError).toHaveBeenCalledWith(expect.stringContaining("Promoted"));
+  });
+
+  test("errors when alias is already permanent", async () => {
+    const permAlias: AliasDetail = {
+      name: "perm",
+      description: "permanent",
+      filePath: "/tmp/perm.ts",
+      updatedAt: 1,
+      aliasType: "freeform",
+      expiresAt: null,
+      script: "// perm",
+    };
+
+    const deps = makeDeps({
+      ipcCall: mock(() => Promise.resolve(permAlias)) as AliasDeps["ipcCall"],
+    });
+
+    await expect(cmdAlias(["promote", "perm"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith('Alias "perm" is already permanent — nothing to promote');
+  });
+
+  test("errors when alias not found", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() => Promise.resolve(null)) as AliasDeps["ipcCall"],
+    });
+
+    await expect(cmdAlias(["promote", "missing"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith('Alias "missing" not found');
+  });
+
+  test("promotes with --name override and deletes old", async () => {
+    const ephAlias: AliasDetail = {
+      name: "get_-abc12345",
+      description: "ephemeral: server/tool",
+      filePath: "/tmp/aliases/get_-abc12345.ts",
+      updatedAt: 1,
+      aliasType: "freeform",
+      expiresAt: Date.now() + 86400000,
+      script: 'const result = await mcp["server"]["tool"]({"query":"test"});\nconsole.log(result);',
+    };
+
+    const deps = makeDeps({
+      ipcCall: mock()
+        .mockResolvedValueOnce(ephAlias) // getAlias
+        .mockResolvedValueOnce({ ok: true, filePath: "/tmp/aliases/my-tool.ts" }) // saveAlias
+        .mockResolvedValueOnce({ ok: true }), // deleteAlias
+    });
+
+    await cmdAlias(["promote", "get_-abc12345", "--name", "my-tool"], deps);
+
+    // saveAlias with new name
+    const saveCall = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[1];
+    expect((saveCall[1] as { name: string }).name).toBe("my-tool");
+
+    // deleteAlias for old name
+    const deleteCall = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[2];
+    expect(deleteCall[0]).toBe("deleteAlias");
+    expect((deleteCall[1] as { name: string }).name).toBe("get_-abc12345");
+  });
+
+  test("errors when no name provided", async () => {
+    const deps = makeDeps();
+    await expect(cmdAlias(["promote"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias promote <name> [--name <new-name>]");
   });
 });
 

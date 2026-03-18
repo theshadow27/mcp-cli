@@ -184,6 +184,16 @@ export class StateDb {
     } catch {
       /* column already exists */
     }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN last_run_at INTEGER");
+    } catch {
+      /* column already exists */
+    }
 
     // -- Trace context columns on usage_stats --
     try {
@@ -570,6 +580,8 @@ export class StateDb {
     inputSchemaJson?: Record<string, unknown>;
     outputSchemaJson?: Record<string, unknown>;
     expiresAt?: number | null;
+    runCount: number;
+    lastRunAt: number | null;
   }> {
     this.maybeRunAliasPrune();
     return this.db
@@ -583,10 +595,12 @@ export class StateDb {
           input_schema_json: string | null;
           output_schema_json: string | null;
           expires_at: number | null;
+          run_count: number;
+          last_run_at: number | null;
         },
         [number]
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
       )
       .all(Date.now())
       .map((row) => ({
@@ -598,6 +612,8 @@ export class StateDb {
         ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
         ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
         expiresAt: row.expires_at,
+        runCount: row.run_count,
+        lastRunAt: row.last_run_at,
       }));
   }
 
@@ -610,6 +626,8 @@ export class StateDb {
         bundledJs?: string;
         sourceHash?: string;
         expiresAt?: number | null;
+        runCount: number;
+        lastRunAt: number | null;
       }
     | undefined {
     const row = this.db
@@ -622,10 +640,12 @@ export class StateDb {
           bundled_js: string | null;
           source_hash: string | null;
           expires_at: number | null;
+          run_count: number;
+          last_run_at: number | null;
         },
         [string]
       >(
-        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at FROM aliases WHERE name = ?",
+        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at FROM aliases WHERE name = ?",
       )
       .get(name);
     if (!row) return undefined;
@@ -637,6 +657,8 @@ export class StateDb {
       ...(row.bundled_js ? { bundledJs: row.bundled_js } : {}),
       ...(row.source_hash ? { sourceHash: row.source_hash } : {}),
       expiresAt: row.expires_at,
+      runCount: row.run_count,
+      lastRunAt: row.last_run_at,
     };
   }
 
@@ -693,6 +715,16 @@ export class StateDb {
 
   deleteAlias(name: string): void {
     this.db.run("DELETE FROM aliases WHERE name = ?", [name]);
+  }
+
+  /** Increment run_count and set last_run_at. Returns the new run count. */
+  recordAliasRun(name: string): number {
+    const row = this.db
+      .query<{ run_count: number }, [string]>(
+        "UPDATE aliases SET run_count = run_count + 1, last_run_at = unixepoch() WHERE name = ? RETURNING run_count",
+      )
+      .get(name);
+    return row?.run_count ?? 0;
   }
 
   /** Reset the TTL on an ephemeral alias (called when re-run). */

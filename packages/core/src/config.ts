@@ -60,6 +60,8 @@ export interface EphemeralAliasConfig {
   charThreshold?: number;
   /** Default TTL in milliseconds (default: 48h = 172800000) */
   ttlMs?: number;
+  /** Run count threshold to trigger promotion hint (default: 3) */
+  promotionThreshold?: number;
 }
 
 /** mcp-cli config file (~/.mcp-cli/config.json) */

@@ -34,6 +34,7 @@ import {
   PROTOCOL_VERSION,
   PruneSpansParamsSchema,
   ReadMailParamsSchema,
+  RecordAliasRunParamsSchema,
   ReplyToMailParamsSchema,
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
@@ -666,6 +667,12 @@ export class IpcServer {
       const { name, expiresAt } = TouchAliasParamsSchema.parse(params);
       this.db.touchAliasExpiry(name, expiresAt);
       return { ok: true };
+    });
+
+    this.handlers.set("recordAliasRun", async (params, _ctx) => {
+      const { name } = RecordAliasRunParamsSchema.parse(params);
+      const runCount = this.db.recordAliasRun(name);
+      return { ok: true, runCount };
     });
 
     this.handlers.set("getLogs", async (params, _ctx) => {

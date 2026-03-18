@@ -642,6 +642,59 @@ describe("StateDb", () => {
       expect(alias?.expiresAt).toBe(future2);
       db.close();
     });
+
+    test("recordAliasRun increments run_count", () => {
+      const db = createDb();
+      db.saveAlias("runner", "/tmp/runner.ts", "test");
+
+      expect(db.recordAliasRun("runner")).toBe(1);
+      expect(db.recordAliasRun("runner")).toBe(2);
+      expect(db.recordAliasRun("runner")).toBe(3);
+
+      const alias = db.getAlias("runner");
+      expect(alias?.runCount).toBe(3);
+      db.close();
+    });
+
+    test("recordAliasRun sets last_run_at", () => {
+      const db = createDb();
+      db.saveAlias("runner2", "/tmp/runner2.ts");
+
+      const alias1 = db.getAlias("runner2");
+      expect(alias1?.lastRunAt).toBeNull();
+
+      db.recordAliasRun("runner2");
+      const alias2 = db.getAlias("runner2");
+      expect(alias2?.lastRunAt).toBeGreaterThan(0);
+      db.close();
+    });
+
+    test("recordAliasRun returns 0 for unknown alias", () => {
+      const db = createDb();
+      expect(db.recordAliasRun("nonexistent")).toBe(0);
+      db.close();
+    });
+
+    test("listAliases includes runCount and lastRunAt", () => {
+      const db = createDb();
+      db.saveAlias("counted", "/tmp/counted.ts", "test");
+      db.recordAliasRun("counted");
+
+      const aliases = db.listAliases();
+      const alias = aliases.find((a) => a.name === "counted");
+      expect(alias?.runCount).toBe(1);
+      expect(alias?.lastRunAt).toBeGreaterThan(0);
+      db.close();
+    });
+
+    test("new alias has runCount 0 and lastRunAt null", () => {
+      const db = createDb();
+      db.saveAlias("fresh", "/tmp/fresh.ts");
+      const alias = db.getAlias("fresh");
+      expect(alias?.runCount).toBe(0);
+      expect(alias?.lastRunAt).toBeNull();
+      db.close();
+    });
   });
 
   describe("auth_tokens", () => {
