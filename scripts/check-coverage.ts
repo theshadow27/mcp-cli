@@ -84,6 +84,7 @@ const EXCLUSIONS: Record<string, string> = {
   "command/src/commands/config-file.ts": "61% coverage, needs work",
   "command/src/commands/add.ts": "65% coverage, needs work",
   "command/src/commands/completions.ts": "73% coverage, close to threshold",
+  "command/src/commands/serve.ts": "79% coverage, jq filtering path untested (#826)",
 
   // Daemon internals — connection lifecycle requires integration
   "daemon/src/server-pool.ts": "51% coverage, connection lifecycle (#45/#51)",
