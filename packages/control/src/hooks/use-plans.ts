@@ -7,8 +7,7 @@ import {
 } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TranscriptEntry } from "../lib/claude-plan-adapter.js";
-import { extractPlansFromTranscript } from "../lib/claude-plan-adapter.js";
+import { extractPlansFromTranscript, validateTranscriptEntries } from "../lib/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
 /** Per-server IPC timeout to prevent a single hanging server from stalling the poll loop. */
@@ -83,7 +82,7 @@ async function fetchClaudePlans(
           const transcriptText = extractToolText(transcriptResult);
           if (!transcriptText) return;
 
-          const entries = JSON.parse(transcriptText) as TranscriptEntry[];
+          const entries = validateTranscriptEntries(JSON.parse(transcriptText), session.sessionId);
           const plan = extractPlansFromTranscript(entries, session.sessionId);
           if (plan) {
             plans.push(plan);
