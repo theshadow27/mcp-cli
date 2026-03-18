@@ -72,6 +72,7 @@ function opts(overrides?: {
   onRequestComplete?: () => void;
   onShutdown?: () => void;
   onReloadConfig?: () => Promise<void>;
+  drainTimeoutMs?: number;
 }) {
   return {
     daemonId: TEST_DAEMON_ID,
@@ -388,6 +389,64 @@ describe("IpcServer HTTP transport", () => {
 
     await pollUntil(() => shutdownCalled);
     expect(shutdownCalled).toBe(true);
+  });
+
+  test("shutdown drain timeout forces shutdown when requests are stuck", async () => {
+    socketPath = tmpSocket();
+    let shutdownCalled = false;
+    let handlerEntered: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    });
+    // Pool with a handler that never resolves — simulates a stuck request
+    let resolveStuck: (() => void) | undefined;
+    const stuckForever = new Promise<void>((resolve) => {
+      resolveStuck = resolve;
+    });
+    const stuckPool = {
+      ...mockPool(),
+      callTool: async () => {
+        handlerEntered();
+        await stuckForever;
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(
+      stuckPool as never,
+      mockConfig(),
+      mockDb(),
+      null,
+      opts({
+        onShutdown: () => {
+          shutdownCalled = true;
+        },
+        drainTimeoutMs: 200,
+      }),
+    );
+    server.start(socketPath);
+
+    // Start a stuck callTool request (don't await — it will never resolve on its own)
+    const stuckReq = rpc("/rpc", {
+      id: "stuck1",
+      method: "callTool",
+      params: { server: "s", tool: "t", arguments: {} },
+    });
+
+    // Wait for the handler to start executing
+    await handlerStarted;
+
+    // Trigger shutdown — drain timeout (200ms) should force shutdown even though request is stuck
+    const shutdownRes = await rpc("/rpc", { id: "sd-timeout", method: "shutdown" });
+    const shutdownJson = (await shutdownRes.json()) as IpcResponse;
+    expect(shutdownJson.result).toEqual({ ok: true });
+
+    // Shutdown should fire within the drain timeout despite stuck request
+    await pollUntil(() => shutdownCalled, 2_000);
+    expect(shutdownCalled).toBe(true);
+
+    // Unblock the stuck handler so the test can clean up
+    resolveStuck?.();
+    await stuckReq.catch(() => {});
   });
 
   test("shutdown works when pool has active servers", async () => {

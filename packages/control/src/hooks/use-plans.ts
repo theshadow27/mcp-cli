@@ -78,11 +78,11 @@ export interface UsePlansOptions {
 }
 
 /**
- * Polls `list_plans` on all plan-capable servers every 30s.
+ * Polls `list_plans` on all plan-capable servers every 10s.
  * Aggregates results across all servers into a single flat list.
  */
 export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
-  const { intervalMs = 30_000, enabled = true, timeoutMs = IPC_TIMEOUT_MS, ipcCallFn = ipcCall } = opts;
+  const { intervalMs = 10_000, enabled = true, timeoutMs = IPC_TIMEOUT_MS, ipcCallFn = ipcCall } = opts;
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

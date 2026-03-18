@@ -7,13 +7,39 @@
  * 2. Markdown text with headings + checkboxes — fallback for plan-mode output
  */
 
+import { z } from "zod/v4";
 import type { Plan, PlanStatus, PlanStep } from "./plan";
 
+/** Zod schema for transcript entries from the daemon's NDJSON ring buffer. */
+const TranscriptEntrySchema = z.object({
+  timestamp: z.number(),
+  direction: z.enum(["inbound", "outbound"]),
+  message: z.record(z.string(), z.unknown()),
+});
+
 /** Transcript entry shape from the daemon's NDJSON ring buffer. */
-export interface TranscriptEntry {
-  timestamp: number;
-  direction: "inbound" | "outbound";
-  message: Record<string, unknown>;
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+
+/**
+ * Validate and filter raw parsed JSON into TranscriptEntry[].
+ * Invalid entries are skipped with a warning logged to console.error.
+ */
+export function validateTranscriptEntries(raw: unknown, sessionId: string): TranscriptEntry[] {
+  if (!Array.isArray(raw)) {
+    console.error(`[claude-plan-adapter] session ${sessionId}: expected array, got ${typeof raw}`);
+    return [];
+  }
+
+  const valid: TranscriptEntry[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const result = TranscriptEntrySchema.safeParse(raw[i]);
+    if (result.success) {
+      valid.push(result.data);
+    } else {
+      console.error(`[claude-plan-adapter] session ${sessionId}: skipping entry[${i}]: ${result.error.message}`);
+    }
+  }
+  return valid;
 }
 
 /** A single todo item from Claude Code's TodoWrite tool input. */

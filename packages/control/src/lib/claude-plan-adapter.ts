@@ -8,5 +8,6 @@ export {
   looksLikePlan,
   parseClaudePlanMarkdown,
   todosToPlan,
+  validateTranscriptEntries,
 } from "@mcp-cli/core";
 export type { TranscriptEntry } from "@mcp-cli/core";
