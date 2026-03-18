@@ -28,7 +28,10 @@ const defaultDeps: CmdRunDeps = {
   exit: (code) => process.exit(code),
 };
 
-export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promise<void> {
+export async function cmdRun(
+  args: string[],
+  deps?: Partial<CmdRunDeps>,
+): Promise<{ _recordPromise: Promise<void> }> {
   const d: CmdRunDeps = { ...defaultDeps, ...deps };
   const aliasName = args[0];
   if (!aliasName) {
@@ -51,8 +54,9 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
     d.ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch(() => {});
   }
 
-  // Record run and maybe suggest promotion
-  d.ipcCall("recordAliasRun", { name: aliasName })
+  // Record run and maybe suggest promotion (returned for testability)
+  const recordPromise = d
+    .ipcCall("recordAliasRun", { name: aliasName })
     .then((result) => {
       if (aliasInfo.expiresAt) {
         const config = d.readCliConfig();
@@ -68,6 +72,8 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
     .catch(() => {});
 
   await d.runAlias(aliasInfo.filePath, cliArgs, jsonInput);
+
+  return { _recordPromise: recordPromise };
 }
 
 /**

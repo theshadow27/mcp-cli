@@ -93,10 +93,9 @@ describe("cmdRun promotion hint", () => {
     options.EPHEMERAL_ALIAS_PROMOTION_THRESHOLD = 3;
     const deps = createDeps();
 
-    await cmdRun(["test-alias"], deps);
+    const { _recordPromise } = await cmdRun(["test-alias"], deps);
+    await _recordPromise;
 
-    // Wait for fire-and-forget promise to resolve
-    await new Promise((r) => setTimeout(r, 10));
     const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls;
     const promotionMsg = logCalls.find((c: unknown[]) => (c[0] as string).includes("promote"));
     expect(promotionMsg).toBeDefined();
@@ -107,8 +106,8 @@ describe("cmdRun promotion hint", () => {
     options.EPHEMERAL_ALIAS_PROMOTION_THRESHOLD = 5;
     const deps = createDeps();
 
-    await cmdRun(["test-alias"], deps);
-    await new Promise((r) => setTimeout(r, 10));
+    const { _recordPromise } = await cmdRun(["test-alias"], deps);
+    await _recordPromise;
 
     const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls;
     const promotionMsg = logCalls.find((c: unknown[]) => (c[0] as string).includes("promote"));
@@ -136,8 +135,8 @@ describe("cmdRun promotion hint", () => {
       }) as CmdRunDeps["ipcCall"]),
     });
 
-    await cmdRun(["perm"], deps);
-    await new Promise((r) => setTimeout(r, 10));
+    const { _recordPromise } = await cmdRun(["perm"], deps);
+    await _recordPromise;
 
     const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls;
     const promotionMsg = logCalls.find((c: unknown[]) => (c[0] as string).includes("promote"));
@@ -150,8 +149,8 @@ describe("cmdRun promotion hint", () => {
       readCliConfig: () => ({ ephemeralAliases: { promotionThreshold: 5 } }),
     });
 
-    await cmdRun(["test-alias"], deps);
-    await new Promise((r) => setTimeout(r, 10));
+    const { _recordPromise } = await cmdRun(["test-alias"], deps);
+    await _recordPromise;
 
     // runCount=3 but threshold=5, so no hint
     const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls;

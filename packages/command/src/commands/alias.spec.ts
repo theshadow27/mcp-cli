@@ -496,6 +496,26 @@ describe("parseEphemeralScript", () => {
     const script = 'mcp["s"]["t"]({broken})';
     expect(parseEphemeralScript(script)).toBeUndefined();
   });
+
+  test("parses nested JSON args (brace-balanced)", () => {
+    const script = 'const result = await mcp["server"]["tool"]({"filter":{"type":"bug","severity":"high"},"limit":10});\nconsole.log(result);';
+    const parsed = parseEphemeralScript(script);
+    expect(parsed).toEqual({
+      server: "server",
+      tool: "tool",
+      args: { filter: { type: "bug", severity: "high" }, limit: 10 },
+    });
+  });
+
+  test("parses deeply nested JSON args", () => {
+    const script = 'mcp["s"]["t"]({"a":{"b":{"c":1}}})';
+    const parsed = parseEphemeralScript(script);
+    expect(parsed).toEqual({
+      server: "s",
+      tool: "t",
+      args: { a: { b: { c: 1 } } },
+    });
+  });
 });
 
 /* ── generatePromotionScaffold ───────────────────────────────────── */
@@ -547,9 +567,10 @@ describe("cmdAlias promote", () => {
 
     const saveCall = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[1];
     expect(saveCall[0]).toBe("saveAlias");
-    const params = saveCall[1] as { name: string; script: string; expiresAt?: number };
+    const params = saveCall[1] as { name: string; script: string; description?: string; expiresAt?: number };
     expect(params.name).toBe("get_-abc12345");
     expect(params.script).toContain("defineAlias");
+    expect(params.description).toBe("server/tool"); // "ephemeral: " prefix stripped
     expect(params.expiresAt).toBeUndefined(); // permanent
     expect(deps.logError).toHaveBeenCalledWith(expect.stringContaining("Promoted"));
   });

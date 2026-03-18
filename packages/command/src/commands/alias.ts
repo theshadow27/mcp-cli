@@ -237,7 +237,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       const result = (await d.ipcCall("saveAlias", {
         name: targetName,
         script: scaffold,
-        description: alias.description,
+        description: alias.description?.replace(/^ephemeral: /, "") ?? alias.description,
       })) as {
         ok: boolean;
         filePath: string;
@@ -337,16 +337,52 @@ export function parsePromoteArgs(args: string[]): { source: string | undefined; 
 export function parseEphemeralScript(
   script: string,
 ): { server: string; tool: string; args: Record<string, unknown> } | undefined {
-  const match = script.match(/mcp\[([^\]]+)\]\[([^\]]+)\]\((\{[\s\S]*?\})\)/);
+  const match = script.match(/mcp\[([^\]]+)\]\[([^\]]+)\]\(/);
   if (!match) return undefined;
+
+  // Find the matching brace-balanced JSON object after the opening paren
+  const braceStart = (match.index ?? 0) + match[0].length;
+  const jsonStr = extractBalancedBraces(script, braceStart);
+  if (!jsonStr) return undefined;
+
   try {
     const server = JSON.parse(match[1]) as string;
     const tool = JSON.parse(match[2]) as string;
-    const args = JSON.parse(match[3]) as Record<string, unknown>;
+    const args = JSON.parse(jsonStr) as Record<string, unknown>;
     return { server, tool, args };
   } catch {
     return undefined;
   }
+}
+
+/** Extract a brace-balanced substring starting at `start` (which must be '{') */
+function extractBalancedBraces(s: string, start: number): string | undefined {
+  if (s[start] !== "{") return undefined;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return undefined;
 }
 
 /** Infer a Zod type string from a JS value */
