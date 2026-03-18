@@ -78,6 +78,8 @@ export class IpcServer {
   private inflightCount = 0;
   private draining = false;
   private shutdownScheduled = false;
+  private drainTimer: ReturnType<typeof setTimeout> | null = null;
+  private drainTimeoutMs: number;
 
   private onReloadConfig: (() => Promise<void>) | null = null;
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
@@ -101,6 +103,8 @@ export class IpcServer {
       logger?: Logger;
       /** Returns the current and expected WS port for status reporting. */
       getWsPortInfo?: () => { actual: number | null; expected: number };
+      /** Max ms to wait for in-flight requests before forcing shutdown (default 5000) */
+      drainTimeoutMs?: number;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -112,6 +116,7 @@ export class IpcServer {
     this.aliasServer = aliasServer;
     this.logger = options.logger ?? consoleLogger;
     this.getWsPortInfo = options.getWsPortInfo ?? null;
+    this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
     this.registerHandlers();
     // Prune expired ephemeral aliases on startup
     this.db.pruneExpiredAliases();
@@ -208,6 +213,10 @@ export class IpcServer {
 
   /** Stop listening and clean up socket */
   stop(): void {
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = null;
+    }
     this.server?.stop(true);
     try {
       unlinkSync(this.socketPath);
@@ -220,9 +229,26 @@ export class IpcServer {
   private checkDrain(): void {
     if (this.draining && this.inflightCount === 0 && !this.shutdownScheduled) {
       this.shutdownScheduled = true;
+      if (this.drainTimer) {
+        clearTimeout(this.drainTimer);
+        this.drainTimer = null;
+      }
       // Defer to next event-loop turn so Bun can finish writing the HTTP response
       setTimeout(() => this.onShutdown(), 0);
     }
+  }
+
+  /** Start a drain timeout — force shutdown after drainTimeoutMs even if requests are stuck */
+  private startDrainTimeout(): void {
+    this.drainTimer = setTimeout(() => {
+      if (!this.shutdownScheduled) {
+        this.logger.warn(
+          `[ipc] Drain timeout (${this.drainTimeoutMs}ms) — forcing shutdown with ${this.inflightCount} request(s) still in-flight`,
+        );
+        this.shutdownScheduled = true;
+        this.onShutdown();
+      }
+    }, this.drainTimeoutMs);
   }
 
   // -- Dispatch --
@@ -770,6 +796,7 @@ export class IpcServer {
       }
       // Enter drain mode — onShutdown fires after all in-flight responses are sent
       this.draining = true;
+      this.startDrainTimeout();
       return { ok: true };
     });
   }
