@@ -17,6 +17,7 @@ import type { IpcMethod, ToolInfo } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BunStdioServerTransport } from "../bun-stdio-transport";
+import { extractJqArg, injectJqParam, processJqResult } from "../jq/jq-support";
 import { splitServerTool } from "../parse";
 
 // -- Types --
@@ -111,7 +112,11 @@ export const CALL_TOOL = {
     type: "object" as const,
     properties: {
       tool: { type: "string", description: "Tool path as 'server/tool'" },
-      input: { type: "object", description: "Arguments to pass to the tool" },
+      input: {
+        type: "object",
+        description:
+          "Arguments to pass to the tool. Include a 'jq' key with a filter string to apply server-side filtering.",
+      },
     },
     required: ["tool"],
   },
@@ -196,7 +201,7 @@ export async function handleListTools(
         return {
           name: ct.name,
           description: info.description ?? "",
-          inputSchema: info.inputSchema ?? { type: "object" as const, properties: {} },
+          inputSchema: injectJqParam(info.inputSchema ?? { type: "object" as const, properties: {} }),
         };
       } catch (err) {
         console.error(`[mcx serve] Failed to fetch schema for ${ct.server}/${ct.tool}: ${err}`);
@@ -246,17 +251,21 @@ export async function handleCallTool(
     }
     const [server, tool] = split;
     const input = (args?.input as Record<string, unknown>) ?? {};
-    return (await ipc("callTool", { server, tool, arguments: input })) as ToolCallResult;
+    const { jqFilter, cleanArgs: cleanInput } = extractJqArg(input);
+    const result = (await ipc("callTool", { server, tool, arguments: cleanInput })) as ToolCallResult;
+    return processJqResult(result, jqFilter);
   }
 
   // Curated tool
   const ct = curated.find((c) => c.name === name);
   if (ct) {
-    return (await ipc("callTool", {
+    const { jqFilter, cleanArgs } = extractJqArg(args ?? {});
+    const result = (await ipc("callTool", {
       server: ct.server,
       tool: ct.tool,
-      arguments: args ?? {},
+      arguments: cleanArgs,
     })) as ToolCallResult;
+    return processJqResult(result, jqFilter);
   }
 
   return {

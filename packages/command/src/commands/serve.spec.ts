@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
+import { _resetJqStateForTesting } from "../jq/index";
+import { SERVE_SIZE_OK, SERVE_SIZE_TRUNCATE } from "../jq/jq-support";
 import {
   CALL_TOOL,
   type CuratedTool,
@@ -172,7 +174,17 @@ describe("handleListTools", () => {
     expect(result.tools).toHaveLength(3);
     expect(result.tools[0].name).toBe("search");
     expect(result.tools[0].description).toBe("Description of search");
-    expect(result.tools[0].inputSchema).toEqual({ type: "object", properties: { q: { type: "string" } } });
+    expect(result.tools[0].inputSchema).toEqual({
+      type: "object",
+      properties: {
+        q: { type: "string" },
+        jq: {
+          type: "string",
+          description:
+            "JQ filter to apply server-side (e.g., '.entities[:5]'). Set to 'false' to bypass size protection.",
+        },
+      },
+    });
     expect(result.tools[1].name).toBe("find");
     expect(result.tools[2].name).toBe("call");
   });
@@ -436,5 +448,125 @@ describe("startToolListPoller", () => {
     await Bun.sleep(60);
 
     expect(callCount).toBe(countAtStop);
+  });
+});
+
+// -- Server-side jq support --
+
+describe("handleListTools with jq injection", () => {
+  const mockIpc = (async (method: IpcMethod, params?: unknown) => {
+    if (method === "getToolInfo") {
+      const p = params as { server: string; tool: string };
+      return {
+        name: p.tool,
+        server: p.server,
+        description: `Description of ${p.tool}`,
+        inputSchema: { type: "object", properties: { q: { type: "string" } } },
+      };
+    }
+    return null;
+  }) as IpcCaller;
+
+  test("curated tools have jq parameter injected into schema", async () => {
+    const curated: CuratedTool[] = [{ name: "search", server: "atlassian", tool: "search" }];
+    const result = await handleListTools(curated, mockIpc);
+    const searchTool = result.tools.find((t) => t.name === "search");
+    expect(searchTool).toBeDefined();
+    const props = searchTool?.inputSchema.properties as Record<string, unknown>;
+    expect(props.jq).toBeDefined();
+    expect(props.q).toBeDefined(); // original property preserved
+  });
+
+  test("meta-tools do not have jq injected", async () => {
+    const result = await handleListTools([], mockIpc);
+    const findTool = result.tools.find((t) => t.name === "find");
+    const callTool = result.tools.find((t) => t.name === "call");
+    expect(findTool).toBeDefined();
+    expect(callTool).toBeDefined();
+    const findProps = findTool?.inputSchema.properties as Record<string, unknown>;
+    expect(findProps.jq).toBeUndefined();
+  });
+});
+
+describe("handleCallTool with jq support", () => {
+  afterEach(() => {
+    _resetJqStateForTesting();
+  });
+
+  const curated: CuratedTool[] = [{ name: "search", server: "atlassian", tool: "search" }];
+
+  test("curated tool strips jq from args before forwarding", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const capturingIpc = (async (_method: IpcMethod, params?: unknown) => {
+      captured = params as Record<string, unknown>;
+      return { content: [{ type: "text", text: '{"result": "ok"}' }] };
+    }) as IpcCaller;
+
+    await handleCallTool("search", { query: "test", jq: ".result" }, curated, capturingIpc);
+    // jq should NOT be forwarded to the upstream tool
+    expect((captured as Record<string, unknown>).arguments).toEqual({ query: "test" });
+  });
+
+  test("curated tool applies jq filter to JSON response", async () => {
+    const mockIpc = (async () => ({
+      content: [{ type: "text", text: '{"items": [1, 2, 3], "total": 3}' }],
+    })) as IpcCaller;
+
+    const result = await handleCallTool("search", { jq: ".items" }, curated, mockIpc);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toEqual([1, 2, 3]);
+  });
+
+  test("curated tool with jq='false' bypasses size protection", async () => {
+    const bigData = JSON.stringify({
+      records: Array.from({ length: 500 }, (_, i) => ({ id: i, payload: "x".repeat(50) })),
+    });
+    expect(Buffer.byteLength(bigData)).toBeGreaterThan(SERVE_SIZE_TRUNCATE);
+
+    const mockIpc = (async () => ({
+      content: [{ type: "text", text: bigData }],
+    })) as IpcCaller;
+
+    const result = await handleCallTool("search", { jq: "false" }, curated, mockIpc);
+    expect(result.content[0].text).toBe(bigData);
+  });
+
+  test("curated tool applies size protection when no jq specified", async () => {
+    const bigData = JSON.stringify({
+      records: Array.from({ length: 500 }, (_, i) => ({ id: i, payload: "x".repeat(50) })),
+    });
+    expect(Buffer.byteLength(bigData)).toBeGreaterThan(SERVE_SIZE_TRUNCATE);
+
+    const mockIpc = (async () => ({
+      content: [{ type: "text", text: bigData }],
+    })) as IpcCaller;
+
+    const result = await handleCallTool("search", { query: "test" }, curated, mockIpc);
+    expect(result.content[0].text).toContain("Response too large");
+    expect(result.content[0].text).toContain("jq parameter");
+  });
+
+  test("call meta-tool supports jq in input args", async () => {
+    const mockIpc = (async (_method: IpcMethod, params?: unknown) => {
+      const p = params as { arguments: Record<string, unknown> };
+      // Verify jq is stripped before forwarding
+      expect(p.arguments).not.toHaveProperty("jq");
+      return { content: [{ type: "text", text: '{"data": [1, 2, 3]}' }] };
+    }) as IpcCaller;
+
+    const result = await handleCallTool("call", { tool: "test/echo", input: { jq: ".data" } }, [], mockIpc);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toEqual([1, 2, 3]);
+  });
+
+  test("small responses pass through without modification", async () => {
+    const smallData = '{"status": "ok"}';
+    const mockIpc = (async () => ({
+      content: [{ type: "text", text: smallData }],
+    })) as IpcCaller;
+
+    const result = await handleCallTool("search", {}, curated, mockIpc);
+    expect(result.content[0].text).toBe(smallData);
+    expect(result.content).toHaveLength(1);
   });
 });
