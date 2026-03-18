@@ -259,14 +259,21 @@ export function summarizeInput(input: Record<string, unknown>): string {
 
 // ── Server ──
 
+/** Default interval (ms) between attempts to reclaim the well-known WS port. */
+const PORT_RECLAIM_INTERVAL_MS = 30_000;
+
 export class ClaudeWsServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
+  /** Second server on the well-known port, created after successful reclaim. */
+  private reclaimServer: ReturnType<typeof Bun.serve> | null = null;
+  private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly spawn: SpawnFn;
   private readonly killTimeoutMs: number;
   private readonly portRetryCount: number;
   private readonly portRetryDelayMs: number;
+  private readonly reclaimIntervalMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -281,17 +288,47 @@ export class ClaudeWsServer {
     logger?: Logger;
     portRetryCount?: number;
     portRetryDelayMs?: number;
+    reclaimIntervalMs?: number;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
     this.portRetryCount = deps?.portRetryCount ?? 10;
     this.portRetryDelayMs = deps?.portRetryDelayMs ?? 500;
+    this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
   }
 
   /** Current event sequence number (monotonically increasing). */
   get currentSeq(): number {
     return this.eventSeq;
+  }
+
+  /** Create a Bun.serve() instance with the WS routing handlers. */
+  private createServer(p: number): ReturnType<typeof Bun.serve> {
+    return Bun.serve<WsData>({
+      port: p,
+      fetch: (req, server) => {
+        const url = new URL(req.url);
+        const match = url.pathname.match(/^\/session\/([^/]+)$/);
+        if (!match) {
+          return new Response("Not found", { status: 404 });
+        }
+        const sessionId = match[1];
+        if (!this.sessions.has(sessionId)) {
+          return new Response("Unknown session", { status: 404 });
+        }
+        const upgraded = server.upgrade(req, { data: { sessionId } });
+        if (!upgraded) {
+          return new Response("WebSocket upgrade failed", { status: 500 });
+        }
+        return undefined;
+      },
+      websocket: {
+        open: (ws) => this.handleOpen(ws),
+        message: (ws, message) => this.handleMessage(ws, String(message)),
+        close: (ws) => this.handleClose(ws),
+      },
+    });
   }
 
   /** Start the WebSocket server. Returns the assigned port.
@@ -301,36 +338,10 @@ export class ClaudeWsServer {
   async start(port?: number): Promise<number> {
     const requestedPort = port ?? 0;
 
-    const createServer = (p: number) =>
-      Bun.serve<WsData>({
-        port: p,
-        fetch: (req, server) => {
-          const url = new URL(req.url);
-          const match = url.pathname.match(/^\/session\/([^/]+)$/);
-          if (!match) {
-            return new Response("Not found", { status: 404 });
-          }
-          const sessionId = match[1];
-          if (!this.sessions.has(sessionId)) {
-            return new Response("Unknown session", { status: 404 });
-          }
-          const upgraded = server.upgrade(req, { data: { sessionId } });
-          if (!upgraded) {
-            return new Response("WebSocket upgrade failed", { status: 500 });
-          }
-          return undefined;
-        },
-        websocket: {
-          open: (ws) => this.handleOpen(ws),
-          message: (ws, message) => this.handleMessage(ws, String(message)),
-          close: (ws) => this.handleClose(ws),
-        },
-      });
-
     if (requestedPort !== 0) {
       for (let attempt = 0; attempt <= this.portRetryCount; attempt++) {
         try {
-          this.server = createServer(requestedPort);
+          this.server = this.createServer(requestedPort);
           return this.server.port as number;
         } catch (err) {
           if (!isAddrInUse(err)) throw err;
@@ -346,24 +357,69 @@ export class ClaudeWsServer {
       }
     }
 
-    this.server = createServer(0);
+    this.server = this.createServer(0);
+
+    // Started on a fallback port — begin periodic reclaim attempts
+    if (requestedPort !== 0) {
+      this.startReclaimLoop(requestedPort);
+    }
+
     return this.server.port as number;
+  }
+
+  /** True when the well-known port has been reclaimed (a second server is running). */
+  get reclaimed(): boolean {
+    return this.reclaimServer !== null;
+  }
+
+  /**
+   * Start a background loop that periodically tries to bind the well-known port.
+   * On success, a second Bun.serve() is created on that port — existing connections
+   * on the fallback port are maintained, and new sessions use the well-known port.
+   */
+  private startReclaimLoop(wellKnownPort: number): void {
+    this.reclaimTimer = setInterval(() => {
+      try {
+        const srv = this.createServer(wellKnownPort);
+        this.reclaimServer = srv;
+        this.stopReclaimLoop();
+        this.logger.info(`[ws-server] Reclaimed well-known port ${wellKnownPort}`);
+      } catch (err) {
+        if (!isAddrInUse(err)) {
+          this.logger.error(`[ws-server] Unexpected error reclaiming port ${wellKnownPort}: ${err}`);
+          this.stopReclaimLoop();
+        }
+        // EADDRINUSE — port still occupied, will retry next interval
+      }
+    }, this.reclaimIntervalMs);
+  }
+
+  /** Stop the reclaim retry loop. */
+  private stopReclaimLoop(): void {
+    if (this.reclaimTimer) {
+      clearInterval(this.reclaimTimer);
+      this.reclaimTimer = null;
+    }
   }
 
   /** Stop the server and all sessions. */
   async stop(): Promise<void> {
+    this.stopReclaimLoop();
     const terminations: Promise<void>[] = [];
     for (const [sessionId, session] of this.sessions) {
       terminations.push(this.terminateSession(sessionId, session, "Server stopping"));
     }
     await Promise.allSettled(terminations);
     // terminateSession removes each session from the map; nothing left to clear.
+    this.reclaimServer?.stop();
+    this.reclaimServer = null;
     this.server?.stop();
     this.server = null;
   }
 
   get port(): number {
-    return this.server?.port ?? 0;
+    // Prefer the reclaimed well-known port for new sessions
+    return this.reclaimServer?.port ?? this.server?.port ?? 0;
   }
 
   /** Number of active (not yet ended) sessions. */
