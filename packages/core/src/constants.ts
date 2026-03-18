@@ -121,6 +121,8 @@ const _originalOptions = {
   EPHEMERAL_ALIAS_CHAR_THRESHOLD: 400,
   /** How many alias operations between expired-alias prune passes */
   ALIAS_PRUNE_INTERVAL: 20,
+  /** Run count threshold to trigger ephemeral alias promotion hint */
+  EPHEMERAL_ALIAS_PROMOTION_THRESHOLD: 3,
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {

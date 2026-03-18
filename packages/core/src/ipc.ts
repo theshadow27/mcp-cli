@@ -30,6 +30,7 @@ export type IpcMethod =
   | "saveAlias"
   | "deleteAlias"
   | "touchAlias"
+  | "recordAliasRun"
   | "getLogs"
   | "getDaemonLogs"
   | "sendMail"
@@ -126,6 +127,10 @@ export const TouchAliasParamsSchema = z.object({
   expiresAt: z.number().positive(),
 });
 
+export const RecordAliasRunParamsSchema = z.object({
+  name: z.string(),
+});
+
 export const GetLogsParamsSchema = z.object({
   server: z.string(),
   limit: z.number().optional(),
@@ -142,6 +147,10 @@ export interface AliasInfo {
   outputSchemaJson?: Record<string, unknown>;
   /** Absolute ms timestamp when this alias expires (null = permanent) */
   expiresAt?: number | null;
+  /** Number of times this alias has been run */
+  runCount?: number;
+  /** Epoch seconds of last run (null = never run) */
+  lastRunAt?: number | null;
 }
 
 export interface AliasDetail extends AliasInfo {
@@ -425,6 +434,7 @@ export interface IpcMethodResult {
   saveAlias: SaveAliasResult;
   deleteAlias: DeleteAliasResult;
   touchAlias: { ok: true };
+  recordAliasRun: { ok: true; runCount: number };
   getLogs: GetLogsResult;
   getDaemonLogs: GetDaemonLogsResult;
   sendMail: SendMailResult;

@@ -3,9 +3,7 @@
   "private": true,
   "version": "0.7.0",
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "scripts": {
     "build": "bun scripts/build.ts",
     "typecheck": "bun install && bun --bun tsc -b",
