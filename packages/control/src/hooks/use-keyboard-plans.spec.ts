@@ -6,6 +6,8 @@ import {
   type PlansNav,
   type StatusType,
   clearPlansState,
+  findExpanded,
+  getTargetPlan,
   handlePlansInput,
   hasCapability,
   isPlanReadOnly,
@@ -547,5 +549,44 @@ describe("isPlanReadOnly", () => {
     const servers = [makeServer("srv", ["list", "abort"])];
     const plan = makePlan({ id: "p1", server: "srv" });
     expect(isPlanReadOnly(servers, plan)).toBe(false);
+  });
+});
+
+describe("findExpanded", () => {
+  it("returns the matching plan by id and server", () => {
+    const plans = [makePlan({ id: "p1", server: "a" }), makePlan({ id: "p2", server: "b" })];
+    expect(findExpanded(plans, { id: "p2", server: "b" })).toBe(plans[1]);
+  });
+
+  it("returns undefined when key is null", () => {
+    const plans = [makePlan({ id: "p1" })];
+    expect(findExpanded(plans, null)).toBeUndefined();
+  });
+
+  it("returns undefined when no plan matches", () => {
+    const plans = [makePlan({ id: "p1", server: "a" })];
+    expect(findExpanded(plans, { id: "p1", server: "other" })).toBeUndefined();
+  });
+});
+
+describe("getTargetPlan", () => {
+  it("returns expanded plan when expandedPlan is set", () => {
+    const plans = [makePlan({ id: "p1", server: "a" }), makePlan({ id: "p2", server: "b" })];
+    const result = getTargetPlan(plans, { id: "p2", server: "b" }, 0);
+    expect(result).toBe(plans[1]);
+  });
+
+  it("returns plan at selectedIndex when expandedPlan is null", () => {
+    const plans = [makePlan({ id: "p1" }), makePlan({ id: "p2" })];
+    expect(getTargetPlan(plans, null, 1)).toBe(plans[1]);
+  });
+
+  it("returns undefined when expandedPlan does not match any plan", () => {
+    const plans = [makePlan({ id: "p1", server: "a" })];
+    expect(getTargetPlan(plans, { id: "gone", server: "a" }, 0)).toBeUndefined();
+  });
+
+  it("returns undefined when plans array is empty", () => {
+    expect(getTargetPlan([], null, 0)).toBeUndefined();
   });
 });
