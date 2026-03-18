@@ -101,6 +101,9 @@ const EXCLUSIONS: Record<string, string> = {
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
 
+  // Serve command — graceful shutdown handler (lines 274-320) added in #817, tracked in #824
+  "command/src/commands/serve.ts": "78% coverage, signal handler untested (#824)",
+
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
