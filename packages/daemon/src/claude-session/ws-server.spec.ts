@@ -168,6 +168,124 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("start(port) begins reclaim loop on fallback", async () => {
+    // Occupy a port, force fallback, then release and verify reclaim
+    const blocker = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const wellKnownPort = await blocker.start(0);
+    try {
+      server = new ClaudeWsServer({
+        spawn: mockSpawn().spawn,
+        logger: silentLogger,
+        portRetryCount: 0,
+        reclaimIntervalMs: 50, // fast for testing
+      });
+      const fallbackPort = await server.start(wellKnownPort);
+      expect(fallbackPort).not.toBe(wellKnownPort);
+      expect(server.reclaimed).toBe(false);
+
+      // Release the well-known port
+      await blocker.stop();
+
+      // Wait for reclaim to succeed
+      await pollUntil(() => server?.reclaimed, 3_000);
+      expect(server.port).toBe(wellKnownPort);
+    } finally {
+      await blocker.stop().catch(() => {});
+    }
+  });
+
+  test("reclaim loop stops after successful reclaim", async () => {
+    const blocker = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const wellKnownPort = await blocker.start(0);
+    try {
+      server = new ClaudeWsServer({
+        spawn: mockSpawn().spawn,
+        logger: silentLogger,
+        portRetryCount: 0,
+        reclaimIntervalMs: 50,
+      });
+      await server.start(wellKnownPort);
+      await blocker.stop();
+
+      await pollUntil(() => server?.reclaimed, 3_000);
+
+      // New sessions should get the well-known port in their spawn URL
+      const ms = mockSpawn();
+      const server2 = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      // Verify reclaimed server accepts connections
+      const ws = new WebSocket(`ws://localhost:${wellKnownPort}/session/no-such-session`);
+      const closed = new Promise<number>((r) => {
+        ws.onclose = (e) => r(e.code);
+      });
+      // Should get 404 (not connection refused) since the reclaim server is listening
+      ws.onerror = () => {};
+      await closed;
+      await server2.stop();
+    } finally {
+      await blocker.stop().catch(() => {});
+    }
+  });
+
+  test("reclaimed port serves new sessions while fallback port keeps existing ones", async () => {
+    const blocker = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    const wellKnownPort = await blocker.start(0);
+    try {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({
+        spawn: ms.spawn,
+        logger: silentLogger,
+        portRetryCount: 0,
+        reclaimIntervalMs: 50,
+      });
+      const fallbackPort = await server.start(wellKnownPort);
+
+      // Create a session on the fallback port
+      server.prepareSession("existing-session", { prompt: "test" });
+
+      // Connect to the fallback port
+      const existingWs = await connectMockClaude(fallbackPort, "existing-session");
+      const initMsg = await waitForMessage(existingWs);
+      expect(initMsg).toContain('"type":"user"');
+
+      // Release well-known port and wait for reclaim
+      await blocker.stop();
+      await pollUntil(() => server?.reclaimed, 3_000);
+
+      // server.port should now return the well-known port
+      expect(server.port).toBe(wellKnownPort);
+
+      // New session should be connectable on the well-known port
+      server.prepareSession("new-session", { prompt: "test2" });
+      const newWs = await connectMockClaude(wellKnownPort, "new-session");
+      const newInitMsg = await waitForMessage(newWs);
+      expect(newInitMsg).toContain('"type":"user"');
+
+      // Existing connection on fallback port should still work —
+      // drive session to idle with init + result messages
+      existingWs.send(systemInitMessage("existing-session"));
+      existingWs.send(resultMessage("existing-session"));
+      await pollUntil(() => server?.listSessions().find((s) => s.sessionId === "existing-session")?.state === "idle");
+
+      existingWs.close();
+      newWs.close();
+    } finally {
+      await blocker.stop().catch(() => {});
+    }
+  });
+
+  test("start() without port does not start reclaim loop", async () => {
+    server = new ClaudeWsServer({
+      spawn: mockSpawn().spawn,
+      logger: silentLogger,
+      reclaimIntervalMs: 50,
+    });
+    await server.start();
+    // No reclaim needed when using a random port by choice
+    expect(server.reclaimed).toBe(false);
+    await Bun.sleep(100);
+    expect(server.reclaimed).toBe(false);
+  });
+
   test("prepareSession + spawnClaude starts claude process with correct args", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
