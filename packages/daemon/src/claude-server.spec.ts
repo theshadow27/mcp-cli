@@ -74,9 +74,9 @@ describe("isWorkerEvent", () => {
 // ── buildClaudeToolCache ──
 
 describe("buildClaudeToolCache", () => {
-  test("returns all 9 claude tools", () => {
+  test("returns all 10 claude tools", () => {
     const tools = buildClaudeToolCache();
-    expect(tools.size).toBe(9);
+    expect(tools.size).toBe(10);
     expect(tools.has("claude_prompt")).toBe(true);
     expect(tools.has("claude_session_list")).toBe(true);
     expect(tools.has("claude_session_status")).toBe(true);
@@ -86,6 +86,7 @@ describe("buildClaudeToolCache", () => {
     expect(tools.has("claude_wait")).toBe(true);
     expect(tools.has("claude_approve")).toBe(true);
     expect(tools.has("claude_deny")).toBe(true);
+    expect(tools.has("claude_plans")).toBe(true);
   });
 
   test("all tools have server set to _claude", () => {
@@ -133,13 +134,14 @@ describe("ClaudeServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools.length).toBe(9);
+    expect(tools.length).toBe(10);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "claude_approve",
       "claude_bye",
       "claude_deny",
       "claude_interrupt",
+      "claude_plans",
       "claude_prompt",
       "claude_session_list",
       "claude_session_status",
@@ -887,7 +889,7 @@ describe("ClaudeServer", () => {
 
     // MCP client should still work correctly after startup
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(9);
+    expect(tools.length).toBe(10);
   });
 
   // ── Worker cleanup on start() failure (#471, #453, #454) ──

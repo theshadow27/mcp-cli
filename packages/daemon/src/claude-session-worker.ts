@@ -21,6 +21,7 @@ import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { ClaudeWsServer, type WaitResult, WaitTimeoutError, compactifyEntry } from "./claude-session/ws-server";
+import { aggregatePlans } from "./plan-aggregator";
 import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
@@ -106,6 +107,8 @@ async function handleToolCall(
         return handleApprove(server, args);
       case "claude_deny":
         return handleDeny(server, args);
+      case "claude_plans":
+        return handleClaudePlans(server);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -283,6 +286,19 @@ function handleDeny(
   const message = (args.message as string) ?? "Denied by user via mcpctl";
   server.respondToPermission(args.sessionId as string, args.requestId as string, false, message);
   return { content: [{ type: "text", text: JSON.stringify({ denied: true }) }] };
+}
+
+function handleClaudePlans(server: ClaudeWsServer): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const sessions = server.listSessions();
+  // Intentionally reads only the in-memory ring buffer (last ~100 entries)
+  // rather than falling back to JSONL on disk. Reading JSONL for every live
+  // session on every poll cycle would trigger synchronous readFileSync and
+  // stall the WebSocket keepalive loop. For plans, TodoWrite typically
+  // appears in the most recent ~50 entries so the buffer is sufficient.
+  const plans = aggregatePlans(sessions, (id) => server.getTranscript(id));
+  return { content: [{ type: "text", text: JSON.stringify(plans) }] };
 }
 
 async function handleWait(
