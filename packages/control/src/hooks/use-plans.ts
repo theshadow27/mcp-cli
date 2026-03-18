@@ -7,8 +7,6 @@ import {
 } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TranscriptEntry } from "../lib/claude-plan-adapter.js";
-import { extractPlansFromTranscript } from "../lib/claude-plan-adapter.js";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
 /** Per-server IPC timeout to prevent a single hanging server from stalling the poll loop. */
@@ -22,22 +20,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-// -- Claude plan helpers --
-
 /**
- * Max transcript entries to scan for plan data per session.
- * Must be large enough to capture TodoWrite calls from early in a session —
- * the daemon returns the tail (most recent N), so a low limit silently
- * misses old TodoWrites and falls back to the markdown heuristic.
- */
-const CLAUDE_TRANSCRIPT_LIMIT = 500;
-
-/** Session states worth scanning for plan data. */
-const LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
-
-/**
- * Fetch plans from active Claude Code sessions by scanning transcripts
- * for TodoWrite tool calls or plan-like markdown.
+ * Fetch plans from active Claude Code sessions via the daemon-side
+ * `claude_plans` tool — a single IPC call replaces the old N+1 pattern.
  */
 async function fetchClaudePlans(
   ipcCallFn: typeof ipcCall,
@@ -45,58 +30,21 @@ async function fetchClaudePlans(
   timeoutMs = IPC_TIMEOUT_MS,
 ): Promise<Plan[]> {
   try {
-    // Get session list from _claude virtual server
-    const listResult = await withTimeout(
+    const result = await withTimeout(
       ipcCallFn("callTool", {
         server: CLAUDE_SERVER_NAME,
-        tool: "claude_session_list",
+        tool: "claude_plans",
         arguments: {},
       }),
       timeoutMs,
-      "claude_session_list",
+      "claude_plans",
     );
     if (cancelRef.current) return [];
 
-    const listText = extractToolText(listResult);
-    if (!listText) return [];
+    const text = extractToolText(result);
+    if (!text) return [];
 
-    const sessions = JSON.parse(listText) as Array<{ sessionId: string; state: string }>;
-    const liveSessions = sessions.filter((s) => LIVE_STATES.has(s.state));
-    if (liveSessions.length === 0) return [];
-
-    const plans: Plan[] = [];
-
-    await Promise.allSettled(
-      liveSessions.map(async (session) => {
-        try {
-          const transcriptResult = await withTimeout(
-            ipcCallFn("callTool", {
-              server: CLAUDE_SERVER_NAME,
-              tool: "claude_transcript",
-              arguments: { sessionId: session.sessionId, limit: CLAUDE_TRANSCRIPT_LIMIT },
-            }),
-            timeoutMs,
-            `claude_transcript(${session.sessionId})`,
-          );
-          if (cancelRef.current) return;
-
-          const transcriptText = extractToolText(transcriptResult);
-          if (!transcriptText) return;
-
-          const entries = JSON.parse(transcriptText) as TranscriptEntry[];
-          const plan = extractPlansFromTranscript(entries, session.sessionId);
-          if (plan) {
-            plans.push(plan);
-          }
-        } catch {
-          // One session failing doesn't break the whole list
-        }
-      }),
-    );
-
-    // Sort by sessionId for deterministic ordering across polls
-    plans.sort((a, b) => a.id.localeCompare(b.id));
-    return plans;
+    return JSON.parse(text) as Plan[];
   } catch (err) {
     // _claude server not available is expected — only log unexpected errors
     if (!(err instanceof Error && err.message.includes("not found"))) {

@@ -14,7 +14,13 @@
  *   { type: "db:end", sessionId }
  */
 
-import { CLAUDE_SERVER_NAME, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
+import {
+  CLAUDE_SERVER_NAME,
+  extractPlansFromTranscript,
+  generateSpanId,
+  resolveModelName,
+  silentLogger,
+} from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -106,6 +112,8 @@ async function handleToolCall(
         return handleApprove(server, args);
       case "claude_deny":
         return handleDeny(server, args);
+      case "claude_plans":
+        return handleClaudePlans(server);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -283,6 +291,31 @@ function handleDeny(
   const message = (args.message as string) ?? "Denied by user via mcpctl";
   server.respondToPermission(args.sessionId as string, args.requestId as string, false, message);
   return { content: [{ type: "text", text: JSON.stringify({ denied: true }) }] };
+}
+
+/** Session states worth scanning for plan data. */
+const PLAN_LIVE_STATES = new Set(["active", "waiting_permission", "result", "idle"]);
+
+function handleClaudePlans(server: ClaudeWsServer): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const sessions = server.listSessions();
+  const liveSessions = sessions.filter((s) => PLAN_LIVE_STATES.has(s.state));
+
+  const plans = [];
+  for (const session of liveSessions) {
+    try {
+      const transcript = server.getTranscript(session.sessionId);
+      const plan = extractPlansFromTranscript(transcript, session.sessionId);
+      if (plan) plans.push(plan);
+    } catch {
+      // One session failing doesn't break the whole list
+    }
+  }
+
+  // Sort by id for deterministic ordering
+  plans.sort((a, b) => a.id.localeCompare(b.id));
+  return { content: [{ type: "text", text: JSON.stringify(plans) }] };
 }
 
 async function handleWait(

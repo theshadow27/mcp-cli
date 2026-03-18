@@ -164,4 +164,15 @@ export const CLAUDE_TOOLS = [
       required: ["sessionId", "requestId"],
     },
   },
+  {
+    name: "claude_plans",
+    description:
+      "Extract plans from all active Claude Code sessions. " +
+      "Returns Plan[] directly — no raw transcript data crosses the socket. " +
+      "Replaces the N+1 pattern of claude_session_list + N × claude_transcript.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
 ] as const;

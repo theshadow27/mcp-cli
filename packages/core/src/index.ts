@@ -16,4 +16,5 @@ export * from "./git";
 export * from "./logger";
 export * from "./worktree-config";
 export * from "./plan";
+export * from "./claude-plan-adapter";
 export * from "./python-repr";

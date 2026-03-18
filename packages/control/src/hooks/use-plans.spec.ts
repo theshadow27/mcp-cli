@@ -109,6 +109,8 @@ describe("usePlans", () => {
     const plan = makePlan("plan-1", "test-server");
     const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+      const p = params as { server?: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       return planToolResult([plan]);
     };
 
@@ -132,6 +134,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "server-a") return planToolResult([plan1]);
       if (p.server === "server-b") return planToolResult([plan2]);
       return planToolResult([]);
@@ -154,6 +157,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "server-z") return planToolResult([planB]);
       if (p.server === "server-a") return planToolResult([planA]);
       return planToolResult([]);
@@ -213,11 +217,13 @@ describe("usePlans", () => {
   it("resets loading=true when enabled transitions false→true (#775)", async () => {
     const plan = makePlan("plan-1", "test-server");
     let pollDelay = 0;
-    const ipcCallFn = async (method: string) => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") {
         if (pollDelay > 0) await new Promise((r) => setTimeout(r, pollDelay));
         return daemonStatus([{ name: "test-server", hasList: true }]);
       }
+      const p = params as { server?: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       return planToolResult([plan]);
     };
 
@@ -274,6 +280,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "bad-server") throw new Error("server unreachable");
       return planToolResult([plan]);
     };
@@ -296,6 +303,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "bad-server") throw new Error("server unreachable");
       return planToolResult([plan]);
     };
@@ -317,6 +325,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "bad-schema-server") {
         return { content: [{ type: "text", text: JSON.stringify({ wrong: "shape" }) }] };
       }
@@ -333,8 +342,10 @@ describe("usePlans", () => {
 
   it("clears failedServers when all servers succeed", async () => {
     const plan = makePlan("plan-1", "server-a");
-    const ipcCallFn = async (method: string) => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([{ name: "server-a", hasList: true }]);
+      const p = params as { server?: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       return planToolResult([plan]);
     };
 
@@ -354,6 +365,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "slow-server") {
         // Simulate a server that never responds — will be killed by timeout
         return new Promise<never>(() => {});
@@ -469,6 +481,7 @@ describe("usePlans", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "z-server") return planToolResult([planB]);
       if (p.server === "a-server") return planToolResult([planA]);
       return planToolResult([]);
@@ -544,8 +557,10 @@ describe("step clamp effect (app.tsx:149-155 integration)", () => {
     };
 
     let pollCount = 0;
-    const ipcCallFn = async (method: string) => {
+    const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([{ name: "srv", hasList: true }]);
+      const p = params as { server?: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       pollCount++;
       // First poll: 3 steps; subsequent polls: 1 step
       return planToolResult([pollCount <= 1 ? threeStepPlan : oneStepPlan]);
@@ -640,6 +655,7 @@ describe("cursor snaps to expanded plan on reorder (issue #763)", () => {
         ]);
       }
       const p = params as { server: string };
+      if (p.server === "_claude") return { content: [{ type: "text", text: "[]" }] };
       if (p.server === "server-b") {
         pollRound++;
         return planToolResult([planB]);
@@ -708,48 +724,29 @@ describe("usePlans — Claude plan integration", () => {
     return { instance, stateRef };
   }
 
-  function transcriptWithTodoWrite(todos: Array<{ id: string; content: string; status: string }>) {
-    return [
-      {
-        timestamp: Date.now(),
-        direction: "inbound",
-        message: {
-          type: "assistant",
-          message: {
-            id: "msg-1",
-            type: "message",
-            role: "assistant",
-            content: [{ type: "tool_use", name: "TodoWrite", input: { todos } }],
-          },
-        },
-      },
-    ];
+  /** Helper: build a claude_plans tool response containing Plan[] */
+  function claudePlansResult(plans: Plan[]): object {
+    return { content: [{ type: "text", text: JSON.stringify(plans) }] };
   }
 
   it("merges Claude session plans alongside server plans", async () => {
     const serverPlan = makePlan("server-plan", "test-server");
+    const claudePlan: Plan = {
+      id: "claude-sess-1",
+      name: "Session sess-1",
+      status: "active",
+      server: "_claude",
+      steps: [{ id: "t1", name: "Build feature", status: "active" }],
+      activeStepId: "t1",
+    };
     const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
 
       const p = params as { server?: string; tool?: string };
       if (p.server === "test-server") return planToolResult([serverPlan]);
 
-      // _claude server calls
-      if (p.tool === "claude_session_list") {
-        return { content: [{ type: "text", text: JSON.stringify([{ sessionId: "sess-1", state: "active" }]) }] };
-      }
-      if (p.tool === "claude_transcript") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                transcriptWithTodoWrite([{ id: "t1", content: "Build feature", status: "in_progress" }]),
-              ),
-            },
-          ],
-        };
-      }
+      // _claude server: claude_plans tool
+      if (p.tool === "claude_plans") return claudePlansResult([claudePlan]);
       return { content: [{ type: "text", text: "[]" }] };
     };
 
@@ -757,9 +754,9 @@ describe("usePlans — Claude plan integration", () => {
     await waitFor(() => !stateRef.current.loading);
 
     expect(stateRef.current.plans.length).toBeGreaterThanOrEqual(2);
-    const claudePlan = stateRef.current.plans.find((p) => p.server === "_claude");
-    expect(claudePlan).toBeDefined();
-    expect(claudePlan?.steps[0].name).toBe("Build feature");
+    const cp = stateRef.current.plans.find((p) => p.server === "_claude");
+    expect(cp).toBeDefined();
+    expect(cp?.steps[0].name).toBe("Build feature");
   });
 
   it("returns only server plans when _claude server is unavailable", async () => {
@@ -781,61 +778,44 @@ describe("usePlans — Claude plan integration", () => {
     expect(stateRef.current.error).toBeNull();
   });
 
-  it("skips connecting/init Claude sessions", async () => {
+  it("returns empty Claude plans when claude_plans returns empty array", async () => {
     const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([]);
 
       const p = params as { tool?: string };
-      if (p.tool === "claude_session_list") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify([
-                { sessionId: "sess-connecting", state: "connecting" },
-                { sessionId: "sess-init", state: "init" },
-              ]),
-            },
-          ],
-        };
-      }
-      throw new Error("Should not fetch transcript for connecting/init session");
+      if (p.tool === "claude_plans") return claudePlansResult([]);
+      return { content: [{ type: "text", text: "[]" }] };
     };
 
     const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
     await waitFor(() => !stateRef.current.loading);
 
-    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
-    expect(claudePlans).toHaveLength(0);
+    const cp = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(cp).toHaveLength(0);
   });
 
-  it("skips ended/disconnected Claude sessions", async () => {
+  it("handles claude_plans timeout gracefully", async () => {
     const ipcCallFn = async (method: string, params?: unknown) => {
       if (method === "status") return daemonStatus([]);
 
       const p = params as { tool?: string };
-      if (p.tool === "claude_session_list") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify([
-                { sessionId: "sess-ended", state: "ended" },
-                { sessionId: "sess-dc", state: "disconnected" },
-              ]),
-            },
-          ],
-        };
+      if (p.tool === "claude_plans") {
+        // Simulate a server that never responds
+        return new Promise<never>(() => {});
       }
-      // Should never reach transcript call for ended/disconnected sessions
-      throw new Error("Should not fetch transcript for ended session");
+      return { content: [{ type: "text", text: "[]" }] };
     };
 
-    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await waitFor(() => !stateRef.current.loading);
+    const { stateRef } = mount({
+      timeoutMs: 100,
+      ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"],
+    });
+    await waitFor(() => !stateRef.current.loading, 3_000);
 
-    const claudePlans = stateRef.current.plans.filter((p) => p.server === "_claude");
-    expect(claudePlans).toHaveLength(0);
+    // Should complete without error — timeout is caught internally
+    const cp = stateRef.current.plans.filter((p) => p.server === "_claude");
+    expect(cp).toHaveLength(0);
+    expect(stateRef.current.error).toBeNull();
   });
 });
 
