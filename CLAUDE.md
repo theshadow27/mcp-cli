@@ -54,7 +54,7 @@ packages/
 - JSON output to stdout, errors/status to stderr
 - **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
 - **Flaky test prevention**: see `test/CLAUDE.md` for required patterns. Never use `setTimeout` for waiting, never hardcode ports, always poll with deadlines instead of fixed delays.
-- **Test time budget**: no single test file should take >5s in isolation. If it does, extract pure logic into unit tests or split the file. `scripts/check-coverage.ts` profiles every test file and enforces this budget.
+- **Test time budget**: no single test file should take >5s in isolation. If it does, extract pure logic into unit tests or split the file. `scripts/check-coverage.ts` profiles every test file and warns on overages (does not block commits — see #812 for the replacement plan).
 - **No implementation code in index files**: `index.ts` is for barrel exports only. Entry points go in `main.ts` (or `main.tsx`). This keeps testable code separate from untestable process boilerplate.
 
 ## Project Structure

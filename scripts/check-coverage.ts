@@ -275,12 +275,14 @@ const overBudget = timings.filter((t) => {
   return !excluded;
 });
 if (overBudget.length > 0) {
-  console.error(`\nFAIL: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
+  // WARNING only — do not fail the build. The hard-fail mode caused ~$2700 in
+  // wasted compute during Sprint 15 when sessions retried pre-commit hooks in a
+  // loop. See #812 for the hash-based timing cache replacement plan.
+  console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
   for (const { file, ms } of overBudget) {
-    console.error(`  ${ms}ms  ${file}`);
+    console.warn(`  ${ms}ms  ${file}`);
   }
-  console.error("\nExtract pure logic into unit tests or split the file. See CLAUDE.md test budget rule.");
-  failed = true;
+  console.warn("\nConsider extracting pure logic into unit tests or splitting the file. See #812.");
 }
 
 if (failed) {

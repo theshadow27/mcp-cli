@@ -81,7 +81,7 @@ Write `.claude/sprints/sprint-{N}.md`:
 ```markdown
 # Sprint {N}
 
-> Planned {date}. Target: 15 PRs.
+> Planned {date} {HH:MM local}. Target: 15 PRs.
 
 ## Goal
 

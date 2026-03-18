@@ -14,6 +14,11 @@ Determine what to run, in priority order:
 
 If using a sprint plan, announce: "Running sprint {N}: {goal}. Batch 1: #X, #Y, #Z..."
 
+Record the start timestamp in the sprint file header (append to the `>` line):
+```
+> Planned {date}. Started {date} {HH:MM local}. Target: 15 PRs.
+```
+
 ## Pre-flight
 
 Before spawning any sessions, ensure the daemon is running the latest build:
@@ -85,13 +90,23 @@ Then re-triage. High scrutiny rewrites get 2 adversarial reviews.
 
 ### QA
 
-**Reuse the worktree** from the implement phase via `--cwd`:
+**Reuse the worktree** from the implement phase via `--cwd`. If the worktree
+was auto-cleaned by `bye` (happens when the branch was pushed and worktree is
+clean), use `--worktree` instead to give QA its own isolated worktree:
 
 ```bash
+# Preferred: reuse existing worktree
 mcx claude spawn --cwd <worktree-path> --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+
+# Fallback: worktree was auto-cleaned, create a fresh one
+mcx claude spawn --worktree --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
 QA verifies and merges if passing.
+
+**CRITICAL: Never spawn QA (or review) without `--cwd` or `--worktree`.**
+Without either flag, the session runs in the main repo folder, polluting the
+user's working tree with branch checkouts and file modifications.
 
 ### Failure handling
 
@@ -106,11 +121,19 @@ Each issue gets ONE worktree, created at implementation time. All subsequent
 phases (review, repair, QA) reuse it via `--cwd`. This avoids creating
 redundant worktrees and avoids branch checkout conflicts.
 
+**Note:** `bye` auto-cleans worktrees when all changes are committed and
+pushed. If you `bye` the implementation session before spawning review/QA,
+the worktree path will be gone. In that case, use `--worktree` for the
+next phase instead of `--cwd`.
+
 ```
 implement: spawn --worktree  →  creates worktree  →  bye (save worktree path)
 review:    spawn --cwd <path> →  reuses worktree   →  bye
 repair:    spawn --cwd <path> →  reuses worktree   →  bye
 QA:        spawn --cwd <path> →  reuses worktree   →  bye (final cleanup)
+
+# If worktree was auto-cleaned after bye:
+review/QA: spawn --worktree  →  creates fresh worktree  →  bye
 ```
 
 Only the final `bye` (after QA merge or failure) should clean up the worktree.
@@ -155,10 +178,14 @@ while issues remain:
 
 When the sprint is winding down (2 or fewer active sessions remaining):
 
-1. **Start planning the next sprint** — run `/sprint plan` while waiting for
+1. **Record the end timestamp** in the sprint file header:
+   ```
+   > Planned {date}. Started {date} {HH:MM}. Completed {date} {HH:MM}. Result: N/M merged.
+   ```
+2. **Start planning the next sprint** — run `/sprint plan` while waiting for
    the last sessions to complete. This overlaps planning with execution.
-2. After all sessions complete: report what merged, what failed, what's in progress
-3. Pull main and rebuild: `git checkout main && git pull && bun run build`
+3. After all sessions complete: report what merged, what failed, what's in progress
+4. Pull main and rebuild: `git checkout main && git pull && bun run build`
 4. Restart the daemon so it picks up the new build: verify no sessions active
    with `mcx claude ls`, then restart. This ensures the next sprint runs on
    the latest code (including any daemon fixes merged during this sprint).
