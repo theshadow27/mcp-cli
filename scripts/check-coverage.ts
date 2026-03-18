@@ -1,16 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Coverage threshold enforcement + per-file test timing.
+ * Coverage threshold enforcement + hash-based test timing cache.
  *
  * Parses `bun test --coverage` text output and exits non-zero if:
  *   1. Overall coverage drops below global thresholds (ratchet)
  *   2. Any individual file drops below per-file minimum (unless excluded)
- *   3. Any single test file exceeds the per-file time budget
  *
- * After the coverage run, profiles each test file individually (in parallel)
- * to collect per-file timing and reports the top 10 slowest.
+ * After the coverage run, profiles test files whose content hash has changed
+ * since the last run (stored in test-timings.json).  Budget violations are
+ * reported as warnings — they never block commits.
  *
- * Usage:  bun scripts/check-coverage.ts
+ * Usage:  bun scripts/check-coverage.ts          # incremental timing
+ *         bun scripts/check-coverage.ts --full    # re-time all files
  *
  * Bump thresholds up as coverage improves; never lower them.
  */
@@ -99,18 +100,10 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
-import { Glob } from "bun";
+import { resolve } from "node:path";
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
-
-/** Discover all test files in the project */
-async function findTestFiles(): Promise<string[]> {
-  const files: string[] = [];
-  for await (const path of new Glob("**/*.spec.{ts,tsx}").scan({ cwd: ".", onlyFiles: true })) {
-    files.push(path);
-  }
-  return files.sort();
-}
+import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTimings } from "./test-timings";
 
 /** Run a single test file and return its wall-clock duration in ms */
 async function timeTestFile(file: string): Promise<{ file: string; ms: number }> {
@@ -247,43 +240,89 @@ if (noiseLines.length > NOISE_THRESHOLD) {
   failed = true;
 }
 
-// --- Per-file test timing (DISABLED — see #812) ---
-// Profiling adds ~55s of wall time re-running every test file individually.
-// The hard-fail budget caused ~$2700 in wasted compute during Sprint 15.
-// Re-enable once #812 (hash-based timing cache) is implemented.
-//
-// console.log("\n--- Test Timing Profile ---");
-// const testFiles = await findTestFiles();
-// const profileStart = performance.now();
-// const timings = await profileTestFiles(testFiles, PROFILE_CONCURRENCY);
-// const profileDuration = Math.round(performance.now() - profileStart);
-// const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
-//
-// console.log(
-//   `Profiled ${timings.length} test files in ${(profileDuration / 1000).toFixed(1)}s ` +
-//     `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
-// );
-// console.log(
-//   `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
-// );
-// for (const { file, ms } of timings.slice(0, 10)) {
-//   const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
-//   const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
-//   console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
-// }
-//
-// const overBudget = timings.filter((t) => {
-//   if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
-//   const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
-//   return !excluded;
-// });
-// if (overBudget.length > 0) {
-//   console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
-//   for (const { file, ms } of overBudget) {
-//     console.warn(`  ${ms}ms  ${file}`);
-//   }
-//   console.warn("\nConsider extracting pure logic into unit tests or splitting the file. See #812.");
-// }
+// --- Per-file test timing (hash-based cache — see #812) ---
+// Only re-times test files whose content has changed since the last run.
+// Budget violations warn to stderr but NEVER block commits.
+
+const fullMode = process.argv.includes("--full");
+const TIMING_CACHE_PATH = resolve(import.meta.dir, "../test-timings.json");
+
+const cache = loadTimings(TIMING_CACHE_PATH);
+const testFiles = await findTestFiles();
+
+// Prune entries for deleted test files
+const currentFileSet = new Set(testFiles);
+const pruned = pruneStaleEntries(cache, currentFileSet);
+
+const { changed, hashes } = await findChangedFiles(testFiles, cache);
+const filesToTime = fullMode ? testFiles : changed;
+
+if (filesToTime.length > 0) {
+  console.log(`\n--- Test Timing Profile (${fullMode ? "full" : "incremental"}) ---`);
+  console.log(`${filesToTime.length} of ${testFiles.length} test file(s) to profile`);
+  if (pruned > 0) console.log(`Pruned ${pruned} stale cache entries`);
+
+  const profileStart = performance.now();
+  const timings = await profileTestFiles(filesToTime, PROFILE_CONCURRENCY);
+  const profileDuration = Math.round(performance.now() - profileStart);
+  const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
+
+  console.log(
+    `Profiled ${timings.length} file(s) in ${(profileDuration / 1000).toFixed(1)}s ` +
+      `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
+  );
+
+  // Update cache with fresh timings
+  for (const { file, ms } of timings) {
+    cache[file] = { hash: hashes[file], timeMs: ms };
+  }
+
+  // Ensure unchanged files still have their hashes up to date
+  for (const file of testFiles) {
+    if (cache[file] && hashes[file]) {
+      cache[file].hash = hashes[file];
+    }
+  }
+
+  saveTimings(TIMING_CACHE_PATH, cache);
+} else {
+  console.log("\n--- Test Timing Profile (incremental) ---");
+  console.log("All test files unchanged — skipping profiling.");
+  if (pruned > 0) {
+    console.log(`Pruned ${pruned} stale cache entries`);
+    saveTimings(TIMING_CACHE_PATH, cache);
+  }
+}
+
+// Report top 10 slowest from the full cache (including cached entries)
+const allTimings = testFiles
+  .filter((f) => cache[f]?.timeMs != null)
+  .map((f) => ({ file: f, ms: cache[f].timeMs }))
+  .sort((a, b) => b.ms - a.ms);
+
+if (allTimings.length > 0) {
+  console.log(
+    `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
+  );
+  for (const { file, ms } of allTimings.slice(0, 10)) {
+    const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
+    const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
+    console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
+  }
+
+  // Warn (never fail) on budget violations
+  const overBudget = allTimings.filter((t) => {
+    if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
+    return !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
+  });
+  if (overBudget.length > 0) {
+    console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
+    for (const { file, ms } of overBudget) {
+      console.warn(`  ${ms}ms  ${file}`);
+    }
+    console.warn("\nConsider extracting pure logic into unit tests or splitting the file.");
+  }
+}
 
 if (failed) {
   process.exit(1);
