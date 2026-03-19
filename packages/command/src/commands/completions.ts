@@ -8,13 +8,19 @@
 
 import { ipcCall as realIpcCall, isDaemonRunning as realIsDaemonRunning } from "../daemon-lifecycle";
 import { printError } from "../output";
+import { listRegistry as realListRegistry } from "../registry/client";
 
 export interface CompletionDeps {
   ipcCall: typeof realIpcCall;
   isDaemonRunning: typeof realIsDaemonRunning;
+  listRegistry: typeof realListRegistry;
 }
 
-const defaultDeps: CompletionDeps = { ipcCall: realIpcCall, isDaemonRunning: realIsDaemonRunning };
+const defaultDeps: CompletionDeps = {
+  ipcCall: realIpcCall,
+  isDaemonRunning: realIsDaemonRunning,
+  listRegistry: realListRegistry,
+};
 
 /** Top-level subcommands for the mcx CLI */
 export const SUBCOMMANDS = [
@@ -76,6 +82,10 @@ export async function cmdCompletions(args: string[], deps?: CompletionDeps): Pro
   }
   if (args[0] === "--aliases") {
     await printAliases(d);
+    return;
+  }
+  if (args[0] === "--registry") {
+    await printRegistrySlugs(d);
     return;
   }
 
@@ -141,6 +151,18 @@ async function printAliases(deps: CompletionDeps): Promise<void> {
   }
 }
 
+/** Print registry slugs, one per line. Silent on failure (network, etc.). */
+async function printRegistrySlugs(deps: CompletionDeps): Promise<void> {
+  try {
+    const response = await deps.listRegistry();
+    for (const entry of response.servers) {
+      console.log(entry._meta["com.anthropic.api/mcp-registry"].slug);
+    }
+  } catch {
+    // Network error or registry unavailable — output nothing
+  }
+}
+
 // -- Shell script generators --
 
 export function bashScript(): string {
@@ -203,6 +225,14 @@ _mcx_completions() {
     local aliases
     aliases="$(mcx completions --aliases 2>/dev/null)"
     COMPREPLY=( $(compgen -W "$aliases" -- "$cur") )
+    return
+  fi
+
+  # mcx install <TAB> — registry slugs
+  if [[ "$cmd" == "install" && $cword -eq 2 ]]; then
+    local slugs
+    slugs="$(mcx completions --registry 2>/dev/null)"
+    COMPREPLY=( $(compgen -W "$slugs" -- "$cur") )
     return
   fi
 
@@ -308,6 +338,14 @@ _mcx() {
     return
   fi
 
+  # mcx install <TAB> — registry slugs
+  if [[ "$cmd" == "install" ]] && (( CURRENT == 3 )); then
+    local -a slugs
+    slugs=(\${(f)"$(mcx completions --registry 2>/dev/null)"})
+    _describe 'registry server' slugs
+    return
+  fi
+
   # mcx <server-command> <TAB> — server names
   if (( CURRENT == 3 )) && (( \${server_commands[(Ie)$cmd]} )); then
     local -a servers
@@ -369,6 +407,9 @@ ${ALIAS_NAME_COMMANDS.map(
 
 # mcx run <TAB> — alias names
 complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = run' -a '(mcx completions --aliases 2>/dev/null)' -d 'alias'
+
+# mcx install <TAB> — registry slugs
+complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = install' -a '(mcx completions --registry 2>/dev/null)' -d 'registry server'
 
 # Server name completion for: ${SERVER_COMMANDS.join(", ")}
 ${SERVER_COMMANDS.map(

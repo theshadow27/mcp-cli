@@ -83,6 +83,10 @@ describe("bashScript", () => {
     expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
+  test("calls back for registry slugs on install", () => {
+    expect(script).toContain("mcx completions --registry 2>/dev/null");
+  });
+
   test("contains all subcommands", () => {
     for (const cmd of SUBCOMMANDS) {
       expect(script).toContain(cmd);
@@ -117,6 +121,10 @@ describe("zshScript", () => {
     expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
+  test("calls back for registry slugs on install", () => {
+    expect(script).toContain("mcx completions --registry 2>/dev/null");
+  });
+
   test("contains all subcommands", () => {
     for (const cmd of SUBCOMMANDS) {
       expect(script).toContain(cmd);
@@ -147,8 +155,56 @@ describe("fishScript", () => {
     expect(script).toContain("mcx completions --aliases 2>/dev/null");
   });
 
+  test("calls back for registry slugs on install", () => {
+    expect(script).toContain("mcx completions --registry 2>/dev/null");
+  });
+
   test("contains all subcommands in initial completion", () => {
     expect(script).toContain(SUBCOMMANDS.join(" "));
+  });
+});
+
+describe("--registry helper", () => {
+  function makeDeps(registryResult: unknown): CompletionDeps {
+    return {
+      ipcCall: mock(() => Promise.resolve([])) as CompletionDeps["ipcCall"],
+      isDaemonRunning: mock(() => Promise.resolve(false)),
+      listRegistry: mock(() => Promise.resolve(registryResult)),
+    } as CompletionDeps;
+  }
+
+  test("prints slugs from registry response", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    try {
+      const deps = makeDeps({
+        servers: [
+          { _meta: { "com.anthropic.api/mcp-registry": { slug: "server-a" } } },
+          { _meta: { "com.anthropic.api/mcp-registry": { slug: "server-b" } } },
+        ],
+        metadata: { count: 2 },
+      });
+      await cmdCompletions(["--registry"], deps);
+      expect(logs).toEqual(["server-a", "server-b"]);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("outputs nothing on network error", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    try {
+      const deps = makeDeps(null);
+      // Override to throw
+      deps.listRegistry = mock(() => Promise.reject(new Error("network"))) as CompletionDeps["listRegistry"];
+      await cmdCompletions(["--registry"], deps);
+      expect(logs).toEqual([]);
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 
@@ -156,7 +212,12 @@ describe("daemon guard", () => {
   test("completion helpers do not call ipcCall when daemon is not running", async () => {
     const ipcCallMock = mock(() => Promise.resolve([]));
     const isDaemonRunningMock = mock(() => Promise.resolve(false));
-    const deps = { ipcCall: ipcCallMock as CompletionDeps["ipcCall"], isDaemonRunning: isDaemonRunningMock };
+    const listRegistryMock = mock(() => Promise.resolve({ servers: [], metadata: { count: 0 } }));
+    const deps = {
+      ipcCall: ipcCallMock as CompletionDeps["ipcCall"],
+      isDaemonRunning: isDaemonRunningMock,
+      listRegistry: listRegistryMock as CompletionDeps["listRegistry"],
+    };
 
     // --servers
     await cmdCompletions(["--servers"], deps);
@@ -201,6 +262,10 @@ describe("cross-script consistency", () => {
 
     test(`${name} references --aliases`, () => {
       expect(fn()).toContain("--aliases");
+    });
+
+    test(`${name} references --registry`, () => {
+      expect(fn()).toContain("--registry");
     });
 
     test(`${name} suppresses stderr with 2>/dev/null`, () => {
