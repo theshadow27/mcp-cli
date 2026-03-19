@@ -73,10 +73,22 @@ describe("P1: Daemon lifecycle", () => {
     // via hasPendingServers(), which was the root cause of the 15s margin (#492).
     daemon = await startTestDaemon({}, { idleTimeout: 4_000, skipVirtualServers: true });
 
-    // With no virtual servers, idle timer starts immediately on daemon ready.
-    // 4s idle + 6s margin = 10s total — generous margin for full-suite CPU contention (#487).
+    // Margin-based workaround: 4s idle + 6s margin = 10s deadline.
+    // Under CPU contention setTimeout can fire late — see #842 for root cause investigation.
+    const t0 = Date.now();
     const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    const elapsed = Date.now() - t0;
+
+    if (exitCode === "timeout") {
+      console.error(
+        `[idle-timeout-test] timed out after ${elapsed}ms, pid ${daemon.proc.pid} killed=${daemon.proc.killed}`,
+      );
+    }
     expect(exitCode).toBe(0);
+
+    // Daemon should exit within 2x its configured idle timeout under any reasonable load
+    if (exitCode === 0) expect(elapsed).toBeLessThan(8_000);
+
     daemon = undefined;
   });
 
