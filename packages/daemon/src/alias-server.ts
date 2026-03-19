@@ -149,8 +149,43 @@ export class AliasServer {
     this.clientTransport = null;
   }
 
+  /**
+   * Call an alias tool with call-chain tracking for cross-alias composition.
+   * Used by the IPC server when a callTool request includes a callChain.
+   * Returns MCP-formatted result (same shape as pool.callTool).
+   */
+  async callToolWithChain(
+    name: string,
+    args: Record<string, unknown>,
+    callChain: string[],
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+    const aliasDef = this.currentAliases.find((a) => a.name === name);
+    if (!aliasDef) {
+      return {
+        content: [{ type: "text" as const, text: `Alias "${name}" not found` }],
+        isError: true,
+      };
+    }
+
+    try {
+      const result = await this.executeInSubprocess(aliasDef, args, callChain);
+      const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
   /** Execute an alias in a subprocess for fault isolation. */
-  private async executeInSubprocess(aliasDef: AliasToolDef, args: Record<string, unknown>): Promise<unknown> {
+  private async executeInSubprocess(
+    aliasDef: AliasToolDef,
+    args: Record<string, unknown>,
+    callChain?: string[],
+  ): Promise<unknown> {
     // Load bundled JS lazily from DB (not held in memory on tool list)
     const dbAlias = this.db.getAlias(aliasDef.name);
     let bundledJs = dbAlias?.bundledJs;
@@ -196,6 +231,7 @@ export class AliasServer {
       input: args,
       isDefineAlias: aliasDef.isDefineAlias,
       aliasName: aliasDef.name,
+      ...(callChain && callChain.length > 0 ? { callChain } : {}),
     });
 
     return this.spawnExecutor(payload, 30_000) as Promise<unknown>;

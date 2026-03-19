@@ -18,6 +18,7 @@ import type {
   ToolInfo,
 } from "@mcp-cli/core";
 import {
+  ALIAS_SERVER_NAME,
   AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
@@ -360,13 +361,19 @@ export class IpcServer {
     });
 
     this.handlers.set("callTool", async (params, ctx) => {
-      const { server, tool, arguments: args, timeoutMs } = CallToolParamsSchema.parse(params);
+      const { server, tool, arguments: args, timeoutMs, callChain } = CallToolParamsSchema.parse(params);
       const toolSpan = ctx.span.child(`tool.${server}.${tool}`);
       toolSpan.setAttribute("tool.server", server);
       toolSpan.setAttribute("tool.name", tool);
+      if (callChain) toolSpan.setAttribute("alias.callChainDepth", callChain.length);
       const toolLabels = { server, tool };
       try {
-        const result = await this.pool.callTool(server, tool, args, timeoutMs);
+        // For cross-alias composition: route _aliases calls with a callChain
+        // directly through the alias server to thread cycle detection.
+        const result =
+          callChain && server === ALIAS_SERVER_NAME && this.aliasServer
+            ? await this.aliasServer.callToolWithChain(tool, args, callChain)
+            : await this.pool.callTool(server, tool, args, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
         // Dual-write: usage_stats (Phase 1 compat) + spans table
