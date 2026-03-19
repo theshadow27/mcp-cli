@@ -10,9 +10,12 @@
  * 1. Walking err.cause chains to find the original system error code
  * 2. Pattern-matching SDK message formats (e.g., "Unable to connect")
  *
+ * Performance: all tests share a single daemon instance (started once in
+ * beforeAll) to avoid per-test daemon startup overhead (~5s each).
+ *
  * @see https://github.com/theshadow27/mcp-cli/issues/855
  */
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
@@ -37,23 +40,45 @@ async function getServerStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Shared daemon — all transport error tests use a single daemon instance
+// with all server configs registered upfront.
+// ---------------------------------------------------------------------------
+
+let daemon: TestDaemon;
+
+beforeAll(async () => {
+  const dir = createTestDir();
+  const script = join(dir, "no-exec.sh");
+  writeFileSync(script, "#!/bin/sh\necho hello");
+  chmodSync(script, 0o644); // not executable
+
+  daemon = await startTestDaemon(
+    {
+      // Stdio servers
+      bogus: { command: "nonexistent-mcp-server-binary-xyz" },
+      noperm: { command: script },
+      crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
+      // HTTP servers
+      deadhttp: { type: "http", url: "http://127.0.0.1:19999/mcp" },
+      baddns: { type: "http", url: "http://this-host-does-not-resolve.invalid/mcp" },
+      // SSE server
+      deadsse: { type: "sse", url: "http://127.0.0.1:19998/events" },
+      // Healthy server (for listServers tests)
+      echo: { command: "bun", args: [resolve("test/echo-server.ts")] },
+    },
+    { dir },
+  );
+});
+
+afterAll(async () => {
+  await daemon?.kill();
+});
+
+// ---------------------------------------------------------------------------
 // Stdio transport errors
 // ---------------------------------------------------------------------------
 describe("Stdio transport errors", () => {
-  let daemon: TestDaemon | undefined;
-
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
-  });
-
   test("command not found → friendly message with command name and PATH hint", async () => {
-    daemon = await startTestDaemon({
-      bogus: { command: "nonexistent-mcp-server-binary-xyz" },
-    });
-
     const rpcError = await triggerConnect(daemon.socketPath, "bogus");
     expect(rpcError).toContain('command "nonexistent-mcp-server-binary-xyz" not found');
     expect(rpcError).toContain("PATH");
@@ -65,13 +90,6 @@ describe("Stdio transport errors", () => {
   });
 
   test("permission denied → friendly message with file path", async () => {
-    const dir = createTestDir();
-    const script = join(dir, "no-exec.sh");
-    writeFileSync(script, "#!/bin/sh\necho hello");
-    chmodSync(script, 0o644); // not executable
-
-    daemon = await startTestDaemon({ noperm: { command: script } }, { dir });
-
     const rpcError = await triggerConnect(daemon.socketPath, "noperm");
     expect(rpcError).toContain("permission denied");
 
@@ -81,10 +99,6 @@ describe("Stdio transport errors", () => {
   });
 
   test("process exits immediately → actionable exit message with command", async () => {
-    daemon = await startTestDaemon({
-      crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
-    });
-
     const rpcError = await triggerConnect(daemon.socketPath, "crasher");
     // The MCP SDK wraps the exit as "MCP error -32000: Connection closed".
     // wrapTransportError now matches this pattern and produces an actionable message.
@@ -103,20 +117,7 @@ describe("Stdio transport errors", () => {
 // HTTP transport errors
 // ---------------------------------------------------------------------------
 describe("HTTP transport errors", () => {
-  let daemon: TestDaemon | undefined;
-
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
-  });
-
   test("connection refused → friendly message with URL", async () => {
-    daemon = await startTestDaemon({
-      deadhttp: { type: "http", url: "http://127.0.0.1:19999/mcp" },
-    });
-
     const rpcError = await triggerConnect(daemon.socketPath, "deadhttp");
     expect(rpcError).toBeDefined();
     // The MCP SDK wraps ECONNREFUSED as "Unable to connect..." — wrapTransportError
@@ -131,10 +132,6 @@ describe("HTTP transport errors", () => {
   });
 
   test("DNS failure → DNS-specific message with URL", async () => {
-    daemon = await startTestDaemon({
-      baddns: { type: "http", url: "http://this-host-does-not-resolve.invalid/mcp" },
-    });
-
     const rpcError = await triggerConnect(daemon.socketPath, "baddns");
     expect(rpcError).toBeDefined();
     // The MCP SDK wraps ENOTFOUND — wrapTransportError now checks err.cause
@@ -155,20 +152,7 @@ describe("HTTP transport errors", () => {
 // SSE transport errors
 // ---------------------------------------------------------------------------
 describe("SSE transport errors", () => {
-  let daemon: TestDaemon | undefined;
-
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
-  });
-
   test("connection refused → friendly message with URL", async () => {
-    daemon = await startTestDaemon({
-      deadsse: { type: "sse", url: "http://127.0.0.1:19998/events" },
-    });
-
     const rpcError = await triggerConnect(daemon.socketPath, "deadsse");
     expect(rpcError).toBeDefined();
     expect(rpcError).toContain('Server "deadsse"');
@@ -186,20 +170,7 @@ describe("SSE transport errors", () => {
 // listServers: lastError field end-to-end verification
 // ---------------------------------------------------------------------------
 describe("listServers lastError field", () => {
-  let daemon: TestDaemon | undefined;
-
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
-  });
-
   test("failed server: state=error, lastError includes server name", async () => {
-    daemon = await startTestDaemon({
-      bogus: { command: "nonexistent-mcp-server-binary-xyz" },
-    });
-
     await triggerConnect(daemon.socketPath, "bogus");
 
     const status = await getServerStatus(daemon.socketPath, "bogus");
@@ -212,10 +183,6 @@ describe("listServers lastError field", () => {
   });
 
   test("healthy server: lastError is undefined after successful connect", async () => {
-    daemon = await startTestDaemon({
-      echo: { command: "bun", args: [resolve("test/echo-server.ts")] },
-    });
-
     await triggerConnect(daemon.socketPath, "echo");
 
     const status = await getServerStatus(daemon.socketPath, "echo");
@@ -225,11 +192,6 @@ describe("listServers lastError field", () => {
   });
 
   test("daemon remains functional after transport errors", async () => {
-    daemon = await startTestDaemon({
-      bogus: { command: "nonexistent-mcp-server-binary-xyz" },
-      echo: { command: "bun", args: [resolve("test/echo-server.ts")] },
-    });
-
     // Trigger failure on bogus server
     await triggerConnect(daemon.socketPath, "bogus");
 
