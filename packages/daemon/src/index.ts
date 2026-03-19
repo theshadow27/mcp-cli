@@ -191,6 +191,8 @@ export type ShutdownReason =
 export interface DaemonHandle {
   shutdown(reason?: ShutdownReason): Promise<void>;
   readonly isShuttingDown: boolean;
+  /** Resolves when shutdown is fully complete (all resources released). */
+  readonly shutdownComplete: Promise<void>;
   readonly db: StateDb;
   readonly pool: ServerPool;
   readonly ipcServer: IpcServer;
@@ -577,8 +579,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Graceful shutdown — re-entrant safe
   let _isShuttingDown = false;
+  let _shutdownResolve: (() => void) | null = null;
+  const _shutdownComplete = new Promise<void>((resolve) => {
+    _shutdownResolve = resolve;
+  });
   async function shutdown(reason?: ShutdownReason): Promise<void> {
-    if (_isShuttingDown) return;
+    if (_isShuttingDown) return _shutdownComplete;
     _isShuttingDown = true;
     const shutdownStart = performance.now();
     logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
@@ -651,6 +657,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }
     const totalShutdownMs = Math.round(performance.now() - shutdownStart);
     logger.info(`[mcpd] Shutdown complete in ${totalShutdownMs}ms`);
+    _shutdownResolve?.();
   }
 
   return {
@@ -658,6 +665,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     get isShuttingDown() {
       return _isShuttingDown;
     },
+    shutdownComplete: _shutdownComplete,
     db,
     pool,
     ipcServer,
