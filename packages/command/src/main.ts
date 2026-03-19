@@ -18,6 +18,7 @@ import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAcp } from "./commands/acp";
 import { cmdAdd, cmdAddJson } from "./commands/add";
+import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
 import { cmdClaude } from "./commands/claude";
@@ -281,6 +282,10 @@ async function main(): Promise<void> {
 
       case "tty":
         await cmdTty(cleanArgs.slice(1));
+        break;
+
+      case "agent":
+        await cmdAgent(cleanArgs.slice(1));
         break;
 
       case "claude":
