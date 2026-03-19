@@ -151,6 +151,50 @@ describe("P2: Config hot reload", () => {
     }, 10_000);
   });
 
+  test("modifying a server config triggers reconnect", async () => {
+    daemon = await startTestDaemon({ echo: echoServerConfig() });
+
+    // Connect the echo server by calling a tool
+    const before = await rpc(daemon.socketPath, "callTool", {
+      server: "echo",
+      tool: "echo",
+      arguments: { message: "before" },
+    });
+    expect(before.error).toBeUndefined();
+
+    // Verify it's connected
+    const statusBefore = await rpc(daemon.socketPath, "listServers");
+    const echoBefore = (statusBefore.result as Array<{ name: string; state: string }>).find((s) => s.name === "echo");
+    expect(echoBefore?.state).toBe("connected");
+
+    // Modify the echo server config (add an env var — changes deepEquals comparison)
+    const modifiedConfig = { ...echoServerConfig(), env: { MODIFIED: "1" } };
+    writeFileSync(join(daemon.dir, "servers.json"), JSON.stringify({ mcpServers: { echo: modifiedConfig } }));
+
+    // Poll until the server has been through a reconnect cycle.
+    // After config change, connected servers go through disconnect → reconnect.
+    // We detect this by waiting for the server to return to connected state
+    // with valid tools (meaning the new process started successfully).
+    const sock = daemon.socketPath;
+    await pollUntil(async () => {
+      const res = await rpc(sock, "listServers");
+      const echo = (res.result as Array<{ name: string; state: string }>).find((s) => s.name === "echo");
+      // During reconnect, state may briefly be disconnected/connecting.
+      // We want to see it come back to connected.
+      return echo?.state === "connected";
+    }, 10_000);
+
+    // Confirm the reconnected server still works
+    const after = await rpc(daemon.socketPath, "callTool", {
+      server: "echo",
+      tool: "echo",
+      arguments: { message: "after reconnect" },
+    });
+    expect(after.error).toBeUndefined();
+    const content = (after.result as { content: Array<{ text: string }> }).content;
+    expect(content[0].text).toBe("after reconnect");
+  });
+
   test("removing a server from config is detected", async () => {
     daemon = await startTestDaemon({ echo: echoServerConfig() });
 
@@ -262,6 +306,84 @@ describe("P4: Concurrent operations", () => {
       const content = (results[i].result as { content: Array<{ text: string }> }).content;
       expect(content[0].text).toBe(String(i + 100));
     }
+  });
+
+  test("callTool during config reload does not crash", async () => {
+    // Fire a config write while simultaneously calling tools — daemon must not crash
+    const echoConfig = echoServerConfig();
+    const configPath = join(daemon.dir, "servers.json");
+
+    // Add a second server to trigger config reload
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { echo: echoConfig, echo2: echoConfig } }));
+
+    // Immediately fire parallel callTool requests on the existing echo server
+    const count = 5;
+    const promises = Array.from({ length: count }, (_, i) =>
+      rpc(daemon.socketPath, "callTool", {
+        server: "echo",
+        tool: "add",
+        arguments: { a: i, b: 200 },
+      }),
+    );
+
+    const results = await Promise.all(promises);
+    for (let i = 0; i < count; i++) {
+      expect(results[i].error).toBeUndefined();
+      const content = (results[i].result as { content: Array<{ text: string }> }).content;
+      expect(content[0].text).toBe(String(i + 200));
+    }
+
+    // Daemon should still respond after the reload storm
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
+
+    // Wait for echo2 to appear, confirming reload completed
+    const sock = daemon.socketPath;
+    await pollUntil(async () => {
+      const res = await rpc(sock, "listServers");
+      return (res.result as Array<{ name: string }>).some((s) => s.name === "echo2");
+    }, 10_000);
+
+    // Restore original config for subsequent tests
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { echo: echoConfig } }));
+  });
+
+  test("listServers shows server in non-connected state before first use", async () => {
+    // Add a server that will fail to connect (invalid command)
+    const configPath = join(daemon.dir, "servers.json");
+    const echoConfig = echoServerConfig();
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          echo: echoConfig,
+          broken: { command: "nonexistent-binary-that-does-not-exist-12345" },
+        },
+      }),
+    );
+
+    // Poll until the broken server appears in listServers
+    const sock = daemon.socketPath;
+    await pollUntil(async () => {
+      const res = await rpc(sock, "listServers");
+      return (res.result as Array<{ name: string }>).some((s) => s.name === "broken");
+    }, 10_000);
+
+    // Server should be in disconnected state (lazy connect — not attempted yet)
+    const res = await rpc(daemon.socketPath, "listServers");
+    const servers = res.result as Array<{ name: string; state: string }>;
+    const broken = servers.find((s) => s.name === "broken");
+    expect(broken).toBeDefined();
+    expect(broken?.state).toBe("disconnected");
+
+    // Restore original config
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { echo: echoConfig } }));
+
+    // Wait for broken server to be removed
+    await pollUntil(async () => {
+      const after = await rpc(sock, "listServers");
+      return (after.result as Array<{ name: string }>).every((s) => s.name !== "broken");
+    }, 10_000);
   });
 });
 
