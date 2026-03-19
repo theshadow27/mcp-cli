@@ -237,9 +237,9 @@ export async function executeAliasBundled(
     const result = captured.output.safeParse(output);
     if (!result.success) {
       console.error(`⚠ Output validation warning: ${result.error.message}`);
-    } else {
-      return result.data;
     }
+    // Always return consistently: coerced data on success, raw output on failure
+    return result.success ? result.data : output;
   }
 
   return output;

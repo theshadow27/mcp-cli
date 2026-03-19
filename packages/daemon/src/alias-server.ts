@@ -5,7 +5,7 @@
  * Alias execution happens in a subprocess via Bun.spawn for fault isolation.
  */
 
-import type { AliasMetadata, AliasValidationResult, JsonSchema, ToolInfo } from "@mcp-cli/core";
+import type { AliasValidationResult, JsonSchema, ToolInfo } from "@mcp-cli/core";
 import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -200,18 +200,6 @@ export class AliasServer {
     return this.spawnExecutor(payload, 30_000) as Promise<unknown>;
   }
 
-  /** Extract metadata from bundled JS in a subprocess (safe against sync infinite loops). */
-  async extractMetadataInSubprocess(bundledJs: string): Promise<AliasMetadata> {
-    const payload = JSON.stringify({
-      bundledJs,
-      input: null,
-      isDefineAlias: true,
-      mode: "extractMetadata",
-    });
-
-    return this.spawnExecutor(payload, 10_000) as Promise<AliasMetadata>;
-  }
-
   /** Validate bundled JS in a subprocess, returning structured results. */
   async validateInSubprocess(bundledJs: string): Promise<AliasValidationResult> {
     const payload = JSON.stringify({
@@ -248,6 +236,11 @@ export class AliasServer {
       ]);
 
       clearTimeout(killTimeout);
+
+      // Surface subprocess warnings (e.g. output validation) even on success
+      if (exitCode === 0 && stderr.trim()) {
+        console.warn(`[alias] executor stderr: ${stderr.trim()}`);
+      }
 
       if (exitCode !== 0) {
         if (stdout) {
