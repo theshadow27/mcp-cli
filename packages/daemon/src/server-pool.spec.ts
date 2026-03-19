@@ -91,6 +91,48 @@ describe("isRetryableError", () => {
       expect(isRetryableError(new Error("something went wrong"))).toBe(false);
     });
   });
+
+  describe("stdio-specific retry semantics", () => {
+    test("process exit is retryable for stdio transport", () => {
+      expect(isRetryableError(new Error("process exited with code 1"), "stdio")).toBe(true);
+    });
+
+    test("process killed is retryable for stdio transport", () => {
+      expect(isRetryableError(new Error("process killed by SIGTERM"), "stdio")).toBe(true);
+    });
+
+    test("spawn error (non-ENOENT) is retryable for stdio transport", () => {
+      expect(isRetryableError(new Error("spawn failed: resource busy"), "stdio")).toBe(true);
+    });
+
+    test("signal termination is retryable for stdio transport", () => {
+      expect(isRetryableError(new Error("process received signal SIGKILL"), "stdio")).toBe(true);
+    });
+
+    test("process crash is retryable for stdio transport", () => {
+      expect(isRetryableError(new Error("child process crashed"), "stdio")).toBe(true);
+    });
+
+    test("process exit is NOT retryable for http transport", () => {
+      expect(isRetryableError(new Error("process exited with code 1"), "http")).toBe(false);
+    });
+
+    test("process exit is NOT retryable without transport context", () => {
+      expect(isRetryableError(new Error("process exited with code 1"))).toBe(false);
+    });
+
+    test("ENOENT is NOT retryable even for stdio transport", () => {
+      expect(isRetryableError(errWithCode("spawn ENOENT", "ENOENT"), "stdio")).toBe(false);
+    });
+
+    test("EACCES is NOT retryable even for stdio transport", () => {
+      expect(isRetryableError(errWithCode("permission denied", "EACCES"), "stdio")).toBe(false);
+    });
+
+    test("network errors are still retryable regardless of transport", () => {
+      expect(isRetryableError(errWithCode("connect failed", "ECONNREFUSED"), "stdio")).toBe(true);
+    });
+  });
 });
 
 describe("wrapTransportError", () => {
@@ -575,6 +617,59 @@ describe("isTransientCallError", () => {
     test("generic unknown error is not transient", () => {
       expect(isTransientCallError(new Error("something went wrong"))).toBe(false);
     });
+  });
+});
+
+// -- ensureConnected stdio retry semantics --
+
+describe("ServerPool stdio retry semantics", () => {
+  test("stdio server retries process crash up to STDIO_CONNECT_MAX_RETRIES times", async () => {
+    let connectCount = 0;
+    const connectFn: ConnectFn = mock(() => {
+      connectCount++;
+      return Promise.reject(new Error("process exited with code 1"));
+    });
+    const pool = new ServerPool(
+      makeConfig({ srv: { command: "npx", args: ["-y", "flaky-server"] } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await expect(pool.listTools("srv")).rejects.toThrow("process exited unexpectedly");
+    // STDIO_CONNECT_MAX_RETRIES = 1, so: initial attempt + 1 retry = 2 total
+    expect(connectCount).toBe(2);
+  });
+
+  test("stdio server does not retry ENOENT", async () => {
+    let connectCount = 0;
+    const connectFn: ConnectFn = mock(() => {
+      connectCount++;
+      return Promise.reject(errWithCode("spawn ENOENT", "ENOENT"));
+    });
+    const pool = new ServerPool(makeConfig({ srv: { command: "nonexistent" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.listTools("srv")).rejects.toThrow('command "nonexistent" not found');
+    // No retries for ENOENT
+    expect(connectCount).toBe(1);
+  });
+
+  test("http server retries up to CONNECT_MAX_RETRIES times", async () => {
+    let connectCount = 0;
+    const connectFn: ConnectFn = mock(() => {
+      connectCount++;
+      return Promise.reject(errWithCode("connect failed", "ECONNREFUSED"));
+    });
+    const pool = new ServerPool(
+      makeConfig({ srv: { type: "http" as const, url: "https://example.com/mcp" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await expect(pool.listTools("srv")).rejects.toThrow();
+    // CONNECT_MAX_RETRIES = 2, so: initial attempt + 2 retries = 3 total
+    expect(connectCount).toBe(3);
   });
 });
 
