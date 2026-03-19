@@ -5,14 +5,12 @@
  * conn.lastError → listServers(). Verifies that friendly, actionable
  * error messages surface correctly for each transport type.
  *
- * NOTE: The MCP SDK wraps low-level system errors (ECONNREFUSED, ENOTFOUND,
- * etc.) in its own higher-level messages before they reach wrapTransportError.
- * This means some of the pattern matches in wrapTransportError (which look for
- * raw error codes/patterns) fall through to generic fallbacks. The tests below
- * verify the ACTUAL end-to-end behavior. See filed follow-up issue for improving
- * SDK error unwrapping.
+ * The MCP SDK wraps low-level system errors (ECONNREFUSED, ENOTFOUND, etc.)
+ * in higher-level messages. wrapTransportError handles this by:
+ * 1. Walking err.cause chains to find the original system error code
+ * 2. Pattern-matching SDK message formats (e.g., "Unable to connect")
  *
- * @see https://github.com/theshadow27/mcp-cli/issues/38
+ * @see https://github.com/theshadow27/mcp-cli/issues/855
  */
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
@@ -82,22 +80,22 @@ describe("Stdio transport errors", () => {
     expect(status?.lastError).toContain("permission denied");
   });
 
-  test("process exits immediately → error surfaces through lastError", async () => {
+  test("process exits immediately → actionable exit message with command", async () => {
     daemon = await startTestDaemon({
       crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
     });
 
     const rpcError = await triggerConnect(daemon.socketPath, "crasher");
-    // The MCP SDK wraps the exit in "MCP error -32000: Connection closed"
-    // which wrapTransportError sees as a generic stdio error. The server
-    // name and transport type still appear in the wrapped message.
+    // The MCP SDK wraps the exit as "MCP error -32000: Connection closed".
+    // wrapTransportError now matches this pattern and produces an actionable message.
     expect(rpcError).toBeDefined();
     expect(rpcError).toContain('Server "crasher"');
-    expect(rpcError).toContain("stdio");
+    expect(rpcError).toContain("process exited unexpectedly");
+    expect(rpcError).toContain("bun");
 
     const status = await getServerStatus(daemon.socketPath, "crasher");
     expect(status?.state).toBe("error");
-    expect(status?.lastError).toBeDefined();
+    expect(status?.lastError).toContain("process exited unexpectedly");
   });
 });
 
@@ -114,34 +112,38 @@ describe("HTTP transport errors", () => {
     }
   });
 
-  test("connection refused → error with server name and transport type", async () => {
+  test("connection refused → friendly message with URL", async () => {
     daemon = await startTestDaemon({
       deadhttp: { type: "http", url: "http://127.0.0.1:19999/mcp" },
     });
 
     const rpcError = await triggerConnect(daemon.socketPath, "deadhttp");
     expect(rpcError).toBeDefined();
-    // The MCP SDK wraps ECONNREFUSED as "Unable to connect. Is the computer
-    // able to access the url?" which doesn't match wrapTransportError's
-    // ECONNREFUSED pattern — falls through to generic HTTP fallback
+    // The MCP SDK wraps ECONNREFUSED as "Unable to connect..." — wrapTransportError
+    // now matches this pattern and produces a URL-specific message.
     expect(rpcError).toContain('Server "deadhttp"');
-    expect(rpcError).toContain("http");
+    expect(rpcError).toContain("could not connect to http://127.0.0.1:19999/mcp");
+    expect(rpcError).toContain("Is the server running?");
 
     const status = await getServerStatus(daemon.socketPath, "deadhttp");
     expect(status?.state).toBe("error");
-    expect(status?.lastError).toBeDefined();
-    expect(status?.lastError).toContain('"deadhttp"');
+    expect(status?.lastError).toContain("could not connect to");
   });
 
-  test("DNS failure → error with server name", async () => {
+  test("DNS failure → DNS-specific message with URL", async () => {
     daemon = await startTestDaemon({
       baddns: { type: "http", url: "http://this-host-does-not-resolve.invalid/mcp" },
     });
 
     const rpcError = await triggerConnect(daemon.socketPath, "baddns");
     expect(rpcError).toBeDefined();
-    // The MCP SDK wraps ENOTFOUND in its own message too
+    // The MCP SDK wraps ENOTFOUND — wrapTransportError now checks err.cause
+    // to recover the original code and distinguish DNS from connection refused.
     expect(rpcError).toContain('Server "baddns"');
+    // Should get either DNS-specific or connection-refused message (depends on
+    // whether the SDK preserves the cause chain). Either is better than generic.
+    const isDnsOrConnectMsg = rpcError?.includes("DNS lookup failed") || rpcError?.includes("could not connect to");
+    expect(isDnsOrConnectMsg).toBe(true);
 
     const status = await getServerStatus(daemon.socketPath, "baddns");
     expect(status?.state).toBe("error");
@@ -162,7 +164,7 @@ describe("SSE transport errors", () => {
     }
   });
 
-  test("connection refused → error with server name and SSE context", async () => {
+  test("connection refused → friendly message with URL", async () => {
     daemon = await startTestDaemon({
       deadsse: { type: "sse", url: "http://127.0.0.1:19998/events" },
     });
@@ -170,13 +172,13 @@ describe("SSE transport errors", () => {
     const rpcError = await triggerConnect(daemon.socketPath, "deadsse");
     expect(rpcError).toBeDefined();
     expect(rpcError).toContain('Server "deadsse"');
-    // SSE errors may be caught as "SSE error:" by the SDK
-    expect(rpcError).toContain("sse");
+    // The MCP SDK wraps as "SSE error: Unable to connect..." — wrapTransportError
+    // now matches "unable to connect" pattern for SSE too.
+    expect(rpcError).toContain("could not connect to http://127.0.0.1:19998/events");
 
     const status = await getServerStatus(daemon.socketPath, "deadsse");
     expect(status?.state).toBe("error");
-    expect(status?.lastError).toBeDefined();
-    expect(status?.lastError).toContain('"deadsse"');
+    expect(status?.lastError).toContain("could not connect to");
   });
 });
 
