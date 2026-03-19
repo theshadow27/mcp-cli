@@ -17,7 +17,7 @@
  * @see https://agentclientprotocol.com/protocol/schema
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -107,7 +107,7 @@ class NdjsonTransport {
   private buffer = "";
   private messageQueue: JsonRpcMessage[] = [];
   private waiters: Array<(msg: JsonRpcMessage) => void> = [];
-  private traceFile: number;
+  private tracePath: string;
   private closed = false;
   private readPromise: Promise<void>;
 
@@ -117,9 +117,7 @@ class NdjsonTransport {
     private cwd: string,
   ) {
     writeFileSync(tracePath, ""); // truncate
-    const file = Bun.openFile(tracePath);
-    // fd is always present for local files
-    this.traceFile = file.fd ?? 0;
+    this.tracePath = tracePath;
 
     this.proc = Bun.spawn(command, {
       stdin: "pipe",
@@ -185,7 +183,7 @@ class NdjsonTransport {
 
   private trace(direction: "send" | "recv", msg: unknown): void {
     const entry = { ts: new Date().toISOString(), direction, msg };
-    Bun.write(this.traceFile, `${JSON.stringify(entry)}\n`);
+    appendFileSync(this.tracePath, `${JSON.stringify(entry)}\n`);
   }
 
   async send(msg: object): Promise<void> {
@@ -295,7 +293,7 @@ async function runSpike(config: Config): Promise<Findings> {
   console.error(`[spike] Work directory: ${workDir}`);
 
   // Determine command
-  const command = config.agent === "copilot" ? ["copilot", "--acp"] : ["gemini", "--acp"];
+  const command = config.agent === "copilot" ? ["gh", "copilot", "--acp"] : ["gemini", "--acp"];
 
   console.error(`[spike] Spawning: ${command.join(" ")}`);
   const transport = new NdjsonTransport(command, config.tracePath, workDir);
