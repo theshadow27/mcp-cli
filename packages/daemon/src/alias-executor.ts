@@ -11,13 +11,20 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { type AliasContext, executeAliasBundled, stubProxy, validateAliasBundled } from "@mcp-cli/core";
+import {
+  type AliasContext,
+  createAliasCache,
+  executeAliasBundled,
+  stubProxy,
+  validateAliasBundled,
+} from "@mcp-cli/core";
 
 interface ExecutorInput {
   bundledJs: string;
   input: unknown;
   isDefineAlias: boolean;
   mode?: "execute" | "validate";
+  aliasName?: string;
 }
 
 async function main(): Promise<void> {
@@ -31,7 +38,7 @@ async function main(): Promise<void> {
 
   // Read input from stdin
   const stdinText = await Bun.stdin.text();
-  const { bundledJs, input, isDefineAlias, mode } = JSON.parse(stdinText) as ExecutorInput;
+  const { bundledJs, input, isDefineAlias, mode, aliasName } = JSON.parse(stdinText) as ExecutorInput;
 
   if (mode === "validate") {
     const validation = await validateAliasBundled(bundledJs);
@@ -47,7 +54,7 @@ async function main(): Promise<void> {
         : {},
     file: (path: string) => readFile(path, "utf-8"),
     json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
-    cache: async (_key, producer) => producer(),
+    cache: createAliasCache(aliasName ?? "unknown"),
   };
 
   const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);
