@@ -107,11 +107,6 @@ const EXCLUSIONS: Record<string, string> = {
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
   "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
 
-  // OpenCode — same Worker lifecycle pattern as ACP, plus HTTP/SSE transport requires real server
-  "daemon/src/opencode-server.ts": "8% coverage, Worker crash recovery lifecycle (mirrors acp-server.ts)",
-  "opencode/src/opencode-process.ts": "37% coverage, Bun.spawn lifecycle requires real subprocess",
-  "opencode/src/opencode-sse.ts": "25% coverage, SSE stream requires real HTTP connection",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
 
