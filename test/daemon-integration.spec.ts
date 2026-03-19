@@ -48,13 +48,14 @@ describe("P1: Daemon lifecycle", () => {
     daemon = undefined;
   });
 
-  test("shutdown via IPC logs reason in stderr", async () => {
+  test("shutdown via IPC logs reason and timing in stderr", async () => {
     daemon = await startTestDaemon({});
     await rpc(daemon.socketPath, "shutdown");
     await daemon.proc.exited;
 
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
     expect(stderr).toContain("Shutting down (IPC shutdown request)");
+    expect(stderr).toContain("Shutdown complete in ");
     daemon = undefined;
   });
 
@@ -68,7 +69,7 @@ describe("P1: Daemon lifecycle", () => {
     daemon = undefined;
   });
 
-  test("idle timeout fires and process exits", async () => {
+  test("idle timeout fires and process exits with timing instrumentation", async () => {
     // Skip virtual servers — their variable startup time defers the idle timer
     // via hasPendingServers(), which was the root cause of the 15s margin (#492).
     daemon = await startTestDaemon({}, { idleTimeout: 4_000, skipVirtualServers: true });
@@ -88,6 +89,17 @@ describe("P1: Daemon lifecycle", () => {
 
     // Daemon should exit within 2x its configured idle timeout under any reasonable load
     if (exitCode === 0) expect(elapsed).toBeLessThan(8_000);
+
+    // Verify timing instrumentation is present in stderr (#842)
+    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    expect(stderr).toContain("Idle timer fired: expected=4000ms actual=");
+    expect(stderr).toContain("drift=");
+    expect(stderr).toContain("Shutdown complete in ");
+    // Log the drift for investigation
+    const driftMatch = stderr.match(/drift=(-?\d+)ms/);
+    if (driftMatch) {
+      console.error(`[idle-timeout-test] Timer drift: ${driftMatch[1]}ms (elapsed wall time: ${elapsed}ms)`);
+    }
 
     daemon = undefined;
   });
