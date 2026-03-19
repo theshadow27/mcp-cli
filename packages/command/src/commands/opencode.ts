@@ -21,14 +21,25 @@ import { c, printError as defaultPrintError, formatToolResult } from "../output"
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import {
+  type PrStatus,
   type SharedSessionDeps,
   cleanupWorktree,
+  defaultGetPrStatus,
   parseByeResult,
   parseLogArgs,
   parseWaitArgs,
   resolveSessionId,
 } from "./claude";
-import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import {
+  type TranscriptEntry,
+  colorState,
+  compactTranscript,
+  extractContentSummary,
+  filterByRepo,
+  formatCost,
+  formatSessionShort,
+  getGitRepoRoot,
+} from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 
@@ -39,9 +50,11 @@ const P = "opencode";
 
 // ── Dependency injection ──
 
-/** OpenCode deps use only the shared session fields — no provider-specific helpers. */
+/** OpenCode deps extend shared deps with PR/repo helpers for feature parity. */
 export interface OpencodeDeps extends SharedSessionDeps {
   getStaleDaemonWarning: () => string | null;
+  getGitRoot: () => string | null;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
 }
 
 const defaultDeps: OpencodeDeps = {
@@ -53,6 +66,8 @@ const defaultDeps: OpencodeDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getStaleDaemonWarning,
+  getGitRoot: getGitRepoRoot,
+  getPrStatus: defaultGetPrStatus,
   exec: (cmd, opts) => {
     const result = Bun.spawnSync(cmd, {
       stdout: "pipe",
@@ -243,6 +258,9 @@ async function opencodeSpawn(args: string[], d: OpencodeDeps): Promise<void> {
 async function opencodeList(args: string[], d: OpencodeDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
+  const showPr = args.includes("--pr");
+  const showAll = args.includes("--all") || args.includes("-a");
+
   const result = await d.callTool(`${P}_session_list`, {});
   const text = formatToolResult(result);
 
@@ -259,6 +277,14 @@ async function opencodeList(args: string[], d: OpencodeDeps): Promise<void> {
     return;
   }
 
+  // Client-side repo-scoping: filter by cwd prefix unless --all
+  if (!showAll) {
+    const gitRoot = d.getGitRoot();
+    if (gitRoot) {
+      sessions = filterByRepo(sessions, gitRoot);
+    }
+  }
+
   if (sessions.length === 0) {
     console.error("No active OpenCode sessions.");
     return;
@@ -271,19 +297,34 @@ async function opencodeList(args: string[], d: OpencodeDeps): Promise<void> {
     return;
   }
 
+  // Gather PR status for worktree sessions in parallel
+  const prStatuses = showPr
+    ? await Promise.all(sessions.map((s) => (s.worktree ? d.getPrStatus(s.worktree) : Promise.resolve(null))))
+    : sessions.map(() => null);
+
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+
   // Table output
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)} CWD`;
+  const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
+  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
-  for (const s of sessions) {
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
     const state = colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
-    const cost = s.cost != null && s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
+    const cost = formatCost(s.cost, s.tokens).padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
+    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens} ${c.dim}${cwd}${c.reset}`);
+    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${pr} ${c.dim}${cwd}${c.reset}`);
   }
+}
+
+function formatPrStatus(pr: PrStatus | null): string {
+  if (!pr) return "—";
+  return `#${pr.number} ${pr.state}`;
 }
 
 // ── Send ──
@@ -355,6 +396,7 @@ async function opencodeInterrupt(args: string[], d: OpencodeDeps): Promise<void>
 
 async function opencodeLog(args: string[], d: OpencodeDeps): Promise<void> {
   const parsed = parseLogArgs(args);
+  const compact = args.includes("--compact");
 
   if (parsed.error) {
     d.printError(parsed.error);
@@ -362,7 +404,7 @@ async function opencodeLog(args: string[], d: OpencodeDeps): Promise<void> {
   }
 
   if (!parsed.sessionPrefix) {
-    d.printError("Usage: mcx opencode log <session-id> [--last N]");
+    d.printError("Usage: mcx opencode log <session-id> [--last N] [--compact]");
     d.exit(1);
   }
 
@@ -386,12 +428,16 @@ async function opencodeLog(args: string[], d: OpencodeDeps): Promise<void> {
     return;
   }
 
-  let entries: Array<{ timestamp: number; direction: string; message: { type: string; [k: string]: unknown } }>;
+  let entries: TranscriptEntry[];
   try {
     entries = JSON.parse(text);
   } catch {
     console.log(text);
     return;
+  }
+
+  if (compact) {
+    entries = compactTranscript(entries);
   }
 
   const truncate = (s: string) => (parsed.full || s.length <= 200 ? s : `${s.slice(0, 200)}…`);
@@ -491,7 +537,9 @@ Usage:
   mcx opencode spawn --task "..." --json     Machine-parseable JSON output
   mcx opencode spawn "description"           Shorthand (positional task)
   mcx opencode spawn -w --task "desc"        Spawn in a new git worktree
-  mcx opencode ls                            List active OpenCode sessions
+  mcx opencode ls                            List active OpenCode sessions (current repo)
+  mcx opencode ls --all                      List all OpenCode sessions (all repos)
+  mcx opencode ls --pr                       Show PR status for worktree sessions
   mcx opencode send <session> <message>      Send follow-up prompt (non-blocking)
   mcx opencode wait [session]                Block until a session event occurs
   mcx opencode bye <session>                 End session and stop process
@@ -500,6 +548,7 @@ Usage:
   mcx opencode log <session> --json          Raw JSON transcript output
   mcx opencode log <session> --json --jq '.' Apply jq filter to JSON output
   mcx opencode log <session> --full          Full output (no truncation)
+  mcx opencode log <session> --compact       Truncated tool results for overview
 
 Spawn options:
   --task, -t "description"    Task prompt for OpenCode
@@ -520,5 +569,6 @@ Wait options:
   --timeout, -t <ms>          Max wait time (default: 300000)
 
 Session IDs support prefix matching (like git SHAs).
-OpenCode tracks cost in USD and reports reasoning tokens.`);
+OpenCode tracks cost in USD and reports reasoning tokens.
+Cost is estimated from token counts when not reported by the provider (shown as ~$X.XXXX).`);
 }

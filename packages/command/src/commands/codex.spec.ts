@@ -13,6 +13,8 @@ function makeDeps(overrides?: Partial<CodexDeps>): CodexDeps {
       throw new ExitError(code);
     }) as CodexDeps["exit"],
     getStaleDaemonWarning: mock(() => null),
+    getGitRoot: mock(() => null),
+    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ...overrides,
   };
@@ -401,7 +403,7 @@ describe("codex ls", () => {
     }
   });
 
-  test("shows N/A for cost in table output", async () => {
+  test("shows estimated cost when real cost is null", async () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
@@ -410,10 +412,10 @@ describe("codex ls", () => {
     console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
     try {
       await cmdCodex(["ls"], deps);
-      // Session rows should contain N/A for cost
+      // Session rows should show estimated cost (with ~ prefix) instead of N/A
       const sessionRows = logCalls.filter((l) => l.includes("abc12345".slice(0, 8)));
       expect(sessionRows.length).toBeGreaterThan(0);
-      expect(sessionRows[0]).toContain("N/A");
+      expect(sessionRows[0]).toContain("~$");
     } finally {
       console.log = origLog;
     }
@@ -465,6 +467,92 @@ describe("codex ls", () => {
       expect(errCalls.some((l) => l.includes("No active Codex sessions"))).toBe(true);
     } finally {
       console.error = origErr;
+    }
+  });
+
+  test("filters sessions by repo root when getGitRoot returns a path", async () => {
+    const sessionsWithCwd = [
+      { ...SESSION_LIST[0], cwd: "/my/repo/src" },
+      { ...SESSION_LIST[1], cwd: "/other/project" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithCwd)),
+      getGitRoot: mock(() => "/my/repo"),
+    });
+    const logCalls: string[] = [];
+    const origLog = console.log;
+    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["ls"], deps);
+      // Only first session should appear (cwd under /my/repo)
+      const sessionRows = logCalls.filter((l) => l.includes("abc12345".slice(0, 8)));
+      expect(sessionRows.length).toBe(1);
+      const otherRows = logCalls.filter((l) => l.includes("def67890".slice(0, 8)));
+      expect(otherRows.length).toBe(0);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--all bypasses repo filtering", async () => {
+    const sessionsWithCwd = [
+      { ...SESSION_LIST[0], cwd: "/my/repo/src" },
+      { ...SESSION_LIST[1], cwd: "/other/project" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithCwd)),
+      getGitRoot: mock(() => "/my/repo"),
+    });
+    const logCalls: string[] = [];
+    const origLog = console.log;
+    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["ls", "--all"], deps);
+      // Both sessions should appear
+      const allRows = logCalls.filter((l) => l.includes("abc12345".slice(0, 8)) || l.includes("def67890".slice(0, 8)));
+      expect(allRows.length).toBe(2);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shows estimated cost when real cost is null", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+    });
+    const logCalls: string[] = [];
+    const origLog = console.log;
+    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["ls"], deps);
+      // Cost should show estimated value with ~ prefix instead of N/A
+      const sessionRows = logCalls.filter((l) => l.includes("abc12345".slice(0, 8)));
+      expect(sessionRows.length).toBeGreaterThan(0);
+      expect(sessionRows[0]).toContain("~$");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--pr shows PR status for worktree sessions", async () => {
+    const sessionsWithWt = [
+      { ...SESSION_LIST[0], worktree: "feat-branch", cwd: "/repo/.claude/worktrees/feat-branch" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessionsWithWt)),
+      getPrStatus: mock(async () => ({ number: 42, state: "open" })),
+    });
+    const logCalls: string[] = [];
+    const origLog = console.log;
+    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    try {
+      await cmdCodex(["ls", "--pr"], deps);
+      const headerRow = logCalls.find((l) => l.includes("PR"));
+      expect(headerRow).toBeDefined();
+      const sessionRow = logCalls.find((l) => l.includes("#42"));
+      expect(sessionRow).toBeDefined();
+    } finally {
+      console.log = origLog;
     }
   });
 });
