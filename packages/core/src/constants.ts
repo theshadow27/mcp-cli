@@ -234,6 +234,7 @@ export const CLAUDE_SERVER_NAME = "_claude";
 export const CODEX_SERVER_NAME = "_codex";
 export const OPENCODE_SERVER_NAME = "_opencode";
 export const ACP_SERVER_NAME = "_acp";
+export const OPENCODE_SERVER_NAME = "_opencode";
 export const ALIAS_SERVER_NAME = "_aliases";
 export const METRICS_SERVER_NAME = "_metrics";
 export const MAIL_SERVER_NAME = "_mail";

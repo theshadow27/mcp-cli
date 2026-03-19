@@ -27,6 +27,7 @@ import {
   DEFAULT_CLAUDE_WS_PORT,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
+  OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
   auditRuntimePermissions,
   consoleLogger,
@@ -51,6 +52,7 @@ import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
 import { MetricsServer } from "./metrics-server";
+import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
@@ -288,6 +290,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     Bun.spawnSync(["which", "gemini"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const acpServer = acpAgentInstalled ? new AcpServer(db, daemonId, undefined, logger) : null;
 
+  // OpenCode server: only created if `opencode` binary is installed
+  const opencodeInstalled = Bun.spawnSync(["which", "opencode"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const opencodeServer = opencodeInstalled ? new OpenCodeServer(db, daemonId, undefined, logger) : null;
+
   const metricsServer = new MetricsServer(metrics);
 
   // Register uptime and server metrics
@@ -302,6 +308,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     claudeServer.pruneDeadSessions();
     codexServer?.pruneDeadSessions();
     acpServer?.pruneDeadSessions();
+    opencodeServer?.pruneDeadSessions();
   }, 30_000);
 
   // Update uptime and server gauges periodically
@@ -354,7 +361,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       claudeServer.pruneDeadSessions();
       codexServer?.pruneDeadSessions();
       acpServer?.pruneDeadSessions();
-      if (claudeServer.hasActiveSessions() || codexServer?.hasActiveSessions() || acpServer?.hasActiveSessions()) {
+      opencodeServer?.pruneDeadSessions();
+      if (
+        claudeServer.hasActiveSessions() ||
+        codexServer?.hasActiveSessions() ||
+        acpServer?.hasActiveSessions() ||
+        opencodeServer?.hasActiveSessions()
+      ) {
         logger.debug("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
         return;
@@ -414,6 +427,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
   if (acpServer) {
     acpServer.onActivity = () => resetIdleTimer();
+  }
+  if (opencodeServer) {
+    opencodeServer.onActivity = () => resetIdleTimer();
   }
 
   // Start idle timer
@@ -506,6 +522,28 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       );
     }
 
+    if (opencodeServer) {
+      pool.registerPendingVirtualServer(
+        OPENCODE_SERVER_NAME,
+        (async () => {
+          try {
+            const { client: opencodeClient, transport: opencodeTransport } = await opencodeServer.start();
+            const opencodeTools = buildOpenCodeToolCache();
+            pool.registerVirtualServer(OPENCODE_SERVER_NAME, opencodeClient, opencodeTransport, opencodeTools);
+            logger.info("[mcpd] OpenCode session server started");
+          } catch (err) {
+            logger.error(`[mcpd] Failed to start OpenCode session server: ${err}`);
+          }
+
+          opencodeServer.onRestarted = (client, transport) => {
+            const opencodeTools = buildOpenCodeToolCache();
+            pool.registerVirtualServer(OPENCODE_SERVER_NAME, client, transport, opencodeTools);
+            logger.info("[mcpd] OpenCode session server re-registered after crash recovery");
+          };
+        })(),
+      );
+    }
+
     pool.registerPendingVirtualServer(
       METRICS_SERVER_NAME,
       (async () => {
@@ -563,6 +601,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         [CLAUDE_SERVER_NAME, claudeServer],
         [CODEX_SERVER_NAME, codexServer],
         [ACP_SERVER_NAME, acpServer],
+        [OPENCODE_SERVER_NAME, opencodeServer],
         [ALIAS_SERVER_NAME, aliasServer],
         [METRICS_SERVER_NAME, metricsServer],
         [MAIL_SERVER_NAME, mailServer],
