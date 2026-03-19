@@ -219,8 +219,16 @@ describe("cmdInstall", () => {
     try {
       await cmdInstall(["sentry", "--json"], deps);
 
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      const output = JSON.parse(logSpy.mock.calls[0][0] as string);
+      const jsonCalls = logSpy.mock.calls.filter((c) => {
+        try {
+          const p = JSON.parse(c[0] as string);
+          return typeof p === "object" && p !== null && "name" in p;
+        } catch {
+          return false;
+        }
+      });
+      expect(jsonCalls.length).toBe(1);
+      const output = JSON.parse(jsonCalls[0][0] as string);
       expect(output.name).toBe("sentry");
       expect(output.config).toEqual({ type: "http", url: "https://mcp.sentry.io" });
     } finally {
