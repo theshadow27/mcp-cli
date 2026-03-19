@@ -74,8 +74,9 @@ describe("daemon index.ts", () => {
     });
 
     afterAll(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       opts[Symbol.dispose]();
       _restoreOptions();
@@ -289,7 +290,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 2_000);
+        await pollUntil(() => handle?.isShuttingDown, 1_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -308,7 +309,7 @@ describe("daemon index.ts", () => {
         }
 
         // Now stop pinging and let it idle out
-        await pollUntil(() => handle?.isShuttingDown, 2_000);
+        await pollUntil(() => handle?.isShuttingDown, 1_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -317,7 +318,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 2_000);
+        await pollUntil(() => handle?.isShuttingDown, 1_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });

@@ -233,12 +233,15 @@ export class IpcServer {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
     }
-    this.server?.stop(true);
+    // Unlink the socket FIRST so new connections fail immediately with ENOENT
+    // (a clean error) rather than ENXIO (partial teardown race).
     try {
       unlinkSync(this.socketPath);
     } catch {
       // already gone
     }
+    // Then force-stop the server — any in-flight fetch() handlers are aborted.
+    this.server?.stop(true);
   }
 
   /** If draining and no requests in flight, trigger shutdown on next tick (lets Bun flush responses) */
