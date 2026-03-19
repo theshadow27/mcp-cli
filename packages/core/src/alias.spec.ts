@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFINE_ALIAS_SENTINEL, isDefineAlias } from "./alias";
+import { DEFINE_ALIAS_SENTINEL, extractContent, isDefineAlias } from "./alias";
 
 describe("DEFINE_ALIAS_SENTINEL", () => {
   test("is the expected string", () => {
@@ -33,5 +33,54 @@ describe("isDefineAlias", () => {
 
   test("returns false for partial match without open paren", () => {
     expect(isDefineAlias("const defineAlias = 42")).toBe(false);
+  });
+});
+
+describe("extractContent", () => {
+  test("unwraps single text content with JSON parsing", () => {
+    const result = { content: [{ type: "text", text: '{"id":1,"name":"test"}' }] };
+    expect(extractContent(result)).toEqual({ id: 1, name: "test" });
+  });
+
+  test("unwraps single text content as plain string when not JSON", () => {
+    const result = { content: [{ type: "text", text: "hello world" }] };
+    expect(extractContent(result)).toBe("hello world");
+  });
+
+  test("returns array of text for multiple content items", () => {
+    const result = {
+      content: [
+        { type: "text", text: "line 1" },
+        { type: "text", text: "line 2" },
+      ],
+    };
+    expect(extractContent(result)).toEqual(["line 1", "line 2"]);
+  });
+
+  test("filters out non-text content items", () => {
+    const result = {
+      content: [
+        { type: "image", text: "ignored" },
+        { type: "text", text: "only text" },
+      ],
+    };
+    expect(extractContent(result)).toEqual(["only text"]);
+  });
+
+  test("passes through non-MCP values unchanged", () => {
+    expect(extractContent("raw string")).toBe("raw string");
+    expect(extractContent(42)).toBe(42);
+    expect(extractContent(null)).toBe(null);
+    expect(extractContent(undefined)).toBe(undefined);
+  });
+
+  test("handles content without text field", () => {
+    const result = { content: [{ type: "text" }] };
+    expect(extractContent(result)).toEqual([]);
+  });
+
+  test("handles empty content array", () => {
+    const result = { content: [] };
+    expect(extractContent(result)).toEqual([]);
   });
 });

@@ -258,6 +258,28 @@ describe("AliasServer", () => {
     expect(tools).toHaveLength(0);
   });
 
+  test("callToolWithChain returns error for unknown alias", async () => {
+    using opts = testOptions();
+    const { db: testDb } = setupAlias(opts);
+    server = new AliasServer(testDb);
+    await server.start();
+
+    const result = await server.callToolWithChain("nonexistent", {}, []);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not found");
+  });
+
+  test("callToolWithChain executes alias with call chain", async () => {
+    using opts = testOptions();
+    const { db: testDb } = setupAlias(opts);
+    server = new AliasServer(testDb);
+    await server.start();
+
+    const result = await server.callToolWithChain("greet", { name: "Chain" }, ["parent-alias"]);
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual({ message: "Hello, Chain!" });
+  });
+
   test("refresh() updates tool list after alias save", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
