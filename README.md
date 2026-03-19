@@ -134,6 +134,7 @@ mcx import                          # auto-find .mcp.json in parent dirs
 mcx import /path/to/config.json     # import from specific file
 mcx import --claude                 # import from Claude Code config
 mcx import --claude --all           # import all Claude Code projects
+mcx add-from-claude-desktop         # import all servers from Claude Desktop config
 mcx export                          # export to stdout
 mcx export .mcp.json                # export to file
 mcx export --server <name>          # export specific server(s)
