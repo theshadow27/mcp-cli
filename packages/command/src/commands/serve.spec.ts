@@ -13,11 +13,14 @@ import {
   checkRecursionGuard,
   checkTtyStdin,
   computeToolsFingerprint,
+  generateInstanceId,
   handleCallTool,
   handleListTools,
   parseMcpTools,
+  registerServeInstance,
   registerShutdownHandlers,
   startToolListPoller,
+  unregisterServeInstance,
 } from "./serve";
 
 // -- parseMcpTools --
@@ -656,5 +659,68 @@ describe("handleCallTool with jq support", () => {
     const result = await handleCallTool("search", {}, curated, mockIpc);
     expect(result.content[0].text).toBe(smallData);
     expect(result.content).toHaveLength(1);
+  });
+});
+
+// -- generateInstanceId --
+
+describe("generateInstanceId", () => {
+  test("returns a 16-character hex string", () => {
+    const id = generateInstanceId();
+    expect(id).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  test("returns unique values on successive calls", () => {
+    const ids = new Set(Array.from({ length: 10 }, () => generateInstanceId()));
+    expect(ids.size).toBe(10);
+  });
+});
+
+// -- registerServeInstance / unregisterServeInstance --
+
+describe("registerServeInstance", () => {
+  test("calls registerServe with correct params", async () => {
+    let called: unknown;
+    const ipc = (async (method: IpcMethod, params?: unknown) => {
+      called = { method, params };
+      return { ok: true as const };
+    }) as IpcCaller;
+
+    await registerServeInstance(ipc, "abc123", 42, ["search", "write"]);
+    expect(called).toEqual({
+      method: "registerServe",
+      params: { instanceId: "abc123", pid: 42, tools: ["search", "write"] },
+    });
+  });
+
+  test("swallows errors when daemon is unavailable", async () => {
+    const ipc = (async () => {
+      throw new Error("connection refused");
+    }) as IpcCaller;
+
+    // Should not throw
+    await expect(registerServeInstance(ipc, "abc123", 42, [])).resolves.toBeUndefined();
+  });
+});
+
+describe("unregisterServeInstance", () => {
+  test("calls unregisterServe with correct instanceId", async () => {
+    let called: unknown;
+    const ipc = (async (method: IpcMethod, params?: unknown) => {
+      called = { method, params };
+      return { ok: true as const };
+    }) as IpcCaller;
+
+    await unregisterServeInstance(ipc, "xyz789");
+    expect(called).toEqual({ method: "unregisterServe", params: { instanceId: "xyz789" } });
+  });
+
+  test("swallows errors when daemon is already gone", async () => {
+    const ipc = (async () => {
+      throw new Error("ENOENT");
+    }) as IpcCaller;
+
+    // Should not throw
+    await expect(unregisterServeInstance(ipc, "xyz789")).resolves.toBeUndefined();
   });
 });

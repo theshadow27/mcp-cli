@@ -1786,4 +1786,121 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error?.code).toBe(IPC_ERROR.INTERNAL_ERROR);
     expect(json.error?.message).toContain("Config reload not available");
   });
+
+  // -- Serve instance tracking tests --
+
+  test("registerServe adds instance and listServeInstances returns it", async () => {
+    startServer();
+
+    const regRes = await rpc("/rpc", {
+      id: "si1",
+      method: "registerServe",
+      params: { instanceId: "abc123", pid: process.pid, tools: ["search", "echo"] },
+    });
+    const regJson = (await regRes.json()) as IpcResponse;
+    expect(regJson.error).toBeUndefined();
+    expect(regJson.result).toEqual({ ok: true });
+
+    const listRes = await rpc("/rpc", { id: "si2", method: "listServeInstances" });
+    const listJson = (await listRes.json()) as IpcResponse;
+    expect(listJson.error).toBeUndefined();
+
+    const instances = listJson.result as Array<{ instanceId: string; pid: number; tools: string[]; startedAt: number }>;
+    expect(instances).toHaveLength(1);
+    expect(instances[0].instanceId).toBe("abc123");
+    expect(instances[0].pid).toBe(process.pid);
+    expect(instances[0].tools).toEqual(["search", "echo"]);
+    expect(instances[0].startedAt).toBeGreaterThan(0);
+  });
+
+  test("unregisterServe removes instance", async () => {
+    startServer();
+
+    await rpc("/rpc", {
+      id: "si3",
+      method: "registerServe",
+      params: { instanceId: "def456", pid: process.pid, tools: [] },
+    });
+
+    const unregRes = await rpc("/rpc", {
+      id: "si4",
+      method: "unregisterServe",
+      params: { instanceId: "def456" },
+    });
+    const unregJson = (await unregRes.json()) as IpcResponse;
+    expect(unregJson.error).toBeUndefined();
+    expect(unregJson.result).toEqual({ ok: true });
+
+    const listRes = await rpc("/rpc", { id: "si5", method: "listServeInstances" });
+    const listJson = (await listRes.json()) as IpcResponse;
+    expect(listJson.result).toEqual([]);
+  });
+
+  test("unregisterServe with unknown instanceId is a no-op", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "si6",
+      method: "unregisterServe",
+      params: { instanceId: "nonexistent" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({ ok: true });
+  });
+
+  test("listServeInstances prunes stale PIDs", async () => {
+    startServer();
+
+    // Register an instance with a PID that doesn't exist
+    await rpc("/rpc", {
+      id: "si7",
+      method: "registerServe",
+      params: { instanceId: "stale1", pid: 999999, tools: [] },
+    });
+
+    // Also register one with current PID (alive)
+    await rpc("/rpc", {
+      id: "si8",
+      method: "registerServe",
+      params: { instanceId: "alive1", pid: process.pid, tools: ["tool1"] },
+    });
+
+    const listRes = await rpc("/rpc", { id: "si9", method: "listServeInstances" });
+    const listJson = (await listRes.json()) as IpcResponse;
+    const instances = listJson.result as Array<{ instanceId: string }>;
+
+    // Only the alive instance should remain
+    expect(instances).toHaveLength(1);
+    expect(instances[0].instanceId).toBe("alive1");
+  });
+
+  test("status response includes serveInstances", async () => {
+    startServer();
+
+    await rpc("/rpc", {
+      id: "si10",
+      method: "registerServe",
+      params: { instanceId: "status-test", pid: process.pid, tools: ["find"] },
+    });
+
+    const statusRes = await rpc("/rpc", { id: "si11", method: "status" });
+    const statusJson = (await statusRes.json()) as IpcResponse;
+    const result = statusJson.result as { serveInstances: Array<{ instanceId: string }> };
+
+    expect(result.serveInstances).toHaveLength(1);
+    expect(result.serveInstances[0].instanceId).toBe("status-test");
+  });
+
+  test("registerServe with missing params returns INVALID_PARAMS", async () => {
+    startServer();
+
+    const res = await rpc("/rpc", {
+      id: "si12",
+      method: "registerServe",
+      params: { instanceId: "x" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+  });
 });

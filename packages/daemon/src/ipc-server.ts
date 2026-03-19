@@ -13,6 +13,7 @@ import type {
   LiveSpan,
   Logger,
   ResolvedConfig,
+  ServeInstanceInfo,
   ServerAuthStatus,
   ToolInfo,
 } from "@mcp-cli/core";
@@ -36,6 +37,7 @@ import {
   PruneSpansParamsSchema,
   ReadMailParamsSchema,
   RecordAliasRunParamsSchema,
+  RegisterServeParamsSchema,
   ReplyToMailParamsSchema,
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
@@ -43,6 +45,7 @@ import {
   ShutdownParamsSchema,
   TouchAliasParamsSchema,
   TriggerAuthParamsSchema,
+  UnregisterServeParamsSchema,
   WaitForMailParamsSchema,
   bundleAlias,
   consoleLogger,
@@ -83,6 +86,7 @@ export class IpcServer {
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
   private drainTimeoutMs: number;
 
+  private serveInstances = new Map<string, ServeInstanceInfo>();
   private onReloadConfig: (() => Promise<void>) | null = null;
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
   private aliasServer: AliasServer | null = null;
@@ -321,6 +325,7 @@ export class IpcServer {
       const wsPortInfo = this.getWsPortInfo?.();
       const hasMismatch = wsPortInfo != null && wsPortInfo.actual != null && wsPortInfo.actual !== wsPortInfo.expected;
       const wsPortHolder = hasMismatch ? await getPortHolder(wsPortInfo.expected) : null;
+      this.pruneStaleServeInstances();
       return {
         pid: process.pid,
         uptime: process.uptime(),
@@ -332,6 +337,7 @@ export class IpcServer {
         wsPort: wsPortInfo?.actual ?? null,
         wsPortExpected: wsPortInfo?.expected,
         wsPortHolder,
+        serveInstances: [...this.serveInstances.values()],
       };
     });
 
@@ -841,6 +847,25 @@ export class IpcServer {
       return { pruned: this.db.pruneSpans(before) };
     });
 
+    // -- Serve instance tracking --
+
+    this.handlers.set("registerServe", async (params, _ctx) => {
+      const { instanceId, pid, tools } = RegisterServeParamsSchema.parse(params);
+      this.serveInstances.set(instanceId, { instanceId, pid, tools, startedAt: Date.now() });
+      return { ok: true as const };
+    });
+
+    this.handlers.set("unregisterServe", async (params, _ctx) => {
+      const { instanceId } = UnregisterServeParamsSchema.parse(params);
+      this.serveInstances.delete(instanceId);
+      return { ok: true as const };
+    });
+
+    this.handlers.set("listServeInstances", async (_params, _ctx) => {
+      this.pruneStaleServeInstances();
+      return [...this.serveInstances.values()];
+    });
+
     this.handlers.set("shutdown", async (params, _ctx) => {
       const { force } = ShutdownParamsSchema.parse(params ?? {});
       // Check force BEFORE querying DB — --force is the escape hatch when DB is degraded
@@ -859,6 +884,17 @@ export class IpcServer {
       this.startDrainTimeout();
       return { ok: true };
     });
+  }
+
+  /** Remove serve instances whose PID is no longer alive. */
+  private pruneStaleServeInstances(): void {
+    for (const [id, info] of this.serveInstances) {
+      try {
+        process.kill(info.pid, 0);
+      } catch {
+        this.serveInstances.delete(id);
+      }
+    }
   }
 }
 

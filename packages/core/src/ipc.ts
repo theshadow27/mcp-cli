@@ -43,7 +43,10 @@ export type IpcMethod =
   | "getMetrics"
   | "getSpans"
   | "markSpansExported"
-  | "pruneSpans";
+  | "pruneSpans"
+  | "registerServe"
+  | "unregisterServe"
+  | "listServeInstances";
 
 // -- Request/Response --
 
@@ -217,6 +220,15 @@ export interface ToolInfo {
   signature?: string;
 }
 
+export interface ServeInstanceInfo {
+  instanceId: string;
+  pid: number;
+  /** Curated tool names from MCP_TOOLS (empty if discovery-only). */
+  tools: string[];
+  /** Epoch ms when the serve instance started. */
+  startedAt: number;
+}
+
 export interface DaemonStatus {
   pid: number;
   uptime: number;
@@ -231,6 +243,8 @@ export interface DaemonStatus {
   wsPortExpected?: number;
   /** Process holding the expected WS port when there's a mismatch (e.g. "mcpd (PID 38291)"). */
   wsPortHolder?: string | null;
+  /** Active `mcx serve` instances registered with the daemon. */
+  serveInstances?: ServeInstanceInfo[];
 }
 
 export interface GetConfigResult {
@@ -295,6 +309,18 @@ export const MarkSpansExportedParamsSchema = z.object({
 
 export const PruneSpansParamsSchema = z.object({
   before: z.number().optional(),
+});
+
+// -- Serve instance schemas --
+
+export const RegisterServeParamsSchema = z.object({
+  instanceId: z.string(),
+  pid: z.number(),
+  tools: z.array(z.string()),
+});
+
+export const UnregisterServeParamsSchema = z.object({
+  instanceId: z.string(),
 });
 
 // -- Result types for methods without a named interface --
@@ -466,6 +492,9 @@ export interface IpcMethodResult {
   getSpans: GetSpansResult;
   markSpansExported: MarkSpansExportedResult;
   pruneSpans: PruneSpansResult;
+  registerServe: { ok: true };
+  unregisterServe: { ok: true };
+  listServeInstances: ServeInstanceInfo[];
 }
 
 // -- Error codes --

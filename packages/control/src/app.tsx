@@ -346,6 +346,7 @@ export function App() {
             selectedIndex={selectedIndex}
             expandedServer={expandedServer}
             usageStats={status?.usageStats ?? []}
+            serveInstances={status?.serveInstances}
           />
         </>
       ) : view === "logs" ? (
