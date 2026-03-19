@@ -140,6 +140,8 @@ const mcpctlConfig: BinaryBuildConfig = {
   plugins: [devtoolsStubPlugin],
 };
 
+const bundleCleanup: string[] = [];
+
 async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: string): Promise<void> {
   const result = await Bun.build({
     entrypoints: [resolve(config.entrypoint)],
@@ -162,15 +164,22 @@ async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: 
   }
   // Bun.build doesn't support --compile, so compile the bundle
   const bundlePath = resolve(`dist/${config.bundleName}.js`);
+  bundleCleanup.push(bundlePath);
+  // Ensure the bundle is flushed to disk before compiling (CI race fix #884)
+  const bundleFile = Bun.file(bundlePath);
+  for (let i = 0; i < 50; i++) {
+    if (await bundleFile.exists()) break;
+    await Bun.sleep(100);
+  }
+  if (!(await bundleFile.exists())) {
+    console.error(`${config.label}: bundle not found at ${bundlePath} after waiting`);
+    process.exit(1);
+  }
   if (target) {
     await $`bun build --compile --minify --target=${target} ${bundlePath} --outfile ${outfile}`;
   } else {
     await $`bun build --compile --minify ${bundlePath} --outfile ${outfile}`;
   }
-  // Clean up intermediate bundle
-  try {
-    unlinkSync(bundlePath);
-  } catch {}
 }
 
 if (releaseMode) {
@@ -192,6 +201,12 @@ if (releaseMode) {
     ]);
   }
 
+  // Clean up intermediate bundles after all compiles finish
+  for (const p of bundleCleanup) {
+    try {
+      unlinkSync(p);
+    } catch {}
+  }
   console.log("Release build complete.");
 } else {
   // Dev build: current platform, simple names
@@ -200,5 +215,11 @@ if (releaseMode) {
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
+  // Clean up intermediate bundles after all compiles finish
+  for (const p of bundleCleanup) {
+    try {
+      unlinkSync(p);
+    } catch {}
+  }
   console.log("Built: dist/mcpd, dist/mcx, dist/mcpctl");
 }
