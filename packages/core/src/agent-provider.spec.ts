@@ -110,6 +110,19 @@ describe("agent-provider", () => {
       expect(args.agentOverride).toBe("copilot");
       expect(args.foo).toBe(1);
     });
+
+    test("extras cannot overwrite explicit fields", () => {
+      const claude = requireProvider("claude");
+      const args = claude.buildSpawnArgs({
+        task: "real task",
+        model: "opus",
+        cwd: "/safe",
+        extras: { task: "", model: "haiku", cwd: "/evil" },
+      });
+      expect(args.task).toBe("real task");
+      expect(args.model).toBe("opus");
+      expect(args.cwd).toBe("/safe");
+    });
   });
 
   describe("shim registry", () => {
@@ -167,10 +180,13 @@ describe("agent-provider", () => {
   });
 
   describe("_resetRegistries", () => {
-    test("clears all providers and shims", () => {
+    test("clears all providers and shims then restores", () => {
+      const saved = getAllProviders();
       _resetRegistries();
       expect(getAllProviders()).toEqual([]);
       expect(getAllShims()).toEqual([]);
+      // Restore so subsequent tests in the same worker aren't poisoned
+      for (const p of saved) registerProvider(p);
     });
   });
 });

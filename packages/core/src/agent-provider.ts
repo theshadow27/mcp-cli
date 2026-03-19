@@ -122,7 +122,7 @@ function passthrough(opts: CommonSpawnOpts): Record<string, unknown> {
   if (opts.disallowedTools) args.disallowedTools = opts.disallowedTools;
   if (opts.wait) args.wait = opts.wait;
   if (opts.timeout) args.timeout = opts.timeout;
-  return { ...args, ...opts.extras };
+  return { ...opts.extras, ...args };
 }
 
 registerProvider({
