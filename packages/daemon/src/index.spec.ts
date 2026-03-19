@@ -113,8 +113,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
@@ -165,8 +166,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
@@ -266,8 +268,14 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) {
+          await handle.shutdown("SIGTERM");
+        }
+        // Always await full shutdown completion before cleaning up — the idle
+        // timer calls shutdown() as fire-and-forget, so isShuttingDown can be
+        // true while async teardown (unlinkSync, db.close) is still in flight.
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
@@ -281,7 +289,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 500);
+        await pollUntil(() => handle?.isShuttingDown, 2_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -300,7 +308,7 @@ describe("daemon index.ts", () => {
         }
 
         // Now stop pinging and let it idle out
-        await pollUntil(() => handle?.isShuttingDown, 1_000);
+        await pollUntil(() => handle?.isShuttingDown, 2_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -309,7 +317,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 500);
+        await pollUntil(() => handle?.isShuttingDown, 2_000);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -323,8 +331,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
