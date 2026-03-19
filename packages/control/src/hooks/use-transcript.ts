@@ -1,7 +1,8 @@
-import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
+import { ipcCall } from "@mcp-cli/core";
+import type { AgentProvider } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
-import type { TranscriptEntry } from "../components/claude-session-detail.js";
-import { extractToolText } from "./ipc-tool-helpers.js";
+import type { TranscriptEntry } from "../components/agent-session-detail.js";
+import { extractToolText, serverForProvider, toolForProvider } from "./ipc-tool-helpers.js";
 
 const MAX_ENTRIES = 10;
 
@@ -12,6 +13,7 @@ export interface UseTranscriptOptions {
 
 export function useTranscript(
   sessionId: string | null,
+  provider: AgentProvider = "claude",
   opts: UseTranscriptOptions = {},
 ): {
   entries: TranscriptEntry[];
@@ -33,8 +35,8 @@ export function useTranscript(
     async function poll() {
       try {
         const result = await ipcCallFn("callTool", {
-          server: CLAUDE_SERVER_NAME,
-          tool: "claude_transcript",
+          server: serverForProvider(provider),
+          tool: toolForProvider(provider, "transcript"),
           arguments: { sessionId, limit: MAX_ENTRIES },
         });
 
@@ -58,7 +60,7 @@ export function useTranscript(
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId, ipcCallFn]);
+  }, [sessionId, provider, ipcCallFn]);
 
   return { entries, error };
 }

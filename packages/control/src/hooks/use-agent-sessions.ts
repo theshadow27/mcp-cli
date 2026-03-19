@@ -1,24 +1,39 @@
-import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
-import type { SessionInfo } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, CODEX_SERVER_NAME, ipcCall } from "@mcp-cli/core";
+import type { AgentSessionInfo } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
 
-interface UseClaudeSessionsResult {
-  sessions: SessionInfo[];
+interface UseAgentSessionsResult {
+  sessions: AgentSessionInfo[];
   loading: boolean;
   error: string | null;
 }
 
-export interface UseClaudeSessionsOptions {
+export interface UseAgentSessionsOptions {
   intervalMs?: number;
   enabled?: boolean;
   /** Override ipcCall for testing (dependency injection). */
   ipcCallFn?: typeof ipcCall;
 }
 
-export function useClaudeSessions(opts: UseClaudeSessionsOptions = {}): UseClaudeSessionsResult {
+/** Fetch sessions from a single provider, swallowing errors so one offline provider doesn't block others. */
+async function fetchProviderSessions(
+  ipcCallFn: typeof ipcCall,
+  server: string,
+  tool: string,
+): Promise<AgentSessionInfo[]> {
+  try {
+    const result = await ipcCallFn("callTool", { server, tool, arguments: {} });
+    const text = extractToolText(result);
+    return text ? (JSON.parse(text) as AgentSessionInfo[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function useAgentSessions(opts: UseAgentSessionsOptions = {}): UseAgentSessionsResult {
   const { intervalMs = 2500, enabled = true, ipcCallFn = ipcCall } = opts;
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [sessions, setSessions] = useState<AgentSessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,20 +45,14 @@ export function useClaudeSessions(opts: UseClaudeSessionsOptions = {}): UseClaud
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCallFn("callTool", {
-          server: CLAUDE_SERVER_NAME,
-          tool: "claude_session_list",
-          arguments: {},
-        });
+        const [claudeSessions, codexSessions] = await Promise.all([
+          fetchProviderSessions(ipcCallFn, CLAUDE_SERVER_NAME, "claude_session_list"),
+          fetchProviderSessions(ipcCallFn, CODEX_SERVER_NAME, "codex_session_list"),
+        ]);
 
         if (cancelled) return;
 
-        const text = extractToolText(result);
-        if (text) {
-          setSessions(JSON.parse(text) as SessionInfo[]);
-        } else {
-          setSessions([]);
-        }
+        setSessions([...claudeSessions, ...codexSessions]);
         setError(null);
       } catch (err) {
         if (cancelled) return;

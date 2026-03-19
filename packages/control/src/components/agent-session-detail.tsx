@@ -12,7 +12,7 @@ export function entryKey(entry: TranscriptEntry): string {
   return `${entry.timestamp}-${entry.direction}`;
 }
 
-interface ClaudeSessionDetailProps {
+interface AgentSessionDetailProps {
   entries: TranscriptEntry[];
   error: string | null;
   selectedEntry: string | null;
@@ -145,14 +145,14 @@ function ExpandedContent({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
-export function ClaudeSessionDetail({
+export function AgentSessionDetail({
   entries,
   error,
   selectedEntry,
   expandedEntries,
   scrollOffset,
   height,
-}: ClaudeSessionDetailProps) {
+}: AgentSessionDetailProps) {
   if (error) {
     return (
       <Box marginLeft={4}>

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
-import type { TranscriptEntry } from "../components/claude-session-detail.js";
+import type { TranscriptEntry } from "../components/agent-session-detail.js";
 import { type UseTranscriptOptions, useTranscript } from "./use-transcript.js";
 
 interface HookState {
@@ -12,10 +12,11 @@ interface HookState {
 
 const Harness: FC<{
   sessionId: string | null;
+  provider?: string;
   opts: UseTranscriptOptions;
   stateRef: { current: HookState };
-}> = ({ sessionId, opts, stateRef }) => {
-  const result = useTranscript(sessionId, opts);
+}> = ({ sessionId, provider = "claude", opts, stateRef }) => {
+  const result = useTranscript(sessionId, provider, opts);
   stateRef.current = result;
   return React.createElement(Text, null, "ok");
 };
@@ -32,11 +33,11 @@ describe("useTranscript", () => {
     instances.length = 0;
   });
 
-  function mount(sessionId: string | null, opts: UseTranscriptOptions = {}) {
+  function mount(sessionId: string | null, opts: UseTranscriptOptions = {}, provider = "claude") {
     const stateRef: { current: HookState } = {
       current: { entries: [], error: null },
     };
-    const instance = render(React.createElement(Harness, { sessionId, opts, stateRef }));
+    const instance = render(React.createElement(Harness, { sessionId, provider, opts, stateRef }));
     instances.push(instance);
     return { instance, stateRef };
   }
@@ -112,5 +113,21 @@ describe("useTranscript", () => {
 
     await flush(100);
     expect(callCount).toBe(countAtUnmount);
+  });
+
+  it("routes to codex server when provider is codex", async () => {
+    let capturedServer: string | undefined;
+    let capturedTool: string | undefined;
+    const ipcCallFn = async (_method: string, params: Record<string, unknown>) => {
+      capturedServer = (params as { server: string }).server;
+      capturedTool = (params as { tool: string }).tool;
+      return { content: [{ type: "text", text: "[]" }] };
+    };
+
+    mount("session-codex", { ipcCallFn: ipcCallFn as UseTranscriptOptions["ipcCallFn"] }, "codex");
+
+    await flush();
+    expect(capturedServer).toBe("_codex");
+    expect(capturedTool).toBe("codex_transcript");
   });
 });
