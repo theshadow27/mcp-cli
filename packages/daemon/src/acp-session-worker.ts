@@ -188,6 +188,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
         state: "connecting",
         cwd,
         worktree: config.worktree,
+        repoRoot: config.repoRoot,
       },
     });
 
@@ -341,11 +342,16 @@ async function handleWait(args: Record<string, unknown>): Promise<{
   }
 
   const waiters = [...sessions.values()].map((s) => s.waitForEvent(timeoutMs));
-  const event = await Promise.race(waiters);
-  for (const p of waiters) {
-    p.catch(() => {});
+  try {
+    const event = await Promise.race(waiters);
+    return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
+  } finally {
+    // Cancel losing waiters to prevent timer/reference leaks
+    for (const p of waiters) {
+      if (typeof p.cancel === "function") p.cancel();
+      p.catch(() => {});
+    }
   }
-  return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
 }
 
 function handleApprove(args: Record<string, unknown>): {

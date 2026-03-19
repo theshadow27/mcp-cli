@@ -282,9 +282,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
 
-  // ACP server: created if any ACP-compatible agent is installed (gh copilot or gemini)
+  // ACP server: created if any ACP-compatible agent binary is found on PATH
   const acpAgentInstalled =
-    Bun.spawnSync(["gh", "copilot", "--help"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0 ||
+    Bun.spawnSync(["which", "gh"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0 ||
     Bun.spawnSync(["which", "gemini"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const acpServer = acpAgentInstalled ? new AcpServer(db, daemonId, undefined, logger) : null;
 

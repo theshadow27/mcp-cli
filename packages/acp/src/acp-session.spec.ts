@@ -279,6 +279,67 @@ describe("AcpSession (with fake ACP agent)", () => {
   });
 });
 
+// ── Server request tests (fs, terminal) ──
+
+describe("AcpSession server requests", () => {
+  test("fs/write_text_file writes to cwd and completes", async () => {
+    const probePath = join(TEST_CWD, "acp-test-probe.txt");
+    try {
+      const { session } = makeSession({ agent: "fs-write" });
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      const content = await Bun.file(probePath).text();
+      expect(content).toBe("hello from acp");
+    } finally {
+      try {
+        await Bun.write(probePath, ""); // cleanup
+        const { unlinkSync } = await import("node:fs");
+        unlinkSync(probePath);
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  });
+
+  test("fs/read_text_file reads file under cwd and completes", async () => {
+    const { session } = makeSession({ agent: "fs-read" });
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+    expect(result.type).toBe("session:result");
+  });
+
+  test("fs/write_text_file rejects path traversal outside cwd", async () => {
+    const { session } = makeSession({ agent: "fs-write-traversal" });
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    await resultPromise;
+
+    // The traversal target should NOT have been written
+    const { existsSync } = await import("node:fs");
+    expect(existsSync("/tmp/acp-traversal-probe.txt")).toBe(false);
+  });
+
+  test("terminal/create runs async command and completes", async () => {
+    const { session } = makeSession({ agent: "terminal" });
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+    expect(result.type).toBe("session:result");
+  });
+
+  test("terminate() is idempotent — second call is no-op", () => {
+    const { session, events } = makeSession();
+    session.terminate();
+    const endedCount1 = events.filter((e) => e.type === "session:ended").length;
+    session.terminate();
+    const endedCount2 = events.filter((e) => e.type === "session:ended").length;
+    expect(endedCount2).toBe(endedCount1);
+  });
+});
+
 // ── Watchdog tests ──
 
 describe("AcpSession watchdog", () => {

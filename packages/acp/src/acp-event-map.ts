@@ -67,8 +67,8 @@ export function mapSessionUpdate(params: Record<string, unknown>, state: AcpEven
         | { inputTokens?: number; outputTokens?: number; reasoningTokens?: number }
         | undefined;
       if (usage) {
-        state.totalTokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-        state.reasoningTokens = usage.reasoningTokens ?? 0;
+        state.totalTokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+        state.reasoningTokens += usage.reasoningTokens ?? 0;
       }
       if (typeof update.cost === "number") {
         state.cost = update.cost;

@@ -13,6 +13,7 @@
  * Mirrors codex-session.ts but for the ACP protocol.
  */
 
+import { resolve } from "node:path";
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { type AcpEventMapState, buildTurnResult, createAcpEventMapState, mapSessionUpdate } from "./acp-event-map";
@@ -224,6 +225,7 @@ export class AcpSession {
 
   /** Terminate the session. */
   terminate(): void {
+    if (this.state === "ended") return;
     this.clearWatchdog();
     this.proc?.kill();
     this.rpc?.rejectAll("Session terminated");
@@ -251,15 +253,25 @@ export class AcpSession {
         }
       };
       this.resultWaiters.push(waiter);
+
+      // Re-check: session may have ended between the guard and registration
+      if (this.state === "ended") {
+        clearTimeout(timer);
+        this.resultWaiters = this.resultWaiters.filter((w) => w !== waiter);
+        resolve({ type: "session:ended" });
+      }
     });
   }
 
-  /** Wait for any actionable event. */
-  waitForEvent(timeoutMs: number): Promise<AgentSessionEvent> {
+  /** Wait for any actionable event. Returns a cancellable promise (has .cancel()). */
+  waitForEvent(timeoutMs: number): Promise<AgentSessionEvent> & { cancel?: () => void } {
     if (this.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
     }
-    return new Promise<AgentSessionEvent>((resolve, reject) => {
+
+    let cancelFn: (() => void) | undefined;
+
+    const promise = new Promise<AgentSessionEvent>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
         reject(new Error(`waitForEvent timeout (${timeoutMs}ms)`));
@@ -270,8 +282,25 @@ export class AcpSession {
         this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
         resolve(event);
       };
+
+      cancelFn = () => {
+        clearTimeout(timer);
+        this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
+        reject(new Error("waitForEvent cancelled"));
+      };
+
       this.eventWaiters.push(waiter);
-    });
+
+      // Re-check: session may have ended between the guard and registration
+      if (this.state === "ended") {
+        clearTimeout(timer);
+        this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
+        resolve({ type: "session:ended" });
+      }
+    }) as Promise<AgentSessionEvent> & { cancel?: () => void };
+
+    promise.cancel = cancelFn;
+    return promise;
   }
 
   /** Get current session info. */
@@ -454,49 +483,74 @@ export class AcpSession {
     this.emit({ type: "session:permission_request", request: permWithId });
   }
 
-  private handleFsWrite(id: number | string, params: Record<string, unknown>): void {
+  private async handleFsWrite(id: number | string, params: Record<string, unknown>): Promise<void> {
     const path = params.path as string;
     const content = params.content as string;
+
+    // Validate path is under session cwd
+    const resolved = resolve(this.config.cwd, path);
+    if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
+      this.rpc?.respondWithError(id, -1, `Path traversal denied: ${path} is outside session cwd`);
+      return;
+    }
+
     try {
-      Bun.write(path, content);
+      await Bun.write(resolved, content);
       this.rpc?.respondToServerRequest(id, {});
     } catch (err) {
       this.rpc?.respondWithError(id, -1, String(err));
     }
   }
 
-  private handleFsRead(id: number | string, params: Record<string, unknown>): void {
+  private async handleFsRead(id: number | string, params: Record<string, unknown>): Promise<void> {
     const path = params.path as string;
+
+    // Validate path is under session cwd
+    const resolved = resolve(this.config.cwd, path);
+    if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
+      this.rpc?.respondWithError(id, -1, `Path traversal denied: ${path} is outside session cwd`);
+      return;
+    }
+
     try {
-      const file = Bun.file(path);
-      file
-        .text()
-        .then((content) => {
-          this.rpc?.respondToServerRequest(id, { content });
-        })
-        .catch((err) => {
-          this.rpc?.respondWithError(id, -1, String(err));
-        });
+      const file = Bun.file(resolved);
+      const content = await file.text();
+      this.rpc?.respondToServerRequest(id, { content });
     } catch (err) {
       this.rpc?.respondWithError(id, -1, String(err));
     }
   }
 
-  private handleTerminalCreate(id: number | string, params: Record<string, unknown>): void {
+  /** Default timeout for terminal commands: 5 minutes. */
+  private static readonly TERMINAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+  private async handleTerminalCreate(id: number | string, params: Record<string, unknown>): Promise<void> {
     const cmd = params.command as string;
     const cmdArgs = (params.args as string[]) ?? [];
     const cmdCwd = (params.cwd as string) ?? this.config.cwd;
     try {
-      const result = Bun.spawnSync([cmd, ...cmdArgs], {
+      const proc = Bun.spawn([cmd, ...cmdArgs], {
         cwd: cmdCwd,
         stdout: "pipe",
         stderr: "pipe",
       });
+
+      const timeout = setTimeout(() => {
+        proc.kill("SIGTERM");
+      }, AcpSession.TERMINAL_TIMEOUT_MS);
+
+      const [exitCode, stdoutBuf, stderrBuf] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      clearTimeout(timeout);
+
       const termId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.terminalResults.set(termId, {
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        exitCode: result.exitCode,
+        stdout: stdoutBuf,
+        stderr: stderrBuf,
+        exitCode,
       });
       this.rpc?.respondToServerRequest(id, { terminalId: termId });
     } catch (err) {

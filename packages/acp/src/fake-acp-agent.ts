@@ -9,6 +9,8 @@
  *   crash-after-prompt — handshake + session/new + prompt completes + exit code 2
  *   silent          — handshake + session/new + prompt accepted, then no events (for watchdog testing)
  *   fs-write        — handshake + session/new + sends fs/write_text_file request, then completes
+ *   fs-read         — handshake + session/new + sends fs/read_text_file request, then completes
+ *   fs-write-traversal — sends fs/write with path traversal (../outside.txt), then completes
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  */
 import { createInterface } from "node:readline";
@@ -127,6 +129,21 @@ function schedulePromptEvents(): void {
       sendServerRequest("fs-1", "fs/write_text_file", {
         path: `${process.cwd()}/acp-test-probe.txt`,
         content: "hello from acp",
+      });
+      setTimeout(() => completePrompt(), 100);
+    }, 30);
+  } else if (mode === "fs-read") {
+    setTimeout(() => {
+      sendServerRequest("fs-2", "fs/read_text_file", {
+        path: `${process.cwd()}/package.json`,
+      });
+      setTimeout(() => completePrompt(), 100);
+    }, 30);
+  } else if (mode === "fs-write-traversal") {
+    setTimeout(() => {
+      sendServerRequest("fs-3", "fs/write_text_file", {
+        path: "/tmp/acp-traversal-probe.txt",
+        content: "should be blocked",
       });
       setTimeout(() => completePrompt(), 100);
     }, 30);

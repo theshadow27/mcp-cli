@@ -63,7 +63,7 @@ export function evaluatePermission(
   const decision: PermissionDecision = evaluate(rules, request);
 
   // If no rule matched, escalate to manual review
-  if (!decision.allow && decision.message?.startsWith("No matching rule")) {
+  if (!decision.matched) {
     return { resolved: false, allow: false, persistent: false, request };
   }
 

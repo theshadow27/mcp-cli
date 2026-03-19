@@ -94,6 +94,9 @@ const EXCLUSIONS: Record<string, string> = {
   "daemon/src/ipc-server.ts": "59% coverage, handler logic (#46)",
   "daemon/src/config/watcher.ts": "47% coverage, FS watcher loop (#48)",
 
+  // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
+  "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
+
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
 
