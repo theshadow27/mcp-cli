@@ -49,6 +49,7 @@ import {
 import { checkDeprecatedName } from "./deprecation";
 import { maybeAutoSaveEphemeral } from "./ephemeral";
 import { readFileWithLimit } from "./file-read";
+import { maybeShowFirstRunPrompt } from "./first-run";
 import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
 import {
   extractErrorMessage,
@@ -65,6 +66,7 @@ import {
   extractFullFlag,
   extractJqFlag,
   extractJsonFlag,
+  extractQuietFlag,
   extractTimeoutFlag,
   extractVerboseFlag,
   readStdinJson,
@@ -91,11 +93,21 @@ async function main(): Promise<void> {
 
   // Extract global flags before command dispatch
   const { verbose, rest: afterVerbose } = extractVerboseFlag(args);
-  const { dryRun, rest: cleanArgs } = extractDryRunFlag(afterVerbose);
+  const { dryRun, rest: afterDryRun } = extractDryRunFlag(afterVerbose);
+  const { quiet, rest: cleanArgs } = extractQuietFlag(afterDryRun);
   _dryRun = dryRun;
   if (verbose) process.env.MCX_VERBOSE = "1";
 
   const command = cleanArgs[0];
+
+  // First-run prompt: show once per directory when .mcp.json detected
+  if (!quiet) {
+    try {
+      maybeShowFirstRunPrompt();
+    } catch {
+      // Best-effort — never block CLI startup
+    }
+  }
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
   if (dryRun && command && command !== "call") {
@@ -782,6 +794,7 @@ Options:
   --jq '<filter>'                   Apply jq filter to call output (client-side)
   --full, -f                        Bypass output size protection (call)
   --verbose, -V                     Show IPC requests/responses and debug info (stderr)
+  --quiet, -q                       Suppress informational prompts (e.g. first-run hint)
   --dry-run                         Show what would be executed without running it (call)
 
 Examples:
