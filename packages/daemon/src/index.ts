@@ -308,13 +308,27 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   let inFlightCount = 0;
 
   let lastIdleReset = Date.now();
+  /** Monotonic timestamp (ms) when the current idle timer was scheduled */
+  let idleTimerScheduledAt = 0;
 
   function resetIdleTimer(): void {
     lastIdleReset = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
+    idleTimerScheduledAt = performance.now();
+    const scheduledAt = idleTimerScheduledAt;
     idleTimer = setTimeout(() => {
+      const firedAt = performance.now();
+      const actualDelayMs = Math.round(firedAt - scheduledAt);
+      const driftMs = actualDelayMs - idleTimeoutMs;
       const sinceLast = Date.now() - lastIdleReset;
-      logger.debug(`[mcpd] Idle timer fired (${Math.round(sinceLast / 1000)}s since last reset)`);
+      logger.debug(
+        `[mcpd] Idle timer fired: expected=${idleTimeoutMs}ms actual=${actualDelayMs}ms drift=${driftMs}ms (${Math.round(sinceLast / 1000)}s since last reset)`,
+      );
+      if (driftMs > 500) {
+        logger.info(
+          `[mcpd] Idle timer drift warning: ${driftMs}ms late (expected ${idleTimeoutMs}ms, actual ${actualDelayMs}ms)`,
+        );
+      }
 
       if (inFlightCount > 0) {
         logger.debug(`[mcpd] Idle timeout deferred: ${inFlightCount} request(s) in flight`);
@@ -390,6 +404,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Start idle timer
   resetIdleTimer();
+  logger.debug(
+    `[mcpd] Idle timer started ${Math.round(performance.now())}ms after process start (timeout=${idleTimeoutMs}ms)`,
+  );
 
   // Signal readiness to parent (IPC socket is open, commands can connect now)
   console.log(DAEMON_READY_SIGNAL);
@@ -489,6 +506,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   async function shutdown(reason?: ShutdownReason): Promise<void> {
     if (_isShuttingDown) return;
     _isShuttingDown = true;
+    const shutdownStart = performance.now();
     logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
     if (idleTimer) clearTimeout(idleTimer);
     clearInterval(pruneInterval);
@@ -496,11 +514,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     watcher.stop();
     ipcServer.stop();
     // Wait for any in-progress virtual server startups before stopping them
+    let phase = performance.now();
     try {
       await pool.awaitPendingServers();
     } catch (err) {
       logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
     }
+    logger.debug(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
     // Stop each virtual server individually so one failure doesn't leak the rest
     const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
       opts?._virtualServers ?? [
@@ -510,7 +530,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         [METRICS_SERVER_NAME, metricsServer],
         [MAIL_SERVER_NAME, mailServer],
       ];
+    phase = performance.now();
     for (const [name, server] of virtualServers) {
+      const serverStart = performance.now();
       try {
         if (server) {
           await server.stop();
@@ -520,17 +542,25 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         logger.error(`[mcpd] Error stopping ${name}: ${err}`);
         pool.unregisterVirtualServer(name);
       }
+      if (server) {
+        logger.debug(`[mcpd] Shutdown: stop ${name} took ${Math.round(performance.now() - serverStart)}ms`);
+      }
     }
+    logger.debug(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
+    phase = performance.now();
     try {
       await pool.closeAll();
     } catch (err) {
       logger.error(`[mcpd] Error closing server pool: ${err}`);
     }
+    logger.debug(`[mcpd] Shutdown: pool.closeAll took ${Math.round(performance.now() - phase)}ms`);
+    phase = performance.now();
     try {
       db.close();
     } catch (err) {
       logger.error(`[mcpd] Error closing database: ${err}`);
     }
+    logger.debug(`[mcpd] Shutdown: db.close took ${Math.round(performance.now() - phase)}ms`);
     if (!opts?.skipLogSetup) {
       try {
         closeDaemonLogFile();
@@ -543,6 +573,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     } catch {
       // already gone
     }
+    const totalShutdownMs = Math.round(performance.now() - shutdownStart);
+    logger.info(`[mcpd] Shutdown complete in ${totalShutdownMs}ms`);
   }
 
   return {
