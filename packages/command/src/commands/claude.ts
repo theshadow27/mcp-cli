@@ -13,14 +13,13 @@ import {
   buildHookEnv,
   fixCoreBare,
   hasWorktreeHooks,
-  ipcCall,
   readWorktreeConfig,
   resolveModelName,
   resolveWorktreeBase,
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import type { WorktreeHooksConfig } from "@mcp-cli/core";
-import { getStaleDaemonWarning } from "../daemon-lifecycle";
+import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
