@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -70,3 +71,28 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Set version from tag
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          bun -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
+            pkg.version = process.env.RELEASE_VERSION.replace(/^v/, '');
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

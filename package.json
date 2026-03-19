@@ -1,9 +1,15 @@
 {
-  "name": "mcp-cli",
-  "private": true,
+  "name": "@theshadow27/mcp-cli",
   "version": "0.10.0",
+  "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
   "type": "module",
   "workspaces": ["packages/*"],
+  "bin": {
+    "mcx": "packages/command/src/main.ts",
+    "mcpd": "packages/daemon/src/main.ts",
+    "mcpctl": "packages/control/src/main.tsx"
+  },
+  "files": ["packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
   "scripts": {
     "build": "bun scripts/build.ts",
     "typecheck": "bun install && bun --bun tsc -b",
