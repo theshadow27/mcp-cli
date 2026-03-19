@@ -13,6 +13,8 @@ function makeDeps(overrides?: Partial<AcpDeps>): AcpDeps {
       throw new ExitError(code);
     }) as AcpDeps["exit"],
     getStaleDaemonWarning: mock(() => null),
+    getGitRoot: mock(() => null),
+    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ...overrides,
   };

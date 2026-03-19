@@ -14,14 +14,25 @@ import { c, printError as defaultPrintError, formatToolResult } from "../output"
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import {
+  type PrStatus,
   type SharedSessionDeps,
   cleanupWorktree,
+  defaultGetPrStatus,
   parseByeResult,
   parseLogArgs,
   parseWaitArgs,
   resolveSessionId,
 } from "./claude";
-import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import {
+  type TranscriptEntry,
+  colorState,
+  compactTranscript,
+  extractContentSummary,
+  filterByRepo,
+  formatCost,
+  formatSessionShort,
+  getGitRepoRoot,
+} from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { worktreesCommand } from "./worktree-commands";
@@ -33,9 +44,11 @@ const P = "codex";
 
 // ── Dependency injection ──
 
-/** Codex deps use only the shared session fields — no claude-specific helpers. */
+/** Codex deps extend shared deps with PR/diff/repo helpers for feature parity. */
 export interface CodexDeps extends SharedSessionDeps {
   getStaleDaemonWarning: () => string | null;
+  getGitRoot: () => string | null;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
 }
 
 const defaultDeps: CodexDeps = {
@@ -47,6 +60,8 @@ const defaultDeps: CodexDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getStaleDaemonWarning,
+  getGitRoot: getGitRepoRoot,
+  getPrStatus: defaultGetPrStatus,
   exec: (cmd, opts) => {
     const result = Bun.spawnSync(cmd, {
       stdout: "pipe",
@@ -199,6 +214,9 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
 async function codexList(args: string[], d: CodexDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
+  const showPr = args.includes("--pr");
+  const showAll = args.includes("--all") || args.includes("-a");
+
   const result = await d.callTool(`${P}_session_list`, {});
   const text = formatToolResult(result);
 
@@ -215,6 +233,14 @@ async function codexList(args: string[], d: CodexDeps): Promise<void> {
     return;
   }
 
+  // Client-side repo-scoping: filter by cwd prefix unless --all
+  if (!showAll) {
+    const gitRoot = d.getGitRoot();
+    if (gitRoot) {
+      sessions = filterByRepo(sessions, gitRoot);
+    }
+  }
+
   if (sessions.length === 0) {
     console.error("No active Codex sessions.");
     return;
@@ -227,19 +253,34 @@ async function codexList(args: string[], d: CodexDeps): Promise<void> {
     return;
   }
 
+  // Gather PR status for worktree sessions in parallel
+  const prStatuses = showPr
+    ? await Promise.all(sessions.map((s) => (s.worktree ? d.getPrStatus(s.worktree) : Promise.resolve(null))))
+    : sessions.map(() => null);
+
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+
   // Table output
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)} CWD`;
+  const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
+  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
-  for (const s of sessions) {
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
     const state = colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
-    const cost = s.cost != null && s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "N/A".padEnd(8);
+    const cost = formatCost(s.cost, s.tokens).padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
+    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens} ${c.dim}${cwd}${c.reset}`);
+    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${pr} ${c.dim}${cwd}${c.reset}`);
   }
+}
+
+function formatPrStatus(pr: PrStatus | null): string {
+  if (!pr) return "—";
+  return `#${pr.number} ${pr.state}`;
 }
 
 // ── Send ──
@@ -311,6 +352,7 @@ async function codexInterrupt(args: string[], d: CodexDeps): Promise<void> {
 
 async function codexLog(args: string[], d: CodexDeps): Promise<void> {
   const parsed = parseLogArgs(args);
+  const compact = args.includes("--compact");
 
   if (parsed.error) {
     d.printError(parsed.error);
@@ -318,7 +360,7 @@ async function codexLog(args: string[], d: CodexDeps): Promise<void> {
   }
 
   if (!parsed.sessionPrefix) {
-    d.printError("Usage: mcx codex log <session-id> [--last N]");
+    d.printError("Usage: mcx codex log <session-id> [--last N] [--compact]");
     d.exit(1);
   }
 
@@ -342,12 +384,17 @@ async function codexLog(args: string[], d: CodexDeps): Promise<void> {
     return;
   }
 
-  let entries: Array<{ timestamp: number; direction: string; message: { type: string; [k: string]: unknown } }>;
+  let entries: TranscriptEntry[];
   try {
     entries = JSON.parse(text);
   } catch {
     console.log(text);
     return;
+  }
+
+  // Client-side compact: truncate tool results
+  if (compact) {
+    entries = compactTranscript(entries);
   }
 
   const truncate = (s: string) => (parsed.full || s.length <= 200 ? s : `${s.slice(0, 200)}…`);
@@ -447,7 +494,9 @@ Usage:
   mcx codex spawn --task "..." --json     Machine-parseable JSON output
   mcx codex spawn "description"           Shorthand (positional task)
   mcx codex spawn -w --task "desc"        Spawn in a new git worktree
-  mcx codex ls                            List active Codex sessions
+  mcx codex ls                            List active Codex sessions (current repo)
+  mcx codex ls --all                      List all Codex sessions (all repos)
+  mcx codex ls --pr                       Show PR status for worktree sessions
   mcx codex send <session> <message>      Send follow-up prompt (non-blocking)
   mcx codex wait [session]                Block until a session event occurs
   mcx codex bye <session>                 End session and stop process
@@ -456,6 +505,7 @@ Usage:
   mcx codex log <session> --json          Raw JSON transcript output
   mcx codex log <session> --json --jq '.' Apply jq filter to JSON output
   mcx codex log <session> --full          Full output (no truncation)
+  mcx codex log <session> --compact       Truncated tool results for overview
   mcx codex worktrees                     List mcx-created worktrees
   mcx codex worktrees --prune             Remove orphaned worktrees + merged branches
 
@@ -477,5 +527,5 @@ Wait options:
   --timeout, -t <ms>          Max wait time (default: 300000)
 
 Session IDs support prefix matching (like git SHAs).
-Cost is not tracked for Codex sessions (shown as N/A).`);
+Cost is estimated from token counts when not reported by the provider (shown as ~$X.XXXX).`);
 }

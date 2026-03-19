@@ -36,7 +36,7 @@ const PER_FILE_TIME_BUDGET_MS = 5_000;
  * Uses sequential sum (not parallel wall time) for reproducibility across machines.
  * Ratchet this down as optimizations land. Warns but never blocks commits.
  */
-const AGGREGATE_TIME_BUDGET_MS = 60_000;
+const AGGREGATE_TIME_BUDGET_MS = 50_000;
 
 /** Number of test files to profile concurrently — scales with available CPUs */
 const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?? 4, 32));
@@ -51,6 +51,7 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
   "test/transport-errors.spec.ts": "Live daemon transport error integration tests",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
   "packages/daemon/src/config/watcher.spec.ts": "FS polling integration tests with 8s timeouts",
+  "packages/core/src/alias-bundle-tsc.spec.ts": "bunx tsc subprocess spawning per test (~3-4s each)",
 };
 
 /**
@@ -106,13 +107,10 @@ const EXCLUSIONS: Record<string, string> = {
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
   "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
 
-  // OpenCode — same Worker lifecycle pattern as ACP, plus HTTP/SSE transport requires real server
-  "daemon/src/opencode-server.ts": "8% coverage, Worker crash recovery lifecycle (mirrors acp-server.ts)",
-  "opencode/src/opencode-process.ts": "37% coverage, Bun.spawn lifecycle requires real subprocess",
-  "opencode/src/opencode-sse.ts": "25% coverage, SSE stream requires real HTTP connection",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
+  "scripts/prepare-npm.ts":
+    "import.meta.main entrypoint block uses real fs/dist paths — pure functions fully tested, entrypoint requires e2e",
 
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",

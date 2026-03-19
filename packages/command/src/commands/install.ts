@@ -13,6 +13,7 @@ import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, resolveConfigPath }
 
 export interface InstallDeps {
   searchRegistry: (query: string, opts?: RegistryOpts) => Promise<RegistryResponse>;
+  log?: (msg: string) => void;
 }
 
 const defaultDeps: InstallDeps = { searchRegistry: realSearchRegistry };
@@ -123,6 +124,6 @@ export async function cmdInstall(args: string[], deps?: InstallDeps): Promise<vo
   console.error(`Installed "${meta.displayName}" as "${serverName}" → ${path}`);
 
   if (parsed.json) {
-    console.log(JSON.stringify({ name: serverName, config, path }, null, 2));
+    (d.log ?? console.log)(JSON.stringify({ name: serverName, config, path }, null, 2));
   }
 }

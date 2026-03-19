@@ -72,8 +72,56 @@ jobs:
             artifacts/*.tar.gz
             artifacts/checksums.txt
 
+  publish-platform:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
+    strategy:
+      matrix:
+        include:
+          - suffix: darwin-arm64
+            platform: darwin-arm64
+          - suffix: darwin-x64
+            platform: darwin-x64
+          - suffix: linux-x64
+            platform: linux-x64
+          - suffix: linux-arm64
+            platform: linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: artifacts
+      - name: Prepare platform package
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          cd artifacts
+          tar xzf mcx-${{ matrix.suffix }}.tar.gz
+          cd ..
+          mkdir -p npm/${{ matrix.platform }}/bin
+          cp artifacts/mcx-${{ matrix.suffix }} npm/${{ matrix.platform }}/bin/mcx
+          cp artifacts/mcpd-${{ matrix.suffix }} npm/${{ matrix.platform }}/bin/mcpd
+          cp artifacts/mcpctl-${{ matrix.suffix }} npm/${{ matrix.platform }}/bin/mcpctl
+          chmod +x npm/${{ matrix.platform }}/bin/*
+          VERSION="${RELEASE_VERSION#v}"
+          cd npm/${{ matrix.platform }}
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+      - name: Publish platform package
+        run: |
+          cd npm/${{ matrix.platform }}
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   publish:
-    needs: release
+    needs: [release, publish-platform]
     runs-on: ubuntu-latest
     if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
     steps:
@@ -89,7 +137,15 @@ jobs:
           bun -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
-            pkg.version = process.env.RELEASE_VERSION.replace(/^v/, '');
+            const version = process.env.RELEASE_VERSION.replace(/^v/, '');
+            pkg.version = version;
+            if (pkg.optionalDependencies) {
+              for (const key of Object.keys(pkg.optionalDependencies)) {
+                if (key.startsWith('@theshadow27/mcp-cli-')) {
+                  pkg.optionalDependencies[key] = version;
+                }
+              }
+            }
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
       - name: Publish to npm

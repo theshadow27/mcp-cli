@@ -9,13 +9,25 @@
  * need stdout for URL discovery, then communication moves to HTTP.
  */
 
-import type { Subprocess } from "bun";
-
 /** Default timeout for URL discovery from stdout (30s). */
 export const URL_DISCOVERY_TIMEOUT_MS = 30_000;
 
 /** Pattern to match the server listening line. */
 const URL_PATTERN = /https?:\/\/127\.0\.0\.1:\d+/;
+
+/** Minimal subset of Bun.Subprocess used by OpenCodeProcess. */
+export interface SpawnResult {
+  pid: number;
+  stdout: ReadableStream<Uint8Array> | null;
+  exited: Promise<number | undefined>;
+  kill(signal?: number | NodeJS.Signals): void;
+}
+
+/** Function signature matching Bun.spawn for DI. */
+export type SpawnFn = (
+  cmd: string[],
+  opts: { cwd: string; stdout: "pipe"; stderr: "inherit"; env: Record<string, string | undefined> },
+) => SpawnResult;
 
 export interface OpenCodeProcessOptions {
   /** Working directory for the agent process. */
@@ -26,16 +38,20 @@ export interface OpenCodeProcessOptions {
   discoveryTimeoutMs?: number;
   /** Called when the process exits. */
   onExit?: (code: number | null, signal: string | null) => void;
+  /** Override spawn function for testing. Defaults to Bun.spawn. */
+  spawnFn?: SpawnFn;
 }
 
 export class OpenCodeProcess {
-  private proc: Subprocess | null = null;
+  private proc: SpawnResult | null = null;
   private _exited = false;
   private _baseUrl: string | null = null;
   private readonly opts: OpenCodeProcessOptions;
+  private readonly spawnFn: SpawnFn;
 
   constructor(opts: OpenCodeProcessOptions) {
     this.opts = opts;
+    this.spawnFn = opts.spawnFn ?? ((cmd, o) => Bun.spawn(cmd, o));
   }
 
   /**
@@ -45,7 +61,7 @@ export class OpenCodeProcess {
   async spawn(): Promise<string> {
     if (this.proc) throw new Error("OpenCodeProcess already spawned");
 
-    this.proc = Bun.spawn(["opencode", "serve", "--hostname=127.0.0.1", "--port=0"], {
+    this.proc = this.spawnFn(["opencode", "serve", "--hostname=127.0.0.1", "--port=0"], {
       cwd: this.opts.cwd,
       stdout: "pipe",
       stderr: "inherit",
@@ -56,7 +72,7 @@ export class OpenCodeProcess {
     this.proc.exited.then((code) => {
       if (this._exited) return;
       this._exited = true;
-      this.opts.onExit?.(code, null);
+      this.opts.onExit?.(code ?? null, null);
     });
 
     // Discover URL from stdout
@@ -77,7 +93,7 @@ export class OpenCodeProcess {
   /** Send SIGTERM to the process. */
   kill(): void {
     if (!this.proc || this._exited) return;
-    this.proc.kill("SIGTERM");
+    this.proc.kill("SIGTERM" as NodeJS.Signals);
   }
 
   /** Whether the process is still running. */
