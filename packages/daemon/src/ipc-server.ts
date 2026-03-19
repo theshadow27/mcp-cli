@@ -54,6 +54,7 @@ import {
   options,
   safeAliasPath,
   startSpan,
+  validateFreeformTsc,
 } from "@mcp-cli/core";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
@@ -708,7 +709,6 @@ export class IpcServer {
         // Freeform aliases — try bundling to check for syntax errors
         try {
           await bundleAlias(alias.filePath);
-          return { valid: true, aliasType: "freeform", errors: [], warnings: [] };
         } catch (err) {
           return {
             valid: false,
@@ -717,6 +717,10 @@ export class IpcServer {
             warnings: [],
           };
         }
+
+        // Run tsc --noEmit for type-level diagnostics (warnings only)
+        const tsc = await validateFreeformTsc(alias.filePath);
+        return { valid: true, aliasType: "freeform", errors: [], warnings: tsc.warnings };
       }
 
       // defineAlias — full validation
