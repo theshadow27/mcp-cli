@@ -8,7 +8,7 @@
 
 import { appendFileSync, closeSync, openSync, renameSync, statSync } from "node:fs";
 import { DAEMON_LOG_MAX_BYTES, options } from "@mcp-cli/core";
-import { type StderrLine, StderrRingBuffer } from "./stderr-buffer";
+import { type StderrLine, StderrRingBuffer, type StderrSubscriber } from "./stderr-buffer";
 
 const DAEMON_KEY = "__daemon__";
 const DAEMON_CAPACITY = 200;
@@ -86,6 +86,14 @@ export function closeDaemonLogFile(): void {
 /** Retrieve captured daemon log lines. */
 export function getDaemonLogLines(limit?: number): StderrLine[] {
   return buffer.getLines(DAEMON_KEY, limit);
+}
+
+/** Subscribe to new daemon log lines. Returns an unsubscribe function. */
+export function subscribeDaemonLogs(fn: (entry: StderrLine) => void): () => void {
+  const wrapper: StderrSubscriber = (server, entry) => {
+    if (server === DAEMON_KEY) fn(entry);
+  };
+  return buffer.subscribe(wrapper);
 }
 
 function writeToLogFile(line: string): void {

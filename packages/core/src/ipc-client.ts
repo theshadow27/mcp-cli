@@ -115,3 +115,59 @@ export function pingDaemon(): Promise<boolean> {
     .then((res) => res.ok)
     .catch(() => false);
 }
+
+/**
+ * Open an SSE stream to the daemon's GET /logs endpoint.
+ * Returns an async iterable of parsed log entries plus an abort function.
+ */
+export function openLogStream(params: {
+  server?: string;
+  daemon?: boolean;
+  lines?: number;
+  since?: number;
+}): { entries: AsyncIterable<{ timestamp: number; line: string }>; abort: () => void } {
+  const qs = new URLSearchParams();
+  if (params.server) qs.set("server", params.server);
+  if (params.daemon) qs.set("daemon", "true");
+  if (params.lines !== undefined) qs.set("lines", String(params.lines));
+  if (params.since !== undefined) qs.set("since", String(params.since));
+
+  const controller = new AbortController();
+  const url = `http://localhost/logs?${qs.toString()}`;
+
+  async function* iterate(): AsyncGenerator<{ timestamp: number; line: string }> {
+    const res = await fetch(url, {
+      method: "GET",
+      unix: options.SOCKET_PATH,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.ok) {
+      throw new Error(`SSE stream error: ${res.status} ${await res.text()}`);
+    }
+
+    const body = res.body;
+    if (!body) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const chunk of body) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "");
+        if (!line) continue;
+        try {
+          yield JSON.parse(line) as { timestamp: number; line: string };
+        } catch {
+          // Skip malformed SSE events
+        }
+      }
+    }
+  }
+
+  return { entries: iterate(), abort: () => controller.abort() };
+}
