@@ -50,7 +50,7 @@ export class PermissionRouter {
   async evaluate(request: CanUseToolRequest): Promise<RouterDecision> {
     switch (this.strategy) {
       case "auto":
-        return { allow: true, updatedInput: request.input };
+        return { allow: true, matched: true, updatedInput: request.input };
 
       case "rules":
         return evaluate(this.rules, {
@@ -60,7 +60,7 @@ export class PermissionRouter {
 
       case "delegate": {
         if (!this.onDelegate) {
-          return { allow: false, message: "No delegate callback registered" };
+          return { allow: false, matched: false, message: "No delegate callback registered" };
         }
         return this.onDelegate(request);
       }

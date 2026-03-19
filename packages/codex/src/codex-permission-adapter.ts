@@ -46,7 +46,7 @@ export function evaluateApproval(
 
   // If no rule matched (neither allow nor explicit deny), escalate to manual review
   // rather than silently denying. This ensures new tool types aren't blocked invisibly.
-  if (!decision.allow && decision.message?.startsWith("No matching rule")) {
+  if (!decision.matched) {
     return { resolved: false, allow: false, request };
   }
 

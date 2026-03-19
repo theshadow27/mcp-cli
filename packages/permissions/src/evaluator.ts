@@ -19,6 +19,8 @@ export interface PermissionRequest {
 
 export interface PermissionDecision {
   allow: boolean;
+  /** Whether a rule matched. False means fail-closed (no rule matched). */
+  matched: boolean;
   message?: string;
   updatedInput?: Record<string, unknown>;
 }
@@ -94,6 +96,7 @@ export function evaluate(rules: readonly PermissionRule[], request: PermissionRe
     if (rule.action === "deny") {
       return {
         allow: false,
+        matched: true,
         message: `Denied by rule: ${rule.tool}`,
       };
     }
@@ -101,12 +104,13 @@ export function evaluate(rules: readonly PermissionRule[], request: PermissionRe
   }
 
   if (hasAllow) {
-    return { allow: true, updatedInput: request.input };
+    return { allow: true, matched: true, updatedInput: request.input };
   }
 
   // Fail-closed: no matching rule → deny
   return {
     allow: false,
+    matched: false,
     message: `No matching rule for tool: ${request.toolName}`,
   };
 }

@@ -141,6 +141,7 @@ describe("PermissionRouter — delegate", () => {
     const router = new PermissionRouter("delegate");
     const expectedDecision: PermissionDecision = {
       allow: true,
+      matched: true,
       updatedInput: { command: "safe-command" },
     };
 
@@ -156,7 +157,7 @@ describe("PermissionRouter — delegate", () => {
 
     router.onDelegate = async (req) => {
       receivedRequest = req;
-      return { allow: true };
+      return { allow: true, matched: true };
     };
 
     const request = makeRequest("Bash", { command: "echo hi" });
@@ -178,6 +179,7 @@ describe("PermissionRouter — delegate", () => {
     const router = new PermissionRouter("delegate");
     router.onDelegate = async () => ({
       allow: false,
+      matched: true,
       message: "Human says no",
     });
 
@@ -190,6 +192,7 @@ describe("PermissionRouter — delegate", () => {
     const router = new PermissionRouter("delegate");
     router.onDelegate = async (req) => ({
       allow: true,
+      matched: true,
       updatedInput: req.input,
       updatedPermissions: [{ tool: "Bash(git:*)", action: "allow" as const }],
     });
