@@ -73,6 +73,8 @@ export interface CliConfig {
   wsPort?: number;
   /** Configuration for ephemeral (auto-saved) aliases */
   ephemeralAliases?: EphemeralAliasConfig;
+  /** Directories where the first-run import prompt has already been shown */
+  promptedDirs?: string[];
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

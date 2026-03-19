@@ -94,9 +94,6 @@ const EXCLUSIONS: Record<string, string> = {
   "daemon/src/ipc-server.ts": "59% coverage, handler logic (#46)",
   "daemon/src/config/watcher.ts": "47% coverage, FS watcher loop (#48)",
 
-  // Serve command — signal handler, TTY detection, and jq filtering paths need integration tests (#824, #825, #826)
-  "command/src/commands/serve.ts": "78% coverage, signal/TTY/jq paths need integration test (#824 #825 #826)",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
 

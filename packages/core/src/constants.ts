@@ -91,6 +91,7 @@ const _originalOptions = {
   ALIASES_DIR,
   CACHE_DIR,
   CLAUDE_CONFIG_PATH: join(homedir(), ".claude.json"),
+  CLAUDE_DESKTOP_CONFIG_PATH: join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json"),
   USER_SERVERS_PATH: join(MCP_CLI_DIR, "servers.json"),
   PROJECTS_DIR: join(MCP_CLI_DIR, "projects"),
   TYPES_PATH: join(MCP_CLI_DIR, "mcp-cli.d.ts"),
@@ -197,6 +198,8 @@ export const PID_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  *             = 3 × 15s + 1s + 2s = 48s < 60s
  */
 export const CONNECT_MAX_RETRIES = 2;
+/** Stdio transports get fewer retries — process bugs won't self-heal. */
+export const STDIO_CONNECT_MAX_RETRIES = 1;
 export const CONNECT_INITIAL_DELAY_MS = 1_000;
 export const CONNECT_MAX_DELAY_MS = 15_000;
 

@@ -2,6 +2,8 @@
 
 **MCP tools from the command line. Zero context overhead.**
 
+> Here for the auto-sprint? Check out the [sprint skill](.claude/skills/sprint/README.md) — the autonomous pipeline that develops this repo.
+
 Many MCP servers inject 15,000+ tokens of tool definitions into every Claude Code conversation — every message, every subagent. The `gh` CLI costs 0 tokens when unused.
 
 `mcp-cli` gives you the same MCP tools via Bash: discoverable, pipeable, composable, and invisible until needed.
@@ -280,3 +282,5 @@ bun dev:mcx -- ls            # run CLI directly
 ## Disclaimer
 
 This project was developed entirely by Claude Code, without any sort of IDE.
+
+The [`mcx claude`](#claude-sessions) commands exist because they were needed here first. Every sprint is planned, executed, reviewed, and retro'd by Claude sessions talking to each other through `mcx`. See the [sprint skill](.claude/skills/sprint/README.md) for how it works.

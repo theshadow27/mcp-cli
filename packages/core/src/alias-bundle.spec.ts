@@ -218,7 +218,7 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       { name: "World" },
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null },
+      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
       true,
     );
 
@@ -245,7 +245,7 @@ describe("executeAliasBundled", () => {
       executeAliasBundled(
         js,
         { count: "not-a-number" },
-        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null },
+        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
         true,
       ),
     ).rejects.toThrow("Invalid input");
@@ -274,7 +274,7 @@ describe("executeAliasBundled", () => {
       const result = await executeAliasBundled(
         js,
         undefined,
-        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null },
+        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
         true,
       );
       // Output is returned despite schema mismatch (warn, don't block)
@@ -304,7 +304,7 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       undefined,
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null },
+      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
       true,
     );
     expect(result).toEqual({ message: "hello" });
@@ -319,7 +319,7 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       undefined,
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null },
+      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
       false,
     );
 

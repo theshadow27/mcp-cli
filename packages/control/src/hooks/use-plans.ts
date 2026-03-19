@@ -1,10 +1,5 @@
 import type { Plan, PlanMetrics, ServerStatus } from "@mcp-cli/core";
-import {
-  CLAUDE_SERVER_NAME,
-  GetPlanMetricsResultSchema,
-  GetPlanResultSchema,
-  ListPlansResultSchema,
-} from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, GetPlanMetricsResultSchema, ListPlansResultSchema } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers.js";
@@ -204,89 +199,6 @@ export function usePlans(opts: UsePlansOptions = {}): UsePlansResult {
   }, [intervalMs, enabled, tick]);
 
   return { plans, loading, error, disconnected, failedServers, refresh };
-}
-
-// -- usePlan --
-
-export interface UsePlanResult {
-  plan: Plan | null;
-  loading: boolean;
-  error: string | null;
-  /** True when the server has `advance_plan` capability. */
-  canAdvance: boolean;
-  /** True when the last fetch failed (stale data is shown). */
-  disconnected: boolean;
-}
-
-export interface UsePlanOptions {
-  enabled?: boolean;
-  /**
-   * Whether the plan server supports `advance_plan`.
-   * Pass from server's `planCapabilities` (e.g. from `usePlans` or `useDaemon`).
-   * Defaults to false if not provided.
-   */
-  canAdvance?: boolean;
-  /** Override ipcCall for testing (dependency injection). */
-  ipcCallFn?: typeof ipcCall;
-}
-
-/**
- * Fetches a single plan via `get_plan`. Re-fetches when planId or server changes.
- */
-export function usePlan(planId: string, server: string, opts: UsePlanOptions = {}): UsePlanResult {
-  const { enabled = true, canAdvance = false, ipcCallFn = ipcCall } = opts;
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [disconnected, setDisconnected] = useState(false);
-
-  const ipcCallRef = useRef(ipcCallFn);
-  ipcCallRef.current = ipcCallFn;
-
-  useEffect(() => {
-    if (!enabled || !planId || !server) return;
-
-    // Reset loading when re-enabled so stale data shows a spinner (#775)
-    setLoading(true);
-
-    let cancelled = false;
-
-    async function fetch() {
-      try {
-        const result = await ipcCallRef.current("callTool", {
-          server,
-          tool: "get_plan",
-          arguments: { planId },
-        });
-        if (cancelled) return;
-        const text = extractToolText(result);
-        if (text) {
-          const parsed = GetPlanResultSchema.safeParse(JSON.parse(text));
-          if (parsed.success) {
-            setPlan(parsed.data.plan);
-          } else {
-            console.error(`[usePlan] parse error for plan ${planId} on ${server}:`, parsed.error.issues);
-          }
-        }
-        setError(null);
-        setDisconnected(false);
-        setLoading(false);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setDisconnected(true);
-        setLoading(false);
-      }
-    }
-
-    fetch();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [planId, server, enabled]);
-
-  return { plan, loading, error, canAdvance, disconnected };
 }
 
 // -- usePlanMetrics --

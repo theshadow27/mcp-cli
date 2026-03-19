@@ -33,6 +33,7 @@ import {
   fixCoreBare,
   generateSpanId,
   options,
+  pruneExpiredCache,
   readCliConfig,
   readWorktreeConfig,
   resolveWorktreePath,
@@ -254,6 +255,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const cleaned = reapOrphanedSessions(db, logger);
   if (cleaned > 0) {
     logger.info(`[mcpd] Cleaned up ${cleaned} stale session(s) from previous run`);
+  }
+
+  // Prune expired alias cache entries
+  const cachePruned = pruneExpiredCache();
+  if (cachePruned > 0) {
+    logger.info(`[mcpd] Pruned ${cachePruned} expired cache entry(ies)`);
   }
 
   // Warn if runtime state permissions have been loosened

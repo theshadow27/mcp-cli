@@ -9,11 +9,12 @@
  * bundleAlias() + executeAliasBundled() to avoid Bun module resolver segfaults (#577).
  */
 
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   type AliasContext,
   type McpProxy,
   bundleAlias,
+  createAliasCache,
   executeAliasBundled,
   ipcCall,
   isDefineAlias,
@@ -37,11 +38,15 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
   // Bundle the alias
   const { js } = await bundleAlias(aliasPath);
 
+  // Derive alias name from filename (e.g. "my-alias.ts" → "my-alias")
+  const aliasName = basename(aliasPath, ".ts");
+
   const ctx: AliasContext = {
     mcp: mcpProxy,
     args: cliArgs,
     file: (path: string) => Bun.file(path).text(),
     json: async (path: string) => JSON.parse(await Bun.file(path).text()),
+    cache: createAliasCache(aliasName),
   };
 
   if (isStructured) {
