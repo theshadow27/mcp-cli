@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { bundleAlias } from "@mcp-cli/core";
 
@@ -105,6 +105,54 @@ describe("alias-executor subprocess protocol", () => {
     const parsed = JSON.parse(stdout);
     expect(parsed.error).toBeDefined();
     expect(typeof parsed.error).toBe("string");
+  });
+
+  test("cache() writes to disk and returns cached value on second call", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "cached.ts");
+    // Script uses cache() — on first call writes file, on second call reads it
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "cached",',
+        "  input: z.object({ seed: z.string() }),",
+        "  fn: async (input, ctx) => {",
+        '    const val = await ctx.cache("test-key", () => input.seed);',
+        "    return val;",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+
+    // First call: producer runs, value cached
+    const first = await runExecutor({
+      bundledJs: js,
+      input: { seed: "original" },
+      isDefineAlias: true,
+      aliasName: "executor-cache-test",
+    });
+    expect(first.exitCode).toBe(0);
+    expect(JSON.parse(first.stdout).result).toBe("original");
+
+    // Second call with different seed: should return cached "original"
+    const second = await runExecutor({
+      bundledJs: js,
+      input: { seed: "different" },
+      isDefineAlias: true,
+      aliasName: "executor-cache-test",
+    });
+    expect(second.exitCode).toBe(0);
+    expect(JSON.parse(second.stdout).result).toBe("original");
+
+    // Clean up cache files
+    const cacheDir = join(homedir(), ".mcp-cli", "cache", "alias", "executor-cache-test");
+    if (existsSync(cacheDir)) {
+      rmSync(cacheDir, { recursive: true });
+    }
   });
 
   test("console.log in alias script does not corrupt stdout JSON", async () => {
