@@ -10,13 +10,13 @@
 
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AgentProviderConfig } from "@mcp-cli/core";
+import type { AgentFeatures, AgentProvider } from "@mcp-cli/core";
 import {
   PROMPT_IPC_TIMEOUT_MS,
   buildHookEnv,
+  getAllProviders,
   getProvider,
   hasWorktreeHooks,
-  listProviders,
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
@@ -45,9 +45,7 @@ export interface AgentDeps extends SharedSessionDeps {
   ttyOpen: (args: string[]) => Promise<void>;
 }
 
-function makeCallTool(
-  provider: AgentProviderConfig,
-): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
+function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
   const p = provider.toolPrefix;
   return (tool, args) => {
     const needsLongTimeout = (tool === `${p}_prompt` && args.wait) || tool === `${p}_wait`;
@@ -122,7 +120,7 @@ async function defaultGetPrStatus(worktreePath: string): Promise<{ number: numbe
   }
 }
 
-export function makeDefaultDeps(provider: AgentProviderConfig): AgentDeps {
+export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
   return {
     callTool: makeCallTool(provider),
     printError: defaultPrintError,
@@ -148,6 +146,19 @@ export function makeDefaultDeps(provider: AgentProviderConfig): AgentDeps {
   };
 }
 
+// ── Helpers ──
+
+/** Capitalize the first letter of a provider name for display. */
+function providerDisplayName(provider: AgentProvider, override?: string): string {
+  const n = override ?? provider.name;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+/** Check a partial feature flag — undefined is treated as false. */
+function hasFeature(provider: AgentProvider, feature: keyof AgentFeatures): boolean {
+  return provider.native[feature] === true;
+}
+
 // ── Entry point ──
 
 /**
@@ -166,14 +177,18 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 
   const provider = getProvider(providerName);
   if (!provider) {
-    const available = listProviders().join(", ");
+    const available = getAllProviders()
+      .filter((p) => !["copilot", "gemini"].includes(p.name))
+      .map((p) => p.name)
+      .join(", ");
     (deps?.printError ?? defaultPrintError)(`Unknown provider: ${providerName}. Available: ${available}`);
     (deps?.exit ?? ((code: number) => process.exit(code)))(1);
     return; // unreachable but helps TS
   }
 
-  // For copilot/gemini, the provider resolves to ACP — set the agent override
-  const agentOverride = providerName !== provider.name ? providerName : undefined;
+  // Derive agent override from buildSpawnArgs (copilot/gemini inject agentOverride into spawn args)
+  const dummySpawnArgs = provider.buildSpawnArgs({ task: "" });
+  const agentOverride = typeof dummySpawnArgs.agentOverride === "string" ? dummySpawnArgs.agentOverride : undefined;
 
   const d: AgentDeps = { ...makeDefaultDeps(provider), ...deps };
 
@@ -208,7 +223,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
       await agentWait(args.slice(2), provider, agentOverride, d);
       break;
     case "resume":
-      if (!provider.features.resume) {
+      if (!hasFeature(provider, "resume")) {
         d.printError(
           `"${providerName}" does not support resume. Only providers with native session resume support this.`,
         );
@@ -220,7 +235,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
       break;
     case "worktrees":
     case "wt":
-      if (!provider.features.resume) {
+      if (!hasFeature(provider, "resume")) {
         d.printError(`"${providerName}" does not support worktree management.`);
         d.exit(1);
         break;
@@ -255,7 +270,7 @@ interface AgentSpawnArgs {
 
 export function parseAgentSpawnArgs(
   args: string[],
-  providerConfig: AgentProviderConfig,
+  providerConfig: AgentProvider,
   agentOverride?: string,
 ): AgentSpawnArgs {
   let json = false;
@@ -280,16 +295,16 @@ export function parseAgentSpawnArgs(
       return 0;
     }
     if (arg === "--headed") {
-      if (!providerConfig.features.headed) {
-        extraError = `--headed is not supported by ${providerConfig.displayName}`;
+      if (!hasFeature(providerConfig, "headed")) {
+        extraError = `--headed is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
       headed = true;
       return 0;
     }
     if (arg === "--agent" || arg === "-a") {
-      if (!providerConfig.features.agentSelect) {
-        extraError = `--agent is not supported by ${providerConfig.displayName}`;
+      if (!hasFeature(providerConfig, "agentSelect")) {
+        extraError = `--agent is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
       if (agentOverride) return 1; // Already set by wrapper
@@ -302,8 +317,8 @@ export function parseAgentSpawnArgs(
       return 1;
     }
     if (arg === "--provider" || arg === "-p") {
-      if (!providerConfig.features.providerSelect) {
-        extraError = `--provider is not supported by ${providerConfig.displayName}`;
+      if (providerConfig.name !== "opencode") {
+        extraError = `--provider is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
       const val = allArgs[i + 1];
@@ -335,7 +350,7 @@ export function parseAgentSpawnArgs(
 
 async function agentSpawn(
   args: string[],
-  provider: AgentProviderConfig,
+  provider: AgentProvider,
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
@@ -352,7 +367,7 @@ async function agentSpawn(
   }
 
   // ACP requires --agent
-  if (provider.features.agentSelect && !parsed.agent) {
+  if (hasFeature(provider, "agentSelect") && !parsed.agent) {
     d.printError("--agent is required for ACP. Specify which agent to spawn (e.g. copilot, gemini).");
     d.exit(1);
   }
@@ -400,7 +415,7 @@ async function agentSpawn(
     return;
   }
   if (parsed_data?.sessionId) {
-    const label = agentOverride ? agentOverride.charAt(0).toUpperCase() + agentOverride.slice(1) : provider.displayName;
+    const label = providerDisplayName(provider, agentOverride);
     console.error(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
   }
   console.log(text);
@@ -412,7 +427,7 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProviderConfig, d: AgentDeps): Promise<void> {
+async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProvider, d: AgentDeps): Promise<void> {
   if (parsed.wait) {
     d.printError("--headed and --wait are incompatible. Headed sessions are interactive.");
     d.exit(1);
@@ -498,27 +513,27 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
 
 async function agentList(
   args: string[],
-  provider: AgentProviderConfig,
+  provider: AgentProvider,
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
   const P = provider.toolPrefix;
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
-  const showPr = args.includes("--pr") && provider.features.repoScoped;
+  const showPr = args.includes("--pr") && hasFeature(provider, "repoScoped");
   const showAll = args.includes("--all");
 
   const toolArgs: Record<string, unknown> = {};
 
   // Repo-scoped filtering (Claude only, unless --all)
-  if (provider.features.repoScoped && !showAll) {
+  if (hasFeature(provider, "repoScoped") && !showAll) {
     const gitRoot = d.getGitRoot();
     if (gitRoot) toolArgs.repoRoot = gitRoot;
   }
 
   // Agent filter for ACP variants
   const agentFilter = agentOverride ?? extractFlag(args, "--agent", "-a");
-  if (agentFilter && provider.features.agentSelect) toolArgs.agent = agentFilter;
+  if (agentFilter && hasFeature(provider, "agentSelect")) toolArgs.agent = agentFilter;
 
   const result = await d.callTool(`${P}_session_list`, toolArgs);
   const text = formatToolResult(result);
@@ -537,7 +552,7 @@ async function agentList(
   }
 
   if (sessions.length === 0) {
-    const label = agentOverride ?? provider.displayName;
+    const label = agentOverride ?? providerDisplayName(provider);
     console.error(`No active ${label} sessions.`);
     return;
   }
@@ -551,7 +566,7 @@ async function agentList(
 
   // Gather diff stats and (optionally) PR status for worktree sessions in parallel
   const [diffStats, prStatuses] = await Promise.all([
-    provider.features.repoScoped
+    hasFeature(provider, "repoScoped")
       ? Promise.all(sessions.map((s) => (s.worktree ? d.getDiffStats(s.worktree as string) : Promise.resolve(null))))
       : Promise.resolve(sessions.map(() => null)),
     showPr
@@ -561,7 +576,7 @@ async function agentList(
 
   const hasAnyDiff = diffStats.some((stat) => stat !== null);
   const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
-  const showAgent = provider.features.agentSelect && !agentOverride;
+  const showAgent = hasFeature(provider, "agentSelect") && !agentOverride;
 
   // Build header
   const agentHeader = showAgent ? ` ${"AGENT".padEnd(10)}` : "";
@@ -578,9 +593,9 @@ async function agentList(
     const model = String(s.model ?? "—").padEnd(16);
     const costVal = s.cost as number | null;
     const cost =
-      provider.features.costTracking && costVal != null && costVal > 0
+      hasFeature(provider, "costTracking") && costVal != null && costVal > 0
         ? `$${costVal.toFixed(4)}`.padEnd(8)
-        : (provider.features.costTracking ? "—" : "N/A").padEnd(8);
+        : (hasFeature(provider, "costTracking") ? "—" : "N/A").padEnd(8);
     const tokens = (s.tokens as number) > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
     const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
     const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
@@ -613,7 +628,7 @@ function extractFlag(args: string[], ...flags: string[]): string | undefined {
 
 // ── Send ──
 
-async function agentSend(args: string[], provider: AgentProviderConfig, d: AgentDeps): Promise<void> {
+async function agentSend(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
   let wait = false;
   const rest: string[] = [];
@@ -643,7 +658,7 @@ async function agentSend(args: string[], provider: AgentProviderConfig, d: Agent
 
 // ── Bye ──
 
-async function agentBye(args: string[], provider: AgentProviderConfig, d: AgentDeps): Promise<void> {
+async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
   const sessionPrefix = args[0];
 
@@ -661,7 +676,7 @@ async function agentBye(args: string[], provider: AgentProviderConfig, d: AgentD
   if (byeResult.worktree) {
     if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
-    } else if (provider.features.resume) {
+    } else if (hasFeature(provider, "resume")) {
       // Claude: daemon-created worktrees have cwd=null — resolve from local repo root
       const repoRoot = d.getCwd();
       const wtConfig = readWorktreeConfig(repoRoot);
@@ -673,7 +688,7 @@ async function agentBye(args: string[], provider: AgentProviderConfig, d: AgentD
 
 // ── Interrupt ──
 
-async function agentInterrupt(args: string[], provider: AgentProviderConfig, d: AgentDeps): Promise<void> {
+async function agentInterrupt(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
   const sessionPrefix = args[0];
 
@@ -689,7 +704,7 @@ async function agentInterrupt(args: string[], provider: AgentProviderConfig, d: 
 
 // ── Log ──
 
-async function agentLog(args: string[], provider: AgentProviderConfig, d: AgentDeps): Promise<void> {
+async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
   const { json, rest: r1 } = extractJsonFlag(args);
   const { full, rest: r2 } = extractFullFlag(r1);
@@ -779,7 +794,7 @@ async function agentLog(args: string[], provider: AgentProviderConfig, d: AgentD
 
 async function agentWait(
   args: string[],
-  provider: AgentProviderConfig,
+  provider: AgentProvider,
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
@@ -812,7 +827,7 @@ async function agentWait(
       }
     } else if (arg === "--short") {
       short = true;
-    } else if (arg === "--all" || (arg === "-a" && !provider.features.agentSelect)) {
+    } else if (arg === "--all" || (arg === "-a" && !hasFeature(provider, "agentSelect"))) {
       all = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
@@ -835,7 +850,7 @@ async function agentWait(
 
   // Repo-scoped filtering (Claude only)
   let repoFilter: string | undefined;
-  if (provider.features.repoScoped && !all && !sessionPrefix) {
+  if (hasFeature(provider, "repoScoped") && !all && !sessionPrefix) {
     const gitRoot = d.getGitRoot();
     if (gitRoot) {
       toolArgs.repoRoot = gitRoot;
@@ -940,9 +955,9 @@ async function agentWait(
   const event = evt.event ?? "—";
   const costVal = evt.cost;
   const cost =
-    provider.features.costTracking && costVal != null && costVal > 0
+    hasFeature(provider, "costTracking") && costVal != null && costVal > 0
       ? `$${costVal.toFixed(4)}`
-      : provider.features.costTracking
+      : hasFeature(provider, "costTracking")
         ? "—"
         : "N/A";
   const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
@@ -953,7 +968,9 @@ async function agentWait(
 // ── Usage ──
 
 function printAgentUsage(): void {
-  const providers = listProviders();
+  const providers = getAllProviders()
+    .filter((p) => !["copilot", "gemini"].includes(p.name))
+    .map((p) => p.name);
   console.log(`mcx agent — unified command for all agent providers
 
 Usage:
@@ -972,9 +989,9 @@ Examples:
 Run "mcx agent <provider> --help" for provider-specific subcommands.`);
 }
 
-function printProviderUsage(provider: AgentProviderConfig, name: string, agentOverride?: string): void {
-  const label = agentOverride ?? provider.displayName;
-  const resumeLine = provider.features.resume
+function printProviderUsage(provider: AgentProvider, name: string, agentOverride?: string): void {
+  const label = agentOverride ?? providerDisplayName(provider);
+  const resumeLine = hasFeature(provider, "resume")
     ? `\n  mcx agent ${name} resume <worktree>        Resume with conversation history
   mcx agent ${name} worktrees                 List mcx-created worktrees`
     : "";
@@ -993,10 +1010,10 @@ Usage:
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }
 
-function printSpawnUsage(provider: AgentProviderConfig, agentOverride?: string): void {
+function printSpawnUsage(provider: AgentProvider, agentOverride?: string): void {
   const name = agentOverride ?? provider.name;
   const lines: string[] = [
-    `mcx agent ${name} spawn — Start a new ${agentOverride ?? provider.displayName} session`,
+    `mcx agent ${name} spawn — Start a new ${agentOverride ?? providerDisplayName(provider)} session`,
     "",
     "Options:",
     "  --task, -t <string>        Task prompt for the session (required)",
@@ -1009,13 +1026,13 @@ function printSpawnUsage(provider: AgentProviderConfig, agentOverride?: string):
     "  --json                     Output raw JSON",
   ];
 
-  if (provider.features.headed) {
+  if (hasFeature(provider, "headed")) {
     lines.push("  --headed                   Open in a visible terminal tab");
   }
-  if (provider.features.agentSelect && !agentOverride) {
+  if (hasFeature(provider, "agentSelect") && !agentOverride) {
     lines.push("  --agent, -a <name>         ACP agent to spawn (e.g. copilot, gemini)");
   }
-  if (provider.features.providerSelect) {
+  if (provider.name === "opencode") {
     lines.push("  --provider, -p <name>      LLM provider (e.g. anthropic, openai, google)");
   }
 

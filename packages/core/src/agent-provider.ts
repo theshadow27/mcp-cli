@@ -1,59 +1,136 @@
 /**
- * Agent provider registry — maps provider names to server/tool configuration.
+ * Agent provider registry and shim interface.
  *
- * Each provider has a daemon server name (e.g. "_claude") and a tool prefix
- * (e.g. "claude") used to construct tool names like "claude_prompt".
- *
- * This is the foundation for `mcx agent <provider> <subcommand>` — the unified
- * command dispatches subcommands parameterized by the provider config here.
+ * Defines the common interface that all agent providers (Claude, Codex,
+ * OpenCode, ACP, Copilot, Gemini) implement. The registry maps provider
+ * names to their definitions and the shim registry provides feature
+ * polyfills for providers that lack native support.
  */
 
-import { ACP_SERVER_NAME, CLAUDE_SERVER_NAME, CODEX_SERVER_NAME, OPENCODE_SERVER_NAME } from "./constants";
+// ── Types ──────────────────────────────────────────────────────────
 
-/** Static configuration for an agent provider. */
-export interface AgentProviderConfig {
-  /** Provider identifier: "claude", "codex", "opencode", "acp" */
-  readonly name: string;
-  /** Display name for user-facing messages: "Claude", "Codex", "OpenCode", "ACP" */
-  readonly displayName: string;
-  /** Daemon virtual server name: "_claude", "_codex", "_acp", "_opencode" */
-  readonly serverName: string;
-  /** Tool name prefix: "claude", "codex", "acp", "opencode" */
-  readonly toolPrefix: string;
-  /** Native feature flags — controls which subcommands/options are available. */
-  readonly features: AgentFeatures;
-}
-
-/** Feature flags declaring native capabilities per provider. */
 export interface AgentFeatures {
-  /** Native --worktree in subprocess (all providers support via mcx shim). */
-  readonly worktree: boolean;
-  /** Native session resume (only Claude). */
-  readonly resume: boolean;
-  /** Native repo-scoped session filtering (only Claude). */
-  readonly repoScoped: boolean;
-  /** Native per-session cost events. */
-  readonly costTracking: boolean;
-  /** Native compact transcript mode. */
-  readonly compactLog: boolean;
-  /** Native cursor-based wait polling. */
-  readonly afterSeq: boolean;
-  /** Native TUI mode (--headed, only Claude). */
-  readonly headed: boolean;
-  /** Agent sub-selection (--agent flag, ACP only). */
-  readonly agentSelect: boolean;
-  /** Provider sub-selection (--provider flag, OpenCode only). */
-  readonly providerSelect: boolean;
+  /** Native --worktree in subprocess */
+  worktree: boolean;
+  /** Native session resume */
+  resume: boolean;
+  /** Native repo-scoped session filtering */
+  repoScoped: boolean;
+  /** Native per-session cost events */
+  costTracking: boolean;
+  /** Native compact transcript mode */
+  compactLog: boolean;
+  /** Native cursor-based wait polling */
+  afterSeq: boolean;
+  /** Native TUI mode */
+  headed: boolean;
+  /** Agent sub-selection (ACP only) */
+  agentSelect: boolean;
 }
 
-// ── Built-in providers ──
+export interface CommonSpawnOpts {
+  task: string;
+  model?: string;
+  cwd?: string;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  wait?: boolean;
+  timeout?: number;
+  /** Provider-specific extras passed through */
+  extras?: Record<string, unknown>;
+}
 
-const CLAUDE_PROVIDER: AgentProviderConfig = {
+export interface AgentProvider {
+  /** Provider identifier: "claude", "codex", "acp", "opencode", "copilot", "gemini" */
+  name: string;
+  /** Daemon server name: "_claude", "_codex", "_acp", "_opencode" */
+  serverName: string;
+  /** Tool name prefix: "claude", "codex", "acp", "opencode" */
+  toolPrefix: string;
+  /** How to build provider-specific spawn args from common options */
+  buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown>;
+  /** Native feature declarations — anything not listed here gets shimmed */
+  native: Partial<AgentFeatures>;
+}
+
+export interface ShimContext {
+  provider: AgentProvider;
+  sessionId: string;
+  spawnArgs: Record<string, unknown>;
+}
+
+export interface AgentShim {
+  /** Feature this shim provides */
+  feature: keyof AgentFeatures;
+  /** Check if this shim should activate for the given provider */
+  appliesTo(provider: AgentProvider): boolean;
+  /** Pre-spawn hook: modify spawn args, set up environment */
+  beforeSpawn?(ctx: ShimContext): Promise<void>;
+  /** Post-bye hook: cleanup */
+  afterBye?(ctx: ShimContext): Promise<void>;
+}
+
+// ── Provider Registry ──────────────────────────────────────────────
+
+const providers = new Map<string, AgentProvider>();
+
+export function registerProvider(provider: AgentProvider): void {
+  providers.set(provider.name, provider);
+}
+
+export function getProvider(name: string): AgentProvider | undefined {
+  return providers.get(name);
+}
+
+export function getAllProviders(): AgentProvider[] {
+  return [...providers.values()];
+}
+
+// ── Shim Registry ──────────────────────────────────────────────────
+
+const shims: AgentShim[] = [];
+
+export function registerShim(shim: AgentShim): void {
+  shims.push(shim);
+}
+
+/** Return all shims that apply to the given provider (features it lacks natively). */
+export function getShims(provider: AgentProvider): AgentShim[] {
+  return shims.filter((s) => s.appliesTo(provider));
+}
+
+/** Return all registered shims. */
+export function getAllShims(): AgentShim[] {
+  return [...shims];
+}
+
+// ── Testing helpers ────────────────────────────────────────────────
+
+/** Reset registries to empty state. For tests only. */
+export function _resetRegistries(): void {
+  providers.clear();
+  shims.length = 0;
+}
+
+// ── Built-in Providers ─────────────────────────────────────────────
+
+function passthrough(opts: CommonSpawnOpts): Record<string, unknown> {
+  const args: Record<string, unknown> = { task: opts.task };
+  if (opts.model) args.model = opts.model;
+  if (opts.cwd) args.cwd = opts.cwd;
+  if (opts.allowedTools) args.allowedTools = opts.allowedTools;
+  if (opts.disallowedTools) args.disallowedTools = opts.disallowedTools;
+  if (opts.wait) args.wait = opts.wait;
+  if (opts.timeout) args.timeout = opts.timeout;
+  return { ...opts.extras, ...args };
+}
+
+registerProvider({
   name: "claude",
-  displayName: "Claude",
-  serverName: CLAUDE_SERVER_NAME,
+  serverName: "_claude",
   toolPrefix: "claude",
-  features: {
+  buildSpawnArgs: passthrough,
+  native: {
     worktree: true,
     resume: true,
     repoScoped: true,
@@ -62,92 +139,96 @@ const CLAUDE_PROVIDER: AgentProviderConfig = {
     afterSeq: true,
     headed: true,
     agentSelect: false,
-    providerSelect: false,
   },
-};
+});
 
-const CODEX_PROVIDER: AgentProviderConfig = {
+registerProvider({
   name: "codex",
-  displayName: "Codex",
-  serverName: CODEX_SERVER_NAME,
+  serverName: "_codex",
   toolPrefix: "codex",
-  features: {
-    worktree: true,
-    resume: false,
-    repoScoped: false,
-    costTracking: false,
-    compactLog: false,
-    afterSeq: true,
-    headed: false,
-    agentSelect: false,
-    providerSelect: false,
-  },
-};
-
-const OPENCODE_PROVIDER: AgentProviderConfig = {
-  name: "opencode",
-  displayName: "OpenCode",
-  serverName: OPENCODE_SERVER_NAME,
-  toolPrefix: "opencode",
-  features: {
-    worktree: true,
+  buildSpawnArgs: passthrough,
+  native: {
+    worktree: false,
     resume: false,
     repoScoped: false,
     costTracking: true,
     compactLog: false,
-    afterSeq: true,
+    afterSeq: false,
+    headed: true,
+    agentSelect: false,
+  },
+});
+
+registerProvider({
+  name: "opencode",
+  serverName: "_opencode",
+  toolPrefix: "opencode",
+  buildSpawnArgs: passthrough,
+  native: {
+    worktree: false,
+    resume: false,
+    repoScoped: false,
+    costTracking: true,
+    compactLog: false,
+    afterSeq: false,
     headed: false,
     agentSelect: false,
-    providerSelect: true,
   },
-};
+});
 
-const ACP_PROVIDER: AgentProviderConfig = {
+registerProvider({
   name: "acp",
-  displayName: "ACP",
-  serverName: ACP_SERVER_NAME,
+  serverName: "_acp",
   toolPrefix: "acp",
-  features: {
-    worktree: true,
+  buildSpawnArgs: passthrough,
+  native: {
+    worktree: false,
     resume: false,
     repoScoped: false,
     costTracking: false,
     compactLog: false,
-    afterSeq: true,
+    afterSeq: false,
     headed: false,
     agentSelect: true,
-    providerSelect: false,
   },
-};
+});
 
-/** All registered providers, keyed by name. */
-const PROVIDERS: ReadonlyMap<string, AgentProviderConfig> = new Map([
-  ["claude", CLAUDE_PROVIDER],
-  ["codex", CODEX_PROVIDER],
-  ["opencode", OPENCODE_PROVIDER],
-  ["acp", ACP_PROVIDER],
-  // Aliases — these are ACP variants with a fixed agent override
-  ["copilot", ACP_PROVIDER],
-  ["gemini", ACP_PROVIDER],
-]);
+/** Copilot is an ACP variant — same server, different agent selection. */
+registerProvider({
+  name: "copilot",
+  serverName: "_acp",
+  toolPrefix: "acp",
+  buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown> {
+    return { ...passthrough(opts), agentOverride: "copilot" };
+  },
+  native: {
+    worktree: false,
+    resume: false,
+    repoScoped: false,
+    costTracking: false,
+    compactLog: false,
+    afterSeq: false,
+    headed: false,
+    agentSelect: true,
+  },
+});
 
-/**
- * Look up a provider by name. Returns undefined if not found.
- */
-export function getProvider(name: string): AgentProviderConfig | undefined {
-  return PROVIDERS.get(name);
-}
-
-/**
- * List all registered provider names (excluding aliases like copilot/gemini).
- */
-export function listProviders(): string[] {
-  return ["claude", "codex", "opencode", "acp"];
-}
-
-/**
- * List all provider names including aliases.
- */
-export function listAllProviderNames(): string[] {
-  return [...PROVIDERS.keys()];
-}
+/** Gemini is an ACP variant — same server, different agent selection. */
+registerProvider({
+  name: "gemini",
+  serverName: "_acp",
+  toolPrefix: "acp",
+  buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown> {
+    return { ...passthrough(opts), agentOverride: "gemini" };
+  },
+  native: {
+    worktree: false,
+    resume: false,
+    repoScoped: false,
+    costTracking: false,
+    compactLog: false,
+    afterSeq: false,
+    headed: false,
+    agentSelect: true,
+  },
+});

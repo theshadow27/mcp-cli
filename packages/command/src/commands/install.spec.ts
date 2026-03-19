@@ -212,19 +212,18 @@ describe("cmdInstall", () => {
   });
 
   test("outputs JSON when --json flag is used", async () => {
-    using opts = testOptions();
-    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    using _opts = testOptions();
+    const logged: string[] = [];
+    const deps: InstallDeps = {
+      ...makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io")),
+      log: (msg) => logged.push(msg),
+    };
 
-    try {
-      await cmdInstall(["sentry", "--json"], deps);
+    await cmdInstall(["sentry", "--json"], deps);
 
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      const output = JSON.parse(logSpy.mock.calls[0][0] as string);
-      expect(output.name).toBe("sentry");
-      expect(output.config).toEqual({ type: "http", url: "https://mcp.sentry.io" });
-    } finally {
-      logSpy.mockRestore();
-    }
+    expect(logged).toHaveLength(1);
+    const output = JSON.parse(logged[0]);
+    expect(output.name).toBe("sentry");
+    expect(output.config).toEqual({ type: "http", url: "https://mcp.sentry.io" });
   });
 });
