@@ -12,6 +12,7 @@ import {
   checkRecursionGuard,
   checkTtyStdin,
   computeToolsFingerprint,
+  generateInstanceId,
   handleCallTool,
   handleListTools,
   parseMcpTools,
@@ -568,5 +569,19 @@ describe("handleCallTool with jq support", () => {
     const result = await handleCallTool("search", {}, curated, mockIpc);
     expect(result.content[0].text).toBe(smallData);
     expect(result.content).toHaveLength(1);
+  });
+});
+
+// -- generateInstanceId --
+
+describe("generateInstanceId", () => {
+  test("returns a 16-character hex string", () => {
+    const id = generateInstanceId();
+    expect(id).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  test("returns unique values on successive calls", () => {
+    const ids = new Set(Array.from({ length: 10 }, () => generateInstanceId()));
+    expect(ids.size).toBe(10);
   });
 });

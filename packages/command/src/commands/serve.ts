@@ -280,6 +280,13 @@ export function checkTtyStdin(): boolean {
   return !!process.stdin.isTTY;
 }
 
+/** Generate a short random instance ID. */
+export function generateInstanceId(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function cmdServe(): Promise<void> {
   if (checkTtyStdin()) {
     console.error("[mcx serve] Error: mcx serve is an MCP stdio server — connect it via stdio, not a terminal.");
@@ -312,6 +319,16 @@ export async function cmdServe(): Promise<void> {
   const transport = new BunStdioServerTransport();
   await server.connect(transport);
   const stopPoller = startToolListPoller(server, ipcCall);
+
+  // Register this serve instance with the daemon for visibility in mcpctl
+  const instanceId = generateInstanceId();
+  const toolNames = curated.map((ct) => ct.name);
+  try {
+    await ipcCall("registerServe", { instanceId, pid: process.pid, tools: toolNames });
+  } catch (err) {
+    console.error(`[mcx serve] Failed to register with daemon: ${err}`);
+  }
+
   console.error("[mcx serve] MCP server running on stdio");
 
   // Graceful shutdown on SIGTERM/SIGINT — close server and transport so
@@ -328,4 +345,11 @@ export async function cmdServe(): Promise<void> {
   stopPoller();
   process.off("SIGTERM", shutdown);
   process.off("SIGINT", shutdown);
+
+  // Deregister from daemon on exit
+  try {
+    await ipcCall("unregisterServe", { instanceId });
+  } catch {
+    // Daemon may already be gone — that's fine
+  }
 }
