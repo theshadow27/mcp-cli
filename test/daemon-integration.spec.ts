@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 // CI runners are slower — give daemon spawn + test logic plenty of room
 setDefaultTimeout(30_000);
 import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
 import { echoServerConfig, pollUntil, rpc, startTestDaemon } from "./harness";
 
@@ -447,5 +447,98 @@ describe("P5: Error scenarios", () => {
     expect(res.error).toBeUndefined();
     const content = (res.result as { content: Array<{ text: string }> }).content;
     expect(content[0].text).toBe("still alive");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P5b: Error scenario edge cases (#117)
+// ---------------------------------------------------------------------------
+describe("P5b: Error scenario edge cases", () => {
+  let daemon: TestDaemon | undefined;
+
+  afterEach(async () => {
+    if (daemon) {
+      await daemon.kill();
+      daemon = undefined;
+    }
+  });
+
+  test("HTTP 401 error suggests 'mcx auth' in the error message", async () => {
+    // Start a local HTTP server that always returns 401
+    const authServer = Bun.spawn(["bun", resolve("test/http-401-server.ts")], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    try {
+      // Read the port from stdout
+      const reader = authServer.stdout.getReader();
+      const { value } = await reader.read();
+      reader.releaseLock();
+      const port = Number(new TextDecoder().decode(value).trim());
+
+      daemon = await startTestDaemon({
+        authfail: { type: "http", url: `http://127.0.0.1:${port}/mcp` },
+      });
+
+      // Trigger a connection attempt — the 401 should produce an auth hint
+      const res = await rpc(daemon.socketPath, "listTools", { server: "authfail" });
+      expect(res.error).toBeDefined();
+      expect(res.error?.message).toContain("auth");
+      expect(res.error?.message).toContain("mcx auth");
+
+      // Verify lastError also contains the hint
+      const list = await rpc(daemon.socketPath, "listServers");
+      const server = (list.result as Array<{ name: string; lastError?: string }>).find((s) => s.name === "authfail");
+      expect(server?.lastError).toContain("mcx auth");
+    } finally {
+      authServer.kill();
+      await authServer.exited;
+    }
+  });
+
+  test("callTool with short timeout returns clear timeout error", async () => {
+    daemon = await startTestDaemon({
+      slow: {
+        command: "bun",
+        args: [resolve("test/slow-echo-server.ts")],
+        env: { SLOW_MS: "10000" },
+      },
+    });
+
+    // Ensure server is connected first
+    const tools = await rpc(daemon.socketPath, "listTools", { server: "slow" });
+    expect(tools.error).toBeUndefined();
+
+    // Call with an impossibly short timeout (100ms vs 10s delay)
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "slow",
+      tool: "slow_echo",
+      arguments: { message: "should timeout" },
+      timeoutMs: 100,
+    });
+    expect(res.error).toBeDefined();
+    // The error should mention timeout or timed out
+    const msg = res.error?.message?.toLowerCase() ?? "";
+    expect(msg.includes("timed out") || msg.includes("timeout")).toBe(true);
+  });
+
+  test("server that fails to start produces actionable error via callTool", async () => {
+    daemon = await startTestDaemon({
+      crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
+    });
+
+    // callTool against a server that crashes on startup
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "crasher",
+      tool: "anything",
+      arguments: {},
+    });
+    expect(res.error).toBeDefined();
+    // Error should identify the server by name
+    expect(res.error?.message).toContain("crasher");
+
+    // Daemon should still be alive after the error
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
   });
 });
