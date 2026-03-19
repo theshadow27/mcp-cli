@@ -3418,4 +3418,33 @@ describe("cmdClaude resume", () => {
     expect(promptArgs.model).toContain("sonnet");
     expect(promptArgs.allowedTools).toEqual(["Read", "Grep"]);
   });
+
+  test("passes --wait and --timeout to claude_prompt", async () => {
+    const wtPath = `${worktreeParent}/claude-wt`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-2-wait\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "s1", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-wt", "--wait", "--timeout", "30000"], deps);
+
+    const promptCall = (callTool as ReturnType<typeof mock>).mock.calls.find(
+      (c: unknown[]) => c[0] === "claude_prompt",
+    );
+    const promptArgs = promptCall?.[1] as Record<string, unknown>;
+    expect(promptArgs.wait).toBe(true);
+    expect(promptArgs.timeout).toBe(30000);
+  });
 });
