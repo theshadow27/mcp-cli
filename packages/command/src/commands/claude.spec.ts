@@ -2639,6 +2639,10 @@ describe("mcx claude worktrees", () => {
       if (tool === "claude_session_list") {
         return toolResult([{ ...SESSION_LIST[0], worktree: "claude-active" }]);
       }
+      // Other provider session lists return empty (prune queries ALL providers)
+      if (tool.endsWith("_session_list")) {
+        return toolResult([]);
+      }
       return toolResult({});
     });
     const exec: ClaudeDeps["exec"] = mock((cmd: string[]) => {

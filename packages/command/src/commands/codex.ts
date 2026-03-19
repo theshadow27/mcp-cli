@@ -6,15 +6,7 @@
  * Worktree support: spawn with --worktree for isolated git worktrees, cleanup on bye.
  */
 
-import { existsSync } from "node:fs";
-import {
-  CODEX_SERVER_NAME,
-  PROMPT_IPC_TIMEOUT_MS,
-  buildHookEnv,
-  hasWorktreeHooks,
-  readWorktreeConfig,
-  resolveWorktreePath,
-} from "@mcp-cli/core";
+import { CODEX_SERVER_NAME, PROMPT_IPC_TIMEOUT_MS, WorktreeError, createWorktree } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
@@ -43,6 +35,7 @@ import {
 } from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
+import { worktreesCommand } from "./worktree-commands";
 
 // ── Constants ──
 
@@ -124,9 +117,13 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
     case "wait":
       await codexWait(args.slice(1), d);
       break;
+    case "worktrees":
+    case "wt":
+      await worktreesCommand(args.slice(1), d);
+      break;
     default:
       d.printError(
-        `Unknown codex subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
+        `Unknown codex subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -183,38 +180,12 @@ async function codexSpawn(args: string[], d: CodexDeps): Promise<void> {
   if (parsed.wait) toolArgs.wait = true;
 
   if (parsed.worktree) {
-    const repoRoot = process.cwd();
-    const wtConfig = readWorktreeConfig(repoRoot);
-
-    if (hasWorktreeHooks(wtConfig)) {
-      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
-      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
-      if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stderr}`);
-        d.exit(1);
-      }
-      if (!existsSync(worktreePath)) {
-        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
-        d.exit(1);
-      }
-      toolArgs.cwd = worktreePath;
-      toolArgs.worktree = parsed.worktree;
-      toolArgs.repoRoot = repoRoot;
-      d.printError(`Created worktree via hook: ${worktreePath}`);
-    } else if (wtConfig?.branchPrefix === false) {
-      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", parsed.worktree, "HEAD"]);
-      if (exitCode !== 0) {
-        d.printError(`Failed to create worktree: ${stdout}`);
-        d.exit(1);
-      }
-      toolArgs.cwd = worktreePath;
-      toolArgs.worktree = parsed.worktree;
-      toolArgs.repoRoot = repoRoot;
-      d.printError(`Created worktree: ${worktreePath}`);
-    } else {
-      toolArgs.worktree = parsed.worktree;
+    try {
+      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "codex/" }, d);
+      Object.assign(toolArgs, result.toolArgs);
+    } catch (e) {
+      d.printError(e instanceof WorktreeError ? e.message : String(e));
+      d.exit(1);
     }
   }
 
@@ -535,6 +506,8 @@ Usage:
   mcx codex log <session> --json --jq '.' Apply jq filter to JSON output
   mcx codex log <session> --full          Full output (no truncation)
   mcx codex log <session> --compact       Truncated tool results for overview
+  mcx codex worktrees                     List mcx-created worktrees
+  mcx codex worktrees --prune             Remove orphaned worktrees + merged branches
 
 Spawn options:
   --task, -t "description"    Task prompt for Codex
