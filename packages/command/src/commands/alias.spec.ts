@@ -641,6 +641,111 @@ describe("cmdAlias promote", () => {
   });
 });
 
+/* ── cmdAlias: check ─────────────────────────────────────────────── */
+
+describe("cmdAlias check", () => {
+  test("reports valid alias", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() =>
+        Promise.resolve({
+          valid: true,
+          aliasType: "defineAlias",
+          name: "greet",
+          description: "Say hello",
+          errors: [],
+          warnings: [],
+        }),
+      ) as AliasDeps["ipcCall"],
+    });
+
+    await cmdAlias(["check", "greet"], deps);
+
+    expect(deps.ipcCall).toHaveBeenCalledWith("checkAlias", { name: "greet" });
+    expect(deps.logError).toHaveBeenCalledWith(expect.stringContaining("✓"));
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  test("reports invalid alias and exits with error", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() =>
+        Promise.resolve({
+          valid: false,
+          aliasType: "defineAlias",
+          errors: ["name: Missing or not a string", "fn: Missing or not a function"],
+          warnings: [],
+        }),
+      ) as AliasDeps["ipcCall"],
+    });
+
+    await expect(cmdAlias(["check", "bad"], deps)).rejects.toThrow(ExitError);
+    expect(deps.logError).toHaveBeenCalledWith(expect.stringContaining("✗"));
+  });
+
+  test("displays warnings", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() =>
+        Promise.resolve({
+          valid: true,
+          aliasType: "defineAlias",
+          name: "warn-test",
+          errors: [],
+          warnings: ["input: Schema cannot convert to JSON Schema"],
+        }),
+      ) as AliasDeps["ipcCall"],
+    });
+
+    await cmdAlias(["check", "warn-test"], deps);
+
+    const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls.map((c) => c[0]);
+    expect(logCalls.some((msg: string) => msg.includes("⚠"))).toBe(true);
+  });
+
+  test("exits when no name provided", async () => {
+    const deps = makeDeps();
+    await expect(cmdAlias(["check"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith("Usage: mcx alias check <name>");
+  });
+});
+
+/* ── save validation feedback ────────────────────────────────────── */
+
+describe("cmdAlias save validation feedback", () => {
+  test("displays validation errors from save result", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() =>
+        Promise.resolve({
+          ok: true,
+          filePath: "/a.ts",
+          validationErrors: ["name: Missing or not a string"],
+          warnings: [],
+        }),
+      ) as AliasDeps["ipcCall"],
+    });
+
+    await cmdAlias(["save", "test", "console.log('hi')"], deps);
+
+    const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls.map((c) => c[0]);
+    expect(logCalls.some((msg: string) => msg.includes("✗"))).toBe(true);
+  });
+
+  test("displays warnings from save result", async () => {
+    const deps = makeDeps({
+      ipcCall: mock(() =>
+        Promise.resolve({
+          ok: true,
+          filePath: "/a.ts",
+          warnings: ["input: Schema cannot convert to JSON Schema"],
+        }),
+      ) as AliasDeps["ipcCall"],
+    });
+
+    await cmdAlias(["save", "test", "console.log('hi')"], deps);
+
+    const logCalls = (deps.logError as ReturnType<typeof mock>).mock.calls.map((c) => c[0]);
+    expect(logCalls.some((msg: string) => msg.includes("⚠"))).toBe(true);
+  });
+});
+
 /* ── cmdAlias: help / unknown ────────────────────────────────────── */
 
 describe("cmdAlias help/unknown", () => {

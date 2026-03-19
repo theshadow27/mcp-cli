@@ -113,8 +113,11 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
         const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
           ok: boolean;
           filePath: string;
+          warnings?: string[];
+          validationErrors?: string[];
         };
         d.logError(`Saved alias "${name}" → ${result.filePath}`);
+        printValidationFeedback(d, name, result.validationErrors, result.warnings);
         break;
       }
 
@@ -150,8 +153,11 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
         ok: boolean;
         filePath: string;
+        warnings?: string[];
+        validationErrors?: string[];
       };
       d.logError(`Saved alias "${name}" → ${result.filePath}`);
+      printValidationFeedback(d, name, result.validationErrors, result.warnings);
       break;
     }
 
@@ -254,6 +260,40 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       break;
     }
 
+    case "check": {
+      const name = args[1];
+      if (!name) {
+        d.printError("Usage: mcx alias check <name>");
+        d.exit(1);
+      }
+
+      const checkResult = (await d.ipcCall("checkAlias", { name })) as {
+        valid: boolean;
+        aliasType: string;
+        name?: string;
+        description?: string;
+        errors: string[];
+        warnings: string[];
+      };
+
+      if (checkResult.valid) {
+        d.logError(`✓ Alias "${name}" is valid (${checkResult.aliasType})`);
+        if (checkResult.name) d.logError(`  name: ${checkResult.name}`);
+        if (checkResult.description) d.logError(`  description: ${checkResult.description}`);
+      } else {
+        d.logError(`✗ Validation failed for "${name}" (${checkResult.aliasType}):`);
+        for (const err of checkResult.errors) {
+          d.logError(`  - ${err}`);
+        }
+      }
+      for (const warn of checkResult.warnings) {
+        d.logError(`  ⚠ ${warn}`);
+      }
+
+      if (!checkResult.valid) d.exit(1);
+      break;
+    }
+
     case "rm":
     case "delete": {
       const name = args[1];
@@ -276,6 +316,21 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
   }
 }
 
+/** Print validation errors/warnings from save result to stderr. */
+function printValidationFeedback(d: AliasDeps, name: string, errors?: string[], warnings?: string[]): void {
+  if (errors && errors.length > 0) {
+    d.logError(`✗ Validation failed for defineAlias '${name}':`);
+    for (const err of errors) {
+      d.logError(`  - ${err}`);
+    }
+  }
+  if (warnings && warnings.length > 0) {
+    for (const warn of warnings) {
+      d.logError(`  ⚠ ${warn}`);
+    }
+  }
+}
+
 /** Print help text with defineAlias usage examples */
 function printAliasHelp(): void {
   console.error(`Usage: mcx alias <command> [options]
@@ -285,6 +340,7 @@ Commands:
   save <name> ...   Save an alias
   show <name>       Show alias source (--debug for metadata)
   edit <name>       Open alias in $EDITOR
+  check <name>      Validate an alias (schema + structure)
   promote <name>    Promote ephemeral alias to permanent defineAlias
   rm, delete        Delete an alias
 

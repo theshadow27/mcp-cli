@@ -5,7 +5,7 @@
  * Alias execution happens in a subprocess via Bun.spawn for fault isolation.
  */
 
-import type { AliasMetadata, JsonSchema, ToolInfo } from "@mcp-cli/core";
+import type { AliasMetadata, AliasValidationResult, JsonSchema, ToolInfo } from "@mcp-cli/core";
 import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -210,6 +210,18 @@ export class AliasServer {
     });
 
     return this.spawnExecutor(payload, 10_000) as Promise<AliasMetadata>;
+  }
+
+  /** Validate bundled JS in a subprocess, returning structured results. */
+  async validateInSubprocess(bundledJs: string): Promise<AliasValidationResult> {
+    const payload = JSON.stringify({
+      bundledJs,
+      input: null,
+      isDefineAlias: true,
+      mode: "validate",
+    });
+
+    return this.spawnExecutor(payload, 10_000) as Promise<AliasValidationResult>;
   }
 
   /** Spawn executor subprocess with semaphore-limited concurrency. */

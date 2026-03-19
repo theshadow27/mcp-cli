@@ -20,6 +20,7 @@ import {
   AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
+  CheckAliasParamsSchema,
   DeleteAliasParamsSchema,
   GetAliasParamsSchema,
   GetDaemonLogsParamsSchema,
@@ -605,6 +606,8 @@ export class IpcServer {
       writeFileSync(filePath, finalScript, "utf-8");
 
       const aliasType = isStructured ? "defineAlias" : "freeform";
+      const warnings: string[] = [];
+      const validationErrors: string[] = [];
 
       // Bundle the alias and extract metadata
       try {
@@ -612,14 +615,20 @@ export class IpcServer {
 
         if (isStructured) {
           if (!this.aliasServer) throw new Error("Alias server not initialized");
-          const meta = await this.aliasServer.extractMetadataInSubprocess(js);
+          const validation = await this.aliasServer.validateInSubprocess(js);
+          if (!validation.valid) {
+            validationErrors.push(...validation.errors);
+          }
+          if (validation.warnings.length > 0) {
+            warnings.push(...validation.warnings);
+          }
           this.db.saveAlias(
             name,
             filePath,
-            meta.description || description,
+            validation.description || description,
             aliasType,
-            meta.inputSchema ? JSON.stringify(meta.inputSchema) : undefined,
-            meta.outputSchema ? JSON.stringify(meta.outputSchema) : undefined,
+            validation.inputSchema ? JSON.stringify(validation.inputSchema) : undefined,
+            validation.outputSchema ? JSON.stringify(validation.outputSchema) : undefined,
             js,
             sourceHash,
             expiresAt,
@@ -627,8 +636,9 @@ export class IpcServer {
         } else {
           this.db.saveAlias(name, filePath, description, aliasType, undefined, undefined, js, sourceHash, expiresAt);
         }
-      } catch {
+      } catch (err) {
         // Bundle/extraction failed — save without bundle
+        validationErrors.push(`Bundle failed: ${err instanceof Error ? err.message : String(err)}`);
         this.db.saveAlias(
           name,
           filePath,
@@ -644,7 +654,13 @@ export class IpcServer {
 
       // Refresh virtual alias server so new tool is immediately visible
       await this.aliasServer?.refresh();
-      return { ok: true, filePath };
+      const result: { ok: true; filePath: string; warnings?: string[]; validationErrors?: string[] } = {
+        ok: true,
+        filePath,
+      };
+      if (warnings.length > 0) result.warnings = warnings;
+      if (validationErrors.length > 0) result.validationErrors = validationErrors;
+      return result;
     });
 
     this.handlers.set("deleteAlias", async (params, _ctx) => {
@@ -673,6 +689,43 @@ export class IpcServer {
       const { name } = RecordAliasRunParamsSchema.parse(params);
       const runCount = this.db.recordAliasRun(name);
       return { ok: true, runCount };
+    });
+
+    this.handlers.set("checkAlias", async (params, _ctx) => {
+      const { name } = CheckAliasParamsSchema.parse(params);
+      const alias = this.db.getAlias(name);
+      if (!alias) {
+        return { valid: false, aliasType: "freeform", errors: [`Alias "${name}" not found`], warnings: [] };
+      }
+
+      if (alias.aliasType !== "defineAlias") {
+        // Freeform aliases — try bundling to check for syntax errors
+        try {
+          await bundleAlias(alias.filePath);
+          return { valid: true, aliasType: "freeform", errors: [], warnings: [] };
+        } catch (err) {
+          return {
+            valid: false,
+            aliasType: "freeform",
+            errors: [`Bundle failed: ${err instanceof Error ? err.message : String(err)}`],
+            warnings: [],
+          };
+        }
+      }
+
+      // defineAlias — full validation
+      try {
+        const { js } = await bundleAlias(alias.filePath);
+        if (!this.aliasServer) throw new Error("Alias server not initialized");
+        return await this.aliasServer.validateInSubprocess(js);
+      } catch (err) {
+        return {
+          valid: false,
+          aliasType: "defineAlias",
+          errors: [`Validation failed: ${err instanceof Error ? err.message : String(err)}`],
+          warnings: [],
+        };
+      }
     });
 
     this.handlers.set("getLogs", async (params, _ctx) => {

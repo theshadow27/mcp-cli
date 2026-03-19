@@ -232,16 +232,115 @@ export async function executeAliasBundled(
 
   const output = await captured.fn(parsedInput, ctx);
 
-  // Validate output
+  // Validate output (warn, don't block — per #94)
   if (captured.output) {
     const result = captured.output.safeParse(output);
     if (!result.success) {
-      throw new Error(`Invalid output: ${result.error.message}`);
+      console.error(`⚠ Output validation warning: ${result.error.message}`);
+    } else {
+      return result.data;
     }
-    return result.data;
   }
 
   return output;
+}
+
+/** Structured validation result for alias scripts. */
+export interface AliasValidationResult {
+  valid: boolean;
+  aliasType: "defineAlias" | "freeform";
+  name?: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Validate a bundled defineAlias script, returning structured results.
+ *
+ * Checks:
+ * - Script calls defineAlias()
+ * - name and fn are present
+ * - input/output are valid Zod schemas (can safeParse)
+ * - input/output convert to JSON Schema
+ */
+export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000): Promise<AliasValidationResult> {
+  const result: AliasValidationResult = {
+    valid: true,
+    aliasType: "defineAlias",
+    errors: [],
+    warnings: [],
+  };
+
+  let captured: AliasDefinition | null;
+  try {
+    captured = await evalBundledJs(
+      bundledJs,
+      { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
+      timeoutMs,
+    );
+  } catch (err) {
+    result.valid = false;
+    result.errors.push(`Failed to evaluate script: ${err instanceof Error ? err.message : String(err)}`);
+    return result;
+  }
+
+  if (!captured) {
+    result.valid = false;
+    result.errors.push("Script did not call defineAlias()");
+    return result;
+  }
+
+  // Validate required fields
+  if (!captured.name || typeof captured.name !== "string") {
+    result.valid = false;
+    result.errors.push("name: Missing or not a string");
+  } else {
+    result.name = captured.name;
+  }
+
+  if (typeof captured.fn !== "function") {
+    result.valid = false;
+    result.errors.push("fn: Missing or not a function");
+  }
+
+  result.description = captured.description ?? "";
+
+  // Validate input schema
+  if (captured.input) {
+    if (typeof captured.input.safeParse !== "function") {
+      result.valid = false;
+      result.errors.push(`input: Expected ZodType, got ${typeof captured.input}`);
+    } else {
+      try {
+        result.inputSchema = z.toJSONSchema(captured.input) as Record<string, unknown>;
+      } catch (err) {
+        result.warnings.push(
+          `input: Schema cannot convert to JSON Schema — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  // Validate output schema
+  if (captured.output) {
+    if (typeof captured.output.safeParse !== "function") {
+      result.valid = false;
+      result.errors.push(`output: Expected ZodType, got ${typeof captured.output}`);
+    } else {
+      try {
+        result.outputSchema = z.toJSONSchema(captured.output) as Record<string, unknown>;
+      } catch (err) {
+        result.warnings.push(
+          `output: Schema cannot convert to JSON Schema — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return result;
 }
 
 // AsyncFunction constructor (not directly accessible as a global)
