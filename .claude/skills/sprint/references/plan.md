@@ -89,12 +89,16 @@ Write `.claude/sprints/sprint-{N}.md`:
 
 ## Issues
 
-| # | Title | Scrutiny | Batch | Model | Category |
-|---|-------|----------|-------|-------|----------|
-| 638 | stale expandedEntries indices | low | 1 | opus | goal |
-| 385 | README missing commands | low | 1 | sonnet | filler |
-| 642 | SIGTERM escalation fix | medium | 2 | opus | goal |
+| # | Title | Scrutiny | Batch | Model | Provider | Category |
+|---|-------|----------|-------|-------|----------|----------|
+| 638 | stale expandedEntries indices | low | 1 | opus | claude | goal |
+| 385 | README missing commands | low | 1 | sonnet | claude | filler |
+| 642 | SIGTERM escalation fix | medium | 2 | opus | copilot | goal |
 ...
+
+The `Provider` column is optional — omit it or leave blank to default to `claude`.
+Valid values: `claude`, `copilot`, `gemini`, `acp:<agent-name>`.
+See `references/run.md` for how the provider routes spawn commands.
 
 ## Batch Plan
 
