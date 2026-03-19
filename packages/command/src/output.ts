@@ -126,10 +126,15 @@ export function printToolInfo(tool: {
   description: string;
   inputSchema: Record<string, unknown>;
   signature?: string;
+  note?: string;
 }): void {
   console.log(`${c.bold}${tool.server}/${tool.name}${c.reset}`);
   if (tool.description) {
     console.log(`${c.dim}${tool.description}${c.reset}\n`);
+  }
+
+  if (tool.note) {
+    console.log(`${c.yellow}Note: ${tool.note}${c.reset}\n`);
   }
 
   if (tool.signature) {

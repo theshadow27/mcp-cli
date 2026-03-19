@@ -1645,6 +1645,78 @@ describe("StateDb", () => {
     });
   });
 
+  describe("notes", () => {
+    test("setNote and getNote round-trip", () => {
+      const db = createDb();
+      db.setNote("atlassian", "editJiraIssue", "use categoryId 37 for GO team");
+
+      const note = db.getNote("atlassian", "editJiraIssue");
+      expect(note).toBe("use categoryId 37 for GO team");
+      db.close();
+    });
+
+    test("setNote upserts existing note", () => {
+      const db = createDb();
+      db.setNote("atlassian", "editJiraIssue", "old note");
+      db.setNote("atlassian", "editJiraIssue", "new note");
+
+      expect(db.getNote("atlassian", "editJiraIssue")).toBe("new note");
+      db.close();
+    });
+
+    test("getNote returns undefined for missing note", () => {
+      const db = createDb();
+      expect(db.getNote("nope", "nope")).toBeUndefined();
+      db.close();
+    });
+
+    test("listNotes returns all notes ordered by server.tool", () => {
+      const db = createDb();
+      db.setNote("z-server", "tool1", "note z");
+      db.setNote("a-server", "tool2", "note a");
+      db.setNote("a-server", "tool1", "note a1");
+
+      const notes = db.listNotes();
+      expect(notes).toHaveLength(3);
+      expect(notes[0].serverName).toBe("a-server");
+      expect(notes[0].toolName).toBe("tool1");
+      expect(notes[1].serverName).toBe("a-server");
+      expect(notes[1].toolName).toBe("tool2");
+      expect(notes[2].serverName).toBe("z-server");
+      db.close();
+    });
+
+    test("deleteNote removes note and returns true", () => {
+      const db = createDb();
+      db.setNote("srv", "tool", "my note");
+      const deleted = db.deleteNote("srv", "tool");
+
+      expect(deleted).toBe(true);
+      expect(db.getNote("srv", "tool")).toBeUndefined();
+      db.close();
+    });
+
+    test("deleteNote returns false for missing note", () => {
+      const db = createDb();
+      expect(db.deleteNote("nope", "nope")).toBe(false);
+      db.close();
+    });
+
+    test("notes for different tools on same server are independent", () => {
+      const db = createDb();
+      db.setNote("srv", "tool1", "note 1");
+      db.setNote("srv", "tool2", "note 2");
+
+      expect(db.getNote("srv", "tool1")).toBe("note 1");
+      expect(db.getNote("srv", "tool2")).toBe("note 2");
+
+      db.deleteNote("srv", "tool1");
+      expect(db.getNote("srv", "tool1")).toBeUndefined();
+      expect(db.getNote("srv", "tool2")).toBe("note 2");
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);
