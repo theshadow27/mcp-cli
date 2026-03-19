@@ -13,6 +13,8 @@ function makeDeps(overrides?: Partial<OpencodeDeps>): OpencodeDeps {
       throw new ExitError(code);
     }) as OpencodeDeps["exit"],
     getStaleDaemonWarning: mock(() => null),
+    getGitRoot: mock(() => null),
+    getPrStatus: mock(async () => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ...overrides,
   };

@@ -1001,6 +1001,7 @@ export function parseLogArgs(args: string[]): LogArgs {
 
 async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   const parsed = parseLogArgs(args);
+  const compact = args.includes("--compact");
 
   if (parsed.error) {
     d.printError(parsed.error);
@@ -1008,12 +1009,15 @@ async function claudeLog(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (!parsed.sessionPrefix) {
-    d.printError("Usage: mcx claude log <session-id> [--last N]");
+    d.printError("Usage: mcx claude log <session-id> [--last N] [--compact]");
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(parsed.sessionPrefix, d);
-  const result = await d.callTool("claude_transcript", { sessionId, limit: parsed.last });
+  // Claude supports compact natively in the daemon
+  const toolArgs: Record<string, unknown> = { sessionId, limit: parsed.last };
+  if (compact) toolArgs.compact = true;
+  const result = await d.callTool("claude_transcript", toolArgs);
   const text = formatToolResult(result);
 
   if (parsed.json) {

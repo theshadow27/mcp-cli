@@ -96,12 +96,17 @@ export const OPENCODE_TOOLS = [
     name: "opencode_wait",
     description:
       "Block until an OpenCode agent session event occurs (result, error, permission request, or ended). " +
-      "If sessionId is provided, waits for that session only. Otherwise waits for any session.",
+      "If sessionId is provided, waits for that session only. Otherwise waits for any session. " +
+      "Use afterSeq for race-free cursor-based polling: returns immediately if events exist past the cursor.",
     inputSchema: {
       type: "object" as const,
       properties: {
         sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
+        afterSeq: {
+          type: "number",
+          description: "Return events after this sequence number. Enables race-free polling.",
+        },
       },
     },
   },

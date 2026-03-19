@@ -47,9 +47,48 @@ let transport: WorkerServerTransport | null = null;
 /** Active sessions indexed by session ID. */
 const sessions = new Map<string, AcpSession>();
 
+// ── afterSeq event buffer ──
+
+interface BufferedEvent {
+  seq: number;
+  sessionId: string;
+  event: AgentSessionEvent;
+}
+
+const MAX_EVENT_BUFFER = 200;
+let nextSeq = 1;
+const eventBuffer: BufferedEvent[] = [];
+
+/** Resolvers waiting for events after a specific sequence number. */
+const afterSeqWaiters: Array<{
+  sessionId: string | null;
+  afterSeq: number;
+  resolve: (entry: BufferedEvent) => void;
+  timer: ReturnType<typeof setTimeout>;
+}> = [];
+
+function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
+  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event };
+  eventBuffer.push(entry);
+  if (eventBuffer.length > MAX_EVENT_BUFFER) {
+    eventBuffer.shift();
+  }
+
+  // Resolve any afterSeq waiters that match
+  for (let i = afterSeqWaiters.length - 1; i >= 0; i--) {
+    const w = afterSeqWaiters[i];
+    if (entry.seq > w.afterSeq && (w.sessionId === null || w.sessionId === sessionId)) {
+      clearTimeout(w.timer);
+      afterSeqWaiters.splice(i, 1);
+      w.resolve(entry);
+    }
+  }
+}
+
 // ── Session event → DB message forwarding ──
 
 function forwardSessionEvent(sessionId: string, event: AgentSessionEvent): void {
+  bufferEvent(sessionId, event);
   switch (event.type) {
     case "session:init":
       self.postMessage({
@@ -326,6 +365,51 @@ async function handleWait(args: Record<string, unknown>): Promise<{
 }> {
   const sessionId = args.sessionId as string | undefined;
   const timeoutMs = (args.timeout as number) ?? 300_000;
+  const afterSeq = args.afterSeq as number | undefined;
+
+  // afterSeq cursor: check buffer first, then block until a new event arrives
+  if (afterSeq !== undefined) {
+    const buffered = eventBuffer.filter((e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId));
+    if (buffered.length > 0) {
+      const entry = buffered[0];
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ...entry.event, seq: entry.seq, sessionId: entry.sessionId }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const entry = await new Promise<BufferedEvent>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = afterSeqWaiters.findIndex((w) => w.resolve === resolve);
+        if (idx !== -1) afterSeqWaiters.splice(idx, 1);
+        const list = [...sessions.values()].map((s) => s.getInfo());
+        reject({ timeout: true, sessions: list });
+      }, timeoutMs);
+      afterSeqWaiters.push({ sessionId: sessionId ?? null, afterSeq, resolve, timer });
+    }).catch((err) => {
+      if (err && typeof err === "object" && "timeout" in err) {
+        return err as { timeout: true; sessions: unknown[] };
+      }
+      throw err;
+    });
+
+    if ("timeout" in entry) {
+      return { content: [{ type: "text", text: JSON.stringify(entry.sessions, null, 2) }] };
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ...entry.event, seq: entry.seq, sessionId: entry.sessionId }, null, 2),
+        },
+      ],
+    };
+  }
 
   if (sessionId) {
     const session = sessions.get(sessionId);

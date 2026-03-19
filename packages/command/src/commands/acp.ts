@@ -26,14 +26,25 @@ import { c, printError as defaultPrintError, formatToolResult } from "../output"
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 
 import {
+  type PrStatus,
   type SharedSessionDeps,
   cleanupWorktree,
+  defaultGetPrStatus,
   parseByeResult,
   parseLogArgs,
   parseWaitArgs,
   resolveSessionId,
 } from "./claude";
-import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import {
+  type TranscriptEntry,
+  colorState,
+  compactTranscript,
+  extractContentSummary,
+  filterByRepo,
+  formatCost,
+  formatSessionShort,
+  getGitRepoRoot,
+} from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 
@@ -46,6 +57,8 @@ const P = "acp";
 
 export interface AcpDeps extends SharedSessionDeps {
   getStaleDaemonWarning: () => string | null;
+  getGitRoot: () => string | null;
+  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
 }
 
 const defaultDeps: AcpDeps = {
@@ -57,6 +70,8 @@ const defaultDeps: AcpDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getStaleDaemonWarning,
+  getGitRoot: getGitRepoRoot,
+  getPrStatus: defaultGetPrStatus,
   exec: (cmd, opts) => {
     const result = Bun.spawnSync(cmd, {
       stdout: "pipe",
@@ -265,6 +280,8 @@ async function acpSpawn(args: string[], agentOverride: string | undefined, d: Ac
 async function acpList(args: string[], agentOverride: string | undefined, d: AcpDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
+  const showPr = args.includes("--pr");
+  const showAll = args.includes("--all") || args.includes("-a");
 
   // Pass agent filter to daemon — when using `mcx copilot ls`, only show copilot sessions
   const toolArgs: Record<string, unknown> = {};
@@ -287,6 +304,14 @@ async function acpList(args: string[], agentOverride: string | undefined, d: Acp
     return;
   }
 
+  // Client-side repo-scoping: filter by cwd prefix unless --all
+  if (!showAll) {
+    const gitRoot = d.getGitRoot();
+    if (gitRoot) {
+      sessions = filterByRepo(sessions, gitRoot);
+    }
+  }
+
   if (sessions.length === 0) {
     const label = agentFilter ? `${agentFilter} ` : "ACP ";
     console.error(`No active ${label}sessions.`);
@@ -300,24 +325,41 @@ async function acpList(args: string[], agentOverride: string | undefined, d: Acp
     return;
   }
 
+  // Gather PR status for worktree sessions in parallel
+  const prStatuses = showPr
+    ? await Promise.all(sessions.map((s) => (s.worktree ? d.getPrStatus(s.worktree) : Promise.resolve(null))))
+    : sessions.map(() => null);
+
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+
   // Table output
   const showAgent = !agentOverride;
   const agentHeader = showAgent ? ` ${"AGENT".padEnd(10)}` : "";
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)}${agentHeader} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)} CWD`;
+  const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
+  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)}${agentHeader} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
-  for (const s of sessions) {
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
     const state = colorState(s.state);
     const agentCol = showAgent
       ? ` ${(((s as unknown as Record<string, unknown>).agent as string) ?? "—").padEnd(10)}`
       : "";
     const model = (s.model ?? "—").padEnd(16);
-    const cost = s.cost != null && s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "N/A".padEnd(8);
+    const cost = formatCost(s.cost, s.tokens).padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
+    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state}${agentCol} ${model} ${cost} ${tokens} ${c.dim}${cwd}${c.reset}`);
+    console.log(
+      `${c.cyan}${id}${c.reset}   ${state}${agentCol} ${model} ${cost} ${tokens}${pr} ${c.dim}${cwd}${c.reset}`,
+    );
   }
+}
+
+function formatPrStatus(pr: PrStatus | null): string {
+  if (!pr) return "—";
+  return `#${pr.number} ${pr.state}`;
 }
 
 /** Extract --agent value from args without consuming them. */
@@ -399,6 +441,7 @@ async function acpInterrupt(args: string[], _agentOverride: string | undefined, 
 
 async function acpLog(args: string[], _agentOverride: string | undefined, d: AcpDeps): Promise<void> {
   const parsed = parseLogArgs(args);
+  const compact = args.includes("--compact");
 
   if (parsed.error) {
     d.printError(parsed.error);
@@ -406,7 +449,7 @@ async function acpLog(args: string[], _agentOverride: string | undefined, d: Acp
   }
 
   if (!parsed.sessionPrefix) {
-    d.printError("Usage: mcx acp log <session-id> [--last N]");
+    d.printError("Usage: mcx acp log <session-id> [--last N] [--compact]");
     d.exit(1);
   }
 
@@ -430,12 +473,16 @@ async function acpLog(args: string[], _agentOverride: string | undefined, d: Acp
     return;
   }
 
-  let entries: Array<{ timestamp: number; direction: string; message: { type: string; [k: string]: unknown } }>;
+  let entries: TranscriptEntry[];
   try {
     entries = JSON.parse(text);
   } catch {
     console.log(text);
     return;
+  }
+
+  if (compact) {
+    entries = compactTranscript(entries);
   }
 
   const truncate = (s: string) => (parsed.full || s.length <= 200 ? s : `${s.slice(0, 200)}…`);
@@ -562,7 +609,9 @@ function printAcpUsage(agentOverride?: string): void {
 
 Usage:
   mcx ${name} spawn${agentFlag} --task "description"    Start a new session
-  mcx ${name} ls${agentOverride ? "" : " [--agent <name>]"}                        List active sessions
+  mcx ${name} ls${agentOverride ? "" : " [--agent <name>]"}                        List active sessions (current repo)
+  mcx ${name} ls --all                      List all sessions (all repos)
+  mcx ${name} ls --pr                       Show PR status for worktree sessions
   mcx ${name} send <session> <message>      Send follow-up prompt
   mcx ${name} wait [session]                Block until a session event occurs
   mcx ${name} bye <session>                 End session and stop process
@@ -571,6 +620,7 @@ Usage:
   mcx ${name} log <session> --json          Raw JSON transcript output
   mcx ${name} log <session> --json --jq '.' Apply jq filter to JSON output
   mcx ${name} log <session> --full          Full output (no truncation)
+  mcx ${name} log <session> --compact       Truncated tool results for overview
 
 Spawn options:
 ${
