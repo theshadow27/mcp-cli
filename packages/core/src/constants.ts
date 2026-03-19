@@ -91,6 +91,7 @@ const _originalOptions = {
   ALIASES_DIR,
   CACHE_DIR,
   CLAUDE_CONFIG_PATH: join(homedir(), ".claude.json"),
+  CLAUDE_DESKTOP_CONFIG_PATH: join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json"),
   USER_SERVERS_PATH: join(MCP_CLI_DIR, "servers.json"),
   PROJECTS_DIR: join(MCP_CLI_DIR, "projects"),
   TYPES_PATH: join(MCP_CLI_DIR, "mcp-cli.d.ts"),

@@ -26,6 +26,7 @@ export const SUBCOMMANDS = [
   "config",
   "add",
   "add-json",
+  "add-from-claude-desktop",
   "remove",
   "get",
   "auth",

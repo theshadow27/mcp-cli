@@ -26,7 +26,7 @@ import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
 import { cmdGet } from "./commands/get";
-import { cmdImport } from "./commands/import";
+import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
@@ -204,6 +204,10 @@ async function main(): Promise<void> {
 
       case "add-json":
         await cmdAddJson(cleanArgs.slice(1));
+        break;
+
+      case "add-from-claude-desktop":
+        await cmdAddFromClaudeDesktop(cleanArgs.slice(1));
         break;
 
       case "remove":
@@ -715,6 +719,7 @@ Usage:
   mcx export [file] [--scope ...]      Export servers to .mcp.json format
   mcx add --transport {stdio|http|sse} <name> ...   Add a server
   mcx add-json <name> '<json>'        Add a server from raw JSON
+  mcx add-from-claude-desktop         Import servers from Claude Desktop config
   mcx remove <name>                   Remove a server
   mcx get <name>                      Inspect a server's config and status
   mcx auth                             List servers with auth status
