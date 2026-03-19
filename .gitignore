@@ -13,3 +13,8 @@ build/
 .env
 test-timing-report.json
 test-timings.json
+
+# Compiled binaries placed into npm platform packages by CI
+npm/*/bin/mcx
+npm/*/bin/mcpd
+npm/*/bin/mcpctl

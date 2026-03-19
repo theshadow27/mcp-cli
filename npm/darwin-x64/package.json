@@ -1,0 +1,11 @@
+{
+  "name": "@theshadow27/mcp-cli-darwin-x64",
+  "version": "0.0.0",
+  "description": "mcp-cli native binaries for macOS x64",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin/"],
+  "publishConfig": {
+    "access": "public"
+  }
+}
