@@ -68,7 +68,7 @@ async function waitFor(predicate: () => boolean, deadlineMs = 2000): Promise<voi
     if (performance.now() - start > deadlineMs) {
       throw new Error(`waitFor timed out after ${deadlineMs}ms`);
     }
-    await new Promise((r) => setTimeout(r, 1));
+    await Bun.sleep(1);
   }
 }
 
@@ -209,7 +209,7 @@ describe("usePlans", () => {
 
     mount({ enabled: false, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
     // Give a short window to confirm no calls are made
-    await new Promise((r) => setTimeout(r, 30));
+    await Bun.sleep(30);
 
     expect(callCount).toBe(0);
   });
@@ -466,7 +466,7 @@ describe("usePlans", () => {
     const countAtUnmount = callCount;
 
     // Wait and confirm no more calls after unmount
-    await new Promise((r) => setTimeout(r, 100));
+    await Bun.sleep(100);
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -921,7 +921,7 @@ describe("usePlan", () => {
       enabled: false,
       ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
     });
-    await new Promise((r) => setTimeout(r, 30));
+    await Bun.sleep(30);
 
     expect(callCount).toBe(0);
   });
@@ -975,7 +975,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: false,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await new Promise((r) => setTimeout(r, 30));
+    await Bun.sleep(30);
 
     expect(callCount).toBe(0);
     expect(stateRef.current.metrics).toBeNull();
@@ -1047,7 +1047,7 @@ describe("usePlanMetrics", () => {
     instances.pop();
     const countAtUnmount = callCount;
 
-    await new Promise((r) => setTimeout(r, 100));
+    await Bun.sleep(100);
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -1064,7 +1064,7 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await new Promise((r) => setTimeout(r, 30));
+    await Bun.sleep(30);
     expect(callCount).toBe(0);
   });
 
