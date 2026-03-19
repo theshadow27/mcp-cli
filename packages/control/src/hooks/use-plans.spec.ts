@@ -3,14 +3,7 @@ import type { Plan, PlanMetrics } from "@mcp-cli/core";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
-import {
-  type UsePlanMetricsOptions,
-  type UsePlanOptions,
-  type UsePlansOptions,
-  usePlan,
-  usePlanMetrics,
-  usePlans,
-} from "./use-plans";
+import { type UsePlanMetricsOptions, type UsePlansOptions, usePlanMetrics, usePlans } from "./use-plans";
 
 /* ---------- fixtures ---------- */
 
@@ -27,10 +20,6 @@ function makePlan(id: string, server: string): Plan {
 
 function planToolResult(plans: Plan[]): object {
   return { content: [{ type: "text", text: JSON.stringify({ plans }) }] };
-}
-
-function planDetailResult(plan: Plan): object {
-  return { content: [{ type: "text", text: JSON.stringify({ plan }) }] };
 }
 
 function metricsResult(metrics: PlanMetrics): object {
@@ -816,114 +805,6 @@ describe("usePlans — Claude plan integration", () => {
     const cp = stateRef.current.plans.filter((p) => p.server === "_claude");
     expect(cp).toHaveLength(0);
     expect(stateRef.current.error).toBeNull();
-  });
-});
-
-/* ---------- usePlan tests ---------- */
-
-describe("usePlan", () => {
-  interface HookState {
-    plan: Plan | null;
-    loading: boolean;
-    error: string | null;
-    canAdvance: boolean;
-    disconnected: boolean;
-  }
-
-  const instances: ReturnType<typeof render>[] = [];
-
-  afterEach(() => {
-    for (const inst of instances) inst.unmount();
-    instances.length = 0;
-  });
-
-  const Harness: FC<{
-    planId: string;
-    server: string;
-    opts: UsePlanOptions;
-    stateRef: { current: HookState };
-  }> = ({ planId, server, opts, stateRef }) => {
-    const result = usePlan(planId, server, opts);
-    stateRef.current = result;
-    return React.createElement(Text, null, "ok");
-  };
-
-  function mount(planId: string, server: string, opts: UsePlanOptions) {
-    const stateRef: { current: HookState } = {
-      current: { plan: null, loading: true, error: null, canAdvance: false, disconnected: false },
-    };
-    const instance = render(React.createElement(Harness, { planId, server, opts, stateRef }));
-    instances.push(instance);
-    return { instance, stateRef };
-  }
-
-  it("fetches plan on mount", async () => {
-    const plan = makePlan("plan-1", "srv");
-    const ipcCallFn = async () => planDetailResult(plan);
-
-    const { stateRef } = mount("plan-1", "srv", {
-      ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
-    });
-    await waitFor(() => stateRef.current.loading === false);
-
-    expect(stateRef.current.plan?.id).toBe("plan-1");
-    expect(stateRef.current.error).toBeNull();
-    expect(stateRef.current.disconnected).toBe(false);
-  });
-
-  it("exposes canAdvance=false by default", async () => {
-    const plan = makePlan("plan-1", "srv");
-    const ipcCallFn = async () => planDetailResult(plan);
-
-    const { stateRef } = mount("plan-1", "srv", {
-      ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
-    });
-    await waitFor(() => stateRef.current.loading === false);
-
-    expect(stateRef.current.canAdvance).toBe(false);
-  });
-
-  it("exposes canAdvance=true when provided", async () => {
-    const plan = makePlan("plan-1", "srv");
-    const ipcCallFn = async () => planDetailResult(plan);
-
-    const { stateRef } = mount("plan-1", "srv", {
-      canAdvance: true,
-      ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
-    });
-    await waitFor(() => stateRef.current.loading === false);
-
-    expect(stateRef.current.canAdvance).toBe(true);
-  });
-
-  it("sets disconnected and error when callTool fails", async () => {
-    const ipcCallFn = async () => {
-      throw new Error("server offline");
-    };
-
-    const { stateRef } = mount("plan-1", "srv", {
-      ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
-    });
-    await waitFor(() => stateRef.current.loading === false);
-
-    expect(stateRef.current.error).toBe("server offline");
-    expect(stateRef.current.disconnected).toBe(true);
-  });
-
-  it("does not fetch when enabled=false", async () => {
-    let callCount = 0;
-    const ipcCallFn = async () => {
-      callCount++;
-      return planDetailResult(makePlan("plan-1", "srv"));
-    };
-
-    mount("plan-1", "srv", {
-      enabled: false,
-      ipcCallFn: ipcCallFn as UsePlanOptions["ipcCallFn"],
-    });
-    await Bun.sleep(30);
-
-    expect(callCount).toBe(0);
   });
 });
 
