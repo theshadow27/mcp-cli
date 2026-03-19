@@ -274,6 +274,29 @@ export async function handleCallTool(
   };
 }
 
+// -- Graceful shutdown --
+
+/** Something that can be closed (MCP Server, Transport, etc.) */
+export interface Closeable {
+  close(): Promise<void>;
+}
+
+/**
+ * Register SIGTERM/SIGINT handlers that gracefully close the given resources.
+ * Returns an unregister function that removes the signal handlers.
+ */
+export function registerShutdownHandlers(closeables: Closeable[]): () => void {
+  const shutdown = async () => {
+    for (const c of closeables) await c.close();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  return () => {
+    process.off("SIGTERM", shutdown);
+    process.off("SIGINT", shutdown);
+  };
+}
+
 // -- Server --
 
 export function checkTtyStdin(): boolean {
@@ -316,16 +339,10 @@ export async function cmdServe(): Promise<void> {
 
   // Graceful shutdown on SIGTERM/SIGINT — close server and transport so
   // inflight MCP requests get proper responses before the process exits.
-  const shutdown = async () => {
-    await server.close();
-    await transport.close();
-  };
-  process.once("SIGTERM", shutdown);
-  process.once("SIGINT", shutdown);
+  const unregisterShutdown = registerShutdownHandlers([server, transport]);
 
   // Block until stdin closes — prevents main() from calling process.exit()
   await transport.closed;
   stopPoller();
-  process.off("SIGTERM", shutdown);
-  process.off("SIGINT", shutdown);
+  unregisterShutdown();
 }

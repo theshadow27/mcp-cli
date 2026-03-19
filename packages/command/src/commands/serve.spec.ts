@@ -5,6 +5,7 @@ import { _resetJqStateForTesting } from "../jq/index";
 import { SERVE_SIZE_OK, SERVE_SIZE_TRUNCATE } from "../jq/jq-support";
 import {
   CALL_TOOL,
+  type Closeable,
   type CuratedTool,
   FIND_TOOL,
   type IpcCaller,
@@ -15,6 +16,7 @@ import {
   handleCallTool,
   handleListTools,
   parseMcpTools,
+  registerShutdownHandlers,
   startToolListPoller,
 } from "./serve";
 
@@ -448,6 +450,92 @@ describe("startToolListPoller", () => {
     await Bun.sleep(60);
 
     expect(callCount).toBe(countAtStop);
+  });
+});
+
+// -- registerShutdownHandlers --
+
+describe("registerShutdownHandlers", () => {
+  test("calls close on all closeables when SIGTERM fires", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+    const b: Closeable = {
+      close: async () => {
+        closed.push("b");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a, b]);
+    process.emit("SIGTERM");
+    // Allow async handler to complete
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a", "b"]);
+    unregister();
+  });
+
+  test("calls close on all closeables when SIGINT fires", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    process.emit("SIGINT");
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a"]);
+    unregister();
+  });
+
+  test("unregister removes signal handlers (no double-close)", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    unregister();
+
+    // Guard: without a listener, process.emit("SIGTERM") triggers default kill behavior.
+    // Add a no-op so the signal doesn't terminate the test process.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
+    process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
+    await Bun.sleep(10);
+
+    expect(closed).toEqual([]);
+  });
+
+  test("only fires once per signal (uses process.once)", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    process.emit("SIGTERM");
+    // After process.once fires, the handler is auto-removed. Guard the second emit
+    // with a no-op so the test process isn't killed by an unhandled SIGTERM.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
+    process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a"]);
+    unregister();
   });
 });
 
