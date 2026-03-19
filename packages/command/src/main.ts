@@ -33,6 +33,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdOpencode } from "./commands/opencode";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -278,6 +279,10 @@ async function main(): Promise<void> {
 
       case "codex":
         await cmdCodex(cleanArgs.slice(1));
+        break;
+
+      case "opencode":
+        await cmdOpencode(cleanArgs.slice(1));
         break;
 
       case "acp":
