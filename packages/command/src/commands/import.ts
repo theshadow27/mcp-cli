@@ -19,7 +19,13 @@ import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core
 import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
 import { printError } from "../output";
 import { parseScope } from "../parse";
-import { CONFIG_SCOPES_NO_LOCAL, type ConfigScope, addServerToConfig, resolveConfigPath } from "./config-file";
+import {
+  CONFIG_SCOPES_NO_LOCAL,
+  type ConfigScope,
+  addServerToConfig,
+  readConfigFile,
+  resolveConfigPath,
+} from "./config-file";
 
 /** Shape of ~/.claude.json relevant to server config */
 export interface ClaudeConfig {
@@ -73,11 +79,161 @@ export function collectClaudeServers(config: ClaudeConfig, cwd: string, all: boo
   return { servers, sources, warnings };
 }
 
+/** A single OAuth entry from the macOS Keychain */
+export interface KeychainOAuthEntry {
+  serverName: string;
+  serverUrl: string;
+  clientId: string;
+}
+
+/** Raw keychain data shape for mcpOAuth entries */
+interface KeychainOAuthData {
+  mcpOAuth?: Record<
+    string,
+    {
+      serverName: string;
+      serverUrl: string;
+      clientId: string;
+      accessToken: string;
+    }
+  >;
+}
+
+/**
+ * Read all OAuth server entries from the Claude Code macOS Keychain.
+ * Returns an empty array on non-macOS, missing keychain, or parse errors.
+ *
+ * @param readKeychain - optional override for testing (returns raw JSON string or null)
+ */
+export async function readKeychainOAuthEntries(
+  readKeychain?: () => Promise<string | null>,
+): Promise<KeychainOAuthEntry[]> {
+  let raw: string | null;
+
+  if (readKeychain) {
+    raw = await readKeychain();
+  } else {
+    if (process.platform !== "darwin") return [];
+    try {
+      const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      raw = await new Response(proc.stdout).text();
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) return [];
+      raw = raw.trim();
+    } catch {
+      return [];
+    }
+  }
+
+  if (!raw) return [];
+
+  try {
+    const data: KeychainOAuthData = JSON.parse(raw);
+    const mcpOAuth = data.mcpOAuth;
+    if (!mcpOAuth) return [];
+
+    const entries: KeychainOAuthEntry[] = [];
+    for (const entry of Object.values(mcpOAuth)) {
+      if (entry.serverUrl && entry.clientId && entry.serverName) {
+        entries.push({
+          serverName: entry.serverName,
+          serverUrl: entry.serverUrl,
+          clientId: entry.clientId,
+        });
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Determine transport type from a URL.
+ * URLs ending with /sse get SSE transport; everything else gets HTTP.
+ */
+export function inferTransportType(url: string): "http" | "sse" {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.endsWith("/sse") ? "sse" : "http";
+  } catch {
+    return "http";
+  }
+}
+
+/**
+ * Build a ServerConfig from a keychain OAuth entry.
+ */
+export function keychainEntryToServerConfig(entry: KeychainOAuthEntry): ServerConfig {
+  const transport = inferTransportType(entry.serverUrl);
+  return {
+    type: transport,
+    url: entry.serverUrl,
+  };
+}
+
+/**
+ * Import OAuth servers discovered in the macOS Keychain.
+ * Checks existing config and only adds servers that aren't already present (by URL match).
+ */
+export async function importFromKeychain(
+  scope: ConfigScope,
+  readKeychain?: () => Promise<string | null>,
+): Promise<void> {
+  const entries = await readKeychainOAuthEntries(readKeychain);
+  if (entries.length === 0) {
+    console.error("No OAuth servers found in Claude Code keychain.");
+    return;
+  }
+
+  // Load existing config to check for already-configured servers
+  const configPath = resolveConfigPath(scope);
+  const existing = readConfigFile(configPath);
+  const existingServers = existing.mcpServers ?? {};
+
+  // Check each entry's URL against all existing server URLs
+  const existingUrls = new Set<string>();
+  for (const cfg of Object.values(existingServers)) {
+    if ("url" in cfg) {
+      existingUrls.add(cfg.url);
+    }
+  }
+
+  console.error(`Found ${entries.length} OAuth server(s) in Claude Code keychain:`);
+
+  let imported = 0;
+  for (const entry of entries) {
+    const shortClientId = entry.clientId.length > 6 ? `${entry.clientId.slice(0, 6)}...` : entry.clientId;
+
+    if (existingUrls.has(entry.serverUrl)) {
+      console.error(
+        `  ${entry.serverName.padEnd(12)} ${entry.serverUrl.padEnd(40)} (client: ${shortClientId})  ✓ already configured`,
+      );
+      continue;
+    }
+
+    const serverConfig = keychainEntryToServerConfig(entry);
+    addServerToConfig(scope, entry.serverName, serverConfig);
+    imported++;
+    console.error(`  ${entry.serverName.padEnd(12)} ${entry.serverUrl.padEnd(40)} (client: ${shortClientId})  → added`);
+  }
+
+  if (imported > 0) {
+    console.error(`\nImported ${imported} server(s).`);
+  } else {
+    console.error("\nAll servers already configured.");
+  }
+}
+
 export async function cmdImport(args: string[]): Promise<void> {
   // Parse flags
   let scope: ConfigScope | undefined;
   let claude = false;
   let all = false;
+  let fromKeychain = false;
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -88,6 +244,8 @@ export async function cmdImport(args: string[]): Promise<void> {
       claude = true;
     } else if (arg === "--all") {
       all = true;
+    } else if (arg === "--from-keychain") {
+      fromKeychain = true;
     } else if (arg === "--help" || arg === "-h") {
       printImportUsage();
       return;
@@ -96,6 +254,11 @@ export async function cmdImport(args: string[]): Promise<void> {
     } else {
       positional.push(arg);
     }
+  }
+
+  if (fromKeychain) {
+    await importFromKeychain(scope ?? "user");
+    return;
   }
 
   if (claude) {
@@ -284,10 +447,12 @@ Usage:
   mcx import <dir>                    Import from .mcp.json in directory (project scope)
   mcx import --claude                 Import from ~/.claude.json (global + matching projects)
   mcx import --claude --all           Import from ~/.claude.json (all projects)
+  mcx import --from-keychain          Discover OAuth servers from Claude Code's macOS Keychain
 
 Options:
   --claude, -c                        Read servers from Claude Code's ~/.claude.json
   --all                               With --claude: import from all projects, not just CWD
+  --from-keychain                     Auto-discover OAuth servers from macOS Keychain
   --scope user|project                Override target scope (default varies by source)
   -s                                  Shorthand for --scope
 
