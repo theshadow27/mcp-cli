@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
-import { ipcCall, options } from "@mcp-cli/core";
+import { ipcCall, openLogStream, options } from "@mcp-cli/core";
 import { printError } from "../output";
 
 export interface LogsArgs {
@@ -23,6 +23,7 @@ export interface LogsArgs {
 
 export interface LogsDeps {
   ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
+  openLogStream: typeof openLogStream;
   printError: (msg: string) => void;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   daemonLogPath: string;
@@ -36,6 +37,7 @@ export interface LogsDeps {
 
 const defaultDeps: LogsDeps = {
   ipcCall,
+  openLogStream,
   printError,
   readFileSync: (path, enc) => readFileSync(path, enc),
   daemonLogPath: options.DAEMON_LOG_PATH,
@@ -75,10 +77,6 @@ export function parseLogsArgs(args: string[]): LogsArgs {
   return { server, daemon, follow, lines, error };
 }
 
-/** Backoff constants for follow-mode polling */
-const POLL_MIN_MS = 200;
-const POLL_MAX_MS = 5_000;
-
 export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise<void> {
   const d: LogsDeps = { ...defaultDeps, ...deps };
   const parsed = parseLogsArgs(args);
@@ -103,17 +101,18 @@ export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise
   const serverName = parsed.server;
   const { follow, lines } = parsed;
 
-  // Fetch initial batch
+  if (follow) {
+    // Use SSE for real-time streaming (no polling)
+    await streamLogsSSE({ server: serverName }, serverName, lines, d);
+    return;
+  }
+
+  // One-shot fetch
   const result = await d.ipcCall("getLogs", { server: serverName, limit: lines });
 
   for (const entry of result.lines) {
     printLogLine(serverName, entry.timestamp, entry.line, d);
   }
-
-  if (!follow) return;
-
-  const since = result.lines.at(-1)?.timestamp;
-  await followLogs("getLogs", { server: serverName }, serverName, since, d);
 }
 
 async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
@@ -137,55 +136,33 @@ async function cmdDaemonLogs(parsed: LogsArgs, d: LogsDeps): Promise<void> {
     return;
   }
 
-  // Follow mode: use IPC getDaemonLogs with adaptive backoff
-  const result = await d.ipcCall("getDaemonLogs", { limit: lines });
-
-  for (const entry of result.lines) {
-    printLogLine("mcpd", entry.timestamp, entry.line, d);
-  }
-
-  const since = result.lines.at(-1)?.timestamp;
-  await followLogs("getDaemonLogs", {}, "mcpd", since, d);
+  // Follow mode: use SSE for real-time streaming
+  await streamLogsSSE({ daemon: true }, "mcpd", lines, d);
 }
 
-/** Shared follow-mode polling with adaptive backoff. */
-export async function followLogs(
-  method: IpcMethod,
-  baseParams: Record<string, unknown>,
+/** Stream logs via SSE — replaces polling with push-based real-time streaming. */
+export async function streamLogsSSE(
+  params: { server?: string; daemon?: boolean },
   label: string,
-  since: number | undefined,
+  lines: number,
   d: LogsDeps,
 ): Promise<void> {
-  let lastTimestamp = since ?? Date.now();
-  let delay = POLL_MIN_MS;
+  const { entries, abort } = d.openLogStream({ ...params, lines });
 
-  const poll = async () => {
-    try {
-      const update = (await d.ipcCall(method, { ...baseParams, since: lastTimestamp })) as {
-        lines: Array<{ timestamp: number; line: string }>;
-      };
-      if (update.lines.length > 0) {
-        for (const entry of update.lines) {
-          printLogLine(label, entry.timestamp, entry.line, d);
-          lastTimestamp = entry.timestamp;
-        }
-        delay = POLL_MIN_MS;
-      } else {
-        delay = Math.min(delay * 2, POLL_MAX_MS);
-      }
-    } catch {
-      delay = Math.min(delay * 2, POLL_MAX_MS);
-    }
-    timeout = d.schedule(poll, delay);
-  };
-
-  let timeout = d.schedule(poll, delay);
   d.onSigint(() => {
-    d.cancelSchedule(timeout);
+    abort();
     d.exit(0);
   });
 
-  await d.keepAlive();
+  try {
+    for await (const entry of entries) {
+      printLogLine(label, entry.timestamp, entry.line, d);
+    }
+  } catch (err) {
+    // AbortError is expected on SIGINT
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    throw err;
+  }
 }
 
 export function printLogLine(server: string, timestamp: number, line: string, deps?: Partial<LogsDeps>): void {

@@ -438,6 +438,11 @@ export class ServerPool {
     return this.stderrBuffer.getLines(server, limit);
   }
 
+  /** Subscribe to new stderr lines across all servers. Returns an unsubscribe function. */
+  subscribeStderr(fn: (server: string, entry: { timestamp: number; line: string }) => void): () => void {
+    return this.stderrBuffer.subscribe(fn);
+  }
+
   /** List all configured servers with status */
   listServers(): ServerStatus[] {
     const servers: ServerStatus[] = [...this.connections.values()].map((conn) => {

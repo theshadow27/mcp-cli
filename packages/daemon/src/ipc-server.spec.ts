@@ -32,6 +32,7 @@ function mockPool() {
     getDb: () => null,
     restart: async () => {},
     getStderrLines: () => [],
+    subscribeStderr: () => () => {},
   };
 }
 
@@ -1902,5 +1903,111 @@ describe("IpcServer HTTP transport", () => {
     });
     const json = (await res.json()) as IpcResponse;
     expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+  });
+
+  // -- SSE /logs endpoint tests --
+
+  test("GET /logs without params returns 400", async () => {
+    startServer();
+
+    const res = await fetch("http://localhost/logs", {
+      method: "GET",
+      unix: socketPath,
+    } as RequestInit);
+
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).toContain("Missing");
+  });
+
+  test("GET /logs?daemon=true returns SSE content-type", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/logs?daemon=true&lines=0", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+
+    // Abort to close the stream
+    controller.abort();
+  });
+
+  test("GET /logs?daemon=true streams backfill lines", async () => {
+    startServer();
+
+    // Emit a recognizable log line
+    const marker = `sse-test-${Date.now()}`;
+    console.error(marker);
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/logs?daemon=true&lines=10", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Read until we get our marker or timeout
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes(marker)) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).toContain(marker);
+    expect(buffer).toContain("data: ");
+  });
+
+  test("GET /logs?server=<name> streams backfill from pool", async () => {
+    socketPath = tmpSocket();
+    const pool = {
+      ...mockPool(),
+      getStderrLines: () => [{ timestamp: 1000, line: "pool-line" }],
+    };
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/logs?server=myserver&lines=5", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("pool-line")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).toContain("pool-line");
   });
 });
