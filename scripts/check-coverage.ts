@@ -30,6 +30,14 @@ const GLOBAL_THRESHOLDS = {
 /** Per-file test time budget in milliseconds — no single file should exceed this */
 const PER_FILE_TIME_BUDGET_MS = 5_000;
 
+/**
+ * Aggregate test suite time budget in milliseconds.
+ * Sum of all non-excluded test file times (sequential sum) should stay below this.
+ * Uses sequential sum (not parallel wall time) for reproducibility across machines.
+ * Ratchet this down as optimizations land. Warns but never blocks commits.
+ */
+const AGGREGATE_TIME_BUDGET_MS = 60_000;
+
 /** Number of test files to profile concurrently — scales with available CPUs */
 const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?? 4, 32));
 
@@ -40,6 +48,7 @@ const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?
 const TIMING_EXCLUSIONS: Record<string, string> = {
   "test/daemon-integration.spec.ts": "Full daemon lifecycle integration tests",
   "test/stress.spec.ts": "Stress tests spawning real CLI processes",
+  "test/transport-errors.spec.ts": "Live daemon transport error integration tests",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
   "packages/daemon/src/config/watcher.spec.ts": "FS polling integration tests with 8s timeouts",
 };
@@ -320,6 +329,21 @@ if (allTimings.length > 0) {
       console.warn(`  ${ms}ms  ${file}`);
     }
     console.warn("\nConsider extracting pure logic into unit tests or splitting the file.");
+  }
+
+  // --- Aggregate time ratchet (sequential sum of non-excluded files) ---
+  const nonExcludedTimings = allTimings.filter(
+    (t) => !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern)),
+  );
+  const aggregateMs = nonExcludedTimings.reduce((sum, t) => sum + t.ms, 0);
+  console.log(
+    `\nAggregate test time (non-excluded): ${(aggregateMs / 1000).toFixed(1)}s ` +
+      `(budget: ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s, ${nonExcludedTimings.length} files)`,
+  );
+  if (aggregateMs > AGGREGATE_TIME_BUDGET_MS) {
+    console.warn(
+      `\nWARN: Aggregate test time ${(aggregateMs / 1000).toFixed(1)}s exceeds ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s budget. Optimize slow test files or raise the budget if justified.`,
+    );
   }
 }
 

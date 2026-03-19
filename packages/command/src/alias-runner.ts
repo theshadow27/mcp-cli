@@ -16,6 +16,7 @@ import {
   bundleAlias,
   createAliasCache,
   executeAliasBundled,
+  extractContent,
   ipcCall,
   isDefineAlias,
   options,
@@ -131,20 +132,5 @@ function createMcpProxy(): McpProxy {
   });
 }
 
-export function extractContent(result: unknown): unknown {
-  // MCP results: { content: [{type: "text", text: "..."}] }
-  // Unwrap to actual content for ergonomic alias authoring
-  if (result && typeof result === "object" && "content" in result) {
-    const { content } = result as { content: Array<{ type: string; text?: string }> };
-    if (Array.isArray(content) && content.length === 1 && content[0].type === "text" && content[0].text) {
-      try {
-        return JSON.parse(content[0].text);
-      } catch {
-        return content[0].text;
-      }
-    }
-    // Multiple content items — return array of text
-    return content.filter((c) => c.type === "text").map((c) => c.text);
-  }
-  return result;
-}
+// extractContent is now imported from @mcp-cli/core and re-exported for test compatibility
+export { extractContent } from "@mcp-cli/core";

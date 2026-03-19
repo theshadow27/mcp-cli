@@ -34,6 +34,7 @@ import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdNote } from "./commands/note";
+import { cmdOpencode } from "./commands/opencode";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -41,6 +42,7 @@ import { cmdServe } from "./commands/serve";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
+import { cmdUpdate } from "./commands/update";
 import { cmdVersion } from "./commands/version";
 import {
   ShutdownRefusedError,
@@ -191,6 +193,10 @@ async function main(): Promise<void> {
         await cmdInstall(cleanArgs.slice(1));
         break;
 
+      case "update":
+        await cmdUpdate(cleanArgs.slice(1));
+        break;
+
       case "registry":
         await cmdRegistryDispatch(cleanArgs.slice(1));
         break;
@@ -283,6 +289,10 @@ async function main(): Promise<void> {
 
       case "codex":
         await cmdCodex(cleanArgs.slice(1));
+        break;
+
+      case "opencode":
+        await cmdOpencode(cleanArgs.slice(1));
         break;
 
       case "acp":
@@ -751,6 +761,8 @@ Usage:
   mcx grep <pattern>                  Search tools by name/description
   mcx search <query>                  Search local tools, then registry
   mcx install <slug>                  Install a server from the registry
+  mcx update <slug>                   Check for and apply server updates
+  mcx update --all                    Check all installed servers for updates
   mcx registry search <query>         Search the MCP registry
   mcx registry list                   List available registry servers
   mcx import [source] [--scope ...]    Import servers from .mcp.json or config file

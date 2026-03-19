@@ -80,4 +80,50 @@ describe("StderrRingBuffer", () => {
     expect(buf.getLines("s1")).toEqual([]);
     expect(buf.getLines("s2")).toEqual([]);
   });
+
+  test("subscribe receives new entries with server name", () => {
+    const buf = new StderrRingBuffer();
+    const received: Array<{ server: string; line: string }> = [];
+
+    buf.subscribe((server, entry) => {
+      received.push({ server, line: entry.line });
+    });
+
+    buf.push("s1", "hello");
+    buf.push("s2", "world");
+
+    expect(received).toHaveLength(2);
+    expect(received[0]).toEqual({ server: "s1", line: "hello" });
+    expect(received[1]).toEqual({ server: "s2", line: "world" });
+  });
+
+  test("unsubscribe stops notifications", () => {
+    const buf = new StderrRingBuffer();
+    const received: string[] = [];
+
+    const unsub = buf.subscribe((_server, entry) => {
+      received.push(entry.line);
+    });
+
+    buf.push("s1", "before");
+    unsub();
+    buf.push("s1", "after");
+
+    expect(received).toEqual(["before"]);
+  });
+
+  test("subscriber errors do not break push", () => {
+    const buf = new StderrRingBuffer();
+    const received: string[] = [];
+
+    buf.subscribe(() => {
+      throw new Error("boom");
+    });
+    buf.subscribe((_server, entry) => {
+      received.push(entry.line);
+    });
+
+    buf.push("s1", "still works");
+    expect(received).toEqual(["still works"]);
+  });
 });

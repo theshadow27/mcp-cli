@@ -58,3 +58,25 @@ export interface AliasDefinition<I = unknown, O = unknown> {
 
 /** Alias type discriminant for DB and IPC */
 export type AliasType = "freeform" | "defineAlias";
+
+/**
+ * Unwrap MCP tool call result content for ergonomic alias authoring.
+ *
+ * MCP results look like: { content: [{type: "text", text: "..."}] }
+ * This extracts the actual value, attempting JSON parse on text content.
+ */
+export function extractContent(result: unknown): unknown {
+  if (result && typeof result === "object" && "content" in result) {
+    const { content } = result as { content: Array<{ type: string; text?: string }> };
+    if (Array.isArray(content) && content.length === 1 && content[0].type === "text" && content[0].text) {
+      try {
+        return JSON.parse(content[0].text);
+      } catch {
+        return content[0].text;
+      }
+    }
+    // Multiple content items — return array of text
+    return content.filter((c) => c.type === "text").map((c) => c.text);
+  }
+  return result;
+}

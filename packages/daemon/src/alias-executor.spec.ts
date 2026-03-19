@@ -155,6 +155,95 @@ describe("alias-executor subprocess protocol", () => {
     }
   });
 
+  test("cycle detection: errors when alias is already in callChain", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "cyclic.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "cyclic",',
+        "  input: z.object({ x: z.string() }),",
+        "  fn: (input) => input.x,",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const { stdout, exitCode } = await runExecutor({
+      bundledJs: js,
+      input: { x: "test" },
+      isDefineAlias: true,
+      aliasName: "cyclic",
+      callChain: ["parent", "cyclic"],
+    });
+
+    expect(exitCode).toBe(1);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.error).toContain("Alias cycle detected");
+    expect(parsed.error).toContain("parent → cyclic → cyclic");
+  });
+
+  test("depth limit: errors when callChain exceeds max depth", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "deep.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "deep",',
+        "  input: z.object({ x: z.string() }),",
+        "  fn: (input) => input.x,",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const chain = Array.from({ length: 16 }, (_, i) => `alias-${i}`);
+    const { stdout, exitCode } = await runExecutor({
+      bundledJs: js,
+      input: { x: "test" },
+      isDefineAlias: true,
+      aliasName: "deep",
+      callChain: chain,
+    });
+
+    expect(exitCode).toBe(1);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.error).toContain("too deep");
+  });
+
+  test("no cycle: succeeds when alias is not in callChain", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "nocycle.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "nocycle",',
+        "  input: z.object({ x: z.string() }),",
+        "  fn: (input) => input.x,",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const { stdout, exitCode } = await runExecutor({
+      bundledJs: js,
+      input: { x: "hello" },
+      isDefineAlias: true,
+      aliasName: "nocycle",
+      callChain: ["parent", "other"],
+    });
+
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.result).toBe("hello");
+  });
+
   test("console.log in alias script does not corrupt stdout JSON", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "noisy.ts");

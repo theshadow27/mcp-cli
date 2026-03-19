@@ -18,6 +18,7 @@ import type {
   ToolInfo,
 } from "@mcp-cli/core";
 import {
+  ALIAS_SERVER_NAME,
   AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
@@ -64,7 +65,7 @@ import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
 import { startCallbackServer } from "./auth/callback-server";
 import { McpOAuthProvider } from "./auth/oauth-provider";
-import { getDaemonLogLines } from "./daemon-log";
+import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import { getPortHolder } from "./port-holder";
@@ -158,6 +159,11 @@ export class IpcServer {
           return new Response(metrics.toPrometheusText(), {
             headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
           });
+        }
+
+        // GET /logs — SSE stream for real-time log tailing
+        if (url.pathname === "/logs" && req.method === "GET") {
+          return self.handleLogsSSE(url);
         }
 
         if (req.method !== "POST") {
@@ -400,13 +406,19 @@ export class IpcServer {
     });
 
     this.handlers.set("callTool", async (params, ctx) => {
-      const { server, tool, arguments: args, timeoutMs } = CallToolParamsSchema.parse(params);
+      const { server, tool, arguments: args, timeoutMs, callChain } = CallToolParamsSchema.parse(params);
       const toolSpan = ctx.span.child(`tool.${server}.${tool}`);
       toolSpan.setAttribute("tool.server", server);
       toolSpan.setAttribute("tool.name", tool);
+      if (callChain) toolSpan.setAttribute("alias.callChainDepth", callChain.length);
       const toolLabels = { server, tool };
       try {
-        const result = await this.pool.callTool(server, tool, args, timeoutMs);
+        // For cross-alias composition: route _aliases calls with a callChain
+        // directly through the alias server to thread cycle detection.
+        const result =
+          callChain && server === ALIAS_SERVER_NAME && this.aliasServer
+            ? await this.aliasServer.callToolWithChain(tool, args, callChain)
+            : await this.pool.callTool(server, tool, args, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
         // Dual-write: usage_stats (Phase 1 compat) + spans table
@@ -951,6 +963,84 @@ export class IpcServer {
       this.draining = true;
       this.startDrainTimeout();
       return { ok: true };
+    });
+  }
+
+  /**
+   * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
+   *
+   * Query params:
+   *   server=<name>  — stream stderr from a specific MCP server
+   *   daemon=true    — stream daemon logs
+   *   lines=<n>      — number of initial backfill lines (default 50)
+   *   since=<ts>     — only backfill lines after this timestamp (ms)
+   */
+  private handleLogsSSE(url: URL): Response {
+    const serverName = url.searchParams.get("server");
+    const isDaemon = url.searchParams.get("daemon") === "true";
+    const lines = Number(url.searchParams.get("lines") ?? "50");
+    const since = url.searchParams.has("since") ? Number(url.searchParams.get("since")) : undefined;
+
+    if (!serverName && !isDaemon) {
+      return new Response("Missing ?server=<name> or ?daemon=true", { status: 400 });
+    }
+
+    let unsubscribe: (() => void) | undefined;
+
+    const stream = new ReadableStream({
+      start: (controller) => {
+        const encoder = new TextEncoder();
+        const send = (entry: { timestamp: number; line: string }) => {
+          try {
+            const data = JSON.stringify({ timestamp: entry.timestamp, line: entry.line });
+            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+          } catch {
+            // Stream closed — clean up
+            unsubscribe?.();
+          }
+        };
+
+        // Backfill initial lines
+        if (isDaemon) {
+          let backfill = getDaemonLogLines(lines);
+          if (since !== undefined) {
+            backfill = backfill.filter((l) => l.timestamp > since);
+          }
+          for (const entry of backfill) {
+            send(entry);
+          }
+        } else if (serverName) {
+          let backfill = this.pool.getStderrLines(serverName, since === undefined ? lines : undefined);
+          if (since !== undefined) {
+            backfill = backfill.filter((l) => l.timestamp > since);
+            if (backfill.length > lines) backfill = backfill.slice(-lines);
+          }
+          for (const entry of backfill) {
+            send(entry);
+          }
+        }
+
+        // Subscribe to new lines
+        if (isDaemon) {
+          unsubscribe = subscribeDaemonLogs((entry) => send(entry));
+        } else if (serverName) {
+          unsubscribe = this.pool.subscribeStderr((server, entry) => {
+            if (server !== serverName) return;
+            send(entry);
+          });
+        }
+      },
+      cancel: () => {
+        unsubscribe?.();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
     });
   }
 

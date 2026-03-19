@@ -15,9 +15,12 @@ export interface StderrLine {
 
 const DEFAULT_CAPACITY = 100;
 
+export type StderrSubscriber = (server: string, entry: StderrLine) => void;
+
 export class StderrRingBuffer {
   private buffers = new Map<string, CircularBuffer>();
   private capacity: number;
+  private subscribers = new Set<StderrSubscriber>();
 
   constructor(capacity = DEFAULT_CAPACITY) {
     this.capacity = capacity;
@@ -32,7 +35,22 @@ export class StderrRingBuffer {
     }
     const entry: StderrLine = { timestamp: Date.now(), line };
     buf.push(entry);
+    for (const fn of this.subscribers) {
+      try {
+        fn(server, entry);
+      } catch {
+        // subscriber errors must not break the push path
+      }
+    }
     return entry;
+  }
+
+  /** Subscribe to new lines across all servers. Returns an unsubscribe function. */
+  subscribe(fn: StderrSubscriber): () => void {
+    this.subscribers.add(fn);
+    return () => {
+      this.subscribers.delete(fn);
+    };
   }
 
   /** Get lines for a server in chronological order. */

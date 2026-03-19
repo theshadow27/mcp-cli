@@ -82,6 +82,8 @@ export const CallToolParamsSchema = z.object({
   tool: z.string(),
   arguments: z.record(z.string(), z.unknown()).optional().default({}),
   timeoutMs: z.number().optional(),
+  /** Alias call chain for cycle detection in cross-alias composition. */
+  callChain: z.array(z.string()).optional(),
 });
 
 export const ListToolsParamsSchema = z.object({

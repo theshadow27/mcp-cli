@@ -1,13 +1,28 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { openLogStream } from "@mcp-cli/core";
 import { ExitError } from "../test-helpers";
 import type { LogsDeps } from "./logs";
-import { cmdLogs, pad2, pad3, parseLogsArgs, printLogLine } from "./logs";
+import { cmdLogs, pad2, pad3, parseLogsArgs, printLogLine, streamLogsSSE } from "./logs";
 
 /* ── helpers ─────────────────────────────────────────────────────── */
+
+/** Create a mock openLogStream that yields the given entries then completes. */
+function mockLogStream(entries: Array<{ timestamp: number; line: string }>): typeof openLogStream {
+  return ((_params: unknown) => {
+    const abortFn = mock(() => {});
+    async function* iterate() {
+      for (const entry of entries) {
+        yield entry;
+      }
+    }
+    return { entries: iterate(), abort: abortFn };
+  }) as unknown as typeof openLogStream;
+}
 
 function makeDeps(overrides?: Partial<LogsDeps>): Partial<LogsDeps> {
   return {
     ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
+    openLogStream: mockLogStream([]),
     printError: mock(() => {}),
     readFileSync: mock(() => ""),
     daemonLogPath: "/tmp/test-mcpd.log",
@@ -231,124 +246,113 @@ describe("cmdLogs server (no follow)", () => {
   });
 });
 
-/* ── cmdLogs: server logs (follow mode) ─────────────────────────── */
+/* ── cmdLogs: server logs (follow mode via SSE) ────────────────── */
 
 describe("cmdLogs server (follow)", () => {
-  test("starts polling after initial fetch", async () => {
-    const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
-    });
+  test("uses openLogStream for follow mode", async () => {
+    const openLogStreamMock = mock(mockLogStream([]));
+    const deps = makeDeps({ openLogStream: openLogStreamMock as unknown as typeof openLogStream });
 
     await cmdLogs(["myserver", "-f"], deps);
 
-    expect(deps.schedule).toHaveBeenCalled();
-    expect(deps.onSigint).toHaveBeenCalled();
+    expect(openLogStreamMock).toHaveBeenCalledWith({ server: "myserver", lines: 50 });
   });
 
-  test("prints initial lines before entering follow mode", async () => {
+  test("prints streamed log lines", async () => {
     const output: string[] = [];
-    const deps = makeDeps({
-      ipcCall: mock(() =>
-        Promise.resolve({
-          lines: [{ timestamp: Date.now(), line: "initial" }],
-        }),
-      ) as LogsDeps["ipcCall"],
-      writeStderr: (msg: string) => output.push(msg),
-    });
-
-    await cmdLogs(["myserver", "-f"], deps);
-
-    expect(output).toHaveLength(1);
-    expect(output[0]).toContain("initial");
-  });
-
-  test("poll callback prints new lines and resets backoff", async () => {
-    const output: string[] = [];
-    const scheduledFns: Array<() => void> = [];
     const ts = Date.now();
-
     const deps = makeDeps({
-      ipcCall: mock()
-        .mockResolvedValueOnce({ lines: [{ timestamp: ts, line: "initial" }] }) // initial fetch
-        .mockResolvedValueOnce({ lines: [{ timestamp: ts + 1000, line: "polled" }] }) as LogsDeps["ipcCall"], // poll
+      openLogStream: mockLogStream([
+        { timestamp: ts, line: "first" },
+        { timestamp: ts + 1000, line: "second" },
+      ]),
       writeStderr: (msg: string) => output.push(msg),
-      schedule: mock((fn: () => void) => {
-        scheduledFns.push(fn);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
     });
 
     await cmdLogs(["myserver", "-f"], deps);
-
-    // Execute the poll callback
-    expect(scheduledFns.length).toBeGreaterThanOrEqual(1);
-    await scheduledFns[0]();
 
     expect(output).toHaveLength(2);
-    expect(output[1]).toContain("polled");
+    expect(output[0]).toContain("[myserver] first");
+    expect(output[1]).toContain("[myserver] second");
   });
 
-  test("poll callback backs off when no new data", async () => {
-    const scheduledFns: Array<() => void> = [];
-    const scheduledDelays: number[] = [];
-
-    const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
-      schedule: mock((fn: () => void, ms: number) => {
-        scheduledFns.push(fn);
-        scheduledDelays.push(ms);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
-    });
-
-    await cmdLogs(["myserver", "-f"], deps);
-
-    // Execute poll twice — should see increasing delays
-    await scheduledFns[0]();
-    await scheduledFns[1]();
-
-    expect(scheduledDelays[1]).toBeGreaterThan(scheduledDelays[0]);
-  });
-
-  test("poll callback handles errors with backoff", async () => {
-    const scheduledFns: Array<() => void> = [];
-    const scheduledDelays: number[] = [];
-
-    const deps = makeDeps({
-      ipcCall: mock()
-        .mockResolvedValueOnce({ lines: [] }) // initial fetch
-        .mockRejectedValueOnce(new Error("connection lost")) as LogsDeps["ipcCall"], // poll error
-      schedule: mock((fn: () => void, ms: number) => {
-        scheduledFns.push(fn);
-        scheduledDelays.push(ms);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
-    });
-
-    await cmdLogs(["myserver", "-f"], deps);
-    await scheduledFns[0](); // This should catch the error
-
-    // Should still schedule next poll (with backoff)
-    expect(scheduledFns).toHaveLength(2);
-    expect(scheduledDelays[1]).toBeGreaterThan(scheduledDelays[0]);
-  });
-
-  test("SIGINT handler cancels polling and exits", async () => {
+  test("registers SIGINT handler that aborts stream", async () => {
     let sigintHandler: (() => void) | undefined;
-
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
+      openLogStream: mockLogStream([]),
       onSigint: mock((fn: () => void) => {
         sigintHandler = fn;
       }),
-      schedule: mock(() => "timer-id" as unknown as ReturnType<typeof setTimeout>),
     });
 
     await cmdLogs(["myserver", "-f"], deps);
 
     expect(sigintHandler).toBeDefined();
     expect(() => (sigintHandler as () => void)()).toThrow(ExitError);
-    expect(deps.cancelSchedule).toHaveBeenCalled();
+  });
+
+  test("respects --lines with follow mode", async () => {
+    const openLogStreamMock = mock(mockLogStream([]));
+    const deps = makeDeps({ openLogStream: openLogStreamMock as unknown as typeof openLogStream });
+
+    await cmdLogs(["myserver", "-f", "--lines", "10"], deps);
+
+    expect(openLogStreamMock).toHaveBeenCalledWith({ server: "myserver", lines: 10 });
+  });
+});
+
+/* ── streamLogsSSE ─────────────────────────────────────────────── */
+
+describe("streamLogsSSE", () => {
+  test("prints entries from the async iterable", async () => {
+    const output: string[] = [];
+    const ts = Date.now();
+    const deps = makeDeps({
+      openLogStream: mockLogStream([
+        { timestamp: ts, line: "line-a" },
+        { timestamp: ts + 500, line: "line-b" },
+      ]),
+      writeStderr: (msg: string) => output.push(msg),
+    });
+
+    await streamLogsSSE({ server: "srv" }, "srv", 50, { ...makeDeps(), ...deps } as LogsDeps);
+
+    expect(output).toHaveLength(2);
+    expect(output[0]).toContain("[srv] line-a");
+    expect(output[1]).toContain("[srv] line-b");
+  });
+
+  test("handles AbortError gracefully", async () => {
+    const deps = makeDeps({
+      openLogStream: ((_params: unknown) => {
+        const iter: AsyncIterable<{ timestamp: number; line: string }> = {
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(new DOMException("The operation was aborted", "AbortError")),
+          }),
+        };
+        return { entries: iter, abort: () => {} };
+      }) as unknown as typeof openLogStream,
+    });
+
+    // Should not throw
+    await streamLogsSSE({ server: "srv" }, "srv", 50, { ...makeDeps(), ...deps } as LogsDeps);
+  });
+
+  test("re-throws non-abort errors", async () => {
+    const deps = makeDeps({
+      openLogStream: ((_params: unknown) => {
+        const iter: AsyncIterable<{ timestamp: number; line: string }> = {
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(new Error("connection failed")),
+          }),
+        };
+        return { entries: iter, abort: () => {} };
+      }) as unknown as typeof openLogStream,
+    });
+
+    await expect(streamLogsSSE({ server: "srv" }, "srv", 50, { ...makeDeps(), ...deps } as LogsDeps)).rejects.toThrow(
+      "connection failed",
+    );
   });
 });
 
@@ -398,120 +402,54 @@ describe("cmdLogs --daemon (no follow)", () => {
   });
 });
 
-/* ── cmdLogs: daemon logs (follow mode) ─────────────────────────── */
+/* ── cmdLogs: daemon logs (follow mode via SSE) ────────────────── */
 
 describe("cmdLogs --daemon (follow)", () => {
-  test("uses IPC getDaemonLogs and starts polling", async () => {
+  test("uses openLogStream with daemon flag", async () => {
+    const openLogStreamMock = mock(mockLogStream([]));
+    const deps = makeDeps({ openLogStream: openLogStreamMock as unknown as typeof openLogStream });
+
+    await cmdLogs(["--daemon", "-f"], deps);
+
+    expect(openLogStreamMock).toHaveBeenCalledWith({ daemon: true, lines: 50 });
+  });
+
+  test("prints streamed daemon lines", async () => {
     const output: string[] = [];
+    const ts = Date.now();
     const deps = makeDeps({
-      ipcCall: mock(() =>
-        Promise.resolve({
-          lines: [{ timestamp: Date.now(), line: "daemon line" }],
-        }),
-      ) as LogsDeps["ipcCall"],
+      openLogStream: mockLogStream([{ timestamp: ts, line: "daemon line" }]),
       writeStderr: (msg: string) => output.push(msg),
     });
 
     await cmdLogs(["--daemon", "-f"], deps);
 
-    expect(deps.ipcCall).toHaveBeenCalledWith("getDaemonLogs", { limit: 50 });
     expect(output).toHaveLength(1);
-    expect(output[0]).toContain("daemon line");
-    expect(deps.schedule).toHaveBeenCalled();
-    expect(deps.onSigint).toHaveBeenCalled();
+    expect(output[0]).toContain("[mcpd] daemon line");
   });
 
   test("respects --lines with --daemon -f", async () => {
-    const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
-    });
+    const openLogStreamMock = mock(mockLogStream([]));
+    const deps = makeDeps({ openLogStream: openLogStreamMock as unknown as typeof openLogStream });
 
     await cmdLogs(["--daemon", "-f", "--lines", "20"], deps);
-    expect(deps.ipcCall).toHaveBeenCalledWith("getDaemonLogs", { limit: 20 });
+
+    expect(openLogStreamMock).toHaveBeenCalledWith({ daemon: true, lines: 20 });
   });
 
-  test("daemon poll callback prints new lines", async () => {
-    const output: string[] = [];
-    const scheduledFns: Array<() => void> = [];
-    const ts = Date.now();
-
-    const deps = makeDeps({
-      ipcCall: mock()
-        .mockResolvedValueOnce({ lines: [{ timestamp: ts, line: "init" }] })
-        .mockResolvedValueOnce({
-          lines: [{ timestamp: ts + 1000, line: "polled-daemon" }],
-        }) as unknown as LogsDeps["ipcCall"],
-      writeStderr: (msg: string) => output.push(msg),
-      schedule: mock((fn: () => void) => {
-        scheduledFns.push(fn);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
-    });
-
-    await cmdLogs(["--daemon", "-f"], deps);
-    await scheduledFns[0]();
-
-    expect(output).toHaveLength(2);
-    expect(output[1]).toContain("polled-daemon");
-  });
-
-  test("daemon poll backs off on empty data", async () => {
-    const scheduledFns: Array<() => void> = [];
-    const scheduledDelays: number[] = [];
-
-    const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
-      schedule: mock((fn: () => void, ms: number) => {
-        scheduledFns.push(fn);
-        scheduledDelays.push(ms);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
-    });
-
-    await cmdLogs(["--daemon", "-f"], deps);
-    await scheduledFns[0]();
-    await scheduledFns[1]();
-
-    expect(scheduledDelays[1]).toBeGreaterThan(scheduledDelays[0]);
-  });
-
-  test("daemon poll handles errors with backoff", async () => {
-    const scheduledFns: Array<() => void> = [];
-    const scheduledDelays: number[] = [];
-
-    const deps = makeDeps({
-      ipcCall: mock()
-        .mockResolvedValueOnce({ lines: [] })
-        .mockRejectedValueOnce(new Error("ipc error")) as unknown as LogsDeps["ipcCall"],
-      schedule: mock((fn: () => void, ms: number) => {
-        scheduledFns.push(fn);
-        scheduledDelays.push(ms);
-        return null as unknown as ReturnType<typeof setTimeout>;
-      }),
-    });
-
-    await cmdLogs(["--daemon", "-f"], deps);
-    await scheduledFns[0]();
-
-    expect(scheduledFns).toHaveLength(2);
-    expect(scheduledDelays[1]).toBeGreaterThan(scheduledDelays[0]);
-  });
-
-  test("daemon SIGINT handler cancels polling and exits", async () => {
+  test("daemon SIGINT handler aborts stream and exits", async () => {
     let sigintHandler: (() => void) | undefined;
 
     const deps = makeDeps({
-      ipcCall: mock(() => Promise.resolve({ lines: [] })) as LogsDeps["ipcCall"],
+      openLogStream: mockLogStream([]),
       onSigint: mock((fn: () => void) => {
         sigintHandler = fn;
       }),
-      schedule: mock(() => "timer-id" as unknown as ReturnType<typeof setTimeout>),
     });
 
     await cmdLogs(["--daemon", "-f"], deps);
 
     expect(sigintHandler).toBeDefined();
     expect(() => (sigintHandler as () => void)()).toThrow(ExitError);
-    expect(deps.cancelSchedule).toHaveBeenCalled();
   });
 });

@@ -984,8 +984,11 @@ describe("ServerPool.updateConfig reconnect", () => {
     const updated = makeConfig({ a: { command: "cat" } });
     pool.updateConfig(updated);
 
-    // Wait for the async disconnect → reconnect chain
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll until reconnect completes (replaces fixed sleep)
+    const deadline = Date.now() + 5000;
+    while (connectCount < 2 && Date.now() < deadline) {
+      await Bun.sleep(10);
+    }
 
     expect(connectCount).toBe(2);
   });
@@ -1007,7 +1010,8 @@ describe("ServerPool.updateConfig reconnect", () => {
     const updated = makeConfig({ a: { command: "cat" } });
     pool.updateConfig(updated);
 
-    await new Promise((r) => setTimeout(r, 50));
+    // Brief yield to allow any async reconnect to fire (negative assertion)
+    await Bun.sleep(50);
 
     // Should NOT have connected because the server wasn't connected before config change
     expect(connectCount).toBe(0);

@@ -28,7 +28,7 @@ export const ACP_AGENTS: Record<string, AcpAgent> = {
     name: "gemini",
     command: "gemini",
     args: ["--acp"],
-    installHint: "Install with: npm install -g @anthropic-ai/gemini-cli",
+    installHint: "Install with: npm install -g @google/gemini-cli",
   },
 };
 
