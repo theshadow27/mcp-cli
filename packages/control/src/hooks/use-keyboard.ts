@@ -1,12 +1,11 @@
-import { CLAUDE_SERVER_NAME } from "@mcp-cli/core";
-import type { ServerStatus, SessionInfo } from "@mcp-cli/core";
+import type { AgentSessionInfo, ServerStatus } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
 import { useCallback, useRef } from "react";
+import type { TranscriptEntry } from "../components/agent-session-detail";
+import { entryKey, formatFullEntry, summarizeEntry } from "../components/agent-session-detail";
 import type { AuthStatus } from "../components/auth-banner";
-import type { TranscriptEntry } from "../components/claude-session-detail";
-import { entryKey, formatFullEntry, summarizeEntry } from "../components/claude-session-detail";
-import { extractToolText } from "./ipc-tool-helpers";
+import { extractToolText, serverForProvider, toolForProvider } from "./ipc-tool-helpers";
 import { handleClaudeInput } from "./use-keyboard-claude";
 import { handleLogsInput } from "./use-keyboard-logs";
 import type { MailNav } from "./use-keyboard-mail";
@@ -17,7 +16,7 @@ import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "claude", "stats", "plans", "mail"] as const;
+export const ALL_TABS = ["servers", "logs", "agents", "stats", "plans", "mail"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
@@ -37,7 +36,7 @@ export function tabByNumber(n: number): View | undefined {
 
 /** Determine what Esc should do from a non-servers view. Returns the action. */
 export function escAction(view: View, expandedSession: string | null): "collapse-transcript" | "navigate-servers" {
-  if (view === "claude" && expandedSession) return "collapse-transcript";
+  if (view === "agents" && expandedSession) return "collapse-transcript";
   return "navigate-servers";
 }
 
@@ -65,7 +64,7 @@ export interface LogsNav {
 }
 
 export interface ClaudeNav {
-  sessions: SessionInfo[];
+  sessions: AgentSessionInfo[];
   selectedIndex: number;
   setSelectedIndex: (fn: (i: number) => number) => void;
   expandedSession: string | null;
@@ -123,26 +122,26 @@ export function useKeyboard({
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
 
-  const openPager = useCallback(async (sessionId: string) => {
+  const openPager = useCallback(async (session: AgentSessionInfo) => {
     if (pagerBusyRef.current) return;
     pagerBusyRef.current = true;
     const { join } = await import("node:path");
     const { unlinkSync } = await import("node:fs");
-    const tmpFile = join(options.MCP_CLI_DIR, `mcpctl-log-${sessionId}.txt`);
+    const tmpFile = join(options.MCP_CLI_DIR, `mcpctl-log-${session.sessionId}.txt`);
     try {
       const result = await ipcCall("callTool", {
-        server: CLAUDE_SERVER_NAME,
-        tool: "claude_transcript",
-        arguments: { sessionId, limit: 500 },
+        server: serverForProvider(session.provider),
+        tool: toolForProvider(session.provider, "transcript"),
+        arguments: { sessionId: session.sessionId, limit: 500 },
       });
       const text = extractToolText(result);
       if (!text) {
-        console.error("[mcpctl] Empty transcript for session", sessionId);
+        console.error("[mcpctl] Empty transcript for session", session.sessionId);
         return;
       }
       const entries = JSON.parse(text) as TranscriptEntry[];
       if (entries.length === 0) {
-        console.error("[mcpctl] No transcript entries for session", sessionId);
+        console.error("[mcpctl] No transcript entries for session", session.sessionId);
         return;
       }
       const formatted = entries
@@ -187,7 +186,7 @@ export function useKeyboard({
   useInput((input, key) => {
     // Modal input modes are handled by their respective view handlers first,
     // before global keys, so they can capture all input.
-    if (view === "claude" && (claudeNav.denyReasonMode || claudeNav.promptMode)) {
+    if (view === "agents" && (claudeNav.denyReasonMode || claudeNav.promptMode)) {
       handleClaudeInput(input, key, claudeNav);
       return;
     }
@@ -273,11 +272,11 @@ export function useKeyboard({
       return;
     }
 
-    // Claude: Ctrl+O opens full transcript in pager (handled here because openPager is a hook callback)
-    if (view === "claude" && key.ctrl && input === "o") {
+    // Agents: Ctrl+O opens full transcript in pager (handled here because openPager is a hook callback)
+    if (view === "agents" && key.ctrl && input === "o") {
       const selectedSession = claudeNav.sessions[claudeNav.selectedIndex];
       if (selectedSession) {
-        openPager(selectedSession.sessionId);
+        openPager(selectedSession);
       }
       return;
     }
@@ -285,7 +284,7 @@ export function useKeyboard({
     // Delegate to active view handler
     if (view === "logs") {
       handleLogsInput(input, key, logsNav, serversNav.servers);
-    } else if (view === "claude") {
+    } else if (view === "agents") {
       handleClaudeInput(input, key, claudeNav);
     } else if (view === "stats") {
       handleStatsInput(input, key, statsNav);

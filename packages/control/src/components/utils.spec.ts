@@ -4,10 +4,10 @@ import { extractToolText } from "../hooks/ipc-tool-helpers";
 import { checkProtocolVersion } from "../hooks/protocol-check";
 import { ALL_TABS, nextTab, prevTab, tabByNumber } from "../hooks/use-keyboard";
 import { buildLogSources, filterLogLines } from "../hooks/use-logs";
+import type { TranscriptEntry } from "./agent-session-detail";
+import { formatFullEntry, summarizeEntry } from "./agent-session-detail";
+import { formatCost, formatTokens, shortCwd, shortId } from "./agent-session-list";
 import { isAuthError } from "./auth-banner";
-import type { TranscriptEntry } from "./claude-session-detail";
-import { formatFullEntry, summarizeEntry } from "./claude-session-detail";
-import { formatCost, formatTokens, shortCwd, shortId } from "./claude-session-list";
 import { formatUptime } from "./header";
 import { formatRelativeTime } from "./server-detail";
 import { buildBadges } from "./tab-bar";
@@ -128,25 +128,25 @@ describe("buildLogSources", () => {
 
 describe("tab navigation", () => {
   it("ALL_TABS has 6 entries in correct order", () => {
-    expect(ALL_TABS).toEqual(["servers", "logs", "claude", "stats", "plans", "mail"]);
+    expect(ALL_TABS).toEqual(["servers", "logs", "agents", "stats", "plans", "mail"]);
   });
 
   it("nextTab cycles forward", () => {
     expect(nextTab("servers")).toBe("logs");
-    expect(nextTab("logs")).toBe("claude");
+    expect(nextTab("logs")).toBe("agents");
     expect(nextTab("mail")).toBe("servers"); // wraps around
   });
 
   it("prevTab cycles backward", () => {
     expect(prevTab("servers")).toBe("mail"); // wraps around
     expect(prevTab("logs")).toBe("servers");
-    expect(prevTab("claude")).toBe("logs");
+    expect(prevTab("agents")).toBe("logs");
   });
 
   it("tabByNumber maps 1-6 to tabs", () => {
     expect(tabByNumber(1)).toBe("servers");
     expect(tabByNumber(2)).toBe("logs");
-    expect(tabByNumber(3)).toBe("claude");
+    expect(tabByNumber(3)).toBe("agents");
     expect(tabByNumber(4)).toBe("stats");
     expect(tabByNumber(5)).toBe("plans");
     expect(tabByNumber(6)).toBe("mail");
@@ -166,24 +166,24 @@ describe("buildBadges", () => {
 
   it("shows claude session count without color when no pending permissions", () => {
     const badges = buildBadges({ sessionCount: 3, pendingPermissionCount: 0, errorServerCount: 0 });
-    expect(badges.claude).toEqual({ count: 3 });
+    expect(badges.agents).toEqual({ count: 3 });
     expect(badges.servers).toBeUndefined();
   });
 
   it("shows claude badge in red when pending permissions exist", () => {
     const badges = buildBadges({ sessionCount: 2, pendingPermissionCount: 1, errorServerCount: 0 });
-    expect(badges.claude).toEqual({ count: 2, color: "red" });
+    expect(badges.agents).toEqual({ count: 2, color: "red" });
   });
 
   it("shows servers badge in red when errors exist", () => {
     const badges = buildBadges({ sessionCount: 0, pendingPermissionCount: 0, errorServerCount: 2 });
     expect(badges.servers).toEqual({ count: 2, color: "red" });
-    expect(badges.claude).toBeUndefined();
+    expect(badges.agents).toBeUndefined();
   });
 
   it("shows both badges when both have counts", () => {
     const badges = buildBadges({ sessionCount: 5, pendingPermissionCount: 3, errorServerCount: 1 });
-    expect(badges.claude).toEqual({ count: 5, color: "red" });
+    expect(badges.agents).toEqual({ count: 5, color: "red" });
     expect(badges.servers).toEqual({ count: 1, color: "red" });
   });
 });
@@ -220,6 +220,10 @@ describe("formatCost", () => {
   it("formats fractional cost", () => {
     expect(formatCost(0.1234)).toBe("$0.1234");
     expect(formatCost(1.5)).toBe("$1.5000");
+  });
+
+  it("formats null cost as dash", () => {
+    expect(formatCost(null)).toBe("-");
   });
 });
 

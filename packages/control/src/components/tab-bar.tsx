@@ -25,7 +25,7 @@ export function buildBadges(opts: {
 }): Partial<Record<View, TabBadge>> {
   const badges: Partial<Record<View, TabBadge>> = {};
   if (opts.sessionCount > 0) {
-    badges.claude =
+    badges.agents =
       opts.pendingPermissionCount > 0 ? { count: opts.sessionCount, color: "red" } : { count: opts.sessionCount };
   }
   if (opts.errorServerCount > 0) {
