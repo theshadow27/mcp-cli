@@ -1,25 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { AGENTS, resolveAgentCommand } from "./agents";
+import { ACP_AGENTS, resolveAgentCommand } from "./agents";
 
-describe("AGENTS registry", () => {
-  test("copilot uses gh copilot --acp", () => {
-    const agent = AGENTS.copilot;
-    expect(agent.command).toBe("gh");
-    expect(agent.args).toEqual(["copilot", "--acp"]);
+describe("ACP_AGENTS registry", () => {
+  test("copilot uses standalone copilot binary with --acp", () => {
+    const agent = ACP_AGENTS.copilot;
+    expect(agent.command).toBe("copilot");
+    expect(agent.args).toEqual(["--acp"]);
+    expect(agent.installHint).toContain("gh extension install");
   });
 
   test("gemini uses gemini --acp", () => {
-    const agent = AGENTS.gemini;
+    const agent = ACP_AGENTS.gemini;
     expect(agent.command).toBe("gemini");
     expect(agent.args).toEqual(["--acp"]);
+    expect(agent.installHint).toContain("npm install");
   });
 });
 
 describe("resolveAgentCommand", () => {
   test("known agent returns registry command", () => {
     const result = resolveAgentCommand("copilot");
-    expect(result.command).toEqual(["gh", "copilot", "--acp"]);
-    expect(result.displayName).toBe("GitHub Copilot");
+    expect(result.command).toEqual(["copilot", "--acp"]);
+    expect(result.displayName).toBe("copilot");
   });
 
   test("custom command overrides agent name", () => {

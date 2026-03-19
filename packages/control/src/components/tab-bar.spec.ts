@@ -7,14 +7,14 @@ describe("buildBadges", () => {
     expect(badges).toEqual({});
   });
 
-  it("sets claude badge without color when no pending permissions", () => {
+  it("sets agents badge without color when no pending permissions", () => {
     const badges = buildBadges({ sessionCount: 3, pendingPermissionCount: 0, errorServerCount: 0 });
-    expect(badges.claude).toEqual({ count: 3 });
+    expect(badges.agents).toEqual({ count: 3 });
   });
 
-  it("sets claude badge with red color when pending permissions exist", () => {
+  it("sets agents badge with red color when pending permissions exist", () => {
     const badges = buildBadges({ sessionCount: 2, pendingPermissionCount: 1, errorServerCount: 0 });
-    expect(badges.claude).toEqual({ count: 2, color: "red" });
+    expect(badges.agents).toEqual({ count: 2, color: "red" });
   });
 
   it("sets servers badge with red color for error servers", () => {
@@ -39,7 +39,7 @@ describe("buildBadges", () => {
 
   it("sets all badges simultaneously", () => {
     const badges = buildBadges({ sessionCount: 1, pendingPermissionCount: 1, errorServerCount: 1, unreadMailCount: 3 });
-    expect(badges.claude).toBeDefined();
+    expect(badges.agents).toBeDefined();
     expect(badges.servers).toBeDefined();
     expect(badges.mail).toEqual({ count: 3, color: "yellow" });
   });

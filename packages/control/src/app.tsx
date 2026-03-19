@@ -1,8 +1,8 @@
 import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentSessionList } from "./components/agent-session-list.js";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner.js";
-import { ClaudeSessionList } from "./components/claude-session-list.js";
 import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
 import { Loading } from "./components/loading.js";
@@ -12,7 +12,7 @@ import { PlansTab } from "./components/plans-tab.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
-import { useClaudeSessions } from "./hooks/use-claude-sessions.js";
+import { useAgentSessions } from "./hooks/use-agent-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import { type ExpandedPlanKey, type StatusType, getTargetPlan, hasCapability } from "./hooks/use-keyboard-plans.js";
@@ -67,14 +67,18 @@ export function App() {
   const [planRefreshing, setPlanRefreshing] = useState(false);
 
   const servers = status?.servers ?? [];
-  // Poll faster on claude tab, slower off-tab (badge still updates)
+  // Poll faster on agents tab, slower off-tab (badge still updates)
   const {
     sessions,
     loading: claudeLoading,
     error: claudeError,
-  } = useClaudeSessions({ intervalMs: view === "claude" ? 2500 : 10_000 });
+  } = useAgentSessions({ intervalMs: view === "agents" ? 2500 : 10_000 });
+
+  // Determine provider for expanded session's transcript
+  const expandedProvider = sessions.find((s) => s.sessionId === expandedSession)?.provider ?? "claude";
   const { entries: transcriptEntries, error: transcriptError } = useTranscript(
-    view === "claude" ? expandedSession : null,
+    view === "agents" ? expandedSession : null,
+    expandedProvider,
   );
   const {
     metrics: metricsData,
@@ -359,8 +363,8 @@ export function App() {
           filterText={filterText}
           totalCount={logLines.length}
         />
-      ) : view === "claude" ? (
-        <ClaudeSessionList
+      ) : view === "agents" ? (
+        <AgentSessionList
           sessions={sessions}
           selectedIndex={claudeSelectedIndex}
           expandedSession={expandedSession}

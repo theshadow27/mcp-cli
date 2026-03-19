@@ -2721,6 +2721,83 @@ describe("stderr drain", () => {
     // --worktree should NOT be in the command (hook pre-created)
     expect(ms.lastCmd).not.toContain("--worktree");
   });
+
+  test("connect timeout transitions session to disconnected when CLI does not connect", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 100 });
+    const port = await server.start();
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    server.prepareSession("timeout-test", { prompt: "Hello" });
+    server.spawnClaude("timeout-test");
+
+    // Session starts in connecting state
+    expect(server.listSessions()[0].state).toBe("connecting");
+
+    // Wait for the connect timeout to fire
+    await pollUntil(() => {
+      const s = server?.listSessions()[0];
+      return s?.state === "disconnected";
+    }, 2_000);
+
+    expect(server.listSessions()[0].state).toBe("disconnected");
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+    const disconnectEvent = events.find((e) => e.type === "session:disconnected") as {
+      type: "session:disconnected";
+      reason: string;
+    };
+    expect(disconnectEvent.reason).toBe("connect timeout");
+    // Process should have been killed
+    expect(ms.killed).toBe(true);
+  });
+
+  test("connect timeout is cleared when WS connection arrives", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 200 });
+    const port = await server.start();
+
+    server.prepareSession("connect-ok", { prompt: "Hello" });
+    server.spawnClaude("connect-ok");
+
+    // Connect before timeout fires
+    const ws = await connectMockClaude(port, "connect-ok");
+    const initMsg = await waitForMessage(ws);
+    expect(initMsg).toContain('"type":"user"');
+
+    // Wait past the timeout period — session should NOT transition to disconnected
+    await Bun.sleep(300);
+    expect(server.listSessions()[0].state).toBe("connecting"); // still waiting for system/init
+
+    ws.close();
+  });
+
+  test("connect timeout does not fire for sessions that already received WS open", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 100 });
+    const port = await server.start();
+
+    server.prepareSession("no-timeout", { prompt: "Hello" });
+    server.spawnClaude("no-timeout");
+
+    // Connect and send system/init to move past connecting state
+    const ws = await connectMockClaude(port, "no-timeout");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("no-timeout"));
+
+    // Wait past timeout — should still be in init state, not disconnected
+    await pollUntil(() => {
+      const s = server?.listSessions()[0];
+      return s?.state === "init";
+    }, 1_000);
+
+    await Bun.sleep(150);
+    expect(server.listSessions()[0].state).toBe("init");
+    expect(ms.killed).toBe(false);
+
+    ws.close();
+  });
 });
 
 // ── restoreSessions ──

@@ -1,5 +1,6 @@
 export * from "./schemas";
 export * from "./agents";
+export * from "./acp-resolve";
 export * from "./acp-process";
 export * from "./acp-rpc";
 export * from "./acp-event-map";

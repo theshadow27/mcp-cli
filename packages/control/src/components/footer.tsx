@@ -116,7 +116,7 @@ export function Footer({
     );
   }
 
-  if (view === "claude") {
+  if (view === "agents") {
     return (
       <Box marginTop={1}>
         <Text>

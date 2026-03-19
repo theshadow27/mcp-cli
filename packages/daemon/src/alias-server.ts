@@ -195,6 +195,7 @@ export class AliasServer {
       bundledJs,
       input: args,
       isDefineAlias: aliasDef.isDefineAlias,
+      aliasName: aliasDef.name,
     });
 
     return this.spawnExecutor(payload, 30_000) as Promise<unknown>;

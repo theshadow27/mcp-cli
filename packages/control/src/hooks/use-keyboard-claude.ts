@@ -1,10 +1,11 @@
-import { CLAUDE_SERVER_NAME, ipcCall } from "@mcp-cli/core";
+import { ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
-import { entryKey } from "../components/claude-session-detail";
+import { entryKey } from "../components/agent-session-detail";
+import { serverForProvider, toolForProvider } from "./ipc-tool-helpers";
 import type { ClaudeNav } from "./use-keyboard";
 
 /**
- * Handle keyboard input for the claude view.
+ * Handle keyboard input for the agents view.
  * Returns true if the input was consumed.
  */
 export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): boolean {
@@ -40,16 +41,14 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
       const selectedSession = sessions[selectedIndex];
       const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
       if (perm) {
+        const server = serverForProvider(selectedSession.provider);
+        const tool = toolForProvider(selectedSession.provider, "deny");
         const args: Record<string, string> = {
           sessionId: selectedSession.sessionId,
           requestId: perm.requestId,
         };
         if (denyReasonText) args.message = denyReasonText;
-        ipcCall("callTool", {
-          server: CLAUDE_SERVER_NAME,
-          tool: "claude_deny",
-          arguments: args,
-        }).catch(() => {});
+        ipcCall("callTool", { server, tool, arguments: args }).catch(() => {});
       }
       setDenyReasonText("");
       setDenyReasonMode(false);
@@ -75,9 +74,11 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
     if (key.return) {
       const session = sessions[selectedIndex];
       if (session && promptText) {
+        const server = serverForProvider(session.provider);
+        const tool = toolForProvider(session.provider, "prompt");
         ipcCall("callTool", {
-          server: CLAUDE_SERVER_NAME,
-          tool: "claude_prompt",
+          server,
+          tool,
           arguments: { sessionId: session.sessionId, prompt: promptText },
         }).catch(() => {});
       }
@@ -195,9 +196,11 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
   if (input === "a") {
     const perm = selectedSession?.pendingPermissionDetails?.[permissionIndex];
     if (perm) {
+      const server = serverForProvider(selectedSession.provider);
+      const tool = toolForProvider(selectedSession.provider, "approve");
       ipcCall("callTool", {
-        server: CLAUDE_SERVER_NAME,
-        tool: "claude_approve",
+        server,
+        tool,
         arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
       }).catch(() => {});
     }
@@ -224,9 +227,11 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
   // End session
   if (input === "x") {
     if (selectedSession) {
+      const server = serverForProvider(selectedSession.provider);
+      const tool = toolForProvider(selectedSession.provider, "bye");
       ipcCall("callTool", {
-        server: CLAUDE_SERVER_NAME,
-        tool: "claude_bye",
+        server,
+        tool,
         arguments: { sessionId: selectedSession.sessionId },
       }).catch(() => {});
       setExpandedSession(null);

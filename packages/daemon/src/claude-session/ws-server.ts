@@ -29,6 +29,8 @@ import { SessionState } from "./session-state";
 const KILL_TIMEOUT_MS = 5_000;
 /** Time (ms) to wait after SIGKILL before giving up. */
 const KILL_SIGKILL_GRACE_MS = 2_000;
+/** Time (ms) to wait for a WebSocket connection after spawning a Claude CLI process. */
+const CONNECT_TIMEOUT_MS = 30_000;
 
 // ── Errors ──
 
@@ -235,6 +237,8 @@ interface WsSession {
   clearing: boolean;
   /** Claude Code's own session ID (from system/init), used for JSONL file lookup. */
   claudeSessionId: string | null;
+  /** Timer that fires if the Claude CLI process doesn't connect via WS within the deadline. */
+  connectTimer: Timer | null;
 }
 
 interface WsData {
@@ -274,6 +278,7 @@ export class ClaudeWsServer {
   private readonly portRetryCount: number;
   private readonly portRetryDelayMs: number;
   private readonly reclaimIntervalMs: number;
+  private readonly connectTimeoutMs: number;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -289,6 +294,7 @@ export class ClaudeWsServer {
     portRetryCount?: number;
     portRetryDelayMs?: number;
     reclaimIntervalMs?: number;
+    connectTimeoutMs?: number;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -296,6 +302,7 @@ export class ClaudeWsServer {
     this.portRetryCount = deps?.portRetryCount ?? 10;
     this.portRetryDelayMs = deps?.portRetryDelayMs ?? 500;
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
+    this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -475,6 +482,7 @@ export class ClaudeWsServer {
         keepAliveTimer: null,
         clearing: false,
         claudeSessionId: null,
+        connectTimer: null,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -505,6 +513,7 @@ export class ClaudeWsServer {
       keepAliveTimer: null,
       clearing: false,
       claudeSessionId: null,
+      connectTimer: null,
     });
   }
 
@@ -563,6 +572,40 @@ export class ClaudeWsServer {
     session.pid = proc.pid;
     session.proc = proc;
     session.spawnAlive = true;
+
+    // Start connect timeout — if no WS connection arrives within the deadline,
+    // kill the stuck process and transition to disconnected. This prevents sessions
+    // from being stuck in "connecting" forever when the Claude CLI fails to establish
+    // a WebSocket connection (e.g., race after daemon auto-start, #837).
+    if (session.connectTimer) clearTimeout(session.connectTimer);
+    session.connectTimer = setTimeout(() => {
+      session.connectTimer = null;
+      // Only act if still in connecting state with no WS
+      if (session.ws !== null || session.state.state !== "connecting") return;
+      this.logger.error(
+        `[_claude] Connect timeout for session ${sessionId} — Claude CLI did not connect within ${this.connectTimeoutMs}ms`,
+      );
+      // Kill the stuck process
+      if (session.proc) {
+        try {
+          session.proc.kill();
+        } catch {
+          /* already dead */
+        }
+      }
+      // Transition to disconnected so callers see a clear state
+      const events = session.state.disconnect("connect timeout");
+      for (const event of events) {
+        this.onSessionEvent?.(sessionId, event);
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          this.logger.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
+      }
+    }, this.connectTimeoutMs);
 
     // Drain stderr immediately to prevent pipe buffer deadlock.
     // On macOS the pipe buffer is 64KB — if the child writes more than that
@@ -772,6 +815,12 @@ export class ClaudeWsServer {
           `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
         );
       }
+    }
+
+    // Clear connect timeout timer
+    if (session.connectTimer) {
+      clearTimeout(session.connectTimer);
+      session.connectTimer = null;
     }
 
     // Clear keep-alive timer
@@ -1032,6 +1081,12 @@ export class ClaudeWsServer {
     if (!session) {
       ws.close(1008, "Unknown session");
       return;
+    }
+
+    // Clear the connect timeout — WS connection established successfully
+    if (session.connectTimer) {
+      clearTimeout(session.connectTimer);
+      session.connectTimer = null;
     }
 
     session.ws = ws;
@@ -1492,6 +1547,12 @@ export class ClaudeWsServer {
     }
     this.eventWaiters.length = 0;
     this.eventWaiters.push(...remainingEventWaiters);
+
+    // Clear connect timeout timer
+    if (session.connectTimer) {
+      clearTimeout(session.connectTimer);
+      session.connectTimer = null;
+    }
 
     // Clear keep-alive timer
     if (session.keepAliveTimer) {

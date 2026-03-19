@@ -1,10 +1,10 @@
-import type { SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import type { AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { ClaudeSessionDetail, type TranscriptEntry } from "./claude-session-detail.js";
+import { AgentSessionDetail, type TranscriptEntry } from "./agent-session-detail.js";
 
-interface ClaudeSessionListProps {
-  sessions: SessionInfo[];
+interface AgentSessionListProps {
+  sessions: AgentSessionInfo[];
   selectedIndex: number;
   expandedSession: string | null;
   loading: boolean;
@@ -18,7 +18,7 @@ interface ClaudeSessionListProps {
   transcriptViewHeight: number;
 }
 
-const stateColor: Record<SessionStateEnum, string> = {
+const stateColor: Record<AgentSessionState, string> = {
   active: "green",
   init: "green",
   connecting: "yellow",
@@ -29,7 +29,7 @@ const stateColor: Record<SessionStateEnum, string> = {
   ended: "gray",
 };
 
-const stateLabel: Record<SessionStateEnum, string> = {
+const stateLabel: Record<AgentSessionState, string> = {
   active: "active",
   init: "init",
   connecting: "connecting",
@@ -40,7 +40,8 @@ const stateLabel: Record<SessionStateEnum, string> = {
   ended: "ended",
 };
 
-export function formatCost(cost: number): string {
+export function formatCost(cost: number | null): string {
+  if (cost == null) return "-";
   return `$${cost.toFixed(4)}`;
 }
 
@@ -61,7 +62,7 @@ export function shortCwd(cwd: string | null): string {
   return display.length > 30 ? `...${display.slice(-27)}` : display;
 }
 
-export function ClaudeSessionList({
+export function AgentSessionList({
   sessions,
   selectedIndex,
   expandedSession,
@@ -74,7 +75,7 @@ export function ClaudeSessionList({
   transcriptExpandedEntries,
   transcriptScrollOffset,
   transcriptViewHeight,
-}: ClaudeSessionListProps) {
+}: AgentSessionListProps) {
   if (loading && sessions.length === 0) {
     return (
       <Box marginLeft={2} marginTop={1}>
@@ -94,7 +95,7 @@ export function ClaudeSessionList({
   if (sessions.length === 0) {
     return (
       <Box marginLeft={2} marginTop={1}>
-        <Text dimColor>No active sessions. Use `mcx claude spawn` to start one.</Text>
+        <Text dimColor>No active sessions. Use `mcx claude spawn` or `mcx codex spawn` to start one.</Text>
       </Box>
     );
   }
@@ -112,6 +113,8 @@ export function ClaudeSessionList({
             <Text bold={selected}>
               <Text>{selected ? "> " : "  "}</Text>
               <Text bold={selected}>{shortId(session.sessionId)}</Text>
+              {"  "}
+              <Text color="magenta">[{session.provider}]</Text>
               {"  "}
               <Text color={color}>{label}</Text>
               {"  "}
@@ -162,7 +165,7 @@ export function ClaudeSessionList({
               </Box>
             )}
             {expanded && (
-              <ClaudeSessionDetail
+              <AgentSessionDetail
                 entries={transcriptEntries}
                 error={transcriptError}
                 selectedEntry={transcriptSelectedEntry}
