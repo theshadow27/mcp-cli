@@ -31,6 +31,7 @@ export type IpcMethod =
   | "deleteAlias"
   | "touchAlias"
   | "recordAliasRun"
+  | "checkAlias"
   | "getLogs"
   | "getDaemonLogs"
   | "sendMail"
@@ -328,7 +329,24 @@ export interface RestartServerResult {
 export interface SaveAliasResult {
   ok: true;
   filePath: string;
+  /** Validation warnings (non-fatal issues detected during save) */
+  warnings?: string[];
+  /** Validation errors (alias saved but validation failed) */
+  validationErrors?: string[];
 }
+
+export interface CheckAliasResult {
+  valid: boolean;
+  aliasType: "defineAlias" | "freeform";
+  name?: string;
+  description?: string;
+  errors: string[];
+  warnings: string[];
+}
+
+export const CheckAliasParamsSchema = z.object({
+  name: z.string(),
+});
 
 export interface DeleteAliasResult {
   ok: true;
@@ -435,6 +453,7 @@ export interface IpcMethodResult {
   deleteAlias: DeleteAliasResult;
   touchAlias: { ok: true };
   recordAliasRun: { ok: true; runCount: number };
+  checkAlias: CheckAliasResult;
   getLogs: GetLogsResult;
   getDaemonLogs: GetDaemonLogsResult;
   sendMail: SendMailResult;

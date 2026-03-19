@@ -11,13 +11,13 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { type AliasContext, executeAliasBundled, extractMetadata, stubProxy } from "@mcp-cli/core";
+import { type AliasContext, executeAliasBundled, stubProxy, validateAliasBundled } from "@mcp-cli/core";
 
 interface ExecutorInput {
   bundledJs: string;
   input: unknown;
   isDefineAlias: boolean;
-  mode?: "execute" | "extractMetadata";
+  mode?: "execute" | "validate";
 }
 
 async function main(): Promise<void> {
@@ -33,9 +33,9 @@ async function main(): Promise<void> {
   const stdinText = await Bun.stdin.text();
   const { bundledJs, input, isDefineAlias, mode } = JSON.parse(stdinText) as ExecutorInput;
 
-  if (mode === "extractMetadata") {
-    const meta = await extractMetadata(bundledJs);
-    process.stdout.write(JSON.stringify({ result: meta }));
+  if (mode === "validate") {
+    const validation = await validateAliasBundled(bundledJs);
+    process.stdout.write(JSON.stringify({ result: validation }));
     return;
   }
 

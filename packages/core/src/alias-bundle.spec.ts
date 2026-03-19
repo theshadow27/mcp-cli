@@ -9,6 +9,7 @@ import {
   extractMetadata,
   stripMcpCliImport,
   stubProxy,
+  validateAliasBundled,
 } from "./alias-bundle";
 
 function makeTmpDir(): string {
@@ -250,7 +251,7 @@ describe("executeAliasBundled", () => {
     ).rejects.toThrow("Invalid input");
   });
 
-  test("validates output against schema", async () => {
+  test("warns on output schema mismatch instead of throwing", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "validate-output.ts");
     writeFileSync(
@@ -266,14 +267,47 @@ describe("executeAliasBundled", () => {
     );
 
     const { js } = await bundleAlias(scriptPath);
-    await expect(
-      executeAliasBundled(
+    const stderrMessages: string[] = [];
+    const origError = console.error;
+    console.error = (msg: string) => stderrMessages.push(msg);
+    try {
+      const result = await executeAliasBundled(
         js,
         undefined,
         { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
         true,
-      ),
-    ).rejects.toThrow("Invalid output");
+      );
+      // Output is returned despite schema mismatch (warn, don't block)
+      expect(result).toEqual({ message: 123 });
+      expect(stderrMessages.some((m) => m.includes("Output validation warning"))).toBe(true);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("returns validated output when schema matches", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "valid-output.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "good-output",',
+        "  output: z.object({ message: z.string() }),",
+        '  fn: () => ({ message: "hello" }),',
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await executeAliasBundled(
+      js,
+      undefined,
+      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+      true,
+    );
+    expect(result).toEqual({ message: "hello" });
   });
 
   test("freeform script returns undefined", async () => {
@@ -290,5 +324,95 @@ describe("executeAliasBundled", () => {
     );
 
     expect(result).toBeUndefined();
+  });
+});
+
+describe("validateAliasBundled", () => {
+  test("returns valid result for well-formed defineAlias", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "valid.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "greet",',
+        '  description: "Greet someone",',
+        "  input: z.object({ name: z.string() }),",
+        "  output: z.object({ message: z.string() }),",
+        "  fn: (input) => ({ message: `Hello, ${input.name}!` }),",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(true);
+    expect(result.name).toBe("greet");
+    expect(result.description).toBe("Greet someone");
+    expect(result.inputSchema).toBeDefined();
+    expect(result.outputSchema).toBeDefined();
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test("reports error when script does not call defineAlias", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "no-define.ts");
+    writeFileSync(scriptPath, "const x = 1;");
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("Script did not call defineAlias()");
+  });
+
+  test("reports error when name is missing", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "no-name.ts");
+    writeFileSync(
+      scriptPath,
+      ['import { defineAlias } from "mcp-cli";', "defineAlias({", "  fn: () => 42,", "});"].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("name"))).toBe(true);
+  });
+
+  test("reports error when fn is missing", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "no-fn.ts");
+    writeFileSync(
+      scriptPath,
+      ['import { defineAlias } from "mcp-cli";', "defineAlias({", '  name: "no-fn",', "});"].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("fn"))).toBe(true);
+  });
+
+  test("validates without errors when no input/output schemas", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "minimal.ts");
+    writeFileSync(
+      scriptPath,
+      ['import { defineAlias } from "mcp-cli";', "defineAlias({", '  name: "minimal",', "  fn: () => 42,", "});"].join(
+        "\n",
+      ),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(true);
+    expect(result.name).toBe("minimal");
   });
 });

@@ -62,7 +62,7 @@ describe("alias-executor subprocess protocol", () => {
     expect(parsed.result).toBe("Hello, World!");
   });
 
-  test("extractMetadata mode: returns metadata as JSON on stdout", async () => {
+  test("validate mode: returns validation result as JSON on stdout", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "meta.ts");
     writeFileSync(
@@ -83,11 +83,12 @@ describe("alias-executor subprocess protocol", () => {
       bundledJs: js,
       input: null,
       isDefineAlias: true,
-      mode: "extractMetadata",
+      mode: "validate",
     });
 
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
+    expect(parsed.result.valid).toBe(true);
     expect(parsed.result.name).toBe("my-tool");
     expect(parsed.result.description).toBe("A cool tool");
     expect(parsed.result.inputSchema).toBeDefined();
