@@ -100,6 +100,7 @@ export function isOpenCodeWorkerEvent(data: unknown): data is WorkerEvent {
 // ── Server ──
 
 type ClientFactory = () => Client;
+type WorkerFactory = (scriptPath: string) => Worker;
 
 export class OpenCodeServer {
   private worker: Worker | null = null;
@@ -107,6 +108,7 @@ export class OpenCodeServer {
   private client: Client | null = null;
   private db: StateDb;
   private readonly clientFactory: ClientFactory;
+  private readonly workerFactory: WorkerFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private restartInProgress = false;
@@ -132,10 +134,12 @@ export class OpenCodeServer {
     clientFactory?: ClientFactory,
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
+    workerFactory?: WorkerFactory,
   ) {
     this.db = db;
     this.clientFactory =
       clientFactory ?? (() => new Client({ name: `mcp-cli/${OPENCODE_SERVER_NAME}`, version: "0.1.0" }));
+    this.workerFactory = workerFactory ?? ((path) => new Worker(path));
     this.logger = logger ?? consoleLogger;
   }
 
@@ -144,7 +148,7 @@ export class OpenCodeServer {
     if (this.worker) throw new Error("start() called while worker is already running");
     this.stopped = false;
     metrics.gauge("mcpd_opencode_worker_crash_loop_stopped").set(0);
-    const worker = new Worker(workerPath("opencode-session-worker.ts"));
+    const worker = this.workerFactory(workerPath("opencode-session-worker.ts"));
     this.worker = worker;
 
     // Wait for the worker to report ready
