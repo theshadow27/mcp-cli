@@ -5,20 +5,21 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   CLAUDE_SERVER_NAME,
   PROMPT_IPC_TIMEOUT_MS,
-  buildHookEnv,
-  fixCoreBare,
-  hasWorktreeHooks,
+  WorktreeError,
+  cleanupWorktree,
+  createWorktree,
+  getDefaultBranch,
+  listMcxWorktrees,
+  parseWorktreeList,
+  pruneWorktrees,
   readWorktreeConfig,
   resolveModelName,
-  resolveWorktreeBase,
   resolveWorktreePath,
 } from "@mcp-cli/core";
-import type { WorktreeHooksConfig } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
@@ -326,43 +327,14 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
 
-  // Handle worktree with lifecycle hooks: pre-create via hook,
-  // then pass cwd (not --worktree) so Claude doesn't try to create another.
+  // Handle worktree: use shim for hooks/branchPrefix, otherwise Claude handles natively.
   if (parsed.worktree) {
-    const repoRoot = process.cwd();
-    const wtConfig = readWorktreeConfig(repoRoot);
-
-    if (hasWorktreeHooks(wtConfig)) {
-      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
-      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
-      if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stderr}`);
-        d.exit(1);
-      }
-      if (!existsSync(worktreePath)) {
-        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
-        d.exit(1);
-      }
-      // Pass cwd + worktree name + repoRoot — daemon will use cwd but skip --worktree flag
-      toolArgs.cwd = worktreePath;
-      toolArgs.worktree = parsed.worktree;
-      toolArgs.repoRoot = repoRoot;
-      d.printError(`Created worktree via hook: ${worktreePath}`);
-    } else if (wtConfig?.branchPrefix === false) {
-      // branchPrefix: false — pre-create worktree with raw branch name (no claude/ prefix)
-      const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", parsed.worktree, "HEAD"]);
-      if (exitCode !== 0) {
-        d.printError(`Failed to create worktree: ${stdout}`);
-        d.exit(1);
-      }
-      toolArgs.cwd = worktreePath;
-      toolArgs.worktree = parsed.worktree;
-      toolArgs.repoRoot = repoRoot;
-      d.printError(`Created worktree: ${worktreePath}`);
-    } else {
-      toolArgs.worktree = parsed.worktree;
+    try {
+      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), nativeWorktree: true }, d);
+      Object.assign(toolArgs, result.toolArgs);
+    } catch (e) {
+      d.printError(e instanceof WorktreeError ? e.message : String(e));
+      d.exit(1);
     }
   }
 
@@ -383,32 +355,13 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   // Handle --worktree: create a git worktree and use it as cwd
   let cwd = parsed.cwd;
   if (parsed.worktree) {
-    const repoRoot = process.cwd();
-    const wtConfig = readWorktreeConfig(repoRoot);
-    const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
-
-    if (hasWorktreeHooks(wtConfig)) {
-      // Run the setup hook instead of git worktree add
-      const hookEnv = buildHookEnv({ branch: parsed.worktree, path: worktreePath, cwd: repoRoot });
-      const { exitCode, stderr } = d.exec(["sh", "-c", wtConfig.setup], { env: hookEnv });
-      if (exitCode !== 0) {
-        d.printError(`Worktree setup hook failed: ${stderr}`);
-        d.exit(1);
-      }
-      if (!existsSync(worktreePath)) {
-        d.printError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
-        d.exit(1);
-      }
-    } else {
-      const branchName = wtConfig?.branchPrefix === false ? parsed.worktree : `headed/${parsed.worktree}`;
-      const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", branchName, "HEAD"]);
-      if (exitCode !== 0) {
-        d.printError(`Failed to create worktree: ${stdout}`);
-        d.exit(1);
-      }
+    try {
+      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "headed/" }, d);
+      cwd = result.path;
+    } catch (e) {
+      d.printError(e instanceof WorktreeError ? e.message : String(e));
+      d.exit(1);
     }
-    cwd = worktreePath;
-    d.printError(`Created worktree: ${worktreePath}`);
   }
 
   // Build the claude command and prepend cd if cwd is set
@@ -574,18 +527,22 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const cwd = process.cwd();
-  const wtConfig = readWorktreeConfig(cwd);
-  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
 
   // List all worktrees
-  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
-  if (wtExit !== 0) {
-    d.printError("Failed to list git worktrees (not a git repo?)");
+  let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
+  let worktreeParent: string;
+  try {
+    const listed = listMcxWorktrees(cwd, d);
+    mcxWorktrees = listed.worktrees;
+    worktreeParent = listed.worktreeBase;
+  } catch (e) {
+    d.printError(e instanceof WorktreeError ? e.message : String(e));
     d.exit(1);
   }
 
+  // Also need the full worktree list for fallback resolution
+  const { stdout: wtOutput } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
   const allWorktrees = parseWorktreeList(wtOutput);
-  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
 
   // Get active sessions to find orphaned worktrees
   let sessionWorktrees = new Set<string>();
@@ -643,20 +600,6 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   await resumeWorktree(resolved, parsed, d);
 }
 
-/**
- * Detect the default branch (e.g. "main" or "master") from origin/HEAD.
- * Falls back to "main" if git symbolic-ref is unavailable or returns nothing.
- */
-function getDefaultBranch(exec: ClaudeDeps["exec"], cwd: string): string {
-  const { stdout, exitCode } = exec(["git", "-C", cwd, "symbolic-ref", "refs/remotes/origin/HEAD"]);
-  if (exitCode === 0 && stdout.trim()) {
-    // e.g. "refs/remotes/origin/main" → "main"
-    const parts = stdout.trim().split("/");
-    return parts[parts.length - 1] || "main";
-  }
-  return "main";
-}
-
 async function resumeWorktree(
   wt: { path: string; branch: string | null },
   parsed: ResumeArgs,
@@ -665,7 +608,7 @@ async function resumeWorktree(
   const branch = wt.branch ?? "unknown";
 
   // Check if branch is already merged into the default branch
-  const defaultBranch = getDefaultBranch(d.exec, wt.path);
+  const defaultBranch = getDefaultBranch(d, wt.path);
   const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
     "git",
     "-C",
@@ -877,78 +820,8 @@ export function parseByeResult(result: unknown): ByeResult {
   }
 }
 
-/** Clean up a worktree after session ends: remove if clean, warn if dirty. */
-export function cleanupWorktree(worktree: string, cwd: string, d: SharedSessionDeps, repoRoot?: string | null): void {
-  // repoRoot is stored in session metadata at spawn time and returned by bye.
-  // For hook-based worktrees, cwd is the worktree path (not repo root), so repoRoot is required.
-  // For non-hook worktrees, cwd from bye IS the repo root — use it as fallback.
-  const effectiveRoot = repoRoot ?? cwd;
-  const wtConfig = readWorktreeConfig(effectiveRoot);
-  const worktreeBase = resolveWorktreeBase(effectiveRoot, wtConfig);
-  const worktreePath = join(worktreeBase, worktree);
-
-  // Guard against path traversal (worktree name comes from daemon response)
-  if (!worktreePath.startsWith(`${worktreeBase}/`)) return;
-
-  // Check for uncommitted changes in the worktree
-  const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
-  if (statusExit !== 0) return; // worktree gone, not a git repo, or git unavailable
-
-  if (status === "") {
-    // Capture branch name before removing worktree (removal deletes the .git link)
-    const { stdout: branch } = d.exec(["git", "-C", worktreePath, "branch", "--show-current"]);
-
-    if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
-      // Run teardown hook instead of git worktree remove
-      const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
-      const { exitCode: hookExit, stderr: hookStderr } = d.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
-      if (hookExit === 0) {
-        d.printError(`Removed worktree via hook: ${worktreePath}`);
-        // Clean up the branch (same as non-hook path)
-        if (branch) {
-          const { exitCode: branchExit } = d.exec(["git", "-C", effectiveRoot, "branch", "-d", branch]);
-          if (branchExit === 0) {
-            d.printError(`Deleted branch: ${branch} (merged)`);
-          }
-        }
-      } else {
-        d.printError(`Worktree teardown hook failed for: ${worktreePath}: ${hookStderr}`);
-      }
-    } else {
-      // Default: git worktree remove
-      const { exitCode: removeExit } = d.exec(["git", "-C", effectiveRoot, "worktree", "remove", worktreePath]);
-      if (removeExit === 0) {
-        if (fixCoreBare(effectiveRoot, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
-        d.printError(`Removed worktree: ${worktreePath}`);
-        // Delete the local branch if it was merged (git branch -d is safe — refuses unmerged)
-        if (branch) {
-          const { exitCode: branchExit } = d.exec(["git", "-C", effectiveRoot, "branch", "-d", branch]);
-          if (branchExit === 0) {
-            d.printError(`Deleted branch: ${branch} (merged)`);
-          }
-          // If -d fails the branch is unmerged — silently keep it
-        }
-      } else {
-        d.printError(`Failed to remove worktree: ${worktreePath}`);
-      }
-    }
-  } else {
-    // Dirty — warn the user
-    const lines = status.split("\n").filter((l) => l !== "");
-    const modified = lines.filter((l) => l[0] === "M" || l[1] === "M").length;
-    const untracked = lines.filter((l) => l.startsWith("??")).length;
-
-    const parts: string[] = [];
-    if (modified > 0) parts.push(`${modified} modified`);
-    if (untracked > 0) parts.push(`${untracked} untracked`);
-    const other = lines.length - modified - untracked;
-    if (other > 0) parts.push(`${other} other`);
-
-    d.printError("Warning: worktree has uncommitted changes, not removing:");
-    d.printError(`  ${worktreePath}`);
-    d.printError(`  ${parts.join(", ")}`);
-  }
-}
+// Re-export cleanupWorktree from the shim for backward compatibility
+export { cleanupWorktree } from "@mcp-cli/core";
 
 async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
   const sessionPrefix = args[0];
@@ -1246,41 +1119,23 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(text);
 }
 
-/** Parse `git worktree list --porcelain` output into structured entries. */
-export function parseWorktreeList(output: string): Array<{ path: string; branch: string | null }> {
-  const entries: Array<{ path: string; branch: string | null }> = [];
-  let currentPath: string | null = null;
-  let currentBranch: string | null = null;
-
-  for (const line of output.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      if (currentPath) entries.push({ path: currentPath, branch: currentBranch });
-      currentPath = line.slice("worktree ".length);
-      currentBranch = null;
-    } else if (line.startsWith("branch refs/heads/")) {
-      currentBranch = line.slice("branch refs/heads/".length);
-    }
-  }
-  if (currentPath) entries.push({ path: currentPath, branch: currentBranch });
-  return entries;
-}
+// Re-export parseWorktreeList from the shim for backward compatibility
+export { parseWorktreeList } from "@mcp-cli/core";
 
 async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
   const prune = args.includes("--prune");
   const cwd = process.cwd();
-  const wtConfig = readWorktreeConfig(cwd);
-  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
 
-  // Get all git worktrees
-  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
-  if (wtExit !== 0) {
-    d.printError("Failed to list git worktrees (not a git repo?)");
+  let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
+  let worktreeParent: string;
+  try {
+    const listed = listMcxWorktrees(cwd, d);
+    mcxWorktrees = listed.worktrees;
+    worktreeParent = listed.worktreeBase;
+  } catch (e) {
+    d.printError(e instanceof WorktreeError ? e.message : String(e));
     d.exit(1);
   }
-
-  const allWorktrees = parseWorktreeList(wtOutput);
-  // Filter to mcx-created worktrees under .claude/worktrees/
-  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
 
   if (mcxWorktrees.length === 0 && !prune) {
     d.printError("No mcx worktrees found.");
@@ -1288,101 +1143,17 @@ async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   // Get active sessions to cross-reference
-  let sessionWorktrees = new Set<string>();
-  try {
-    const result = await d.callTool("claude_session_list", {});
-    const text = formatToolResult(result);
-    const sessions = JSON.parse(text) as SessionInfo[];
-    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
-  } catch {
-    // Daemon may not be running — continue without session info
-  }
+  const sessionWorktrees = await getActiveSessionWorktrees("claude_session_list", d);
 
   if (prune) {
-    const defaultBranch = getDefaultBranch(d.exec, cwd);
-    // Get list of branches merged into the default branch
-    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
-      "git",
-      "-C",
-      cwd,
-      "branch",
-      "--merged",
-      defaultBranch,
-    ]);
-    let mergedBranches: Set<string>;
-    let skipMergeCheck = false;
-    if (mergedExit !== 0) {
-      d.printError(
-        "Warning: could not determine merged branches (git branch --merged failed). Pruning clean orphaned worktrees without merge check.",
-      );
-      mergedBranches = new Set();
-      skipMergeCheck = true;
-    } else {
-      mergedBranches = new Set(
-        mergedOutput
-          .split("\n")
-          .map((line) => line.replace(/^\*?\s+/, "").trim())
-          .filter(Boolean),
-      );
-    }
-
-    let pruned = 0;
-    const skipped: string[] = [];
-    for (const wt of mcxWorktrees) {
-      const wtName = wt.path.slice(`${worktreeParent}/`.length);
-      // Skip worktrees with active sessions
-      if (sessionWorktrees.has(wtName)) continue;
-
-      // Only prune worktrees whose branch has been merged (unless merge check failed)
-      if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch)) {
-        skipped.push(wt.branch);
-        continue;
-      }
-
-      // Check if clean
-      const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
-      if (statusExit !== 0 || status !== "") continue; // gone or dirty — skip
-
-      // Remove worktree
-      if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
-        const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd });
-        const { exitCode: hookExit, stderr: hookStderr } = d.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
-        if (hookExit === 0) {
-          d.printError(`Removed worktree via hook: ${wt.path}`);
-          pruned++;
-          // Clean up the branch
-          if (wt.branch) {
-            const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
-            if (branchExit === 0) {
-              d.printError(`Deleted branch: ${wt.branch} (merged)`);
-            }
-          }
-        } else {
-          d.printError(`Worktree teardown hook failed for: ${wt.path}: ${hookStderr}`);
-        }
-      } else {
-        const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
-        if (removeExit === 0) {
-          if (fixCoreBare(cwd, d.exec)) d.printError("Fixed core.bare=true after worktree removal");
-          d.printError(`Removed worktree: ${wt.path}`);
-          pruned++;
-          // Delete branch only if git branch -d succeeds
-          if (wt.branch) {
-            const { exitCode: branchExit } = d.exec(["git", "-C", cwd, "branch", "-d", wt.branch]);
-            if (branchExit === 0) {
-              d.printError(`Deleted branch: ${wt.branch} (merged)`);
-            }
-          }
-        }
-      }
-    }
-    if (pruned === 0) {
+    const result = pruneWorktrees({ repoRoot: cwd, activeWorktrees: sessionWorktrees, deps: d });
+    if (result.pruned === 0) {
       d.printError("Nothing to prune.");
     } else {
-      d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+      d.printError(`Pruned ${result.pruned} worktree${result.pruned === 1 ? "" : "s"}.`);
     }
-    if (skipped.length > 0) {
-      d.printError(`Skipped ${skipped.length} unmerged: ${skipped.join(", ")}`);
+    if (result.skippedUnmerged.length > 0) {
+      d.printError(`Skipped ${result.skippedUnmerged.length} unmerged: ${result.skippedUnmerged.join(", ")}`);
     }
     return;
   }
@@ -1441,6 +1212,21 @@ export async function resolveSessionId(
   }
 
   return matches[0].sessionId;
+}
+
+/**
+ * Get the set of worktree names with active sessions from a session list tool.
+ * Returns an empty set if the daemon is unreachable.
+ */
+export async function getActiveSessionWorktrees(listTool: string, d: SharedSessionDeps): Promise<Set<string>> {
+  try {
+    const result = await d.callTool(listTool, {});
+    const text = formatToolResult(result);
+    const sessions = JSON.parse(text) as Array<{ worktree?: string | null }>;
+    return new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch {
+    return new Set();
+  }
 }
 
 // ── Usage ──
