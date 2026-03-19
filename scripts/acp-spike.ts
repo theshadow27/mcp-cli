@@ -324,6 +324,7 @@ async function runSpike(config: Config): Promise<Findings> {
     console.error("\n[spike] === Step 2: session/new ===");
     const sessionResp = await transport.request("session/new", {
       cwd: workDir,
+      mcpServers: [],
     });
 
     if (sessionResp.error) {
