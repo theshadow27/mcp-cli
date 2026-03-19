@@ -1,5 +1,6 @@
 export * from "./alias";
 export * from "./alias-bundle";
+export * from "./cache";
 export * from "./ipc";
 export * from "./ipc-client";
 export * from "./config";

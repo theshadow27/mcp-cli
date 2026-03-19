@@ -4,6 +4,14 @@
 
 import type { z } from "zod/v4";
 
+/** Options for the cache() helper in alias context */
+export interface CacheOptions {
+  /** Namespace prefix — defaults to the current alias name */
+  prefix?: string;
+  /** Time-to-live in ms — default 24h */
+  ttl?: number;
+}
+
 /** Sentinel string to detect defineAlias scripts without executing them */
 export const DEFINE_ALIAS_SENTINEL = "defineAlias(";
 
@@ -25,6 +33,8 @@ export interface AliasContext {
   file: (path: string) => Promise<string>;
   /** Read and parse a JSON file */
   json: (path: string) => Promise<unknown>;
+  /** Cache a value by key. Returns cached value if fresh, otherwise calls producer. */
+  cache: <T>(key: string, producer: () => T | Promise<T>, opts?: CacheOptions) => Promise<T>;
 }
 
 /**
