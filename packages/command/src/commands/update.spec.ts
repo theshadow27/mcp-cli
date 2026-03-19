@@ -167,8 +167,18 @@ describe("cmdUpdate", () => {
     try {
       await cmdUpdate(["sentry", "--json"], deps);
 
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      const output = JSON.parse(logSpy.mock.calls[0][0] as string);
+      // Filter for structured JSON calls — other parallel test files may also call
+      // console.log, so we check content rather than exact call count.
+      const jsonCalls = logSpy.mock.calls.filter((c) => {
+        try {
+          const p = JSON.parse(c[0] as string);
+          return typeof p === "object" && p !== null && "status" in p;
+        } catch {
+          return false;
+        }
+      });
+      expect(jsonCalls.length).toBe(1);
+      const output = JSON.parse(jsonCalls[0][0] as string);
       expect(output.name).toBe("sentry");
       expect(output.status).toBe("up-to-date");
     } finally {
@@ -190,8 +200,18 @@ describe("cmdUpdate", () => {
     try {
       await cmdUpdate(["--all", "--json"], deps);
 
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      const output = JSON.parse(logSpy.mock.calls[0][0] as string);
+      // Filter for structured JSON calls — other parallel test files may also call
+      // console.log, so we check content rather than exact call count.
+      const jsonCalls = logSpy.mock.calls.filter((c) => {
+        try {
+          const p = JSON.parse(c[0] as string);
+          return Array.isArray(p);
+        } catch {
+          return false;
+        }
+      });
+      expect(jsonCalls.length).toBe(1);
+      const output = JSON.parse(jsonCalls[0][0] as string);
       expect(Array.isArray(output)).toBe(true);
       expect(output[0].name).toBe("sentry");
     } finally {
