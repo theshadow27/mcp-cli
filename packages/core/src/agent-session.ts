@@ -10,7 +10,7 @@
  * Known agent providers. Uses `string & {}` to allow unknown providers
  * without requiring type changes — the DB stores plain TEXT.
  */
-export type AgentProvider = "claude" | "codex" | "opencode" | "acp" | (string & {});
+export type AgentProviderName = "claude" | "codex" | "opencode" | "acp" | (string & {});
 
 export type AgentSessionState =
   | "connecting"
@@ -31,7 +31,7 @@ export interface AgentPermissionRequest {
 
 export interface AgentSessionInfo {
   sessionId: string;
-  provider: AgentProvider;
+  provider: AgentProviderName;
   state: AgentSessionState;
   model: string | null;
   cwd: string | null;
@@ -59,7 +59,7 @@ export interface AgentResult {
 }
 
 export type AgentSessionEvent =
-  | { type: "session:init"; sessionId: string; provider: AgentProvider; model: string; cwd: string }
+  | { type: "session:init"; sessionId: string; provider: AgentProviderName; model: string; cwd: string }
   | { type: "session:response"; text: string }
   | { type: "session:permission_request"; request: AgentPermissionRequest }
   | { type: "session:result"; result: AgentResult }
