@@ -36,7 +36,7 @@ const PER_FILE_TIME_BUDGET_MS = 5_000;
  * Uses sequential sum (not parallel wall time) for reproducibility across machines.
  * Ratchet this down as optimizations land. Warns but never blocks commits.
  */
-const AGGREGATE_TIME_BUDGET_MS = 60_000;
+const AGGREGATE_TIME_BUDGET_MS = 50_000;
 
 /** Number of test files to profile concurrently — scales with available CPUs */
 const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?? 4, 32));
@@ -51,6 +51,7 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
   "test/transport-errors.spec.ts": "Live daemon transport error integration tests",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
   "packages/daemon/src/config/watcher.spec.ts": "FS polling integration tests with 8s timeouts",
+  "packages/core/src/alias-bundle-tsc.spec.ts": "bunx tsc subprocess spawning per test (~3-4s each)",
 };
 
 /**
