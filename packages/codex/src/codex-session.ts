@@ -19,7 +19,7 @@ import { buildRules, evaluateApproval } from "./codex-permission-adapter";
 import { CodexProcess } from "./codex-process";
 import { CodexRpcClient } from "./codex-rpc";
 import { type TranscriptEntry, itemToTranscript } from "./codex-transcript";
-import type { InitializeResult, Thread, ThreadItem, Turn } from "./schemas";
+import type { InitializeResult, Thread, ThreadItem, ThreadStartResult, Turn, TurnStartResult } from "./schemas";
 
 /** Default watchdog timeout: 5 minutes with no events kills the process. */
 export const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
@@ -121,7 +121,7 @@ export class CodexSession {
       // Send initialized notification
       await this.rpc.notify("initialized");
 
-      this.model = this.config.model ?? initResult.serverInfo?.name ?? "codex";
+      this.model = this.config.model ?? "codex";
       this.setState("init");
       this.emit({
         type: "session:init",
@@ -142,9 +142,9 @@ export class CodexSession {
         approvalPolicy: protocolPolicy,
         experimentalRawEvents: false,
         persistExtendedHistory: false,
-      })) as Thread;
+      })) as ThreadStartResult;
 
-      this.thread = threadResult;
+      this.thread = threadResult.thread;
 
       // Step 3: Start first turn with the prompt
       await this.startTurn(this.config.prompt);
@@ -292,9 +292,9 @@ export class CodexSession {
     const turnResult = (await this.rpc.request("turn/start", {
       threadId: this.thread.id,
       input: [{ type: "text", text, text_elements: [] }],
-    })) as Turn;
+    })) as TurnStartResult;
 
-    this.currentTurn = turnResult;
+    this.currentTurn = turnResult.turn;
     this.resetWatchdog();
   }
 

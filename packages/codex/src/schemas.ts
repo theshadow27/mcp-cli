@@ -58,9 +58,7 @@ export interface InitializeCapabilities {
 }
 
 export interface InitializeResult {
-  serverInfo: { name: string; version: string };
-  capabilities: Record<string, unknown>;
-  userAgent?: string;
+  userAgent: string;
 }
 
 // ── Thread lifecycle ──
@@ -76,15 +74,19 @@ export interface ThreadStartParams {
 
 export interface Thread {
   id: string;
-  status: ThreadStatus;
+  status: ThreadStatus | { type: ThreadStatus } | { type: "active"; activeFlags: unknown[] };
   cwd: string;
 }
 
 export type ThreadStatus = "idle" | "active" | "waitingOnApproval" | "ended";
 
+export interface ThreadStartResult {
+  thread: Thread;
+}
+
 export interface ThreadStatusChangedParams {
   threadId: string;
-  status: ThreadStatus;
+  status: ThreadStatus | { type: ThreadStatus } | { type: "active"; activeFlags: unknown[] };
 }
 
 // ── Turn lifecycle ──
@@ -103,17 +105,19 @@ export interface TurnInputElement {
 
 export interface Turn {
   id: string;
-  threadId: string;
   status: TurnStatus;
+  error?: { message?: string | null } | null;
 }
 
 export type TurnStatus = "inProgress" | "completed" | "interrupted" | "failed";
 
+export interface TurnStartResult {
+  turn: Turn;
+}
+
 export interface TurnCompletedParams {
   threadId: string;
-  turnId: string;
-  status: TurnStatus;
-  reason?: string;
+  turn: Turn;
 }
 
 export interface TurnDiffUpdatedParams {

@@ -123,7 +123,7 @@ describe("CodexSession (with fake codex server)", () => {
     expect(events.some((e) => e.type === "session:init")).toBe(true);
   });
 
-  test("getInfo() reflects model name from initResult", async () => {
+  test("getInfo() falls back to codex when initialize omits serverInfo", async () => {
     const { session } = makeSession({ command: fakeCommand("simple") });
 
     const resultPromise = session.waitForResult(10000);
@@ -131,7 +131,7 @@ describe("CodexSession (with fake codex server)", () => {
     await resultPromise;
 
     const info = session.getInfo();
-    expect(info.model).toBe("codex-fake");
+    expect(info.model).toBe("codex");
     expect(info.numTurns).toBe(1);
   });
 
