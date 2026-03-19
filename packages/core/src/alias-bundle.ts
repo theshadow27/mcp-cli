@@ -343,6 +343,121 @@ export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000)
   return result;
 }
 
+/**
+ * Stub declaration for the "mcp-cli" virtual module, used during tsc validation
+ * so that freeform alias imports resolve without errors.
+ */
+const MCP_CLI_STUB_DTS = `
+declare module "mcp-cli" {
+  export const mcp: Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
+  export const args: Record<string, string>;
+  export function file(path: string): Promise<string>;
+  export function json(path: string): Promise<unknown>;
+  export function defineAlias(def: unknown): void;
+  export const z: typeof import("zod/v4").z;
+}
+`.trimStart();
+
+/** Minimal tsconfig for tsc validation of freeform alias scripts. */
+const TSC_TSCONFIG = JSON.stringify(
+  {
+    compilerOptions: {
+      target: "ESNext",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      noEmit: true,
+      strict: false,
+      skipLibCheck: true,
+      paths: { "mcp-cli": ["./mcp-cli.d.ts"] },
+    },
+    include: ["*.ts"],
+  },
+  null,
+  2,
+);
+
+/**
+ * Parse tsc diagnostic lines into human-readable messages.
+ * Only includes lines matching the tsc diagnostic format: file(line,col): error TSxxxx: message
+ * Filters out bunx/npm noise (e.g. "Resolving dependencies").
+ */
+function parseTscDiagnostics(output: string, scriptBasename: string): string[] {
+  // Match: file.ts(line,col): error TS1234: message  OR  error TS1234: message
+  const diagPattern = /^(?:.*\(\d+,\d+\):\s*)?error\s+TS\d+:/;
+  const diagnostics: string[] = [];
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || !diagPattern.test(trimmed)) continue;
+    // Simplify by stripping the temp file path prefix
+    const simplified = trimmed.replace(new RegExp(`^${escapeRegExp(scriptBasename)}\\(`), "(");
+    diagnostics.push(simplified);
+  }
+  return diagnostics;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Validate a freeform alias script using `bunx tsc --noEmit`.
+ *
+ * Creates a temp directory with the script, a stub mcp-cli.d.ts, and a
+ * tsconfig.json, then runs tsc. Diagnostics are returned as warnings.
+ * Returns valid: true unless tsc crashes (signal kill, not diagnostic errors).
+ */
+export async function validateFreeformTsc(
+  sourcePath: string,
+  timeoutMs = 10_000,
+): Promise<{ warnings: string[]; timedOut: boolean }> {
+  const { mkdtempSync, writeFileSync, cpSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, basename } = await import("node:path");
+
+  const tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-tsc-"));
+  const scriptName = basename(sourcePath);
+
+  try {
+    // Copy alias source and write support files
+    cpSync(sourcePath, join(tmpDir, scriptName));
+    writeFileSync(join(tmpDir, "mcp-cli.d.ts"), MCP_CLI_STUB_DTS);
+    writeFileSync(join(tmpDir, "tsconfig.json"), TSC_TSCONFIG);
+
+    const proc = Bun.spawn(["bunx", "tsc", "--noEmit"], {
+      cwd: tmpDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
+
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    clearTimeout(timer);
+
+    await proc.exited;
+
+    if (timedOut) {
+      return { warnings: ["tsc validation timed out"], timedOut: true };
+    }
+
+    // Parse diagnostics from stdout (tsc writes diagnostics to stdout)
+    const output = stdout || stderr;
+    const warnings = parseTscDiagnostics(output, scriptName);
+
+    return { warnings, timedOut: false };
+  } finally {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
 // AsyncFunction constructor (not directly accessible as a global)
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
   ...args: string[]
