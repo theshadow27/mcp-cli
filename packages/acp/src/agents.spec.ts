@@ -14,6 +14,8 @@ describe("ACP_AGENTS registry", () => {
     expect(agent.command).toBe("gemini");
     expect(agent.args).toEqual(["--acp"]);
     expect(agent.installHint).toContain("npm install");
+    expect(agent.installHint).toContain("@google/gemini-cli");
+    expect(agent.installHint).not.toContain("@anthropic-ai/gemini-cli");
   });
 });
 
