@@ -17,6 +17,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
+  ACP_SERVER_NAME,
   ALIAS_SERVER_NAME,
   BUILD_VERSION,
   CLAUDE_SERVER_NAME,
@@ -38,6 +39,7 @@ import {
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
+import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
@@ -279,6 +281,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Codex server: only created if `codex` binary is installed
   const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
+
+  // ACP server: created if any ACP-compatible agent is installed (gh copilot or gemini)
+  const acpAgentInstalled =
+    Bun.spawnSync(["gh", "copilot", "--help"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0 ||
+    Bun.spawnSync(["which", "gemini"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const acpServer = acpAgentInstalled ? new AcpServer(db, daemonId, undefined, logger) : null;
+
   const metricsServer = new MetricsServer(metrics);
 
   // Register uptime and server metrics
@@ -292,6 +301,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const pruneInterval = setInterval(() => {
     claudeServer.pruneDeadSessions();
     codexServer?.pruneDeadSessions();
+    acpServer?.pruneDeadSessions();
   }, 30_000);
 
   // Update uptime and server gauges periodically
@@ -329,7 +339,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // Prune sessions whose processes have exited before checking
       claudeServer.pruneDeadSessions();
       codexServer?.pruneDeadSessions();
-      if (claudeServer.hasActiveSessions() || codexServer?.hasActiveSessions()) {
+      acpServer?.pruneDeadSessions();
+      if (claudeServer.hasActiveSessions() || codexServer?.hasActiveSessions() || acpServer?.hasActiveSessions()) {
         logger.debug("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
         return;
@@ -382,10 +393,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   ipcServer.start();
 
-  // Reset idle timer on Claude/Codex session worker events (db:upsert, db:state, db:cost)
+  // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
   if (codexServer) {
     codexServer.onActivity = () => resetIdleTimer();
+  }
+  if (acpServer) {
+    acpServer.onActivity = () => resetIdleTimer();
   }
 
   // Start idle timer
@@ -453,6 +467,28 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       );
     }
 
+    if (acpServer) {
+      pool.registerPendingVirtualServer(
+        ACP_SERVER_NAME,
+        (async () => {
+          try {
+            const { client: acpClient, transport: acpTransport } = await acpServer.start();
+            const acpTools = buildAcpToolCache();
+            pool.registerVirtualServer(ACP_SERVER_NAME, acpClient, acpTransport, acpTools);
+            logger.info("[mcpd] ACP session server started");
+          } catch (err) {
+            logger.error(`[mcpd] Failed to start ACP session server: ${err}`);
+          }
+
+          acpServer.onRestarted = (client, transport) => {
+            const acpTools = buildAcpToolCache();
+            pool.registerVirtualServer(ACP_SERVER_NAME, client, transport, acpTools);
+            logger.info("[mcpd] ACP session server re-registered after crash recovery");
+          };
+        })(),
+      );
+    }
+
     pool.registerPendingVirtualServer(
       METRICS_SERVER_NAME,
       (async () => {
@@ -506,6 +542,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       opts?._virtualServers ?? [
         [CLAUDE_SERVER_NAME, claudeServer],
         [CODEX_SERVER_NAME, codexServer],
+        [ACP_SERVER_NAME, acpServer],
         [ALIAS_SERVER_NAME, aliasServer],
         [METRICS_SERVER_NAME, metricsServer],
         [MAIL_SERVER_NAME, mailServer],
