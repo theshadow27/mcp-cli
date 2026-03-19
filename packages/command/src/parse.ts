@@ -169,6 +169,25 @@ export function extractDryRunFlag(args: string[]): { dryRun: boolean; rest: stri
 }
 
 /**
+ * Extract --quiet / -q flag from args.
+ * Returns whether quiet mode was requested and the remaining args.
+ */
+export function extractQuietFlag(args: string[]): { quiet: boolean; rest: string[] } {
+  const rest: string[] = [];
+  let quiet = false;
+
+  for (const arg of args) {
+    if (arg === "--quiet" || arg === "-q") {
+      quiet = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { quiet, rest };
+}
+
+/**
  * Extract --jq '<filter>' flag from args.
  * Returns the jq filter string (or undefined) and the remaining args.
  */

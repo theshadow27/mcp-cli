@@ -274,6 +274,29 @@ export async function handleCallTool(
   };
 }
 
+// -- Graceful shutdown --
+
+/** Something that can be closed (MCP Server, Transport, etc.) */
+export interface Closeable {
+  close(): Promise<void>;
+}
+
+/**
+ * Register SIGTERM/SIGINT handlers that gracefully close the given resources.
+ * Returns an unregister function that removes the signal handlers.
+ */
+export function registerShutdownHandlers(closeables: Closeable[]): () => void {
+  const shutdown = async () => {
+    for (const c of closeables) await c.close();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  return () => {
+    process.off("SIGTERM", shutdown);
+    process.off("SIGINT", shutdown);
+  };
+}
+
 // -- Server --
 
 export function checkTtyStdin(): boolean {
@@ -285,6 +308,35 @@ export function generateInstanceId(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Register a serve instance with the daemon.
+ * Swallows errors — daemon may be unavailable (e.g. first launch before daemon starts).
+ */
+export async function registerServeInstance(
+  ipc: IpcCaller,
+  instanceId: string,
+  pid: number,
+  tools: string[],
+): Promise<void> {
+  try {
+    await ipc("registerServe", { instanceId, pid, tools });
+  } catch (err) {
+    console.error(`[mcx serve] Failed to register with daemon: ${err}`);
+  }
+}
+
+/**
+ * Deregister a serve instance from the daemon.
+ * Swallows errors — daemon may already be gone when the serve process exits.
+ */
+export async function unregisterServeInstance(ipc: IpcCaller, instanceId: string): Promise<void> {
+  try {
+    await ipc("unregisterServe", { instanceId });
+  } catch {
+    // Daemon may already be gone — that's fine
+  }
 }
 
 export async function cmdServe(): Promise<void> {
@@ -323,33 +375,19 @@ export async function cmdServe(): Promise<void> {
   // Register this serve instance with the daemon for visibility in mcpctl
   const instanceId = generateInstanceId();
   const toolNames = curated.map((ct) => ct.name);
-  try {
-    await ipcCall("registerServe", { instanceId, pid: process.pid, tools: toolNames });
-  } catch (err) {
-    console.error(`[mcx serve] Failed to register with daemon: ${err}`);
-  }
+  await registerServeInstance(ipcCall, instanceId, process.pid, toolNames);
 
   console.error("[mcx serve] MCP server running on stdio");
 
   // Graceful shutdown on SIGTERM/SIGINT — close server and transport so
   // inflight MCP requests get proper responses before the process exits.
-  const shutdown = async () => {
-    await server.close();
-    await transport.close();
-  };
-  process.once("SIGTERM", shutdown);
-  process.once("SIGINT", shutdown);
+  const unregisterShutdown = registerShutdownHandlers([server, transport]);
 
   // Block until stdin closes — prevents main() from calling process.exit()
   await transport.closed;
   stopPoller();
-  process.off("SIGTERM", shutdown);
-  process.off("SIGINT", shutdown);
+  unregisterShutdown();
 
   // Deregister from daemon on exit
-  try {
-    await ipcCall("unregisterServe", { instanceId });
-  } catch {
-    // Daemon may already be gone — that's fine
-  }
+  await unregisterServeInstance(ipcCall, instanceId);
 }

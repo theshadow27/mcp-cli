@@ -30,6 +30,7 @@ import {
   CONNECT_MAX_RETRIES,
   CONNECT_TIMEOUT_MS,
   MCP_TOOL_TIMEOUT_MS,
+  STDIO_CONNECT_MAX_RETRIES,
   getTransportType,
   isHttpConfig,
   isSseConfig,
@@ -290,7 +291,8 @@ export class ServerPool {
       }
 
       let lastErr: Error = new Error("Connection failed");
-      const maxRetries = CONNECT_MAX_RETRIES;
+      const transportType = getTransportType(config);
+      const maxRetries = transportType === "stdio" ? STDIO_CONNECT_MAX_RETRIES : CONNECT_MAX_RETRIES;
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
@@ -324,7 +326,7 @@ export class ServerPool {
         } catch (err) {
           lastErr = err instanceof Error ? err : new Error(String(err), { cause: err });
 
-          if (attempt < maxRetries && isRetryableError(err)) {
+          if (attempt < maxRetries && isRetryableError(err, transportType)) {
             const delay = Math.min(CONNECT_INITIAL_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);
             this.logger.warn(
               `[mcpd] Connection to "${name}" failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${lastErr.message}`,
@@ -685,8 +687,15 @@ const RETRYABLE_CODES = new Set([
   "EAI_AGAIN",
 ]);
 
-/** Classify whether a connection error is transient and worth retrying. */
-export function isRetryableError(err: unknown): boolean {
+/**
+ * Classify whether a connection error is transient and worth retrying.
+ *
+ * When `transport` is "stdio", process crashes during startup (exit code,
+ * killed, spawn errors) are considered retryable — transient issues like
+ * `npx -y` download failures may succeed on retry. Permanent failures
+ * (ENOENT, EACCES) are still excluded.
+ */
+export function isRetryableError(err: unknown, transport?: "stdio" | "http" | "sse"): boolean {
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
   const code = (err as NodeJS.ErrnoException).code;
@@ -697,9 +706,24 @@ export function isRetryableError(err: unknown): boolean {
   // Fetch-style network errors (no system code)
   if (msg.includes("fetch failed") || msg.includes("socket hang up")) return true;
 
-  // NOT retryable: auth failures, bad config
+  // NOT retryable: auth failures, bad config, command not found, permission denied
+  if (code === "ENOENT" || code === "EACCES") return false;
   if (msg.includes("401") || msg.includes("403") || msg.includes("not found") || msg.includes("permission denied")) {
     return false;
+  }
+
+  // Stdio-specific: process crash during startup is worth one retry
+  if (transport === "stdio") {
+    if (
+      msg.includes("exited") ||
+      msg.includes("exit code") ||
+      msg.includes("killed") ||
+      msg.includes("spawn") ||
+      msg.includes("crashed") ||
+      msg.includes("signal")
+    ) {
+      return true;
+    }
   }
 
   return false;

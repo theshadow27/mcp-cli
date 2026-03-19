@@ -47,6 +47,7 @@ async function main(): Promise<void> {
         : {},
     file: (path: string) => readFile(path, "utf-8"),
     json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
+    cache: async (_key, producer) => producer(),
   };
 
   const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);

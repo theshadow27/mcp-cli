@@ -5,6 +5,7 @@ import { _resetJqStateForTesting } from "../jq/index";
 import { SERVE_SIZE_OK, SERVE_SIZE_TRUNCATE } from "../jq/jq-support";
 import {
   CALL_TOOL,
+  type Closeable,
   type CuratedTool,
   FIND_TOOL,
   type IpcCaller,
@@ -16,7 +17,10 @@ import {
   handleCallTool,
   handleListTools,
   parseMcpTools,
+  registerServeInstance,
+  registerShutdownHandlers,
   startToolListPoller,
+  unregisterServeInstance,
 } from "./serve";
 
 // -- parseMcpTools --
@@ -452,6 +456,92 @@ describe("startToolListPoller", () => {
   });
 });
 
+// -- registerShutdownHandlers --
+
+describe("registerShutdownHandlers", () => {
+  test("calls close on all closeables when SIGTERM fires", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+    const b: Closeable = {
+      close: async () => {
+        closed.push("b");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a, b]);
+    process.emit("SIGTERM");
+    // Allow async handler to complete
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a", "b"]);
+    unregister();
+  });
+
+  test("calls close on all closeables when SIGINT fires", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    process.emit("SIGINT");
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a"]);
+    unregister();
+  });
+
+  test("unregister removes signal handlers (no double-close)", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    unregister();
+
+    // Guard: without a listener, process.emit("SIGTERM") triggers default kill behavior.
+    // Add a no-op so the signal doesn't terminate the test process.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
+    process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
+    await Bun.sleep(10);
+
+    expect(closed).toEqual([]);
+  });
+
+  test("only fires once per signal (uses process.once)", async () => {
+    const closed: string[] = [];
+    const a: Closeable = {
+      close: async () => {
+        closed.push("a");
+      },
+    };
+
+    const unregister = registerShutdownHandlers([a]);
+    process.emit("SIGTERM");
+    // After process.once fires, the handler is auto-removed. Guard the second emit
+    // with a no-op so the test process isn't killed by an unhandled SIGTERM.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
+    process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
+    await Bun.sleep(10);
+
+    expect(closed).toEqual(["a"]);
+    unregister();
+  });
+});
+
 // -- Server-side jq support --
 
 describe("handleListTools with jq injection", () => {
@@ -583,5 +673,54 @@ describe("generateInstanceId", () => {
   test("returns unique values on successive calls", () => {
     const ids = new Set(Array.from({ length: 10 }, () => generateInstanceId()));
     expect(ids.size).toBe(10);
+  });
+});
+
+// -- registerServeInstance / unregisterServeInstance --
+
+describe("registerServeInstance", () => {
+  test("calls registerServe with correct params", async () => {
+    let called: unknown;
+    const ipc = (async (method: IpcMethod, params?: unknown) => {
+      called = { method, params };
+      return { ok: true as const };
+    }) as IpcCaller;
+
+    await registerServeInstance(ipc, "abc123", 42, ["search", "write"]);
+    expect(called).toEqual({
+      method: "registerServe",
+      params: { instanceId: "abc123", pid: 42, tools: ["search", "write"] },
+    });
+  });
+
+  test("swallows errors when daemon is unavailable", async () => {
+    const ipc = (async () => {
+      throw new Error("connection refused");
+    }) as IpcCaller;
+
+    // Should not throw
+    await expect(registerServeInstance(ipc, "abc123", 42, [])).resolves.toBeUndefined();
+  });
+});
+
+describe("unregisterServeInstance", () => {
+  test("calls unregisterServe with correct instanceId", async () => {
+    let called: unknown;
+    const ipc = (async (method: IpcMethod, params?: unknown) => {
+      called = { method, params };
+      return { ok: true as const };
+    }) as IpcCaller;
+
+    await unregisterServeInstance(ipc, "xyz789");
+    expect(called).toEqual({ method: "unregisterServe", params: { instanceId: "xyz789" } });
+  });
+
+  test("swallows errors when daemon is already gone", async () => {
+    const ipc = (async () => {
+      throw new Error("ENOENT");
+    }) as IpcCaller;
+
+    // Should not throw
+    await expect(unregisterServeInstance(ipc, "xyz789")).resolves.toBeUndefined();
   });
 });
