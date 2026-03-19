@@ -6,7 +6,8 @@
  * not shared IPC transport.
  */
 
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import {
   BUILD_VERSION,
@@ -446,4 +447,93 @@ export function getStaleDaemonWarning(): string | null {
   const data = readLivePidData();
   if (!data) return null;
   return _buildStaleDaemonWarning(data.buildVersion);
+}
+
+/**
+ * Extract the build epoch (Unix seconds) from BUILD_VERSION.
+ * Returns null in dev mode (no epoch suffix).
+ */
+export function _parseBuildEpoch(buildVersion: string): number | null {
+  const match = buildVersion.match(/\+(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Find the newest mtime (seconds) among source files in a packages/ subdirectory.
+ * Only scans `src/` within each package. Returns { pkg, mtimeSec } or null.
+ */
+function newestSourceMtime(packagesDir: string): { pkg: string; mtimeSec: number }[] {
+  const stalePackages: { pkg: string; mtimeSec: number }[] = [];
+  let pkgs: string[];
+  try {
+    pkgs = readdirSync(packagesDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return stalePackages;
+  }
+
+  for (const pkg of pkgs) {
+    const srcDir = join(packagesDir, pkg, "src");
+    let newest = 0;
+    try {
+      const files = readdirSync(srcDir, { withFileTypes: true, recursive: true });
+      for (const f of files) {
+        if (!f.isFile()) continue;
+        const fullPath = join(f.parentPath ?? srcDir, f.name);
+        const mtime = statSync(fullPath).mtimeMs / 1000;
+        if (mtime > newest) newest = mtime;
+      }
+    } catch {
+      continue;
+    }
+    if (newest > 0) stalePackages.push({ pkg, mtimeSec: newest });
+  }
+  return stalePackages;
+}
+
+/**
+ * Check if any source files under packages/ are newer than the compiled binary.
+ * Returns a warning string if stale, null otherwise.
+ * Only applies in compiled mode (BUILD_VERSION contains +epoch).
+ *
+ * @param workspaceRoot - override for testing; defaults to auto-detection
+ */
+export function getSourceStalenessWarning(workspaceRoot?: string): string | null {
+  const buildEpoch = _parseBuildEpoch(BUILD_VERSION);
+  if (buildEpoch === null) return null; // dev mode — source is always live
+
+  // Find workspace root: walk up from the binary's directory looking for packages/
+  let root = workspaceRoot;
+  if (!root) {
+    let dir = dirname(process.execPath);
+    while (true) {
+      if (existsSync(join(dir, "packages"))) {
+        root = dir;
+        break;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) return null; // no workspace found (installed globally)
+      dir = parent;
+    }
+  }
+
+  const packagesDir = join(root, "packages");
+  const entries = newestSourceMtime(packagesDir);
+  const stale = entries.filter((e) => e.mtimeSec > buildEpoch);
+
+  if (stale.length === 0) return null;
+
+  const pkgList = stale.map((s) => s.pkg).join(", ");
+  const newestAge = Math.max(...stale.map((s) => s.mtimeSec)) - buildEpoch;
+  const ageStr = formatAge(newestAge);
+
+  return `dist/ binaries were built before latest source changes (${pkgList} modified ${ageStr} after build).\n  Run: bun run build && mcx daemon restart`;
+}
+
+function formatAge(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
