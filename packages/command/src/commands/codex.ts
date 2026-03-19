@@ -12,11 +12,11 @@ import {
   PROMPT_IPC_TIMEOUT_MS,
   buildHookEnv,
   hasWorktreeHooks,
-  ipcCall,
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
+import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -41,7 +41,9 @@ const P = "codex";
 // ── Dependency injection ──
 
 /** Codex deps use only the shared session fields — no claude-specific helpers. */
-export type CodexDeps = SharedSessionDeps;
+export interface CodexDeps extends SharedSessionDeps {
+  getStaleDaemonWarning: () => string | null;
+}
 
 const defaultDeps: CodexDeps = {
   callTool: (tool, args) => {
@@ -51,6 +53,7 @@ const defaultDeps: CodexDeps = {
   },
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
+  getStaleDaemonWarning,
   exec: (cmd, opts) => {
     const result = Bun.spawnSync(cmd, {
       stdout: "pipe",
@@ -74,6 +77,12 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
   if (!sub || sub === "--help" || sub === "-h") {
     printCodexUsage();
     return;
+  }
+
+  const staleWarning = d.getStaleDaemonWarning();
+  if (staleWarning) {
+    d.printError(staleWarning);
+    d.exit(1);
   }
 
   switch (sub) {

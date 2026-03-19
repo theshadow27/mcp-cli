@@ -28,9 +28,14 @@ rl.on("line", (line) => {
   } else if (method === "thread/start") {
     respond(msg.id, { id: "thread-1", status: "active" });
   } else if (method === "turn/start") {
-    // In validate-input mode, assert that input is an array of elements
+    // In validate-input mode, assert that threadId and input match the Codex protocol.
     if (mode === "validate-input") {
       const params = msg.params as Record<string, unknown> | undefined;
+      if (typeof params?.threadId !== "string" || params.threadId.length === 0) {
+        respond(msg.id, null);
+        process.stderr.write(`FAIL: threadId must be a non-empty string, got ${JSON.stringify(params?.threadId)}\n`);
+        process.exit(1);
+      }
       const input = params?.input;
       if (!Array.isArray(input)) {
         respond(msg.id, null);
