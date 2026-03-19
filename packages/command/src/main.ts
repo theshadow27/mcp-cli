@@ -40,6 +40,7 @@ import { cmdTypegen } from "./commands/typegen";
 import { cmdVersion } from "./commands/version";
 import {
   ShutdownRefusedError,
+  getSourceStalenessWarning,
   getStaleDaemonWarning,
   ipcCall,
   isDaemonInitializing,
@@ -558,9 +559,12 @@ async function cmdStatus(args: string[] = []): Promise<void> {
   }
 
   const staleWarning = getStaleDaemonWarning();
+  const sourceWarning = getSourceStalenessWarning();
 
   if (json) {
-    const output = staleWarning ? { ...status, staleBuild: true, staleWarning } : status;
+    let output = { ...status };
+    if (staleWarning) output = { ...output, staleBuild: true, staleWarning } as typeof output;
+    if (sourceWarning) output = { ...output, staleSource: true, sourceWarning } as typeof output;
     console.log(JSON.stringify(output, null, 2));
   } else {
     console.log(`Daemon PID: ${status.pid}`);
@@ -569,6 +573,9 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     printServerList(status.servers);
     if (staleWarning) {
       console.error(`\n⚠ ${staleWarning}`);
+    }
+    if (sourceWarning) {
+      console.error(`\n⚠ ${sourceWarning}`);
     }
   }
 }
