@@ -131,6 +131,7 @@ export async function discoverUrl(stdout: ReadableStream<Uint8Array> | null, tim
             const match = line.match(URL_PATTERN);
             if (match) {
               clearTimeout(timer);
+              reader.releaseLock();
               resolve(match[0]);
               return;
             }
@@ -140,6 +141,7 @@ export async function discoverUrl(stdout: ReadableStream<Uint8Array> | null, tim
           const match = buffer.match(URL_PATTERN);
           if (match) {
             clearTimeout(timer);
+            reader.releaseLock();
             resolve(match[0]);
             return;
           }

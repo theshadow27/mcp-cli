@@ -35,6 +35,7 @@ export const OPENCODE_TOOLS = [
           description: "Tool patterns to auto-deny",
         },
         worktree: { type: "string", description: "Git worktree name for isolation" },
+        repoRoot: { type: "string", description: "Repository root for worktree cleanup" },
         timeout: { type: "number", description: "Max wait time in ms (default: 300000)" },
         wait: { type: "boolean", description: "Block until result (default: false)" },
       },

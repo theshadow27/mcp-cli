@@ -209,12 +209,14 @@ export class OpenCodeSession {
   /** Terminate the session. */
   terminate(): void {
     if (this.state === "ended") return;
+    this.setState("ended");
     this.clearWatchdog();
     this.sse?.disconnect();
     this.proc?.kill();
-    this.setState("ended");
     this.emit({ type: "session:ended" });
-    this.rejectAllWaiters("Session terminated");
+    // emit() already dispatches to all waiters; clear any stragglers
+    this.resultWaiters = [];
+    this.eventWaiters = [];
   }
 
   /** Wait for a turn result or error. */
@@ -437,17 +439,9 @@ export class OpenCodeSession {
       }
       this.emit({ type: "session:ended" });
     }
-    this.rejectAllWaiters("Process exited");
-  }
-
-  private rejectAllWaiters(reason: string): void {
-    const rw = this.resultWaiters;
-    const ew = this.eventWaiters;
+    // emit() already dispatches to all waiters; clear any stragglers
     this.resultWaiters = [];
     this.eventWaiters = [];
-    const endedEvent: AgentSessionEvent = { type: "session:ended" };
-    for (const w of rw) w(endedEvent);
-    for (const w of ew) w(endedEvent);
   }
 
   private resetWatchdog(): void {
@@ -466,7 +460,8 @@ export class OpenCodeSession {
         });
         this.emit({ type: "session:ended" });
       }
-      this.rejectAllWaiters("Watchdog timeout");
+      this.resultWaiters = [];
+      this.eventWaiters = [];
     }, this.watchdogTimeoutMs);
   }
 

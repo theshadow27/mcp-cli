@@ -35,6 +35,9 @@ export interface OpenCodePermissionEvent {
   metadata: Record<string, unknown>;
 }
 
+/** Default HTTP request timeout (30s). */
+export const HTTP_TIMEOUT_MS = 30_000;
+
 export class OpenCodeClient {
   constructor(private readonly baseUrl: string) {}
 
@@ -81,6 +84,7 @@ export class OpenCodeClient {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "GET",
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -94,6 +98,7 @@ export class OpenCodeClient {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
