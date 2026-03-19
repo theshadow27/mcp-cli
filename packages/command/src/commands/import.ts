@@ -220,6 +220,60 @@ function resolveSource(source: string | undefined): ResolvedSource {
   return { filePath: resolved, defaultScope: "user" };
 }
 
+/**
+ * `mcx add-from-claude-desktop` — import servers from Claude Desktop's config.
+ *
+ * Reads ~/Library/Application Support/Claude/claude_desktop_config.json,
+ * lists discovered servers, and imports them into mcp-cli.
+ */
+export async function cmdAddFromClaudeDesktop(
+  args: string[],
+  configPath = options.CLAUDE_DESKTOP_CONFIG_PATH,
+): Promise<void> {
+  let scope: ConfigScope = "user";
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--scope" || arg === "-s") {
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
+    } else if (arg === "--help" || arg === "-h") {
+      console.log(`mcx add-from-claude-desktop — import servers from Claude Desktop
+
+Usage:
+  mcx add-from-claude-desktop              Import all servers from Claude Desktop config
+  mcx add-from-claude-desktop --scope user Override target scope (default: user)
+
+Options:
+  --scope user|project    Target config scope (default: user)
+  -s                      Shorthand for --scope
+
+Reads: ~/Library/Application Support/Claude/claude_desktop_config.json`);
+      return;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`Unknown flag: ${arg}`);
+    }
+  }
+
+  if (!existsSync(configPath)) {
+    throw new Error(`Claude Desktop config not found: ${configPath}`);
+  }
+
+  let config: McpConfigFile;
+  try {
+    config = JSON.parse(readFileSync(configPath, "utf-8")) as McpConfigFile;
+  } catch {
+    throw new Error(`Cannot parse ${configPath}`);
+  }
+
+  const servers = config.mcpServers;
+  if (!servers || Object.keys(servers).length === 0) {
+    console.error(`No servers found in ${configPath}`);
+    return;
+  }
+
+  importServers(servers, scope, "Claude Desktop");
+}
+
 function printImportUsage(): void {
   console.log(`mcx import — import servers from external config files
 

@@ -5,7 +5,13 @@ import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { findFileUpward } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { readConfigFile, writeConfigFile } from "./config-file";
-import { type ClaudeConfig, cmdImport, collectClaudeServers, importFromClaude } from "./import";
+import {
+  type ClaudeConfig,
+  cmdAddFromClaudeDesktop,
+  cmdImport,
+  collectClaudeServers,
+  importFromClaude,
+} from "./import";
 
 /**
  * Tests for mcx import's source resolution and file I/O.
@@ -686,6 +692,114 @@ describe("mcx import", () => {
       const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.github).toEqual(FIXTURES.github);
       expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
+    });
+  });
+
+  describe("cmdAddFromClaudeDesktop", () => {
+    test("imports servers from Claude Desktop config", async () => {
+      using opts = testOptions();
+      const configPath = join(opts.dir, "claude_desktop_config.json");
+      const desktopConfig = fixtureConfig("notion", "filesystem");
+      writeFileSync(configPath, JSON.stringify(desktopConfig));
+
+      await cmdAddFromClaudeDesktop([], configPath);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
+      expect(result.mcpServers?.filesystem).toEqual(FIXTURES.filesystem);
+    });
+
+    test("throws when config file is missing", async () => {
+      using opts = testOptions();
+      const missingPath = join(opts.dir, "nonexistent.json");
+      await expect(cmdAddFromClaudeDesktop([], missingPath)).rejects.toThrow("config not found");
+    });
+
+    test("throws on invalid JSON", async () => {
+      using opts = testOptions();
+      const badPath = join(opts.dir, "bad.json");
+      writeFileSync(badPath, "not valid json{{{");
+      await expect(cmdAddFromClaudeDesktop([], badPath)).rejects.toThrow("Cannot parse");
+    });
+
+    test("handles empty mcpServers gracefully", async () => {
+      using opts = testOptions();
+      const emptyPath = join(opts.dir, "empty-desktop.json");
+      writeFileSync(emptyPath, JSON.stringify({ mcpServers: {} }));
+      await cmdAddFromClaudeDesktop([], emptyPath);
+    });
+
+    test("handles config with no mcpServers key", async () => {
+      using opts = testOptions();
+      const noServersPath = join(opts.dir, "no-servers.json");
+      writeFileSync(noServersPath, JSON.stringify({}));
+      await cmdAddFromClaudeDesktop([], noServersPath);
+    });
+
+    test("accepts --scope flag", async () => {
+      using opts = testOptions();
+      const configPath = join(opts.dir, "desktop.json");
+      writeFileSync(configPath, JSON.stringify(fixtureConfig("sentry")));
+
+      await cmdAddFromClaudeDesktop(["--scope", "user"], configPath);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
+    });
+
+    test("accepts -s shorthand for scope", async () => {
+      using opts = testOptions();
+      const configPath = join(opts.dir, "desktop.json");
+      writeFileSync(configPath, JSON.stringify(fixtureConfig("github")));
+
+      await cmdAddFromClaudeDesktop(["-s", "user"], configPath);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.github).toEqual(FIXTURES.github);
+    });
+
+    test("throws on unknown flag", async () => {
+      using opts = testOptions();
+      await expect(cmdAddFromClaudeDesktop(["--bogus"], join(opts.dir, "x.json"))).rejects.toThrow("Unknown flag");
+    });
+
+    test("--help does not throw", async () => {
+      await cmdAddFromClaudeDesktop(["--help"]);
+    });
+
+    test("-h does not throw", async () => {
+      await cmdAddFromClaudeDesktop(["-h"]);
+    });
+
+    test("imports all transport types", async () => {
+      using opts = testOptions();
+      const configPath = join(opts.dir, "desktop-all.json");
+      const allServers = fixtureConfig("filesystem", "notion", "atlassian", "sentry");
+      writeFileSync(configPath, JSON.stringify(allServers));
+
+      await cmdAddFromClaudeDesktop([], configPath);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(Object.keys(result.mcpServers ?? {})).toHaveLength(4);
+      expect("command" in (result.mcpServers?.filesystem ?? {})).toBe(true);
+      expect(result.mcpServers?.notion?.type).toBe("http");
+      expect(result.mcpServers?.atlassian?.type).toBe("sse");
+    });
+
+    test("overwrites existing servers", async () => {
+      using opts = testOptions();
+      const targetPath = join(opts.dir, "servers.json");
+      writeConfigFile(targetPath, {
+        mcpServers: { notion: { type: "http" as const, url: "https://old.example.com" } },
+      });
+
+      const configPath = join(opts.dir, "desktop-overwrite.json");
+      writeFileSync(configPath, JSON.stringify(fixtureConfig("notion")));
+
+      await cmdAddFromClaudeDesktop([], configPath);
+
+      const result = readConfigFile(targetPath);
+      expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
     });
   });
 });
