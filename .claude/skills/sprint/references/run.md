@@ -42,9 +42,34 @@ Always use opus. For documentation-only issues, use sonnet.
 PRs always target `main` — never feature branches. Feature branch merges caused
 a 44-file conflict nightmare in Sprint 14.
 
+#### Provider routing
+
+If the sprint plan has a `Provider` column for the issue, route the spawn
+through that provider instead of `mcx claude`. Default is `claude`.
+
+| Provider value | Spawn command |
+|----------------|---------------|
+| `claude` (default) | `mcx claude spawn` |
+| `copilot` | `mcx copilot spawn` |
+| `gemini` | `mcx gemini spawn` |
+| `acp:<agent>` | `mcx acp spawn --agent <agent>` |
+
 ```bash
+# Default (claude)
 mcx claude spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+
+# With --provider copilot
+mcx copilot spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+
+# With --provider gemini
+mcx gemini spawn --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+
+# With --provider acp:<custom-agent>
+mcx acp spawn --agent <custom-agent> --worktree -t "/implement N" --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
 ```
+
+The provider flag also applies to review, repair, and QA sessions for that issue.
+All sessions in an issue's lifecycle use the same provider.
 
 ### Triage
 
@@ -79,13 +104,21 @@ Everything else is **low scrutiny**.
 **Reuse the worktree** from the implement phase via `--cwd`:
 
 ```bash
+# Default (claude)
 mcx claude spawn --cwd <worktree-path> --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+
+# With provider (e.g. copilot) — use the same provider as the implement phase
+mcx copilot spawn --cwd <worktree-path> --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
 If review finds issues, spawn an opus repair session on the same worktree:
 
 ```bash
+# Default (claude)
 mcx claude spawn --cwd <worktree-path> -t "Repair PR #N ..." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+
+# With provider — match the issue's provider
+mcx copilot spawn --cwd <worktree-path> -t "Repair PR #N ..." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
 ```
 
 Then re-triage. High scrutiny rewrites get 2 adversarial reviews.
@@ -97,11 +130,14 @@ was auto-cleaned by `bye` (happens when the branch was pushed and worktree is
 clean), use `--worktree` instead to give QA its own isolated worktree:
 
 ```bash
-# Preferred: reuse existing worktree
+# Preferred: reuse existing worktree (default claude)
 mcx claude spawn --cwd <worktree-path> --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 
 # Fallback: worktree was auto-cleaned, create a fresh one
 mcx claude spawn --worktree --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+
+# With provider — match the issue's provider (e.g. copilot)
+mcx copilot spawn --cwd <worktree-path> --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
 QA verifies and merges if passing.
@@ -145,15 +181,28 @@ Only the final `bye` (after QA merge or failure) should clean up the worktree.
 This is the main loop. The goal is maximum throughput — keep 5 opus
 implementation slots full, with unlimited sonnet review/QA slots.
 
+Track the **provider** for each issue from the sprint plan. When spawning any
+session (implement, review, repair, QA), use `mcx <provider>` instead of
+`mcx claude` if the issue has a non-default provider. For `acp:<agent>`,
+use `mcx acp --agent <agent>`.
+
+Also track ACP sessions separately: `mcx copilot ls`, `mcx gemini ls`, or
+`mcx acp ls` to check provider-specific session lists. `mcx claude ls` only
+shows Claude sessions.
+
 ```
 while issues remain:
   mcx claude wait --timeout 30000 --short   # block until event or 30s
-  mcx claude ls --short                      # check all session states
+  mcx claude ls --short                      # check claude session states
+  # If any issues use ACP providers, also check those:
+  mcx copilot ls --short 2>/dev/null
+  mcx gemini ls --short 2>/dev/null
 
   for each session that completed (idle/result):
     if implementation session:
       bye → save worktree path → triage → spawn review or QA (--cwd)
       spawn next issue from backlog (backfill the slot)
+      # Use the issue's provider for the spawn command
     if review session:
       bye → read findings → spawn repair (--cwd) if needed, else spawn QA (--cwd)
     if QA session:

@@ -49,6 +49,36 @@ git -C <worktree-path> status --porcelain
 - Empty output: safe to `git worktree remove <path>`
 - Has changes: investigate first — uncommitted work may be valuable
 
+## ACP Provider Routing
+
+When a sprint issue specifies a `Provider` column, swap `mcx claude` for the
+provider-specific command. All subcommands (spawn, ls, send, bye, wait, etc.)
+work identically across providers.
+
+| Provider | Command prefix | Notes |
+|----------|---------------|-------|
+| `claude` (default) | `mcx claude` | Standard Claude Code sessions |
+| `copilot` | `mcx copilot` | GitHub Copilot via ACP |
+| `gemini` | `mcx gemini` | Google Gemini via ACP |
+| `acp:<agent>` | `mcx acp --agent <agent>` | Any custom ACP agent |
+
+```bash
+# Claude (default)
+mcx claude spawn --worktree -t "task" --allow Read Glob Grep Write Edit Bash
+
+# Copilot
+mcx copilot spawn --worktree -t "task" --allow Read Glob Grep Write Edit Bash
+
+# Gemini
+mcx gemini spawn --worktree -t "task" --allow Read Glob Grep Write Edit Bash
+
+# Custom ACP agent
+mcx acp spawn --agent my-agent --worktree -t "task" --allow Read Glob Grep Write Edit Bash
+```
+
+Session management commands (ls, send, bye, wait, log, interrupt) use the same
+provider prefix. E.g., `mcx copilot bye <id>`, `mcx gemini wait --timeout 30000`.
+
 ## Concurrency
 
 - **Maximum recommended**: 5 concurrent sessions
