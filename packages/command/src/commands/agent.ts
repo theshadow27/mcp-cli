@@ -18,13 +18,23 @@ import {
   hasWorktreeHooks,
   listProviders,
   readWorktreeConfig,
+  resolveWorktreeBase,
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { type SharedSessionDeps, cleanupWorktree, parseByeResult, resolveSessionId } from "./claude";
+import {
+  type SharedSessionDeps,
+  buildResumePrompt,
+  cleanupWorktree,
+  extractIssueNumber,
+  parseByeResult,
+  parseWorktreeList,
+  resolveSessionId,
+  resolveWorktree,
+} from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -207,28 +217,15 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
       await agentWait(args.slice(2), provider, agentOverride, d);
       break;
     case "resume":
-      if (!provider.features.resume) {
-        d.printError(
-          `"${providerName}" does not support resume. Only providers with native session resume support this.`,
-        );
-        d.exit(1);
-      }
-      // Resume is Claude-specific — delegate to the existing cmdClaude
-      d.printError(`Use "mcx claude resume" for session resume — it requires Claude-specific features.`);
-      d.exit(1);
+      await agentResume(args.slice(2), provider, agentOverride, d);
       break;
     case "worktrees":
     case "wt":
-      if (!provider.features.resume) {
-        d.printError(`Use "mcx claude worktrees" for worktree management — it requires Claude-specific features.`);
-        d.exit(1);
-      }
-      d.printError(`Use "mcx claude worktrees" for worktree management.`);
-      d.exit(1);
+      await agentWorktrees(args.slice(2), provider, agentOverride, d);
       break;
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -947,6 +944,415 @@ async function agentWait(
   console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
 }
 
+// ── Resume ──
+
+export interface AgentResumeArgs {
+  target: string | undefined;
+  /** Specific session ID to resume (Claude native only). */
+  sessionId: string | undefined;
+  all: boolean;
+  /** Skip native resume, use git-context prompt instead. */
+  fresh: boolean;
+  allow: string[];
+  model: string | undefined;
+  wait: boolean;
+  timeout: number | undefined;
+  agent: string | undefined;
+  provider: string | undefined;
+  error: string | undefined;
+}
+
+export function parseAgentResumeArgs(
+  args: string[],
+  providerConfig: AgentProviderConfig,
+  agentOverride?: string,
+): AgentResumeArgs {
+  let all = false;
+  let fresh = false;
+  let model: string | undefined;
+  let wait = false;
+  let timeout: number | undefined;
+  let error: string | undefined;
+  let agent: string | undefined = agentOverride;
+  let llmProvider: string | undefined;
+  const allow: string[] = [];
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--all") {
+      all = true;
+    } else if (arg === "--fresh") {
+      fresh = true;
+    } else if (arg === "--model" || arg === "-m") {
+      const val = args[++i];
+      if (!val) {
+        error = "--model requires a value";
+      } else {
+        model = val;
+      }
+    } else if (arg === "--allow") {
+      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        allow.push(args[++i]);
+      }
+      if (allow.length === 0) error = "--allow requires at least one tool pattern";
+    } else if (arg === "--wait") {
+      wait = true;
+    } else if (arg === "--timeout") {
+      const val = args[++i];
+      if (!val) {
+        error = "--timeout requires a value in ms";
+      } else {
+        timeout = Number(val);
+        if (Number.isNaN(timeout)) error = "--timeout must be a number";
+      }
+    } else if (arg === "--agent" || arg === "-a") {
+      if (providerConfig.features.agentSelect && !agentOverride) {
+        const val = args[++i];
+        if (!val || val.startsWith("-")) {
+          error = "--agent requires a value";
+        } else {
+          agent = val;
+        }
+      } else {
+        i++; // consume value
+      }
+    } else if (arg === "--provider" || arg === "-p") {
+      if (providerConfig.features.providerSelect) {
+        const val = args[++i];
+        if (!val || val.startsWith("-")) {
+          error = "--provider requires a value";
+        } else {
+          llmProvider = val;
+        }
+      } else {
+        i++; // consume value
+      }
+    } else if (!arg.startsWith("-")) {
+      positionals.push(arg);
+    }
+  }
+
+  const target = positionals[0];
+  const sessionId = positionals[1];
+
+  if (fresh && sessionId) {
+    error = "--fresh cannot be combined with an explicit session ID";
+  } else if (!all && !target) {
+    const name = agentOverride ?? providerConfig.name;
+    error = `Usage: mcx agent ${name} resume <worktree> [--fresh] [--model M] [--allow tools...]\n       mcx agent ${name} resume --all`;
+  }
+
+  return { target, sessionId, all, fresh, allow, model, wait, timeout, agent, provider: llmProvider, error };
+}
+
+/**
+ * Detect the default branch (e.g. "main" or "master") from origin/HEAD.
+ */
+function getDefaultBranch(exec: AgentDeps["exec"], cwd: string): string {
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "symbolic-ref", "refs/remotes/origin/HEAD"]);
+  if (exitCode === 0 && stdout.trim()) {
+    const parts = stdout.trim().split("/");
+    return parts[parts.length - 1] || "main";
+  }
+  return "main";
+}
+
+async function agentResume(
+  args: string[],
+  provider: AgentProviderConfig,
+  agentOverride: string | undefined,
+  d: AgentDeps,
+): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    printResumeUsage(provider, agentOverride);
+    return;
+  }
+
+  const parsed = parseAgentResumeArgs(args, provider, agentOverride);
+
+  if (parsed.error) {
+    d.printError(parsed.error);
+    d.exit(1);
+  }
+
+  const cwd = process.cwd();
+  const wtConfig = readWorktreeConfig(cwd);
+  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
+
+  // List all git worktrees
+  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
+  if (wtExit !== 0) {
+    d.printError("Failed to list git worktrees (not a git repo?)");
+    d.exit(1);
+  }
+
+  const allWorktrees = parseWorktreeList(wtOutput);
+  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
+
+  // Get active sessions for this provider to find orphaned worktrees
+  const P = provider.toolPrefix;
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool(`${P}_session_list`, {});
+    const text = formatToolResult(result);
+    const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch {
+    // Daemon may not be running — all worktrees are orphaned
+  }
+
+  if (parsed.all) {
+    const orphaned = mcxWorktrees.filter((wt) => {
+      const wtName = wt.path.slice(`${worktreeParent}/`.length);
+      return !sessionWorktrees.has(wtName);
+    });
+
+    if (orphaned.length === 0) {
+      d.printError("No orphaned worktrees to resume.");
+      return;
+    }
+
+    const label = agentOverride ?? provider.displayName;
+    d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"} with ${label}...`);
+
+    for (const wt of orphaned) {
+      await resumeAgentWorktree(wt, parsed, provider, agentOverride, d);
+    }
+    return;
+  }
+
+  // Single worktree resume
+  const target = parsed.target ?? "";
+  const resolved = resolveWorktree(target, mcxWorktrees);
+
+  if (!resolved) {
+    const resolvedAll = resolveWorktree(target, allWorktrees);
+    if (resolvedAll) {
+      d.printError(`Worktree "${target}" exists but is not an mcx worktree (not under .claude/worktrees/).`);
+    } else {
+      d.printError(
+        `No worktree matching "${target}". Use "mcx agent ${agentOverride ?? provider.name} worktrees" to list.`,
+      );
+    }
+    d.exit(1);
+  }
+
+  const wtName = resolved.path.slice(`${worktreeParent}/`.length);
+  if (sessionWorktrees.has(wtName)) {
+    d.printError(
+      `Worktree "${wtName}" already has an active session. Use "mcx agent ${agentOverride ?? provider.name} send" to interact.`,
+    );
+    d.exit(1);
+  }
+
+  await resumeAgentWorktree(resolved, parsed, provider, agentOverride, d);
+}
+
+async function resumeAgentWorktree(
+  wt: { path: string; branch: string | null },
+  parsed: AgentResumeArgs,
+  provider: AgentProviderConfig,
+  agentOverride: string | undefined,
+  d: AgentDeps,
+): Promise<void> {
+  const P = provider.toolPrefix;
+  const branch = wt.branch ?? "unknown";
+  const label = agentOverride ?? provider.displayName;
+
+  // Check if branch is already merged into the default branch
+  const defaultBranch = getDefaultBranch(d.exec, wt.path);
+  const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+    "git",
+    "-C",
+    wt.path,
+    "branch",
+    "--merged",
+    defaultBranch,
+  ]);
+  if (mergedExit === 0) {
+    const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+    if (mergedBranches.includes(branch)) {
+      d.printError(
+        `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${agentOverride ?? provider.name} worktrees --prune" to clean up.`,
+      );
+      return;
+    }
+  }
+
+  const toolArgs: Record<string, unknown> = { cwd: wt.path };
+  if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.model) toolArgs.model = parsed.model;
+  if (parsed.timeout) toolArgs.timeout = parsed.timeout;
+  if (parsed.wait) toolArgs.wait = true;
+  if (parsed.agent) toolArgs.agent = parsed.agent;
+  if (parsed.provider) toolArgs.provider = parsed.provider;
+
+  // Native resume: Claude with --resume (unless --fresh)
+  if (provider.features.resume && !parsed.fresh) {
+    toolArgs.resumeSessionId = parsed.sessionId ?? "continue";
+    toolArgs.prompt =
+      "Your previous conversation history has just been restored via --continue/--resume. " +
+      "Please review the restored context and continue where you left off, picking up any in-progress work.";
+    d.printError(`Resuming ${label} session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
+  } else {
+    // Shimmed resume: build git-context prompt
+    const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `${defaultBranch}..${branch}`, "--"]);
+    const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
+
+    const issueNumber = extractIssueNumber(branch);
+
+    let prInfo: string | null = null;
+    const prStatus = await d.getPrStatus(wt.path);
+    if (prStatus) {
+      prInfo = `#${prStatus.number} (${prStatus.state})`;
+    }
+
+    toolArgs.prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
+
+    const mode = provider.features.resume ? "fresh — git context only" : "git context (no native resume)";
+    d.printError(`Resuming ${label} session in ${wt.path} (branch: ${branch}) [${mode}]`);
+  }
+
+  const result = await d.callTool(`${P}_prompt`, toolArgs);
+  console.log(formatToolResult(result));
+}
+
+// ── Worktrees ──
+
+async function agentWorktrees(
+  args: string[],
+  provider: AgentProviderConfig,
+  agentOverride: string | undefined,
+  d: AgentDeps,
+): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    printWorktreesUsage(provider, agentOverride);
+    return;
+  }
+
+  const prune = args.includes("--prune");
+  const cwd = process.cwd();
+  const wtConfig = readWorktreeConfig(cwd);
+  const worktreeParent = resolveWorktreeBase(cwd, wtConfig);
+  const P = provider.toolPrefix;
+
+  // Get all git worktrees
+  const { stdout: wtOutput, exitCode: wtExit } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
+  if (wtExit !== 0) {
+    d.printError("Failed to list git worktrees (not a git repo?)");
+    d.exit(1);
+  }
+
+  const allWorktrees = parseWorktreeList(wtOutput);
+  const mcxWorktrees = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeParent}/`));
+
+  if (mcxWorktrees.length === 0) {
+    d.printError("No mcx worktrees found.");
+    return;
+  }
+
+  // Get active sessions to identify orphans
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool(`${P}_session_list`, {});
+    const text = formatToolResult(result);
+    const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch {
+    // Daemon not running — all worktrees are orphaned
+  }
+
+  if (prune) {
+    // Determine merged branches for safe pruning
+    let mergedBranches: Set<string> | null = null;
+    const defaultBranch = getDefaultBranch(d.exec, cwd);
+    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+      "git",
+      "-C",
+      cwd,
+      "branch",
+      "--merged",
+      defaultBranch,
+    ]);
+    if (mergedExit === 0) {
+      mergedBranches = new Set(mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, "")));
+    } else {
+      d.printError(
+        "Warning: could not determine merged branches (git branch --merged failed). Pruning clean orphaned worktrees without merge check.",
+      );
+    }
+
+    let pruned = 0;
+    for (const wt of mcxWorktrees) {
+      const wtName = wt.path.slice(`${worktreeParent}/`.length);
+      if (sessionWorktrees.has(wtName)) continue;
+      if (mergedBranches && wt.branch && !mergedBranches.has(wt.branch)) continue;
+
+      // Check for uncommitted changes
+      const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
+      if (statusExit !== 0) continue;
+      if (status.trim()) {
+        d.printError(`Skipping ${wtName} — has uncommitted changes`);
+        continue;
+      }
+
+      // Capture branch before removal
+      const { stdout: branchName } = d.exec(["git", "-C", wt.path, "branch", "--show-current"]);
+
+      if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
+        const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd });
+        const { exitCode: hookExit } = d.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
+        if (hookExit === 0) {
+          d.printError(`Removed worktree via hook: ${wt.path}`);
+          pruned++;
+        }
+      } else {
+        const { exitCode: removeExit } = d.exec(["git", "-C", cwd, "worktree", "remove", wt.path]);
+        if (removeExit === 0) {
+          d.printError(`Removed worktree: ${wt.path}`);
+          pruned++;
+        }
+      }
+
+      // Delete merged branch
+      if (branchName.trim()) {
+        d.exec(["git", "-C", cwd, "branch", "-d", branchName.trim()]);
+      }
+    }
+
+    d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+    return;
+  }
+
+  // List mode — show worktrees with status
+  const label = agentOverride ?? provider.displayName;
+  const header = `${"WORKTREE".padEnd(30)} ${"BRANCH".padEnd(30)} ${"STATUS".padEnd(12)} DIFF`;
+  console.log(`${c.dim}${header}${c.reset}`);
+
+  const diffStats = await Promise.all(mcxWorktrees.map((wt) => d.getDiffStats(wt.path)));
+
+  for (let i = 0; i < mcxWorktrees.length; i++) {
+    const wt = mcxWorktrees[i];
+    const wtName = wt.path.slice(`${worktreeParent}/`.length);
+    const branch = wt.branch ?? "—";
+    const isActive = sessionWorktrees.has(wtName);
+    const status = isActive ? `${c.green}active${c.reset}` : `${c.yellow}orphaned${c.reset}`;
+    const diff = diffStats[i] ?? "—";
+    console.log(`${c.cyan}${wtName.padEnd(30)}${c.reset} ${branch.padEnd(30)} ${status.padEnd(21)} ${diff}`);
+  }
+
+  const orphanCount = mcxWorktrees.filter((wt) => {
+    const wtName = wt.path.slice(`${worktreeParent}/`.length);
+    return !sessionWorktrees.has(wtName);
+  }).length;
+  if (orphanCount > 0) {
+    d.printError(
+      `\n${orphanCount} orphaned worktree${orphanCount === 1 ? "" : "s"}. Use "mcx agent ${agentOverride ?? provider.name} resume --all" to resume or "--prune" to clean up.`,
+    );
+  }
+}
+
 // ── Usage ──
 
 function printAgentUsage(): void {
@@ -971,10 +1377,7 @@ Run "mcx agent <provider> --help" for provider-specific subcommands.`);
 
 function printProviderUsage(provider: AgentProviderConfig, name: string, agentOverride?: string): void {
   const label = agentOverride ?? provider.displayName;
-  const resumeLine = provider.features.resume
-    ? `\n  mcx agent ${name} resume <worktree>        Resume with conversation history
-  mcx agent ${name} worktrees                 List mcx-created worktrees`
-    : "";
+  const resumeMode = provider.features.resume ? "conversation history" : "git-context prompt";
 
   console.log(`mcx agent ${name} — manage ${label} sessions
 
@@ -985,7 +1388,9 @@ Usage:
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session>                End session
   mcx agent ${name} interrupt <session>          Interrupt current turn
-  mcx agent ${name} log <session> [--last N]     View transcript${resumeLine}
+  mcx agent ${name} log <session> [--last N]     View transcript
+  mcx agent ${name} resume <worktree>            Resume in worktree (${resumeMode})
+  mcx agent ${name} worktrees [--prune]          List/prune mcx-created worktrees
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }
@@ -1017,4 +1422,44 @@ function printSpawnUsage(provider: AgentProviderConfig, agentOverride?: string):
   }
 
   console.log(lines.join("\n"));
+}
+
+function printResumeUsage(provider: AgentProviderConfig, agentOverride?: string): void {
+  const name = agentOverride ?? provider.name;
+  const label = agentOverride ?? provider.displayName;
+  const nativeNote = provider.features.resume
+    ? `\n  Default: restores conversation history via native --continue/--resume.
+  --fresh forces git-context prompt instead.`
+    : `\n  ${label} does not support native session resume.
+  Sessions are resumed with a git-context prompt (branch, commits, uncommitted changes).`;
+
+  console.log(`mcx agent ${name} resume — Resume a session in a worktree
+${nativeNote}
+
+Usage:
+  mcx agent ${name} resume <worktree>            Resume in worktree
+  mcx agent ${name} resume <worktree> --fresh    Resume with git-context only
+  mcx agent ${name} resume --all                 Resume all orphaned worktrees
+
+Options:
+  --fresh                    Use git-context prompt (skip native resume)
+  --all                      Resume all orphaned worktrees
+  --model, -m <name>         Model override
+  --allow <tools...>         Tool patterns to auto-approve
+  --wait                     Block until result
+  --timeout <ms>             Max wait time`);
+}
+
+function printWorktreesUsage(provider: AgentProviderConfig, agentOverride?: string): void {
+  const name = agentOverride ?? provider.name;
+
+  console.log(`mcx agent ${name} worktrees — List and manage mcx-created worktrees
+
+Usage:
+  mcx agent ${name} worktrees                    List all mcx worktrees
+  mcx agent ${name} worktrees --prune            Remove orphaned worktrees with merged branches
+
+Orphaned worktrees (no active session) can be resumed with:
+  mcx agent ${name} resume <worktree>
+  mcx agent ${name} resume --all`);
 }
