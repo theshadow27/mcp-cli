@@ -7,10 +7,15 @@ import { testOptions } from "../../../../test/test-options";
 import { readConfigFile, writeConfigFile } from "./config-file";
 import {
   type ClaudeConfig,
+  type KeychainOAuthEntry,
   cmdAddFromClaudeDesktop,
   cmdImport,
   collectClaudeServers,
   importFromClaude,
+  importFromKeychain,
+  inferTransportType,
+  keychainEntryToServerConfig,
+  readKeychainOAuthEntries,
 } from "./import";
 
 /**
@@ -771,6 +776,11 @@ describe("mcx import", () => {
       await cmdAddFromClaudeDesktop(["-h"]);
     });
 
+    test("--from-keychain flag is recognized", async () => {
+      // On non-macOS or without keychain, this should just print "no OAuth servers"
+      await cmdImport(["--from-keychain"]);
+    });
+
     test("imports all transport types", async () => {
       using opts = testOptions();
       const configPath = join(opts.dir, "desktop-all.json");
@@ -800,6 +810,186 @@ describe("mcx import", () => {
 
       const result = readConfigFile(targetPath);
       expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
+    });
+  });
+
+  describe("--from-keychain: readKeychainOAuthEntries", () => {
+    const sampleKeychainData = JSON.stringify({
+      mcpOAuth: {
+        "asana|abc123": {
+          serverName: "asana",
+          serverUrl: "https://mcp.asana.com/sse",
+          clientId: "44EBfNxyz",
+          accessToken: "tok_asana",
+        },
+        "sentry|def456": {
+          serverName: "sentry",
+          serverUrl: "https://mcp.sentry.dev/mcp",
+          clientId: "lwL7Cdabc",
+          accessToken: "tok_sentry",
+        },
+      },
+    });
+
+    test("parses entries from keychain JSON", async () => {
+      const entries = await readKeychainOAuthEntries(async () => sampleKeychainData);
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => e.serverName).sort()).toEqual(["asana", "sentry"]);
+      expect(entries.find((e) => e.serverName === "asana")?.serverUrl).toBe("https://mcp.asana.com/sse");
+      expect(entries.find((e) => e.serverName === "asana")?.clientId).toBe("44EBfNxyz");
+    });
+
+    test("returns empty array when keychain returns null", async () => {
+      const entries = await readKeychainOAuthEntries(async () => null);
+      expect(entries).toEqual([]);
+    });
+
+    test("returns empty array when no mcpOAuth key", async () => {
+      const entries = await readKeychainOAuthEntries(async () => JSON.stringify({ otherStuff: true }));
+      expect(entries).toEqual([]);
+    });
+
+    test("returns empty array on invalid JSON", async () => {
+      const entries = await readKeychainOAuthEntries(async () => "not valid json{{{");
+      expect(entries).toEqual([]);
+    });
+
+    test("skips entries missing required fields", async () => {
+      const data = JSON.stringify({
+        mcpOAuth: {
+          "missing-url|123": {
+            serverName: "test",
+            clientId: "abc",
+            accessToken: "tok",
+            // serverUrl is missing
+          },
+          "valid|456": {
+            serverName: "valid",
+            serverUrl: "https://example.com/mcp",
+            clientId: "xyz",
+            accessToken: "tok",
+          },
+        },
+      });
+      const entries = await readKeychainOAuthEntries(async () => data);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].serverName).toBe("valid");
+    });
+  });
+
+  describe("--from-keychain: inferTransportType", () => {
+    test("returns sse for URLs ending with /sse", () => {
+      expect(inferTransportType("https://mcp.asana.com/sse")).toBe("sse");
+      expect(inferTransportType("https://mcp.atlassian.com/v1/sse")).toBe("sse");
+    });
+
+    test("returns http for other URLs", () => {
+      expect(inferTransportType("https://mcp.sentry.dev/mcp")).toBe("http");
+      expect(inferTransportType("https://mcp.notion.com/mcp")).toBe("http");
+    });
+
+    test("returns http for invalid URLs", () => {
+      expect(inferTransportType("not a url")).toBe("http");
+    });
+  });
+
+  describe("--from-keychain: keychainEntryToServerConfig", () => {
+    test("creates SSE config for /sse URLs", () => {
+      const config = keychainEntryToServerConfig({
+        serverName: "asana",
+        serverUrl: "https://mcp.asana.com/sse",
+        clientId: "44EBfN",
+      });
+      expect(config).toEqual({ type: "sse", url: "https://mcp.asana.com/sse" });
+    });
+
+    test("creates HTTP config for non-sse URLs", () => {
+      const config = keychainEntryToServerConfig({
+        serverName: "sentry",
+        serverUrl: "https://mcp.sentry.dev/mcp",
+        clientId: "lwL7Cd",
+      });
+      expect(config).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
+    });
+  });
+
+  describe("--from-keychain: importFromKeychain", () => {
+    const keychainJson = JSON.stringify({
+      mcpOAuth: {
+        "asana|abc123": {
+          serverName: "asana",
+          serverUrl: "https://mcp.asana.com/sse",
+          clientId: "44EBfNxyz",
+          accessToken: "tok_asana",
+        },
+        "sentry|def456": {
+          serverName: "sentry",
+          serverUrl: "https://mcp.sentry.dev/mcp",
+          clientId: "lwL7Cdabc",
+          accessToken: "tok_sentry",
+        },
+      },
+    });
+
+    test("imports new servers from keychain", async () => {
+      using opts = testOptions();
+      await importFromKeychain("user", async () => keychainJson);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.asana).toEqual({ type: "sse", url: "https://mcp.asana.com/sse" });
+      expect(result.mcpServers?.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
+    });
+
+    test("skips servers that are already configured by URL", async () => {
+      using opts = testOptions();
+      // Pre-configure asana with the same URL
+      writeConfigFile(join(opts.dir, "servers.json"), {
+        mcpServers: {
+          "my-asana": { type: "sse" as const, url: "https://mcp.asana.com/sse" },
+        },
+      });
+
+      await importFromKeychain("user", async () => keychainJson);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      // asana should NOT be added (URL already exists under "my-asana")
+      expect(result.mcpServers?.asana).toBeUndefined();
+      // my-asana should still be there
+      expect(result.mcpServers?.["my-asana"]).toBeDefined();
+      // sentry should be added
+      expect(result.mcpServers?.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
+    });
+
+    test("handles empty keychain gracefully", async () => {
+      using opts = testOptions();
+      await importFromKeychain("user", async () => null);
+      // Should not throw, just print a message
+    });
+
+    test("handles keychain with no entries", async () => {
+      using opts = testOptions();
+      await importFromKeychain("user", async () => JSON.stringify({ mcpOAuth: {} }));
+    });
+
+    test("preserves URL exactly as-is from keychain", async () => {
+      using opts = testOptions();
+      const data = JSON.stringify({
+        mcpOAuth: {
+          "test|1": {
+            serverName: "test",
+            serverUrl: "https://WEIRD.example.COM/Path/To/MCP",
+            clientId: "abc",
+            accessToken: "tok",
+          },
+        },
+      });
+      await importFromKeychain("user", async () => data);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.test).toBeDefined();
+      if (result.mcpServers?.test && "url" in result.mcpServers.test) {
+        expect(result.mcpServers.test.url).toBe("https://WEIRD.example.COM/Path/To/MCP");
+      }
     });
   });
 });
