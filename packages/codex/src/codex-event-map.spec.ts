@@ -38,7 +38,7 @@ describe("mapNotification", () => {
 
     const events = mapNotification(
       "turn/completed",
-      { threadId: "t1", turnId: "turn1", status: "completed" },
+      { threadId: "t1", turn: { id: "turn1", status: "completed", error: null } },
       state,
       sessionId,
       provider,
@@ -61,7 +61,7 @@ describe("mapNotification", () => {
     const state = createEventMapState();
     const events = mapNotification(
       "turn/completed",
-      { threadId: "t1", turnId: "turn1", status: "failed", reason: "Model error" },
+      { threadId: "t1", turn: { id: "turn1", status: "failed", error: { message: "Model error" } } },
       state,
       sessionId,
       provider,
@@ -175,7 +175,7 @@ describe("mapNotification", () => {
     const state = createEventMapState();
     const events = mapNotification(
       "thread/status/changed",
-      { threadId: "t1", status: "waitingOnApproval" },
+      { threadId: "t1", status: { type: "idle" } },
       state,
       sessionId,
       provider,
@@ -187,7 +187,7 @@ describe("mapNotification", () => {
     const state = createEventMapState();
     const events = mapNotification(
       "turn/completed",
-      { threadId: "t1", turnId: "turn1", status: "interrupted" },
+      { threadId: "t1", turn: { id: "turn1", status: "interrupted", error: null } },
       state,
       sessionId,
       provider,
@@ -210,7 +210,7 @@ describe("mapNotification", () => {
 
     mapNotification(
       "turn/completed",
-      { threadId: "t1", turnId: "turn1", status: "completed" },
+      { threadId: "t1", turn: { id: "turn1", status: "completed", error: null } },
       state,
       sessionId,
       provider,
@@ -227,7 +227,7 @@ describe("mapNotification", () => {
 
     const events = mapNotification(
       "turn/completed",
-      { threadId: "t1", turnId: "turn1", status: "completed" },
+      { threadId: "t1", turn: { id: "turn1", status: "completed", error: null } },
       state,
       sessionId,
       provider,

@@ -12,6 +12,7 @@ function makeDeps(overrides?: Partial<CodexDeps>): CodexDeps {
     exit: mock((code: number) => {
       throw new ExitError(code);
     }) as CodexDeps["exit"],
+    getStaleDaemonWarning: mock(() => null),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ...overrides,
   };
@@ -209,6 +210,15 @@ describe("cmdCodex", () => {
     const deps = makeDeps();
     await expect(cmdCodex(["bogus"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Unknown codex subcommand"));
+  });
+
+  test("fails fast when daemon build is stale", async () => {
+    const deps = makeDeps({
+      getStaleDaemonWarning: mock(() => "Daemon is running a different build. Run `mcx shutdown`."),
+    });
+    await expect(cmdCodex(["spawn", "--task", "x"], deps)).rejects.toThrow(ExitError);
+    expect(deps.callTool).not.toHaveBeenCalled();
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("mcx shutdown"));
   });
 });
 

@@ -24,13 +24,18 @@ rl.on("line", (line) => {
   if (msg.id === undefined || !method) return;
 
   if (method === "initialize") {
-    respond(msg.id, { serverInfo: { name: "codex-fake", version: "0.0.1" } });
+    respond(msg.id, { userAgent: "codex-fake/0.0.1" });
   } else if (method === "thread/start") {
-    respond(msg.id, { id: "thread-1", status: "active" });
+    respond(msg.id, { thread: { id: "thread-1", status: "idle", cwd: process.cwd() } });
   } else if (method === "turn/start") {
-    // In validate-input mode, assert that input is an array of elements
+    // In validate-input mode, assert that threadId and input match the Codex protocol.
     if (mode === "validate-input") {
       const params = msg.params as Record<string, unknown> | undefined;
+      if (typeof params?.threadId !== "string" || params.threadId.length === 0) {
+        respond(msg.id, null);
+        process.stderr.write(`FAIL: threadId must be a non-empty string, got ${JSON.stringify(params?.threadId)}\n`);
+        process.exit(1);
+      }
       const input = params?.input;
       if (!Array.isArray(input)) {
         respond(msg.id, null);
@@ -44,7 +49,7 @@ rl.on("line", (line) => {
         process.exit(1);
       }
     }
-    respond(msg.id, { id: "turn-1", status: "active" });
+    respond(msg.id, { turn: { id: "turn-1", status: "inProgress", error: null } });
     scheduleEvents();
   } else if (method === "turn/interrupt") {
     respond(msg.id, { status: "interrupted" });
@@ -62,7 +67,7 @@ function sendTurnCompleted(status = "completed"): void {
     `${JSON.stringify({
       jsonrpc: "2.0",
       method: "turn/completed",
-      params: { turnId: "turn-1", threadId: "thread-1", status },
+      params: { threadId: "thread-1", turn: { id: "turn-1", status, error: null } },
     })}\n`,
   );
 }

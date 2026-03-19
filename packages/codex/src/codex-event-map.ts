@@ -72,7 +72,8 @@ export function mapNotification(
 
     case "thread/status/changed": {
       const p = params as unknown as ThreadStatusChangedParams;
-      if (p.status === "waitingOnApproval") {
+      const status = typeof p.status === "string" ? p.status : p.status.type;
+      if (status === "waitingOnApproval") {
         // Permission request events are generated from the actual approval
         // server-request, not from this status change. This is just a state hint.
       }
@@ -117,13 +118,14 @@ export function mapNotification(
 
     case "turn/completed": {
       const p = params as unknown as TurnCompletedParams;
+      const status = p.turn.status;
       state.numTurns++;
 
-      if (p.status === "failed") {
-        return [{ type: "session:error", errors: [p.reason ?? "Turn failed"], cost: null }];
+      if (status === "failed") {
+        return [{ type: "session:error", errors: [p.turn.error?.message ?? "Turn failed"], cost: null }];
       }
 
-      if (p.status === "interrupted") {
+      if (status === "interrupted") {
         return [{ type: "session:error", errors: ["Turn interrupted"], cost: null }];
       }
 
