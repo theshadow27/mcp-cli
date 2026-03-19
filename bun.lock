@@ -16,6 +16,13 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/acp": {
+      "name": "@mcp-cli/acp",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mcp-cli/core": "workspace:*",
+      },
+    },
     "packages/codex": {
       "name": "@mcp-cli/codex",
       "version": "0.1.0",
@@ -92,6 +99,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@1.9.4", "", { "os": "win32", "cpu": "x64" }, "sha512-8Y5wMhVIPaWe6jw2H+KlEm4wP/f7EW3810ZLmDlrEEy5KvBsb9ECEfu/kMWD484ijfQ8+nIi0giMgu9g1UAuuA=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.9", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw=="],
+
+    "@mcp-cli/acp": ["@mcp-cli/acp@workspace:packages/acp"],
 
     "@mcp-cli/codex": ["@mcp-cli/codex@workspace:packages/codex"],
 
