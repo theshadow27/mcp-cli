@@ -107,7 +107,7 @@ export async function cmdAcp(args: string[], agentOverride?: string, deps?: Part
       break;
     case "worktrees":
     case "wt":
-      await worktreesCommand(args.slice(1), `${P}_session_list`, d);
+      await worktreesCommand(args.slice(1), d);
       break;
     default: {
       const name = agentOverride ?? "acp";

@@ -90,6 +90,13 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   const { name, repoRoot, branchPrefix, nativeWorktree } = opts;
   const wtConfig = readWorktreeConfig(repoRoot);
 
+  // Path traversal guard — validate before any case
+  const worktreeBase = resolveWorktreeBase(repoRoot, wtConfig);
+  const candidatePath = resolveWorktreePath(repoRoot, name, wtConfig);
+  if (!candidatePath.startsWith(`${worktreeBase}/`)) {
+    throw new WorktreeError(`Worktree name "${name}" resolves outside the worktree base directory`);
+  }
+
   // Case 1: Custom hooks
   if (hasWorktreeHooks(wtConfig)) {
     const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
@@ -112,9 +119,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 2: branchPrefix: false — create with raw branch name
   if (wtConfig?.branchPrefix === false) {
     const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
-    const { exitCode, stdout } = deps.exec(["git", "worktree", "add", worktreePath, "-b", name, "HEAD"]);
+    const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", name, "HEAD"]);
     if (exitCode !== 0) {
-      throw new WorktreeError(`Failed to create worktree: ${stdout}`);
+      throw new WorktreeError(`Failed to create worktree: ${stderr}`);
     }
     deps.printError(`Created worktree: ${worktreePath}`);
     return {
@@ -136,9 +143,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 4: Shim creates worktree with prefixed branch name
   const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
   const gitBranch = branchPrefix ? `${branchPrefix}${name}` : name;
-  const { exitCode, stdout } = deps.exec(["git", "worktree", "add", worktreePath, "-b", gitBranch, "HEAD"]);
+  const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", gitBranch, "HEAD"]);
   if (exitCode !== 0) {
-    throw new WorktreeError(`Failed to create worktree: ${stdout}`);
+    throw new WorktreeError(`Failed to create worktree: ${stderr}`);
   }
   deps.printError(`Created worktree: ${worktreePath}`);
   return {
@@ -160,13 +167,15 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
   // Guard against path traversal
   if (!worktreePath.startsWith(`${worktreeBase}/`)) return;
 
-  // Check for uncommitted changes
-  const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
+  // Check for uncommitted changes (trim to handle trailing newline from some git versions)
+  const { stdout: rawStatus, exitCode: statusExit } = deps.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
   if (statusExit !== 0) return;
+  const status = rawStatus.trim();
 
   if (status === "") {
-    // Capture branch name before removal
-    const { stdout: branch } = deps.exec(["git", "-C", worktreePath, "branch", "--show-current"]);
+    // Capture branch name before removal (trim trailing newline from git output)
+    const { stdout: rawBranch } = deps.exec(["git", "-C", worktreePath, "branch", "--show-current"]);
+    const branch = rawBranch.trim();
 
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
@@ -244,7 +253,7 @@ export function parseWorktreeList(output: string): WorktreeEntry[] {
 export function listMcxWorktrees(
   repoRoot: string,
   deps: WorktreeShimDeps,
-): { worktrees: WorktreeEntry[]; worktreeBase: string } {
+): { worktrees: WorktreeEntry[]; allWorktrees: WorktreeEntry[]; worktreeBase: string } {
   const wtConfig = readWorktreeConfig(repoRoot);
   const worktreeBase = resolveWorktreeBase(repoRoot, wtConfig);
 
@@ -253,9 +262,9 @@ export function listMcxWorktrees(
     throw new WorktreeError("Failed to list git worktrees (not a git repo?)");
   }
 
-  const all = parseWorktreeList(stdout);
-  const mcx = all.filter((wt) => wt.path.startsWith(`${worktreeBase}/`));
-  return { worktrees: mcx, worktreeBase };
+  const allWorktrees = parseWorktreeList(stdout);
+  const mcx = allWorktrees.filter((wt) => wt.path.startsWith(`${worktreeBase}/`));
+  return { worktrees: mcx, allWorktrees, worktreeBase };
 }
 
 // ── Prune ──
@@ -319,9 +328,9 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
       continue;
     }
 
-    // Check if clean
+    // Check if clean (trim to handle trailing newline from some git versions)
     const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", wt.path, "status", "--porcelain"]);
-    if (statusExit !== 0 || status !== "") continue;
+    if (statusExit !== 0 || status.trim() !== "") continue;
 
     // Remove worktree
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {

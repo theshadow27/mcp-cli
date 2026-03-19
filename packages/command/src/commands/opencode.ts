@@ -103,7 +103,7 @@ export async function cmdOpencode(args: string[], deps?: Partial<OpencodeDeps>):
       break;
     case "worktrees":
     case "wt":
-      await worktreesCommand(args.slice(1), `${P}_session_list`, d);
+      await worktreesCommand(args.slice(1), d);
       break;
     default:
       d.printError(

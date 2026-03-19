@@ -104,7 +104,7 @@ export async function cmdCodex(args: string[], deps?: Partial<CodexDeps>): Promi
       break;
     case "worktrees":
     case "wt":
-      await worktreesCommand(args.slice(1), `${P}_session_list`, d);
+      await worktreesCommand(args.slice(1), d);
       break;
     default:
       d.printError(

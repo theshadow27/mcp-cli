@@ -15,7 +15,6 @@ import {
   getDefaultBranch,
   listMcxWorktrees,
   parseWorktreeList,
-  pruneWorktrees,
   readWorktreeConfig,
   resolveModelName,
   resolveWorktreePath,
@@ -528,21 +527,19 @@ async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
 
   const cwd = process.cwd();
 
-  // List all worktrees
+  // List all worktrees (single git call — listMcxWorktrees returns both filtered and full lists)
   let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
+  let allWorktrees: ReturnType<typeof listMcxWorktrees>["allWorktrees"];
   let worktreeParent: string;
   try {
     const listed = listMcxWorktrees(cwd, d);
     mcxWorktrees = listed.worktrees;
+    allWorktrees = listed.allWorktrees;
     worktreeParent = listed.worktreeBase;
   } catch (e) {
     d.printError(e instanceof WorktreeError ? e.message : String(e));
     d.exit(1);
   }
-
-  // Also need the full worktree list for fallback resolution
-  const { stdout: wtOutput } = d.exec(["git", "-C", cwd, "worktree", "list", "--porcelain"]);
-  const allWorktrees = parseWorktreeList(wtOutput);
 
   // Get active sessions to find orphaned worktrees
   let sessionWorktrees = new Set<string>();
@@ -1123,64 +1120,8 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
 export { parseWorktreeList } from "@mcp-cli/core";
 
 async function claudeWorktrees(args: string[], d: ClaudeDeps): Promise<void> {
-  const prune = args.includes("--prune");
-  const cwd = process.cwd();
-
-  let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
-  let worktreeParent: string;
-  try {
-    const listed = listMcxWorktrees(cwd, d);
-    mcxWorktrees = listed.worktrees;
-    worktreeParent = listed.worktreeBase;
-  } catch (e) {
-    d.printError(e instanceof WorktreeError ? e.message : String(e));
-    d.exit(1);
-  }
-
-  if (mcxWorktrees.length === 0 && !prune) {
-    d.printError("No mcx worktrees found.");
-    return;
-  }
-
-  // Get active sessions to cross-reference
-  const sessionWorktrees = await getActiveSessionWorktrees("claude_session_list", d);
-
-  if (prune) {
-    const result = pruneWorktrees({ repoRoot: cwd, activeWorktrees: sessionWorktrees, deps: d });
-    if (result.pruned === 0) {
-      d.printError("Nothing to prune.");
-    } else {
-      d.printError(`Pruned ${result.pruned} worktree${result.pruned === 1 ? "" : "s"}.`);
-    }
-    if (result.skippedUnmerged.length > 0) {
-      d.printError(`Skipped ${result.skippedUnmerged.length} unmerged: ${result.skippedUnmerged.join(", ")}`);
-    }
-    return;
-  }
-
-  // List mode — display table
-  const header = `${"WORKTREE".padEnd(28)} ${"BRANCH".padEnd(32)} ${"STATUS".padEnd(10)} SESSION`;
-  console.log(`${c.dim}${header}${c.reset}`);
-
-  for (const wt of mcxWorktrees) {
-    const wtName = wt.path.slice(`${worktreeParent}/`.length);
-    const branch = (wt.branch ?? "—").padEnd(32);
-    const hasSession = sessionWorktrees.has(wtName);
-
-    // Check dirty/clean
-    const { stdout: status, exitCode: statusExit } = d.exec(["git", "-C", wt.path, "status", "--porcelain"]);
-    let wtStatus: string;
-    if (statusExit !== 0) {
-      wtStatus = `${c.red}${"gone".padEnd(10)}${c.reset}`;
-    } else if (status === "") {
-      wtStatus = `${c.green}${"clean".padEnd(10)}${c.reset}`;
-    } else {
-      wtStatus = `${c.yellow}${"dirty".padEnd(10)}${c.reset}`;
-    }
-
-    const session = hasSession ? `${c.green}active${c.reset}` : `${c.dim}—${c.reset}`;
-    console.log(`${c.cyan}${wtName.padEnd(28)}${c.reset} ${branch} ${wtStatus} ${session}`);
-  }
+  const { worktreesCommand } = await import("./worktree-commands");
+  await worktreesCommand(args, d);
 }
 
 // ── Helpers ──

@@ -120,13 +120,20 @@ describe("createWorktree", () => {
     ]);
   });
 
-  test("throws WorktreeError on git failure", () => {
+  test("throws WorktreeError on git failure with stderr message", () => {
     const deps = makeDeps({
-      exec: mock(() => ({ stdout: "error: branch already exists", stderr: "", exitCode: 128 })),
+      exec: mock(() => ({ stdout: "", stderr: "fatal: branch already exists", exitCode: 128 })),
     });
     expect(() => createWorktree({ name: "my-feat", repoRoot: "/repo", branchPrefix: "codex/" }, deps)).toThrow(
-      WorktreeError,
+      "Failed to create worktree: fatal: branch already exists",
     );
+  });
+
+  test("guards against path traversal", () => {
+    const deps = makeDeps();
+    expect(() =>
+      createWorktree({ name: "../../../etc/passwd", repoRoot: "/repo", branchPrefix: "codex/" }, deps),
+    ).toThrow("resolves outside the worktree base directory");
   });
 
   test("hooks: runs setup hook and sets cwd", () => {
@@ -239,6 +246,48 @@ describe("cleanupWorktree", () => {
     cleanupWorktree("../../../etc/passwd", "/repo/.claude/worktrees/x", { exec, printError }, "/repo");
     expect(exec).not.toHaveBeenCalled();
   });
+
+  test("trims branch name before deleting", () => {
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      // Simulate git returning branch with trailing newline
+      if (cmd.includes("--show-current")) return { stdout: "feat/my-branch\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+
+    // The branch delete call should use the trimmed branch name
+    const deleteCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
+      (c[0] as string[]).includes("-d"),
+    );
+    expect(deleteCalls.length).toBe(1);
+    expect(deleteCalls[0][0] as string[]).toContain("feat/my-branch");
+    // Should NOT contain trailing newline
+    expect(deleteCalls[0][0] as string[]).not.toContain("feat/my-branch\n");
+  });
+
+  test("handles trailing newline in git status --porcelain for clean repo", () => {
+    const exec = mock((cmd: string[]) => {
+      // Simulate git returning just a newline for clean repo
+      if (cmd.includes("status")) return { stdout: "\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+
+    // Should treat "\n" as clean and proceed to remove
+    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+  });
 });
 
 // ── getDefaultBranch ──
@@ -300,6 +349,7 @@ describe("listMcxWorktrees", () => {
     const result = listMcxWorktrees("/repo", deps);
     expect(result.worktrees).toHaveLength(1);
     expect(result.worktrees[0].path).toBe("/repo/.claude/worktrees/feat-a");
+    expect(result.allWorktrees).toHaveLength(3);
     expect(result.worktreeBase).toBe("/repo/.claude/worktrees");
   });
 

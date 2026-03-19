@@ -7,22 +7,57 @@
 
 import { WorktreeError, listMcxWorktrees, pruneWorktrees } from "@mcp-cli/core";
 import type { WorktreeShimDeps } from "@mcp-cli/core";
-import { c } from "../output";
-import { getActiveSessionWorktrees } from "./claude";
-import type { SharedSessionDeps } from "./claude";
+import { c, formatToolResult } from "../output";
+
+/** Shared dependency interface for session-based commands. */
+export interface WorktreeCommandDeps extends WorktreeShimDeps {
+  callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
+  exit: (code: number) => never;
+}
+
+/** All provider session list tools — prune must check ALL providers. */
+const ALL_SESSION_LIST_TOOLS = [
+  "claude_session_list",
+  "codex_session_list",
+  "acp_session_list",
+  "opencode_session_list",
+];
+
+/**
+ * Get the set of worktree names with active sessions across ALL providers.
+ * For display/list operations: returns empty set on daemon failure (fail-open).
+ * For prune operations: throws on daemon failure (fail-closed).
+ */
+export async function getAllActiveSessionWorktrees(
+  deps: WorktreeCommandDeps,
+  failClosed: boolean,
+): Promise<Set<string>> {
+  const combined = new Set<string>();
+  for (const tool of ALL_SESSION_LIST_TOOLS) {
+    try {
+      const result = await deps.callTool(tool, {});
+      const text = formatToolResult(result);
+      const sessions = JSON.parse(text) as Array<{ worktree?: string | null }>;
+      for (const s of sessions) {
+        if (s.worktree) combined.add(s.worktree);
+      }
+    } catch {
+      if (failClosed) {
+        throw new Error(`Cannot reach daemon to query ${tool}. Aborting prune to prevent destroying active worktrees.`);
+      }
+      // fail-open for list/display — continue with what we have
+    }
+  }
+  return combined;
+}
 
 /**
  * Shared worktrees subcommand: list or prune mcx-created worktrees.
  *
  * @param args - CLI arguments after the `worktrees` subcommand
- * @param sessionListTool - The provider's session list tool name (e.g. `codex_session_list`)
- * @param deps - Shared session deps (must satisfy both SharedSessionDeps and WorktreeShimDeps)
+ * @param deps - Shared deps (must satisfy both WorktreeCommandDeps and WorktreeShimDeps)
  */
-export async function worktreesCommand(
-  args: string[],
-  sessionListTool: string,
-  deps: SharedSessionDeps & WorktreeShimDeps,
-): Promise<void> {
+export async function worktreesCommand(args: string[], deps: WorktreeCommandDeps): Promise<void> {
   const prune = args.includes("--prune");
   const cwd = process.cwd();
 
@@ -34,7 +69,7 @@ export async function worktreesCommand(
     worktreeBase = listed.worktreeBase;
   } catch (e) {
     deps.printError(e instanceof WorktreeError ? e.message : String(e));
-    deps.exit(1);
+    return deps.exit(1);
   }
 
   if (mcxWorktrees.length === 0 && !prune) {
@@ -42,7 +77,13 @@ export async function worktreesCommand(
     return;
   }
 
-  const activeWorktrees = await getActiveSessionWorktrees(sessionListTool, deps);
+  let activeWorktrees: Set<string>;
+  try {
+    activeWorktrees = await getAllActiveSessionWorktrees(deps, prune);
+  } catch (e) {
+    deps.printError(e instanceof Error ? e.message : String(e));
+    return deps.exit(1);
+  }
 
   if (prune) {
     const result = pruneWorktrees({ repoRoot: cwd, activeWorktrees, deps });
@@ -70,7 +111,7 @@ export async function worktreesCommand(
     let wtStatus: string;
     if (statusExit !== 0) {
       wtStatus = `${c.red}${"gone".padEnd(10)}${c.reset}`;
-    } else if (status === "") {
+    } else if (status.trim() === "") {
       wtStatus = `${c.green}${"clean".padEnd(10)}${c.reset}`;
     } else {
       wtStatus = `${c.yellow}${"dirty".padEnd(10)}${c.reset}`;
