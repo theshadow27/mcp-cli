@@ -23,6 +23,8 @@
       "@mcp-cli/permissions/*": ["./packages/permissions/src/*"],
       "@mcp-cli/codex": ["./packages/codex/src/index.ts"],
       "@mcp-cli/codex/*": ["./packages/codex/src/*"],
+      "@mcp-cli/acp": ["./packages/acp/src/index.ts"],
+      "@mcp-cli/acp/*": ["./packages/acp/src/*"],
       "@mcp-cli/command": ["./packages/command/src/main.ts"],
       "@mcp-cli/command/*": ["./packages/command/src/*"],
       "@mcp-cli/control": ["./packages/control/src/main.tsx"],
