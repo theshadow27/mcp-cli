@@ -10,8 +10,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 setDefaultTimeout(30_000);
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { TestDaemon } from "./harness";
-import { echoServerConfig, pollUntil, rpc, startTestDaemon } from "./harness";
+import type { MockServer, TestDaemon } from "./harness";
+import {
+  echoHttpServerConfig,
+  echoServerConfig,
+  echoSseServerConfig,
+  pollUntil,
+  rpc,
+  startMockServer,
+  startTestDaemon,
+} from "./harness";
 
 // ---------------------------------------------------------------------------
 // P1: Daemon lifecycle
@@ -550,6 +558,180 @@ describe("P5b: Error scenario edge cases", () => {
     expect(res.error?.message).toContain("crasher");
 
     // Daemon should still be alive after the error
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3b: HTTP (Streamable HTTP) transport end-to-end (#115)
+// ---------------------------------------------------------------------------
+describe("P3b: HTTP transport end-to-end", () => {
+  let mockServer: MockServer;
+  let daemon: TestDaemon;
+
+  beforeAll(async () => {
+    mockServer = await startMockServer("test/echo-http-server.ts");
+    daemon = await startTestDaemon({ echohttp: echoHttpServerConfig(mockServer.port) });
+  });
+
+  afterAll(async () => {
+    await daemon.kill();
+    await mockServer.kill();
+  });
+
+  test("listTools returns echo server tools via HTTP transport", async () => {
+    const res = await rpc(daemon.socketPath, "listTools", { server: "echohttp" });
+    expect(res.error).toBeUndefined();
+    const tools = res.result as Array<{ name: string }>;
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual(["add", "echo", "fail"]);
+  });
+
+  test("callTool echo returns correct result via HTTP transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echohttp",
+      tool: "echo",
+      arguments: { message: "hello http" },
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0].text).toBe("hello http");
+  });
+
+  test("callTool add returns correct sum via HTTP transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echohttp",
+      tool: "add",
+      arguments: { a: 30, b: 12 },
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { content: Array<{ text: string }> };
+    expect(result.content[0].text).toBe("42");
+  });
+
+  test("callTool fail returns error content via HTTP transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echohttp",
+      tool: "fail",
+      arguments: {},
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { isError: boolean; content: Array<{ text: string }> };
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("intentional failure");
+
+    // Daemon should still be alive
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3c: SSE transport end-to-end (#115)
+// ---------------------------------------------------------------------------
+describe("P3c: SSE transport end-to-end", () => {
+  let mockServer: MockServer;
+  let daemon: TestDaemon;
+
+  beforeAll(async () => {
+    mockServer = await startMockServer("test/echo-sse-server.ts");
+    daemon = await startTestDaemon({ echosse: echoSseServerConfig(mockServer.port) });
+  });
+
+  afterAll(async () => {
+    await daemon.kill();
+    await mockServer.kill();
+  });
+
+  test("listTools returns echo server tools via SSE transport", async () => {
+    const res = await rpc(daemon.socketPath, "listTools", { server: "echosse" });
+    expect(res.error).toBeUndefined();
+    const tools = res.result as Array<{ name: string }>;
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual(["add", "echo", "fail"]);
+  });
+
+  test("callTool echo returns correct result via SSE transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echosse",
+      tool: "echo",
+      arguments: { message: "hello sse" },
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0].text).toBe("hello sse");
+  });
+
+  test("callTool add returns correct sum via SSE transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echosse",
+      tool: "add",
+      arguments: { a: 19, b: 23 },
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { content: Array<{ text: string }> };
+    expect(result.content[0].text).toBe("42");
+  });
+
+  test("callTool fail returns error content via SSE transport", async () => {
+    const res = await rpc(daemon.socketPath, "callTool", {
+      server: "echosse",
+      tool: "fail",
+      arguments: {},
+    });
+    expect(res.error).toBeUndefined();
+    const result = res.result as { isError: boolean; content: Array<{ text: string }> };
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("intentional failure");
+
+    // Daemon should still be alive
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P5c: HTTP/SSE transport error scenarios (#115)
+// ---------------------------------------------------------------------------
+describe("P5c: Transport connection error scenarios", () => {
+  let daemon: TestDaemon | undefined;
+
+  afterEach(async () => {
+    if (daemon) {
+      await daemon.kill();
+      daemon = undefined;
+    }
+  });
+
+  test("HTTP connection refused returns clear error", async () => {
+    // Point at a port with nothing listening
+    daemon = await startTestDaemon({
+      deadhttp: { type: "http", url: "http://127.0.0.1:1/mcp" },
+    });
+
+    const res = await rpc(daemon.socketPath, "listTools", { server: "deadhttp" });
+    expect(res.error).toBeDefined();
+    // Error should mention connection or the URL
+    const msg = res.error?.message?.toLowerCase() ?? "";
+    expect(msg.includes("connect") || msg.includes("127.0.0.1")).toBe(true);
+
+    // Daemon should survive
+    const ping = await rpc(daemon.socketPath, "ping");
+    expect(ping.result).toHaveProperty("pong", true);
+  });
+
+  test("SSE connection refused returns clear error", async () => {
+    daemon = await startTestDaemon({
+      deadsse: { type: "sse", url: "http://127.0.0.1:1/sse" },
+    });
+
+    const res = await rpc(daemon.socketPath, "listTools", { server: "deadsse" });
+    expect(res.error).toBeDefined();
+    const msg = res.error?.message?.toLowerCase() ?? "";
+    expect(msg.includes("connect") || msg.includes("127.0.0.1")).toBe(true);
+
+    // Daemon should survive
     const ping = await rpc(daemon.socketPath, "ping");
     expect(ping.result).toHaveProperty("pong", true);
   });

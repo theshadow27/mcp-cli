@@ -9,6 +9,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
 
+export interface MockServer {
+  proc: ReturnType<typeof Bun.spawn>;
+  port: number;
+  kill: () => Promise<void>;
+}
+
 export interface TestDaemon {
   proc: ReturnType<typeof Bun.spawn>;
   dir: string;
@@ -135,6 +141,63 @@ export async function pollUntil(
     await Bun.sleep(10);
   }
   if (!(await condition())) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+}
+
+/**
+ * Spawn a mock MCP server process (HTTP or SSE) and read its port from stdout.
+ * The server script must print the listening port as the first line of stdout.
+ */
+export async function startMockServer(scriptPath: string): Promise<MockServer> {
+  const proc = Bun.spawn(["bun", resolve(scriptPath)], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // Read the port from the first line of stdout
+  const reader = proc.stdout.getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+
+  if (!value) {
+    proc.kill();
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`Mock server failed to start: ${stderr}`);
+  }
+
+  const port = Number(new TextDecoder().decode(value).trim());
+  if (!port || Number.isNaN(port)) {
+    proc.kill();
+    throw new Error(`Mock server printed invalid port: ${new TextDecoder().decode(value)}`);
+  }
+
+  return {
+    proc,
+    port,
+    kill: async () => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // already exited
+      }
+      await Promise.race([proc.exited, Bun.sleep(3_000)]);
+    },
+  };
+}
+
+/** HTTP (Streamable HTTP) config pointing to a mock server */
+export function echoHttpServerConfig(port: number): ServerConfig {
+  return {
+    type: "http",
+    url: `http://127.0.0.1:${port}/mcp`,
+  };
+}
+
+/** SSE config pointing to a mock server */
+export function echoSseServerConfig(port: number): ServerConfig {
+  return {
+    type: "sse",
+    url: `http://127.0.0.1:${port}/sse`,
+  };
 }
 
 /** Send an IPC RPC request directly to a daemon's Unix socket */
