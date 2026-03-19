@@ -9,6 +9,7 @@ import {
   ServerPool,
   buildChildEnv,
   detectPlanCapabilities,
+  findCauseCode,
   isRetryableError,
   isTransientCallError,
   safeStderrWrite,
@@ -24,6 +25,11 @@ function errWithCode(message: string, code: string): Error {
   const e = new Error(message);
   (e as unknown as Record<string, unknown>).code = code;
   return e;
+}
+
+/** Create an error with a cause chain (simulating SDK wrapping). */
+function sdkWrapped(message: string, cause: Error): Error {
+  return new Error(message, { cause });
 }
 
 describe("isRetryableError", () => {
@@ -267,6 +273,108 @@ describe("wrapTransportError", () => {
       );
       expect(result.message).toContain("TLS/certificate error");
     });
+  });
+
+  // -- SDK-wrapped errors (cause chain) --
+
+  describe("SDK-wrapped errors", () => {
+    test("HTTP 'Unable to connect' with ECONNREFUSED cause → connection refused", () => {
+      const cause = errWithCode("connect ECONNREFUSED 127.0.0.1:8080", "ECONNREFUSED");
+      const result = wrapTransportError(
+        "api",
+        http,
+        sdkWrapped("Unable to connect. Is the computer able to access the url?", cause),
+      );
+      expect(result.message).toContain("could not connect to https://example.com/mcp");
+      expect(result.message).toContain("Is the server running?");
+    });
+
+    test("HTTP 'Unable to connect' with ENOTFOUND cause → DNS failure", () => {
+      const cause = errWithCode("getaddrinfo ENOTFOUND example.invalid", "ENOTFOUND");
+      const result = wrapTransportError(
+        "api",
+        http,
+        sdkWrapped("Unable to connect. Is the computer able to access the url?", cause),
+      );
+      expect(result.message).toContain("DNS lookup failed");
+      expect(result.message).toContain("https://example.com/mcp");
+    });
+
+    test("HTTP 'Unable to connect' without cause → falls back to connection refused", () => {
+      const result = wrapTransportError(
+        "api",
+        http,
+        new Error("Unable to connect. Is the computer able to access the url?"),
+      );
+      expect(result.message).toContain("could not connect to https://example.com/mcp");
+    });
+
+    test("SSE 'SSE error: Unable to connect' → connection refused", () => {
+      const result = wrapTransportError(
+        "events",
+        sse,
+        new Error("SSE error: Unable to connect. Is the computer able to access the url?"),
+      );
+      expect(result.message).toContain("could not connect to https://sse.example.com/events");
+    });
+
+    test("SSE 'Unable to connect' with ENOTFOUND cause → DNS failure", () => {
+      const cause = errWithCode("getaddrinfo ENOTFOUND", "ENOTFOUND");
+      const result = wrapTransportError(
+        "events",
+        sse,
+        sdkWrapped("SSE error: Unable to connect. Is the computer able to access the url?", cause),
+      );
+      expect(result.message).toContain("DNS lookup failed");
+    });
+
+    test("stdio 'MCP error -32000: Connection closed' → process exit message", () => {
+      const result = wrapTransportError("foo", stdio, new Error("MCP error -32000: Connection closed"));
+      expect(result.message).toContain("process exited unexpectedly");
+      expect(result.message).toContain("npx -y my-server");
+    });
+
+    test("stdio 'Connection closed' → process exit message", () => {
+      const result = wrapTransportError("foo", stdio, new Error("Connection closed"));
+      expect(result.message).toContain("process exited unexpectedly");
+    });
+
+    test("deeply nested cause chain → finds code", () => {
+      const inner = errWithCode("connect ECONNREFUSED", "ECONNREFUSED");
+      const mid = new Error("transport failed", { cause: inner });
+      const outer = new Error("Unable to connect. Is the computer able to access the url?", { cause: mid });
+      const result = wrapTransportError("api", http, outer);
+      expect(result.message).toContain("could not connect to https://example.com/mcp");
+    });
+  });
+});
+
+describe("findCauseCode", () => {
+  test("returns code from direct error", () => {
+    expect(findCauseCode(errWithCode("fail", "ECONNREFUSED"))).toBe("ECONNREFUSED");
+  });
+
+  test("returns code from cause chain", () => {
+    const inner = errWithCode("inner", "ENOTFOUND");
+    const outer = new Error("outer", { cause: inner });
+    expect(findCauseCode(outer)).toBe("ENOTFOUND");
+  });
+
+  test("returns undefined for errors without codes", () => {
+    expect(findCauseCode(new Error("no code"))).toBeUndefined();
+  });
+
+  test("returns undefined for non-Error input", () => {
+    expect(findCauseCode("string")).toBeUndefined();
+  });
+
+  test("handles circular-ish chains by depth limit", () => {
+    let err: Error = errWithCode("base", "FOUND");
+    for (let i = 0; i < 15; i++) {
+      err = new Error(`level-${i}`, { cause: err });
+    }
+    // Code is at depth 15, but we only search 10 levels
+    expect(findCauseCode(err)).toBeUndefined();
   });
 });
 

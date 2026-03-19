@@ -870,6 +870,23 @@ function createTransport(config: ServerConfig, authProvider?: OAuthClientProvide
 // -- Error wrapping --
 
 /**
+ * Walk the `.cause` chain of an error looking for a system error code
+ * (e.g., ECONNREFUSED, ENOTFOUND). The MCP SDK often wraps the original
+ * system error as a `cause`, stripping the code from the outer error.
+ * @internal Exported for testing only.
+ */
+export function findCauseCode(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 10; depth++) {
+    if (!(current instanceof Error)) break;
+    const code = (current as unknown as Record<string, unknown>).code;
+    if (typeof code === "string" && code.length > 0) return code;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/**
  * Inspect a transport-level error and return a new Error with an actionable,
  * user-friendly message that includes the server name and hints for resolution.
  * @internal Exported for testing only.
@@ -878,8 +895,9 @@ export function wrapTransportError(serverName: string, config: ServerConfig, raw
   const err = raw instanceof Error ? raw : new Error(String(raw));
   const msg = err.message.toLowerCase();
 
-  // Extract system error code (Node/Bun set `err.code` on system errors)
-  const code: string | undefined = (err as unknown as Record<string, unknown>).code as string | undefined;
+  // Extract system error code — check the error itself and its cause chain
+  const code: string | undefined =
+    ((err as unknown as Record<string, unknown>).code as string | undefined) ?? findCauseCode(err);
 
   const prefix = `Server "${serverName}"`;
 
@@ -892,7 +910,14 @@ export function wrapTransportError(serverName: string, config: ServerConfig, raw
     if (code === "EACCES" || msg.includes("permission denied") || msg.includes("eacces")) {
       return new Error(`${prefix} failed: permission denied for "${config.command}". Check file permissions.`);
     }
-    if (msg.includes("exited") || msg.includes("exit code") || msg.includes("killed") || msg.includes("spawn")) {
+    if (
+      msg.includes("exited") ||
+      msg.includes("exit code") ||
+      msg.includes("killed") ||
+      msg.includes("spawn") ||
+      msg.includes("connection closed") ||
+      msg.includes("mcp error -32000")
+    ) {
       return new Error(
         `${prefix} process exited unexpectedly. Check server logs or run the command manually: ${config.command} ${(config.args ?? []).join(" ")}`,
       );
@@ -904,11 +929,18 @@ export function wrapTransportError(serverName: string, config: ServerConfig, raw
   // HTTP and SSE share most network-level errors
   const url = (config as { url: string }).url;
 
-  if (code === "ECONNREFUSED" || msg.includes("econnrefused") || msg.includes("connection refused")) {
-    return new Error(`${prefix} failed: could not connect to ${url}. Is the server running?`);
-  }
+  // SDK wraps ECONNREFUSED/ENOTFOUND as "Unable to connect" — check cause chain
+  // to distinguish DNS failures from connection refused
   if (code === "ENOTFOUND" || msg.includes("enotfound") || msg.includes("getaddrinfo")) {
     return new Error(`${prefix} failed: DNS lookup failed for ${url}. Check the URL and your network connection.`);
+  }
+  if (
+    code === "ECONNREFUSED" ||
+    msg.includes("econnrefused") ||
+    msg.includes("connection refused") ||
+    msg.includes("unable to connect")
+  ) {
+    return new Error(`${prefix} failed: could not connect to ${url}. Is the server running?`);
   }
   if (
     msg.includes("certificate") ||
