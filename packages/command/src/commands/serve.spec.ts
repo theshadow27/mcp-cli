@@ -505,7 +505,12 @@ describe("registerShutdownHandlers", () => {
     const unregister = registerShutdownHandlers([a]);
     unregister();
 
+    // Guard: without a listener, process.emit("SIGTERM") triggers default kill behavior.
+    // Add a no-op so the signal doesn't terminate the test process.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
     process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
     await Bun.sleep(10);
 
     expect(closed).toEqual([]);
@@ -521,7 +526,12 @@ describe("registerShutdownHandlers", () => {
 
     const unregister = registerShutdownHandlers([a]);
     process.emit("SIGTERM");
+    // After process.once fires, the handler is auto-removed. Guard the second emit
+    // with a no-op so the test process isn't killed by an unhandled SIGTERM.
+    const noop = () => {};
+    process.once("SIGTERM", noop);
     process.emit("SIGTERM");
+    process.off("SIGTERM", noop);
     await Bun.sleep(10);
 
     expect(closed).toEqual(["a"]);
