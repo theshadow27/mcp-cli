@@ -151,6 +151,14 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
+      CREATE TABLE IF NOT EXISTS notes (
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        note TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (server_name, tool_name)
+      );
+
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -1143,6 +1151,44 @@ export class StateDb {
       [maxRows],
     );
     return result.changes;
+  }
+
+  // -- Notes (per-tool annotations) --
+
+  setNote(serverName: string, toolName: string, note: string): void {
+    this.db.run(
+      `INSERT INTO notes (server_name, tool_name, note, updated_at)
+       VALUES (?, ?, ?, unixepoch())
+       ON CONFLICT(server_name, tool_name) DO UPDATE SET
+         note = excluded.note, updated_at = excluded.updated_at`,
+      [serverName, toolName, note],
+    );
+  }
+
+  getNote(serverName: string, toolName: string): string | undefined {
+    const row = this.db
+      .query<{ note: string }, [string, string]>("SELECT note FROM notes WHERE server_name = ? AND tool_name = ?")
+      .get(serverName, toolName);
+    return row?.note;
+  }
+
+  listNotes(): Array<{ serverName: string; toolName: string; note: string; updatedAt: number }> {
+    return this.db
+      .query<{ server_name: string; tool_name: string; note: string; updated_at: number }, []>(
+        "SELECT server_name, tool_name, note, updated_at FROM notes ORDER BY server_name, tool_name",
+      )
+      .all()
+      .map((row) => ({
+        serverName: row.server_name,
+        toolName: row.tool_name,
+        note: row.note,
+        updatedAt: row.updated_at,
+      }));
+  }
+
+  deleteNote(serverName: string, toolName: string): boolean {
+    const result = this.db.run("DELETE FROM notes WHERE server_name = ? AND tool_name = ?", [serverName, toolName]);
+    return result.changes > 0;
   }
 
   close(): void {

@@ -33,6 +33,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdNote } from "./commands/note";
 import { cmdOpencode } from "./commands/opencode";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
@@ -264,6 +265,10 @@ async function main(): Promise<void> {
 
       case "mail":
         await cmdMail(cleanArgs.slice(1));
+        break;
+
+      case "note":
+        await cmdNote(cleanArgs.slice(1));
         break;
 
       case "typegen":
@@ -824,6 +829,12 @@ Usage:
   mcx daemon restart                  Restart the daemon (kills sessions)
   mcx daemon shutdown [--force]        Stop the daemon (--force if sessions active)
   mcx shutdown [--force]              Stop the daemon (legacy)
+
+Notes:
+  mcx note set <srv>.<tool> "text"    Attach a note to a tool
+  mcx note get <srv>.<tool>           Get a tool's note
+  mcx note ls                         List all notes
+  mcx note rm <srv>.<tool>            Remove a note
 
 Aliases:
   mcx alias ls                        List saved aliases

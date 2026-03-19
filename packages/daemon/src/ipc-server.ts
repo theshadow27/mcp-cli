@@ -24,9 +24,11 @@ import {
   CallToolParamsSchema,
   CheckAliasParamsSchema,
   DeleteAliasParamsSchema,
+  DeleteNoteParamsSchema,
   GetAliasParamsSchema,
   GetDaemonLogsParamsSchema,
   GetLogsParamsSchema,
+  GetNoteParamsSchema,
   GetSpansParamsSchema,
   GetToolInfoParamsSchema,
   GrepToolsParamsSchema,
@@ -43,6 +45,7 @@ import {
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
   SendMailParamsSchema,
+  SetNoteParamsSchema,
   ShutdownParamsSchema,
   TouchAliasParamsSchema,
   TriggerAuthParamsSchema,
@@ -357,12 +360,49 @@ export class IpcServer {
 
     this.handlers.set("getToolInfo", async (params, _ctx) => {
       const { server, tool } = GetToolInfoParamsSchema.parse(params);
-      return this.pool.getToolInfo(server, tool);
+      const info = await this.pool.getToolInfo(server, tool);
+      const note = this.db.getNote(server, tool);
+      return note ? { ...info, note } : info;
     });
 
     this.handlers.set("grepTools", async (params, _ctx) => {
       const { pattern } = GrepToolsParamsSchema.parse(params);
-      return this.pool.grepTools(pattern);
+      const tools = await this.pool.grepTools(pattern);
+
+      // Enrich matched tools with notes and check if any notes match the pattern
+      const allNotes = this.db.listNotes();
+      const noteMap = new Map(allNotes.map((n) => [`${n.serverName}\0${n.toolName}`, n.note]));
+
+      // Add notes to already-matched tools
+      const enriched = tools.map((t) => {
+        const note = noteMap.get(`${t.server}\0${t.name}`);
+        return note ? { ...t, note } : t;
+      });
+
+      // Find tools that match via note content but weren't already matched
+      const matchedKeys = new Set(tools.map((t) => `${t.server}\0${t.name}`));
+      const regex = new RegExp(
+        pattern
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, "."),
+        "i",
+      );
+      const noteMatches = allNotes.filter(
+        (n) => !matchedKeys.has(`${n.serverName}\0${n.toolName}`) && regex.test(n.note),
+      );
+
+      // For note-matched tools, fetch their full ToolInfo
+      for (const n of noteMatches) {
+        try {
+          const info = await this.pool.getToolInfo(n.serverName, n.toolName);
+          enriched.push({ ...info, note: n.note });
+        } catch {
+          // Tool no longer exists — skip
+        }
+      }
+
+      return enriched;
     });
 
     this.handlers.set("callTool", async (params, ctx) => {
@@ -880,6 +920,30 @@ export class IpcServer {
     this.handlers.set("listServeInstances", async (_params, _ctx) => {
       this.pruneStaleServeInstances();
       return [...this.serveInstances.values()];
+    });
+
+    // -- Note handlers --
+
+    this.handlers.set("setNote", async (params, _ctx) => {
+      const { server, tool, note } = SetNoteParamsSchema.parse(params);
+      this.db.setNote(server, tool, note);
+      return { ok: true as const };
+    });
+
+    this.handlers.set("getNote", async (params, _ctx) => {
+      const { server, tool } = GetNoteParamsSchema.parse(params);
+      const note = this.db.getNote(server, tool);
+      return { note: note ?? null };
+    });
+
+    this.handlers.set("listNotes", async (_params, _ctx) => {
+      return this.db.listNotes();
+    });
+
+    this.handlers.set("deleteNote", async (params, _ctx) => {
+      const { server, tool } = DeleteNoteParamsSchema.parse(params);
+      const deleted = this.db.deleteNote(server, tool);
+      return { ok: true as const, deleted };
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {

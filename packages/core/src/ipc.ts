@@ -46,7 +46,11 @@ export type IpcMethod =
   | "pruneSpans"
   | "registerServe"
   | "unregisterServe"
-  | "listServeInstances";
+  | "listServeInstances"
+  | "setNote"
+  | "getNote"
+  | "listNotes"
+  | "deleteNote";
 
 // -- Request/Response --
 
@@ -220,6 +224,8 @@ export interface ToolInfo {
   inputSchema: Record<string, unknown>;
   /** Compact TypeScript-notation signature */
   signature?: string;
+  /** User-attached note (from `mcx note set`) */
+  note?: string;
 }
 
 export interface ServeInstanceInfo {
@@ -323,6 +329,24 @@ export const RegisterServeParamsSchema = z.object({
 
 export const UnregisterServeParamsSchema = z.object({
   instanceId: z.string(),
+});
+
+// -- Note schemas --
+
+export const SetNoteParamsSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
+  note: z.string(),
+});
+
+export const GetNoteParamsSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
+});
+
+export const DeleteNoteParamsSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
 });
 
 // -- Result types for methods without a named interface --
@@ -429,6 +453,15 @@ export interface MetricsSnapshot {
   }>;
 }
 
+// -- Note types --
+
+export interface NoteEntry {
+  serverName: string;
+  toolName: string;
+  note: string;
+  updatedAt: number;
+}
+
 // -- Span types --
 
 export interface SpanRow {
@@ -497,6 +530,10 @@ export interface IpcMethodResult {
   registerServe: { ok: true };
   unregisterServe: { ok: true };
   listServeInstances: ServeInstanceInfo[];
+  setNote: { ok: true };
+  getNote: { note: string | null };
+  listNotes: NoteEntry[];
+  deleteNote: { ok: true; deleted: boolean };
 }
 
 // -- Error codes --
