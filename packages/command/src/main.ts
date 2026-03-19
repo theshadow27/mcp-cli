@@ -16,6 +16,7 @@
 
 import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
+import { cmdAcp } from "./commands/acp";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
@@ -23,8 +24,10 @@ import { cmdClaude } from "./commands/claude";
 import { cmdCodex } from "./commands/codex";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
+import { cmdCopilot } from "./commands/copilot";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
+import { cmdGemini } from "./commands/gemini";
 import { cmdGet } from "./commands/get";
 import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
@@ -275,6 +278,18 @@ async function main(): Promise<void> {
 
       case "codex":
         await cmdCodex(cleanArgs.slice(1));
+        break;
+
+      case "acp":
+        await cmdAcp(cleanArgs.slice(1));
+        break;
+
+      case "copilot":
+        await cmdCopilot(cleanArgs.slice(1));
+        break;
+
+      case "gemini":
+        await cmdGemini(cleanArgs.slice(1));
         break;
 
       case "serve":
@@ -785,6 +800,12 @@ Usage:
   mcx codex wait <session>             Block until a Codex session completes
   mcx codex bye <session>              End a Codex session
   mcx codex log <session>              View Codex session transcript
+  mcx acp spawn --agent copilot ...    Start an ACP agent session
+  mcx acp ls [--agent copilot]         List ACP sessions (optionally filter by agent)
+  mcx copilot spawn --task "..."       Start a Copilot session (alias for acp --agent copilot)
+  mcx copilot ls                       List active Copilot sessions
+  mcx gemini spawn --task "..."        Start a Gemini session (alias for acp --agent gemini)
+  mcx gemini ls                        List active Gemini sessions
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)

@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@mcp-cli/acp": "workspace:*",
     "@mcp-cli/core": "workspace:*",
     "jq-web": "^0.6.2",
     "zod": "^3.25 || ^4.0"
