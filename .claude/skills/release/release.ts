@@ -121,6 +121,13 @@ function updatePackageJson(version: string): void {
   const oldVersion = pkg.version;
   pkg.version = version;
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+  // Re-format so Biome-preferred style (e.g. inline short arrays) is used,
+  // avoiding a lint failure on the release commit.
+  Bun.spawnSync(["bunx", "biome", "format", "--write", pkgPath], {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd: process.cwd(),
+  });
   console.error(`package.json: ${oldVersion} → ${version}`);
 }
 
