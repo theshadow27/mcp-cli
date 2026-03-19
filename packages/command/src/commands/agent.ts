@@ -24,7 +24,7 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { type SharedSessionDeps, cleanupWorktree, parseByeResult, resolveSessionId } from "./claude";
+import { type SharedSessionDeps, cleanupWorktree, cmdClaude, parseByeResult, resolveSessionId } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -35,6 +35,8 @@ export interface AgentDeps extends SharedSessionDeps {
   getStaleDaemonWarning: () => string | null;
   /** Resolve the git repo root for the current working directory. */
   getGitRoot: () => string | null;
+  /** Get the current working directory. */
+  getCwd: () => string;
   /** Get diff stats for a worktree path. */
   getDiffStats: (worktreePath: string) => Promise<string | null>;
   /** Get PR status for a worktree path. */
@@ -127,6 +129,7 @@ export function makeDefaultDeps(provider: AgentProviderConfig): AgentDeps {
     exit: (code) => process.exit(code),
     getStaleDaemonWarning,
     getGitRoot,
+    getCwd: () => process.cwd(),
     getDiffStats: defaultGetDiffStats,
     getPrStatus: defaultGetPrStatus,
     ttyOpen: (args) => ttyOpen(args),
@@ -173,8 +176,6 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
   const agentOverride = providerName !== provider.name ? providerName : undefined;
 
   const d: AgentDeps = { ...makeDefaultDeps(provider), ...deps };
-  // Override callTool if deps provided their own (testing)
-  if (deps?.callTool) d.callTool = deps.callTool;
 
   const sub = args[1];
   if (!sub || sub === "--help" || sub === "-h") {
@@ -212,19 +213,20 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
           `"${providerName}" does not support resume. Only providers with native session resume support this.`,
         );
         d.exit(1);
+        break;
       }
-      // Resume is Claude-specific — delegate to the existing cmdClaude
-      d.printError(`Use "mcx claude resume" for session resume — it requires Claude-specific features.`);
-      d.exit(1);
+      // Delegate to cmdClaude which handles resume natively
+      await cmdClaude(["resume", ...args.slice(2)]);
       break;
     case "worktrees":
     case "wt":
       if (!provider.features.resume) {
-        d.printError(`Use "mcx claude worktrees" for worktree management — it requires Claude-specific features.`);
+        d.printError(`"${providerName}" does not support worktree management.`);
         d.exit(1);
+        break;
       }
-      d.printError(`Use "mcx claude worktrees" for worktree management.`);
-      d.exit(1);
+      // Delegate to cmdClaude which handles worktrees natively
+      await cmdClaude([sub, ...args.slice(2)]);
       break;
     default:
       d.printError(
@@ -389,16 +391,17 @@ async function agentSpawn(
     return;
   }
 
+  let parsed_data: { sessionId?: string } | undefined;
   try {
-    const data = JSON.parse(text) as { sessionId?: string };
-    if (data.sessionId) {
-      const label = agentOverride
-        ? agentOverride.charAt(0).toUpperCase() + agentOverride.slice(1)
-        : provider.displayName;
-      console.error(`${label} session started: ${data.sessionId.slice(0, 8)}`);
-    }
+    parsed_data = JSON.parse(text) as { sessionId?: string };
   } catch {
-    // Not JSON — fall through
+    // Not JSON — daemon returned an error string. Route to stderr.
+    d.printError(text);
+    return;
+  }
+  if (parsed_data?.sessionId) {
+    const label = agentOverride ? agentOverride.charAt(0).toUpperCase() + agentOverride.slice(1) : provider.displayName;
+    console.error(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
   }
   console.log(text);
 }
@@ -417,7 +420,7 @@ async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProviderC
 
   let cwd = parsed.cwd;
   if (parsed.worktree) {
-    const repoRoot = process.cwd();
+    const repoRoot = d.getCwd();
     const wtConfig = readWorktreeConfig(repoRoot);
     const worktreePath = resolveWorktreePath(repoRoot, parsed.worktree, wtConfig);
 
@@ -456,7 +459,7 @@ async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProviderC
 
 /** Set up a worktree for spawn — shared logic across all providers. */
 function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, d: AgentDeps): void {
-  const repoRoot = process.cwd();
+  const repoRoot = d.getCwd();
   const wtConfig = readWorktreeConfig(repoRoot);
 
   if (hasWorktreeHooks(wtConfig)) {
@@ -502,8 +505,8 @@ async function agentList(
   const P = provider.toolPrefix;
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
-  const showPr = args.includes("--pr");
-  const showAll = args.includes("--all") || args.includes("-a");
+  const showPr = args.includes("--pr") && provider.features.repoScoped;
+  const showAll = args.includes("--all");
 
   const toolArgs: Record<string, unknown> = {};
 
@@ -660,10 +663,10 @@ async function agentBye(args: string[], provider: AgentProviderConfig, d: AgentD
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else if (provider.features.resume) {
       // Claude: daemon-created worktrees have cwd=null — resolve from local repo root
-      const repoRoot = process.cwd();
+      const repoRoot = d.getCwd();
       const wtConfig = readWorktreeConfig(repoRoot);
-      const cwd = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
-      cleanupWorktree(byeResult.worktree, cwd, d, repoRoot);
+      const worktreeCwd = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
+      cleanupWorktree(byeResult.worktree, worktreeCwd, d, repoRoot);
     }
   }
 }

@@ -22,6 +22,7 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
     }) as AgentDeps["exit"],
     getStaleDaemonWarning: mock(() => null),
     getGitRoot: mock(() => null),
+    getCwd: mock(() => "/fake/cwd"),
     getDiffStats: mock(async () => null),
     getPrStatus: mock(async () => null),
     ttyOpen: mock(async () => {}),
@@ -32,6 +33,28 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
 
 function toolResult(data: unknown): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
+}
+
+/** Temporarily replace console.log and console.error, restoring via restore(). */
+function mockConsole() {
+  const origLog = console.log;
+  const origErr = console.error;
+  const logCalls: string[] = [];
+  const errorCalls: string[] = [];
+  const logMock = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+  const errMock = mock((...args: unknown[]) => errorCalls.push(String(args[0])));
+  console.log = logMock;
+  console.error = errMock;
+  return {
+    log: logMock,
+    error: errMock,
+    logCalls,
+    errorCalls,
+    restore: () => {
+      console.log = origLog;
+      console.error = origErr;
+    },
+  };
 }
 
 const SESSION_LIST = [
@@ -71,30 +94,26 @@ const SESSION_LIST = [
 
 describe("cmdAgent", () => {
   test("prints usage on --help", async () => {
-    const log = mock(() => {});
-    const origLog = console.log;
-    console.log = log;
+    const mc = mockConsole();
     try {
       await cmdAgent(["--help"]);
-      expect(log).toHaveBeenCalled();
-      const output = (log.mock.calls[0] as string[])[0];
+      expect(mc.log).toHaveBeenCalled();
+      const output = (mc.log.mock.calls[0] as string[])[0];
       expect(output).toContain("mcx agent");
       expect(output).toContain("claude");
       expect(output).toContain("codex");
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
   test("prints usage on no args", async () => {
-    const log = mock(() => {});
-    const origLog = console.log;
-    console.log = log;
+    const mc = mockConsole();
     try {
       await cmdAgent([]);
-      expect(log).toHaveBeenCalled();
+      expect(mc.log).toHaveBeenCalled();
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -105,17 +124,15 @@ describe("cmdAgent", () => {
   });
 
   test("prints provider usage when no subcommand", async () => {
-    const log = mock(() => {});
-    const origLog = console.log;
-    console.log = log;
+    const mc = mockConsole();
     try {
       const deps = makeDeps();
       await cmdAgent(["codex"], deps);
-      expect(log).toHaveBeenCalled();
-      const output = (log.mock.calls[0] as string[])[0];
+      expect(mc.log).toHaveBeenCalled();
+      const output = (mc.log.mock.calls[0] as string[])[0];
       expect(output).toContain("mcx agent codex");
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -196,13 +213,12 @@ describe("agent codex spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "spawn", "--task", "do stuff"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ prompt: "do stuff" }));
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -210,13 +226,12 @@ describe("agent codex spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "spawn", "--task", "do stuff", "--wait"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ wait: true }));
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -230,13 +245,25 @@ describe("agent codex spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "my-wt"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-wt" }));
     } finally {
-      console.log = origLog;
+      mc.restore();
+    }
+  });
+
+  test("routes non-JSON daemon errors to stderr", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => ({ content: [{ type: "text", text: "connection refused" }] })),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "spawn", "--task", "x"], deps);
+      expect(deps.printError).toHaveBeenCalledWith("connection refused");
+    } finally {
+      mc.restore();
     }
   });
 });
@@ -246,13 +273,12 @@ describe("agent codex ls", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "ls"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -260,15 +286,13 @@ describe("agent codex ls", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
-    const logCalls: string[] = [];
-    const origLog = console.log;
-    console.log = mock((...args: unknown[]) => logCalls.push(String(args[0])));
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "ls", "--short"], deps);
-      expect(logCalls.length).toBe(2);
-      expect(logCalls[0]).toContain("abc12345");
+      expect(mc.logCalls.length).toBe(2);
+      expect(mc.logCalls[0]).toContain("abc12345");
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -276,14 +300,27 @@ describe("agent codex ls", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult([])),
     });
-    const errCalls: string[] = [];
-    const origErr = console.error;
-    console.error = mock((...args: unknown[]) => errCalls.push(String(args[0])));
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "ls"], deps);
-      expect(errCalls.some((l) => l.includes("No active"))).toBe(true);
+      expect(mc.errorCalls.some((l) => l.includes("No active"))).toBe(true);
     } finally {
-      console.error = origErr;
+      mc.restore();
+    }
+  });
+
+  test("--all does not require -a shorthand", async () => {
+    // Verify -a is NOT treated as --all (was a flag collision with --agent)
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "ls", "-a"], deps);
+      // -a is not --all, so non-repoScoped providers just ignore it
+      expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
+    } finally {
+      mc.restore();
     }
   });
 });
@@ -296,8 +333,7 @@ describe("agent codex send", () => {
         return toolResult({ ok: true });
       }),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "send", "abc12345", "hello world"], deps);
       expect(deps.callTool).toHaveBeenCalledWith(
@@ -305,7 +341,7 @@ describe("agent codex send", () => {
         expect.objectContaining({ sessionId: SESSION_LIST[0].sessionId, prompt: "hello world" }),
       );
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -324,13 +360,12 @@ describe("agent codex bye", () => {
         return toolResult({ ended: true, worktree: null, cwd: null, repoRoot: null });
       }),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "bye", "abc12345"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_bye", { sessionId: SESSION_LIST[0].sessionId });
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -343,13 +378,12 @@ describe("agent codex interrupt", () => {
         return toolResult({ ok: true });
       }),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "interrupt", "abc12345"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_interrupt", { sessionId: SESSION_LIST[0].sessionId });
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -362,8 +396,7 @@ describe("agent codex log", () => {
         return toolResult([]);
       }),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "log", "abc12345"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_transcript", {
@@ -371,7 +404,7 @@ describe("agent codex log", () => {
         limit: 20,
       });
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -384,13 +417,12 @@ describe("agent codex wait", () => {
         return toolResult({ event: "session:result", sessionId: SESSION_LIST[0].sessionId });
       }),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "wait", "abc12345"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { sessionId: SESSION_LIST[0].sessionId });
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -398,13 +430,12 @@ describe("agent codex wait", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ event: "timeout" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["codex", "wait", "--timeout", "5000"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { timeout: 5000 });
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -416,8 +447,7 @@ describe("agent acp spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["acp", "spawn", "--agent", "copilot", "--task", "do stuff"], deps);
       expect(deps.callTool).toHaveBeenCalledWith(
@@ -425,7 +455,7 @@ describe("agent acp spawn", () => {
         expect.objectContaining({ prompt: "do stuff", agent: "copilot" }),
       );
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -443,8 +473,7 @@ describe("agent copilot", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["copilot", "spawn", "--task", "do stuff"], deps);
       expect(deps.callTool).toHaveBeenCalledWith(
@@ -452,7 +481,7 @@ describe("agent copilot", () => {
         expect.objectContaining({ prompt: "do stuff", agent: "copilot" }),
       );
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 
@@ -460,13 +489,12 @@ describe("agent copilot", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult([])),
     });
-    const origErr = console.error;
-    console.error = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["copilot", "ls"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
     } finally {
-      console.error = origErr;
+      mc.restore();
     }
   });
 });
@@ -478,13 +506,12 @@ describe("agent claude spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["claude", "spawn", "--task", "do stuff"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("claude_prompt", expect.objectContaining({ prompt: "do stuff" }));
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -495,13 +522,27 @@ describe("agent claude ls", () => {
       callTool: mock(async () => toolResult([])),
       getGitRoot: mock(() => "/repo/root"),
     });
-    const origErr = console.error;
-    console.error = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["claude", "ls"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/root" });
     } finally {
-      console.error = origErr;
+      mc.restore();
+    }
+  });
+
+  test("--pr is gated by repoScoped feature flag", async () => {
+    // Codex does not have repoScoped, so --pr should be ignored
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "ls", "--pr"], deps);
+      // getPrStatus should NOT be called for non-repoScoped providers
+      expect(deps.getPrStatus).not.toHaveBeenCalled();
+    } finally {
+      mc.restore();
     }
   });
 });
@@ -513,13 +554,12 @@ describe("agent opencode spawn", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
     });
-    const origLog = console.log;
-    console.log = mock(() => {});
+    const mc = mockConsole();
     try {
       await cmdAgent(["opencode", "spawn", "--task", "x", "--provider", "openai"], deps);
       expect(deps.callTool).toHaveBeenCalledWith("opencode_prompt", expect.objectContaining({ provider: "openai" }));
     } finally {
-      console.log = origLog;
+      mc.restore();
     }
   });
 });
@@ -533,9 +573,29 @@ describe("agent resume/worktrees", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not support resume"));
   });
 
-  test("delegates worktrees to Claude message", async () => {
+  test("rejects worktrees for non-Claude providers", async () => {
     const deps = makeDeps();
     await expect(cmdAgent(["codex", "worktrees"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("mcx claude worktrees"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not support worktree"));
+  });
+});
+
+// ── Flag collision regression ──
+
+describe("agent acp ls -a flag", () => {
+  test("-a is not treated as --all (flag collision fix)", async () => {
+    // Previously -a was shorthand for both --all and --agent, causing collision.
+    // Now -a is only used for --agent extraction, not --all.
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult([])),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["acp", "ls", "-a", "copilot"], deps);
+      // Should pass agent filter, not set showAll
+      expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
+    } finally {
+      mc.restore();
+    }
   });
 });
