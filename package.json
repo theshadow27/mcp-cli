@@ -5,11 +5,17 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "bin": {
-    "mcx": "packages/command/src/main.ts",
-    "mcpd": "packages/daemon/src/main.ts",
-    "mcpctl": "packages/control/src/main.tsx"
+    "mcx": "bin/mcx.js",
+    "mcpd": "bin/mcpd.js",
+    "mcpctl": "bin/mcpctl.js"
   },
-  "files": ["packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
+  "optionalDependencies": {
+    "@theshadow27/mcp-cli-darwin-arm64": "0.0.0",
+    "@theshadow27/mcp-cli-darwin-x64": "0.0.0",
+    "@theshadow27/mcp-cli-linux-x64": "0.0.0",
+    "@theshadow27/mcp-cli-linux-arm64": "0.0.0"
+  },
+  "files": ["bin/", "packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
   "scripts": {
     "build": "bun scripts/build.ts",
     "typecheck": "bun install && bun --bun tsc -b",

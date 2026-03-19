@@ -15,6 +15,12 @@
         "@types/react": "^18.3.0",
         "typescript": "^5.9.3",
       },
+      "optionalDependencies": {
+        "@theshadow27/mcp-cli-darwin-arm64": "0.0.0",
+        "@theshadow27/mcp-cli-darwin-x64": "0.0.0",
+        "@theshadow27/mcp-cli-linux-arm64": "0.0.0",
+        "@theshadow27/mcp-cli-linux-x64": "0.0.0",
+      },
     },
     "packages/acp": {
       "name": "@mcp-cli/acp",

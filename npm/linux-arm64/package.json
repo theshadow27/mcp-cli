@@ -1,0 +1,11 @@
+{
+  "name": "@theshadow27/mcp-cli-linux-arm64",
+  "version": "0.0.0",
+  "description": "mcp-cli native binaries for Linux ARM64",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/"],
+  "publishConfig": {
+    "access": "public"
+  }
+}
