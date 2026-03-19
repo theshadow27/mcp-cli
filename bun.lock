@@ -73,6 +73,14 @@
         "zod": "^3.25 || ^4.0",
       },
     },
+    "packages/opencode": {
+      "name": "@mcp-cli/opencode",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mcp-cli/core": "workspace:*",
+        "@mcp-cli/permissions": "workspace:*",
+      },
+    },
     "packages/permissions": {
       "name": "@mcp-cli/permissions",
       "version": "0.1.0",
@@ -114,6 +122,8 @@
     "@mcp-cli/core": ["@mcp-cli/core@workspace:packages/core"],
 
     "@mcp-cli/daemon": ["@mcp-cli/daemon@workspace:packages/daemon"],
+
+    "@mcp-cli/opencode": ["@mcp-cli/opencode@workspace:packages/opencode"],
 
     "@mcp-cli/permissions": ["@mcp-cli/permissions@workspace:packages/permissions"],
 
