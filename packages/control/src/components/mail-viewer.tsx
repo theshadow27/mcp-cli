@@ -36,9 +36,9 @@ function MailListItem({ msg, selected }: { msg: MailMessage; selected: boolean }
           {readFlag}
         </Text>
         {"  "}
-        <Text>{msg.sender.padEnd(16).slice(0, 16)}</Text>
+        <Text>{Bun.sliceAnsi(msg.sender.padEnd(16), 0, 16)}</Text>
         {"  "}
-        <Text>{subject.slice(0, 40).padEnd(40)}</Text>
+        <Text>{Bun.sliceAnsi(subject.padEnd(40), 0, 40)}</Text>
         {"  "}
         <Text dimColor>{ts}</Text>
       </Text>

@@ -48,7 +48,7 @@ export function AuthBanner({ servers, authStatus }: AuthBannerProps) {
         <Text color="red">
           {"✗  Auth failed for "}
           <Text bold>{authStatus.server}</Text>
-          {authStatus.message && <Text>: {authStatus.message.slice(0, 60)}</Text>}
+          {authStatus.message && <Text>: {Bun.sliceAnsi(authStatus.message, 0, 60)}</Text>}
         </Text>
       )}
       {servers.map((server) => (
@@ -56,7 +56,7 @@ export function AuthBanner({ servers, authStatus }: AuthBannerProps) {
           <Text color="yellow">
             {"⚠  Authentication required: "}
             <Text bold>{server.name}</Text>
-            {server.lastError && <Text> ({server.lastError.slice(0, 50)})</Text>}
+            {server.lastError && <Text> ({Bun.sliceAnsi(server.lastError, 0, 50)})</Text>}
           </Text>
           <Text dimColor> Press a or run: mcx auth {server.name}</Text>
         </Box>
