@@ -3,3 +3,6 @@
 # Always generate coverage report when running tests
 coverage = true
 coverageReporter = ["text"]
+
+# Prune directories that should not be scanned for tests
+pathIgnorePatterns = ["scripts/**", ".claude/**", "dist/**", ".git-hooks/**"]
