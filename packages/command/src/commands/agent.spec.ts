@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { getProvider } from "@mcp-cli/core";
 import { ExitError } from "../test-helpers";
 import type { AgentDeps } from "./agent";
-import { cmdAgent, parseAgentSpawnArgs } from "./agent";
+import { cmdAgent, parseAgentResumeArgs, parseAgentSpawnArgs } from "./agent";
 
 // ── Helpers ──
 
@@ -564,19 +564,313 @@ describe("agent opencode spawn", () => {
   });
 });
 
-// ── Resume/worktrees delegation ──
+// ── parseAgentResumeArgs ──
 
-describe("agent resume/worktrees", () => {
-  test("rejects resume for non-Claude providers", async () => {
-    const deps = makeDeps();
-    await expect(cmdAgent(["codex", "resume", "wt-1"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not support resume"));
+describe("parseAgentResumeArgs", () => {
+  test("parses target positional", () => {
+    const result = parseAgentResumeArgs(["my-wt"]);
+    expect(result.target).toBe("my-wt");
+    expect(result.all).toBe(false);
+    expect(result.fresh).toBe(false);
+    expect(result.error).toBeUndefined();
   });
 
-  test("rejects worktrees for non-Claude providers", async () => {
-    const deps = makeDeps();
-    await expect(cmdAgent(["codex", "worktrees"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not support worktree"));
+  test("parses --all flag", () => {
+    const result = parseAgentResumeArgs(["--all"]);
+    expect(result.all).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --fresh flag", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--fresh"]);
+    expect(result.fresh).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("errors on --fresh with session ID", () => {
+    const result = parseAgentResumeArgs(["my-wt", "session-abc", "--fresh"]);
+    expect(result.error).toContain("--fresh cannot be combined");
+  });
+
+  test("errors without target or --all", () => {
+    const result = parseAgentResumeArgs([]);
+    expect(result.error).toContain("Usage:");
+  });
+
+  test("parses --model, --allow, --wait, --timeout", () => {
+    const result = parseAgentResumeArgs([
+      "my-wt",
+      "--model",
+      "opus",
+      "--allow",
+      "Read",
+      "Write",
+      "--wait",
+      "--timeout",
+      "5000",
+    ]);
+    expect(result.model).toBe("opus");
+    expect(result.allow).toEqual(["Read", "Write"]);
+    expect(result.wait).toBe(true);
+    expect(result.timeout).toBe(5000);
+  });
+
+  test("parses session ID as second positional", () => {
+    const result = parseAgentResumeArgs(["my-wt", "abc123"]);
+    expect(result.target).toBe("my-wt");
+    expect(result.sessionId).toBe("abc123");
+  });
+});
+
+// ── Resume (shimmed provider — codex) ──
+
+const WORKTREE_LIST_PORCELAIN = [
+  "worktree /repo",
+  "HEAD abc123",
+  "branch refs/heads/main",
+  "",
+  "worktree /repo/.claude/worktrees/codex-wt1",
+  "HEAD def456",
+  "branch refs/heads/feat/issue-42-fix-bug",
+  "",
+].join("\n");
+
+describe("agent codex resume", () => {
+  function makeResumeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
+    return makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "abc123 fix stuff", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: " src/foo.ts | 3 ++-", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult([]);
+        return toolResult({ sessionId: "new-session-id" });
+      }),
+      getPrStatus: mock(async () => null),
+      ...overrides,
+    });
+  }
+
+  test("spawns with git-context prompt (no resumeSessionId)", async () => {
+    const deps = makeResumeDeps();
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1"], deps);
+      expect(deps.callTool).toHaveBeenCalledWith(
+        "codex_prompt",
+        expect.objectContaining({
+          cwd: "/repo/.claude/worktrees/codex-wt1",
+        }),
+      );
+      // Should NOT have resumeSessionId — codex doesn't support native resume
+      const callArgs = (deps.callTool as ReturnType<typeof mock>).mock.calls.find(
+        (c: unknown[]) => c[0] === "codex_prompt",
+      ) as unknown[];
+      expect(callArgs).toBeDefined();
+      expect(callArgs[1]).not.toHaveProperty("resumeSessionId");
+      // Prompt should contain git context
+      expect((callArgs[1] as Record<string, unknown>).prompt).toContain("resuming work");
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("skips merged branches", async () => {
+    const deps = makeResumeDeps({
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1"], deps);
+      expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already merged"));
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("errors when worktree has active session", async () => {
+    const deps = makeResumeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") {
+          return toolResult([{ worktree: "codex-wt1", sessionId: "active-1" }]);
+        }
+        return toolResult({});
+      }),
+    });
+    await expect(cmdAgent(["codex", "resume", "codex-wt1"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already has an active session"));
+  });
+
+  test("errors when worktree not found", async () => {
+    const deps = makeResumeDeps();
+    await expect(cmdAgent(["codex", "resume", "nonexistent"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No worktree matching"));
+  });
+
+  test("--all resumes all orphaned worktrees", async () => {
+    const deps = makeResumeDeps();
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "--all"], deps);
+      // Should have called codex_prompt for the orphaned worktree
+      expect(deps.callTool).toHaveBeenCalledWith(
+        "codex_prompt",
+        expect.objectContaining({ cwd: "/repo/.claude/worktrees/codex-wt1" }),
+      );
+    } finally {
+      mc.restore();
+    }
+  });
+});
+
+// ── Resume (native provider — claude) ──
+
+describe("agent claude resume", () => {
+  function makeClaudeResumeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
+    return makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "abc123 fix stuff", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([]);
+        return toolResult({ sessionId: "resume-session-id" });
+      }),
+      getPrStatus: mock(async () => null),
+      ...overrides,
+    });
+  }
+
+  test("uses native resumeSessionId by default", async () => {
+    const deps = makeClaudeResumeDeps();
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["claude", "resume", "codex-wt1"], deps);
+      const callArgs = (deps.callTool as ReturnType<typeof mock>).mock.calls.find(
+        (c: unknown[]) => c[0] === "claude_prompt",
+      ) as unknown[];
+      expect(callArgs).toBeDefined();
+      expect(callArgs[1]).toHaveProperty("resumeSessionId", "continue");
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("--fresh forces git-context prompt even for Claude", async () => {
+    const deps = makeClaudeResumeDeps();
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["claude", "resume", "codex-wt1", "--fresh"], deps);
+      const callArgs = (deps.callTool as ReturnType<typeof mock>).mock.calls.find(
+        (c: unknown[]) => c[0] === "claude_prompt",
+      ) as unknown[];
+      expect(callArgs).toBeDefined();
+      expect(callArgs[1]).not.toHaveProperty("resumeSessionId");
+      expect((callArgs[1] as Record<string, unknown>).prompt).toContain("resuming work");
+    } finally {
+      mc.restore();
+    }
+  });
+});
+
+// ── Worktrees subcommand ──
+
+describe("agent worktrees", () => {
+  function makeWorktreesDeps(overrides?: Partial<AgentDeps>): AgentDeps {
+    return makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        if (cmd.join(" ").includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async () => toolResult([])),
+      getDiffStats: mock(async () => "+5/-2 (1f)"),
+      ...overrides,
+    });
+  }
+
+  test("lists worktrees with status", async () => {
+    const deps = makeWorktreesDeps();
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "worktrees"], deps);
+      const allOutput = mc.logCalls.join("\n");
+      expect(allOutput).toContain("WORKTREE");
+      expect(allOutput).toContain("codex-wt1");
+      expect(allOutput).toContain("orphaned");
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("shows active status for worktrees with sessions", async () => {
+    const deps = makeWorktreesDeps({
+      callTool: mock(async () => toolResult([{ worktree: "codex-wt1", sessionId: "s1" }])),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "worktrees"], deps);
+      const allOutput = mc.logCalls.join("\n");
+      expect(allOutput).toContain("active");
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("prints message when no worktrees exist", async () => {
+    const deps = makeWorktreesDeps({
+      exec: mock((cmd: string[]) => {
+        if (cmd.join(" ").includes("worktree list")) {
+          // Only the main repo, no extra worktrees
+          return { stdout: "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "worktrees"], deps);
+      expect(mc.errorCalls.join("\n")).toContain("No mcx worktrees found");
+    } finally {
+      mc.restore();
+    }
   });
 });
 
