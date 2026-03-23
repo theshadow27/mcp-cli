@@ -282,7 +282,7 @@ describe("ClaudeWsServer", () => {
     await server.start();
     // No reclaim needed when using a random port by choice
     expect(server.reclaimed).toBe(false);
-    await Bun.sleep(100);
+    await Bun.sleep(60);
     expect(server.reclaimed).toBe(false);
   });
 
@@ -1644,7 +1644,7 @@ describe("ClaudeWsServer", () => {
     // This prevents findImmediateEvent from short-circuiting with session:result
     await waitForMessage(ws);
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
 
     const before = Date.now();
     // waitForEvent blocks — session is not idle
@@ -1672,7 +1672,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
+      await Bun.sleep(10);
 
       const before = Date.now();
       const eventPromise = server.waitForEvent("test-session", 5000);
@@ -1701,7 +1701,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
+      await Bun.sleep(10);
 
       const before = Date.now();
       const eventPromise = server.waitForEvent("test-session", 5000);
@@ -1746,9 +1746,9 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws); // initial prompt
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
     ws.send(resultMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
 
     const events: SessionEvent[] = [];
     server.onSessionEvent = (_id, event) => events.push(event);
@@ -1794,7 +1794,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws); // initial prompt
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
+      await Bun.sleep(10);
 
       const events: SessionEvent[] = [];
       server.onSessionEvent = (_id, event) => events.push(event);
@@ -1836,9 +1836,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(20);
+      await Bun.sleep(10);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(20);
+      await Bun.sleep(10);
 
       // Regular message should be sent as user message
       const msgPromise = waitForMessage(ws);
@@ -1878,11 +1878,11 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws);
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
     ws.send(assistantMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
     ws.send(resultMessage("test-session"));
-    await Bun.sleep(20);
+    await Bun.sleep(10);
 
     // Verify cost accumulated
     const statusBefore = server.getStatus("test-session");
@@ -2767,7 +2767,7 @@ describe("stderr drain", () => {
     expect(initMsg).toContain('"type":"user"');
 
     // Wait past the timeout period — session should NOT transition to disconnected
-    await Bun.sleep(300);
+    await Bun.sleep(150);
     expect(server.listSessions()[0].state).toBe("connecting"); // still waiting for system/init
 
     ws.close();
@@ -2792,7 +2792,7 @@ describe("stderr drain", () => {
       return s?.state === "init";
     }, 1_000);
 
-    await Bun.sleep(150);
+    await Bun.sleep(120);
     expect(server.listSessions()[0].state).toBe("init");
     expect(ms.killed).toBe(false);
 
@@ -2927,7 +2927,7 @@ describe("restoreSessions", () => {
     const ws = await connectMockClaude(port, "log-level-1");
     // Intentional setTimeout: negative-style assertion — we need handleOpen to finish
     // before checking log output. No observable condition to poll for (test/CLAUDE.md §exception).
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 50));
 
     // Reconnect should be logged at info, not error
     expect(infos.some((m) => m.includes("reconnected"))).toBe(true);

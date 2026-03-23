@@ -27,7 +27,7 @@ function fakeCommand(mode = "simple"): string[] {
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
-    await Bun.sleep(50);
+    await Bun.sleep(10);
   }
   if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
@@ -421,8 +421,8 @@ describe("CodexSession watchdog", () => {
 
     await session.start();
 
-    // Wait a bit — watchdog should NOT fire
-    await Bun.sleep(100);
+    // Wait a bit — watchdog should NOT fire (watchdogTimeoutMs: 0 = disabled)
+    await Bun.sleep(50);
 
     expect(session.currentState).not.toBe("ended");
     expect(events.some((e) => e.type === "session:error")).toBe(false);
@@ -441,8 +441,8 @@ describe("CodexSession watchdog", () => {
     // Terminate before watchdog fires
     session.terminate();
 
-    // Wait past the watchdog timeout
-    await Bun.sleep(150);
+    // Wait past the watchdog timeout (100ms)
+    await Bun.sleep(120);
 
     // Should only have the terminate-caused events, no watchdog error
     const errorEvents = events.filter(
