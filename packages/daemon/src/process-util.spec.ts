@@ -91,10 +91,10 @@ describe("killPid", () => {
     // Spawn a process that traps SIGTERM and refuses to die.
     // The perl process prints "ready" to stdout after setting up the trap,
     // so we can wait for the signal handler before sending SIGTERM.
-    const proc = Bun.spawn(
-      ["perl", "-e", '$|=1; $SIG{TERM}="IGNORE"; print "ready\n"; sleep 60'],
-      { stdout: "pipe", stderr: "ignore" },
-    );
+    const proc = Bun.spawn(["perl", "-e", '$|=1; $SIG{TERM}="IGNORE"; print "ready\n"; sleep 60'], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
     const pid = proc.pid;
     try {
       // Wait for perl to finish setting up its signal handler
