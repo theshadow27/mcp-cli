@@ -13,7 +13,7 @@ import { OPENCODE_SERVER_NAME, consoleLogger, formatToolSignature } from "@mcp-c
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
-import { metrics } from "./metrics";
+import { type MetricsCollector, metrics as defaultMetrics } from "./metrics";
 import { OPENCODE_TOOLS } from "./opencode-session/tools";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -117,6 +117,7 @@ export class OpenCodeServer {
   private readonly crashTimestamps: number[] = [];
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
   private readonly logger: Logger;
+  private readonly metrics: MetricsCollector;
   private static readonly MAX_CRASHES = 3;
   private static readonly CRASH_WINDOW_MS = 60_000;
   private static readonly RESTART_BACKOFF_MS: readonly number[] = [100, 500, 2000];
@@ -135,19 +136,21 @@ export class OpenCodeServer {
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
     workerFactory?: WorkerFactory,
+    metricsCollector?: MetricsCollector,
   ) {
     this.db = db;
     this.clientFactory =
       clientFactory ?? (() => new Client({ name: `mcp-cli/${OPENCODE_SERVER_NAME}`, version: "0.1.0" }));
     this.workerFactory = workerFactory ?? ((path) => new Worker(path));
     this.logger = logger ?? consoleLogger;
+    this.metrics = metricsCollector ?? defaultMetrics;
   }
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     if (this.worker) throw new Error("start() called while worker is already running");
     this.stopped = false;
-    metrics.gauge("mcpd_opencode_worker_crash_loop_stopped").set(0);
+    this.metrics.gauge("mcpd_opencode_worker_crash_loop_stopped").set(0);
     const worker = this.workerFactory(workerPath("opencode-session-worker.ts"));
     this.worker = worker;
 
@@ -196,7 +199,7 @@ export class OpenCodeServer {
         this.client.connect(this.transport),
         new Promise<never>((_, reject) => {
           handshakeTimer = setTimeout(() => {
-            metrics.counter("mcpd_connect_timeouts_total").inc();
+            this.metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error("MCP handshake timeout (10s)"));
           }, this.handshakeTimeoutMs);
         }),
@@ -273,7 +276,7 @@ export class OpenCodeServer {
         this.activeSessions.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
-        metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
+        this.metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
         this.logger.warn(
           `[opencode-server] Pruned stale session ${sessionId} (exceeded ${OpenCodeServer.NO_PID_SESSION_TTL_MS / 60_000}min TTL)`,
         );
@@ -303,7 +306,7 @@ export class OpenCodeServer {
   }
 
   private async handleWorkerCrash(reason: string): Promise<void> {
-    metrics.counter("mcpd_opencode_worker_crashes_total").inc();
+    this.metrics.counter("mcpd_opencode_worker_crashes_total").inc();
     if (this.stopped) return;
     if (this.restartInProgress) {
       this.pendingCrashReason = reason;
@@ -347,8 +350,8 @@ export class OpenCodeServer {
       }
       this.activeSessions.clear();
       this.sessionAddedAt.clear();
-      metrics.gauge("mcpd_opencode_active_sessions").set(0);
-      metrics.gauge("mcpd_opencode_worker_crash_loop_stopped").set(1);
+      this.metrics.gauge("mcpd_opencode_active_sessions").set(0);
+      this.metrics.gauge("mcpd_opencode_worker_crash_loop_stopped").set(1);
       return;
     }
 
@@ -381,7 +384,7 @@ export class OpenCodeServer {
             this.sessionAddedAt.delete(sessionId);
             this.db.endSession(sessionId);
           }
-          metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
+          this.metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
 
           (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
           this.onRestarted?.(client, transport);
@@ -398,7 +401,7 @@ export class OpenCodeServer {
       this.stopped = true;
       this.activeSessions.clear();
       this.sessionAddedAt.clear();
-      metrics.gauge("mcpd_opencode_active_sessions").set(0);
+      this.metrics.gauge("mcpd_opencode_active_sessions").set(0);
     } finally {
       this.restartInProgress = false;
       if (this.pendingCrashReason !== null && !this.stopped) {
@@ -419,8 +422,8 @@ export class OpenCodeServer {
         this.activeSessions.add(event.session.sessionId);
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
         this.db.upsertSession(event.session);
-        metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
-        metrics.counter("mcpd_opencode_sessions_total").inc();
+        this.metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
+        this.metrics.counter("mcpd_opencode_sessions_total").inc();
         this.onActivity?.();
         break;
       case "db:state":
@@ -441,13 +444,13 @@ export class OpenCodeServer {
         this.activeSessions.delete(event.sessionId);
         this.sessionAddedAt.delete(event.sessionId);
         this.db.endSession(event.sessionId);
-        metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
+        this.metrics.gauge("mcpd_opencode_active_sessions").set(this.activeSessions.size);
         break;
       case "metrics:inc":
-        metrics.counter(event.name, event.labels).inc(event.value ?? 1);
+        this.metrics.counter(event.name, event.labels).inc(event.value ?? 1);
         break;
       case "metrics:observe":
-        metrics.histogram(event.name, event.labels).observe(event.value);
+        this.metrics.histogram(event.name, event.labels).observe(event.value);
         break;
     }
   }

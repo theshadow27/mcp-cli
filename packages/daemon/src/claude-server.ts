@@ -15,7 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
-import { metrics } from "./metrics";
+import { type MetricsCollector, metrics as defaultMetrics } from "./metrics";
 import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurProcess } from "./process-identity";
 import { DEFAULT_RESTART_POLICY, getBackoffDelay, maxAttempts, shouldRestart } from "./restart-policy";
 import { workerPath } from "./worker-path";
@@ -144,6 +144,7 @@ export class ClaudeServer {
   /** Stored reference to the crash error handler so it can be removed via removeEventListener. */
   private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
   private readonly logger: Logger;
+  private readonly metrics: MetricsCollector;
   private readonly restartPolicy = DEFAULT_RESTART_POLICY;
   /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -162,18 +163,20 @@ export class ClaudeServer {
     private handshakeTimeoutMs = 10_000,
     private readonly configuredWsPort?: number,
     private readonly getProcessStartTimeFn: (pid: number) => number | null = defaultGetProcessStartTime,
+    metricsCollector?: MetricsCollector,
   ) {
     this.db = db;
     this.clientFactory =
       clientFactory ?? (() => new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" }));
     this.logger = logger ?? consoleLogger;
+    this.metrics = metricsCollector ?? defaultMetrics;
   }
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     if (this.worker) throw new Error("start() called while worker is already running");
     this.stopped = false;
-    metrics.gauge("mcpd_worker_crash_loop_stopped").set(0);
+    this.metrics.gauge("mcpd_worker_crash_loop_stopped").set(0);
     const worker = new Worker(workerPath("claude-session-worker.ts"));
     this.worker = worker;
 
@@ -231,7 +234,7 @@ export class ClaudeServer {
         this.client.connect(this.transport),
         new Promise<never>((_, reject) => {
           handshakeTimer = setTimeout(() => {
-            metrics.counter("mcpd_connect_timeouts_total").inc();
+            this.metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error("MCP handshake timeout (10s)"));
           }, this.handshakeTimeoutMs);
         }),
@@ -336,7 +339,7 @@ export class ClaudeServer {
       // Mark as disconnected in DB — they'll transition back when CLI reconnects
       this.db.updateSessionState(row.sessionId, "disconnected");
     }
-    metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+    this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
 
     // Send to worker for WS server restoration
     this.worker?.postMessage({
@@ -430,7 +433,7 @@ export class ClaudeServer {
       this.sessionPidStartTimes.delete(sessionId);
       this.sessionAddedAt.delete(sessionId);
       this.db.endSession(sessionId);
-      metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+      this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
       this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
     }
 
@@ -441,7 +444,7 @@ export class ClaudeServer {
         this.sessionPids.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
-        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
       }
     }
@@ -455,7 +458,7 @@ export class ClaudeServer {
         this.activeSessions.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
         this.db.endSession(sessionId);
-        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         this.logger.warn(
           `[claude-server] Pruned pid-less zombie session ${sessionId} (exceeded ${ClaudeServer.NO_PID_SESSION_TTL_MS / 60_000}min TTL)`,
         );
@@ -489,8 +492,8 @@ export class ClaudeServer {
 
   /** Handle a worker crash: end orphaned sessions and attempt auto-restart. */
   private async handleWorkerCrash(reason: string): Promise<void> {
-    metrics.counter("mcpd_worker_crashes_total").inc();
-    metrics.counter("mcpd_claude_server_crashes_total").inc();
+    this.metrics.counter("mcpd_worker_crashes_total").inc();
+    this.metrics.counter("mcpd_claude_server_crashes_total").inc();
     if (this.stopped) return;
     if (this.restartInProgress) {
       this.pendingCrashReason = reason;
@@ -519,7 +522,7 @@ export class ClaudeServer {
     this.activeSessions.clear();
     this.sessionPids.clear();
     this.sessionAddedAt.clear();
-    metrics.gauge("mcpd_active_sessions").set(0);
+    this.metrics.gauge("mcpd_active_sessions").set(0);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
     await closeClientWithTimeout(this.client);
@@ -550,8 +553,8 @@ export class ClaudeServer {
       this.sessionPids.clear();
       this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
-      metrics.gauge("mcpd_active_sessions").set(0);
-      metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
+      this.metrics.gauge("mcpd_active_sessions").set(0);
+      this.metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
       return;
     }
 
@@ -592,7 +595,7 @@ export class ClaudeServer {
               this.db.endSession(sessionId);
             }
           }
-          metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+          this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
 
           // Notify connected MCP clients that the tool list may have changed
           // (this.worker is set by start() but TS can't track cross-method mutation)
@@ -612,7 +615,7 @@ export class ClaudeServer {
       this.sessionPids.clear();
       this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
-      metrics.gauge("mcpd_active_sessions").set(0);
+      this.metrics.gauge("mcpd_active_sessions").set(0);
     } finally {
       this.restartInProgress = false;
       if (this.pendingCrashReason !== null && !this.stopped) {
@@ -651,13 +654,13 @@ export class ClaudeServer {
               `[claude-server] Could not capture pid start time for session ${event.session.sessionId} ` +
                 `pid=${event.session.pid} — PID reuse protection disabled for this session`,
             );
-            metrics.counter("mcpd_sessions_without_pid_protection").inc();
+            this.metrics.counter("mcpd_sessions_without_pid_protection").inc();
           }
         }
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
         this.db.upsertSession(upsertData);
-        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
-        metrics.counter("mcpd_sessions_total").inc();
+        this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        this.metrics.counter("mcpd_sessions_total").inc();
         this.onActivity?.();
         break;
       }
@@ -667,7 +670,7 @@ export class ClaudeServer {
         break;
       case "db:cost":
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
-        metrics.counter("mcpd_session_cost_usd").inc(event.cost);
+        this.metrics.counter("mcpd_session_cost_usd").inc(event.cost);
         this.onActivity?.();
         break;
       case "db:disconnected":
@@ -681,13 +684,13 @@ export class ClaudeServer {
         this.sessionPidStartTimes.delete(event.sessionId);
         this.sessionAddedAt.delete(event.sessionId);
         this.db.endSession(event.sessionId);
-        metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
+        this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         break;
       case "metrics:inc":
-        metrics.counter(event.name, event.labels).inc(event.value ?? 1);
+        this.metrics.counter(event.name, event.labels).inc(event.value ?? 1);
         break;
       case "metrics:observe":
-        metrics.histogram(event.name, event.labels).observe(event.value);
+        this.metrics.histogram(event.name, event.labels).observe(event.value);
         break;
     }
   }
