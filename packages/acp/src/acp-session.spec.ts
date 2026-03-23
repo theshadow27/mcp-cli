@@ -32,7 +32,7 @@ function fakeCommand(mode = "simple"): string[] {
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
-    await Bun.sleep(50);
+    await Bun.sleep(10);
   }
   if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
@@ -371,7 +371,7 @@ describe("AcpSession watchdog", () => {
     });
 
     await session.start();
-    await Bun.sleep(100);
+    await Bun.sleep(50);
 
     expect(session.currentState).not.toBe("ended");
     expect(events.some((e) => e.type === "session:error")).toBe(false);
@@ -388,7 +388,7 @@ describe("AcpSession watchdog", () => {
     await session.start();
     session.terminate();
 
-    await Bun.sleep(150);
+    await Bun.sleep(120);
 
     const errorEvents = events.filter(
       (e): e is Extract<AgentSessionEvent, { type: "session:error" }> => e.type === "session:error",

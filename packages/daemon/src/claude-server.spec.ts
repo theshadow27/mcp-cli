@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CLAUDE_SERVER_NAME, capturingLogger, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -126,67 +126,113 @@ describe("ClaudeServer", () => {
     db = undefined;
   });
 
-  test("start() connects and listTools returns claude tools", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+  // ── Shared server for read-only integration tests ──
+  // These tests only query the started server without mutating state,
+  // so they share a single Worker to avoid per-test spawn overhead.
+  describe("read-only (shared worker)", () => {
+    let sharedServer: ClaudeServer;
+    let sharedDb: StateDb;
+    let sharedClient: Awaited<ReturnType<ClaudeServer["start"]>>["client"];
+    let sharedOpts: ReturnType<typeof testOptions>;
+    let initialized = false;
 
-    const { client } = await server.start();
-    const { tools } = await client.listTools();
+    async function ensureServer(): Promise<void> {
+      if (!initialized) {
+        sharedOpts = testOptions();
+        sharedDb = new StateDb(sharedOpts.DB_PATH);
+        sharedServer = new ClaudeServer(sharedDb, undefined, undefined, silentLogger);
+        const { client: c } = await sharedServer.start();
+        sharedClient = c;
+        initialized = true;
+      }
+    }
 
-    expect(tools.length).toBe(10);
-    const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual([
-      "claude_approve",
-      "claude_bye",
-      "claude_deny",
-      "claude_interrupt",
-      "claude_plans",
-      "claude_prompt",
-      "claude_session_list",
-      "claude_session_status",
-      "claude_transcript",
-      "claude_wait",
-    ]);
-  });
-
-  test("start() reports a WS port", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
-
-    expect(server.port).toBeGreaterThan(0);
-  });
-
-  test("claude_session_list returns empty array initially", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-    const result = await client.callTool({ name: "claude_session_list", arguments: {} });
-    const content = result.content as Array<{ type: string; text: string }>;
-    const sessions = JSON.parse(content[0].text);
-
-    expect(sessions).toEqual([]);
-  });
-
-  test("claude_session_status returns error for unknown session", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-    const result = await client.callTool({
-      name: "claude_session_status",
-      arguments: { sessionId: "nonexistent" },
+    beforeEach(() => {
+      // Prevent outer afterEach from interfering
+      server = undefined;
+      db = undefined;
     });
 
-    expect(result.isError).toBe(true);
-    const content = result.content as Array<{ type: string; text: string }>;
-    expect(content[0].text).toContain("Unknown session");
+    afterAll(async () => {
+      await sharedServer?.stop();
+      sharedDb?.close();
+      sharedOpts?.[Symbol.dispose]();
+    });
+
+    test("start() connects and listTools returns claude tools", async () => {
+      await ensureServer();
+      const { tools } = await sharedClient.listTools();
+
+      expect(tools.length).toBe(10);
+      const names = tools.map((t) => t.name).sort();
+      expect(names).toEqual([
+        "claude_approve",
+        "claude_bye",
+        "claude_deny",
+        "claude_interrupt",
+        "claude_plans",
+        "claude_prompt",
+        "claude_session_list",
+        "claude_session_status",
+        "claude_transcript",
+        "claude_wait",
+      ]);
+    });
+
+    test("start() reports a WS port", async () => {
+      await ensureServer();
+      expect(sharedServer.port).toBeGreaterThan(0);
+    });
+
+    test("claude_session_list returns empty array initially", async () => {
+      await ensureServer();
+      const result = await sharedClient.callTool({ name: "claude_session_list", arguments: {} });
+      const content = result.content as Array<{ type: string; text: string }>;
+      const sessions = JSON.parse(content[0].text);
+
+      expect(sessions).toEqual([]);
+    });
+
+    test("claude_session_status returns error for unknown session", async () => {
+      await ensureServer();
+      const result = await sharedClient.callTool({
+        name: "claude_session_status",
+        arguments: { sessionId: "nonexistent" },
+      });
+
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0].text).toContain("Unknown session");
+    });
+
+    test("claude_session_list returns empty array with repoRoot filter when no sessions", async () => {
+      await ensureServer();
+      const result = await sharedClient.callTool({
+        name: "claude_session_list",
+        arguments: { repoRoot: "/some/repo" },
+      });
+      const content = result.content as Array<{ type: string; text: string }>;
+      const sessions = JSON.parse(content[0].text);
+
+      expect(sessions).toEqual([]);
+    });
+
+    test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
+      await ensureServer();
+      // Verify the routing decision: unknown types must NOT match isWorkerEvent
+      // so they fall through to the MCP transport handler instead of being consumed
+      expect(isWorkerEvent({ type: "unknown:something", data: "test" })).toBe(false);
+      expect(isWorkerEvent({ type: "init", daemonId: "d1" })).toBe(false);
+      expect(isWorkerEvent({ type: "tools_changed" })).toBe(false);
+
+      // Known worker events must match
+      expect(isWorkerEvent({ type: "db:upsert", session: {} })).toBe(true);
+      expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
+
+      // MCP client should still work correctly after startup
+      const { tools } = await sharedClient.listTools();
+      expect(tools.length).toBe(10);
+    });
   });
 
   test("worker db:upsert event persists session to SQLite", () => {
@@ -868,30 +914,6 @@ describe("ClaudeServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
   });
 
-  // ── isWorkerEvent routing ──
-
-  test("unknown message types pass through isWorkerEvent filter, not consumed as worker events", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-
-    // Verify the routing decision: unknown types must NOT match isWorkerEvent
-    // so they fall through to the MCP transport handler instead of being consumed
-    expect(isWorkerEvent({ type: "unknown:something", data: "test" })).toBe(false);
-    expect(isWorkerEvent({ type: "init", daemonId: "d1" })).toBe(false);
-    expect(isWorkerEvent({ type: "tools_changed" })).toBe(false);
-
-    // Known worker events must match
-    expect(isWorkerEvent({ type: "db:upsert", session: {} })).toBe(true);
-    expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
-
-    // MCP client should still work correctly after startup
-    const { tools } = await client.listTools();
-    expect(tools.length).toBe(10);
-  });
-
   // ── Worker cleanup on start() failure (#471, #453, #454) ──
 
   test("start() terminates worker and nulls state if client.connect() throws", async () => {
@@ -1020,22 +1042,6 @@ describe("ClaudeServer", () => {
     expect(row).not.toBeNull();
     // repoRoot should be null/undefined when not set
     expect(row?.repoRoot ?? null).toBeNull();
-  });
-
-  test("claude_session_list returns empty array with repoRoot filter when no sessions", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-    const result = await client.callTool({
-      name: "claude_session_list",
-      arguments: { repoRoot: "/some/repo" },
-    });
-    const content = result.content as Array<{ type: string; text: string }>;
-    const sessions = JSON.parse(content[0].text);
-
-    expect(sessions).toEqual([]);
   });
 
   // ── stop() ends sessions in DB (#495) ──

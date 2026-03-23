@@ -988,7 +988,7 @@ describe("ServerPool.updateConfig reconnect", () => {
     // Poll until reconnect completes (replaces fixed sleep)
     const deadline = Date.now() + 5000;
     while (connectCount < 2 && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(1);
     }
 
     expect(connectCount).toBe(2);
@@ -1628,7 +1628,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     const deadline = Date.now() + deadlineMs;
     while (Date.now() < deadline) {
       if (!isAlive(pid)) return;
-      await Bun.sleep(50);
+      await Bun.sleep(5);
     }
   }
 

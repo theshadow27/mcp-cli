@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CODEX_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
@@ -99,64 +99,82 @@ describe("CodexServer", () => {
     db = undefined;
   });
 
-  test("start() connects and listTools returns codex tools", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+  // ── Shared server for read-only integration tests ──
+  describe("read-only (shared worker)", () => {
+    let sharedServer: CodexServer;
+    let sharedDb: StateDb;
+    let sharedClient: Awaited<ReturnType<CodexServer["start"]>>["client"];
+    let sharedOpts: ReturnType<typeof testOptions>;
+    let initialized = false;
 
-    const { client } = await server.start();
-    const { tools } = await client.listTools();
+    async function ensureServer(): Promise<void> {
+      if (!initialized) {
+        sharedOpts = testOptions();
+        sharedDb = new StateDb(sharedOpts.DB_PATH);
+        sharedServer = new CodexServer(sharedDb, undefined, undefined, silentLogger);
+        const { client: c } = await sharedServer.start();
+        sharedClient = c;
+        initialized = true;
+      }
+    }
 
-    expect(tools.length).toBe(9);
-    const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual([
-      "codex_approve",
-      "codex_bye",
-      "codex_deny",
-      "codex_interrupt",
-      "codex_prompt",
-      "codex_session_list",
-      "codex_session_status",
-      "codex_transcript",
-      "codex_wait",
-    ]);
-  });
-
-  test("codex_session_list returns empty array initially", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-    const result = await client.callTool({ name: "codex_session_list", arguments: {} });
-    const content = result.content as Array<{ type: string; text: string }>;
-    const sessions = JSON.parse(content[0].text);
-
-    expect(sessions).toEqual([]);
-  });
-
-  test("codex_session_status returns error for unknown session", async () => {
-    using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    const { client } = await server.start();
-    const result = await client.callTool({
-      name: "codex_session_status",
-      arguments: { sessionId: "nonexistent" },
+    beforeEach(() => {
+      server = undefined;
+      db = undefined;
     });
 
-    expect(result.isError).toBe(true);
-    const content = result.content as Array<{ type: string; text: string }>;
-    expect(content[0].text).toContain("Unknown session");
+    afterAll(async () => {
+      await sharedServer?.stop();
+      sharedDb?.close();
+      sharedOpts?.[Symbol.dispose]();
+    });
+
+    test("start() connects and listTools returns codex tools", async () => {
+      await ensureServer();
+      const { tools } = await sharedClient.listTools();
+
+      expect(tools.length).toBe(9);
+      const names = tools.map((t) => t.name).sort();
+      expect(names).toEqual([
+        "codex_approve",
+        "codex_bye",
+        "codex_deny",
+        "codex_interrupt",
+        "codex_prompt",
+        "codex_session_list",
+        "codex_session_status",
+        "codex_transcript",
+        "codex_wait",
+      ]);
+    });
+
+    test("codex_session_list returns empty array initially", async () => {
+      await ensureServer();
+      const result = await sharedClient.callTool({ name: "codex_session_list", arguments: {} });
+      const content = result.content as Array<{ type: string; text: string }>;
+      const sessions = JSON.parse(content[0].text);
+
+      expect(sessions).toEqual([]);
+    });
+
+    test("codex_session_status returns error for unknown session", async () => {
+      await ensureServer();
+      const result = await sharedClient.callTool({
+        name: "codex_session_status",
+        arguments: { sessionId: "nonexistent" },
+      });
+
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0].text).toContain("Unknown session");
+    });
   });
 
-  test("worker db:upsert event persists session to SQLite", async () => {
+  // handleWorkerEvent tests don't need start() — they call the private method directly
+  test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
@@ -170,12 +188,10 @@ describe("CodexServer", () => {
     expect(row?.model).toBe("codex-mini");
   });
 
-  test("worker db:state event updates session state", async () => {
+  test("worker db:state event updates session state", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s2", state: "connecting" } });
@@ -185,12 +201,10 @@ describe("CodexServer", () => {
     expect(row?.state).toBe("active");
   });
 
-  test("worker db:cost event updates cost and tokens", async () => {
+  test("worker db:cost event updates cost and tokens", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s3", state: "active" } });
@@ -201,12 +215,10 @@ describe("CodexServer", () => {
     expect(row?.totalTokens).toBe(1500);
   });
 
-  test("worker db:end event marks session as ended", async () => {
+  test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s4", state: "active" } });
@@ -217,22 +229,18 @@ describe("CodexServer", () => {
     expect(row?.endedAt).not.toBeNull();
   });
 
-  test("hasActiveSessions() returns false initially", async () => {
+  test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     expect(server.hasActiveSessions()).toBe(false);
   });
 
-  test("hasActiveSessions() returns true after db:upsert, false after db:end", async () => {
+  test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "s-active", state: "connecting" } });
@@ -294,12 +302,10 @@ describe("CodexServer", () => {
     await expect(server.start()).rejects.toThrow("start() called while worker is already running");
   });
 
-  test("onActivity is called on db:upsert, db:state, and db:cost events", async () => {
+  test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     let activityCount = 0;
     server.onActivity = () => {
@@ -450,12 +456,10 @@ describe("CodexServer", () => {
 
   // ── Session TTL pruning ──
 
-  test("pruneDeadSessions prunes sessions after TTL expires", async () => {
+  test("pruneDeadSessions prunes sessions after TTL expires", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "stale-1", state: "active" } });
@@ -474,12 +478,10 @@ describe("CodexServer", () => {
     expect(row?.state).toBe("ended");
   });
 
-  test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", async () => {
+  test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     const internals = server as unknown as { sessionAddedAt: Map<string, number> };
@@ -510,12 +512,10 @@ describe("CodexServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
   });
 
-  test("db:cost event also refreshes sessionAddedAt", async () => {
+  test("db:cost event also refreshes sessionAddedAt", () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
-
-    await server.start();
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({ type: "db:upsert", session: { sessionId: "cost-1", state: "active" } });
