@@ -13,6 +13,8 @@ import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, readConfigFile, res
 
 export interface UpdateDeps {
   searchRegistry: (query: string, opts?: RegistryOpts) => Promise<RegistryResponse>;
+  log?: (msg: string) => void;
+  error?: (msg: string) => void;
 }
 
 const defaultDeps: UpdateDeps = { searchRegistry: realSearchRegistry };
@@ -131,7 +133,7 @@ export async function cmdUpdate(args: string[], deps?: UpdateDeps): Promise<void
     const servers = Object.keys(configFile.mcpServers ?? {});
 
     if (servers.length === 0) {
-      console.error("No servers configured.");
+      (d.error ?? console.error)("No servers configured.");
       return;
     }
 
@@ -142,10 +144,10 @@ export async function cmdUpdate(args: string[], deps?: UpdateDeps): Promise<void
       if (!parsed.json) {
         switch (result.status) {
           case "updated":
-            console.error(`Updated "${name}"`);
+            (d.error ?? console.error)(`Updated "${name}"`);
             break;
           case "up-to-date":
-            console.error(`"${name}" is up to date`);
+            (d.error ?? console.error)(`"${name}" is up to date`);
             break;
           case "not-found":
             // Skip — not a registry server
@@ -163,23 +165,23 @@ export async function cmdUpdate(args: string[], deps?: UpdateDeps): Promise<void
     if (!parsed.json) {
       switch (result.status) {
         case "updated":
-          console.error(`Updated "${result.name}"`);
+          (d.error ?? console.error)(`Updated "${result.name}"`);
           break;
         case "up-to-date":
-          console.error(`"${result.name}" is already up to date`);
+          (d.error ?? console.error)(`"${result.name}" is already up to date`);
           break;
         case "not-found":
           throw new Error(
             `Server "${parsed.slug}" not found. Is it installed? Use "mcx install ${parsed.slug}" first.`,
           );
         case "skipped":
-          console.error(`Skipped "${result.name}" (no usable transport)`);
+          (d.error ?? console.error)(`Skipped "${result.name}" (no usable transport)`);
           break;
       }
     }
   }
 
   if (parsed.json) {
-    console.log(JSON.stringify(parsed.all ? results : results[0], null, 2));
+    (d.log ?? console.log)(JSON.stringify(parsed.all ? results : results[0], null, 2));
   }
 }

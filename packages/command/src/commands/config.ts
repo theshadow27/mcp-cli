@@ -14,6 +14,8 @@ export interface ConfigDeps {
   getConfig: () => Promise<GetConfigResult>;
   readConfig: (path: string) => McpConfigFile;
   writeConfig: (path: string, config: McpConfigFile) => void;
+  log?: (msg: string) => void;
+  error?: (msg: string) => void;
 }
 
 const defaultDeps: ConfigDeps = {
@@ -47,35 +49,39 @@ export async function cmdConfig(args: string[], deps: ConfigDeps = defaultDeps):
 }
 
 async function configShow(deps: ConfigDeps): Promise<void> {
+  const log = deps.log ?? console.log;
+  const error = deps.error ?? console.error;
   const config = await deps.getConfig();
   const entries = Object.entries(config.servers);
 
   if (entries.length === 0) {
-    console.error("No servers configured.");
+    error("No servers configured.");
     return;
   }
 
   const maxName = Math.max(...entries.map(([n]) => n.length));
 
   for (const [name, info] of entries) {
-    console.log(
+    log(
       `  ${c.cyan}${name.padEnd(maxName)}${c.reset}  ${c.dim}${info.transport.padEnd(6)}${c.reset}  ${info.toolCount > 0 ? `${info.toolCount} tools` : ""}  ${c.dim}${info.scope}:${info.source}${c.reset}`,
     );
   }
-  console.log(`\n${entries.length} server(s) from ${config.sources.length} source(s)`);
+  log(`\n${entries.length} server(s) from ${config.sources.length} source(s)`);
 }
 
 async function configSources(deps: ConfigDeps): Promise<void> {
+  const log = deps.log ?? console.log;
+  const error = deps.error ?? console.error;
   const config = await deps.getConfig();
 
   if (config.sources.length === 0) {
-    console.error("No config sources found.");
+    error("No config sources found.");
     return;
   }
 
-  console.log(`${c.bold}Config sources${c.reset} (highest priority last):\n`);
+  log(`${c.bold}Config sources${c.reset} (highest priority last):\n`);
   for (const source of config.sources) {
-    console.log(`  ${c.yellow}${source.scope.padEnd(10)}${c.reset}  ${source.file}`);
+    log(`  ${c.yellow}${source.scope.padEnd(10)}${c.reset}  ${source.file}`);
   }
 }
 
@@ -111,7 +117,7 @@ export async function configGetDispatch(args: string[], deps: ConfigDeps = defau
   }
 
   if (isCliOptionKey(key)) {
-    configGetCliOption(args);
+    configGetCliOption(args, deps.log);
     return;
   }
 
@@ -142,12 +148,12 @@ export async function configSetDispatch(args: string[], deps: ConfigDeps = defau
     return;
   }
 
-  configSetCliOption(args);
+  configSetCliOption(args, deps.log);
 }
 
 // -- CLI option get/set --
 
-function configSetCliOption(args: string[]): void {
+function configSetCliOption(args: string[], log?: (msg: string) => void): void {
   const [key, value] = args;
   if (!key || value === undefined) {
     printError("Usage: mcx config set <key> <value>");
@@ -172,10 +178,10 @@ function configSetCliOption(args: string[]): void {
     (config as Record<string, unknown>)[prop] = value;
   }
   writeCliConfig(config);
-  console.log(`${key} = ${config[prop]}`);
+  (log ?? console.log)(`${key} = ${config[prop]}`);
 }
 
-function configGetCliOption(args: string[]): void {
+function configGetCliOption(args: string[], log?: (msg: string) => void): void {
   const key = args[0];
   if (!key) {
     printError("Usage: mcx config get <key>");
@@ -192,12 +198,13 @@ function configGetCliOption(args: string[]): void {
     : NUMBER_KEYS.has(key as ConfigKey)
       ? String(DEFAULT_CLAUDE_WS_PORT)
       : "";
-  console.log(String(config[prop] ?? defaultValue));
+  (log ?? console.log)(String(config[prop] ?? defaultValue));
 }
 
 // -- Server config get/set --
 
 export async function configGetServer(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
+  const log = deps.log ?? console.log;
   const showSecrets = args.includes("--show-secrets");
   const json = args.includes("--json") || args.includes("-j");
   const name = args.find((a) => !a.startsWith("-"));
@@ -218,7 +225,7 @@ export async function configGetServer(args: string[], deps: ConfigDeps = default
   const serverConfig = fileConfig.mcpServers?.[name];
 
   if (json) {
-    console.log(
+    log(
       JSON.stringify(
         {
           name,
@@ -234,34 +241,39 @@ export async function configGetServer(args: string[], deps: ConfigDeps = default
     return;
   }
 
-  console.log(`${c.cyan}${name}${c.reset} ${c.dim}(${serverMeta.transport})${c.reset}`);
+  log(`${c.cyan}${name}${c.reset} ${c.dim}(${serverMeta.transport})${c.reset}`);
 
   if (serverConfig) {
-    printServerConfigDetails(serverConfig, showSecrets);
+    printServerConfigDetails(serverConfig, showSecrets, deps.log);
   }
 
-  console.log(`  ${c.bold}source${c.reset}: ${serverMeta.source} ${c.dim}(${serverMeta.scope})${c.reset}`);
+  log(`  ${c.bold}source${c.reset}: ${serverMeta.source} ${c.dim}(${serverMeta.scope})${c.reset}`);
 }
 
-export function printServerConfigDetails(config: ServerConfig, showSecrets: boolean): void {
+export function printServerConfigDetails(
+  config: ServerConfig,
+  showSecrets: boolean,
+  log?: (msg: string) => void,
+): void {
+  const out = log ?? console.log;
   if (isStdioConfig(config)) {
     const cmdLine = [config.command, ...(config.args ?? [])].join(" ");
-    console.log(`  ${c.bold}command${c.reset}: ${cmdLine}`);
+    out(`  ${c.bold}command${c.reset}: ${cmdLine}`);
     if (config.cwd) {
-      console.log(`  ${c.bold}cwd${c.reset}: ${config.cwd}`);
+      out(`  ${c.bold}cwd${c.reset}: ${config.cwd}`);
     }
     if (config.env && Object.keys(config.env).length > 0) {
-      console.log(`  ${c.bold}env${c.reset}:`);
+      out(`  ${c.bold}env${c.reset}:`);
       for (const [k, v] of Object.entries(config.env)) {
-        console.log(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
+        out(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
       }
     }
   } else {
-    console.log(`  ${c.bold}url${c.reset}: ${config.url}`);
+    out(`  ${c.bold}url${c.reset}: ${config.url}`);
     if (config.headers && Object.keys(config.headers).length > 0) {
-      console.log(`  ${c.bold}headers${c.reset}:`);
+      out(`  ${c.bold}headers${c.reset}:`);
       for (const [k, v] of Object.entries(config.headers)) {
-        console.log(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
+        out(`    ${k}: ${showSecrets ? v : maskValue(v)}`);
       }
     }
   }
@@ -316,7 +328,7 @@ export async function configSetServerEnv(args: string[], deps: ConfigDeps = defa
   serverConfig.env[key] = value;
   deps.writeConfig(serverMeta.source, fileConfig);
 
-  console.log(`Set ${key} on ${serverName}`);
+  (deps.log ?? console.log)(`Set ${key} on ${serverName}`);
 }
 
 export async function configSetServerUrl(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
@@ -350,7 +362,7 @@ export async function configSetServerUrl(args: string[], deps: ConfigDeps = defa
   serverConfig.url = newUrl;
   deps.writeConfig(serverMeta.source, fileConfig);
 
-  console.log(`Set url on ${serverName}`);
+  (deps.log ?? console.log)(`Set url on ${serverName}`);
 }
 
 export async function configSetServerArgs(args: string[], deps: ConfigDeps = defaultDeps): Promise<void> {
@@ -386,7 +398,7 @@ export async function configSetServerArgs(args: string[], deps: ConfigDeps = def
   serverConfig.args = newArgs;
   deps.writeConfig(serverMeta.source, fileConfig);
 
-  console.log(`Set args on ${serverName}`);
+  (deps.log ?? console.log)(`Set args on ${serverName}`);
 }
 
 // -- Masking --
