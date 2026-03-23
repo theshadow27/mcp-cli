@@ -300,13 +300,8 @@ describe("agent codex ls", () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult([])),
     });
-    const mc = mockConsole();
-    try {
-      await cmdAgent(["codex", "ls"], deps);
-      expect(mc.errorCalls.some((l) => l.includes("No active"))).toBe(true);
-    } finally {
-      mc.restore();
-    }
+    await cmdAgent(["codex", "ls"], deps);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No active"));
   });
 
   test("--all does not require -a shorthand", async () => {
@@ -864,13 +859,8 @@ describe("agent worktrees", () => {
         return { stdout: "", stderr: "", exitCode: 0 };
       }),
     });
-    const mc = mockConsole();
-    try {
-      await cmdAgent(["codex", "worktrees"], deps);
-      expect(mc.errorCalls.join("\n")).toContain("No mcx worktrees found");
-    } finally {
-      mc.restore();
-    }
+    await cmdAgent(["codex", "worktrees"], deps);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No mcx worktrees found"));
   });
 });
 
@@ -1350,7 +1340,7 @@ describe("agent ls stale daemon warning", () => {
     const mc = mockConsole();
     try {
       await cmdAgent(["codex", "ls"], deps);
-      expect(mc.errorCalls.some((l) => l.includes("daemon is stale"))).toBe(true);
+      expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("daemon is stale"));
     } finally {
       mc.restore();
     }

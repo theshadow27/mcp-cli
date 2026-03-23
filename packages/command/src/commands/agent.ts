@@ -160,6 +160,15 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
 
 // ── Helpers ──
 
+/** Check if an error indicates the daemon is not running (ECONNREFUSED/ENOENT). */
+function isDaemonUnavailable(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  if (code === "ECONNREFUSED" || code === "ENOENT") return true;
+  const msg = (err as { message?: string }).message;
+  return typeof msg === "string" && (/ECONNREFUSED/.test(msg) || /ENOENT/.test(msg));
+}
+
 /** Capitalize the first letter of a provider name for display. */
 function providerDisplayName(provider: AgentProvider, override?: string): string {
   const n = override ?? provider.name;
@@ -414,7 +423,7 @@ async function agentSpawn(
   }
   if (parsed_data?.sessionId) {
     const label = providerDisplayName(provider, agentOverride);
-    console.error(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
+    d.printError(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
   }
   console.log(text);
 }
@@ -551,7 +560,7 @@ async function agentList(
 
   if (sessions.length === 0) {
     const label = agentOverride ?? providerDisplayName(provider);
-    console.error(`No active ${label} sessions.`);
+    d.printError(`No active ${label} sessions.`);
     return;
   }
 
@@ -605,7 +614,7 @@ async function agentList(
 
   const staleWarning = d.getStaleDaemonWarning();
   if (staleWarning) {
-    console.error(`\n⚠ ${staleWarning}`);
+    d.printError(`\n⚠ ${staleWarning}`);
   }
 }
 
@@ -1014,6 +1023,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         allow.push(args[++i]);
       }
+      if (allow.length === 0) error = "--allow requires at least one tool pattern";
     } else if (!arg.startsWith("-")) {
       positionals.push(arg);
     }
@@ -1070,8 +1080,9 @@ async function agentResume(
     const text = formatToolResult(result);
     const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
     sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
-  } catch {
-    // Daemon may not be running — all worktrees are orphaned
+  } catch (err) {
+    // Only treat connection errors as "daemon not running"
+    if (!isDaemonUnavailable(err)) throw err;
   }
 
   if (parsed.all) {
@@ -1088,7 +1099,12 @@ async function agentResume(
     d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
 
     for (const wt of orphaned) {
-      await resumeAgentWorktree(wt, parsed, provider, d);
+      try {
+        await resumeAgentWorktree(wt, parsed, provider, d);
+      } catch (err) {
+        const wtName = wt.path.slice(`${worktreeBase}/`.length);
+        d.printError(`Failed to resume "${wtName}": ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     return;
   }
@@ -1155,7 +1171,6 @@ async function resumeAgentWorktree(
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
-  if (parsed.wait) toolArgs.wait = true;
 
   const useNativeResume = hasFeature(provider, "resume") && !parsed.fresh;
 
@@ -1165,10 +1180,10 @@ async function resumeAgentWorktree(
     toolArgs.prompt =
       "Your previous conversation history has just been restored via --continue/--resume. " +
       "Please review the restored context and continue where you left off, picking up any in-progress work.";
-    console.error(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
   } else {
     // Git-context shim: build prompt from git state
-    const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `main..${branch}`, "--"]);
+    const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `${defaultBranch}..${branch}`, "--"]);
     const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
 
     const issueNumber = extractIssueNumber(branch);
@@ -1180,11 +1195,29 @@ async function resumeAgentWorktree(
     }
 
     toolArgs.prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
-    console.error(`Resuming session in ${wt.path} (branch: ${branch}) [git context prompt]`);
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [git context prompt]`);
   }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
-  console.log(formatToolResult(result));
+  const text = formatToolResult(result);
+  console.log(text);
+
+  // Client-side wait: block until session reaches idle/ended state
+  if (parsed.wait) {
+    let sessionId: string | undefined;
+    try {
+      const data = JSON.parse(text) as { sessionId?: string };
+      sessionId = data.sessionId;
+    } catch {
+      // Not JSON — cannot wait without a session ID
+    }
+    if (sessionId) {
+      const waitArgs: Record<string, unknown> = { sessionId };
+      if (parsed.timeout) waitArgs.timeout = parsed.timeout;
+      const waitResult = await d.callTool(`${P}_wait`, waitArgs);
+      console.log(formatToolResult(waitResult));
+    }
+  }
 }
 
 // ── Worktrees ──
@@ -1213,8 +1246,9 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
     const text = formatToolResult(result);
     const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
     sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
-  } catch {
-    // Daemon may not be running
+  } catch (err) {
+    // Only treat connection errors as "daemon not running"
+    if (!isDaemonUnavailable(err)) throw err;
   }
 
   if (prune) {
@@ -1235,7 +1269,7 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
   }
 
   if (mcxWorktrees.length === 0) {
-    console.error("No mcx worktrees found.");
+    d.printError("No mcx worktrees found.");
     return;
   }
 
@@ -1250,11 +1284,11 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
     const wtName = wt.path.slice(`${worktreeBase}/`.length);
     const branch = wt.branch ?? "—";
     const isActive = sessionWorktrees.has(wtName);
-    const status = isActive ? `${c.green}active${c.reset}` : `${c.yellow}orphaned${c.reset}`;
+    const statusLabel = isActive ? "active" : "orphaned";
+    const statusColor = isActive ? c.green : c.yellow;
+    const status = `${statusColor}${statusLabel.padEnd(10)}${c.reset}`;
     const diff = diffStats[i] ?? "—";
-    console.log(
-      `${c.cyan}${wtName.padEnd(30)}${c.reset} ${branch.padEnd(30)} ${status.padEnd(10 + (isActive ? c.green.length + c.reset.length : c.yellow.length + c.reset.length))} ${c.dim}${diff}${c.reset}`,
-    );
+    console.log(`${c.cyan}${wtName.padEnd(30)}${c.reset} ${branch.padEnd(30)} ${status} ${c.dim}${diff}${c.reset}`);
   }
 }
 
