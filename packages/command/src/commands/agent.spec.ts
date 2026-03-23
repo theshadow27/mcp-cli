@@ -857,6 +857,110 @@ describe("agent resume --wait without sessionId", () => {
       mc.restore();
     }
   });
+
+  test("calls codex_wait after codex_prompt when sessionId is returned", async () => {
+    const deps = makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "abc123 fix stuff", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult([]);
+        if (tool === "codex_prompt") return toolResult({ sessionId: "wait-session-id" });
+        return toolResult({ event: "session:result" });
+      }),
+      getPrStatus: mock(async () => null),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1", "--wait"], deps);
+      expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.anything());
+      expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { sessionId: "wait-session-id" });
+    } finally {
+      mc.restore();
+    }
+  });
+});
+
+// ── Resume ECONNREFUSED / non-connection error handling ──
+
+describe("agent resume connection error handling", () => {
+  test("swallows ECONNREFUSED from session_list and proceeds without active session guard", async () => {
+    const deps = makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "abc123 fix stuff", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") {
+          const err = new Error("connect ECONNREFUSED /tmp/mcpd.sock");
+          (err as NodeJS.ErrnoException).code = "ECONNREFUSED";
+          throw err;
+        }
+        return toolResult({ sessionId: "new-session" });
+      }),
+      getPrStatus: mock(async () => null),
+    });
+    const mc = mockConsole();
+    try {
+      // Should not throw — ECONNREFUSED means daemon down, treat as no active sessions
+      await cmdAgent(["codex", "resume", "codex-wt1"], deps);
+      expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.anything());
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("rethrows non-connection errors from session_list", async () => {
+    const deps = makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        if (cmd.join(" ").includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") {
+          throw new Error("Internal server error");
+        }
+        return toolResult({});
+      }),
+      getPrStatus: mock(async () => null),
+    });
+    const mc = mockConsole();
+    try {
+      await expect(cmdAgent(["codex", "resume", "codex-wt1"], deps)).rejects.toThrow("Internal server error");
+    } finally {
+      mc.restore();
+    }
+  });
 });
 
 // ── Resume (native provider — claude) ──
