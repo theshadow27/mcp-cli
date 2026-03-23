@@ -4,7 +4,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
 import { StateDb } from "./db/state";
-import { metrics } from "./metrics";
+import { MetricsCollector, metrics } from "./metrics";
 
 // ── isWorkerEvent ──
 
@@ -564,10 +564,6 @@ describe("CodexServer connect timeout metric", () => {
   let server: CodexServer | undefined;
   let db: StateDb | undefined;
 
-  beforeEach(() => {
-    metrics.reset();
-  });
-
   afterEach(async () => {
     await server?.stop();
     db?.close();
@@ -585,19 +581,24 @@ describe("CodexServer connect timeout metric", () => {
       close: async () => {},
     } as unknown as Client;
 
-    server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50);
+    // Use a fresh metrics instance to avoid cross-test contamination via the singleton
+    const testMetrics = new MetricsCollector();
+    server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50, testMetrics);
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+
+    // Use a fresh metrics instance to avoid cross-test contamination via the singleton
+    const testMetrics = new MetricsCollector();
+    server = new CodexServer(db, undefined, undefined, silentLogger, 10_000, testMetrics);
 
     await server.start();
 
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });
