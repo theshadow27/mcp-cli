@@ -23,7 +23,7 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -754,7 +754,11 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
     const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
-    console.log(`${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`);
+    const age = formatAge(s.createdAt);
+    const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
+    console.log(
+      `${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+    );
   }
 
   const staleWarning = getStaleDaemonWarning();
@@ -764,7 +768,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 // formatSessionShort, extractContentSummary, colorState → ./session-display.ts
-export { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+export { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
 
 function formatPrStatus(pr: PrStatus | null): string {
   if (!pr) return "—";

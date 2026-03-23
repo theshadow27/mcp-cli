@@ -239,6 +239,8 @@ interface WsSession {
   claudeSessionId: string | null;
   /** Timer that fires if the Claude CLI process doesn't connect via WS within the deadline. */
   connectTimer: Timer | null;
+  /** Unix timestamp (ms) when this session was created. */
+  createdAt: number;
 }
 
 interface WsData {
@@ -451,6 +453,7 @@ export class ClaudeWsServer {
       worktree: string | null;
       totalCost: number;
       totalTokens: number;
+      spawnedAt?: string | null;
     }>,
   ): number {
     let restored = 0;
@@ -483,6 +486,7 @@ export class ClaudeWsServer {
         clearing: false,
         claudeSessionId: null,
         connectTimer: null,
+        createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -514,6 +518,7 @@ export class ClaudeWsServer {
       clearing: false,
       claudeSessionId: null,
       connectTimer: null,
+      createdAt: Date.now(),
     });
   }
 
@@ -1408,6 +1413,7 @@ export class ClaudeWsServer {
       worktree: s.config.worktree ?? null,
       repoRoot: s.config.repoRoot ?? null,
       processAlive: s.spawnAlive,
+      createdAt: s.createdAt,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,
       snapshotTs: Date.now(),

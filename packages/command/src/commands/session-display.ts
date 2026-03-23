@@ -12,7 +12,21 @@ export interface TranscriptEntry {
   message: { type: string; [k: string]: unknown };
 }
 
-/** Compact one-line format: SESSION STATE MODEL COST TOKENS TURNS */
+/**
+ * Format a short date label like "(Mar 19)" for sessions older than 24 hours.
+ * Returns empty string for recent sessions or if createdAt is unavailable.
+ */
+export function formatAge(createdAt: number | null | undefined, now?: number): string {
+  if (createdAt == null) return "";
+  const elapsed = (now ?? Date.now()) - createdAt;
+  if (elapsed < 24 * 60 * 60 * 1000) return "";
+  const date = new Date(createdAt);
+  const month = date.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const day = date.getUTCDate();
+  return `(${month} ${day})`;
+}
+
+/** Compact one-line format: SESSION STATE MODEL COST TOKENS TURNS [(date)] */
 export function formatSessionShort(s: {
   sessionId: string;
   state: string;
@@ -20,6 +34,7 @@ export function formatSessionShort(s: {
   cost?: number | null;
   tokens?: number;
   numTurns?: number;
+  createdAt?: number | null;
 }): string {
   const id = s.sessionId.slice(0, 8);
   const state = s.state;
@@ -27,7 +42,10 @@ export function formatSessionShort(s: {
   const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
   const tokens = s.tokens && s.tokens > 0 ? String(s.tokens) : "—";
   const turns = s.numTurns !== undefined ? String(s.numTurns) : "—";
-  return `${id} ${state} ${model} ${cost} ${tokens} ${turns}`;
+  const age = formatAge(s.createdAt);
+  return age
+    ? `${id} ${state} ${model} ${cost} ${tokens} ${turns} ${age}`
+    : `${id} ${state} ${model} ${cost} ${tokens} ${turns}`;
 }
 
 /** Extract a readable summary from a Claude API content field (string or content block array). */
