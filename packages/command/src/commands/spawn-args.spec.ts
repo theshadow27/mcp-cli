@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseSharedSpawnArgs } from "./spawn-args";
+import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 
 describe("parseSharedSpawnArgs", () => {
   it("parses --task flag", () => {
@@ -116,5 +116,49 @@ describe("parseSharedSpawnArgs", () => {
   it("passes full model ID through unchanged", () => {
     const result = parseSharedSpawnArgs(["--model", "claude-opus-4-6", "--task", "x"]);
     expect(result.model).toBe("claude-opus-4-6");
+  });
+
+  it("--allow stops consuming at lowercase positional (worktree name)", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Read", "Write", "my-worktree"]);
+    expect(result.allow).toEqual(["Read", "Write"]);
+    // "my-worktree" should be treated as task (positional), not consumed by --allow
+    expect(result.task).toBe("my-worktree");
+  });
+
+  it("--allow accepts wildcard patterns", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Read", "*", "--task", "x"]);
+    expect(result.allow).toEqual(["Read", "*"]);
+  });
+
+  it("--allow accepts mcp-style tool names", () => {
+    const result = parseSharedSpawnArgs(["--allow", "mcp__echo__add", "Read", "--task", "x"]);
+    expect(result.allow).toEqual(["mcp__echo__add", "Read"]);
+  });
+});
+
+describe("looksLikeToolName", () => {
+  it("accepts PascalCase names", () => {
+    expect(looksLikeToolName("Read")).toBe(true);
+    expect(looksLikeToolName("WebSearch")).toBe(true);
+  });
+
+  it("accepts wildcards", () => {
+    expect(looksLikeToolName("*")).toBe(true);
+    expect(looksLikeToolName("Bash*")).toBe(true);
+  });
+
+  it("accepts mcp-style names", () => {
+    expect(looksLikeToolName("mcp__echo__add")).toBe(true);
+  });
+
+  it("rejects lowercase identifiers (worktree/session names)", () => {
+    expect(looksLikeToolName("my-worktree")).toBe(false);
+    expect(looksLikeToolName("codex-wt1")).toBe(false);
+    expect(looksLikeToolName("abc12345")).toBe(false);
+  });
+
+  it("rejects flags", () => {
+    expect(looksLikeToolName("--task")).toBe(false);
+    expect(looksLikeToolName("-t")).toBe(false);
   });
 });

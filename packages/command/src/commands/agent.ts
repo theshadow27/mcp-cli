@@ -13,10 +13,14 @@ import { dirname, resolve } from "node:path";
 import type { AgentFeatures, AgentProvider } from "@mcp-cli/core";
 import {
   PROMPT_IPC_TIMEOUT_MS,
+  WorktreeError,
   buildHookEnv,
   getAllProviders,
+  getDefaultBranch,
   getProvider,
   hasWorktreeHooks,
+  listMcxWorktrees,
+  pruneWorktrees,
   readWorktreeConfig,
   resolveWorktreePath,
 } from "@mcp-cli/core";
@@ -24,11 +28,18 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { type SharedSessionDeps, claudeResume, cleanupWorktree, parseByeResult, resolveSessionId } from "./claude";
+import {
+  type SharedSessionDeps,
+  buildResumePrompt,
+  cleanupWorktree,
+  extractIssueNumber,
+  parseByeResult,
+  resolveSessionId,
+  resolveWorktree,
+} from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
-import { parseSharedSpawnArgs } from "./spawn-args";
+import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
-import { worktreesCommand } from "./worktree-commands";
 
 // ── Dependency injection ──
 
@@ -53,7 +64,7 @@ export interface AgentDeps extends SharedSessionDeps {
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
   const p = provider.toolPrefix;
   return (tool, args) => {
-    const needsLongTimeout = (tool === `${p}_prompt` && args.wait) || tool === `${p}_wait`;
+    const needsLongTimeout = tool === `${p}_prompt` || tool === `${p}_wait`;
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: provider.serverName, tool, arguments: args }, { timeoutMs });
   };
@@ -155,6 +166,24 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
 
 // ── Helpers ──
 
+/** Check if an error indicates the daemon is not running (ECONNREFUSED/ENOENT). */
+function isDaemonUnavailable(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  if (code === "ECONNREFUSED" || code === "ENOENT") return true;
+  const msg = (err as { message?: string }).message;
+  return typeof msg === "string" && (/ECONNREFUSED/.test(msg) || /ENOENT/.test(msg));
+}
+
+/** Parse a session list response, validating it's an array. Throws if not. */
+function parseSessionList(text: string): Array<Record<string, unknown>> {
+  const parsed: unknown = JSON.parse(text);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Expected session list to be an array, got ${typeof parsed}: ${text.slice(0, 200)}`);
+  }
+  return parsed as Array<Record<string, unknown>>;
+}
+
 /** Capitalize the first letter of a provider name for display. */
 function providerDisplayName(provider: AgentProvider, override?: string): string {
   const n = override ?? provider.name;
@@ -230,30 +259,15 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
       await agentWait(args.slice(2), provider, agentOverride, d);
       break;
     case "resume":
-      if (!hasFeature(provider, "resume")) {
-        d.printError(
-          `"${providerName}" does not support resume. Only providers with native session resume support this.`,
-        );
-        d.exit(1);
-        break;
-      }
-      // Call claudeResume directly (avoids circular dispatch through cmdClaude → cmdAgent)
-      await claudeResume(args.slice(2), d);
+      await agentResume(args.slice(2), provider, agentOverride, d);
       break;
     case "worktrees":
-    case "wt": {
-      if (!hasFeature(provider, "resume")) {
-        d.printError(`"${providerName}" does not support worktree management.`);
-        d.exit(1);
-        break;
-      }
-      // Call worktrees command directly (avoids circular dispatch through cmdClaude → cmdAgent)
-      await worktreesCommand(args.slice(2), d);
+    case "wt":
+      await agentWorktrees(args.slice(2), provider, d);
       break;
-    }
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -569,7 +583,7 @@ async function agentList(
 
   let sessions: Array<Record<string, unknown>>;
   try {
-    sessions = JSON.parse(text);
+    sessions = parseSessionList(text);
   } catch {
     d.log(text);
     return;
@@ -996,6 +1010,351 @@ async function agentWait(
   d.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
 }
 
+// ── Resume ──
+
+interface AgentResumeArgs {
+  target: string | undefined;
+  sessionId: string | undefined;
+  all: boolean;
+  fresh: boolean;
+  allow: string[];
+  model: string | undefined;
+  wait: boolean;
+  timeout: number | undefined;
+  error: string | undefined;
+}
+
+export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
+  let all = false;
+  let fresh = false;
+  let wait = false;
+  let timeout: number | undefined;
+  let model: string | undefined;
+  let error: string | undefined;
+  const allow: string[] = [];
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--all") {
+      all = true;
+    } else if (arg === "--fresh") {
+      fresh = true;
+    } else if (arg === "--wait") {
+      wait = true;
+    } else if (arg === "--timeout" || arg === "-t") {
+      const val = args[++i];
+      if (!val) {
+        error = "--timeout requires a value in ms";
+      } else {
+        timeout = Number(val);
+        if (Number.isNaN(timeout)) error = "--timeout must be a number";
+      }
+    } else if (arg === "--model" || arg === "-m") {
+      const val = args[++i];
+      if (!val || val.startsWith("-")) {
+        error = "--model requires a value";
+      } else {
+        model = val;
+      }
+    } else if (arg === "--allow") {
+      while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
+        allow.push(args[++i]);
+      }
+      if (allow.length === 0) error = "--allow requires at least one tool pattern";
+    } else if (!arg.startsWith("-")) {
+      positionals.push(arg);
+    }
+  }
+
+  const target = positionals[0];
+  const sessionId = positionals[1];
+
+  if (fresh && sessionId) {
+    error = "--fresh cannot be combined with an explicit session ID";
+  } else if (!all && !target) {
+    error =
+      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--model M] [--allow tools...]\n       mcx agent <provider> resume --all";
+  }
+
+  return { target, sessionId, all, fresh, allow, model, wait, timeout, error };
+}
+
+async function agentResume(
+  args: string[],
+  provider: AgentProvider,
+  agentOverride: string | undefined,
+  d: AgentDeps,
+): Promise<void> {
+  const parsed = parseAgentResumeArgs(args);
+
+  if (parsed.error) {
+    d.printError(parsed.error);
+    d.exit(1);
+  }
+
+  const P = provider.toolPrefix;
+  const cwd = d.getCwd();
+
+  // List all worktrees
+  let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
+  let allWorktrees: ReturnType<typeof listMcxWorktrees>["allWorktrees"];
+  let worktreeBase: string;
+  try {
+    const listed = listMcxWorktrees(cwd, d);
+    mcxWorktrees = listed.worktrees;
+    allWorktrees = listed.allWorktrees;
+    worktreeBase = listed.worktreeBase;
+  } catch (e) {
+    d.printError(e instanceof WorktreeError ? e.message : String(e));
+    d.exit(1);
+    return; // unreachable
+  }
+
+  // Get active sessions to find orphaned worktrees
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool(`${P}_session_list`, {});
+    const text = formatToolResult(result);
+    const sessions = parseSessionList(text);
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch (err) {
+    // Only treat connection errors as "daemon not running"
+    if (!isDaemonUnavailable(err)) throw err;
+  }
+
+  if (parsed.all) {
+    const orphaned = mcxWorktrees.filter((wt) => {
+      const wtName = wt.path.slice(`${worktreeBase}/`.length);
+      return !sessionWorktrees.has(wtName);
+    });
+
+    if (orphaned.length === 0) {
+      d.printError("No orphaned worktrees to resume.");
+      return;
+    }
+
+    d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
+
+    for (const wt of orphaned) {
+      try {
+        await resumeAgentWorktree(wt, parsed, provider, d);
+      } catch (err) {
+        const wtName = wt.path.slice(`${worktreeBase}/`.length);
+        d.printError(`Failed to resume "${wtName}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return;
+  }
+
+  // Single worktree resume
+  const target = parsed.target ?? "";
+  const resolved = resolveWorktree(target, mcxWorktrees);
+
+  if (!resolved) {
+    const resolvedAll = resolveWorktree(target, allWorktrees);
+    if (resolvedAll) {
+      d.printError(`Worktree "${target}" exists but is not an mcx worktree (not under .claude/worktrees/).`);
+    } else {
+      d.printError(
+        `No worktree matching "${target}". Use "mcx agent ${provider.name} worktrees" to list available worktrees.`,
+      );
+    }
+    d.exit(1);
+    return; // unreachable
+  }
+
+  // Check if it already has an active session
+  const wtName = resolved.path.slice(`${worktreeBase}/`.length);
+  if (sessionWorktrees.has(wtName)) {
+    d.printError(
+      `Worktree "${wtName}" already has an active session. Use "mcx agent ${provider.name} send" to interact with it.`,
+    );
+    d.exit(1);
+    return; // unreachable
+  }
+
+  const skipped = await resumeAgentWorktree(resolved, parsed, provider, d);
+  if (skipped) {
+    d.exit(1);
+    return; // unreachable
+  }
+}
+
+/** Resume a worktree session. Returns true if skipped (e.g. branch already merged). */
+async function resumeAgentWorktree(
+  wt: { path: string; branch: string | null },
+  parsed: AgentResumeArgs,
+  provider: AgentProvider,
+  d: AgentDeps,
+): Promise<boolean> {
+  const P = provider.toolPrefix;
+  const branch = wt.branch;
+
+  // Detached HEAD — skip merge check but warn
+  if (!branch) {
+    d.printError(`Warning: worktree at ${wt.path} has detached HEAD — skipping merge check`);
+  }
+
+  // Check if branch is already merged into the default branch
+  const defaultBranch = getDefaultBranch(d, wt.path);
+  if (branch) {
+    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+      "git",
+      "-C",
+      wt.path,
+      "branch",
+      "--merged",
+      defaultBranch,
+    ]);
+    if (mergedExit === 0) {
+      const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+      if (mergedBranches.includes(branch)) {
+        d.printError(
+          `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
+        );
+        return true;
+      }
+    }
+  }
+
+  const toolArgs: Record<string, unknown> = { cwd: wt.path };
+  if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.model) toolArgs.model = parsed.model;
+  if (parsed.timeout) toolArgs.timeout = parsed.timeout;
+
+  const useNativeResume = hasFeature(provider, "resume") && !parsed.fresh;
+
+  if (useNativeResume) {
+    // Native resume: restore conversation history (Claude only)
+    toolArgs.resumeSessionId = parsed.sessionId ?? "continue";
+    toolArgs.prompt =
+      "Your previous conversation history has just been restored via --continue/--resume. " +
+      "Please review the restored context and continue where you left off, picking up any in-progress work.";
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [restoring conversation history]`);
+  } else {
+    // Git-context shim: build prompt from git state
+    const branchRef = branch ?? "HEAD";
+    const { stdout: gitLog } = d.exec([
+      "git",
+      "-C",
+      wt.path,
+      "log",
+      "--oneline",
+      `${defaultBranch}..${branchRef}`,
+      "--",
+    ]);
+    const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
+
+    const issueNumber = branch ? extractIssueNumber(branch) : null;
+
+    let prInfo: string | null = null;
+    const prStatus = await d.getPrStatus(wt.path);
+    if (prStatus) {
+      prInfo = `#${prStatus.number} (${prStatus.state})`;
+    }
+
+    toolArgs.prompt = buildResumePrompt({ branch: branchRef, issueNumber, gitLog, gitDiff, prInfo });
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [git context prompt]`);
+  }
+
+  const result = await d.callTool(`${P}_prompt`, toolArgs);
+  const text = formatToolResult(result);
+  console.log(text);
+
+  // Client-side wait: block until session reaches idle/ended state
+  if (parsed.wait) {
+    let sessionId: string | undefined;
+    try {
+      const data = JSON.parse(text) as { sessionId?: string };
+      sessionId = data.sessionId;
+    } catch {
+      // Not JSON — cannot wait without a session ID
+    }
+    if (sessionId) {
+      const waitArgs: Record<string, unknown> = { sessionId };
+      if (parsed.timeout) waitArgs.timeout = parsed.timeout;
+      const waitResult = await d.callTool(`${P}_wait`, waitArgs);
+      console.log(formatToolResult(waitResult));
+    } else {
+      d.printError("--wait specified but no sessionId in response — cannot wait");
+    }
+  }
+  return false;
+}
+
+// ── Worktrees ──
+
+async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
+  const P = provider.toolPrefix;
+  const prune = args.includes("--prune");
+  const cwd = d.getCwd();
+
+  let mcxWorktrees: ReturnType<typeof listMcxWorktrees>["worktrees"];
+  let worktreeBase: string;
+  try {
+    const listed = listMcxWorktrees(cwd, d);
+    mcxWorktrees = listed.worktrees;
+    worktreeBase = listed.worktreeBase;
+  } catch (e) {
+    d.printError(e instanceof WorktreeError ? e.message : String(e));
+    d.exit(1);
+    return; // unreachable
+  }
+
+  // Get active sessions
+  let sessionWorktrees = new Set<string>();
+  try {
+    const result = await d.callTool(`${P}_session_list`, {});
+    const text = formatToolResult(result);
+    const sessions = parseSessionList(text);
+    sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
+  } catch (err) {
+    // Only treat connection errors as "daemon not running"
+    if (!isDaemonUnavailable(err)) throw err;
+  }
+
+  if (prune) {
+    const { pruned, skippedUnmerged } = pruneWorktrees({
+      repoRoot: cwd,
+      activeWorktrees: sessionWorktrees,
+      deps: d,
+    });
+    if (pruned > 0) {
+      d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+    } else {
+      d.printError("Nothing to prune.");
+    }
+    if (skippedUnmerged.length > 0) {
+      d.printError(`Skipped unmerged: ${skippedUnmerged.join(", ")}`);
+    }
+    return;
+  }
+
+  if (mcxWorktrees.length === 0) {
+    d.printError("No mcx worktrees found.");
+    return;
+  }
+
+  // Gather diff stats in parallel
+  const diffStats = await Promise.all(mcxWorktrees.map((wt) => d.getDiffStats(wt.path)));
+
+  const header = `${"WORKTREE".padEnd(30)} ${"BRANCH".padEnd(30)} ${"STATUS".padEnd(10)} DIFF`;
+  console.log(`${c.dim}${header}${c.reset}`);
+
+  for (let i = 0; i < mcxWorktrees.length; i++) {
+    const wt = mcxWorktrees[i];
+    const wtName = wt.path.slice(`${worktreeBase}/`.length);
+    const branch = wt.branch ?? "—";
+    const isActive = sessionWorktrees.has(wtName);
+    const statusLabel = isActive ? "active" : "orphaned";
+    const statusColor = isActive ? c.green : c.yellow;
+    const status = `${statusColor}${statusLabel.padEnd(10)}${c.reset}`;
+    const diff = diffStats[i] ?? "—";
+    console.log(`${c.cyan}${wtName.padEnd(30)}${c.reset} ${branch.padEnd(30)} ${status} ${c.dim}${diff}${c.reset}`);
+  }
+}
+
 // ── Usage ──
 
 function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {
@@ -1028,10 +1387,9 @@ function printProviderUsage(
   log: (...args: unknown[]) => void = console.log,
 ): void {
   const label = agentOverride ?? providerDisplayName(provider);
-  const resumeLine = hasFeature(provider, "resume")
-    ? `\n  mcx agent ${name} resume <worktree>        Resume with conversation history
-  mcx agent ${name} worktrees                 List mcx-created worktrees`
-    : "";
+  const resumeNote = hasFeature(provider, "resume")
+    ? "Resume with conversation history"
+    : "Resume with git-context prompt";
 
   log(`mcx agent ${name} — manage ${label} sessions
 
@@ -1042,7 +1400,9 @@ Usage:
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session>                End session
   mcx agent ${name} interrupt <session>          Interrupt current turn
-  mcx agent ${name} log <session> [--last N]     View transcript${resumeLine}
+  mcx agent ${name} log <session> [--last N]     View transcript
+  mcx agent ${name} resume <worktree>            ${resumeNote}
+  mcx agent ${name} worktrees [--prune]          List mcx-created worktrees
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }
