@@ -61,6 +61,7 @@ export type SessionEventHandler = (event: AgentSessionEvent) => void;
 
 export class CodexSession {
   readonly sessionId: string;
+  private readonly createdAt = Date.now();
   private state: AgentSessionState = "connecting";
   private proc: CodexProcess | null = null;
   private rpc: CodexRpcClient | null = null;
@@ -268,6 +269,7 @@ export class CodexSession {
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
       processAlive: this.proc?.alive ?? false,
+      createdAt: this.createdAt,
     };
   }
 

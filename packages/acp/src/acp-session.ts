@@ -63,6 +63,7 @@ export type SessionEventHandler = (event: AgentSessionEvent) => void;
 
 export class AcpSession {
   readonly sessionId: string;
+  private readonly createdAt = Date.now();
   private state: AgentSessionState = "connecting";
   private proc: AcpProcess | null = null;
   private rpc: AcpRpcClient | null = null;
@@ -320,6 +321,7 @@ export class AcpSession {
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
       processAlive: this.proc?.alive ?? false,
+      createdAt: this.createdAt,
     };
   }
 

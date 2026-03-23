@@ -64,6 +64,7 @@ export type SessionEventHandler = (event: AgentSessionEvent) => void;
 
 export class OpenCodeSession {
   readonly sessionId: string;
+  private readonly createdAt = Date.now();
   private state: AgentSessionState = "connecting";
   private proc: OpenCodeProcess | null = null;
   private client: OpenCodeClient | null = null;
@@ -303,6 +304,7 @@ export class OpenCodeSession {
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
       processAlive: this.proc?.alive ?? false,
+      createdAt: this.createdAt,
     };
   }
 
