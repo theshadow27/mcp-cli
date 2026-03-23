@@ -28,6 +28,7 @@ import { type SharedSessionDeps, claudeResume, cleanupWorktree, parseByeResult, 
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
+import { worktreesCommand } from "./worktree-commands";
 
 // ── Dependency injection ──
 
@@ -241,7 +242,6 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
         break;
       }
       // Call worktrees command directly (avoids circular dispatch through cmdClaude → cmdAgent)
-      const { worktreesCommand } = await import("./worktree-commands");
       await worktreesCommand(args.slice(2), d);
       break;
     }
