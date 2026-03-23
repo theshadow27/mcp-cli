@@ -5,7 +5,7 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer, WORKER_EVENT_TYPES, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
-import { MetricsCollector, metrics } from "./metrics";
+import { MetricsCollector } from "./metrics";
 
 // ── WORKER_EVENT_TYPES exhaustiveness ──
 
@@ -928,18 +928,17 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash increments mcpd_claude_server_crashes_total", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    const testMetrics = new MetricsCollector();
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, undefined, undefined, undefined, testMetrics);
 
     await server.start();
-
-    const before = metrics.counter("mcpd_claude_server_crashes_total").value();
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
     await crash("test crash for metric");
 
-    expect(metrics.counter("mcpd_claude_server_crashes_total").value()).toBe(before + 1);
+    expect(testMetrics.counter("mcpd_claude_server_crashes_total").value()).toBe(1);
   });
 
   // ── Crash timestamp log on stop (#475) ──
