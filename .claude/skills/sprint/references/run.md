@@ -42,6 +42,19 @@ Always use opus. For documentation-only issues, use sonnet.
 PRs always target `main` — never feature branches. Feature branch merges caused
 a 44-file conflict nightmare in Sprint 14.
 
+#### Flaky test issues
+
+Issues with "flaky" in the title or labeled `flaky` get special treatment:
+
+1. **Always opus** for implementation (never sonnet — flaky fixes need deep analysis)
+2. **Always adversarial review** after implementation, regardless of scrutiny classification
+3. The review must verify the fix addresses the **root cause**, not just the symptom.
+   Papering over timing with longer timeouts or retry loops is not acceptable —
+   the review should reject fixes that don't eliminate the race/nondeterminism.
+
+This prevents the cycle where flaky tests get "fixed" with superficial changes
+that pass locally but fail again under CI load.
+
 #### Provider routing
 
 If the sprint plan has a `Provider` column for the issue, route the spawn
@@ -101,25 +114,35 @@ Everything else is **low scrutiny**.
 
 ### Review (high scrutiny only)
 
-**Reuse the worktree** from the implement phase via `--cwd`:
+Use `--worktree` for review sessions. (`--cwd` rarely works in practice because
+`bye` auto-cleans the impl worktree once the branch is pushed.)
 
 ```bash
 # Default (claude)
-mcx claude spawn --cwd <worktree-path> --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+mcx claude spawn --worktree --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 
 # With provider (e.g. copilot) — use the same provider as the implement phase
-mcx copilot spawn --cwd <worktree-path> --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
+mcx copilot spawn --worktree --model sonnet -t "/adversarial-review (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
-If review finds issues, spawn an opus repair session on the same worktree:
+**Reviewers must post findings as PR comments** (via `gh pr comment` or `gh api`),
+not just print them to the session. PR comments are the durable shared context —
+repair sessions, second reviewers, and QA all read them.
+
+If review finds issues, spawn an opus repair session in a fresh worktree.
+**Always instruct the repairer to read the sticky review comment first:**
 
 ```bash
 # Default (claude)
-mcx claude spawn --cwd <worktree-path> -t "Repair PR #N ..." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+mcx claude spawn --worktree -t "Repair PR #N. First read the adversarial review comment on the PR: gh pr view N --comments. Look for the comment starting with '## Adversarial Review'. Fix all 🔴 and 🟡 issues. Push to existing branch." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
 
 # With provider — match the issue's provider
-mcx copilot spawn --cwd <worktree-path> -t "Repair PR #N ..." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+mcx copilot spawn --worktree -t "Repair PR #N. First read the adversarial review comment on the PR: gh pr view N --comments. Look for the comment starting with '## Adversarial Review'. Fix all 🔴 and 🟡 issues. Push to existing branch." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
 ```
+
+The review uses a sticky comment pattern — on re-review, it updates the same comment
+with a delta table showing what was ✅ Fixed vs ⏳ Not addressed vs 🔄 Partially fixed.
+This gives repairers and QA a single source of truth for all findings across rounds.
 
 Then re-triage. High scrutiny rewrites get 2 adversarial reviews.
 
