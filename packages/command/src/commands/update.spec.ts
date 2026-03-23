@@ -106,15 +106,14 @@ describe("cmdUpdate", () => {
         },
       },
     });
-    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
-    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const errors: string[] = [];
+    const deps: UpdateDeps = {
+      ...makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io")),
+      error: (msg) => errors.push(msg),
+    };
 
-    try {
-      await cmdUpdate(["sentry"], deps);
-      expect(errSpy.mock.calls.some((c) => (c[0] as string).includes("up to date"))).toBe(true);
-    } finally {
-      errSpy.mockRestore();
-    }
+    await cmdUpdate(["sentry"], deps);
+    expect(errors.some((c) => c.includes("up to date"))).toBe(true);
   });
 
   test("throws when server not installed", async () => {
@@ -161,29 +160,18 @@ describe("cmdUpdate", () => {
         },
       },
     });
-    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const logged: string[] = [];
+    const deps: UpdateDeps = {
+      ...makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io")),
+      log: (msg) => logged.push(msg),
+    };
 
-    try {
-      await cmdUpdate(["sentry", "--json"], deps);
+    await cmdUpdate(["sentry", "--json"], deps);
 
-      // Filter for structured JSON calls — other parallel test files may also call
-      // console.log, so we check content rather than exact call count.
-      const jsonCalls = logSpy.mock.calls.filter((c) => {
-        try {
-          const p = JSON.parse(c[0] as string);
-          return typeof p === "object" && p !== null && "status" in p;
-        } catch {
-          return false;
-        }
-      });
-      expect(jsonCalls.length).toBe(1);
-      const output = JSON.parse(jsonCalls[0][0] as string);
-      expect(output.name).toBe("sentry");
-      expect(output.status).toBe("up-to-date");
-    } finally {
-      logSpy.mockRestore();
-    }
+    expect(logged).toHaveLength(1);
+    const output = JSON.parse(logged[0]);
+    expect(output.name).toBe("sentry");
+    expect(output.status).toBe("up-to-date");
   });
 
   test("--all with --json returns array", async () => {
@@ -194,29 +182,18 @@ describe("cmdUpdate", () => {
         },
       },
     });
-    const deps = makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io"));
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const logged: string[] = [];
+    const deps: UpdateDeps = {
+      ...makeDeps(fakeRegistryResponse("sentry", "https://mcp.sentry.io")),
+      log: (msg) => logged.push(msg),
+    };
 
-    try {
-      await cmdUpdate(["--all", "--json"], deps);
+    await cmdUpdate(["--all", "--json"], deps);
 
-      // Filter for structured JSON calls — other parallel test files may also call
-      // console.log, so we check content rather than exact call count.
-      const jsonCalls = logSpy.mock.calls.filter((c) => {
-        try {
-          const p = JSON.parse(c[0] as string);
-          return Array.isArray(p);
-        } catch {
-          return false;
-        }
-      });
-      expect(jsonCalls.length).toBe(1);
-      const output = JSON.parse(jsonCalls[0][0] as string);
-      expect(Array.isArray(output)).toBe(true);
-      expect(output[0].name).toBe("sentry");
-    } finally {
-      logSpy.mockRestore();
-    }
+    expect(logged).toHaveLength(1);
+    const output = JSON.parse(logged[0]);
+    expect(Array.isArray(output)).toBe(true);
+    expect(output[0].name).toBe("sentry");
   });
 
   test("exits with 1 on empty args", async () => {
