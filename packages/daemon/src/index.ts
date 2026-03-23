@@ -579,7 +579,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Graceful shutdown — re-entrant safe
   let _isShuttingDown = false;
-  let _resolveShutdown: () => void;
+  let _resolveShutdown!: () => void;
   const _shutdownComplete = new Promise<void>((r) => {
     _resolveShutdown = r;
   });
@@ -587,77 +587,88 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     if (_isShuttingDown) return;
     _isShuttingDown = true;
     const shutdownStart = performance.now();
-    logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
-    if (idleTimer) clearTimeout(idleTimer);
-    clearInterval(pruneInterval);
-    clearInterval(metricsInterval);
-    watcher.stop();
-    ipcServer.stop();
-    // Wait for any in-progress virtual server startups before stopping them
-    let phase = performance.now();
     try {
-      await pool.awaitPendingServers();
-    } catch (err) {
-      logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
-    }
-    logger.debug(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
-    // Stop each virtual server individually so one failure doesn't leak the rest
-    const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
-      opts?._virtualServers ?? [
-        [CLAUDE_SERVER_NAME, claudeServer],
-        [CODEX_SERVER_NAME, codexServer],
-        [ACP_SERVER_NAME, acpServer],
-        [OPENCODE_SERVER_NAME, opencodeServer],
-        [ALIAS_SERVER_NAME, aliasServer],
-        [METRICS_SERVER_NAME, metricsServer],
-        [MAIL_SERVER_NAME, mailServer],
-      ];
-    phase = performance.now();
-    for (const [name, server] of virtualServers) {
-      const serverStart = performance.now();
+      logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearInterval(pruneInterval);
+      clearInterval(metricsInterval);
       try {
-        if (server) {
-          await server.stop();
+        watcher.stop();
+      } catch (err) {
+        logger.error(`[mcpd] Error stopping config watcher: ${err}`);
+      }
+      try {
+        ipcServer.stop();
+      } catch (err) {
+        logger.error(`[mcpd] Error stopping IPC server: ${err}`);
+      }
+      // Wait for any in-progress virtual server startups before stopping them
+      let phase = performance.now();
+      try {
+        await pool.awaitPendingServers();
+      } catch (err) {
+        logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
+      }
+      logger.debug(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
+      // Stop each virtual server individually so one failure doesn't leak the rest
+      const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
+        opts?._virtualServers ?? [
+          [CLAUDE_SERVER_NAME, claudeServer],
+          [CODEX_SERVER_NAME, codexServer],
+          [ACP_SERVER_NAME, acpServer],
+          [OPENCODE_SERVER_NAME, opencodeServer],
+          [ALIAS_SERVER_NAME, aliasServer],
+          [METRICS_SERVER_NAME, metricsServer],
+          [MAIL_SERVER_NAME, mailServer],
+        ];
+      phase = performance.now();
+      for (const [name, server] of virtualServers) {
+        const serverStart = performance.now();
+        try {
+          if (server) {
+            await server.stop();
+            pool.unregisterVirtualServer(name);
+          }
+        } catch (err) {
+          logger.error(`[mcpd] Error stopping ${name}: ${err}`);
           pool.unregisterVirtualServer(name);
         }
-      } catch (err) {
-        logger.error(`[mcpd] Error stopping ${name}: ${err}`);
-        pool.unregisterVirtualServer(name);
+        if (server) {
+          logger.debug(`[mcpd] Shutdown: stop ${name} took ${Math.round(performance.now() - serverStart)}ms`);
+        }
       }
-      if (server) {
-        logger.debug(`[mcpd] Shutdown: stop ${name} took ${Math.round(performance.now() - serverStart)}ms`);
-      }
-    }
-    logger.debug(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
-    phase = performance.now();
-    try {
-      await pool.closeAll();
-    } catch (err) {
-      logger.error(`[mcpd] Error closing server pool: ${err}`);
-    }
-    logger.debug(`[mcpd] Shutdown: pool.closeAll took ${Math.round(performance.now() - phase)}ms`);
-    phase = performance.now();
-    try {
-      db.close();
-    } catch (err) {
-      logger.error(`[mcpd] Error closing database: ${err}`);
-    }
-    logger.debug(`[mcpd] Shutdown: db.close took ${Math.round(performance.now() - phase)}ms`);
-    if (!opts?.skipLogSetup) {
+      logger.debug(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
+      phase = performance.now();
       try {
-        closeDaemonLogFile();
+        await pool.closeAll();
       } catch (err) {
-        logger.error(`[mcpd] Error closing log file: ${err}`);
+        logger.error(`[mcpd] Error closing server pool: ${err}`);
       }
+      logger.debug(`[mcpd] Shutdown: pool.closeAll took ${Math.round(performance.now() - phase)}ms`);
+      phase = performance.now();
+      try {
+        db.close();
+      } catch (err) {
+        logger.error(`[mcpd] Error closing database: ${err}`);
+      }
+      logger.debug(`[mcpd] Shutdown: db.close took ${Math.round(performance.now() - phase)}ms`);
+      if (!opts?.skipLogSetup) {
+        try {
+          closeDaemonLogFile();
+        } catch (err) {
+          logger.error(`[mcpd] Error closing log file: ${err}`);
+        }
+      }
+      try {
+        unlinkSync(options.PID_PATH);
+      } catch {
+        // already gone
+      }
+      const totalShutdownMs = Math.round(performance.now() - shutdownStart);
+      logger.info(`[mcpd] Shutdown complete in ${totalShutdownMs}ms`);
+    } finally {
+      _resolveShutdown();
     }
-    try {
-      unlinkSync(options.PID_PATH);
-    } catch {
-      // already gone
-    }
-    const totalShutdownMs = Math.round(performance.now() - shutdownStart);
-    logger.info(`[mcpd] Shutdown complete in ${totalShutdownMs}ms`);
-    _resolveShutdown();
   }
 
   return {
