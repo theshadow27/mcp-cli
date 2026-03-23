@@ -83,4 +83,24 @@ describe("extractContent", () => {
     const result = { content: [] };
     expect(extractContent(result)).toEqual([]);
   });
+
+  test("auto-parses Python repr text when JSON.parse fails", () => {
+    const result = {
+      content: [{ type: "text", text: "{'key': 'value', 'active': True}" }],
+    };
+    expect(extractContent(result)).toEqual({ key: "value", active: true });
+  });
+
+  test("auto-parses Python repr with nested JSON strings (Coralogix)", () => {
+    const pythonRepr = `{'records': [{'user_data': '{"r":{"tid":"abc123"}}'}]}`;
+    const result = { content: [{ type: "text", text: pythonRepr }] };
+    expect(extractContent(result)).toEqual({
+      records: [{ user_data: '{"r":{"tid":"abc123"}}' }],
+    });
+  });
+
+  test("returns raw text when neither JSON nor Python repr", () => {
+    const result = { content: [{ type: "text", text: "just plain text" }] };
+    expect(extractContent(result)).toBe("just plain text");
+  });
 });
