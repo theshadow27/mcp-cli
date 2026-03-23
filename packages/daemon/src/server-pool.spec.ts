@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   BASE_ENV_ALLOWLIST,
@@ -1609,5 +1610,91 @@ describe("detectPlanCapabilities", () => {
 
     const [status] = pool.listServers();
     expect(status.planCapabilities).toBeUndefined();
+  });
+});
+
+describe("disconnect kills stdio child processes (#940)", () => {
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("disconnect sends SIGTERM to stdio child process", async () => {
+    // Spawn a real stdio transport wrapping a long-running process
+    const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
+    await transport.start();
+    const pid = transport.pid;
+    if (pid == null) throw new Error("expected pid after start()");
+    expect(isAlive(pid)).toBe(true);
+
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: transport as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(
+      makeConfig({ sleeper: { command: "sleep", args: ["60"] } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+    // Force connection so the transport is stored
+    await pool.listTools("sleeper");
+
+    await pool.disconnect("sleeper");
+
+    // Give the process a moment to exit after SIGTERM
+    await Bun.sleep(50);
+    expect(isAlive(pid)).toBe(false);
+  });
+
+  test("closeAll kills all stdio child processes", async () => {
+    const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
+    await transport.start();
+    const pid = transport.pid;
+    if (pid == null) throw new Error("expected pid after start()");
+
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: transport as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(
+      makeConfig({ sleeper: { command: "sleep", args: ["60"] } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+    await pool.listTools("sleeper");
+
+    await pool.closeAll();
+
+    await Bun.sleep(50);
+    expect(isAlive(pid)).toBe(false);
+  });
+
+  test("disconnect does not throw for non-stdio transports", async () => {
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(
+      makeConfig({ remote: { type: "http" as const, url: "https://example.com" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+    await pool.listTools("remote");
+
+    // Should not throw
+    await pool.disconnect("remote");
   });
 });

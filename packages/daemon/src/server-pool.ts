@@ -582,6 +582,9 @@ export class ServerPool {
     const conn = this.connections.get(name);
     if (!conn) return;
 
+    // Capture stdio child PID before closing (pid is only available while transport is open)
+    const childPid = conn.transport instanceof StdioClientTransport ? conn.transport.pid : null;
+
     // Flush and detach stderr listener
     if (conn.stderrCleanup) {
       conn.stderrCleanup();
@@ -593,6 +596,19 @@ export class ServerPool {
     } catch {
       // ignore close errors
     }
+
+    // Kill stdio child process if it's still alive after transport close.
+    // StdioClientTransport closes stdin/stdout but children with active timers
+    // (e.g. keepalive intervals) won't exit, causing process leaks (#940).
+    if (childPid != null) {
+      try {
+        process.kill(childPid, 0); // check if alive
+        process.kill(childPid, "SIGTERM");
+      } catch {
+        // already dead — nothing to do
+      }
+    }
+
     conn.client = null;
     conn.transport = null;
     conn.state = "disconnected";
