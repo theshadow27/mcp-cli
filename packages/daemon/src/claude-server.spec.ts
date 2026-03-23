@@ -5,7 +5,7 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer, WORKER_EVENT_TYPES, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
-import { metrics } from "./metrics";
+import { MetricsCollector } from "./metrics";
 
 // ── WORKER_EVENT_TYPES exhaustiveness ──
 
@@ -928,18 +928,17 @@ describe("ClaudeServer", () => {
   test("handleWorkerCrash increments mcpd_claude_server_crashes_total", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    const testMetrics = new MetricsCollector();
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, undefined, undefined, undefined, testMetrics);
 
     await server.start();
-
-    const before = metrics.counter("mcpd_claude_server_crashes_total").value();
 
     const crash = (
       server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
     ).handleWorkerCrash.bind(server);
     await crash("test crash for metric");
 
-    expect(metrics.counter("mcpd_claude_server_crashes_total").value()).toBe(before + 1);
+    expect(testMetrics.counter("mcpd_claude_server_crashes_total").value()).toBe(1);
   });
 
   // ── Crash timestamp log on stop (#475) ──
@@ -1098,9 +1097,10 @@ describe("ClaudeServer", () => {
 describe("ClaudeServer connect timeout metric", () => {
   let server: ClaudeServer | undefined;
   let db: StateDb | undefined;
+  let testMetrics: MetricsCollector;
 
   beforeEach(() => {
-    metrics.reset();
+    testMetrics = new MetricsCollector();
   });
 
   afterEach(async () => {
@@ -1110,9 +1110,7 @@ describe("ClaudeServer connect timeout metric", () => {
     db = undefined;
   });
 
-  // Flaky in full coverage suite — metrics singleton gets incremented by concurrent workers.
-  // Passes in isolation. Tracked in #936.
-  test.skip("increments mcpd_connect_timeouts_total when handshake times out", async () => {
+  test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
 
@@ -1122,20 +1120,20 @@ describe("ClaudeServer connect timeout metric", () => {
       close: async () => {},
     } as unknown as Client;
 
-    server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50);
+    server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50, undefined, undefined, testMetrics);
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, undefined, testMetrics);
 
     await server.start();
 
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });
 
