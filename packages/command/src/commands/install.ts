@@ -14,6 +14,7 @@ import { CONFIG_SCOPES, type ConfigScope, addServerToConfig, resolveConfigPath }
 export interface InstallDeps {
   searchRegistry: (query: string, opts?: RegistryOpts) => Promise<RegistryResponse>;
   log?: (msg: string) => void;
+  exit?: (code: number) => never;
 }
 
 const defaultDeps: InstallDeps = { searchRegistry: realSearchRegistry };
@@ -68,7 +69,7 @@ export async function cmdInstall(args: string[], deps?: InstallDeps): Promise<vo
   const d = deps ?? defaultDeps;
   if (args.length === 0) {
     printError("Usage: mcx install <slug> [--as name] [--scope user|project] [--env KEY=VALUE]");
-    process.exit(1);
+    (d.exit ?? process.exit)(1);
   }
 
   const parsed = parseInstallArgs(args);
@@ -98,7 +99,7 @@ export async function cmdInstall(args: string[], deps?: InstallDeps): Promise<vo
     if (meta.documentation) {
       console.error(`\nDocumentation: ${meta.documentation}`);
     }
-    process.exit(1);
+    (d.exit ?? process.exit)(1);
   }
 
   // Warn about required env vars that aren't provided

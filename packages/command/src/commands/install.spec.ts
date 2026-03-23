@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { McpConfigFile } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
@@ -200,15 +200,17 @@ describe("cmdInstall", () => {
 
   test("exits with 1 on empty args", async () => {
     using _opts = testOptions();
-    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit");
-    });
-    try {
-      await expect(cmdInstall([])).rejects.toThrow("process.exit");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    } finally {
-      exitSpy.mockRestore();
-    }
+    let exitCode: number | undefined;
+    const deps: InstallDeps = {
+      ...makeDeps({ servers: [], metadata: { count: 0 } }),
+      exit: (code: number) => {
+        exitCode = code;
+        throw new Error(`exit:${code}`);
+      },
+    };
+
+    await expect(cmdInstall([], deps)).rejects.toThrow("exit:1");
+    expect(exitCode).toBe(1);
   });
 
   test("outputs JSON when --json flag is used", async () => {
