@@ -24,7 +24,7 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { type SharedSessionDeps, cleanupWorktree, cmdClaude, parseByeResult, resolveSessionId } from "./claude";
+import { type SharedSessionDeps, claudeResume, cleanupWorktree, parseByeResult, resolveSessionId } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -230,19 +230,21 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
         d.exit(1);
         break;
       }
-      // Delegate to cmdClaude which handles resume natively
-      await cmdClaude(["resume", ...args.slice(2)]);
+      // Call claudeResume directly (avoids circular dispatch through cmdClaude → cmdAgent)
+      await claudeResume(args.slice(2), d);
       break;
     case "worktrees":
-    case "wt":
+    case "wt": {
       if (!hasFeature(provider, "resume")) {
         d.printError(`"${providerName}" does not support worktree management.`);
         d.exit(1);
         break;
       }
-      // Delegate to cmdClaude which handles worktrees natively
-      await cmdClaude([sub, ...args.slice(2)]);
+      // Call worktrees command directly (avoids circular dispatch through cmdClaude → cmdAgent)
+      const { worktreesCommand } = await import("./worktree-commands");
+      await worktreesCommand(args.slice(2), d);
       break;
+    }
     default:
       d.printError(
         `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
