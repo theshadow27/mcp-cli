@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail } from "@mcp-cli/core";
-import { extractErrorMessage, formatToolResult, printAliasDebug, printAliasList } from "./output";
+import { extractErrorMessage, formatToolResult, printAliasDebug, printAliasList, printToolList } from "./output";
 
 describe("formatToolResult", () => {
   test("returns empty string for null", () => {
@@ -212,6 +212,46 @@ describe("printAliasDebug", () => {
     const output = captureStderr(() => printAliasDebug(alias));
     expect(output).not.toContain("description");
     expect(output).toContain("source");
+  });
+});
+
+describe("printToolList ANSI-aware truncation", () => {
+  function captureStdout(fn: () => void): string {
+    const original = console.log;
+    const lines: string[] = [];
+    console.log = mock((...args: unknown[]) => lines.push(args.join(" ")));
+    try {
+      fn();
+      return lines.join("\n");
+    } finally {
+      console.log = original;
+    }
+  }
+
+  test("truncates long descriptions using Bun.sliceAnsi", () => {
+    const longDesc = "A".repeat(100);
+    const tools = [{ name: "tool1", server: "srv", description: longDesc }];
+    const output = captureStdout(() => printToolList(tools));
+    // Should be truncated to 77 chars + "..."
+    expect(output).toContain(`${"A".repeat(77)}...`);
+    expect(output).not.toContain("A".repeat(78));
+  });
+
+  test("preserves ANSI codes in truncated descriptions", () => {
+    // Description with ANSI color that would break with naive .slice()
+    const colored = `\x1b[32m${"A".repeat(100)}\x1b[0m`;
+    const tools = [{ name: "tool1", server: "srv", description: colored }];
+    const output = captureStdout(() => printToolList(tools));
+    // Bun.sliceAnsi should preserve the opening SGR and add a reset
+    expect(output).toContain("\x1b[32m");
+    expect(output).toContain("...");
+  });
+
+  test("does not truncate short descriptions", () => {
+    const tools = [{ name: "tool1", server: "srv", description: "short desc" }];
+    const output = captureStdout(() => printToolList(tools));
+    expect(output).toContain("short desc");
+    expect(output).not.toContain("...");
   });
 });
 
