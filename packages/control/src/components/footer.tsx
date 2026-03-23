@@ -16,6 +16,9 @@ interface FooterProps {
   planConfirmAbort?: boolean;
   canAdvance?: boolean;
   canAbort?: boolean;
+  addServerMode?: boolean;
+  confirmRemove?: boolean;
+  confirmRemoveServer?: string;
 }
 
 export function Footer({
@@ -32,7 +35,31 @@ export function Footer({
   planConfirmAbort,
   canAdvance,
   canAbort,
+  addServerMode,
+  confirmRemove,
+  confirmRemoveServer,
 }: FooterProps) {
+  if (confirmRemove) {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text color="yellow">Remove {confirmRemoveServer ?? "server"}?</Text>
+          {"  "}
+          <Text dimColor>y</Text> confirm{"  "}
+          <Text dimColor>n</Text> cancel
+        </Text>
+      </Box>
+    );
+  }
+
+  if (addServerMode) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>esc cancel (see form hints above)</Text>
+      </Box>
+    );
+  }
+
   if (denyReasonMode) {
     return (
       <Box marginTop={1}>
@@ -104,6 +131,8 @@ export function Footer({
         <Text>
           {tabHints}
           <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>n</Text> add{"  "}
+          <Text dimColor>d</Text> remove{"  "}
           <Text dimColor>a</Text> auth{"  "}
           <Text dimColor>r</Text> restart{"  "}
           <Text dimColor>R</Text> restart-all{"  "}

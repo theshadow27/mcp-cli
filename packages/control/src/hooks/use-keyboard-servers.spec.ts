@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { Key } from "ink";
+import { initialAddServerState } from "../components/server-add-form";
 import type { ServersNav } from "./use-keyboard";
 import { handleServersInput } from "./use-keyboard-servers";
 
@@ -33,6 +34,13 @@ function makeNav(overrides: Partial<ServersNav> = {}): ServersNav {
     refresh: mock(() => {}),
     authStatus: null,
     setAuthStatus: mock(() => {}),
+    addServerMode: false,
+    setAddServerMode: mock(() => {}),
+    addServerState: initialAddServerState(),
+    setAddServerState: mock(() => {}),
+    confirmRemove: false,
+    setConfirmRemove: mock(() => {}),
+    configInfo: {},
     ...overrides,
   };
 }
