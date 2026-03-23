@@ -38,6 +38,8 @@ import {
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import type { StateDb } from "./db/state";
+import { getProcessStartTime } from "./process-identity";
+import { killPid } from "./process-util";
 import { StderrRingBuffer } from "./stderr-buffer";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
@@ -582,8 +584,12 @@ export class ServerPool {
     const conn = this.connections.get(name);
     if (!conn) return;
 
-    // Capture stdio child PID before closing (pid is only available while transport is open)
+    // Capture stdio child PID and its start time BEFORE closing the transport.
+    // The PID is only available while the transport is open, and we need the
+    // start time to verify PID ownership after close (prevents killing a
+    // recycled PID that now belongs to a different process).
     const childPid = conn.transport instanceof StdioClientTransport ? conn.transport.pid : null;
+    const pidStartTime = childPid != null ? getProcessStartTime(childPid) : null;
 
     // Flush and detach stderr listener
     if (conn.stderrCleanup) {
@@ -600,13 +606,9 @@ export class ServerPool {
     // Kill stdio child process if it's still alive after transport close.
     // StdioClientTransport closes stdin/stdout but children with active timers
     // (e.g. keepalive intervals) won't exit, causing process leaks (#940).
+    // Uses SIGTERM → poll → SIGKILL escalation with PID ownership verification.
     if (childPid != null) {
-      try {
-        process.kill(childPid, 0); // check if alive
-        process.kill(childPid, "SIGTERM");
-      } catch {
-        // already dead — nothing to do
-      }
+      await killPid(childPid, this.logger, { pidStartTime });
     }
 
     conn.client = null;

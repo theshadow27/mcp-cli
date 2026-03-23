@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
-import { isOurProcess } from "../process-identity";
+import { killPid } from "../process-util";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -702,59 +702,13 @@ export class ClaudeWsServer {
 
   /**
    * Kill a raw PID (no proc handle) with SIGTERM → SIGKILL escalation.
-   * Used for restored sessions where we only have the PID from SQLite, not
-   * a Bun Subprocess handle. Polls process.kill(pid, 0) to detect exit.
-   *
-   * If pidStartTime is provided, verifies the PID still belongs to our
-   * process before sending any signals. This prevents SIGTERM to an
-   * unrelated process when the PID has been recycled by the OS.
+   * Delegates to the shared killPid utility.
    */
   private async killRawPid(pid: number, pidStartTime?: number | null): Promise<void> {
-    // Verify PID ownership before sending signals
-    if (pidStartTime != null) {
-      if (!isOurProcess(pid, pidStartTime)) {
-        this.logger.warn(`[_claude] PID ${pid} has been recycled — skipping kill`);
-        return;
-      }
-    }
-
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // already dead (ESRCH) or not owned (EPERM)
-      return;
-    }
-
-    // Poll for exit up to killTimeoutMs
-    const deadline = Date.now() + this.killTimeoutMs;
-    const POLL_INTERVAL_MS = 100;
-    while (Date.now() < deadline) {
-      await Bun.sleep(POLL_INTERVAL_MS);
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return; // process exited
-      }
-    }
-
-    // Still alive — escalate to SIGKILL
-    this.logger.error(`[_claude] Raw PID ${pid} did not exit after SIGTERM — sending SIGKILL`);
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      return; // already dead
-    }
-
-    // Wait briefly for SIGKILL to take effect
-    const sigkillDeadline = Date.now() + KILL_SIGKILL_GRACE_MS;
-    while (Date.now() < sigkillDeadline) {
-      await Bun.sleep(POLL_INTERVAL_MS);
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return; // process exited
-      }
-    }
+    await killPid(pid, this.logger, {
+      pidStartTime,
+      killTimeoutMs: this.killTimeoutMs,
+    });
   }
 
   /**
