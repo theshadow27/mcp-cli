@@ -9,7 +9,7 @@
  *   bun scripts/prepare-npm.ts                  # uses version from package.json
  *   bun scripts/prepare-npm.ts --version 0.11.0 # override version
  */
-import { chmodSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const PLATFORMS = [
@@ -74,6 +74,14 @@ export function prepareNpm(args: string[], deps: PrepareNpmDeps = defaultDeps): 
     const pkgPath = resolve(`npm/${platform.dir}/package.json`);
     const stamped = stampPlatformPackage(d.readFile(pkgPath), version);
     d.writeFile(pkgPath, stamped);
+
+    // Remove .gitkeep so it doesn't end up in the published tarball
+    const gitkeep = resolve(`npm/${platform.dir}/bin/.gitkeep`);
+    try {
+      unlinkSync(gitkeep);
+    } catch {
+      // already absent — fine
+    }
 
     for (const binary of BINARIES) {
       const src = resolve(`dist/${binary}-${platform.suffix}`);
