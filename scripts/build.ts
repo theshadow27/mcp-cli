@@ -143,12 +143,14 @@ const mcpctlConfig: BinaryBuildConfig = {
 const bundleCleanup: string[] = [];
 
 async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: string): Promise<void> {
+  // Always bundle for generic "bun" target — the JS bundle is platform-agnostic.
+  // Platform-specific cross-compilation happens in the subsequent --compile step.
   const result = await Bun.build({
     entrypoints: [resolve(config.entrypoint)],
     outdir: resolve("dist"),
     naming: `${config.bundleName}.[ext]`,
     minify: true,
-    target: (target as "bun") ?? "bun",
+    target: "bun",
     plugins: config.plugins,
     define: {
       __PROTOCOL_HASH__: JSON.stringify(protocolHash),
