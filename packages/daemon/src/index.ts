@@ -190,6 +190,8 @@ export type ShutdownReason =
 /** Handle returned by startDaemon for testing and lifecycle management. */
 export interface DaemonHandle {
   shutdown(reason?: ShutdownReason): Promise<void>;
+  /** Resolves when shutdown completes. Useful for tests that need to await cleanup. */
+  readonly shutdownComplete: Promise<void>;
   readonly isShuttingDown: boolean;
   readonly db: StateDb;
   readonly pool: ServerPool;
@@ -577,6 +579,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Graceful shutdown — re-entrant safe
   let _isShuttingDown = false;
+  let _resolveShutdown: () => void;
+  const _shutdownComplete = new Promise<void>((r) => {
+    _resolveShutdown = r;
+  });
   async function shutdown(reason?: ShutdownReason): Promise<void> {
     if (_isShuttingDown) return;
     _isShuttingDown = true;
@@ -651,10 +657,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }
     const totalShutdownMs = Math.round(performance.now() - shutdownStart);
     logger.info(`[mcpd] Shutdown complete in ${totalShutdownMs}ms`);
+    _resolveShutdown();
   }
 
   return {
     shutdown,
+    shutdownComplete: _shutdownComplete,
     get isShuttingDown() {
       return _isShuttingDown;
     },
