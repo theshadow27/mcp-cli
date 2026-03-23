@@ -111,7 +111,7 @@ export function printToolList(
   const maxServer = Math.max(...tools.map((t) => t.server.length));
 
   for (const t of tools) {
-    const desc = t.description.length > 80 ? `${t.description.slice(0, 77)}...` : t.description;
+    const desc = Bun.stringWidth(t.description) > 80 ? `${Bun.sliceAnsi(t.description, 0, 77)}...` : t.description;
     console.log(
       `  ${c.green}${t.name.padEnd(maxName)}${c.reset}  ${c.dim}${t.server.padEnd(maxServer)}${c.reset}  ${desc}`,
     );
@@ -232,7 +232,7 @@ export function printAliasDebug(alias: AliasDetail): void {
   const type = alias.aliasType === "defineAlias" ? "defineAlias" : "freeform";
   const width = 46;
   const header = `── ${alias.name} (${type}) `;
-  const pad = Math.max(0, width - header.length);
+  const pad = Math.max(0, width - Bun.stringWidth(header));
 
   console.error(`${c.dim}${header}${"─".repeat(pad)}${c.reset}`);
 
@@ -268,7 +268,7 @@ export function printRegistryList(entries: RegistryEntry[]): void {
 
   for (const e of entries) {
     const meta = e._meta["com.anthropic.api/mcp-registry"];
-    const oneLiner = meta.oneLiner.length > 60 ? `${meta.oneLiner.slice(0, 57)}...` : meta.oneLiner;
+    const oneLiner = Bun.stringWidth(meta.oneLiner) > 60 ? `${Bun.sliceAnsi(meta.oneLiner, 0, 57)}...` : meta.oneLiner;
     const toolCount = meta.toolNames?.length ?? 0;
     const tools = toolCount > 0 ? `${c.dim}${toolCount} tools${c.reset}` : "";
     console.log(
