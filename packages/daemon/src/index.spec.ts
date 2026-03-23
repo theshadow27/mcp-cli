@@ -113,8 +113,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
@@ -165,8 +166,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
@@ -327,8 +329,9 @@ describe("daemon index.ts", () => {
     let opts: ReturnType<typeof testOptions> | undefined;
 
     afterEach(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       handle = undefined;
       if (opts) {
