@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   BASE_ENV_ALLOWLIST,
@@ -1010,8 +1011,8 @@ describe("ServerPool.updateConfig reconnect", () => {
     const updated = makeConfig({ a: { command: "cat" } });
     pool.updateConfig(updated);
 
-    // Brief yield to allow any async reconnect to fire (negative assertion)
-    await Bun.sleep(50);
+    // Yield several microtasks to allow any async reconnect to fire (negative assertion)
+    for (let i = 0; i < 10; i++) await Promise.resolve();
 
     // Should NOT have connected because the server wasn't connected before config change
     expect(connectCount).toBe(0);
@@ -1609,5 +1610,119 @@ describe("detectPlanCapabilities", () => {
 
     const [status] = pool.listServers();
     expect(status.planCapabilities).toBeUndefined();
+  });
+});
+
+describe("disconnect kills stdio child processes (#940)", () => {
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Poll until process is dead or deadline reached. */
+  async function awaitDeath(pid: number, deadlineMs = 5_000): Promise<void> {
+    const deadline = Date.now() + deadlineMs;
+    while (Date.now() < deadline) {
+      if (!isAlive(pid)) return;
+      await Bun.sleep(50);
+    }
+  }
+
+  /** Force-kill a PID if still alive (test cleanup safety net). */
+  function forceKill(pid: number): void {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }
+
+  test("disconnect sends SIGTERM to stdio child process", async () => {
+    // Spawn a real stdio transport wrapping a long-running process
+    const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
+    await transport.start();
+    const pid = transport.pid;
+    if (pid == null) throw new Error("expected pid after start()");
+
+    try {
+      expect(isAlive(pid)).toBe(true);
+
+      const connectFn: ConnectFn = mock(() =>
+        Promise.resolve({
+          client: makeMockClient() as unknown as Client,
+          transport: transport as unknown as Transport,
+        }),
+      );
+      const pool = new ServerPool(
+        makeConfig({ sleeper: { command: "sleep", args: ["60"] } }),
+        undefined,
+        connectFn,
+        silentLogger,
+      );
+      // Force connection so the transport is stored
+      await pool.listTools("sleeper");
+
+      await pool.disconnect("sleeper");
+
+      // Poll until the process exits (replaces fixed Bun.sleep)
+      await awaitDeath(pid);
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      forceKill(pid);
+    }
+  });
+
+  test("closeAll kills all stdio child processes", async () => {
+    const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
+    await transport.start();
+    const pid = transport.pid;
+    if (pid == null) throw new Error("expected pid after start()");
+
+    try {
+      const connectFn: ConnectFn = mock(() =>
+        Promise.resolve({
+          client: makeMockClient() as unknown as Client,
+          transport: transport as unknown as Transport,
+        }),
+      );
+      const pool = new ServerPool(
+        makeConfig({ sleeper: { command: "sleep", args: ["60"] } }),
+        undefined,
+        connectFn,
+        silentLogger,
+      );
+      await pool.listTools("sleeper");
+
+      await pool.closeAll();
+
+      // Poll until the process exits (replaces fixed Bun.sleep)
+      await awaitDeath(pid);
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      forceKill(pid);
+    }
+  });
+
+  test("disconnect does not throw for non-stdio transports", async () => {
+    const connectFn: ConnectFn = mock(() =>
+      Promise.resolve({
+        client: makeMockClient() as unknown as Client,
+        transport: makeMockTransport() as unknown as Transport,
+      }),
+    );
+    const pool = new ServerPool(
+      makeConfig({ remote: { type: "http" as const, url: "https://example.com" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+    await pool.listTools("remote");
+
+    // Should not throw
+    await pool.disconnect("remote");
   });
 });
