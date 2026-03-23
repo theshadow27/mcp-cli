@@ -9,7 +9,7 @@
  *   bun scripts/prepare-npm.ts                  # uses version from package.json
  *   bun scripts/prepare-npm.ts --version 0.11.0 # override version
  */
-import { chmodSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const PLATFORMS = [
@@ -48,30 +48,58 @@ export function stampOptionalDeps(pkgText: string, version: string): string {
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-  const version = parseVersion(args, readFileSync("package.json", "utf-8"));
+export interface PrepareNpmDeps {
+  readFile: (path: string) => string;
+  writeFile: (path: string, data: string) => void;
+  copyFile: (src: string, dst: string) => void;
+  chmod: (path: string, mode: number) => void;
+  log?: (msg: string) => void;
+}
 
-  console.log(`Preparing npm packages for version ${version}`);
+const defaultDeps: PrepareNpmDeps = {
+  readFile: (p) => readFileSync(p, "utf-8"),
+  writeFile: writeFileSync,
+  copyFile: copyFileSync,
+  chmod: chmodSync,
+  log: console.log,
+};
+
+export function prepareNpm(args: string[], deps: PrepareNpmDeps = defaultDeps): void {
+  const d = { ...defaultDeps, ...deps };
+  const version = parseVersion(args, d.readFile("package.json"));
+
+  d.log?.(`Preparing npm packages for version ${version}`);
 
   for (const platform of PLATFORMS) {
     const pkgPath = resolve(`npm/${platform.dir}/package.json`);
-    const stamped = stampPlatformPackage(readFileSync(pkgPath, "utf-8"), version);
-    writeFileSync(pkgPath, stamped);
+    const stamped = stampPlatformPackage(d.readFile(pkgPath), version);
+    d.writeFile(pkgPath, stamped);
+
+    // Remove .gitkeep so it doesn't end up in the published tarball
+    const gitkeep = resolve(`npm/${platform.dir}/bin/.gitkeep`);
+    try {
+      unlinkSync(gitkeep);
+    } catch {
+      // already absent — fine
+    }
 
     for (const binary of BINARIES) {
       const src = resolve(`dist/${binary}-${platform.suffix}`);
       const dst = resolve(`npm/${platform.dir}/bin/${binary}`);
-      copyFileSync(src, dst);
-      chmodSync(dst, 0o755);
-      console.log(`  ${binary}-${platform.suffix} → npm/${platform.dir}/bin/${binary}`);
+      d.copyFile(src, dst);
+      d.chmod(dst, 0o755);
+      d.log?.(`  ${binary}-${platform.suffix} → npm/${platform.dir}/bin/${binary}`);
     }
   }
 
   const rootPkgPath = resolve("package.json");
-  const stamped = stampOptionalDeps(readFileSync(rootPkgPath, "utf-8"), version);
-  writeFileSync(rootPkgPath, stamped);
-  console.log(`Stamped optionalDependencies to ${version}`);
+  const stamped = stampOptionalDeps(d.readFile(rootPkgPath), version);
+  d.writeFile(rootPkgPath, stamped);
+  d.log?.(`Stamped optionalDependencies to ${version}`);
 
-  console.log("Done.");
+  d.log?.("Done.");
+}
+
+if (import.meta.main) {
+  prepareNpm(process.argv.slice(2));
 }

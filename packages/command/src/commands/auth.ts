@@ -119,7 +119,7 @@ export async function cmdAuth(args: string[], deps?: Partial<AuthDeps>): Promise
     d.log(`${c.bold}${"SERVER".padEnd(nameWidth)}  ${"TRANSPORT".padEnd(9)}  ${"AUTH".padEnd(10)}  STATUS${c.reset}`);
     for (const s of result.servers) {
       const authLabel = authSupportLabel(s);
-      const authPad = 10 + (authLabel.length - stripAnsi(authLabel).length);
+      const authPad = 10 + (authLabel.length - Bun.stringWidth(authLabel));
       d.log(`${s.server.padEnd(nameWidth)}  ${s.transport.padEnd(9)}  ${authLabel.padEnd(authPad)}  ${statusLabel(s)}`);
     }
     return;

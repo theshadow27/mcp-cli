@@ -107,10 +107,10 @@ packages/command/src/
   output.ts       Output formatting (JSON to stdout, errors to stderr)
   file-read.ts    Safe file reading with size limits
   parse.ts        Stdin reading and input parsing
-  commands/       call, ls, run, alias, mail, status, auth, config, claude,
-                  serve, tty, install, completions, typegen, logs, version,
-                  spans, registry-cmd, export, import, add, remove, get,
-                  config-file
+  commands/       call, ls, run, alias, mail, status, auth, config, agent,
+                  claude (alias), serve, tty, install, completions, typegen,
+                  logs, version, spans, registry-cmd, export, import, add,
+                  remove, get, config-file
   jq/             jq filtering support
   registry/       Registry client (transport + API)
   tty/            Terminal detection and adapters (iTerm, Kitty, etc.)

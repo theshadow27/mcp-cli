@@ -146,6 +146,20 @@ describe("pythonReprToJson", () => {
     expect(JSON.parse(result)).toBe("C:\\Users\\test");
   });
 
+  it("handles nested JSON strings inside single-quoted Python values", () => {
+    const input = `{'records': [{'metadata': {}, 'labels': {}, 'user_data': '{"r":{"tid":"2724a35f0406edd1bb84ad31f5c21894"}}'}]}`;
+    const result = JSON.parse(pythonReprToJson(input));
+    expect(result).toEqual({
+      records: [
+        {
+          metadata: {},
+          labels: {},
+          user_data: '{"r":{"tid":"2724a35f0406edd1bb84ad31f5c21894"}}',
+        },
+      ],
+    });
+  });
+
   it("does not infinite loop on bare + or -", () => {
     const input = "{'a': +, 'b': -}";
     // Should complete without hanging — output may not be valid JSON
@@ -216,5 +230,19 @@ describe("parsePythonRepr", () => {
   it("handles mixed quote styles in values", () => {
     const input = `{'msg': "it's broken"}`;
     expect(parsePythonRepr(input)).toEqual({ msg: "it's broken" });
+  });
+
+  it("parses Coralogix response with nested JSON in user_data", () => {
+    const input = `{'records': [{'metadata': {}, 'labels': {}, 'user_data': '{"r":{"tid":"2724a35f0406edd1bb84ad31f5c21894"}}'}]}`;
+    const result = parsePythonRepr(input);
+    expect(result).toEqual({
+      records: [
+        {
+          metadata: {},
+          labels: {},
+          user_data: '{"r":{"tid":"2724a35f0406edd1bb84ad31f5c21894"}}',
+        },
+      ],
+    });
   });
 });

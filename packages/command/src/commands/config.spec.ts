@@ -38,6 +38,7 @@ function makeDeps(
   servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }>,
   fileContents: Record<string, McpConfigFile> = {},
   writtenFiles: Record<string, McpConfigFile> = {},
+  captures?: { logs: string[]; errors: string[] },
 ): ConfigDeps {
   return {
     getConfig: async () =>
@@ -49,7 +50,25 @@ function makeDeps(
     writeConfig: (path: string, config: McpConfigFile) => {
       writtenFiles[path] = structuredClone(config);
     },
+    ...(captures
+      ? {
+          log: (msg: string) => captures.logs.push(msg),
+          error: (msg: string) => captures.errors.push(msg),
+        }
+      : {}),
   };
+}
+
+/** Shorthand: create deps with log/error capture arrays pre-wired. */
+function makeDepsWithCapture(
+  servers: Record<string, { transport: string; source: string; scope: string; toolCount: number }>,
+  fileContents: Record<string, McpConfigFile> = {},
+  writtenFiles: Record<string, McpConfigFile> = {},
+): { deps: ConfigDeps; logs: string[]; errors: string[] } {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const deps = makeDeps(servers, fileContents, writtenFiles, { logs, errors });
+  return { deps, logs, errors };
 }
 
 // -- maskValue --
@@ -175,9 +194,7 @@ describe("isCliOptionKey", () => {
 describe("printServerConfigDetails", () => {
   it("prints stdio server details", () => {
     const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
+    const log = (msg: string) => logs.push(msg);
 
     const config: ServerConfig = {
       command: "npx",
@@ -185,7 +202,7 @@ describe("printServerConfigDetails", () => {
       env: { API_KEY: "secret12345678" },
       cwd: "/some/path",
     };
-    printServerConfigDetails(config, false);
+    printServerConfigDetails(config, false, log);
 
     expect(logs.some((l) => l.includes("npx my-server --flag"))).toBe(true);
     expect(logs.some((l) => l.includes("/some/path"))).toBe(true);
@@ -195,31 +212,27 @@ describe("printServerConfigDetails", () => {
 
   it("prints stdio server details with --show-secrets", () => {
     const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
+    const log = (msg: string) => logs.push(msg);
 
     const config: ServerConfig = {
       command: "node",
       env: { API_KEY: "secret12345678" },
     };
-    printServerConfigDetails(config, true);
+    printServerConfigDetails(config, true, log);
 
     expect(logs.some((l) => l.includes("secret12345678"))).toBe(true);
   });
 
   it("prints http server details", () => {
     const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
+    const log = (msg: string) => logs.push(msg);
 
     const config: ServerConfig = {
       type: "http",
       url: "https://example.com/mcp",
       headers: { Authorization: "Bearer secret12345678" },
     };
-    printServerConfigDetails(config, false);
+    printServerConfigDetails(config, false, log);
 
     expect(logs.some((l) => l.includes("https://example.com/mcp"))).toBe(true);
     expect(logs.some((l) => l.includes("Authorization"))).toBe(true);
@@ -228,12 +241,10 @@ describe("printServerConfigDetails", () => {
 
   it("prints stdio without env or cwd", () => {
     const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
+    const log = (msg: string) => logs.push(msg);
 
     const config: ServerConfig = { command: "node", args: ["server.js"] };
-    printServerConfigDetails(config, false);
+    printServerConfigDetails(config, false, log);
 
     expect(logs.some((l) => l.includes("node server.js"))).toBe(true);
     expect(logs.some((l) => l.includes("env"))).toBe(false);
@@ -241,12 +252,10 @@ describe("printServerConfigDetails", () => {
 
   it("prints http without headers", () => {
     const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
+    const log = (msg: string) => logs.push(msg);
 
     const config: ServerConfig = { type: "sse", url: "https://example.com/sse" };
-    printServerConfigDetails(config, false);
+    printServerConfigDetails(config, false, log);
 
     expect(logs.some((l) => l.includes("https://example.com/sse"))).toBe(true);
     expect(logs.some((l) => l.includes("headers"))).toBe(false);
@@ -257,13 +266,8 @@ describe("printServerConfigDetails", () => {
 
 describe("configGetServer", () => {
   it("displays server config in text mode", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
     const sourcePath = join(testDir, "servers.json");
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 3 } },
       {
         [sourcePath]: {
@@ -283,13 +287,8 @@ describe("configGetServer", () => {
   });
 
   it("displays server config in JSON mode", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
     const sourcePath = join(testDir, "servers.json");
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 2 } },
       {
         [sourcePath]: {
@@ -309,13 +308,8 @@ describe("configGetServer", () => {
   });
 
   it("shows secrets in JSON mode with --show-secrets", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
     const sourcePath = join(testDir, "servers.json");
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       {
         [sourcePath]: {
@@ -333,12 +327,7 @@ describe("configGetServer", () => {
   });
 
   it("handles server with no config in file (virtual)", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "virtual-srv": { transport: "virtual", source: "/some/path", scope: "mcp-cli", toolCount: 1 } },
       { "/some/path": { mcpServers: {} } },
     );
@@ -356,7 +345,7 @@ describe("configSetServerEnv", () => {
   it("sets env var on stdio server", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 3 } },
       {
         [sourcePath]: {
@@ -368,21 +357,19 @@ describe("configSetServerEnv", () => {
       writtenFiles,
     );
 
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
-
     await configSetServerEnv(["my-server", "env", "NEW_KEY:new-value"], deps);
 
     expect(writtenFiles[sourcePath]).toBeDefined();
     const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { env: Record<string, string> };
     expect(updated.env.EXISTING).toBe("value");
     expect(updated.env.NEW_KEY).toBe("new-value");
-    expect(logSpy).toHaveBeenCalledWith("Set NEW_KEY on my-server");
+    expect(logs).toContain("Set NEW_KEY on my-server");
   });
 
   it("creates env object when missing", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       {
         [sourcePath]: {
@@ -394,8 +381,6 @@ describe("configSetServerEnv", () => {
       writtenFiles,
     );
 
-    spyOn(console, "log").mockImplementation(() => {});
-
     await configSetServerEnv(["my-server", "env", "API_KEY:sk-test"], deps);
 
     const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { env: Record<string, string> };
@@ -405,13 +390,11 @@ describe("configSetServerEnv", () => {
   it("handles values containing colons", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { "my-server": { command: "node" } } } },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetServerEnv(["my-server", "env", "URL:https://host:8080/path"], deps);
 
@@ -424,13 +407,8 @@ describe("configSetServerEnv", () => {
 
 describe("configGetDispatch", () => {
   it("dispatches to server config for unknown keys", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
     const sourcePath = join(testDir, "servers.json");
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 1 } },
       { [sourcePath]: { mcpServers: { "my-server": { command: "echo" } } } },
     );
@@ -447,13 +425,11 @@ describe("configSetDispatch", () => {
   it("dispatches to server env set when second arg is 'env'", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { srv: { command: "node" } } } },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetDispatch(["srv", "env", "K:V"], deps);
 
@@ -466,12 +442,7 @@ describe("configSetDispatch", () => {
 
 describe("cmdConfig", () => {
   it("dispatches 'show' subcommand", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps({
+    const { deps, logs } = makeDepsWithCapture({
       srv: { transport: "stdio", source: "/path", scope: "user", toolCount: 2 },
     });
 
@@ -482,12 +453,7 @@ describe("cmdConfig", () => {
   });
 
   it("dispatches 'sources' subcommand", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps({
+    const { deps, logs } = makeDepsWithCapture({
       srv: { transport: "stdio", source: "/path/servers.json", scope: "user", toolCount: 0 },
     });
 
@@ -498,13 +464,8 @@ describe("cmdConfig", () => {
   });
 
   it("dispatches 'get' to configGetDispatch", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
     const sourcePath = join(testDir, "servers.json");
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { srv: { command: "echo" } } } },
     );
@@ -517,13 +478,11 @@ describe("cmdConfig", () => {
   it("dispatches 'set' with env to configSetServerEnv", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { srv: { command: "node" } } } },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await cmdConfig(["set", "srv", "env", "K:V"], deps);
 
@@ -531,12 +490,7 @@ describe("cmdConfig", () => {
   });
 
   it("defaults to 'show' when no subcommand", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps({
+    const { deps, logs } = makeDepsWithCapture({
       srv: { transport: "stdio", source: "/path", scope: "user", toolCount: 1 },
     });
 
@@ -550,12 +504,7 @@ describe("cmdConfig", () => {
 
 describe("configShow", () => {
   it("prints message when no servers configured", async () => {
-    const errors: string[] = [];
-    spyOn(console, "error").mockImplementation((msg: string) => {
-      errors.push(msg);
-    });
-
-    const deps = makeDeps({});
+    const { deps, errors } = makeDepsWithCapture({});
 
     await cmdConfig(["show"], deps);
 
@@ -563,12 +512,7 @@ describe("configShow", () => {
   });
 
   it("shows tool count when > 0", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps({
+    const { deps, logs } = makeDepsWithCapture({
       a: { transport: "stdio", source: "/p", scope: "user", toolCount: 5 },
     });
 
@@ -583,15 +527,11 @@ describe("configShow", () => {
 describe("configSources", () => {
   it("prints message when no sources", async () => {
     const errors: string[] = [];
-    spyOn(console, "error").mockImplementation((msg: string) => {
-      errors.push(msg);
-    });
-
-    // Use a custom deps with empty sources
     const deps: ConfigDeps = {
       getConfig: async () => ({ servers: {}, sources: [] }),
       readConfig: () => ({ mcpServers: {} }),
       writeConfig: () => {},
+      error: (msg: string) => errors.push(msg),
     };
 
     await cmdConfig(["sources"], deps);
@@ -604,11 +544,10 @@ describe("configSources", () => {
 
 describe("configGetServer error handling", () => {
   it("exits when server not found", async () => {
-    const errors: string[] = [];
-    spyOn(console, "error").mockImplementation(() => {});
     const exitSpy = spyOn(process, "exit").mockImplementation(() => {
       throw new Error("exit");
     });
+    spyOn(console, "error").mockImplementation(() => {});
 
     const deps = makeDeps({});
 
@@ -622,12 +561,7 @@ describe("configGetServer error handling", () => {
   });
 
   it("outputs JSON with null config for virtual server", async () => {
-    const logs: string[] = [];
-    spyOn(console, "log").mockImplementation((msg: string) => {
-      logs.push(msg);
-    });
-
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { virt: { transport: "virtual", source: "/p", scope: "mcp-cli", toolCount: 0 } },
       { "/p": { mcpServers: {} } },
     );
@@ -723,7 +657,7 @@ describe("configSetServerUrl", () => {
   it("sets url on http server", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "http", source: sourcePath, scope: "user", toolCount: 3 } },
       {
         [sourcePath]: {
@@ -735,20 +669,18 @@ describe("configSetServerUrl", () => {
       writtenFiles,
     );
 
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
-
     await configSetServerUrl(["my-server", "url", "https://new.example.com"], deps);
 
     expect(writtenFiles[sourcePath]).toBeDefined();
     const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { url: string };
     expect(updated.url).toBe("https://new.example.com");
-    expect(logSpy).toHaveBeenCalledWith("Set url on my-server");
+    expect(logs).toContain("Set url on my-server");
   });
 
   it("sets url on sse server", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { "my-server": { transport: "sse", source: sourcePath, scope: "user", toolCount: 0 } },
       {
         [sourcePath]: {
@@ -759,8 +691,6 @@ describe("configSetServerUrl", () => {
       },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetServerUrl(["my-server", "url", "https://new.example.com/sse"], deps);
 
@@ -833,7 +763,7 @@ describe("configSetServerArgs", () => {
   it("sets args on stdio server", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps, logs } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 3 } },
       {
         [sourcePath]: {
@@ -845,20 +775,18 @@ describe("configSetServerArgs", () => {
       writtenFiles,
     );
 
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
-
     await configSetServerArgs(["my-server", "args", "new.js", "--flag"], deps);
 
     expect(writtenFiles[sourcePath]).toBeDefined();
     const updated = writtenFiles[sourcePath].mcpServers?.["my-server"] as { args: string[] };
     expect(updated.args).toEqual(["new.js", "--flag"]);
-    expect(logSpy).toHaveBeenCalledWith("Set args on my-server");
+    expect(logs).toContain("Set args on my-server");
   });
 
   it("sets args when none existed before", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { "my-server": { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       {
         [sourcePath]: {
@@ -869,8 +797,6 @@ describe("configSetServerArgs", () => {
       },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetServerArgs(["my-server", "args", "server.js"], deps);
 
@@ -940,13 +866,11 @@ describe("configSetDispatch url/args routing", () => {
   it("dispatches to url setter when second arg is 'url'", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { srv: { transport: "http", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { srv: { type: "http", url: "https://old.com" } } } },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetDispatch(["srv", "url", "https://new.com"], deps);
 
@@ -957,13 +881,11 @@ describe("configSetDispatch url/args routing", () => {
   it("dispatches to args setter when second arg is 'args'", async () => {
     const sourcePath = join(testDir, "servers.json");
     const writtenFiles: Record<string, McpConfigFile> = {};
-    const deps = makeDeps(
+    const { deps } = makeDepsWithCapture(
       { srv: { transport: "stdio", source: sourcePath, scope: "user", toolCount: 0 } },
       { [sourcePath]: { mcpServers: { srv: { command: "node" } } } },
       writtenFiles,
     );
-
-    spyOn(console, "log").mockImplementation(() => {});
 
     await configSetDispatch(["srv", "args", "server.js", "--port", "3000"], deps);
 

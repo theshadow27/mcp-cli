@@ -3,6 +3,7 @@
  */
 
 import type { z } from "zod/v4";
+import { parsePythonRepr } from "./python-repr";
 
 /** Options for the cache() helper in alias context */
 export interface CacheOptions {
@@ -69,10 +70,14 @@ export function extractContent(result: unknown): unknown {
   if (result && typeof result === "object" && "content" in result) {
     const { content } = result as { content: Array<{ type: string; text?: string }> };
     if (Array.isArray(content) && content.length === 1 && content[0].type === "text" && content[0].text) {
+      const text = content[0].text;
       try {
-        return JSON.parse(content[0].text);
+        return JSON.parse(text);
       } catch {
-        return content[0].text;
+        // JSON.parse failed — try Python repr conversion (e.g. Coralogix MCP responses)
+        const parsed = parsePythonRepr(text);
+        if (parsed !== text) return parsed;
+        return text;
       }
     }
     // Multiple content items — return array of text

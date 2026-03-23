@@ -146,7 +146,7 @@ function getGitRoot(): string | null {
   }
 }
 
-const defaultDeps: ClaudeDeps = {
+export const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
@@ -174,7 +174,33 @@ const defaultDeps: ClaudeDeps = {
 
 // ── Entry point ──
 
+/**
+ * `mcx claude` — thin alias that routes to `mcx agent claude`.
+ *
+ * Kept as a top-level command because orchestration workflows, memory files,
+ * and CLAUDE.md all reference `mcx claude` directly.
+ *
+ * When `deps` are provided (testing), uses the internal dispatch to allow
+ * dependency injection without going through agent.ts.
+ */
 export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Promise<void> {
+  // Show claude-branded help when invoked directly
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h") {
+    printClaudeUsage();
+    return;
+  }
+
+  if (deps) {
+    // Direct dispatch for testing with injected deps
+    await cmdClaudeInternal(args, deps);
+    return;
+  }
+  const { cmdAgent } = await import("./agent");
+  await cmdAgent(["claude", ...args]);
+}
+
+async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Promise<void> {
   const d: ClaudeDeps = { ...defaultDeps, ...deps };
   const sub = args[0];
 
@@ -517,7 +543,7 @@ export function buildResumePrompt(opts: {
   return lines.join("\n");
 }
 
-async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
+export async function claudeResume(args: string[], d: ClaudeDeps): Promise<void> {
   const parsed = parseResumeArgs(args);
 
   if (parsed.error) {

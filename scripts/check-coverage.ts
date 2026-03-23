@@ -109,9 +109,6 @@ const EXCLUSIONS: Record<string, string> = {
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
-  "scripts/prepare-npm.ts":
-    "import.meta.main entrypoint block uses real fs/dist paths — pure functions fully tested, entrypoint requires e2e",
-
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
