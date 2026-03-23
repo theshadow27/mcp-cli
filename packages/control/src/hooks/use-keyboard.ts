@@ -62,6 +62,10 @@ export interface ServersNav {
   confirmRemove: boolean;
   setConfirmRemove: (mode: boolean) => void;
   configInfo: Record<string, { source: string; scope: string }>;
+  /** Injected for testing — defaults to the real addServerToConfig. */
+  onAddServer?: (scope: "user" | "project", name: string, config: import("@mcp-cli/core").ServerConfig) => void;
+  /** Injected for testing — defaults to the real removeServerFromConfig. */
+  onRemoveServer?: (scope: "user" | "project", name: string) => void;
 }
 
 export interface LogsNav {

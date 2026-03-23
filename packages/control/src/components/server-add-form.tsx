@@ -33,12 +33,14 @@ export function initialAddServerState(): AddServerState {
 
 interface ServerAddFormProps {
   state: AddServerState;
+  /** Resolved config file path for the current scope — shown on the confirm step. */
+  configPath?: string;
 }
 
 const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
 const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
-export function ServerAddForm({ state }: ServerAddFormProps) {
+export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Text bold color="cyan">
@@ -145,6 +147,11 @@ export function ServerAddForm({ state }: ServerAddFormProps) {
           <Text>
             Scope: <Text color="green">{state.scope}</Text>
           </Text>
+          {configPath && (
+            <Text>
+              Config: <Text dimColor>{configPath}</Text>
+            </Text>
+          )}
           <Text dimColor>enter save esc cancel</Text>
         </Box>
       )}

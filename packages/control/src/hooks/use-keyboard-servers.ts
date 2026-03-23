@@ -64,6 +64,8 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     confirmRemove,
     setConfirmRemove,
     configInfo,
+    onAddServer,
+    onRemoveServer,
   } = nav;
 
   // ── Confirm remove mode ──
@@ -72,8 +74,13 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
       const server = servers[selectedIndex];
       if (server) {
         const info = configInfo[server.name];
-        const scope = (info?.scope === "project" ? "project" : "user") as "user" | "project";
-        removeServerFromConfig(scope, server.name);
+        if (!info) {
+          // configInfo not loaded yet — cannot determine scope, abort removal
+          setConfirmRemove(false);
+          return true;
+        }
+        const scope = (info.scope === "project" ? "project" : "user") as "user" | "project";
+        (onRemoveServer ?? removeServerFromConfig)(scope, server.name);
         // Force daemon to reload config
         ipcCall("reloadConfig")
           .then(refresh)
@@ -174,7 +181,7 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
 
 /** Handle input within the add-server multi-step form. */
 function handleAddServerInput(input: string, key: Key, nav: ServersNav): boolean {
-  const { addServerState: state, setAddServerState, setAddServerMode, refresh } = nav;
+  const { addServerState: state, setAddServerState, setAddServerMode, refresh, onAddServer } = nav;
 
   // Cancel at any step
   if (key.escape) {
@@ -295,7 +302,7 @@ function handleAddServerInput(input: string, key: Key, nav: ServersNav): boolean
   if (step === "confirm") {
     if (key.return) {
       const config = buildConfig(state);
-      addServerToConfig(state.scope, state.name, config);
+      (onAddServer ?? addServerToConfig)(state.scope, state.name, config);
       // Force daemon to reload config
       ipcCall("reloadConfig")
         .then(refresh)

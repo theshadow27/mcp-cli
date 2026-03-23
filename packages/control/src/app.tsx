@@ -1,5 +1,5 @@
 import type { GetConfigResult, Plan } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import { ipcCall, resolveConfigPath } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSessionList } from "./components/agent-session-list.js";
@@ -386,7 +386,7 @@ export function App() {
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
           {addServerMode ? (
-            <ServerAddForm state={addServerState} />
+            <ServerAddForm state={addServerState} configPath={resolveConfigPath(addServerState.scope)} />
           ) : (
             <ServerList
               servers={servers}

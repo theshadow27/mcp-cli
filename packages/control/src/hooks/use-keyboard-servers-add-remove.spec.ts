@@ -371,6 +371,46 @@ describe("add server mode", () => {
     expect(consumed).toBe(true);
     expect(nav.setAddServerMode).not.toHaveBeenCalled();
   });
+
+  test("confirm step: enter calls onAddServer with correct args and exits", () => {
+    const onAddServer = mock(() => {});
+    const state = {
+      ...initialAddServerState(),
+      step: "confirm" as const,
+      transport: "http" as const,
+      name: "my-server",
+      url: "https://example.com/mcp",
+      scope: "project" as const,
+    };
+    const nav = makeNav({ addServerMode: true, addServerState: state, onAddServer });
+    const consumed = handleServersInput("", { ...baseKey, return: true }, nav);
+    expect(consumed).toBe(true);
+    expect(onAddServer).toHaveBeenCalledWith("project", "my-server", {
+      type: "http",
+      url: "https://example.com/mcp",
+    });
+    expect(nav.setAddServerMode).toHaveBeenCalledWith(false);
+  });
+
+  test("confirm step: enter with stdio calls onAddServer with command config", () => {
+    const onAddServer = mock(() => {});
+    const state = {
+      ...initialAddServerState(),
+      step: "confirm" as const,
+      transport: "stdio" as const,
+      name: "local-server",
+      url: "npx -y some-pkg",
+      env: ["API_KEY=secret"],
+      scope: "user" as const,
+    };
+    const nav = makeNav({ addServerMode: true, addServerState: state, onAddServer });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    expect(onAddServer).toHaveBeenCalledWith("user", "local-server", {
+      command: "npx",
+      args: ["-y", "some-pkg"],
+      env: { API_KEY: "secret" },
+    });
+  });
 });
 
 describe("remove server mode", () => {
@@ -413,5 +453,32 @@ describe("remove server mode", () => {
     const consumed = handleServersInput("d", baseKey, nav);
     expect(consumed).toBe(true);
     expect(nav.setConfirmRemove).not.toHaveBeenCalled();
+  });
+
+  test("y confirm calls onRemoveServer with correct scope", () => {
+    const onRemoveServer = mock(() => {});
+    const nav = makeNav({ confirmRemove: true, selectedIndex: 1, onRemoveServer });
+    const consumed = handleServersInput("y", baseKey, nav);
+    expect(consumed).toBe(true);
+    // s2 is project-scoped in makeNav configInfo
+    expect(onRemoveServer).toHaveBeenCalledWith("project", "s2");
+    expect(nav.setConfirmRemove).toHaveBeenCalledWith(false);
+  });
+
+  test("y confirm with user-scoped server calls onRemoveServer with user scope", () => {
+    const onRemoveServer = mock(() => {});
+    const nav = makeNav({ confirmRemove: true, selectedIndex: 0, onRemoveServer });
+    handleServersInput("y", baseKey, nav);
+    // s1 is user-scoped in makeNav configInfo
+    expect(onRemoveServer).toHaveBeenCalledWith("user", "s1");
+  });
+
+  test("y confirm aborts when configInfo is empty (not loaded yet)", () => {
+    const onRemoveServer = mock(() => {});
+    const nav = makeNav({ confirmRemove: true, configInfo: {}, onRemoveServer });
+    const consumed = handleServersInput("y", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(onRemoveServer).not.toHaveBeenCalled();
+    expect(nav.setConfirmRemove).toHaveBeenCalledWith(false);
   });
 });
