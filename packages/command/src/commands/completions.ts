@@ -52,6 +52,8 @@ export const SUBCOMMANDS = [
   "import",
   "export",
   "help",
+  "agent",
+  "claude",
 ] as const;
 
 /** Subcommands for `mcx alias` */
@@ -59,6 +61,22 @@ export const ALIAS_SUBCOMMANDS = ["ls", "save", "show", "edit", "rm"] as const;
 
 /** Subcommands for `mcx config` */
 export const CONFIG_SUBCOMMANDS = ["show", "sources", "set", "get"] as const;
+
+/** Subcommands for `mcx claude <TAB>` and `mcx agent <provider> <TAB>` */
+export const AGENT_SUBCOMMANDS = [
+  "spawn",
+  "ls",
+  "send",
+  "bye",
+  "wait",
+  "interrupt",
+  "log",
+  "resume",
+  "worktrees",
+] as const;
+
+/** Providers for `mcx agent <TAB>` */
+export const AGENT_PROVIDERS = ["claude", "codex", "opencode", "acp"] as const;
 
 /** Subcommands that accept a server name as their first argument */
 const SERVER_COMMANDS = ["call", "info", "ls", "tools", "auth", "logs", "restart", "remove", "get"];
@@ -236,6 +254,27 @@ _mcx_completions() {
     return
   fi
 
+  local agent_subcommands="${AGENT_SUBCOMMANDS.join(" ")}"
+  local agent_providers="${AGENT_PROVIDERS.join(" ")}"
+
+  # mcx claude <TAB> — agent subcommands
+  if [[ "$cmd" == "claude" && $cword -eq 2 ]]; then
+    COMPREPLY=( $(compgen -W "$agent_subcommands" -- "$cur") )
+    return
+  fi
+
+  # mcx agent <TAB> — provider names
+  if [[ "$cmd" == "agent" && $cword -eq 2 ]]; then
+    COMPREPLY=( $(compgen -W "$agent_providers" -- "$cur") )
+    return
+  fi
+
+  # mcx agent <provider> <TAB> — agent subcommands
+  if [[ "$cmd" == "agent" && $cword -eq 3 ]]; then
+    COMPREPLY=( $(compgen -W "$agent_subcommands" -- "$cur") )
+    return
+  fi
+
   # mcx <server-command> <TAB> — server names
   if [[ $cword -eq 2 ]]; then
     for sc in $server_commands; do
@@ -346,6 +385,30 @@ _mcx() {
     return
   fi
 
+  local -a agent_subcommands
+  agent_subcommands=(${AGENT_SUBCOMMANDS.map((s) => `'${s}'`).join(" ")})
+
+  local -a agent_providers
+  agent_providers=(${AGENT_PROVIDERS.map((s) => `'${s}'`).join(" ")})
+
+  # mcx claude <TAB> — agent subcommands
+  if [[ "$cmd" == "claude" ]] && (( CURRENT == 3 )); then
+    _describe 'subcommand' agent_subcommands
+    return
+  fi
+
+  # mcx agent <TAB> — provider names
+  if [[ "$cmd" == "agent" ]] && (( CURRENT == 3 )); then
+    _describe 'provider' agent_providers
+    return
+  fi
+
+  # mcx agent <provider> <TAB> — agent subcommands
+  if [[ "$cmd" == "agent" ]] && (( CURRENT == 4 )); then
+    _describe 'subcommand' agent_subcommands
+    return
+  fi
+
   # mcx <server-command> <TAB> — server names
   if (( CURRENT == 3 )) && (( \${server_commands[(Ie)$cmd]} )); then
     local -a servers
@@ -410,6 +473,18 @@ complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = run' -a '(mcx c
 
 # mcx install <TAB> — registry slugs
 complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = install' -a '(mcx completions --registry 2>/dev/null)' -d 'registry server'
+
+# mcx claude <TAB> — agent subcommands
+complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = claude' -a '${AGENT_SUBCOMMANDS.join(" ")}' -d 'subcommand'
+
+# mcx agent <TAB> — provider names
+complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = agent' -a '${AGENT_PROVIDERS.join(" ")}' -d 'provider'
+
+# mcx agent <provider> <TAB> — agent subcommands
+${AGENT_PROVIDERS.map(
+  (p) =>
+    `complete -c mcx -n '__mcx_token_count -eq 3; and __mcx_token 2 = agent; and __mcx_token 3 = ${p}' -a '${AGENT_SUBCOMMANDS.join(" ")}' -d 'subcommand'`,
+).join("\n")}
 
 # Server name completion for: ${SERVER_COMMANDS.join(", ")}
 ${SERVER_COMMANDS.map(

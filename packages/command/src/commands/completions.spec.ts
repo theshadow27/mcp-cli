@@ -1,6 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { CompletionDeps } from "./completions";
 import {
+  AGENT_PROVIDERS,
+  AGENT_SUBCOMMANDS,
   ALIAS_SUBCOMMANDS,
   CONFIG_SUBCOMMANDS,
   SUBCOMMANDS,
@@ -39,6 +41,8 @@ describe("SUBCOMMANDS", () => {
     "import",
     "export",
     "help",
+    "agent",
+    "claude",
   ];
 
   test("contains all expected commands", () => {
@@ -57,6 +61,28 @@ describe("ALIAS_SUBCOMMANDS", () => {
 describe("CONFIG_SUBCOMMANDS", () => {
   test("contains show, sources, set, and get", () => {
     expect([...CONFIG_SUBCOMMANDS]).toEqual(["show", "sources", "set", "get"]);
+  });
+});
+
+describe("AGENT_SUBCOMMANDS", () => {
+  test("contains all agent subcommands", () => {
+    expect([...AGENT_SUBCOMMANDS]).toEqual([
+      "spawn",
+      "ls",
+      "send",
+      "bye",
+      "wait",
+      "interrupt",
+      "log",
+      "resume",
+      "worktrees",
+    ]);
+  });
+});
+
+describe("AGENT_PROVIDERS", () => {
+  test("contains known providers", () => {
+    expect([...AGENT_PROVIDERS]).toEqual(["claude", "codex", "opencode", "acp"]);
   });
 });
 
@@ -90,6 +116,18 @@ describe("bashScript", () => {
   test("contains all subcommands", () => {
     for (const cmd of SUBCOMMANDS) {
       expect(script).toContain(cmd);
+    }
+  });
+
+  test("completes claude subcommands", () => {
+    for (const sub of AGENT_SUBCOMMANDS) {
+      expect(script).toContain(sub);
+    }
+  });
+
+  test("completes agent providers", () => {
+    for (const p of AGENT_PROVIDERS) {
+      expect(script).toContain(p);
     }
   });
 });
@@ -130,6 +168,18 @@ describe("zshScript", () => {
       expect(script).toContain(cmd);
     }
   });
+
+  test("completes claude subcommands", () => {
+    for (const sub of AGENT_SUBCOMMANDS) {
+      expect(script).toContain(sub);
+    }
+  });
+
+  test("completes agent providers", () => {
+    for (const p of AGENT_PROVIDERS) {
+      expect(script).toContain(p);
+    }
+  });
 });
 
 describe("fishScript", () => {
@@ -161,6 +211,20 @@ describe("fishScript", () => {
 
   test("contains all subcommands in initial completion", () => {
     expect(script).toContain(SUBCOMMANDS.join(" "));
+  });
+
+  test("completes claude subcommands", () => {
+    expect(script).toContain(`__mcx_token 2 = claude' -a '${AGENT_SUBCOMMANDS.join(" ")}'`);
+  });
+
+  test("completes agent providers", () => {
+    expect(script).toContain(`__mcx_token 2 = agent' -a '${AGENT_PROVIDERS.join(" ")}'`);
+  });
+
+  test("completes agent provider subcommands", () => {
+    for (const p of AGENT_PROVIDERS) {
+      expect(script).toContain(`__mcx_token 3 = ${p}`);
+    }
   });
 });
 
