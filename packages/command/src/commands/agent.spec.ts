@@ -615,6 +615,12 @@ describe("parseAgentResumeArgs", () => {
     expect(result.target).toBe("my-wt");
     expect(result.sessionId).toBe("abc123");
   });
+
+  test("--allow stops consuming at lowercase worktree name", () => {
+    const result = parseAgentResumeArgs(["--allow", "Read", "Write", "my-worktree"]);
+    expect(result.allow).toEqual(["Read", "Write"]);
+    expect(result.target).toBe("my-worktree");
+  });
 });
 
 // ── Resume (shimmed provider — codex) ──
@@ -683,7 +689,24 @@ describe("agent codex resume", () => {
     }
   });
 
-  test("skips merged branches", async () => {
+  test("skips merged branches with exit 1 in single-target mode", async () => {
+    const deps = makeResumeDeps({
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+    await expect(cmdAgent(["codex", "resume", "codex-wt1"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already merged"));
+  });
+
+  test("skips merged branches without exit in --all mode", async () => {
     const deps = makeResumeDeps({
       exec: mock((cmd: string[]) => {
         const cmdStr = cmd.join(" ");
@@ -698,8 +721,14 @@ describe("agent codex resume", () => {
     });
     const mc = mockConsole();
     try {
-      await cmdAgent(["codex", "resume", "codex-wt1"], deps);
+      // --all mode should skip merged branches gracefully without exit(1)
+      await cmdAgent(["codex", "resume", "--all"], deps);
       expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already merged"));
+      // Should NOT have called codex_prompt since the only worktree is merged
+      const promptCalls = (deps.callTool as ReturnType<typeof mock>).mock.calls.filter(
+        (c: unknown[]) => c[0] === "codex_prompt",
+      );
+      expect(promptCalls.length).toBe(0);
     } finally {
       mc.restore();
     }
@@ -734,6 +763,96 @@ describe("agent codex resume", () => {
         "codex_prompt",
         expect.objectContaining({ cwd: "/repo/.claude/worktrees/codex-wt1" }),
       );
+    } finally {
+      mc.restore();
+    }
+  });
+});
+
+// ── Resume detached HEAD ──
+
+describe("agent resume detached HEAD worktree", () => {
+  const DETACHED_WORKTREE_LIST = [
+    "worktree /repo",
+    "HEAD abc123",
+    "branch refs/heads/main",
+    "",
+    "worktree /repo/.claude/worktrees/codex-detached",
+    "HEAD def456",
+    "detached",
+    "",
+  ].join("\n");
+
+  test("warns about detached HEAD and skips merge check", async () => {
+    const deps = makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: DETACHED_WORKTREE_LIST, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "def456 some work", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult([]);
+        return toolResult({ sessionId: "new-session" });
+      }),
+      getPrStatus: mock(async () => null),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-detached"], deps);
+      expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("detached HEAD"));
+      // Should still spawn a session (not skip it)
+      expect(deps.callTool).toHaveBeenCalledWith(
+        "codex_prompt",
+        expect.objectContaining({ cwd: "/repo/.claude/worktrees/codex-detached" }),
+      );
+    } finally {
+      mc.restore();
+    }
+  });
+});
+
+// ── Resume --wait without sessionId ──
+
+describe("agent resume --wait without sessionId", () => {
+  test("warns when --wait used but no sessionId in response", async () => {
+    const deps = makeDeps({
+      getCwd: mock(() => "/repo"),
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("log --oneline")) {
+          return { stdout: "abc123 fix stuff", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("diff --stat")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult([]);
+        // Return response without sessionId
+        return toolResult({ error: "something" });
+      }),
+      getPrStatus: mock(async () => null),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1", "--wait"], deps);
+      expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--wait specified but no sessionId"));
     } finally {
       mc.restore();
     }
@@ -847,6 +966,14 @@ describe("agent worktrees", () => {
     } finally {
       mc.restore();
     }
+  });
+
+  test("handles non-array session_list in worktrees command", async () => {
+    // session_list returning a non-array should throw a descriptive error
+    const deps = makeWorktreesDeps({
+      callTool: mock(async () => toolResult({ error: "something went wrong" })),
+    });
+    await expect(cmdAgent(["codex", "worktrees"], deps)).rejects.toThrow("Expected session list");
   });
 
   test("prints message when no worktrees exist", async () => {
@@ -1286,6 +1413,21 @@ describe("agent ls --json", () => {
     try {
       await cmdAgent(["codex", "ls"], deps);
       expect(mc.logCalls.some((l) => l.includes("error"))).toBe(true);
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("handles non-array session_list response gracefully", async () => {
+    // When session_list returns an object instead of array, should not throw TypeError
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ error: "unexpected response" })),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "ls"], deps);
+      // Should fall through to console.log output, not crash
+      expect(mc.logCalls.length).toBeGreaterThan(0);
     } finally {
       mc.restore();
     }

@@ -38,7 +38,7 @@ import {
   resolveWorktree,
 } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
-import { parseSharedSpawnArgs } from "./spawn-args";
+import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 // ── Dependency injection ──
@@ -60,7 +60,7 @@ export interface AgentDeps extends SharedSessionDeps {
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
   const p = provider.toolPrefix;
   return (tool, args) => {
-    const needsLongTimeout = (tool === `${p}_prompt` && args.wait) || tool === `${p}_wait`;
+    const needsLongTimeout = tool === `${p}_prompt` || tool === `${p}_wait`;
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: provider.serverName, tool, arguments: args }, { timeoutMs });
   };
@@ -167,6 +167,15 @@ function isDaemonUnavailable(err: unknown): boolean {
   if (code === "ECONNREFUSED" || code === "ENOENT") return true;
   const msg = (err as { message?: string }).message;
   return typeof msg === "string" && (/ECONNREFUSED/.test(msg) || /ENOENT/.test(msg));
+}
+
+/** Parse a session list response, validating it's an array. Throws if not. */
+function parseSessionList(text: string): Array<Record<string, unknown>> {
+  const parsed: unknown = JSON.parse(text);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Expected session list to be an array, got ${typeof parsed}: ${text.slice(0, 200)}`);
+  }
+  return parsed as Array<Record<string, unknown>>;
 }
 
 /** Capitalize the first letter of a provider name for display. */
@@ -552,7 +561,7 @@ async function agentList(
 
   let sessions: Array<Record<string, unknown>>;
   try {
-    sessions = JSON.parse(text);
+    sessions = parseSessionList(text);
   } catch {
     console.log(text);
     return;
@@ -1020,7 +1029,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
         model = val;
       }
     } else if (arg === "--allow") {
-      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+      while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
         allow.push(args[++i]);
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";
@@ -1078,7 +1087,7 @@ async function agentResume(
   try {
     const result = await d.callTool(`${P}_session_list`, {});
     const text = formatToolResult(result);
-    const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
+    const sessions = parseSessionList(text);
     sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
   } catch (err) {
     // Only treat connection errors as "daemon not running"
@@ -1133,37 +1142,50 @@ async function agentResume(
       `Worktree "${wtName}" already has an active session. Use "mcx agent ${provider.name} send" to interact with it.`,
     );
     d.exit(1);
+    return; // unreachable
   }
 
-  await resumeAgentWorktree(resolved, parsed, provider, d);
+  const skipped = await resumeAgentWorktree(resolved, parsed, provider, d);
+  if (skipped) {
+    d.exit(1);
+    return; // unreachable
+  }
 }
 
+/** Resume a worktree session. Returns true if skipped (e.g. branch already merged). */
 async function resumeAgentWorktree(
   wt: { path: string; branch: string | null },
   parsed: AgentResumeArgs,
   provider: AgentProvider,
   d: AgentDeps,
-): Promise<void> {
+): Promise<boolean> {
   const P = provider.toolPrefix;
-  const branch = wt.branch ?? "unknown";
+  const branch = wt.branch;
+
+  // Detached HEAD — skip merge check but warn
+  if (!branch) {
+    d.printError(`Warning: worktree at ${wt.path} has detached HEAD — skipping merge check`);
+  }
 
   // Check if branch is already merged into the default branch
   const defaultBranch = getDefaultBranch(d, wt.path);
-  const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
-    "git",
-    "-C",
-    wt.path,
-    "branch",
-    "--merged",
-    defaultBranch,
-  ]);
-  if (mergedExit === 0) {
-    const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
-    if (mergedBranches.includes(branch)) {
-      d.printError(
-        `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
-      );
-      return;
+  if (branch) {
+    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+      "git",
+      "-C",
+      wt.path,
+      "branch",
+      "--merged",
+      defaultBranch,
+    ]);
+    if (mergedExit === 0) {
+      const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+      if (mergedBranches.includes(branch)) {
+        d.printError(
+          `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
+        );
+        return true;
+      }
     }
   }
 
@@ -1180,13 +1202,22 @@ async function resumeAgentWorktree(
     toolArgs.prompt =
       "Your previous conversation history has just been restored via --continue/--resume. " +
       "Please review the restored context and continue where you left off, picking up any in-progress work.";
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [restoring conversation history]`);
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [restoring conversation history]`);
   } else {
     // Git-context shim: build prompt from git state
-    const { stdout: gitLog } = d.exec(["git", "-C", wt.path, "log", "--oneline", `${defaultBranch}..${branch}`, "--"]);
+    const branchRef = branch ?? "HEAD";
+    const { stdout: gitLog } = d.exec([
+      "git",
+      "-C",
+      wt.path,
+      "log",
+      "--oneline",
+      `${defaultBranch}..${branchRef}`,
+      "--",
+    ]);
     const { stdout: gitDiff } = d.exec(["git", "-C", wt.path, "diff", "--stat"]);
 
-    const issueNumber = extractIssueNumber(branch);
+    const issueNumber = branch ? extractIssueNumber(branch) : null;
 
     let prInfo: string | null = null;
     const prStatus = await d.getPrStatus(wt.path);
@@ -1194,8 +1225,8 @@ async function resumeAgentWorktree(
       prInfo = `#${prStatus.number} (${prStatus.state})`;
     }
 
-    toolArgs.prompt = buildResumePrompt({ branch, issueNumber, gitLog, gitDiff, prInfo });
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch}) [git context prompt]`);
+    toolArgs.prompt = buildResumePrompt({ branch: branchRef, issueNumber, gitLog, gitDiff, prInfo });
+    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [git context prompt]`);
   }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
@@ -1216,8 +1247,11 @@ async function resumeAgentWorktree(
       if (parsed.timeout) waitArgs.timeout = parsed.timeout;
       const waitResult = await d.callTool(`${P}_wait`, waitArgs);
       console.log(formatToolResult(waitResult));
+    } else {
+      d.printError("--wait specified but no sessionId in response — cannot wait");
     }
   }
+  return false;
 }
 
 // ── Worktrees ──
@@ -1244,7 +1278,7 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
   try {
     const result = await d.callTool(`${P}_session_list`, {});
     const text = formatToolResult(result);
-    const sessions = JSON.parse(text) as Array<{ worktree?: string }>;
+    const sessions = parseSessionList(text);
     sessionWorktrees = new Set(sessions.filter((s) => s.worktree).map((s) => s.worktree as string));
   } catch (err) {
     // Only treat connection errors as "daemon not running"

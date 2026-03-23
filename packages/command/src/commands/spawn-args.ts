@@ -8,6 +8,23 @@
 import { resolve } from "node:path";
 import { resolveModelName } from "@mcp-cli/core";
 
+/**
+ * Heuristic: does a string look like a tool name / pattern for --allow?
+ * Tool names are PascalCase (Read, WebSearch), MCP-style (mcp__echo__add),
+ * or contain wildcards (*). Worktree names and session IDs are typically
+ * lowercase-kebab or hex strings.
+ */
+export function looksLikeToolName(s: string): boolean {
+  if (s.startsWith("-")) return false;
+  // Wildcards are always tool patterns
+  if (s.includes("*")) return true;
+  // MCP-style tool names
+  if (s.startsWith("mcp_")) return true;
+  // PascalCase: starts with uppercase letter
+  if (/^[A-Z]/.test(s)) return true;
+  return false;
+}
+
 export interface SharedSpawnArgs {
   task: string | undefined;
   allow: string[];
@@ -54,7 +71,7 @@ export function parseSharedSpawnArgs(
       task = args[++i];
       if (!task) error = "--task requires a value";
     } else if (arg === "--allow") {
-      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+      while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
         allow.push(args[++i]);
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";
