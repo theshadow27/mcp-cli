@@ -2,7 +2,7 @@
  * `mcx agent <provider> <subcommand>` — unified command for all agent providers.
  *
  * Dispatches subcommands parameterized by the provider registry, eliminating
- * the duplication across claude.ts, codex.ts, acp.ts, opencode.ts.
+ * the duplication that existed across the former per-provider command files.
  *
  * Subcommands: spawn, ls, send, bye, wait, interrupt, log, resume, worktrees
  * Provider-specific flags (--headed, --agent, --provider) are gated by feature flags.

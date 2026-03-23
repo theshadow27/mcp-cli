@@ -1,5 +1,5 @@
 /**
- * Shared session-display helpers used by `claude.ts`, `codex.ts`, `opencode.ts`, and `acp.ts`.
+ * Shared session-display helpers used by `claude.ts` and `agent.ts`.
  */
 
 import { dirname, resolve } from "node:path";
