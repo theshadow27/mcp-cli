@@ -24,10 +24,11 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { type SharedSessionDeps, cleanupWorktree, cmdClaude, parseByeResult, resolveSessionId } from "./claude";
+import { type SharedSessionDeps, claudeResume, cleanupWorktree, parseByeResult, resolveSessionId } from "./claude";
 import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
+import { worktreesCommand } from "./worktree-commands";
 
 // ── Dependency injection ──
 
@@ -43,6 +44,10 @@ export interface AgentDeps extends SharedSessionDeps {
   getPrStatus: (worktreePath: string) => Promise<{ number: number; state: string } | null>;
   /** Open a command in a terminal tab/window. */
   ttyOpen: (args: string[]) => Promise<void>;
+  /** Write to stdout (default: console.log). Injected for testability. */
+  log: (...args: unknown[]) => void;
+  /** Write to stderr (default: console.error). Injected for testability. */
+  logError: (...args: unknown[]) => void;
 }
 
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
@@ -131,6 +136,8 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
     getDiffStats: defaultGetDiffStats,
     getPrStatus: defaultGetPrStatus,
     ttyOpen: (args) => ttyOpen(args),
+    log: console.log,
+    logError: console.error,
     exec: (cmd, opts) => {
       const result = Bun.spawnSync(cmd, {
         stdout: "pipe",
@@ -171,7 +178,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
   const providerName = args[0];
 
   if (!providerName || providerName === "--help" || providerName === "-h") {
-    printAgentUsage();
+    printAgentUsage(deps?.log);
     return;
   }
 
@@ -194,7 +201,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 
   const sub = args[1];
   if (!sub || sub === "--help" || sub === "-h") {
-    printProviderUsage(provider, providerName, agentOverride);
+    printProviderUsage(provider, providerName, agentOverride, d.log);
     return;
   }
 
@@ -230,19 +237,20 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
         d.exit(1);
         break;
       }
-      // Delegate to cmdClaude which handles resume natively
-      await cmdClaude(["resume", ...args.slice(2)]);
+      // Call claudeResume directly (avoids circular dispatch through cmdClaude → cmdAgent)
+      await claudeResume(args.slice(2), d);
       break;
     case "worktrees":
-    case "wt":
+    case "wt": {
       if (!hasFeature(provider, "resume")) {
         d.printError(`"${providerName}" does not support worktree management.`);
         d.exit(1);
         break;
       }
-      // Delegate to cmdClaude which handles worktrees natively
-      await cmdClaude([sub, ...args.slice(2)]);
+      // Call worktrees command directly (avoids circular dispatch through cmdClaude → cmdAgent)
+      await worktreesCommand(args.slice(2), d);
       break;
+    }
     default:
       d.printError(
         `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", or "wait".`,
@@ -265,6 +273,7 @@ interface AgentSpawnArgs {
   headed: boolean;
   agent: string | undefined;
   provider: string | undefined;
+  resume: string | undefined;
   error: string | undefined;
 }
 
@@ -276,6 +285,7 @@ export function parseAgentSpawnArgs(
   let json = false;
   let worktree: string | undefined;
   let headed = false;
+  let resume: string | undefined;
   let agent: string | undefined = agentOverride;
   let llmProvider: string | undefined;
   let extraError: string | undefined;
@@ -330,8 +340,14 @@ export function parseAgentSpawnArgs(
       return 1;
     }
     if (arg === "--resume") {
-      // Claude-specific: not handled in unified spawn, but consume the arg
-      extraError = 'Use "mcx claude spawn --resume" for session resume';
+      if (!hasFeature(providerConfig, "resume")) {
+        extraError = `--resume is not supported by ${providerDisplayName(providerConfig)}`;
+        return 1;
+      }
+      resume = allArgs[i + 1];
+      if (!resume) {
+        extraError = "--resume requires a session ID";
+      }
       return 1;
     }
     return undefined;
@@ -345,6 +361,7 @@ export function parseAgentSpawnArgs(
     headed,
     agent,
     provider: llmProvider,
+    resume,
   };
 }
 
@@ -355,7 +372,7 @@ async function agentSpawn(
   d: AgentDeps,
 ): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
-    printSpawnUsage(provider, agentOverride);
+    printSpawnUsage(provider, agentOverride, d.log);
     return;
   }
 
@@ -372,19 +389,26 @@ async function agentSpawn(
     d.exit(1);
   }
 
-  if (!parsed.task) {
+  if (!parsed.task && !parsed.resume) {
     const name = agentOverride ?? provider.name;
     d.printError(`Usage: mcx agent ${name} spawn --task "description" [options]`);
     d.exit(1);
   }
 
   if (parsed.headed) {
+    if (parsed.resume) {
+      d.printError("--headed and --resume are incompatible. Use headless spawn for session resume.");
+      d.exit(1);
+    }
     await agentSpawnHeaded(parsed, provider, d);
     return;
   }
 
   const P = provider.toolPrefix;
-  const toolArgs: Record<string, unknown> = { prompt: parsed.task };
+  const toolArgs: Record<string, unknown> = {
+    prompt: parsed.task ?? "Continue from where you left off.",
+  };
+  if (parsed.resume) toolArgs.sessionId = parsed.resume;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
@@ -402,7 +426,7 @@ async function agentSpawn(
   const text = formatToolResult(result);
 
   if (parsed.json) {
-    console.log(text);
+    d.log(text);
     return;
   }
 
@@ -416,9 +440,9 @@ async function agentSpawn(
   }
   if (parsed_data?.sessionId) {
     const label = providerDisplayName(provider, agentOverride);
-    console.error(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
+    d.logError(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
   }
-  console.log(text);
+  d.log(text);
 }
 
 /** Shell-quote a string (wrap in single quotes, escape internal single quotes). */
@@ -539,7 +563,7 @@ async function agentList(
   const text = formatToolResult(result);
 
   if (json) {
-    console.log(text);
+    d.log(text);
     return;
   }
 
@@ -547,19 +571,19 @@ async function agentList(
   try {
     sessions = JSON.parse(text);
   } catch {
-    console.log(text);
+    d.log(text);
     return;
   }
 
   if (sessions.length === 0) {
     const label = agentOverride ?? providerDisplayName(provider);
-    console.error(`No active ${label} sessions.`);
+    d.logError(`No active ${label} sessions.`);
     return;
   }
 
   if (short) {
     for (const s of sessions) {
-      console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
+      d.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
     }
     return;
   }
@@ -583,7 +607,7 @@ async function agentList(
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
   const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
   const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)}${agentHeader} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
-  console.log(`${c.dim}${header}${c.reset}`);
+  d.log(`${c.dim}${header}${c.reset}`);
 
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
@@ -600,14 +624,14 @@ async function agentList(
     const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
     const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = String(s.cwd ?? "—");
-    console.log(
+    d.log(
       `${c.cyan}${id}${c.reset}   ${state}${agentCol} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`,
     );
   }
 
   const staleWarning = d.getStaleDaemonWarning();
   if (staleWarning) {
-    console.error(`\n⚠ ${staleWarning}`);
+    d.logError(`\n⚠ ${staleWarning}`);
   }
 }
 
@@ -653,7 +677,7 @@ async function agentSend(args: string[], provider: AgentProvider, d: AgentDeps):
   if (wait) toolArgs.wait = true;
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
-  console.log(formatToolResult(result));
+  d.log(formatToolResult(result));
 }
 
 // ── Bye ──
@@ -671,7 +695,7 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
   const result = await d.callTool(`${P}_bye`, { sessionId });
 
   const byeResult = parseByeResult(result);
-  console.log(formatToolResult(result));
+  d.log(formatToolResult(result));
 
   if (byeResult.worktree) {
     if (byeResult.cwd) {
@@ -699,7 +723,7 @@ async function agentInterrupt(args: string[], provider: AgentProvider, d: AgentD
 
   const sessionId = await resolveSessionId(sessionPrefix, d, `${P}_session_list`);
   const result = await d.callTool(`${P}_interrupt`, { sessionId });
-  console.log(formatToolResult(result));
+  d.log(formatToolResult(result));
 }
 
 // ── Log ──
@@ -712,6 +736,7 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
 
   let sessionPrefix: string | undefined;
   let last = 20;
+  let compact = false;
   let error: string | undefined;
 
   for (let i = 0; i < r3.length; i++) {
@@ -724,6 +749,8 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
         last = Number(val);
         if (Number.isNaN(last)) error = "--last must be a number";
       }
+    } else if (arg === "--compact") {
+      compact = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
@@ -735,12 +762,16 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
   }
 
   if (!sessionPrefix) {
-    d.printError(`Usage: mcx agent ${provider.name} log <session-id> [--last N]`);
+    d.printError(
+      `Usage: mcx agent ${provider.name} log <session-id> [--last N]${hasFeature(provider, "compactLog") ? " [--compact]" : ""}`,
+    );
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d, `${P}_session_list`);
-  const result = await d.callTool(`${P}_transcript`, { sessionId, limit: last });
+  const toolArgs: Record<string, unknown> = { sessionId, limit: last };
+  if (compact && hasFeature(provider, "compactLog")) toolArgs.compact = true;
+  const result = await d.callTool(`${P}_transcript`, toolArgs);
   const text = formatToolResult(result);
 
   if (json) {
@@ -748,14 +779,14 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
       try {
         const data = JSON.parse(text);
         const filtered = await applyJqFilter(data, jq);
-        console.log(JSON.stringify(filtered, null, 2));
+        d.log(JSON.stringify(filtered, null, 2));
       } catch (err) {
         d.printError(err instanceof Error ? err.message : String(err));
         d.exit(1);
       }
       return;
     }
-    console.log(text);
+    d.log(text);
     return;
   }
 
@@ -763,7 +794,7 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
   try {
     entries = JSON.parse(text);
   } catch {
-    console.log(text);
+    d.log(text);
     return;
   }
 
@@ -773,18 +804,18 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
     const time = new Date(entry.timestamp).toLocaleTimeString();
     const dir = entry.direction === "outbound" ? `${c.green}→${c.reset}` : `${c.cyan}←${c.reset}`;
     const type = entry.message.type ?? "unknown";
-    console.log(`${c.dim}${time}${c.reset} ${dir} ${c.bold}${type}${c.reset}`);
+    d.log(`${c.dim}${time}${c.reset} ${dir} ${c.bold}${type}${c.reset}`);
 
     if ((type === "user" || type === "assistant") && entry.message.message) {
       const msg = entry.message.message as { content?: unknown };
       const summary = extractContentSummary(msg.content);
       if (summary) {
-        console.log(`  ${type === "assistant" ? truncate(summary) : summary}`);
+        d.log(`  ${type === "assistant" ? truncate(summary) : summary}`);
       }
     } else if (type === "result") {
       const res = entry.message as { result?: string };
       if (res.result) {
-        console.log(`  ${c.dim}${truncate(res.result)}${c.reset}`);
+        d.log(`  ${c.dim}${truncate(res.result)}${c.reset}`);
       }
     }
   }
@@ -865,7 +896,7 @@ async function agentWait(
   try {
     data = JSON.parse(text);
   } catch {
-    console.log(text);
+    d.log(text);
     return;
   }
 
@@ -885,7 +916,7 @@ async function agentWait(
       }
     }
     if (!short) {
-      console.log(JSON.stringify(unified, null, 2));
+      d.log(JSON.stringify(unified, null, 2));
       return;
     }
     if (unified.event) {
@@ -896,10 +927,10 @@ async function agentWait(
       const cost = costVal && costVal > 0 ? `$${costVal.toFixed(4)}` : "—";
       const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
       const preview = (evt.result as string) ? (evt.result as string).slice(0, 100) : "";
-      console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+      d.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
     } else {
       for (const s of unified.sessions) {
-        console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
+        d.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
       }
     }
     return;
@@ -917,7 +948,7 @@ async function agentWait(
     }
     if (!short) {
       waitResult.events = events;
-      console.log(JSON.stringify(waitResult, null, 2));
+      d.log(JSON.stringify(waitResult, null, 2));
       return;
     }
     for (const e of events) {
@@ -928,7 +959,7 @@ async function agentWait(
       const cost = costVal && costVal > 0 ? `$${costVal.toFixed(4)}` : "—";
       const turns = session?.numTurns !== undefined ? String(session.numTurns) : "—";
       const preview = (e.result as string) ? (e.result as string).slice(0, 100) : "";
-      console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+      d.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
     }
     return;
   }
@@ -936,18 +967,18 @@ async function agentWait(
   // Timeout fallback: session list array (Codex/ACP/OpenCode)
   if (Array.isArray(data)) {
     if (!short) {
-      console.log(text);
+      d.log(text);
       return;
     }
     for (const s of data as Array<Record<string, unknown>>) {
-      console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
+      d.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
     }
     return;
   }
 
   // Single event result (Codex/ACP/OpenCode)
   if (!short) {
-    console.log(text);
+    d.log(text);
     return;
   }
   const evt = data as { sessionId?: string; event?: string; cost?: number; numTurns?: number; result?: string };
@@ -962,16 +993,17 @@ async function agentWait(
         : "N/A";
   const turns = evt.numTurns !== undefined ? String(evt.numTurns) : "—";
   const preview = evt.result ? evt.result.slice(0, 100) : "";
-  console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
+  d.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
 }
 
 // ── Usage ──
 
-function printAgentUsage(): void {
+function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {
+  const out = log ?? console.log;
   const providers = getAllProviders()
     .filter((p) => !["copilot", "gemini"].includes(p.name))
     .map((p) => p.name);
-  console.log(`mcx agent — unified command for all agent providers
+  out(`mcx agent — unified command for all agent providers
 
 Usage:
   mcx agent <provider> <subcommand> [options]
@@ -989,14 +1021,19 @@ Examples:
 Run "mcx agent <provider> --help" for provider-specific subcommands.`);
 }
 
-function printProviderUsage(provider: AgentProvider, name: string, agentOverride?: string): void {
+function printProviderUsage(
+  provider: AgentProvider,
+  name: string,
+  agentOverride: string | undefined,
+  log: (...args: unknown[]) => void = console.log,
+): void {
   const label = agentOverride ?? providerDisplayName(provider);
   const resumeLine = hasFeature(provider, "resume")
     ? `\n  mcx agent ${name} resume <worktree>        Resume with conversation history
   mcx agent ${name} worktrees                 List mcx-created worktrees`
     : "";
 
-  console.log(`mcx agent ${name} — manage ${label} sessions
+  log(`mcx agent ${name} — manage ${label} sessions
 
 Usage:
   mcx agent ${name} spawn --task "description"   Start a new session
@@ -1010,13 +1047,17 @@ Usage:
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }
 
-function printSpawnUsage(provider: AgentProvider, agentOverride?: string): void {
+function printSpawnUsage(
+  provider: AgentProvider,
+  agentOverride: string | undefined,
+  log: (...args: unknown[]) => void = console.log,
+): void {
   const name = agentOverride ?? provider.name;
   const lines: string[] = [
     `mcx agent ${name} spawn — Start a new ${agentOverride ?? providerDisplayName(provider)} session`,
     "",
     "Options:",
-    "  --task, -t <string>        Task prompt for the session (required)",
+    `  --task, -t <string>        Task prompt for the session (required${hasFeature(provider, "resume") ? " unless --resume" : ""})`,
     "  --worktree, -w [name]      Run in a git worktree for branch isolation",
     "  --allow <tools...>         Space-separated tool patterns to auto-approve",
     "  --model, -m <name>         Model (default: provider default)",
@@ -1026,6 +1067,9 @@ function printSpawnUsage(provider: AgentProvider, agentOverride?: string): void 
     "  --json                     Output raw JSON",
   ];
 
+  if (hasFeature(provider, "resume")) {
+    lines.push("  --resume <id>              Resume a previous session by ID");
+  }
   if (hasFeature(provider, "headed")) {
     lines.push("  --headed                   Open in a visible terminal tab");
   }
@@ -1036,5 +1080,5 @@ function printSpawnUsage(provider: AgentProvider, agentOverride?: string): void 
     lines.push("  --provider, -p <name>      LLM provider (e.g. anthropic, openai, google)");
   }
 
-  console.log(lines.join("\n"));
+  log(lines.join("\n"));
 }

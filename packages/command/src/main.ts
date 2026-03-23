@@ -16,26 +16,21 @@
 
 import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
-import { cmdAcp } from "./commands/acp";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
 import { cmdClaude } from "./commands/claude";
-import { cmdCodex } from "./commands/codex";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
-import { cmdCopilot } from "./commands/copilot";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
-import { cmdGemini } from "./commands/gemini";
 import { cmdGet } from "./commands/get";
 import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdNote } from "./commands/note";
-import { cmdOpencode } from "./commands/opencode";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -293,23 +288,12 @@ async function main(): Promise<void> {
         break;
 
       case "codex":
-        await cmdCodex(cleanArgs.slice(1));
-        break;
-
-      case "opencode":
-        await cmdOpencode(cleanArgs.slice(1));
-        break;
-
       case "acp":
-        await cmdAcp(cleanArgs.slice(1));
-        break;
-
       case "copilot":
-        await cmdCopilot(cleanArgs.slice(1));
-        break;
-
       case "gemini":
-        await cmdGemini(cleanArgs.slice(1));
+      case "opencode":
+        console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
+        await cmdAgent([command, ...cleanArgs.slice(1)]);
         break;
 
       case "serve":
@@ -807,27 +791,11 @@ Usage:
   mcx tty open <command>               Open command in new terminal tab
   mcx tty open --window <command>      Open command in new terminal window
   mcx tty open --headless <command>    Run command as background process
-  mcx claude spawn --task "..."        Start a Claude Code session
-  mcx claude resume <worktree>         Reattach to an orphaned worktree session
-  mcx claude ls                        List active Claude sessions
-  mcx claude send <session> <msg>      Send follow-up prompt to session
-  mcx claude interrupt <session>       Interrupt a session
-  mcx claude wait <session>            Block until a session completes
-  mcx claude bye <session>             End a session gracefully
-  mcx claude log <session>             View session transcript
-  mcx claude worktrees                 List worktrees with session status
-  mcx codex spawn --task "..."         Start a Codex session
-  mcx codex ls                         List active Codex sessions
-  mcx codex send <session> <msg>       Send follow-up prompt to Codex session
-  mcx codex wait <session>             Block until a Codex session completes
-  mcx codex bye <session>              End a Codex session
-  mcx codex log <session>              View Codex session transcript
-  mcx acp spawn --agent copilot ...    Start an ACP agent session
-  mcx acp ls [--agent copilot]         List ACP sessions (optionally filter by agent)
-  mcx copilot spawn --task "..."       Start a Copilot session (alias for acp --agent copilot)
-  mcx copilot ls                       List active Copilot sessions
-  mcx gemini spawn --task "..."        Start a Gemini session (alias for acp --agent gemini)
-  mcx gemini ls                        List active Gemini sessions
+  mcx agent <provider> <subcommand>     Manage agent sessions (claude, codex, acp, opencode)
+  mcx agent claude spawn --task "..."  Start a Claude Code session
+  mcx agent codex spawn --task "..."   Start a Codex session
+  mcx agent acp spawn --task "..."     Start an ACP agent session
+  mcx claude <subcommand>              Alias for mcx agent claude <subcommand>
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)

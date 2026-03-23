@@ -459,6 +459,22 @@ describe("cmdClaude", () => {
     await expect(cmdClaude(["unknown"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Unknown claude subcommand"));
   });
+
+  test("routes through cmdAgent when no deps provided (production path)", async () => {
+    // Without deps, cmdClaude should delegate to cmdAgent(["claude", ...args]).
+    // Use "spawn --help" which prints usage without hitting IPC.
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["spawn", "--help"]);
+      const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
+      // cmdAgent's spawn help uses "mcx agent claude spawn" format
+      expect(output).toContain("mcx agent claude spawn");
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── spawn ──
