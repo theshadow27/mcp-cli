@@ -1,4 +1,5 @@
-import type { Plan } from "@mcp-cli/core";
+import type { GetConfigResult, Plan } from "@mcp-cli/core";
+import { ipcCall, resolveConfigPath } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSessionList } from "./components/agent-session-list.js";
@@ -9,6 +10,7 @@ import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { MailViewer } from "./components/mail-viewer.js";
 import { PlansTab } from "./components/plans-tab.js";
+import { type AddServerState, ServerAddForm, initialAddServerState } from "./components/server-add-form.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
@@ -65,6 +67,12 @@ export function App() {
   const [planStatusType, setPlanStatusType] = useState<StatusType | null>(null);
   const [planInflight, setPlanInflight] = useState(false);
   const [planRefreshing, setPlanRefreshing] = useState(false);
+
+  // Server management state
+  const [addServerMode, setAddServerMode] = useState(false);
+  const [addServerState, setAddServerState] = useState<AddServerState>(initialAddServerState);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [configInfo, setConfigInfo] = useState<Record<string, { source: string; scope: string }>>({});
 
   const servers = status?.servers ?? [];
   // Poll faster on agents tab, slower off-tab (badge still updates)
@@ -137,6 +145,31 @@ export function App() {
     [metricsData, metricsError],
   );
   const prevFilterRef = useRef(filterText);
+
+  // Fetch config info (source/scope) when on servers tab
+  useEffect(() => {
+    if (view !== "servers") return;
+    let cancelled = false;
+    const fetchConfig = () => {
+      ipcCall("getConfig")
+        .then((result: GetConfigResult) => {
+          if (!cancelled) {
+            const info: Record<string, { source: string; scope: string }> = {};
+            for (const [name, data] of Object.entries(result.servers)) {
+              info[name] = { source: data.source, scope: data.scope };
+            }
+            setConfigInfo(info);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchConfig();
+    const interval = setInterval(fetchConfig, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [view]);
 
   // Auto-scroll: follow new lines at the tail, or force-jump when filter changes
   useEffect(() => {
@@ -252,6 +285,13 @@ export function App() {
       refresh,
       authStatus,
       setAuthStatus,
+      addServerMode,
+      setAddServerMode,
+      addServerState,
+      setAddServerState,
+      confirmRemove,
+      setConfirmRemove,
+      configInfo,
     },
     logsNav: {
       logSource,
@@ -345,13 +385,18 @@ export function App() {
       {view === "servers" ? (
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
-          <ServerList
-            servers={servers}
-            selectedIndex={selectedIndex}
-            expandedServer={expandedServer}
-            usageStats={status?.usageStats ?? []}
-            serveInstances={status?.serveInstances}
-          />
+          {addServerMode ? (
+            <ServerAddForm state={addServerState} configPath={resolveConfigPath(addServerState.scope)} />
+          ) : (
+            <ServerList
+              servers={servers}
+              selectedIndex={selectedIndex}
+              expandedServer={expandedServer}
+              usageStats={status?.usageStats ?? []}
+              serveInstances={status?.serveInstances}
+              configInfo={configInfo}
+            />
+          )}
         </>
       ) : view === "logs" ? (
         <LogViewer
@@ -424,6 +469,9 @@ export function App() {
         planConfirmAbort={planConfirmAbort}
         canAdvance={targetPlan ? hasCapability(servers, targetPlan.server, "advance") : false}
         canAbort={targetPlan ? hasCapability(servers, targetPlan.server, "abort") : false}
+        addServerMode={addServerMode}
+        confirmRemove={confirmRemove}
+        confirmRemoveServer={servers[selectedIndex]?.name}
       />
     </Box>
   );

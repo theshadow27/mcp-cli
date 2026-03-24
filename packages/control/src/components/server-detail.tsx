@@ -5,6 +5,7 @@ import React from "react";
 interface ServerDetailProps {
   server: ServerStatus;
   toolStats: UsageStat[];
+  configInfo?: { source: string; scope: string };
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -15,7 +16,7 @@ export function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-export function ServerDetail({ server, toolStats }: ServerDetailProps) {
+export function ServerDetail({ server, toolStats, configInfo }: ServerDetailProps) {
   const totalCalls = server.callCount ?? 0;
   const totalErrors = server.errorCount ?? 0;
   const avgMs = server.avgDurationMs;
@@ -30,7 +31,13 @@ export function ServerDetail({ server, toolStats }: ServerDetailProps) {
         <Text dimColor>Transport: </Text>
         <Text>{server.transport}</Text>
         <Text dimColor> | Source: </Text>
-        <Text>{server.source}</Text>
+        <Text>{configInfo?.source ?? server.source}</Text>
+        {configInfo?.scope && (
+          <Text>
+            <Text dimColor> | Scope: </Text>
+            <Text>{configInfo.scope}</Text>
+          </Text>
+        )}
       </Text>
       <Text>
         <Text dimColor>Tools: </Text>
@@ -102,7 +109,7 @@ export function ServerDetail({ server, toolStats }: ServerDetailProps) {
           <Text color="red">{server.lastError}</Text>
         </Text>
       )}
-      <Text dimColor>Press 'r' to restart</Text>
+      <Text dimColor>r restart d remove</Text>
     </Box>
   );
 }

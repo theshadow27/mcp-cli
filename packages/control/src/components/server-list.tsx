@@ -9,6 +9,7 @@ interface ServerListProps {
   expandedServer: string | null;
   usageStats: UsageStat[];
   serveInstances?: ServeInstanceInfo[];
+  configInfo?: Record<string, { source: string; scope: string }>;
 }
 
 const stateColor: Record<ServerStatus["state"], string> = {
@@ -29,7 +30,14 @@ function formatUptime(ms: number): string {
   return `${h}h${rm > 0 ? `${rm}m` : ""}`;
 }
 
-export function ServerList({ servers, selectedIndex, expandedServer, usageStats, serveInstances }: ServerListProps) {
+export function ServerList({
+  servers,
+  selectedIndex,
+  expandedServer,
+  usageStats,
+  serveInstances,
+  configInfo,
+}: ServerListProps) {
   const instances = serveInstances ?? [];
 
   if (servers.length === 0 && instances.length === 0) {
@@ -73,7 +81,11 @@ export function ServerList({ servers, selectedIndex, expandedServer, usageStats,
               )}
             </Text>
             {expanded && (
-              <ServerDetail server={server} toolStats={usageStats.filter((s) => s.serverName === server.name)} />
+              <ServerDetail
+                server={server}
+                toolStats={usageStats.filter((s) => s.serverName === server.name)}
+                configInfo={configInfo?.[server.name]}
+              />
             )}
           </Box>
         );

@@ -89,6 +89,13 @@ describe("exported nav interfaces", () => {
       refresh: () => {},
       authStatus: null,
       setAuthStatus: () => {},
+      addServerMode: false,
+      setAddServerMode: () => {},
+      addServerState: { step: "transport", transport: "http", name: "", url: "", env: [], envInput: "", scope: "user" },
+      setAddServerState: () => {},
+      confirmRemove: false,
+      setConfirmRemove: () => {},
+      configInfo: {},
     };
     expect(nav.servers).toBeArray();
     expect(nav.selectedIndex).toBe(0);

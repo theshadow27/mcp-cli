@@ -49,6 +49,23 @@ export interface ServersNav {
   refresh: () => void;
   authStatus: AuthStatus | null;
   setAuthStatus: (status: AuthStatus | null) => void;
+  addServerMode: boolean;
+  setAddServerMode: (mode: boolean) => void;
+  addServerState: import("../components/server-add-form").AddServerState;
+  setAddServerState: (
+    fn:
+      | import("../components/server-add-form").AddServerState
+      | ((
+          prev: import("../components/server-add-form").AddServerState,
+        ) => import("../components/server-add-form").AddServerState),
+  ) => void;
+  confirmRemove: boolean;
+  setConfirmRemove: (mode: boolean) => void;
+  configInfo: Record<string, { source: string; scope: string }>;
+  /** Injected for testing — defaults to the real addServerToConfig. */
+  onAddServer?: (scope: "user" | "project", name: string, config: import("@mcp-cli/core").ServerConfig) => void;
+  /** Injected for testing — defaults to the real removeServerFromConfig. */
+  onRemoveServer?: (scope: "user" | "project", name: string) => void;
 }
 
 export interface LogsNav {
@@ -186,6 +203,10 @@ export function useKeyboard({
   useInput((input, key) => {
     // Modal input modes are handled by their respective view handlers first,
     // before global keys, so they can capture all input.
+    if (view === "servers" && (serversNav.addServerMode || serversNav.confirmRemove)) {
+      handleServersInput(input, key, serversNav);
+      return;
+    }
     if (view === "agents" && (claudeNav.denyReasonMode || claudeNav.promptMode)) {
       handleClaudeInput(input, key, claudeNav);
       return;
