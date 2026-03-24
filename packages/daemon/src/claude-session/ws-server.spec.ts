@@ -3208,4 +3208,136 @@ describe("restoreSessions", () => {
       expect(status.sessionId).toBe("prefix-test-session-long-id");
     });
   });
+
+  // ── pendingImmediate: wait blocks on stale idle sessions (#985) ──
+
+  describe("pendingImmediate prevents stale immediate returns (#985)", () => {
+    test("waitForEvent returns immediately for newly idle session", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      const port = await server.start();
+
+      server.prepareSession("s-new", { prompt: "Hello" });
+      server.spawnClaude("s-new");
+
+      const ws = await connectMockClaude(port, "s-new");
+      try {
+        await waitForMessage(ws);
+        ws.send(systemInitMessage("s-new"));
+        ws.send(resultMessage("s-new"));
+        await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+        // First wait should return immediately — the idle event is pending
+        const event = await server.waitForEvent("s-new", 1000);
+        expect(event.event).toBe("session:result");
+        expect(event.sessionId).toBe("s-new");
+      } finally {
+        ws.close();
+      }
+    });
+
+    test("second waitForEvent blocks after idle already reported", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      const port = await server.start();
+
+      server.prepareSession("s-stale", { prompt: "Hello" });
+      server.spawnClaude("s-stale");
+
+      const ws = await connectMockClaude(port, "s-stale");
+      try {
+        await waitForMessage(ws);
+        ws.send(systemInitMessage("s-stale"));
+        ws.send(resultMessage("s-stale"));
+        await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+        // First wait returns immediately (consumes the pending flag)
+        await server.waitForEvent("s-stale", 500);
+
+        // Second wait should timeout — the idle state is stale
+        await expect(server.waitForEvent("s-stale", 200)).rejects.toThrow(WaitTimeoutError);
+      } finally {
+        ws.close();
+      }
+    });
+
+    test("restored sessions do not trigger immediate return", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      // Restore a session as disconnected (simulates daemon restart)
+      server.restoreSessions([
+        {
+          sessionId: "s-restored",
+          pid: null,
+          state: "disconnected",
+          model: "claude-sonnet-4-6",
+          cwd: "/test",
+          worktree: null,
+          totalCost: 0.5,
+          totalTokens: 1000,
+        },
+      ]);
+
+      // Wait should timeout — restored sessions have pendingImmediate=false
+      // (they're also disconnected, so validateWaitTarget may reject,
+      // but this test confirms the pendingImmediate flag is false)
+      await expect(server.waitForEvent("s-restored", 200)).rejects.toThrow(/disconnected/);
+    });
+
+    test("waitForEvent with null sessionId blocks when all idle sessions already reported", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      const port = await server.start();
+
+      server.prepareSession("s-any", { prompt: "Hello" });
+      server.spawnClaude("s-any");
+
+      const ws = await connectMockClaude(port, "s-any");
+      try {
+        await waitForMessage(ws);
+        ws.send(systemInitMessage("s-any"));
+        ws.send(resultMessage("s-any"));
+        await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+        // First wait (any session) — returns immediately
+        const event = await server.waitForEvent(null, 500);
+        expect(event.event).toBe("session:result");
+
+        // Second wait (any session) — should timeout since the idle is stale
+        await expect(server.waitForEvent(null, 200)).rejects.toThrow(WaitTimeoutError);
+      } finally {
+        ws.close();
+      }
+    });
+
+    test("event waiter delivery clears pendingImmediate flag", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      const port = await server.start();
+
+      server.prepareSession("s-waiter", { prompt: "Hello" });
+      server.spawnClaude("s-waiter");
+
+      const ws = await connectMockClaude(port, "s-waiter");
+      try {
+        await waitForMessage(ws);
+        ws.send(systemInitMessage("s-waiter"));
+
+        // Start waiting BEFORE the result arrives
+        const waitPromise = server.waitForEvent("s-waiter", 5000);
+
+        // Now send the result — the waiter should be resolved
+        ws.send(resultMessage("s-waiter"));
+        const event = await waitPromise;
+        expect(event.event).toBe("session:result");
+
+        // Next wait should timeout — the event was delivered to the waiter
+        await expect(server.waitForEvent("s-waiter", 200)).rejects.toThrow(WaitTimeoutError);
+      } finally {
+        ws.close();
+      }
+    });
+  });
 });
