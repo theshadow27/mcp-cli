@@ -230,10 +230,18 @@ export class ClaudeServer {
       // Connect triggers MCP handshake (calls transport.start() which sets worker.onmessage).
       // Race with a timeout to prevent indefinite hangs on broken handshakes (#454).
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+      let connectResolved = false;
       await Promise.race([
-        this.client.connect(this.transport),
+        this.client.connect(this.transport).then((r) => {
+          connectResolved = true;
+          return r;
+        }),
         new Promise<never>((_, reject) => {
           handshakeTimer = setTimeout(() => {
+            // Guard: if connect already won the race but clearTimeout didn't
+            // prevent this callback (Bun event-loop edge case, #956), skip the
+            // side-effect so the counter stays accurate.
+            if (connectResolved) return;
             this.metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error("MCP handshake timeout (10s)"));
           }, this.handshakeTimeoutMs);
