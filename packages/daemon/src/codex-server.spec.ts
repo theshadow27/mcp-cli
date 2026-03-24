@@ -574,14 +574,13 @@ describe("CodexServer connect timeout metric", () => {
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    const testMetrics = new MetricsCollector();
-
     // Mock client that never resolves connect() — forces the handshake timeout to fire
     const neverConnect = {
       connect: () => new Promise<void>(() => {}),
       close: async () => {},
     } as unknown as Client;
 
+    const testMetrics = new MetricsCollector();
     server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50, testMetrics);
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");

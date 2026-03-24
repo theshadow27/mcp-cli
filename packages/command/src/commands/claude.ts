@@ -1058,6 +1058,22 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
+  // Normalize old daemon response shapes (pre-unification):
+  // - Bare array → session list from old timeout path
+  // - Object with sessionId+event but no sessions key → bare event from old event path
+  if (Array.isArray(data)) {
+    data = { sessions: data };
+  } else if (
+    data &&
+    typeof data === "object" &&
+    "sessionId" in data &&
+    "event" in data &&
+    !("sessions" in data) &&
+    !("events" in data)
+  ) {
+    data = { event: data, sessions: [] };
+  }
+
   // Apply repo filtering to unified { event?, sessions } shape
   if (data && typeof data === "object" && "sessions" in data) {
     const unified = data as {
@@ -1077,7 +1093,10 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     if (!parsed.short) {
       console.log(JSON.stringify(unified, null, 2));
       if (repoFilter && unified.sessions.length === 0) {
-        const orig = (JSON.parse(text) as { sessions: unknown[] }).sessions.length;
+        const origData = JSON.parse(text);
+        const orig = Array.isArray(origData)
+          ? origData.length
+          : ((origData as { sessions?: unknown[] }).sessions?.length ?? 0);
         if (orig > 0) {
           console.error(`(${orig} session${orig === 1 ? "" : "s"} in other repos — use --all to see them)`);
         }
@@ -1095,7 +1114,10 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
     } else {
       // Timeout (no event) — print session list
-      const totalBeforeFilter = (JSON.parse(text) as { sessions: unknown[] }).sessions.length;
+      const origData = JSON.parse(text);
+      const totalBeforeFilter = Array.isArray(origData)
+        ? origData.length
+        : ((origData as { sessions?: unknown[] }).sessions?.length ?? 0);
       for (const s of unified.sessions) {
         console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
       }

@@ -2167,6 +2167,98 @@ describe("mcx claude wait", () => {
       console.error = origErr;
     }
   });
+
+  // ── old daemon compat (pre-unification response shapes) ──
+
+  test("--short handles bare event object from old daemon", async () => {
+    // Old daemon returned bare event (no sessions wrapper) on event success
+    const bareEvent = {
+      sessionId: "abc12345-1111-2222-3333-444444444444",
+      event: "session:result",
+      cost: 0.05,
+      numTurns: 3,
+      result: "Done fixing tests",
+    };
+    const callTool = mock(async () => toolResult(bareEvent));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short"], deps);
+      expect(logSpy.mock.calls.length).toBe(1);
+      const line = (logSpy.mock.calls[0] as string[])[0];
+      expect(line).toContain("abc12345");
+      expect(line).toContain("session:result");
+      expect(line).toContain("$0.0500");
+      expect(line).toContain("Done fixing tests");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--short handles bare session array from old daemon timeout", async () => {
+    // Old daemon returned bare array on timeout (no { sessions } wrapper)
+    const callTool = mock(async () => toolResult(SESSION_LIST));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      expect(logSpy.mock.calls.length).toBe(2);
+      const line1 = (logSpy.mock.calls[0] as string[])[0];
+      expect(line1).toContain("abc12345");
+      expect(line1).toContain("active");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("bare event from old daemon prints JSON without --short", async () => {
+    const bareEvent = {
+      sessionId: "abc12345",
+      event: "session:result",
+      cost: 0.05,
+    };
+    const callTool = mock(async () => toolResult(bareEvent));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait"], deps);
+      const output = (logSpy.mock.calls[0] as string[])[0];
+      const parsed = JSON.parse(output);
+      // Normalized to unified shape
+      expect(parsed.event.sessionId).toBe("abc12345");
+      expect(parsed.sessions).toEqual([]);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("bare session array from old daemon prints JSON without --short", async () => {
+    const callTool = mock(async () => toolResult(SESSION_LIST));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--timeout", "1000"], deps);
+      const output = (logSpy.mock.calls[0] as string[])[0];
+      const parsed = JSON.parse(output);
+      // Normalized to unified shape
+      expect(parsed.sessions).toHaveLength(2);
+      expect(parsed.event).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── lifecycle ──
