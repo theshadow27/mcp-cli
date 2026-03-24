@@ -23,7 +23,7 @@ import {
 // ── Events emitted by handleMessage ──
 
 export type SessionEvent =
-  | { type: "session:init"; sessionId: string; model: string; cwd: string }
+  | { type: "session:init"; sessionId: string; model: string; cwd: string; state: SessionStateEnum }
   | { type: "session:response"; message: AssistantMsg }
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
@@ -181,7 +181,12 @@ export class SessionState {
     const parsed = SystemInit.parse(msg);
     this.model = parsed.model;
     this.cwd = parsed.cwd;
-    this.state = "init";
+
+    // Only transition to "init" from "connecting" — don't regress state
+    // when the CLI reconnects after a WS drop and re-sends system/init.
+    if (this.state === "connecting") {
+      this.state = "init";
+    }
 
     return [
       {
@@ -189,6 +194,7 @@ export class SessionState {
         sessionId: parsed.session_id,
         model: parsed.model,
         cwd: parsed.cwd,
+        state: this.state,
       },
     ];
   }

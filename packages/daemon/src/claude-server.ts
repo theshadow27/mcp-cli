@@ -665,10 +665,12 @@ export class ClaudeServer {
         break;
       }
       case "db:state":
+        this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionState(event.sessionId, event.state);
         this.onActivity?.();
         break;
       case "db:cost":
+        this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
         this.metrics.counter("mcpd_session_cost_usd").inc(event.cost);
         this.onActivity?.();

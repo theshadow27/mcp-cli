@@ -131,8 +131,54 @@ describe("SessionState", () => {
           sessionId: "sess-1",
           model: "claude-sonnet-4-6",
           cwd: "/home/user/project",
+          state: "init",
         },
       ]);
+    });
+
+    test("does not regress state when CLI re-sends system/init after reconnect", () => {
+      // Simulate: session completes work (idle), WS drops, CLI reconnects
+      // and re-sends system/init — state should NOT regress to "init"
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.state).toBe("idle");
+      expect(session.cost).toBe(0.05);
+
+      // CLI reconnects and re-sends system/init
+      const events = session.handleMessage(SYSTEM_INIT);
+
+      // State stays "idle" — no regression
+      expect(session.state).toBe("idle");
+      // Model/cwd still updated
+      expect(session.model).toBe("claude-sonnet-4-6");
+      expect(session.cwd).toBe("/home/user/project");
+      // Event carries the actual state, not "init"
+      expect(events[0].type).toBe("session:init");
+      expect((events[0] as { state: string }).state).toBe("idle");
+      // Cost preserved
+      expect(session.cost).toBe(0.05);
+    });
+
+    test("transitions to init after reconnect (disconnected → connecting → init)", () => {
+      // Simulate: session disconnects, reconnects, gets system/init
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.state).toBe("idle");
+
+      // WS drops → disconnected → reconnect → connecting
+      session.disconnect("WS closed");
+      expect(session.state).toBe("disconnected");
+      session.reconnect();
+      expect(session.state).toBe("connecting");
+
+      // system/init should transition to "init" from "connecting"
+      const events = session.handleMessage(SYSTEM_INIT);
+      expect(session.state).toBe("init");
+      expect((events[0] as { state: string }).state).toBe("init");
     });
   });
 
@@ -517,6 +563,11 @@ describe("SessionState", () => {
       // 10. End
       allEvents.push(...session.end());
       expect(session.state).toBe("ended");
+
+      // Verify session:init event carries state
+      const initEvent = allEvents.find((e) => e.type === "session:init");
+      expect(initEvent).toBeDefined();
+      expect((initEvent as { state: string }).state).toBe("init");
 
       // Verify event stream
       const types = allEvents.map((e) => e.type);
