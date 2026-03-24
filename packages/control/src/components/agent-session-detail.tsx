@@ -55,7 +55,7 @@ export function summarizeEntry(entry: TranscriptEntry): string {
         .map((b: Record<string, unknown>) => b.text as string);
       if (texts.length > 0) {
         const combined = texts.join(" ");
-        return combined.length > 120 ? `${combined.slice(0, 117)}...` : combined;
+        return Bun.stringWidth(combined) > 120 ? `${Bun.sliceAnsi(combined, 0, 117)}...` : combined;
       }
       const toolUses = content.filter((b: Record<string, unknown>) => b.type === "tool_use");
       if (toolUses.length > 0) {
@@ -64,7 +64,8 @@ export function summarizeEntry(entry: TranscriptEntry): string {
         const inputSummary = summarizeToolInput(tool);
         if (inputSummary) {
           const maxLen = 80 - name.length - 4; // [Name: ...]
-          const truncated = inputSummary.length > maxLen ? `${inputSummary.slice(0, maxLen - 3)}...` : inputSummary;
+          const truncated =
+            Bun.stringWidth(inputSummary) > maxLen ? `${Bun.sliceAnsi(inputSummary, 0, maxLen - 3)}...` : inputSummary;
           return `[${name}: ${truncated}]`;
         }
         return `[${name}]`;
@@ -75,7 +76,7 @@ export function summarizeEntry(entry: TranscriptEntry): string {
 
   if (type === "result") {
     const text = (msg.result as string) ?? "";
-    return text.length > 120 ? `${text.slice(0, 117)}...` : text || "[result]";
+    return Bun.stringWidth(text) > 120 ? `${Bun.sliceAnsi(text, 0, 117)}...` : text || "[result]";
   }
 
   if (type === "tool_result" || type === "tool_use") {

@@ -2,7 +2,7 @@
  * `mcx agent <provider> <subcommand>` — unified command for all agent providers.
  *
  * Dispatches subcommands parameterized by the provider registry, eliminating
- * the duplication across claude.ts, codex.ts, acp.ts, opencode.ts.
+ * the duplication that existed across the former per-provider command files.
  *
  * Subcommands: spawn, ls, send, bye, wait, interrupt, log, resume, worktrees
  * Provider-specific flags (--headed, --agent, --provider) are gated by feature flags.
@@ -37,7 +37,7 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
-import { colorState, extractContentSummary, formatSessionShort } from "./session-display";
+import { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
 import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
@@ -638,8 +638,10 @@ async function agentList(
     const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
     const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
     const cwd = String(s.cwd ?? "—");
+    const age = formatAge(s.createdAt as number | null | undefined);
+    const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     d.log(
-      `${c.cyan}${id}${c.reset}   ${state}${agentCol} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}`,
+      `${c.cyan}${id}${c.reset}   ${state}${agentCol} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
   }
 

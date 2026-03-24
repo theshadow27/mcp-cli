@@ -4,7 +4,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
 import { StateDb } from "./db/state";
-import { MetricsCollector, metrics } from "./metrics";
+import { MetricsCollector } from "./metrics";
 
 // ── isWorkerEvent ──
 
@@ -574,14 +574,12 @@ describe("CodexServer connect timeout metric", () => {
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-
     // Mock client that never resolves connect() — forces the handshake timeout to fire
     const neverConnect = {
       connect: () => new Promise<void>(() => {}),
       close: async () => {},
     } as unknown as Client;
 
-    // Use a fresh metrics instance to avoid cross-test contamination via the singleton
     const testMetrics = new MetricsCollector();
     server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50, testMetrics);
 
@@ -592,8 +590,6 @@ describe("CodexServer connect timeout metric", () => {
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-
-    // Use a fresh metrics instance to avoid cross-test contamination via the singleton
     const testMetrics = new MetricsCollector();
     server = new CodexServer(db, undefined, undefined, silentLogger, 10_000, testMetrics);
 

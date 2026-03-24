@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { type TranscriptEntry, compactTranscript, estimateCost, filterByRepo, formatCost } from "./session-display";
+import {
+  type TranscriptEntry,
+  compactTranscript,
+  estimateCost,
+  filterByRepo,
+  formatAge,
+  formatCost,
+  formatSessionShort,
+} from "./session-display";
 
 describe("estimateCost", () => {
   test("returns null for zero tokens", () => {
@@ -124,5 +132,68 @@ describe("compactTranscript", () => {
     ];
     const compacted = compactTranscript(entries, 100);
     expect(compacted).toEqual(entries);
+  });
+});
+
+describe("formatAge", () => {
+  const NOW = Date.UTC(2026, 2, 23, 12, 0, 0); // 2026-03-23 12:00 UTC
+
+  test("returns empty string for null/undefined", () => {
+    expect(formatAge(null, NOW)).toBe("");
+    expect(formatAge(undefined, NOW)).toBe("");
+  });
+
+  test("returns empty string for sessions < 24h old", () => {
+    const recent = NOW - 23 * 60 * 60 * 1000; // 23 hours ago
+    expect(formatAge(recent, NOW)).toBe("");
+  });
+
+  test("returns date label for sessions >= 24h old", () => {
+    const old = Date.UTC(2026, 2, 19, 10, 0, 0); // Mar 19
+    expect(formatAge(old, NOW)).toBe("(Mar 19)");
+  });
+
+  test("returns date label for sessions days old", () => {
+    const old = Date.UTC(2026, 0, 15, 8, 0, 0); // Jan 15
+    expect(formatAge(old, NOW)).toBe("(Jan 15)");
+  });
+});
+
+describe("formatSessionShort with createdAt", () => {
+  test("appends age for old sessions", () => {
+    const old = Date.UTC(2026, 2, 19, 10, 0, 0);
+    const line = formatSessionShort({
+      sessionId: "e94a6668-1234-5678-9abc-def012345678",
+      state: "active",
+      model: "claude-opus-4-6[1m]",
+      cost: 519.51,
+      tokens: 4912380,
+      numTurns: 8415,
+      createdAt: old,
+    });
+    expect(line).toContain("(Mar 19)");
+    expect(line).toStartWith("e94a6668");
+  });
+
+  test("no age suffix for recent sessions", () => {
+    const line = formatSessionShort({
+      sessionId: "84418297-1234-5678-9abc-def012345678",
+      state: "active",
+      model: "claude-opus-4-6[1m]",
+      cost: 1.01,
+      tokens: 6885,
+      numTurns: 27,
+      createdAt: Date.now(),
+    });
+    expect(line).not.toContain("(");
+  });
+
+  test("no age suffix when createdAt is null", () => {
+    const line = formatSessionShort({
+      sessionId: "84418297-1234-5678-9abc-def012345678",
+      state: "active",
+      createdAt: null,
+    });
+    expect(line).not.toContain("(");
   });
 });

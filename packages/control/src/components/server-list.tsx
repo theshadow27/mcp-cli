@@ -66,7 +66,9 @@ export function ServerList({ servers, selectedIndex, expandedServer, usageStats,
               {server.state === "error" && server.lastError && (
                 <Text color="red">
                   {"  "}
-                  {server.lastError.length > 40 ? `${server.lastError.slice(0, 40)}...` : server.lastError}
+                  {Bun.stringWidth(server.lastError) > 40
+                    ? `${Bun.sliceAnsi(server.lastError, 0, 40)}...`
+                    : server.lastError}
                 </Text>
               )}
             </Text>

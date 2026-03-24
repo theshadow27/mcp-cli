@@ -24,6 +24,7 @@ function session(id: string, provider: "claude" | "codex" = "claude"): AgentSess
     worktree: null,
     repoRoot: null,
     processAlive: true,
+    createdAt: Date.now(),
   };
 }
 
