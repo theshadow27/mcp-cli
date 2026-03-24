@@ -106,7 +106,7 @@ describe("OpenCodeSse", () => {
             async start(controller) {
               controller.enqueue('event: ping\ndata: {"n":1}\n\n');
               // Wait a bit before sending more — gives time for disconnect
-              await Bun.sleep(500);
+              await Bun.sleep(100);
               try {
                 controller.enqueue('event: ping\ndata: {"n":2}\n\n');
                 controller.close();

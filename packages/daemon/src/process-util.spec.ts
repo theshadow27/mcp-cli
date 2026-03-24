@@ -17,7 +17,7 @@ async function awaitDeath(pid: number, deadlineMs = 5_000): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
     if (!isAlive(pid)) return;
-    await Bun.sleep(50);
+    await Bun.sleep(10);
   }
 }
 

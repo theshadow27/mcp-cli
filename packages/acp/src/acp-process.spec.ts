@@ -25,7 +25,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     expect(messages).toHaveLength(2);
@@ -50,7 +50,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     expect(errors).toHaveLength(1);
@@ -72,7 +72,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     expect(messages.length).toBeGreaterThanOrEqual(1);
@@ -98,7 +98,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     expect(exitCalled).toBe(true);
@@ -143,7 +143,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(10);
     }
 
     expect(stderrChunks.join("")).toContain("error");
