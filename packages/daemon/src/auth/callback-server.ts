@@ -67,7 +67,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
               stopped = true;
               server.stop(true);
             }
-          }, 500);
+          }, 50);
           return new Response(SUCCESS_HTML, {
             headers: { "Content-Type": "text/html" },
           });

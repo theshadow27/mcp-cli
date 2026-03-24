@@ -35,8 +35,17 @@ const PER_FILE_TIME_BUDGET_MS = 5_000;
  * Sum of all non-excluded test file times (sequential sum) should stay below this.
  * Uses sequential sum (not parallel wall time) for reproducibility across machines.
  * Ratchet this down as optimizations land. Warns but never blocks commits.
+ *
+ * Parallel wall time (measured at concurrency=14 on 14-core Apple Silicon):
+ *   ~100s for all 159 files, ~65s for 153 non-excluded files.
+ *   The #690 target of <25s parallel wall time is infeasible with the current
+ *   test count (~153 non-excluded files). Each file has ~200-300ms of Bun
+ *   process startup overhead alone. Achieving <25s would require either:
+ *   (a) an in-process test runner (no per-file subprocess), or
+ *   (b) reducing to ~80 test files via aggressive consolidation.
+ *   Neither is justified given that parallel wall time is not user-facing.
  */
-const AGGREGATE_TIME_BUDGET_MS = 43_000;
+const AGGREGATE_TIME_BUDGET_MS = 39_000;
 
 /** Number of test files to profile concurrently — scales with available CPUs */
 const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?? 4, 32));

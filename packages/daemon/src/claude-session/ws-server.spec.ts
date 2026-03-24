@@ -277,12 +277,12 @@ describe("ClaudeWsServer", () => {
     server = new ClaudeWsServer({
       spawn: mockSpawn().spawn,
       logger: silentLogger,
-      reclaimIntervalMs: 50,
+      reclaimIntervalMs: 20,
     });
     await server.start();
     // No reclaim needed when using a random port by choice
     expect(server.reclaimed).toBe(false);
-    await Bun.sleep(60);
+    await Bun.sleep(30);
     expect(server.reclaimed).toBe(false);
   });
 
@@ -888,9 +888,9 @@ describe("ClaudeWsServer", () => {
     // Reconnect — should NOT receive the initial prompt again
     const ws2 = await connectMockClaude(port, "test-session");
     try {
-      // Intentional setTimeout: negative assertion — verify no message arrives within 200ms.
+      // Intentional setTimeout: negative assertion — verify no message arrives within 50ms.
       // No observable condition to poll for (test/CLAUDE.md §exception).
-      const msg = await Promise.race([waitForMessage(ws2), new Promise<null>((r) => setTimeout(() => r(null), 200))]);
+      const msg = await Promise.race([waitForMessage(ws2), new Promise<null>((r) => setTimeout(() => r(null), 50))]);
       expect(msg).toBeNull(); // No prompt resent on reconnect
 
       // Should transition back from disconnected
@@ -2755,7 +2755,7 @@ describe("stderr drain", () => {
 
   test("connect timeout is cleared when WS connection arrives", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 200 });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 50 });
     const port = await server.start();
 
     server.prepareSession("connect-ok", { prompt: "Hello" });
@@ -2767,7 +2767,7 @@ describe("stderr drain", () => {
     expect(initMsg).toContain('"type":"user"');
 
     // Wait past the timeout period — session should NOT transition to disconnected
-    await Bun.sleep(150);
+    await Bun.sleep(60);
     expect(server.listSessions()[0].state).toBe("connecting"); // still waiting for system/init
 
     ws.close();
@@ -2775,7 +2775,7 @@ describe("stderr drain", () => {
 
   test("connect timeout does not fire for sessions that already received WS open", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 100 });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, connectTimeoutMs: 50 });
     const port = await server.start();
 
     server.prepareSession("no-timeout", { prompt: "Hello" });
@@ -2792,7 +2792,7 @@ describe("stderr drain", () => {
       return s?.state === "init";
     }, 1_000);
 
-    await Bun.sleep(120);
+    await Bun.sleep(60);
     expect(server.listSessions()[0].state).toBe("init");
     expect(ms.killed).toBe(false);
 
@@ -2887,7 +2887,7 @@ describe("restoreSessions", () => {
 
     // Simulate Claude CLI reconnecting — should NOT receive a prompt
     const ws = await connectMockClaude(port, "reconnect-1");
-    const msg = await Promise.race([waitForMessage(ws), new Promise<null>((r) => setTimeout(() => r(null), 200))]);
+    const msg = await Promise.race([waitForMessage(ws), new Promise<null>((r) => setTimeout(() => r(null), 50))]);
     expect(msg).toBeNull(); // No prompt sent on reconnect
 
     // Session should transition from disconnected → connecting

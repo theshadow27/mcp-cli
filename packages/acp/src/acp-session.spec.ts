@@ -371,7 +371,7 @@ describe("AcpSession watchdog", () => {
     });
 
     await session.start();
-    await Bun.sleep(50);
+    await Bun.sleep(10);
 
     expect(session.currentState).not.toBe("ended");
     expect(events.some((e) => e.type === "session:error")).toBe(false);
@@ -382,13 +382,13 @@ describe("AcpSession watchdog", () => {
   test("terminate() clears watchdog without firing", async () => {
     const { session, events } = makeSession({
       agent: "silent",
-      watchdogTimeoutMs: 100,
+      watchdogTimeoutMs: 50,
     });
 
     await session.start();
     session.terminate();
 
-    await Bun.sleep(120);
+    await Bun.sleep(60);
 
     const errorEvents = events.filter(
       (e): e is Extract<AgentSessionEvent, { type: "session:error" }> => e.type === "session:error",

@@ -23,10 +23,18 @@ describe("spawnHeadless with real spawn", () => {
     expect(result.pid).toBeGreaterThan(0);
     expect(result.logFile).toContain(testDir);
 
-    // Wait for the process to finish writing
-    await Bun.sleep(200);
-
-    const logContent = readFileSync(result.logFile, "utf-8");
+    // Poll until the process finishes writing the log file
+    const deadline = Date.now() + 2_000;
+    let logContent = "";
+    while (Date.now() < deadline) {
+      try {
+        logContent = readFileSync(result.logFile, "utf-8");
+        if (logContent.includes("headless-test-output")) break;
+      } catch {
+        // File may not exist yet
+      }
+      await Bun.sleep(10);
+    }
     expect(logContent).toContain("headless-test-output");
   });
 });

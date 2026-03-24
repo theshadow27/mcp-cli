@@ -118,8 +118,8 @@ describe("startCallbackServer", () => {
     await fetch(`${server.url}?code=done`);
     await server.waitForCode;
 
-    // Wait for the 500ms auto-stop delay
-    await Bun.sleep(700);
+    // Wait for the 50ms auto-stop delay
+    await Bun.sleep(150);
 
     // Server should be stopped — fetch should fail
     try {
