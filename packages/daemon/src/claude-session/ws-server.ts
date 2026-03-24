@@ -241,6 +241,13 @@ interface WsSession {
   connectTimer: Timer | null;
   /** Unix timestamp (ms) when this session was created. */
   createdAt: number;
+  /**
+   * Whether this session has an unreported actionable state (idle or waiting_permission).
+   * Set to true when the session transitions to an actionable state via a real event.
+   * Cleared after findImmediateEvent reports it. Prevents wait from returning the same
+   * stale idle session on every call (fixes #985).
+   */
+  pendingImmediate: boolean;
 }
 
 interface WsData {
@@ -487,6 +494,7 @@ export class ClaudeWsServer {
         claudeSessionId: null,
         connectTimer: null,
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
+        pendingImmediate: false, // Restored sessions have no new events
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -519,6 +527,7 @@ export class ClaudeWsServer {
       claudeSessionId: null,
       connectTimer: null,
       createdAt: Date.now(),
+      pendingImmediate: false,
     });
   }
 
@@ -1159,6 +1168,7 @@ export class ClaudeWsServer {
         session.claudeSessionId = event.sessionId;
         break;
       case "session:permission_request":
+        session.pendingImmediate = true;
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1176,6 +1186,7 @@ export class ClaudeWsServer {
         });
         break;
       case "session:result":
+        session.pendingImmediate = true;
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1202,6 +1213,7 @@ export class ClaudeWsServer {
         }
         break;
       case "session:error":
+        session.pendingImmediate = true;
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1287,7 +1299,13 @@ export class ClaudeWsServer {
     for (const [sid, session] of this.sessions) {
       if (sessionId !== null && sid !== sessionId) continue;
 
+      // Only return immediate events that haven't been reported yet.
+      // This prevents wait from returning the same stale idle session on every call,
+      // which caused wait to act like ls after daemon restarts (#985).
+      if (!session.pendingImmediate) continue;
+
       if (session.state.state === "idle") {
+        session.pendingImmediate = false;
         return {
           sessionId: sid,
           event: "session:result",
@@ -1302,6 +1320,7 @@ export class ClaudeWsServer {
         const entry = session.state.pendingPermissions.entries().next().value;
         if (!entry) continue;
         const [requestId, req] = entry;
+        session.pendingImmediate = false;
         return {
           sessionId: sid,
           event: "session:permission_request",
@@ -1466,17 +1485,25 @@ export class ClaudeWsServer {
     this.bufferEvent(event);
 
     const remaining: EventWaiter[] = [];
+    let delivered = false;
     for (const waiter of this.eventWaiters) {
       if (waiter.sessionId === null || waiter.sessionId === sessionId) {
         // Resolve with the buffered (seq-tagged) version
         const latest = this.eventBuffer[this.eventBuffer.length - 1];
         waiter.resolve(latest.event);
+        delivered = true;
       } else {
         remaining.push(waiter);
       }
     }
     this.eventWaiters.length = 0;
     this.eventWaiters.push(...remaining);
+
+    // If event was delivered to at least one waiter, clear the flag so
+    // findImmediateEvent won't return this stale event to the next caller.
+    if (delivered && session) {
+      session.pendingImmediate = false;
+    }
   }
 
   /**
