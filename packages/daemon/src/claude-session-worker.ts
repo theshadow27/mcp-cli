@@ -349,11 +349,15 @@ async function handleWait(
 function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
   switch (event.type) {
     case "session:init":
+      // Forward the actual state from the state machine — not a hardcoded "init".
+      // If the CLI reconnects after a WS drop and re-sends system/init, the
+      // state machine preserves its current state (e.g., "idle") rather than
+      // regressing to "init". Forwarding event.state keeps the DB in sync.
       self.postMessage({
         type: "db:upsert",
         session: {
           sessionId,
-          state: "init",
+          state: event.state,
           model: event.model,
           cwd: event.cwd,
         },

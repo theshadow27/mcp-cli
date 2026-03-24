@@ -1096,6 +1096,56 @@ describe("ClaudeServer", () => {
     const row = db.getSession("no-pid-ttl");
     expect(row?.state).toBe("ended");
   });
+
+  test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const internals = server as unknown as { sessionAddedAt: Map<string, number> };
+
+    handle({ type: "db:upsert", session: { sessionId: "active-1", state: "active" } });
+
+    // Backdate the creation to 9 minutes ago (simulating passage of time)
+    const nineMinAgo = Date.now() - 9 * 60 * 1000;
+    internals.sessionAddedAt.set("active-1", nineMinAgo);
+
+    // Verify it survives at now (9min < 10min TTL)
+    server.pruneDeadSessions(Date.now());
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // Send a db:state event to refresh the timestamp
+    handle({ type: "db:state", sessionId: "active-1", state: "idle" });
+
+    // Prune at 11 minutes from original creation — session should SURVIVE
+    // because db:state refreshed the timestamp to ~now
+    server.pruneDeadSessions(nineMinAgo + 11 * 60 * 1000);
+    expect(server.hasActiveSessions()).toBe(true);
+
+    // Prune 11 minutes after the refresh — NOW it should be pruned
+    const refreshedAt = internals.sessionAddedAt.get("active-1") ?? 0;
+    server.pruneDeadSessions(refreshedAt + 11 * 60 * 1000);
+    expect(server.hasActiveSessions()).toBe(false);
+  });
+
+  test("db:cost event also refreshes sessionAddedAt", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({ type: "db:upsert", session: { sessionId: "cost-1", state: "active" } });
+
+    const internals = server as unknown as { sessionAddedAt: Map<string, number> };
+    const originalAt = internals.sessionAddedAt.get("cost-1") ?? 0;
+
+    // Simulate a cost event arriving later
+    handle({ type: "db:cost", sessionId: "cost-1", cost: 0.01, tokens: 100 });
+    const afterCost = internals.sessionAddedAt.get("cost-1") ?? 0;
+
+    expect(afterCost).toBeGreaterThanOrEqual(originalAt);
+  });
 });
 
 // ── connect timeout metric ──
