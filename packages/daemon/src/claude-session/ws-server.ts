@@ -981,6 +981,15 @@ export class ClaudeWsServer {
       return Promise.resolve({ seq: this.eventSeq, events: buffered });
     }
 
+    // Check if any matching session already has an actionable state (idle, pending permission).
+    // This is critical: if the session went idle but the result event's seq is at or before
+    // afterSeq (already consumed), the buffer check above returns nothing. Without this
+    // immediate check, the wait blocks until timeout even though the session is idle.
+    const immediate = this.findImmediateEvent(resolvedId);
+    if (immediate) {
+      return Promise.resolve({ seq: this.eventSeq, events: [immediate] });
+    }
+
     // Block until next matching event
     return new Promise<WaitResult>((resolve, reject) => {
       const waiter: EventWaiter = {
@@ -1113,6 +1122,15 @@ export class ClaudeWsServer {
     for (const msg of messages) {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
+
+      // Warn if a result message produced no events — indicates schema mismatch.
+      // The session stays stuck in its current state with no event fired.
+      if (msg.type === "result" && events.length === 0) {
+        this.logger.error(
+          `[_claude] Result message for session ${sessionId} matched neither success nor error schema — ` +
+            `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
+        );
+      }
 
       for (const event of events) {
         try {

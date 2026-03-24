@@ -1511,6 +1511,11 @@ describe("ClaudeWsServer", () => {
 
       const currentSeq = server.currentSeq;
 
+      // Send a follow-up prompt so the session is active (not idle).
+      // Without this, findImmediateEvent would detect the idle session
+      // and return immediately instead of blocking.
+      server.sendPrompt("test-session", "follow up");
+
       // Wait with cursor at current — should block until new event
       const resultPromise = server.waitForEventsSince(null, currentSeq, 5000);
 
@@ -1598,6 +1603,80 @@ describe("ClaudeWsServer", () => {
       expect(result.events.length).toBeGreaterThan(0);
     } finally {
       ws.close();
+    }
+  });
+
+  test("waitForEventsSince returns immediately when session is already idle (fixes #978)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Drive session to idle state
+      ws.send(systemInitMessage("test-session"));
+      ws.send(resultMessage("test-session"));
+
+      // Wait for events to be processed and get the current seq
+      await pollUntil(() => (server?.currentSeq ?? 0) > 0);
+      const currentSeq = server.currentSeq;
+
+      // Call waitForEventsSince with cursor AT current seq (event already consumed).
+      // Before fix, this would block until timeout because the buffer has no events
+      // past the cursor and findImmediateEvent wasn't checked.
+      const result: WaitResult = await server.waitForEventsSince("test-session", currentSeq, 1000);
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].event).toBe("session:result");
+      expect(result.events[0].session?.state).toBe("idle");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("waitForEventsSince returns immediately when any session is idle with null filter (fixes #978)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.spawnClaude("s1");
+
+    const ws1 = await connectMockClaude(port, "s1");
+    try {
+      await waitForMessage(ws1);
+
+      // Drive s1 to idle
+      ws1.send(systemInitMessage("s1"));
+      ws1.send(resultMessage("s1"));
+
+      // Wait for result event to be processed
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+      const currentSeq = server.currentSeq;
+
+      // Create a second session that stays active
+      server.prepareSession("s2", { prompt: "World" });
+      server.spawnClaude("s2");
+      const ws2 = await connectMockClaude(port, "s2");
+      try {
+        await waitForMessage(ws2);
+        ws2.send(systemInitMessage("s2"));
+
+        // waitForEventsSince with null sessionId and cursor past all events
+        // should detect s1 is idle and return immediately
+        const result: WaitResult = await server.waitForEventsSince(null, currentSeq, 1000);
+        expect(result.events).toHaveLength(1);
+        expect(result.events[0].event).toBe("session:result");
+        expect(result.events[0].sessionId).toBe("s1");
+      } finally {
+        ws2.close();
+      }
+    } finally {
+      ws1.close();
     }
   });
 
@@ -2306,6 +2385,43 @@ describe("ClaudeWsServer", () => {
       }
     } finally {
       wsA.close();
+    }
+  });
+
+  test("logs warning when result message matches neither success nor error schema", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+
+      // Send a malformed result message (missing required fields)
+      ws.send(
+        serialize({
+          type: "result",
+          subtype: "unknown_subtype",
+          // Missing is_error, result, usage, etc.
+          uuid: "test-uuid",
+          session_id: "test-session",
+        }),
+      );
+
+      // Wait for the message to be processed
+      await pollUntil(() => errors.some((e) => e.includes("matched neither success nor error schema")));
+
+      // Session should still be in active state (result wasn't processed)
+      const status = server.getStatus("test-session");
+      expect(status.state).not.toBe("idle");
+    } finally {
+      ws.close();
     }
   });
 });
