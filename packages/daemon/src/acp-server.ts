@@ -190,10 +190,15 @@ export class AcpServer {
       this.client = this.clientFactory();
 
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+      let connectResolved = false;
       await Promise.race([
-        this.client.connect(this.transport),
+        this.client.connect(this.transport).then((r) => {
+          connectResolved = true;
+          return r;
+        }),
         new Promise<never>((_, reject) => {
           handshakeTimer = setTimeout(() => {
+            if (connectResolved) return;
             this.metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error("MCP handshake timeout (10s)"));
           }, this.handshakeTimeoutMs);
