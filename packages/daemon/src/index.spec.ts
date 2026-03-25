@@ -117,6 +117,25 @@ describe("daemon index.ts", () => {
         if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
         await handle.shutdownComplete;
       }
+      // After shutdown, worker threads and Bun's fetch connection pool may still
+      // have pending async operations. Yield the event loop to let them fire before
+      // the temp directory is removed, preventing ENXIO/ECONNRESET from leaking
+      // into the next test as unhandled exceptions (#960).
+      if (opts) {
+        const socketPath = join(opts.dir, "mcpd.sock");
+        await pollUntil(() => !existsSync(socketPath), 2_000).catch(() => {});
+        // Suppress expected post-shutdown socket errors during drain
+        const suppress = (err: Error) => {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === "ENXIO" || code === "ECONNRESET") return;
+          throw err;
+        };
+        process.on("uncaughtException", suppress);
+        process.on("unhandledRejection", suppress);
+        await Bun.sleep(50);
+        process.removeListener("uncaughtException", suppress);
+        process.removeListener("unhandledRejection", suppress);
+      }
       handle = undefined;
       if (opts) {
         opts[Symbol.dispose]();
