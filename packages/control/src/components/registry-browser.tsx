@@ -241,9 +241,7 @@ export function RegistryBrowser({
       {loading && <Text dimColor>Loading...</Text>}
 
       {/* Results */}
-      {!loading && entries.length === 0 && !error && (
-        <Text dimColor>No results. Press / to search or wait for popular servers to load.</Text>
-      )}
+      {!loading && entries.length === 0 && !error && <Text dimColor>No results. Press / to search.</Text>}
       {entries.map((entry, i) => {
         const slug = entry._meta["com.anthropic.api/mcp-registry"].slug;
         return <EntryRow key={slug} entry={entry} selected={i === selectedIndex} expanded={expandedEntry === slug} />;

@@ -33,8 +33,8 @@ export interface RegistryNav {
   setInstallScope: (scope: "user" | "project") => void;
   statusMessage: string | null;
   setStatusMessage: (msg: string | null) => void;
-  /** DI for testing */
-  onAddServer?: (scope: "user" | "project", name: string, config: ServerConfig) => void;
+  /** DI for testing — return true if an existing entry was replaced */
+  onAddServer?: (scope: "user" | "project", name: string, config: ServerConfig) => boolean;
 }
 
 /** Build a ServerConfig from a transport selection and env overrides. */
@@ -50,11 +50,17 @@ export function buildInstallConfig(selection: TransportSelection, envOverrides: 
     args: selection.commandArgs,
   };
 
+  // Merge required env var placeholders with user-provided overrides, filtering out empty strings
   const envVars = selection.envVars?.filter((v) => v.isRequired) ?? [];
-  if (envVars.length > 0 || Object.keys(envOverrides).length > 0) {
-    const env: Record<string, string> = {};
-    for (const v of envVars) env[v.name] = "";
-    Object.assign(env, envOverrides);
+  const merged: Record<string, string> = {};
+  for (const v of envVars) merged[v.name] = "";
+  Object.assign(merged, envOverrides);
+  // Remove empty values — an explicitly empty string is worse than unset (causes opaque auth failures)
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(merged)) {
+    if (v.length > 0) env[k] = v;
+  }
+  if (Object.keys(env).length > 0) {
     (config as { env?: Record<string, string> }).env = env;
   }
 
@@ -211,14 +217,15 @@ function handleEnvInput(input: string, key: Key, nav: RegistryNav): boolean {
       nav.setEnvInputs((prev) => ({ ...prev, [varName]: buf }));
     }
 
-    if (nav.envCursor >= requiredVars.length - 1) {
+    const nextIdx = nav.envCursor + 1;
+    if (nextIdx >= requiredVars.length) {
       // All vars done, advance to scope pick
       nav.setInstallScope("user");
       nav.setMode("scope-pick");
     } else {
-      nav.setEnvCursor((c) => c + 1);
+      nav.setEnvCursor(() => nextIdx);
       // Load next var's current value into buffer
-      const nextVar = requiredVars[nav.envCursor + 1]?.name;
+      const nextVar = requiredVars[nextIdx]?.name;
       nav.setEnvEditBuffer(() => (nextVar ? (nav.envInputs[nextVar] ?? "") : ""));
     }
     return true;
@@ -244,12 +251,25 @@ function doInstall(nav: RegistryNav): void {
   const slug = installTarget._meta["com.anthropic.api/mcp-registry"].slug;
   const config = buildInstallConfig(installTransport, envInputs);
 
-  (onAddServer ?? addServerToConfig)(installScope, slug, config);
+  try {
+    const replaced = (onAddServer ?? addServerToConfig)(installScope, slug, config);
+    if (replaced) {
+      nav.setStatusMessage(`Replaced existing "${slug}" in ${installScope} config`);
+    } else {
+      nav.setStatusMessage(`Installed "${slug}" to ${installScope} config`);
+    }
+  } catch (err) {
+    nav.setStatusMessage(`Install failed: ${err instanceof Error ? err.message : String(err)}`);
+    nav.setMode("browse");
+    nav.setInstallTarget(null);
+    return;
+  }
 
   // Reload daemon config
-  ipcCall("reloadConfig").catch(() => {});
+  ipcCall("reloadConfig").catch(() => {
+    nav.setStatusMessage(`Installed "${slug}" to config but daemon reload failed`);
+  });
 
-  nav.setStatusMessage(`Installed "${slug}" to ${installScope} config`);
   nav.setMode("browse");
   nav.setInstallTarget(null);
 }

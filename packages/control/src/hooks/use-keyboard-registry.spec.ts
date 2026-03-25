@@ -95,7 +95,7 @@ function makeNav(overrides: Partial<RegistryNav> = {}): RegistryNav & { state: R
     setStatusMessage: (msg: string | null) => {
       state.statusMessage = msg;
     },
-    onAddServer: overrides.onAddServer ?? (() => {}),
+    onAddServer: overrides.onAddServer ?? (() => false),
     state,
   } as RegistryNav & { state: Record<string, unknown> };
 
@@ -271,6 +271,7 @@ describe("handleRegistryInput — confirm install", () => {
       installTransport: { kind: "remote", transport: "http", url: "https://example.com/mcp" },
       onAddServer: () => {
         installed = true;
+        return false;
       },
     });
     handleRegistryInput("y", baseKey, nav);
@@ -418,6 +419,7 @@ describe("handleRegistryInput — install with env vars (stdio)", () => {
       envInputs: { API_KEY: "secret123" },
       onAddServer: (_scope, _name, config) => {
         installedConfig = config as unknown as Record<string, unknown>;
+        return false;
       },
     });
     handleRegistryInput("", { ...baseKey, return: true }, nav);
@@ -454,5 +456,74 @@ describe("buildInstallConfig", () => {
       args: ["-y", "my-pkg"],
       env: { API_KEY: "secret123" },
     });
+  });
+
+  it("filters empty env var strings from config", () => {
+    const config = buildInstallConfig(
+      {
+        kind: "package",
+        transport: "stdio",
+        command: "npx",
+        commandArgs: ["-y", "my-pkg"],
+        envVars: [
+          { name: "API_KEY", isRequired: true, isSecret: true },
+          { name: "EMPTY_VAR", isRequired: true, isSecret: false },
+        ],
+      },
+      { API_KEY: "secret123", EMPTY_VAR: "" },
+    );
+    expect(config).toEqual({
+      command: "npx",
+      args: ["-y", "my-pkg"],
+      env: { API_KEY: "secret123" },
+    });
+  });
+
+  it("omits env entirely when all values are empty", () => {
+    const config = buildInstallConfig(
+      {
+        kind: "package",
+        transport: "stdio",
+        command: "npx",
+        commandArgs: ["-y", "my-pkg"],
+        envVars: [{ name: "API_KEY", isRequired: true, isSecret: true }],
+      },
+      { API_KEY: "" },
+    );
+    expect(config).toEqual({
+      command: "npx",
+      args: ["-y", "my-pkg"],
+    });
+  });
+});
+
+describe("doInstall — overwrite and error handling", () => {
+  it("shows replaced message when overwriting existing server", () => {
+    const entry = makeEntry("test-server");
+    const nav = makeNav({
+      mode: "confirm-install",
+      installTarget: entry,
+      installTransport: { kind: "remote", transport: "http", url: "https://example.com/mcp" },
+      onAddServer: () => true, // signals replacement
+    });
+    handleRegistryInput("y", baseKey, nav);
+    expect(nav.state.statusMessage).toContain("Replaced existing");
+  });
+
+  it("shows error message when addServerToConfig throws", () => {
+    const entry = makeEntry("test-server");
+    const nav = makeNav({
+      mode: "confirm-install",
+      installTarget: entry,
+      installTransport: { kind: "remote", transport: "http", url: "https://example.com/mcp" },
+      onAddServer: () => {
+        throw new Error("Permission denied");
+      },
+    });
+    handleRegistryInput("y", baseKey, nav);
+    expect(nav.state.statusMessage).toContain("Install failed");
+    expect(nav.state.statusMessage).toContain("Permission denied");
+    expect(nav.state.mode).toBe("browse");
+    expect(nav.state.installTarget).toBeNull();
   });
 });

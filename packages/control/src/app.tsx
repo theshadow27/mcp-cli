@@ -16,7 +16,6 @@ import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
 import type { RegistryEntry, TransportSelection } from "./hooks/registry-client.js";
-import { listRegistry, searchRegistry } from "./hooks/registry-client.js";
 import { useAgentSessions } from "./hooks/use-agent-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
@@ -28,6 +27,7 @@ import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 import { usePlanMetrics, usePlans } from "./hooks/use-plans.js";
+import { useRegistryData } from "./hooks/use-registry-data.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -90,47 +90,13 @@ export function App() {
   const [registryEnvEditBuffer, setRegistryEnvEditBuffer] = useState("");
   const [registryInstallScope, setRegistryInstallScope] = useState<"user" | "project">("user");
   const [registryStatusMessage, setRegistryStatusMessage] = useState<string | null>(null);
-  // Inline registry hook (avoids a thin wrapper file that can't meet coverage thresholds)
-  const [registryEntries, setRegistryEntries] = useState<RegistryEntry[]>([]);
-  const [registryLoading, setRegistryLoading] = useState(false);
-  const [registryError, setRegistryError] = useState<string | null>(null);
-  const registryAbortRef = useRef(0);
-  const registrySearch = useCallback((query: string) => {
-    const id = ++registryAbortRef.current;
-    setRegistryLoading(true);
-    setRegistryError(null);
-    searchRegistry(query, 50)
-      .then((res) => {
-        if (registryAbortRef.current === id) {
-          setRegistryEntries(res.servers);
-          setRegistryLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (registryAbortRef.current === id) {
-          setRegistryError(err instanceof Error ? err.message : String(err));
-          setRegistryLoading(false);
-        }
-      });
-  }, []);
-  const registryLoadPopular = useCallback(() => {
-    const id = ++registryAbortRef.current;
-    setRegistryLoading(true);
-    setRegistryError(null);
-    listRegistry(50)
-      .then((res) => {
-        if (registryAbortRef.current === id) {
-          setRegistryEntries(res.servers);
-          setRegistryLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (registryAbortRef.current === id) {
-          setRegistryError(err instanceof Error ? err.message : String(err));
-          setRegistryLoading(false);
-        }
-      });
-  }, []);
+  const {
+    entries: registryEntries,
+    loading: registryLoading,
+    error: registryError,
+    search: registrySearch,
+    loadPopular: registryLoadPopular,
+  } = useRegistryData();
 
   const servers = status?.servers ?? [];
   // Poll faster on agents tab, slower off-tab (badge still updates)
@@ -260,6 +226,20 @@ export function App() {
   useEffect(() => {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
+
+  // Clamp registrySelectedIndex when registry entries change
+  useEffect(() => {
+    setRegistrySelectedIndex((i) => Math.min(i, Math.max(0, registryEntries.length - 1)));
+  }, [registryEntries.length]);
+
+  // Auto-load popular servers when switching to registry tab
+  const registryLoadedRef = useRef(false);
+  useEffect(() => {
+    if (view === "registry" && !registryLoadedRef.current && registryEntries.length === 0 && !registryLoading) {
+      registryLoadedRef.current = true;
+      registryLoadPopular();
+    }
+  }, [view, registryEntries.length, registryLoading, registryLoadPopular]);
 
   // Restore selection by identity when plans list refreshes, fall back to clamp.
   // Prioritize snapping to the expanded plan so cursor and detail panel stay in sync.

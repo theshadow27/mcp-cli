@@ -325,21 +325,34 @@ describe("searchRegistry / listRegistry", () => {
     };
 
     const originalFetch = globalThis.fetch;
+    const unique = `stale-test-${Math.random()}`;
 
-    // First call: populate cache
+    // First call: populate cache with fresh data
     globalThis.fetch = mockFetch(
       async () =>
         new Response(JSON.stringify(mockResponse), { status: 200, headers: { "content-type": "application/json" } }),
     );
 
-    const unique = `stale-test-${Math.random()}`;
     try {
-      const result = await searchRegistry(unique);
+      const result = await searchRegistry(unique, 50);
       expect(result.servers).toHaveLength(1);
 
-      // Expire the cache by resetting cache dir to trigger a re-fetch
-      // (But actually the cache is keyed by URL, so same query = same cache key = cache hit)
-      // Let's just verify the stale path by testing a different query with no cache and network error
+      // Expire the cache entry by rewriting it with an old timestamp
+      const { writeFileSync } = await import("node:fs");
+      const url = `https://api.anthropic.com/mcp-registry/v0/servers?search=${encodeURIComponent(unique)}&version=latest&visibility=commercial&limit=50`;
+      const hasher = new Bun.CryptoHasher("sha256");
+      hasher.update(url);
+      const key = hasher.digest("hex").slice(0, 16);
+      writeFileSync(join(tmpCacheDir, `${key}.json`), JSON.stringify({ timestamp: 1, data: mockResponse }));
+
+      // Now make fetch fail — should fall back to stale cache
+      globalThis.fetch = mockFetch(async () => {
+        throw new TypeError("fetch failed");
+      });
+
+      const staleResult = await searchRegistry(unique, 50);
+      expect(staleResult.servers).toHaveLength(1);
+      expect(staleResult.servers[0]._meta["com.anthropic.api/mcp-registry"].slug).toBe("cached");
     } finally {
       globalThis.fetch = originalFetch;
     }
