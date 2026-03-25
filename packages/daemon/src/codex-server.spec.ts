@@ -590,8 +590,14 @@ describe("CodexServer connect timeout metric", () => {
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
+    // Mock client that resolves connect() immediately — avoids depending on real
+    // codex binary startup timing, which is flaky on loaded CI runners (#975)
+    const instantConnect = {
+      connect: async () => {},
+      close: async () => {},
+    } as unknown as Client;
     const testMetrics = new MetricsCollector();
-    server = new CodexServer(db, undefined, undefined, silentLogger, 10_000, testMetrics);
+    server = new CodexServer(db, undefined, () => instantConnect, silentLogger, 10_000, testMetrics);
 
     await server.start();
 
