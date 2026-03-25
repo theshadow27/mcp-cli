@@ -1153,11 +1153,6 @@ describe("ClaudeServer", () => {
 describe("ClaudeServer connect timeout metric", () => {
   let server: ClaudeServer | undefined;
   let db: StateDb | undefined;
-  let testMetrics: MetricsCollector;
-
-  beforeEach(() => {
-    testMetrics = new MetricsCollector();
-  });
 
   afterEach(async () => {
     await server?.stop();
@@ -1176,6 +1171,7 @@ describe("ClaudeServer connect timeout metric", () => {
       close: async () => {},
     } as unknown as Client;
 
+    const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50, undefined, undefined, testMetrics);
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
@@ -1185,6 +1181,7 @@ describe("ClaudeServer connect timeout metric", () => {
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
+    const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, undefined, testMetrics);
 
     await server.start();
