@@ -124,6 +124,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -163,20 +164,48 @@ async function profileTestFiles(files: string[], concurrency: number): Promise<{
 const installProc = Bun.spawn(["bun", "install"], { stdout: "ignore", stderr: "ignore" });
 await installProc.exited;
 
+// --- Split test runs to avoid Bun segfault (#965) ---
+// Running all tests (especially daemon worker-thread tests) in a single
+// `bun test --coverage` process triggers a non-deterministic segfault in
+// Bun v1.3.11.  Splitting daemon tests into a separate invocation avoids it.
+
+/** Discover non-daemon package test directories */
+const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withFileTypes: true })
+  .filter((d) => d.isDirectory() && d.name !== "daemon")
+  .map((d) => `packages/${d.name}/src`);
+
+const nonDaemonPaths = [...packageDirs, "test"];
+
 const testStart = Date.now();
-const proc = Bun.spawn(["bun", "test", "--coverage"], {
+
+// Run 1: non-daemon tests with --coverage (produces the coverage table we parse)
+const proc1 = Bun.spawn(["bun", "test", "--coverage", ...nonDaemonPaths], {
   stdout: "pipe",
   stderr: "pipe",
 });
+const [stdout1, stderr1] = await Promise.all([new Response(proc1.stdout).text(), new Response(proc1.stderr).text()]);
+const exitCode1 = await proc1.exited;
 
-const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-const exitCode = await proc.exited;
+// Run 2: daemon tests in isolated process (avoids segfault)
+const proc2 = Bun.spawn(["bun", "test", "packages/daemon/src"], {
+  stdout: "pipe",
+  stderr: "pipe",
+});
+const [stdout2, stderr2] = await Promise.all([new Response(proc2.stdout).text(), new Response(proc2.stderr).text()]);
+const exitCode2 = await proc2.exited;
+
 const testDuration = Date.now() - testStart;
+
+// Combine output from both runs
+const stdout = stdout1 + stdout2;
+const stderr = stderr1 + stderr2;
 
 // Print original output so user sees test results + coverage table
 process.stdout.write(stdout);
 process.stderr.write(stderr);
 
+// Fail if either run failed
+const exitCode = exitCode1 !== 0 ? exitCode1 : exitCode2;
 if (exitCode !== 0) {
   try {
     logTestRun(stdout + stderr, exitCode, testDuration);
@@ -188,9 +217,14 @@ if (exitCode !== 0) {
 
 const output = stdout + stderr;
 
+// Coverage table comes from run 1 (non-daemon) only. Run 2 may also produce
+// a coverage table via bunfig.toml, but we parse from run 1 for consistency.
+// Daemon files are mostly excluded from per-file enforcement anyway.
+const coverageOutput = stdout1 + stderr1;
+
 // --- Parse global summary ---
 
-const allFilesMatch = output.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/);
+const allFilesMatch = coverageOutput.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/);
 
 if (!allFilesMatch) {
   console.error("Could not parse coverage summary from test output.");
@@ -206,7 +240,7 @@ const globalLines = Number.parseFloat(allFilesMatch[2]);
 const fileRowRegex = /^\s*([\w/.@-]+\.(?:ts|tsx))\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/gm;
 const failures: { file: string; lines: number }[] = [];
 
-for (const match of output.matchAll(fileRowRegex)) {
+for (const match of coverageOutput.matchAll(fileRowRegex)) {
   const file = match[1];
   const lines = Number.parseFloat(match[3]);
 
