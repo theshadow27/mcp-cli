@@ -12,11 +12,13 @@ import type { MailNav } from "./use-keyboard-mail";
 import { handleMailInput } from "./use-keyboard-mail";
 import type { PlansNav } from "./use-keyboard-plans";
 import { clearPlansState, handlePlansInput } from "./use-keyboard-plans";
+import type { RegistryNav } from "./use-keyboard-registry";
+import { handleRegistryInput } from "./use-keyboard-registry";
 import { handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
-export const ALL_TABS = ["servers", "logs", "agents", "stats", "plans", "mail"] as const;
+export const ALL_TABS = ["servers", "logs", "agents", "stats", "plans", "mail", "registry"] as const;
 
 export type View = (typeof ALL_TABS)[number];
 
@@ -114,6 +116,7 @@ export interface StatsNav {
 
 export type { MailNav } from "./use-keyboard-mail";
 export type { PlansNav } from "./use-keyboard-plans";
+export type { RegistryNav } from "./use-keyboard-registry";
 
 interface UseKeyboardOptions {
   view: View;
@@ -124,6 +127,7 @@ interface UseKeyboardOptions {
   statsNav: StatsNav;
   plansNav: PlansNav;
   mailNav: MailNav;
+  registryNav: RegistryNav;
 }
 
 export function useKeyboard({
@@ -135,6 +139,7 @@ export function useKeyboard({
   statsNav,
   plansNav,
   mailNav,
+  registryNav,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
@@ -217,6 +222,10 @@ export function useKeyboard({
     }
     if (view === "plans" && plansNav.confirmAbort && input !== "q" && input !== "s") {
       handlePlansInput(input, key, plansNav);
+      return;
+    }
+    if (view === "registry" && registryNav.mode !== "browse") {
+      handleRegistryInput(input, key, registryNav);
       return;
     }
 
@@ -302,7 +311,18 @@ export function useKeyboard({
       return;
     }
 
+    // `b` opens registry browser from any view
+    if (input === "b" && view !== "registry") {
+      leavePlansView();
+      setView("registry");
+      return;
+    }
+
     // Delegate to active view handler
+    if (view === "registry") {
+      handleRegistryInput(input, key, registryNav);
+      return;
+    }
     if (view === "logs") {
       handleLogsInput(input, key, logsNav, serversNav.servers);
     } else if (view === "agents") {

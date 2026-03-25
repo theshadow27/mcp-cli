@@ -127,34 +127,37 @@ describe("buildLogSources", () => {
 });
 
 describe("tab navigation", () => {
-  it("ALL_TABS has 6 entries in correct order", () => {
-    expect(ALL_TABS).toEqual(["servers", "logs", "agents", "stats", "plans", "mail"]);
+  it("ALL_TABS has 7 entries in correct order", () => {
+    expect(ALL_TABS).toEqual(["servers", "logs", "agents", "stats", "plans", "mail", "registry"]);
   });
 
   it("nextTab cycles forward", () => {
     expect(nextTab("servers")).toBe("logs");
     expect(nextTab("logs")).toBe("agents");
-    expect(nextTab("mail")).toBe("servers"); // wraps around
+    expect(nextTab("mail")).toBe("registry");
+    expect(nextTab("registry")).toBe("servers"); // wraps around
   });
 
   it("prevTab cycles backward", () => {
-    expect(prevTab("servers")).toBe("mail"); // wraps around
+    expect(prevTab("servers")).toBe("registry"); // wraps around
+    expect(prevTab("registry")).toBe("mail");
     expect(prevTab("logs")).toBe("servers");
     expect(prevTab("agents")).toBe("logs");
   });
 
-  it("tabByNumber maps 1-6 to tabs", () => {
+  it("tabByNumber maps 1-7 to tabs", () => {
     expect(tabByNumber(1)).toBe("servers");
     expect(tabByNumber(2)).toBe("logs");
     expect(tabByNumber(3)).toBe("agents");
     expect(tabByNumber(4)).toBe("stats");
     expect(tabByNumber(5)).toBe("plans");
     expect(tabByNumber(6)).toBe("mail");
+    expect(tabByNumber(7)).toBe("registry");
   });
 
   it("tabByNumber returns undefined for out-of-range", () => {
     expect(tabByNumber(0)).toBeUndefined();
-    expect(tabByNumber(7)).toBeUndefined();
+    expect(tabByNumber(8)).toBeUndefined();
   });
 });
 

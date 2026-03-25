@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
+import type { RegistryMode } from "../hooks/use-keyboard-registry.js";
 import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
 
 interface FooterProps {
@@ -19,6 +20,7 @@ interface FooterProps {
   addServerMode?: boolean;
   confirmRemove?: boolean;
   confirmRemoveServer?: string;
+  registryMode?: RegistryMode;
 }
 
 export function Footer({
@@ -38,6 +40,7 @@ export function Footer({
   addServerMode,
   confirmRemove,
   confirmRemoveServer,
+  registryMode,
 }: FooterProps) {
   if (confirmRemove) {
     return (
@@ -139,7 +142,8 @@ export function Footer({
           <Text dimColor>s</Text> shutdown{"  "}
           <Text dimColor>j/k</Text> navigate{"  "}
           <Text dimColor>enter</Text> details{"  "}
-          <Text dimColor>l</Text> logs
+          <Text dimColor>l</Text> logs{"  "}
+          <Text dimColor>b</Text> browse registry
         </Text>
       </Box>
     );
@@ -220,6 +224,40 @@ export function Footer({
           <Text dimColor>r</Text> refresh{"  "}
           <Text dimColor>esc</Text> {planExpanded ? "collapse" : "back"}
           {"  "}
+          <Text dimColor>q</Text> quit{"  "}
+          <Text dimColor>s</Text> shutdown
+        </Text>
+      </Box>
+    );
+  }
+
+  if (view === "registry") {
+    if (registryMode === "search") {
+      return (
+        <Box marginTop={1}>
+          <Text>
+            <Text dimColor>enter</Text> search{"  "}
+            <Text dimColor>esc</Text> cancel
+          </Text>
+        </Box>
+      );
+    }
+    if (registryMode === "env-input" || registryMode === "scope-pick" || registryMode === "confirm-install") {
+      return (
+        <Box marginTop={1}>
+          <Text dimColor>esc cancel (see form hints above)</Text>
+        </Box>
+      );
+    }
+    return (
+      <Box marginTop={1}>
+        <Text>
+          {tabHints}
+          <Text dimColor>j/k</Text> navigate{"  "}
+          <Text dimColor>enter</Text> details{"  "}
+          <Text dimColor>i</Text> install{"  "}
+          <Text dimColor>/</Text> search{"  "}
+          <Text dimColor>esc</Text> back{"  "}
           <Text dimColor>q</Text> quit{"  "}
           <Text dimColor>s</Text> shutdown
         </Text>

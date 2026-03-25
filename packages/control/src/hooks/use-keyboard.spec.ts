@@ -18,18 +18,20 @@ describe("nextTab", () => {
     expect(nextTab("agents")).toBe("stats");
     expect(nextTab("stats")).toBe("plans");
     expect(nextTab("plans")).toBe("mail");
-    expect(nextTab("mail")).toBe("servers");
+    expect(nextTab("mail")).toBe("registry");
+    expect(nextTab("registry")).toBe("servers");
   });
 });
 
 describe("prevTab", () => {
   test("cycles backward through all tabs", () => {
-    expect(prevTab("servers")).toBe("mail");
+    expect(prevTab("servers")).toBe("registry");
     expect(prevTab("logs")).toBe("servers");
     expect(prevTab("agents")).toBe("logs");
     expect(prevTab("stats")).toBe("agents");
     expect(prevTab("plans")).toBe("stats");
     expect(prevTab("mail")).toBe("plans");
+    expect(prevTab("registry")).toBe("mail");
   });
 });
 
@@ -45,14 +47,14 @@ describe("tabByNumber", () => {
 
   test("returns undefined for out-of-range numbers", () => {
     expect(tabByNumber(0)).toBeUndefined();
-    expect(tabByNumber(7)).toBeUndefined();
+    expect(tabByNumber(8)).toBeUndefined();
     expect(tabByNumber(-1)).toBeUndefined();
   });
 });
 
 describe("ALL_TABS", () => {
-  test("contains exactly 6 tabs in expected order", () => {
-    expect(ALL_TABS).toEqual(["servers", "logs", "agents", "stats", "plans", "mail"]);
+  test("contains exactly 7 tabs in expected order", () => {
+    expect(ALL_TABS).toEqual(["servers", "logs", "agents", "stats", "plans", "mail", "registry"]);
   });
 });
 

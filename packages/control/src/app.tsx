@@ -10,20 +10,24 @@ import { Loading } from "./components/loading.js";
 import { LogViewer } from "./components/log-viewer.js";
 import { MailViewer } from "./components/mail-viewer.js";
 import { PlansTab } from "./components/plans-tab.js";
+import { RegistryBrowser } from "./components/registry-browser.js";
 import { type AddServerState, ServerAddForm, initialAddServerState } from "./components/server-add-form.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
 import { TabBar, buildBadges } from "./components/tab-bar.js";
+import type { RegistryEntry, TransportSelection } from "./hooks/registry-client.js";
 import { useAgentSessions } from "./hooks/use-agent-sessions.js";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count.js";
 import { useDaemon } from "./hooks/use-daemon.js";
 import { type ExpandedPlanKey, type StatusType, getTargetPlan, hasCapability } from "./hooks/use-keyboard-plans.js";
+import type { RegistryMode } from "./hooks/use-keyboard-registry.js";
 import type { View } from "./hooks/use-keyboard.js";
 import { useKeyboard } from "./hooks/use-keyboard.js";
 import { filterLogLines, useLogs } from "./hooks/use-logs.js";
 import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 import { usePlanMetrics, usePlans } from "./hooks/use-plans.js";
+import { useRegistryData } from "./hooks/use-registry-data.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -73,6 +77,26 @@ export function App() {
   const [addServerState, setAddServerState] = useState<AddServerState>(initialAddServerState);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [configInfo, setConfigInfo] = useState<Record<string, { source: string; scope: string }>>({});
+
+  // Registry browser state
+  const [registrySelectedIndex, setRegistrySelectedIndex] = useState(0);
+  const [registryExpandedEntry, setRegistryExpandedEntry] = useState<string | null>(null);
+  const [registrySearchText, setRegistrySearchText] = useState("");
+  const [registryMode, setRegistryMode] = useState<RegistryMode>("browse");
+  const [registryInstallTarget, setRegistryInstallTarget] = useState<RegistryEntry | null>(null);
+  const [registryInstallTransport, setRegistryInstallTransport] = useState<TransportSelection | null>(null);
+  const [registryEnvInputs, setRegistryEnvInputs] = useState<Record<string, string>>({});
+  const [registryEnvCursor, setRegistryEnvCursor] = useState(0);
+  const [registryEnvEditBuffer, setRegistryEnvEditBuffer] = useState("");
+  const [registryInstallScope, setRegistryInstallScope] = useState<"user" | "project">("user");
+  const [registryStatusMessage, setRegistryStatusMessage] = useState<string | null>(null);
+  const {
+    entries: registryEntries,
+    loading: registryLoading,
+    error: registryError,
+    search: registrySearch,
+    loadPopular: registryLoadPopular,
+  } = useRegistryData();
 
   const servers = status?.servers ?? [];
   // Poll faster on agents tab, slower off-tab (badge still updates)
@@ -202,6 +226,20 @@ export function App() {
   useEffect(() => {
     setMailSelectedIndex((i) => Math.min(i, Math.max(0, mailMessages.length - 1)));
   }, [mailMessages.length]);
+
+  // Clamp registrySelectedIndex when registry entries change
+  useEffect(() => {
+    setRegistrySelectedIndex((i) => Math.min(i, Math.max(0, registryEntries.length - 1)));
+  }, [registryEntries.length]);
+
+  // Auto-load popular servers when switching to registry tab
+  const registryLoadedRef = useRef(false);
+  useEffect(() => {
+    if (view === "registry" && !registryLoadedRef.current && registryEntries.length === 0 && !registryLoading) {
+      registryLoadedRef.current = true;
+      registryLoadPopular();
+    }
+  }, [view, registryEntries.length, registryLoading, registryLoadPopular]);
 
   // Restore selection by identity when plans list refreshes, fall back to clamp.
   // Prioritize snapping to the expanded plan so cursor and detail panel stay in sync.
@@ -364,6 +402,33 @@ export function App() {
       scrollOffset: mailScrollOffset,
       setScrollOffset: setMailScrollOffset,
     },
+    registryNav: {
+      entries: registryEntries,
+      selectedIndex: registrySelectedIndex,
+      setSelectedIndex: setRegistrySelectedIndex,
+      expandedEntry: registryExpandedEntry,
+      setExpandedEntry: setRegistryExpandedEntry,
+      searchText: registrySearchText,
+      setSearchText: setRegistrySearchText,
+      mode: registryMode,
+      setMode: setRegistryMode,
+      onSearch: registrySearch,
+      onLoadPopular: registryLoadPopular,
+      installTarget: registryInstallTarget,
+      setInstallTarget: setRegistryInstallTarget,
+      installTransport: registryInstallTransport,
+      setInstallTransport: setRegistryInstallTransport,
+      envInputs: registryEnvInputs,
+      setEnvInputs: setRegistryEnvInputs,
+      envCursor: registryEnvCursor,
+      setEnvCursor: setRegistryEnvCursor,
+      envEditBuffer: registryEnvEditBuffer,
+      setEnvEditBuffer: setRegistryEnvEditBuffer,
+      installScope: registryInstallScope,
+      setInstallScope: setRegistryInstallScope,
+      statusMessage: registryStatusMessage,
+      setStatusMessage: setRegistryStatusMessage,
+    },
   });
 
   if (loading && !status) return <Loading />;
@@ -447,6 +512,23 @@ export function App() {
           statusType={planStatusType}
           confirmAbort={planConfirmAbort}
         />
+      ) : view === "registry" ? (
+        <RegistryBrowser
+          entries={registryEntries}
+          selectedIndex={registrySelectedIndex}
+          expandedEntry={registryExpandedEntry}
+          loading={registryLoading}
+          error={registryError}
+          searchText={registrySearchText}
+          mode={registryMode}
+          statusMessage={registryStatusMessage}
+          installTarget={registryInstallTarget}
+          installTransport={registryInstallTransport}
+          envInputs={registryEnvInputs}
+          envCursor={registryEnvCursor}
+          envEditBuffer={registryEnvEditBuffer}
+          installScope={registryInstallScope}
+        />
       ) : (
         <MailViewer
           messages={mailMessages}
@@ -472,6 +554,7 @@ export function App() {
         addServerMode={addServerMode}
         confirmRemove={confirmRemove}
         confirmRemoveServer={servers[selectedIndex]?.name}
+        registryMode={registryMode}
       />
     </Box>
   );
