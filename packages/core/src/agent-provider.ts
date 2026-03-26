@@ -232,3 +232,14 @@ registerProvider({
     agentSelect: true,
   },
 });
+
+/** Mock agent — reads canned responses from a JSON file. For testing only. */
+registerProvider({
+  name: "mock",
+  serverName: "_mock",
+  toolPrefix: "mock",
+  buildSpawnArgs: passthrough,
+  native: {
+    resume: false,
+  },
+});

@@ -117,6 +117,7 @@ const daemonWorkers = [
   "packages/daemon/src/alias-executor.ts",
   "packages/daemon/src/claude-session-worker.ts",
   "packages/daemon/src/codex-session-worker.ts",
+  "packages/daemon/src/mock-session-worker.ts",
 ];
 
 interface BinaryBuildConfig {
