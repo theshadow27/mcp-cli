@@ -144,7 +144,7 @@ describe("S3: Slow server isolation", () => {
       slow: {
         command: "bun",
         args: [resolve("test/slow-echo-server.ts")],
-        env: { SLOW_MS: "3000" },
+        env: { SLOW_MS: "500" },
       },
     });
   });
@@ -156,7 +156,7 @@ describe("S3: Slow server isolation", () => {
   test("fast server responds while slow server is busy", async () => {
     // Fire a slow call and a fast call concurrently
     const [slowResult, fastResult] = await Promise.all([
-      mcx(daemon.dir, ["call", "slow", "slow_echo", JSON.stringify({ message: "slow" })], { timeout: 15_000 }),
+      mcx(daemon.dir, ["call", "slow", "slow_echo", JSON.stringify({ message: "slow" })], { timeout: 10_000 }),
       mcx(daemon.dir, ["call", "echo", "echo", JSON.stringify({ message: "fast" })]),
     ]);
 
