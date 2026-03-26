@@ -3,10 +3,22 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.2)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
   id-token: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -16,7 +28,8 @@ jobs:
           - os: macos-latest
             target: bun-darwin-arm64
             suffix: darwin-arm64
-          - os: macos-13
+          # Cross-compile darwin-x64 from ARM64 (macos-13 Intel runners are deprecated)
+          - os: macos-latest
             target: bun-darwin-x64
             suffix: darwin-x64
           - os: ubuntu-latest
@@ -29,13 +42,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - name: Inject version from tag into package.json
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
         run: |
           bun -e "
             const fs = require('fs');
@@ -67,7 +82,7 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
@@ -89,13 +104,15 @@ jobs:
             platform: linux-arm64
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/download-artifact@v4
         with:
           name: binaries-${{ matrix.suffix }}
           path: artifacts
       - name: Prepare platform package
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
         run: |
           cd artifacts
           tar xzf mcx-${{ matrix.suffix }}.tar.gz
@@ -126,13 +143,15 @@ jobs:
     if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - name: Set version from tag
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
         run: |
           bun -e "
             const fs = require('fs');
@@ -158,13 +177,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
       - name: Compute SHA256 checksums and update formula
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
         run: |
           SHA_DARWIN_ARM64=$(sha256sum artifacts/mcx-darwin-arm64.tar.gz | cut -d' ' -f1)
           SHA_DARWIN_X64=$(sha256sum artifacts/mcx-darwin-x64.tar.gz | cut -d' ' -f1)

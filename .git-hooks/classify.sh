@@ -21,8 +21,8 @@ classify_files() {
       # Docs: markdown files, .claude/ directory contents
       *.md | .claude/*)
         ;;
-      # Config: JSON files, scripts/, build tooling, git hooks
-      *.json | scripts/* | .git-hooks/*)
+      # Config: JSON files, scripts/, build tooling, git hooks, CI workflows
+      *.json | scripts/* | .git-hooks/* | .github/*)
         has_config=true
         ;;
       # Everything else is source code
