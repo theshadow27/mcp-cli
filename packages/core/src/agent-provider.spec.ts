@@ -57,6 +57,15 @@ describe("agent-provider", () => {
       expect(acp.native.agentSelect).toBe(true);
     });
 
+    test("mock provider is registered with minimal features", () => {
+      const mock = requireProvider("mock");
+      expect(mock.serverName).toBe("_mock");
+      expect(mock.toolPrefix).toBe("mock");
+      expect(mock.native.resume).toBe(false);
+      const args = mock.buildSpawnArgs({ task: "/path/to/script.json" });
+      expect(args.task).toBe("/path/to/script.json");
+    });
+
     test("copilot is an ACP variant with agentOverride", () => {
       const copilot = requireProvider("copilot");
       expect(copilot.serverName).toBe("_acp");
@@ -72,10 +81,10 @@ describe("agent-provider", () => {
       expect(args.agentOverride).toBe("gemini");
     });
 
-    test("getAllProviders returns all 6 built-in providers", () => {
+    test("getAllProviders returns all 7 built-in providers", () => {
       const all = getAllProviders();
       const names = all.map((p) => p.name).sort();
-      expect(names).toEqual(["acp", "claude", "codex", "copilot", "gemini", "opencode"]);
+      expect(names).toEqual(["acp", "claude", "codex", "copilot", "gemini", "mock", "opencode"]);
     });
 
     test("unknown provider returns undefined", () => {

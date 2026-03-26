@@ -27,6 +27,7 @@ import {
   DEFAULT_CLAUDE_WS_PORT,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
+  MOCK_SERVER_NAME,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
   auditRuntimePermissions,
@@ -52,6 +53,7 @@ import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
 import { MetricsServer } from "./metrics-server";
+import { MockServer, buildMockToolCache } from "./mock-server";
 import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
@@ -296,6 +298,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const opencodeInstalled = Bun.spawnSync(["which", "opencode"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const opencodeServer = opencodeInstalled ? new OpenCodeServer(db, daemonId, undefined, logger) : null;
 
+  // Mock server: always available (no external binary needed)
+  const mockServer = new MockServer(db, daemonId, undefined, logger);
+
   const metricsServer = new MetricsServer(metrics);
 
   // Register uptime and server metrics
@@ -311,6 +316,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     codexServer?.pruneDeadSessions();
     acpServer?.pruneDeadSessions();
     opencodeServer?.pruneDeadSessions();
+    mockServer.pruneDeadSessions();
   }, 30_000);
 
   // Update uptime and server gauges periodically
@@ -364,11 +370,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       codexServer?.pruneDeadSessions();
       acpServer?.pruneDeadSessions();
       opencodeServer?.pruneDeadSessions();
+      mockServer.pruneDeadSessions();
       if (
         claudeServer.hasActiveSessions() ||
         codexServer?.hasActiveSessions() ||
         acpServer?.hasActiveSessions() ||
-        opencodeServer?.hasActiveSessions()
+        opencodeServer?.hasActiveSessions() ||
+        mockServer.hasActiveSessions()
       ) {
         logger.debug("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
         resetIdleTimer();
@@ -433,6 +441,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   if (opencodeServer) {
     opencodeServer.onActivity = () => resetIdleTimer();
   }
+  mockServer.onActivity = () => resetIdleTimer();
 
   // Start idle timer
   resetIdleTimer();
@@ -547,6 +556,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }
 
     pool.registerPendingVirtualServer(
+      MOCK_SERVER_NAME,
+      (async () => {
+        try {
+          const { client: mockClient, transport: mockTransport } = await mockServer.start();
+          const mockTools = buildMockToolCache();
+          pool.registerVirtualServer(MOCK_SERVER_NAME, mockClient, mockTransport, mockTools);
+          logger.info("[mcpd] Mock session server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start mock server: ${err}`);
+        }
+      })(),
+    );
+
+    pool.registerPendingVirtualServer(
       METRICS_SERVER_NAME,
       (async () => {
         try {
@@ -617,6 +640,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           [CODEX_SERVER_NAME, codexServer],
           [ACP_SERVER_NAME, acpServer],
           [OPENCODE_SERVER_NAME, opencodeServer],
+          [MOCK_SERVER_NAME, mockServer],
           [ALIAS_SERVER_NAME, aliasServer],
           [METRICS_SERVER_NAME, metricsServer],
           [MAIL_SERVER_NAME, mailServer],
