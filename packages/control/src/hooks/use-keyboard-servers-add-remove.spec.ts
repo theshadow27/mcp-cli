@@ -414,12 +414,48 @@ describe("add server mode", () => {
     expect((call[0] as { step: string }).step).toBe("scope");
   });
 
-  test("env step: enter with no = sign does not add", () => {
+  test("env step: enter with no = sign shows error", () => {
     const state = { ...initialAddServerState(), step: "env" as const, envInput: "NOEQUALS" };
     const nav = makeNav({ addServerMode: true, addServerState: state });
     handleServersInput("", { ...baseKey, return: true }, nav);
-    // Should not add to env or advance
-    expect(nav.setAddServerState).not.toHaveBeenCalled();
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    const result = call[0] as { envError: string; env: string[] };
+    expect(result.envError).toBe("Use KEY=VALUE format");
+    expect(result.env).toEqual([]); // env array unchanged
+  });
+
+  test("env step: enter with =VALUE (no key) shows error", () => {
+    const state = { ...initialAddServerState(), step: "env" as const, envInput: "=VALUE" };
+    const nav = makeNav({ addServerMode: true, addServerState: state });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    const result = call[0] as { envError: string };
+    expect(result.envError).toBe("Use KEY=VALUE format");
+  });
+
+  test("env step: typing clears envError", () => {
+    const state = { ...initialAddServerState(), step: "env" as const, envInput: "X", envError: "Use KEY=VALUE format" };
+    const nav = makeNav({ addServerMode: true, addServerState: state });
+    handleServersInput("Y", baseKey, nav);
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    const result = call[0] as { envError: string; envInput: string };
+    expect(result.envError).toBe("");
+    expect(result.envInput).toBe("XY");
+  });
+
+  test("env step: valid entry clears envError", () => {
+    const state = {
+      ...initialAddServerState(),
+      step: "env" as const,
+      envInput: "KEY=val",
+      envError: "Use KEY=VALUE format",
+    };
+    const nav = makeNav({ addServerMode: true, addServerState: state });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    const result = call[0] as { envError: string; env: string[] };
+    expect(result.envError).toBe("");
+    expect(result.env).toEqual(["KEY=val"]);
   });
 
   test("scope step: j/k toggles scope", () => {
