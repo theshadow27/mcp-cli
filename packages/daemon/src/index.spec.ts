@@ -74,8 +74,9 @@ describe("daemon index.ts", () => {
     });
 
     afterAll(async () => {
-      if (handle && !handle.isShuttingDown) {
-        await handle.shutdown("SIGTERM");
+      if (handle) {
+        if (!handle.isShuttingDown) await handle.shutdown("SIGTERM");
+        await handle.shutdownComplete;
       }
       opts[Symbol.dispose]();
       _restoreOptions();
