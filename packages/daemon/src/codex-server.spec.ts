@@ -587,11 +587,11 @@ describe("CodexServer connect timeout metric", () => {
     expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
-  test("does not increment counter on successful connect", async () => {
+  test("does not increment timeout counter when connect resolves instantly", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    // Mock client that resolves connect() immediately — avoids depending on real
-    // codex binary startup timing, which is flaky on loaded CI runners (#975)
+    // Stub — provides only connect/close. Do not use in tests that exercise tool calls.
+    // Resolves connect() immediately so the timeout never fires (#975).
     const instantConnect = {
       connect: async () => {},
       close: async () => {},
