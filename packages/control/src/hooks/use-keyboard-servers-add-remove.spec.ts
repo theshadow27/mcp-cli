@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Key } from "ink";
 import { initialAddServerState } from "../components/server-add-form";
 import type { ServersNav } from "./use-keyboard";
-import { buildConfig, handleServersInput } from "./use-keyboard-servers";
+import { buildConfig, handleServersInput, splitShellTokens } from "./use-keyboard-servers";
 
 const baseKey: Key = {
   upArrow: false,
@@ -48,6 +48,48 @@ function makeNav(overrides: Partial<ServersNav> = {}): ServersNav {
   };
 }
 
+describe("splitShellTokens", () => {
+  test("splits simple command", () => {
+    expect(splitShellTokens("npx -y some-pkg")).toEqual(["npx", "-y", "some-pkg"]);
+  });
+
+  test("handles double-quoted paths with spaces", () => {
+    expect(splitShellTokens('"/path/to my/binary" --arg')).toEqual(["/path/to my/binary", "--arg"]);
+  });
+
+  test("handles single-quoted paths with spaces", () => {
+    expect(splitShellTokens("'/path/to my/binary' --arg")).toEqual(["/path/to my/binary", "--arg"]);
+  });
+
+  test("handles mixed quotes", () => {
+    expect(splitShellTokens(`"/path/to my/bin" 'another arg' plain`)).toEqual([
+      "/path/to my/bin",
+      "another arg",
+      "plain",
+    ]);
+  });
+
+  test("handles extra whitespace", () => {
+    expect(splitShellTokens("  cmd   --flag   value  ")).toEqual(["cmd", "--flag", "value"]);
+  });
+
+  test("returns empty array for empty string", () => {
+    expect(splitShellTokens("")).toEqual([]);
+  });
+
+  test("returns empty array for whitespace-only string", () => {
+    expect(splitShellTokens("   ")).toEqual([]);
+  });
+
+  test("handles quotes adjacent to unquoted text", () => {
+    expect(splitShellTokens('prefix"quoted"suffix')).toEqual(["prefixquotedsuffix"]);
+  });
+
+  test("handles unclosed quote (treats rest as token)", () => {
+    expect(splitShellTokens('"unclosed path')).toEqual(["unclosed path"]);
+  });
+});
+
 describe("buildConfig", () => {
   test("builds http config", () => {
     const state = {
@@ -80,6 +122,17 @@ describe("buildConfig", () => {
     };
     const config = buildConfig(state);
     expect(config).toEqual({ command: "npx", args: ["-y", "some-pkg"] });
+  });
+
+  test("builds stdio config with quoted path containing spaces", () => {
+    const state = {
+      ...initialAddServerState(),
+      transport: "stdio" as const,
+      name: "test",
+      url: '"/path/to my/binary" --arg value',
+    };
+    const config = buildConfig(state);
+    expect(config).toEqual({ command: "/path/to my/binary", args: ["--arg", "value"] });
   });
 
   test("builds stdio config with env vars", () => {

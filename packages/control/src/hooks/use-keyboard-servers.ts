@@ -13,6 +13,48 @@ import type { ServersNav } from "./use-keyboard";
 const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
 const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
+/**
+ * Split a command string into tokens, respecting single and double quotes.
+ * Exported for testing.
+ *
+ * Examples:
+ *   `npx -y some-pkg`              → ["npx", "-y", "some-pkg"]
+ *   `"/path/to my/bin" --arg`      → ["/path/to my/bin", "--arg"]
+ *   `'single quoted' arg`          → ["single quoted", "arg"]
+ */
+export function splitShellTokens(input: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
 /** Build a ServerConfig from add-server form state. Exported for testing. */
 export function buildConfig(state: AddServerState): ServerConfig {
   const envObj: Record<string, string> = {};
@@ -24,7 +66,7 @@ export function buildConfig(state: AddServerState): ServerConfig {
   }
 
   if (state.transport === "stdio") {
-    const parts = state.url.split(/\s+/).filter(Boolean);
+    const parts = splitShellTokens(state.url);
     const config: ServerConfig = {
       command: parts[0],
       args: parts.slice(1),
