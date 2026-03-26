@@ -144,7 +144,7 @@ describe("S3: Slow server isolation", () => {
       slow: {
         command: "bun",
         args: [resolve("test/slow-echo-server.ts")],
-        env: { SLOW_MS: "500" },
+        env: { SLOW_MS: "3000" },
       },
     });
   });
@@ -154,19 +154,26 @@ describe("S3: Slow server isolation", () => {
   });
 
   test("fast server responds while slow server is busy", async () => {
-    // Fire a slow call and a fast call concurrently
+    // Fire a slow call and a fast call concurrently, timing each independently
+    const fastStart = Date.now();
     const [slowResult, fastResult] = await Promise.all([
-      mcx(daemon.dir, ["call", "slow", "slow_echo", JSON.stringify({ message: "slow" })], { timeout: 10_000 }),
-      mcx(daemon.dir, ["call", "echo", "echo", JSON.stringify({ message: "fast" })]),
+      mcx(daemon.dir, ["call", "slow", "slow_echo", JSON.stringify({ message: "slow" })], { timeout: 15_000 }),
+      mcx(daemon.dir, ["call", "echo", "echo", JSON.stringify({ message: "fast" })]).then((r) => {
+        (r as Record<string, unknown>).elapsed = Date.now() - fastStart;
+        return r;
+      }),
     ]);
 
-    // Fast should complete successfully
-    expect(fastResult.exitCode).toBe(0);
+    const fastElapsed = (fastResult as Record<string, unknown>).elapsed as number;
+
+    // Fast should complete successfully — and well before the slow server's 3s delay
     expect(fastResult.stdout).toContain("fast");
+    expect(fastResult.exitCode).toBe(0);
+    expect(fastElapsed).toBeLessThan(3_000);
 
     // Slow should also complete (just takes longer)
-    expect(slowResult.exitCode).toBe(0);
     expect(slowResult.stdout).toContain("slow");
+    expect(slowResult.exitCode).toBe(0);
   });
 });
 

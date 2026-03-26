@@ -67,8 +67,12 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
  * Maximum allowed production log noise lines during test runs.
  * Matches daemon log prefixes ([mcpd], [_claude], [_aliases]) and
  * production signals (MCPD_READY). Ratchet this down toward zero.
+ *
+ * Current sources (14 total):
+ *   13 × MCPD_READY — index.spec.ts spawns real daemon processes
+ *    1 × [mcpd] test message — daemon-log.spec.ts intentionally tests capture
  */
-const NOISE_THRESHOLD = 22;
+const NOISE_THRESHOLD = 14;
 
 /** Per-file minimum coverage — every file must meet this unless excluded */
 const PER_FILE_MIN_LINES = 80;
@@ -115,9 +119,6 @@ const EXCLUSIONS: Record<string, string> = {
 
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
   "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
-
-  // Permission router — coverage dropped after ACP refactor (#875), needs integration tests
-  "daemon/src/claude-session/permission-router.ts": "19% coverage, ACP refactor dropped coverage",
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
@@ -220,14 +221,10 @@ if (exitCode !== 0) {
 
 const output = stdout + stderr;
 
-// Coverage table comes from run 1 (non-daemon) only. Run 2 may also produce
-// a coverage table via bunfig.toml, but we parse from run 1 for consistency.
-// Daemon files are mostly excluded from per-file enforcement anyway.
-const coverageOutput = stdout1 + stderr1;
+// --- Parse global summary from run 1 (non-daemon has the larger surface) ---
 
-// --- Parse global summary ---
-
-const allFilesMatch = coverageOutput.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/);
+const coverageRun1 = stdout1 + stderr1;
+const allFilesMatch = coverageRun1.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/);
 
 if (!allFilesMatch) {
   console.error("Could not parse coverage summary from test output.");
@@ -238,15 +235,29 @@ if (!allFilesMatch) {
 const globalFuncs = Number.parseFloat(allFilesMatch[1]);
 const globalLines = Number.parseFloat(allFilesMatch[2]);
 
-// --- Parse per-file rows ---
+// --- Parse per-file rows from BOTH runs, taking max coverage per file ---
+// A file may appear in both runs (e.g. daemon files imported transitively by
+// non-daemon tests). We take the best coverage from either run so that daemon
+// files tested in run 2 get proper credit.
 // Format: " packages/core/src/config.ts  |  100.00 |  100.00 | "
 const fileRowRegex = /^\s*([\w/.@-]+\.(?:ts|tsx))\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/gm;
+
+const bestCoverage = new Map<string, { funcs: number; lines: number }>();
+for (const source of [coverageRun1, stdout2 + stderr2]) {
+  for (const match of source.matchAll(fileRowRegex)) {
+    const file = match[1];
+    const funcs = Number.parseFloat(match[2]);
+    const lines = Number.parseFloat(match[3]);
+    const prev = bestCoverage.get(file);
+    if (!prev || lines > prev.lines) {
+      bestCoverage.set(file, { funcs, lines });
+    }
+  }
+}
+
 const failures: { file: string; lines: number }[] = [];
 
-for (const match of coverageOutput.matchAll(fileRowRegex)) {
-  const file = match[1];
-  const lines = Number.parseFloat(match[3]);
-
+for (const [file, { lines }] of bestCoverage) {
   if (lines >= PER_FILE_MIN_LINES) continue;
 
   // Check exclusions (suffix match)
