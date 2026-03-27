@@ -69,14 +69,14 @@ export const ResultSuccess = z
   .object({
     type: z.literal("result"),
     subtype: z.literal("success"),
-    is_error: z.literal(false),
+    is_error: z.literal(false).optional(),
     result: z.string(),
-    duration_ms: z.number(),
-    duration_api_ms: z.number(),
+    duration_ms: z.number().optional(),
+    duration_api_ms: z.number().optional(),
     num_turns: z.number(),
     total_cost_usd: z.number(),
     usage: Usage,
-    uuid: z.string(),
+    uuid: z.string().optional(),
     session_id: z.string(),
   })
   .passthrough();
@@ -85,13 +85,31 @@ export const ResultError = z
   .object({
     type: z.literal("result"),
     subtype: z.string(),
-    is_error: z.literal(true),
+    is_error: z.literal(true).optional(),
     errors: z.array(z.string()),
-    duration_ms: z.number(),
+    duration_ms: z.number().optional(),
     num_turns: z.number(),
     total_cost_usd: z.number(),
-    uuid: z.string(),
+    uuid: z.string().optional(),
     session_id: z.string(),
+  })
+  .passthrough();
+
+/**
+ * Loose result schema — matches any `type: "result"` message regardless of
+ * other fields. Used as a fallback when neither ResultSuccess nor ResultError
+ * match, so the session still transitions to idle instead of staying stuck.
+ */
+export const ResultFallback = z
+  .object({
+    type: z.literal("result"),
+    subtype: z.string().optional(),
+    result: z.string().optional(),
+    errors: z.array(z.string()).optional(),
+    num_turns: z.number().optional(),
+    total_cost_usd: z.number().optional(),
+    usage: Usage.optional(),
+    session_id: z.string().optional(),
   })
   .passthrough();
 
@@ -246,6 +264,7 @@ export type SystemStatus = z.infer<typeof SystemStatus>;
 export type Assistant = z.infer<typeof Assistant>;
 export type ResultSuccess = z.infer<typeof ResultSuccess>;
 export type ResultError = z.infer<typeof ResultError>;
+export type ResultFallback = z.infer<typeof ResultFallback>;
 export type CanUseTool = z.infer<typeof CanUseTool>;
 export type HookCallback = z.infer<typeof HookCallback>;
 export type ToolProgress = z.infer<typeof ToolProgress>;

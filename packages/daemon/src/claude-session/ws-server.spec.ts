@@ -2388,11 +2388,9 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("logs warning when result message matches neither success nor error schema", async () => {
-    const errors: string[] = [];
-    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+  test("transitions to idle via fallback when result message has unrecognized schema (fixes #978)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = await server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -2403,23 +2401,22 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
 
-      // Send a malformed result message (missing required fields)
+      // Send a result message with unrecognized schema (missing strict fields
+      // like is_error, result, usage, etc.) — the fallback should still
+      // transition the session to idle instead of leaving it stuck in active.
       ws.send(
         serialize({
           type: "result",
           subtype: "unknown_subtype",
-          // Missing is_error, result, usage, etc.
           uuid: "test-uuid",
           session_id: "test-session",
         }),
       );
 
-      // Wait for the message to be processed
-      await pollUntil(() => errors.some((e) => e.includes("matched neither success nor error schema")));
-
-      // Session should still be in active state (result wasn't processed)
+      // Session should transition to idle via fallback
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
       const status = server.getStatus("test-session");
-      expect(status.state).not.toBe("idle");
+      expect(status.state).toBe("idle");
     } finally {
       ws.close();
     }

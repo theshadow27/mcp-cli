@@ -12,6 +12,7 @@ import {
   Assistant as AssistantSchema,
   CanUseTool as CanUseToolSchema,
   ResultError,
+  ResultFallback,
   ResultSuccess,
   SystemInit,
   interruptRequest,
@@ -237,6 +238,35 @@ export class SessionState {
       this.numTurns += r.num_turns;
       this.state = "idle";
       return [{ type: "session:error", errors: r.errors, cost: r.total_cost_usd }];
+    }
+
+    // Fallback: transition to idle for any result message, even if neither
+    // strict schema matched. This prevents sessions from getting stuck in
+    // "active" state when the CLI wire format drifts. Extract what we can.
+    const fallback = ResultFallback.safeParse(msg);
+    if (fallback.success) {
+      const r = fallback.data;
+      const cost = r.total_cost_usd ?? 0;
+      const turns = r.num_turns ?? 0;
+      const resultTokens = r.usage ? r.usage.input_tokens + r.usage.output_tokens : 0;
+      this.cost += cost;
+      this.numTurns += turns;
+      this.tokens += resultTokens;
+      this.state = "idle";
+
+      const errors = r.errors;
+      if (r.subtype !== "success" && Array.isArray(errors) && errors.length > 0) {
+        return [{ type: "session:error", errors, cost }];
+      }
+      return [
+        {
+          type: "session:result",
+          cost,
+          tokens: resultTokens,
+          numTurns: turns,
+          result: r.result ?? "",
+        },
+      ];
     }
 
     return [];

@@ -587,4 +587,98 @@ describe("SessionState", () => {
       expect(session.numTurns).toBe(6);
     });
   });
+
+  describe("result fallback (fixes #978)", () => {
+    test("transitions to idle when result message is missing is_error and duration fields", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.state).toBe("active");
+
+      // Result message without is_error, duration_ms, duration_api_ms, uuid
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "Done!",
+        num_turns: 2,
+        total_cost_usd: 0.03,
+        usage: { input_tokens: 150, output_tokens: 75 },
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        expect(events[0].cost).toBe(0.03);
+        expect(events[0].numTurns).toBe(2);
+        expect(events[0].tokens).toBe(225);
+      }
+    });
+
+    test("transitions to idle via fallback when result has unrecognized schema", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.state).toBe("active");
+
+      // Result with completely different field names — only type: "result" matches
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "All done",
+        // Missing: is_error, num_turns, total_cost_usd, usage, duration_ms, etc.
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        // Fallback defaults for missing fields
+        expect(events[0].cost).toBe(0);
+        expect(events[0].numTurns).toBe(0);
+        expect(events[0].tokens).toBe(0);
+        expect(events[0].result).toBe("All done");
+      }
+    });
+
+    test("fallback handles error result with unrecognized schema", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "error",
+        errors: ["Something went wrong"],
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:error");
+      if (events[0].type === "session:error") {
+        expect(events[0].errors).toEqual(["Something went wrong"]);
+        expect(events[0].cost).toBe(0);
+      }
+    });
+
+    test("strict schemas still match when all fields are present", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const events = session.handleMessage(RESULT_SUCCESS);
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        expect(events[0].cost).toBe(0.05);
+        expect(events[0].numTurns).toBe(3);
+        expect(events[0].tokens).toBe(300);
+      }
+    });
+  });
 });
