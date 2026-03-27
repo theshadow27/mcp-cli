@@ -6,12 +6,11 @@ import {
   type AddServerScope,
   type AddServerState,
   type AddServerTransport,
+  SCOPE_OPTIONS,
+  TRANSPORT_OPTIONS,
   initialAddServerState,
 } from "../components/server-add-form";
 import type { ServersNav } from "./use-keyboard";
-
-const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
-const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
 /**
  * Split a command string into tokens, respecting single and double quotes.

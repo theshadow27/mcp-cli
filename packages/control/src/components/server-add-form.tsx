@@ -40,8 +40,8 @@ interface ServerAddFormProps {
   configPath?: string;
 }
 
-const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
-const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
+export const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
+export const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
 export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
   return (
