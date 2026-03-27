@@ -42,8 +42,8 @@ interface ServerAddFormProps {
   nameExists?: boolean;
 }
 
-const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
-const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
+export const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
+export const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
 export function ServerAddForm({ state, configPath, nameExists }: ServerAddFormProps) {
   return (
