@@ -294,29 +294,34 @@ function handleAddServerInput(input: string, key: Key, nav: ServersNav): boolean
   if (step === "env") {
     // Tab → skip to scope
     if (key.tab) {
-      setAddServerState({ ...state, envInput: "", step: "scope" });
+      setAddServerState({ ...state, envInput: "", envError: "", step: "scope" });
       return true;
     }
     if (key.return) {
-      if (state.envInput.trim().length > 0 && state.envInput.includes("=")) {
+      const trimmed = state.envInput.trim();
+      if (trimmed.length > 0 && trimmed.includes("=") && trimmed.indexOf("=") > 0) {
         // Add the env var and clear input for next entry
         setAddServerState({
           ...state,
-          env: [...state.env, state.envInput.trim()],
+          env: [...state.env, trimmed],
           envInput: "",
+          envError: "",
         });
-      } else if (state.envInput.trim().length === 0) {
+      } else if (trimmed.length === 0) {
         // Empty enter → skip to scope
-        setAddServerState({ ...state, envInput: "", step: "scope" });
+        setAddServerState({ ...state, envInput: "", envError: "", step: "scope" });
+      } else {
+        // Invalid format — show error
+        setAddServerState({ ...state, envError: "Use KEY=VALUE format" });
       }
       return true;
     }
     if (key.backspace || key.delete) {
-      setAddServerState({ ...state, envInput: state.envInput.slice(0, -1) });
+      setAddServerState({ ...state, envInput: state.envInput.slice(0, -1), envError: "" });
       return true;
     }
     if (input && !key.ctrl && !key.meta) {
-      setAddServerState({ ...state, envInput: state.envInput + input });
+      setAddServerState({ ...state, envInput: state.envInput + input, envError: "" });
       return true;
     }
     return true;

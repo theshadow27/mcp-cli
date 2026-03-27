@@ -16,6 +16,8 @@ export interface AddServerState {
   env: string[];
   /** Buffer for the env var currently being typed. */
   envInput: string;
+  /** Validation error shown on the env step. */
+  envError: string;
   scope: AddServerScope;
 }
 
@@ -27,6 +29,7 @@ export function initialAddServerState(): AddServerState {
     url: "",
     env: [],
     envInput: "",
+    envError: "",
     scope: "user",
   };
 }
@@ -113,6 +116,7 @@ export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
             Add env (KEY=VALUE): {state.envInput}
             <Text dimColor>█</Text>
           </Text>
+          {state.envError !== "" && <Text color="red">{state.envError}</Text>}
           <Text dimColor>type KEY=VALUE enter add tab skip esc cancel</Text>
         </Box>
       )}
