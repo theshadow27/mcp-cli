@@ -2389,8 +2389,10 @@ describe("ClaudeWsServer", () => {
   });
 
   test("transitions to idle via fallback when result message has unrecognized schema (fixes #978)", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
     const port = await server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -2417,6 +2419,78 @@ describe("ClaudeWsServer", () => {
       await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
       const status = server.getStatus("test-session");
       expect(status.state).toBe("idle");
+
+      // Should log schema mismatch diagnostic
+      expect(errors.some((e) => e.includes("Schema mismatch") && e.includes("fallback"))).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("logs schema mismatch when system/init is missing fields", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Send a minimal system/init missing most required fields
+      ws.send(
+        serialize({
+          type: "system",
+          subtype: "init",
+          cwd: "/test",
+          session_id: "test-session",
+          model: "claude-sonnet-4-6",
+          // Missing: tools, mcp_servers, permissionMode, apiKeySource,
+          // claude_code_version, uuid
+        }),
+      );
+
+      // Should still transition to init (not stuck in connecting)
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "init"));
+      expect(server.listSessions()[0].state).toBe("init");
+
+      // Should log schema mismatch
+      await pollUntil(() => errors.some((e) => e.includes("Schema mismatch") && e.includes("system/init")));
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("logs unrecognized message type", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+
+      // Send a completely unknown message type
+      ws.send(
+        serialize({
+          type: "new_feature_type",
+          data: "something",
+          session_id: "test-session",
+        }),
+      );
+
+      await pollUntil(() => errors.some((e) => e.includes("Unrecognized message type")));
+      expect(errors.some((e) => e.includes('"new_feature_type"'))).toBe(true);
     } finally {
       ws.close();
     }

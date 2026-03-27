@@ -36,6 +36,22 @@ export const SystemInit = z
   })
   .passthrough();
 
+/**
+ * Loose init schema — requires only the fields the state machine needs
+ * (session_id, model, cwd). Used as a fallback when SystemInit doesn't
+ * match, so the session still initializes instead of staying stuck in
+ * "connecting" forever.
+ */
+export const SystemInitFallback = z
+  .object({
+    type: z.literal("system"),
+    subtype: z.literal("init"),
+    cwd: z.string().optional(),
+    session_id: z.string().optional(),
+    model: z.string().optional(),
+  })
+  .passthrough();
+
 export const SystemStatus = z
   .object({
     type: z.literal("system"),
@@ -64,6 +80,23 @@ export const Assistant = z.object({
   uuid: z.string(),
   session_id: z.string(),
 });
+
+/**
+ * Loose assistant schema — requires only the fields the state machine needs
+ * (usage for token tracking). Used as a fallback when Assistant doesn't match,
+ * so the session still transitions to "active" and accumulates tokens.
+ */
+export const AssistantFallback = z
+  .object({
+    type: z.literal("assistant"),
+    message: z
+      .object({
+        usage: Usage.optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
 export const ResultSuccess = z
   .object({
@@ -260,8 +293,10 @@ export const PermissionDeny = z.object({
 // ── Inferred types ──
 
 export type SystemInit = z.infer<typeof SystemInit>;
+export type SystemInitFallback = z.infer<typeof SystemInitFallback>;
 export type SystemStatus = z.infer<typeof SystemStatus>;
 export type Assistant = z.infer<typeof Assistant>;
+export type AssistantFallback = z.infer<typeof AssistantFallback>;
 export type ResultSuccess = z.infer<typeof ResultSuccess>;
 export type ResultError = z.infer<typeof ResultError>;
 export type ResultFallback = z.infer<typeof ResultFallback>;

@@ -32,6 +32,22 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 /** Time (ms) to wait for a WebSocket connection after spawning a Claude CLI process. */
 const CONNECT_TIMEOUT_MS = 30_000;
 
+/**
+ * Message types that the daemon knows about (handled or intentionally ignored).
+ * Used to detect genuinely new/unknown types from the CLI for diagnostic logging.
+ */
+const KNOWN_MSG_TYPES: ReadonlySet<string> = new Set([
+  "system",
+  "assistant",
+  "result",
+  "control_request",
+  "keep_alive",
+  "stream_event",
+  "tool_progress",
+  "tool_use_summary",
+  "auth_status",
+]);
+
 // ── Errors ──
 
 /** Thrown when waitForEvent() or waitForResult() times out. */
@@ -1132,11 +1148,29 @@ export class ClaudeWsServer {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
 
-      // Warn if a result message produced no events — indicates schema mismatch.
-      // The session stays stuck in its current state with no event fired.
+      // Log when a fallback schema was used — the strict schema didn't match
+      // but we still extracted what we could and kept working.
+      if (session.state.parseMismatch) {
+        this.logger.error(
+          `[_claude] Schema mismatch for session ${sessionId}: ${msg.type}` +
+            `${msg.subtype ? `/${msg.subtype}` : ""} used fallback parsing ` +
+            `(state: "${session.state.state}", keys: ${Object.keys(msg).join(", ")})`,
+        );
+      }
+
+      // Log unrecognized message types (not in IGNORED_TYPES, not a known handler).
+      // This helps detect new CLI message types that the daemon should handle.
+      if (events.length === 0 && !session.state.parseMismatch && !KNOWN_MSG_TYPES.has(msg.type)) {
+        this.logger.error(
+          `[_claude] Unrecognized message type "${msg.type}" from session ${sessionId} — ` +
+            `message was silently dropped. Keys: ${Object.keys(msg).join(", ")}`,
+        );
+      }
+
+      // Warn if a result message produced no events — even the fallback failed.
       if (msg.type === "result" && events.length === 0) {
         this.logger.error(
-          `[_claude] Result message for session ${sessionId} matched neither success nor error schema — ` +
+          `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
             `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
         );
       }
