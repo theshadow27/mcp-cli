@@ -81,6 +81,13 @@ export function buildConfig(state: AddServerState): ServerConfig {
   };
 }
 
+/** Reset add-server / confirm-remove modal state (e.g. when leaving the servers tab). */
+export function clearServersState(nav: ServersNav): void {
+  nav.setAddServerMode(false);
+  nav.setAddServerState(initialAddServerState());
+  nav.setConfirmRemove(false);
+}
+
 /**
  * Handle keyboard input for the servers view.
  * Returns true if the input was consumed.

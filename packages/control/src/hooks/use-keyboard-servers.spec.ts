@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Key } from "ink";
 import { initialAddServerState } from "../components/server-add-form";
 import type { ServersNav } from "./use-keyboard";
-import { handleServersInput } from "./use-keyboard-servers";
+import { clearServersState, handleServersInput } from "./use-keyboard-servers";
 
 const baseKey: Key = {
   upArrow: false,
@@ -178,5 +178,30 @@ describe("handleServersInput", () => {
     const nav = makeNav({ selectedIndex: 1 });
     handleServersInput("a", baseKey, nav);
     expect(nav.setAuthStatus).toHaveBeenCalledWith({ server: "s2", state: "pending" });
+  });
+});
+
+describe("clearServersState", () => {
+  test("resets addServerMode, addServerState, and confirmRemove", () => {
+    const nav = makeNav({
+      addServerMode: true,
+      addServerState: {
+        step: "name",
+        transport: "stdio",
+        name: "partial",
+        url: "",
+        env: [],
+        envInput: "",
+        envError: "",
+        scope: "project",
+      },
+      confirmRemove: true,
+    });
+
+    clearServersState(nav);
+
+    expect(nav.setAddServerMode).toHaveBeenCalledWith(false);
+    expect(nav.setAddServerState).toHaveBeenCalled();
+    expect(nav.setConfirmRemove).toHaveBeenCalledWith(false);
   });
 });

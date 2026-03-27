@@ -14,7 +14,7 @@ import type { PlansNav } from "./use-keyboard-plans";
 import { clearPlansState, handlePlansInput } from "./use-keyboard-plans";
 import type { RegistryNav } from "./use-keyboard-registry";
 import { handleRegistryInput } from "./use-keyboard-registry";
-import { handleServersInput } from "./use-keyboard-servers";
+import { clearServersState, handleServersInput } from "./use-keyboard-servers";
 import { handleStatsInput } from "./use-keyboard-stats";
 import type { LogSource } from "./use-logs";
 
@@ -242,13 +242,17 @@ export function useKeyboard({
       return;
     }
 
-    // Helper: clear plans modal state when navigating away
+    // Helpers: clear modal state when navigating away from a view
     const leavePlansView = () => {
       if (view === "plans") clearPlansState(plansNav);
+    };
+    const leaveServersView = () => {
+      if (view === "servers") clearServersState(serversNav);
     };
 
     // Global: Tab / Shift+Tab cycle tabs
     if (key.tab) {
+      leaveServersView();
       leavePlansView();
       setView(key.shift ? prevTab(view) : nextTab(view));
       return;
@@ -259,6 +263,7 @@ export function useKeyboard({
     if (tabNum >= 1 && tabNum <= ALL_TABS.length) {
       const target = tabByNumber(tabNum);
       if (target) {
+        leaveServersView();
         leavePlansView();
         setView(target);
       }
@@ -271,6 +276,7 @@ export function useKeyboard({
         logsNav.setFilterText("");
         setView("servers");
       } else {
+        leaveServersView();
         leavePlansView();
         setView("logs");
       }
@@ -297,6 +303,7 @@ export function useKeyboard({
         return;
       }
       if (view === "logs") logsNav.setFilterText("");
+      leaveServersView();
       leavePlansView();
       setView("servers");
       return;
@@ -313,6 +320,7 @@ export function useKeyboard({
 
     // `b` opens registry browser from any view
     if (input === "b" && view !== "registry") {
+      leaveServersView();
       leavePlansView();
       setView("registry");
       return;
