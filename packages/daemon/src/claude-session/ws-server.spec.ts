@@ -962,7 +962,7 @@ describe("ClaudeWsServer", () => {
       };
     };
 
-    server = new ClaudeWsServer({ spawn: slowSpawn });
+    server = new ClaudeWsServer({ spawn: slowSpawn, logger: silentLogger });
     await server.start();
     server.prepareSession("double-clear", { prompt: "Hello" });
     server.spawnClaude("double-clear"); // spawnCount = 1
@@ -1289,7 +1289,7 @@ describe("ClaudeWsServer", () => {
 
   test("spawnClaude omits --worktree when both cwd and worktree are set (hook pre-created)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     await server.start();
 
     server.prepareSession("hook-session", {
@@ -1306,7 +1306,7 @@ describe("ClaudeWsServer", () => {
 
   test("spawnClaude passes --worktree when only worktree is set (no cwd)", async () => {
     const ms = mockSpawn();
-    server = new ClaudeWsServer({ spawn: ms.spawn });
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     await server.start();
 
     server.prepareSession("wt-only-session", {
@@ -1712,7 +1712,7 @@ describe("ClaudeWsServer", () => {
       };
     };
 
-    server = new ClaudeWsServer({ spawn });
+    server = new ClaudeWsServer({ spawn, logger: silentLogger });
     const port = await server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1816,7 +1816,7 @@ describe("ClaudeWsServer", () => {
       };
     };
 
-    server = new ClaudeWsServer({ spawn });
+    server = new ClaudeWsServer({ spawn, logger: silentLogger });
     const port = await server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1948,7 +1948,7 @@ describe("ClaudeWsServer", () => {
       };
     };
 
-    server = new ClaudeWsServer({ spawn });
+    server = new ClaudeWsServer({ spawn, logger: silentLogger });
     const port = await server.start();
 
     server.prepareSession("test-session", { prompt: "Hello" });
@@ -1982,7 +1982,7 @@ describe("ClaudeWsServer", () => {
   test("WebSocket disconnect runs full cleanup: state, waiters, and keep-alive timer", async () => {
     const spawnState = mockSpawn();
     const events: SessionEvent[] = [];
-    const server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    const server = new ClaudeWsServer({ spawn: spawnState.spawn, logger: silentLogger });
     server.onSessionEvent = (_sid, event) => events.push(event);
     const port = await server.start();
 
@@ -2612,7 +2612,7 @@ describe("getTranscript JSONL fallback", () => {
 
     // Set up server with a session
     spawnState = mockSpawn();
-    server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server = new ClaudeWsServer({ spawn: spawnState.spawn, logger: silentLogger });
     await server.start();
 
     const sessionId = "test-session-1";
@@ -2659,7 +2659,7 @@ describe("getTranscript JSONL fallback", () => {
 
   test("returns buffer entries when request fits in buffer", async () => {
     spawnState = mockSpawn();
-    server = new ClaudeWsServer({ spawn: spawnState.spawn });
+    server = new ClaudeWsServer({ spawn: spawnState.spawn, logger: silentLogger });
     await server.start();
 
     const sessionId = "test-session-2";
