@@ -82,6 +82,11 @@ export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
             {state.transport === "stdio" ? "Command" : "URL"}: {state.url}
             <Text dimColor>█</Text>
           </Text>
+          {state.transport === "stdio" && (
+            <Text dimColor>
+              quoted paths supported: {'"'}path with spaces{'"'} --arg
+            </Text>
+          )}
           <Text dimColor>type {state.transport === "stdio" ? "command" : "url"} enter confirm esc cancel</Text>
         </Box>
       )}
