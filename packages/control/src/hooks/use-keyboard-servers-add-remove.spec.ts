@@ -98,7 +98,7 @@ describe("buildConfig", () => {
     });
   });
 
-  test("builds http config with env vars", () => {
+  test("http config ignores env vars (not supported by HttpServerConfig)", () => {
     const state = {
       ...initialAddServerState(),
       transport: "http" as const,
@@ -107,22 +107,32 @@ describe("buildConfig", () => {
       env: ["API_KEY=abc123"],
     };
     const config = buildConfig(state);
-    // env is set as an extra property via spread — check individual fields
-    expect((config as { type: string }).type).toBe("http");
-    expect((config as { url: string }).url).toBe("https://example.com");
-    expect((config as { env: Record<string, string> }).env).toEqual({ API_KEY: "abc123" });
+    expect(config).toEqual({ type: "http", url: "https://example.com" });
+    expect("env" in config).toBe(false);
   });
 
-  test("ignores invalid env entries (no = sign)", () => {
+  test("sse config ignores env vars (not supported by SseServerConfig)", () => {
     const state = {
       ...initialAddServerState(),
-      transport: "http" as const,
+      transport: "sse" as const,
+      name: "test",
       url: "https://example.com",
+      env: ["API_KEY=abc123"],
+    };
+    const config = buildConfig(state);
+    expect(config).toEqual({ type: "sse", url: "https://example.com" });
+    expect("env" in config).toBe(false);
+  });
+
+  test("ignores invalid env entries (no = sign) for stdio", () => {
+    const state = {
+      ...initialAddServerState(),
+      transport: "stdio" as const,
+      url: "node server.js",
       env: ["INVALID", "GOOD=val"],
     };
     const config = buildConfig(state);
-    expect((config as { type: string }).type).toBe("http");
-    expect((config as { env: Record<string, string> }).env).toEqual({ GOOD: "val" });
+    expect((config as { env?: Record<string, string> }).env).toEqual({ GOOD: "val" });
   });
 });
 
@@ -275,8 +285,34 @@ describe("add server mode", () => {
     expect(nav.setAddServerState).not.toHaveBeenCalled();
   });
 
-  test("url step: enter with url advances to env step", () => {
+  test("url step: enter with url advances to scope for http (skips env)", () => {
     const state = { ...initialAddServerState(), step: "url" as const, url: "https://example.com" };
+    const nav = makeNav({ addServerMode: true, addServerState: state });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    expect((call[0] as { step: string }).step).toBe("scope");
+  });
+
+  test("url step: enter with url advances to scope for sse (skips env)", () => {
+    const state = {
+      ...initialAddServerState(),
+      step: "url" as const,
+      url: "https://example.com",
+      transport: "sse" as const,
+    };
+    const nav = makeNav({ addServerMode: true, addServerState: state });
+    handleServersInput("", { ...baseKey, return: true }, nav);
+    const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];
+    expect((call[0] as { step: string }).step).toBe("scope");
+  });
+
+  test("url step: enter with url advances to env for stdio", () => {
+    const state = {
+      ...initialAddServerState(),
+      step: "url" as const,
+      url: "node server.js",
+      transport: "stdio" as const,
+    };
     const nav = makeNav({ addServerMode: true, addServerState: state });
     handleServersInput("", { ...baseKey, return: true }, nav);
     const call = (nav.setAddServerState as ReturnType<typeof mock>).mock.calls[0];

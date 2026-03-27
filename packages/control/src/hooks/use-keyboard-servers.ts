@@ -33,14 +33,10 @@ export function buildConfig(state: AddServerState): ServerConfig {
     return config;
   }
 
-  const config: ServerConfig = {
+  return {
     type: state.transport,
     url: state.url,
   };
-  if (Object.keys(envObj).length > 0) {
-    return { ...config, env: envObj } as ServerConfig;
-  }
-  return config;
 }
 
 /**
@@ -235,7 +231,9 @@ function handleAddServerInput(input: string, key: Key, nav: ServersNav): boolean
   if (step === "url") {
     if (key.return) {
       if (state.url.trim().length > 0) {
-        setAddServerState({ ...state, step: "env" });
+        // HTTP/SSE configs don't support env vars — skip directly to scope
+        const nextStep = state.transport === "stdio" ? "env" : "scope";
+        setAddServerState({ ...state, step: nextStep });
       }
       return true;
     }
