@@ -2388,7 +2388,7 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("logs warning when result message matches neither success nor error schema", async () => {
+  test("transitions to idle via fallback when result message has unrecognized schema (fixes #978)", async () => {
     const errors: string[] = [];
     const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
     const ms = mockSpawn();
@@ -2403,23 +2403,94 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
 
-      // Send a malformed result message (missing required fields)
+      // Send a result message with unrecognized schema (missing strict fields
+      // like is_error, result, usage, etc.) — the fallback should still
+      // transition the session to idle instead of leaving it stuck in active.
       ws.send(
         serialize({
           type: "result",
           subtype: "unknown_subtype",
-          // Missing is_error, result, usage, etc.
           uuid: "test-uuid",
           session_id: "test-session",
         }),
       );
 
-      // Wait for the message to be processed
-      await pollUntil(() => errors.some((e) => e.includes("matched neither success nor error schema")));
-
-      // Session should still be in active state (result wasn't processed)
+      // Session should transition to idle via fallback
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
       const status = server.getStatus("test-session");
-      expect(status.state).not.toBe("idle");
+      expect(status.state).toBe("idle");
+
+      // Should log schema mismatch diagnostic
+      expect(errors.some((e) => e.includes("Schema mismatch") && e.includes("fallback"))).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("logs schema mismatch when system/init is missing fields", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+
+      // Send a minimal system/init missing most required fields
+      ws.send(
+        serialize({
+          type: "system",
+          subtype: "init",
+          cwd: "/test",
+          session_id: "test-session",
+          model: "claude-sonnet-4-6",
+          // Missing: tools, mcp_servers, permissionMode, apiKeySource,
+          // claude_code_version, uuid
+        }),
+      );
+
+      // Should still transition to init (not stuck in connecting)
+      await pollUntil(() => server?.listSessions().some((s) => s.state === "init"));
+      expect(server.listSessions()[0].state).toBe("init");
+
+      // Should log schema mismatch
+      await pollUntil(() => errors.some((e) => e.includes("Schema mismatch") && e.includes("system/init")));
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("logs unrecognized message type", async () => {
+    const errors: string[] = [];
+    const logger = { ...silentLogger, error: (msg: string) => errors.push(msg) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+
+      // Send a completely unknown message type
+      ws.send(
+        serialize({
+          type: "new_feature_type",
+          data: "something",
+          session_id: "test-session",
+        }),
+      );
+
+      await pollUntil(() => errors.some((e) => e.includes("Unrecognized message type")));
+      expect(errors.some((e) => e.includes('"new_feature_type"'))).toBe(true);
     } finally {
       ws.close();
     }

@@ -587,4 +587,282 @@ describe("SessionState", () => {
       expect(session.numTurns).toBe(6);
     });
   });
+
+  describe("result fallback (fixes #978)", () => {
+    test("transitions to idle when result message is missing is_error and duration fields", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.state).toBe("active");
+
+      // Result message without is_error, duration_ms, duration_api_ms, uuid
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "Done!",
+        num_turns: 2,
+        total_cost_usd: 0.03,
+        usage: { input_tokens: 150, output_tokens: 75 },
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        expect(events[0].cost).toBe(0.03);
+        expect(events[0].numTurns).toBe(2);
+        expect(events[0].tokens).toBe(225);
+      }
+    });
+
+    test("transitions to idle via fallback when result has unrecognized schema", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.state).toBe("active");
+
+      // Result with completely different field names — only type: "result" matches
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "All done",
+        // Missing: is_error, num_turns, total_cost_usd, usage, duration_ms, etc.
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        // Fallback defaults for missing fields
+        expect(events[0].cost).toBe(0);
+        expect(events[0].numTurns).toBe(0);
+        expect(events[0].tokens).toBe(0);
+        expect(events[0].result).toBe("All done");
+      }
+    });
+
+    test("fallback handles error result with unrecognized schema", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const events = session.handleMessage({
+        type: "result",
+        subtype: "error",
+        errors: ["Something went wrong"],
+        session_id: "sess-1",
+      });
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:error");
+      if (events[0].type === "session:error") {
+        expect(events[0].errors).toEqual(["Something went wrong"]);
+        expect(events[0].cost).toBe(0);
+      }
+    });
+
+    test("strict schemas still match when all fields are present", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const events = session.handleMessage(RESULT_SUCCESS);
+
+      expect(session.state).toBe("idle");
+      expect(session.parseMismatch).toBe(false);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+      if (events[0].type === "session:result") {
+        expect(events[0].cost).toBe(0.05);
+        expect(events[0].numTurns).toBe(3);
+        expect(events[0].tokens).toBe(300);
+      }
+    });
+
+    test("sets parseMismatch when fallback is used for result", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "ok",
+        session_id: "sess-1",
+      });
+
+      expect(session.parseMismatch).toBe(true);
+      expect(session.state).toBe("idle");
+    });
+  });
+
+  describe("init fallback", () => {
+    test("transitions to init when system/init is missing non-essential fields", () => {
+      const session = new SessionState("test");
+
+      // Minimal init — only the fields the state machine truly needs
+      const events = session.handleMessage({
+        type: "system",
+        subtype: "init",
+        cwd: "/project",
+        session_id: "sess-99",
+        model: "claude-opus-4-6",
+        // Missing: tools, mcp_servers, permissionMode, apiKeySource,
+        // claude_code_version, uuid
+      });
+
+      expect(session.state).toBe("init");
+      expect(session.model).toBe("claude-opus-4-6");
+      expect(session.cwd).toBe("/project");
+      expect(session.parseMismatch).toBe(true);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:init");
+      if (events[0].type === "session:init") {
+        expect(events[0].sessionId).toBe("sess-99");
+        expect(events[0].model).toBe("claude-opus-4-6");
+        expect(events[0].cwd).toBe("/project");
+      }
+    });
+
+    test("transitions to init with defaults when nearly all fields are missing", () => {
+      const session = new SessionState("test");
+
+      const events = session.handleMessage({
+        type: "system",
+        subtype: "init",
+        // Missing: cwd, session_id, model, and everything else
+      });
+
+      expect(session.state).toBe("init");
+      expect(session.parseMismatch).toBe(true);
+      // Falls back to defaults
+      expect(session.model).toBe("unknown");
+      expect(session.cwd).toBe("/");
+      expect(events).toHaveLength(1);
+      if (events[0].type === "session:init") {
+        expect(events[0].sessionId).toBe("test"); // falls back to SessionState.sessionId
+        expect(events[0].model).toBe("unknown");
+      }
+    });
+
+    test("strict schema still matches when all fields are present", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+
+      expect(session.state).toBe("init");
+      expect(session.parseMismatch).toBe(false);
+      expect(session.model).toBe("claude-sonnet-4-6");
+      expect(session.cwd).toBe("/home/user/project");
+    });
+  });
+
+  describe("assistant fallback", () => {
+    test("transitions to active when assistant message is missing non-essential fields", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+
+      const events = session.handleMessage({
+        type: "assistant",
+        message: {
+          // Only has usage — missing id, type, role, model, content, stop_reason
+          usage: { input_tokens: 50, output_tokens: 25 },
+        },
+      });
+
+      expect(session.state).toBe("active");
+      expect(session.parseMismatch).toBe(true);
+      expect(session.tokens).toBe(75);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:response");
+    });
+
+    test("transitions to active with zero tokens when usage is missing", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+
+      const events = session.handleMessage({
+        type: "assistant",
+        // Completely missing message or usage
+      });
+
+      expect(session.state).toBe("active");
+      expect(session.parseMismatch).toBe(true);
+      expect(session.tokens).toBe(0);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:response");
+    });
+
+    test("strict schema still matches when all fields are present", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+
+      session.handleMessage(ASSISTANT_MSG);
+
+      expect(session.state).toBe("active");
+      expect(session.parseMismatch).toBe(false);
+      expect(session.tokens).toBe(150);
+    });
+  });
+
+  describe("control_request fallback", () => {
+    test("sets parseMismatch when can_use_tool message fails to parse", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const events = session.handleMessage({
+        type: "control_request",
+        request_id: "req-1",
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "Bash",
+          // Missing: input, tool_use_id
+        },
+      });
+
+      expect(events).toHaveLength(0);
+      expect(session.parseMismatch).toBe(true);
+      // State should NOT change — we couldn't extract enough to create a permission entry
+      expect(session.state).toBe("active");
+    });
+
+    test("does not set parseMismatch for non-can_use_tool control requests", () => {
+      const session = new SessionState("test");
+      session.handleMessage(SYSTEM_INIT);
+
+      const events = session.handleMessage({
+        type: "control_request",
+        request_id: "req-1",
+        request: { subtype: "hook_callback", callback_id: "cb-1", input: {} },
+      });
+
+      expect(events).toHaveLength(0);
+      expect(session.parseMismatch).toBe(false);
+    });
+  });
+
+  describe("parseMismatch lifecycle", () => {
+    test("parseMismatch is cleared on each handleMessage call", () => {
+      const session = new SessionState("test");
+
+      // Trigger a fallback
+      session.handleMessage({
+        type: "system",
+        subtype: "init",
+        cwd: "/test",
+        session_id: "s1",
+        model: "test",
+      });
+      expect(session.parseMismatch).toBe(true);
+
+      // Next message should clear it
+      session.handleMessage({
+        type: "keep_alive",
+      });
+      expect(session.parseMismatch).toBe(false);
+    });
+  });
 });
