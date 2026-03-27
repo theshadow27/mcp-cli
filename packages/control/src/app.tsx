@@ -451,7 +451,11 @@ export function App() {
         <>
           {(needsAuth.length > 0 || authStatus) && <AuthBanner servers={needsAuth} authStatus={authStatus} />}
           {addServerMode ? (
-            <ServerAddForm state={addServerState} configPath={resolveConfigPath(addServerState.scope)} />
+            <ServerAddForm
+              state={addServerState}
+              configPath={resolveConfigPath(addServerState.scope)}
+              nameExists={addServerState.name !== "" && addServerState.name in configInfo}
+            />
           ) : (
             <ServerList
               servers={servers}

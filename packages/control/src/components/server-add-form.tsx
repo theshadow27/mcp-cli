@@ -38,12 +38,14 @@ interface ServerAddFormProps {
   state: AddServerState;
   /** Resolved config file path for the current scope — shown on the confirm step. */
   configPath?: string;
+  /** When true, the server name already exists in the config and will be overwritten. */
+  nameExists?: boolean;
 }
 
 const TRANSPORT_OPTIONS: AddServerTransport[] = ["http", "sse", "stdio"];
 const SCOPE_OPTIONS: AddServerScope[] = ["user", "project"];
 
-export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
+export function ServerAddForm({ state, configPath, nameExists }: ServerAddFormProps) {
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Text bold color="cyan">
@@ -159,6 +161,11 @@ export function ServerAddForm({ state, configPath }: ServerAddFormProps) {
           {configPath && (
             <Text>
               Config: <Text dimColor>{configPath}</Text>
+            </Text>
+          )}
+          {nameExists && (
+            <Text color="yellow">
+              ⚠ A server named &apos;{state.name}&apos; already exists — continuing will overwrite it
             </Text>
           )}
           <Text dimColor>enter save esc cancel</Text>

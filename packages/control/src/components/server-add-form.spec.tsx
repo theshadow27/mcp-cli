@@ -3,9 +3,9 @@ import { render } from "ink-testing-library";
 import React from "react";
 import { type AddServerState, ServerAddForm, initialAddServerState } from "./server-add-form";
 
-function renderForm(overrides: Partial<AddServerState> = {}) {
+function renderForm(overrides: Partial<AddServerState> = {}, props: { nameExists?: boolean } = {}) {
   const state: AddServerState = { ...initialAddServerState(), ...overrides };
-  const { lastFrame } = render(<ServerAddForm state={state} />);
+  const { lastFrame } = render(<ServerAddForm state={state} {...props} />);
   return lastFrame() ?? "";
 }
 
@@ -102,5 +102,23 @@ describe("ServerAddForm", () => {
     });
     expect(frame).not.toContain("Env:");
     expect(frame).toContain("project");
+  });
+
+  test("confirm step shows overwrite warning when nameExists is true", () => {
+    const frame = renderForm(
+      { step: "confirm", name: "my-server", transport: "http", url: "https://example.com", scope: "user" },
+      { nameExists: true },
+    );
+    expect(frame).toContain("already exists");
+    expect(frame).toContain("my-server");
+    expect(frame).toContain("overwrite");
+  });
+
+  test("confirm step hides overwrite warning when nameExists is false", () => {
+    const frame = renderForm(
+      { step: "confirm", name: "my-server", transport: "http", url: "https://example.com", scope: "user" },
+      { nameExists: false },
+    );
+    expect(frame).not.toContain("already exists");
   });
 });
