@@ -42,6 +42,24 @@ assembly — that together, orchestrated by a Claude that understands the pipeli
 they produce a system that autonomously clears a sprint. The whole is dramatically
 more than the sum of the parts.
 
+## Session isolation, not subagents
+
+Sprint orchestration requires session-level isolation: each issue gets its own
+independent Claude session with its own context window, working directory, and
+lifecycle. The orchestrator interacts with sessions through a management interface
+(spawn, wait, check, send, end) — not by receiving their full output.
+
+This is distinct from Claude Code's built-in subagent model (Agent tool, background
+agents, swarms), where worker output flows back into the parent context. That model
+works well for decomposing a single complex task, but breaks down at sprint scale —
+10+ parallel issues across multiple phases will exhaust the orchestrator's context
+window with implementation details it doesn't need and can't usefully act on.
+
+mcx provides this isolation today via `mcx claude` commands. The essential capability
+is: spawn an isolated session with a mandate, wait for it without ingesting its
+output, check its result, and clean up. Any tool providing these primitives can
+substitute.
+
 ## Your job
 
 You are not copying mcp-cli's sprint skill. You are understanding the *pattern*
