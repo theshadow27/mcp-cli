@@ -130,8 +130,8 @@ item should be confirmed before proceeding to the next.
     - Fix/repair workflow is documented (even if inline in run.md)
     - Any project-specific skills (screenshot capture, etc.) are working
 
-[ ] Deprecated commands renamed to legacy-*
-    - Old commands that conflict with the new pipeline are moved
+[ ] Deprecated commands deleted
+    - Commands replaced by the sprint pipeline are removed (noted in commit message)
     - Commands that serve different purposes (interactive use) are kept
 
 [ ] Infrastructure verified
@@ -159,11 +159,4 @@ item should be confirmed before proceeding to the next.
 [ ] Sprint 2 planned
     - Apply retro learnings to the skill files FIRST
     - Then plan sprint 2 with slightly more ambition (5-7 issues)
-    - The fact that you're here means sprint 1 worked. It gets better from here.
 ```
-
-That last item is important. If you're planning sprint 2, the system works. It may
-be rough, it may need tuning, but the hard part — proving that Claude can orchestrate
-a sprint — is done. Everything from here is refinement.
-
-You've got this.

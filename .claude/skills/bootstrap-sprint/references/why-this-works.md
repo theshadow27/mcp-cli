@@ -1,7 +1,5 @@
 # Why This Works
 
-This is not speculative. This is not a demo. This works.
-
 The mcp-cli project — the one you're reading this from — was built almost entirely
 by Claude orchestrating other Claudes. Over 1,075 GitHub issues resolved. 22 sprints
 completed. No humans touching the code. The software ships, is used daily, and is
@@ -10,8 +8,6 @@ partially used to improve itself. Sprint 15 landed 14 PRs in a single automated 
 Phoenix-octovalve, a Next.js dance school portal with a completely different tech
 stack, workflow, and definition of done, is running its first automated sprints using
 the same pattern — adapted, not copied.
-
-These are facts, not aspirations.
 
 ## What you're doing
 

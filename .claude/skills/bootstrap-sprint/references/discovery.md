@@ -160,6 +160,72 @@ conversation is where that understanding is built.
 **Don't rush this.** A 20-minute conversation now saves hours of debugging a sprint
 skill that was built on wrong assumptions.
 
+## Prerequisites and honest assessment
+
+Auto-sprint is not magic. It works because of a tight feedback loop: implement,
+validate, fix, validate again. That loop requires infrastructure. If the
+infrastructure isn't there, the sprint will break things faster than they can be
+recovered.
+
+**Be honest with the user during this phase.** A successful auto-sprint is
+predicated on trust, and trust starts with an honest assessment of readiness.
+If the project isn't ready, say so clearly and explain what needs to change.
+
+### Hard prerequisites
+
+These must exist before auto-sprint is viable:
+
+- **Test suite that runs in under 10 minutes.** Rapid iteration requires fast
+  feedback. If the test suite takes 20+ minutes, each fix-push-check cycle becomes
+  a bottleneck — you'll get fractional sprints per day. Skipping tests to go faster
+  is counterproductive; it just moves the breakage downstream. If the suite is slow,
+  explore whether it can be improved (parallelized, split into fast/slow tiers,
+  redundant tests removed). But be honest: if it can't be made fast enough, auto-sprint
+  may not be a good fit for this project right now.
+
+- **Static analysis (types, lint, format).** LLMs generate code that compiles and
+  looks reasonable but may violate project conventions, introduce type errors, or
+  break formatting. Without automated static analysis catching these, review burden
+  increases and quality degrades across sprints.
+
+- **CI safety net.** Some form of automated validation that runs on every push.
+  Doesn't need to be sophisticated — even `typecheck && lint && test` in a GitHub
+  Action is enough. Without it, there's no automated gate, and bad merges compound.
+
+- **Issue tracking.** The orchestrator needs a backlog to plan from, PR linking for
+  traceability, and automated close-on-merge. GitHub Issues is the minimum.
+
+- **CLAUDE.md or equivalent.** The project's conventions, architecture, and rules
+  need to be written down. Worker sessions start fresh — if the knowledge isn't in
+  a file they can read, they'll make decisions that conflict with the project's norms.
+
+### What if prerequisites aren't met?
+
+If discovery reveals missing prerequisites, recommend addressing them first.
+Depending on the project's state, there are three paths:
+
+1. **Incremental**: The project is mostly ready, just missing one or two pieces
+   (e.g., needs a CI pipeline, or CLAUDE.md needs writing). Propose these as
+   concrete tasks. They can be the first issues in the sprint backlog, or done
+   manually before the first sprint.
+
+2. **Foundation-first**: The project has significant gaps (no tests, no CI, no
+   conventions). Recommend a focused effort to build the foundation — test harness,
+   CI pipeline, CLAUDE.md, issue triage — before attempting auto-sprint. This might
+   take a few manual sessions.
+
+3. **Reconsider the approach**: In some cases, the existing codebase may be so
+   poorly structured that adding automation on top would be building on sand. The
+   real value of a codebase is not the code itself — it's the domain knowledge and
+   requirements the code encodes. It may be more effective to extract that knowledge
+   and rebuild (entirely or in chunks) with proper conventions from the start. This
+   is a hard conversation to have, but it's better to have it during discovery than
+   after sprint 3 fails.
+
+The goal is not to gatekeep auto-sprint. The goal is to set it up for success.
+If the prerequisites aren't met, the sprint will produce PRs that break things,
+erode the user's trust, and make the second attempt harder. Better to be honest now.
+
 ## Output
 
 After discovery, write a summary of findings organized by the 8 categories above.

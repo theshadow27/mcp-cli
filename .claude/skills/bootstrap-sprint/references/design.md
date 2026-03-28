@@ -137,6 +137,17 @@ Write the spawn commands verbatim. The orchestrator should be able to copy-paste
 them. Include the `--allow` flags, the model selection, the worktree flags. Don't
 make the orchestrator figure these out at runtime.
 
+### The session management reference (mcx-claude.md)
+
+The orchestrator leans heavily on `mcx claude` commands for session management.
+The canonical reference is maintained at:
+https://github.com/theshadow27/mcp-cli/blob/main/.claude/skills/sprint/references/mcx-claude.md
+
+Fetch the latest version and adapt it for the target project. Strip commands that
+don't apply (provider routing, ACP), add any project-specific flags or worktree
+hooks. The orchestrator should never have to guess at command syntax — every spawn,
+wait, bye, and ls command should be spelled out with exact flags.
+
 ### The review reference (review.md)
 
 How to wrap up: gather what shipped, record results in the sprint file, extract
@@ -169,26 +180,30 @@ what to do if it fails.
 When introducing a sprint skill into a project with existing automation, some
 commands become redundant. Handle this carefully:
 
-- **Kill**: Commands that are genuinely replaced and will confuse the orchestrator
-  if they coexist (e.g., a `/sprint` that does something completely different)
+- **Delete**: Commands that are genuinely replaced and will confuse the orchestrator
+  if they coexist. Delete them outright — note the deletion in the commit message
+  so it's discoverable, but don't leave stale files around. In a Claude-operated
+  project, there's no muscle memory to preserve and legacy prefixes just create
+  confusion about what's canonical.
 - **Keep**: Commands that serve a different purpose (interactive vs. autonomous,
   standalone use vs. pipeline use)
 - **Enhance**: Commands that are almost right but need a small addition (like
   a CI gate added to a fix-comments command)
 
-Rename deprecated commands to `legacy-*` rather than deleting — someone may have
-muscle memory or scripts that reference them.
+## Write draft skill files, then iterate
 
-## Present the design
+Don't present an abstract design document and ask for approval — write the actual
+skill files as a first draft. Working artifacts are easier to react to than
+descriptions of artifacts. The user can read a draft `run.md` and say "this phase
+is wrong" far more effectively than they can evaluate a bullet-point pipeline
+diagram.
 
-Before writing any files, present the full design to the user:
+1. Write all the skill files (SKILL.md, plan.md, run.md, review.md, mcx-claude.md)
+2. Walk the user through each one — explain the pipeline, the phases, the commands
+3. Iterate based on feedback. The user may reorder phases, adjust concurrency,
+   add gates, or cut phases entirely.
+4. Commit when the user is satisfied
 
-1. The pipeline (phases and transitions)
-2. The skill files you'll create or modify
-3. The commands you'll deprecate, keep, or enhance
-4. The concurrency model
-5. Anything you're uncertain about
-
-Get explicit approval. Then write the files.
+This is the design phase *and* the build phase. They're the same thing.
 
 Proceed to `references/iteration.md`.
