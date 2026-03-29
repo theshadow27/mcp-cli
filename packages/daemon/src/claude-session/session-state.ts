@@ -7,13 +7,21 @@
  */
 
 import type { SessionStateEnum } from "@mcp-cli/core";
-import type { Assistant as AssistantMsg, CanUseTool as CanUseToolMsg, NdjsonMessage } from "./ndjson";
+import type {
+  AssistantFallback as AssistantFallbackMsg,
+  Assistant as AssistantMsg,
+  CanUseTool as CanUseToolMsg,
+  NdjsonMessage,
+} from "./ndjson";
 import {
+  AssistantFallback,
   Assistant as AssistantSchema,
   CanUseTool as CanUseToolSchema,
   ResultError,
+  ResultFallback,
   ResultSuccess,
   SystemInit,
+  SystemInitFallback,
   interruptRequest,
   permissionAllow,
   permissionDeny,
@@ -48,7 +56,7 @@ function createDefaultIdGenerator(): RequestIdGenerator {
 
 // ── Ignored message types ──
 
-const IGNORED_TYPES: ReadonlySet<string> = new Set([
+export const IGNORED_TYPES: ReadonlySet<string> = new Set([
   "keep_alive",
   "stream_event",
   "tool_progress",
@@ -69,6 +77,13 @@ export class SessionState {
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
   private readonly genRequestId: RequestIdGenerator;
 
+  /**
+   * Set to true when the last handleMessage used a fallback schema instead
+   * of the strict one. Cleared on every handleMessage call. Allows callers
+   * (ws-server) to log diagnostics without the state machine needing a logger.
+   */
+  parseMismatch = false;
+
   constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
     this.sessionId = sessionId;
     this.state = "connecting";
@@ -80,6 +95,7 @@ export class SessionState {
    * Returns zero or more events for observers.
    */
   handleMessage(msg: NdjsonMessage): SessionEvent[] {
+    this.parseMismatch = false;
     if (IGNORED_TYPES.has(msg.type)) return [];
     if (msg.type === "system" && msg.subtype === "status") return [];
 
@@ -178,9 +194,31 @@ export class SessionState {
   // ── Private handlers ──
 
   private handleInit(msg: NdjsonMessage): SessionEvent[] {
-    const parsed = SystemInit.parse(msg);
-    this.model = parsed.model;
-    this.cwd = parsed.cwd;
+    const strict = SystemInit.safeParse(msg);
+    if (strict.success) {
+      return this.applyInit(strict.data.session_id, strict.data.model, strict.data.cwd);
+    }
+
+    // Fallback: extract what we can so the session doesn't stay stuck in "connecting"
+    const loose = SystemInitFallback.safeParse(msg);
+    if (loose.success) {
+      this.parseMismatch = true;
+      return this.applyInit(
+        loose.data.session_id ?? this.sessionId,
+        loose.data.model ?? "unknown",
+        loose.data.cwd ?? "/",
+      );
+    }
+
+    // unreachable: SystemInitFallback only requires type:"system" + subtype:"init",
+    // both already confirmed by dispatch. Kept as defensive last resort.
+    this.parseMismatch = true;
+    return this.applyInit(this.sessionId, "unknown", "/");
+  }
+
+  private applyInit(sessionId: string, model: string, cwd: string): SessionEvent[] {
+    this.model = model;
+    this.cwd = cwd;
 
     // Only transition to "init" from "connecting" — don't regress state
     // when the CLI reconnects after a WS drop and re-sends system/init.
@@ -191,23 +229,40 @@ export class SessionState {
     return [
       {
         type: "session:init",
-        sessionId: parsed.session_id,
-        model: parsed.model,
-        cwd: parsed.cwd,
+        sessionId,
+        model,
+        cwd,
         state: this.state,
       },
     ];
   }
 
   private handleAssistant(msg: NdjsonMessage): SessionEvent[] {
-    const parsed = AssistantSchema.parse(msg);
+    const strict = AssistantSchema.safeParse(msg);
+    if (strict.success) {
+      this.state = "active";
+      const usage = strict.data.message.usage;
+      this.tokens += usage.input_tokens + usage.output_tokens;
+      return [{ type: "session:response", message: strict.data }];
+    }
+
+    // Fallback: still transition to active and extract tokens if possible
+    const loose = AssistantFallback.safeParse(msg);
+    if (loose.success) {
+      this.parseMismatch = true;
+      this.state = "active";
+      const usage = loose.data.message?.usage;
+      if (usage) {
+        this.tokens += usage.input_tokens + usage.output_tokens;
+      }
+      return [{ type: "session:response", message: buildFallbackAssistant(msg, loose.data) }];
+    }
+
+    // Even the fallback failed — still transition to active
+    // unreachable: AssistantFallback only requires type:"assistant", already confirmed by dispatch
+    this.parseMismatch = true;
     this.state = "active";
-
-    // Accumulate tokens from each assistant message
-    const usage = parsed.message.usage;
-    this.tokens += usage.input_tokens + usage.output_tokens;
-
-    return [{ type: "session:response", message: parsed }];
+    return [{ type: "session:response", message: buildFallbackAssistant(msg) }];
   }
 
   private handleResult(msg: NdjsonMessage): SessionEvent[] {
@@ -239,13 +294,53 @@ export class SessionState {
       return [{ type: "session:error", errors: r.errors, cost: r.total_cost_usd }];
     }
 
+    // Fallback: transition to idle for any result message, even if neither
+    // strict schema matched. This prevents sessions from getting stuck in
+    // "active" state when the CLI wire format drifts. Extract what we can.
+    const fallback = ResultFallback.safeParse(msg);
+    if (fallback.success) {
+      this.parseMismatch = true;
+      const r = fallback.data;
+      const cost = r.total_cost_usd ?? 0;
+      const turns = r.num_turns ?? 0;
+      const resultTokens = r.usage ? r.usage.input_tokens + r.usage.output_tokens : 0;
+      this.cost += cost;
+      this.numTurns += turns;
+      this.tokens += resultTokens;
+      this.state = "idle";
+
+      const errors = r.errors;
+      if (r.subtype !== "success" && Array.isArray(errors) && errors.length > 0) {
+        return [{ type: "session:error", errors, cost }];
+      }
+      return [
+        {
+          type: "session:result",
+          cost,
+          tokens: resultTokens,
+          numTurns: turns,
+          result: r.result ?? "",
+        },
+      ];
+    }
+
+    // unreachable: ResultFallback only requires type:"result", already confirmed by dispatch
     return [];
   }
 
   private handleControlRequest(msg: NdjsonMessage): SessionEvent[] {
     // Only handle can_use_tool control requests
     const parsed = CanUseToolSchema.safeParse(msg);
-    if (!parsed.success) return [];
+    if (!parsed.success) {
+      // Flag if this looked like a can_use_tool but didn't parse — callers
+      // can log the mismatch. Other control_request subtypes (hook_callback,
+      // initialize, interrupt) are intentionally ignored here.
+      const request = msg.request as Record<string, unknown> | undefined;
+      if (request?.subtype === "can_use_tool") {
+        this.parseMismatch = true;
+      }
+      return [];
+    }
 
     const { request_id, request } = parsed.data;
     this.pendingPermissions.set(request_id, request);
@@ -259,4 +354,31 @@ export class SessionState {
       },
     ];
   }
+}
+
+/**
+ * Construct a type-safe AssistantMsg from a fallback parse result (or raw message).
+ * Fills in required fields with safe defaults so downstream consumers of
+ * `session:response` never hit undefined access on typed fields.
+ */
+function buildFallbackAssistant(raw: NdjsonMessage, loose?: AssistantFallbackMsg): AssistantMsg {
+  const rawObj = raw as Record<string, unknown>;
+  const rawMsg = (rawObj.message as Record<string, unknown> | undefined) ?? {};
+  const looseMessage = loose?.message;
+  return {
+    type: "assistant",
+    message: {
+      id: (rawMsg.id as string) ?? "unknown",
+      type: "message",
+      role: "assistant",
+      model: (rawMsg.model as string) ?? "unknown",
+      content: (rawMsg.content as AssistantMsg["message"]["content"]) ?? [],
+      stop_reason: (rawMsg.stop_reason as string) ?? null,
+      usage: looseMessage?.usage ?? { input_tokens: 0, output_tokens: 0 },
+    },
+    parent_tool_use_id: (rawObj.parent_tool_use_id as string) ?? null,
+    error: rawObj.error as string | undefined,
+    uuid: (rawObj.uuid as string) ?? "unknown",
+    session_id: (rawObj.session_id as string) ?? "unknown",
+  };
 }

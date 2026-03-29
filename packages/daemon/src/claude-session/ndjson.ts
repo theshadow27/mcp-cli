@@ -36,6 +36,22 @@ export const SystemInit = z
   })
   .passthrough();
 
+/**
+ * Loose init schema — requires only the fields the state machine needs
+ * (session_id, model, cwd). Used as a fallback when SystemInit doesn't
+ * match, so the session still initializes instead of staying stuck in
+ * "connecting" forever.
+ */
+export const SystemInitFallback = z
+  .object({
+    type: z.literal("system"),
+    subtype: z.literal("init"),
+    cwd: z.string().optional(),
+    session_id: z.string().optional(),
+    model: z.string().optional(),
+  })
+  .passthrough();
+
 export const SystemStatus = z
   .object({
     type: z.literal("system"),
@@ -65,18 +81,35 @@ export const Assistant = z.object({
   session_id: z.string(),
 });
 
+/**
+ * Loose assistant schema — requires only the fields the state machine needs
+ * (usage for token tracking). Used as a fallback when Assistant doesn't match,
+ * so the session still transitions to "active" and accumulates tokens.
+ */
+export const AssistantFallback = z
+  .object({
+    type: z.literal("assistant"),
+    message: z
+      .object({
+        usage: Usage.optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 export const ResultSuccess = z
   .object({
     type: z.literal("result"),
     subtype: z.literal("success"),
-    is_error: z.literal(false),
+    is_error: z.literal(false).optional(),
     result: z.string(),
-    duration_ms: z.number(),
-    duration_api_ms: z.number(),
+    duration_ms: z.number().optional(),
+    duration_api_ms: z.number().optional(),
     num_turns: z.number(),
     total_cost_usd: z.number(),
     usage: Usage,
-    uuid: z.string(),
+    uuid: z.string().optional(),
     session_id: z.string(),
   })
   .passthrough();
@@ -85,13 +118,31 @@ export const ResultError = z
   .object({
     type: z.literal("result"),
     subtype: z.string(),
-    is_error: z.literal(true),
+    is_error: z.literal(true).optional(),
     errors: z.array(z.string()),
-    duration_ms: z.number(),
+    duration_ms: z.number().optional(),
     num_turns: z.number(),
     total_cost_usd: z.number(),
-    uuid: z.string(),
+    uuid: z.string().optional(),
     session_id: z.string(),
+  })
+  .passthrough();
+
+/**
+ * Loose result schema — matches any `type: "result"` message regardless of
+ * other fields. Used as a fallback when neither ResultSuccess nor ResultError
+ * match, so the session still transitions to idle instead of staying stuck.
+ */
+export const ResultFallback = z
+  .object({
+    type: z.literal("result"),
+    subtype: z.string().optional(),
+    result: z.string().optional(),
+    errors: z.array(z.string()).optional(),
+    num_turns: z.number().optional(),
+    total_cost_usd: z.number().optional(),
+    usage: Usage.optional(),
+    session_id: z.string().optional(),
   })
   .passthrough();
 
@@ -242,10 +293,13 @@ export const PermissionDeny = z.object({
 // ── Inferred types ──
 
 export type SystemInit = z.infer<typeof SystemInit>;
+export type SystemInitFallback = z.infer<typeof SystemInitFallback>;
 export type SystemStatus = z.infer<typeof SystemStatus>;
 export type Assistant = z.infer<typeof Assistant>;
+export type AssistantFallback = z.infer<typeof AssistantFallback>;
 export type ResultSuccess = z.infer<typeof ResultSuccess>;
 export type ResultError = z.infer<typeof ResultError>;
+export type ResultFallback = z.infer<typeof ResultFallback>;
 export type CanUseTool = z.infer<typeof CanUseTool>;
 export type HookCallback = z.infer<typeof HookCallback>;
 export type ToolProgress = z.infer<typeof ToolProgress>;
