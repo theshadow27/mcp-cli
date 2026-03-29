@@ -21,7 +21,7 @@ import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
-import { SessionState } from "./session-state";
+import { IGNORED_TYPES, SessionState } from "./session-state";
 
 // ── Constants ──
 
@@ -32,21 +32,14 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 /** Time (ms) to wait for a WebSocket connection after spawning a Claude CLI process. */
 const CONNECT_TIMEOUT_MS = 30_000;
 
+/** Message types handled by the state machine's dispatch. */
+const HANDLED_MSG_TYPES: ReadonlyArray<string> = ["system", "assistant", "result", "control_request"];
+
 /**
  * Message types that the daemon knows about (handled or intentionally ignored).
- * Used to detect genuinely new/unknown types from the CLI for diagnostic logging.
+ * Derived from IGNORED_TYPES (session-state.ts) + handled types to stay in sync.
  */
-const KNOWN_MSG_TYPES: ReadonlySet<string> = new Set([
-  "system",
-  "assistant",
-  "result",
-  "control_request",
-  "keep_alive",
-  "stream_event",
-  "tool_progress",
-  "tool_use_summary",
-  "auth_status",
-]);
+const KNOWN_MSG_TYPES: ReadonlySet<string> = new Set([...HANDLED_MSG_TYPES, ...IGNORED_TYPES]);
 
 // ── Errors ──
 

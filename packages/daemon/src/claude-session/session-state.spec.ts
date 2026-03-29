@@ -777,6 +777,14 @@ describe("SessionState", () => {
       expect(session.tokens).toBe(75);
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe("session:response");
+
+      // Verify fallback constructs a safe AssistantMsg with required fields
+      const resp = events[0] as { type: string; message: Record<string, unknown> };
+      expect(resp.message.type).toBe("assistant");
+      expect(resp.message.session_id).toBe("unknown");
+      const innerMsg = resp.message.message as Record<string, unknown>;
+      expect(innerMsg.role).toBe("assistant");
+      expect(innerMsg.usage).toEqual({ input_tokens: 50, output_tokens: 25 });
     });
 
     test("transitions to active with zero tokens when usage is missing", () => {
@@ -793,6 +801,13 @@ describe("SessionState", () => {
       expect(session.tokens).toBe(0);
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe("session:response");
+
+      // Verify fallback fills safe defaults for all required fields
+      const resp = events[0] as { type: string; message: Record<string, unknown> };
+      const innerMsg = resp.message.message as Record<string, unknown>;
+      expect(innerMsg.role).toBe("assistant");
+      expect(innerMsg.usage).toEqual({ input_tokens: 0, output_tokens: 0 });
+      expect(innerMsg.content).toEqual([]);
     });
 
     test("strict schema still matches when all fields are present", () => {

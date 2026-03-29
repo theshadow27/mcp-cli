@@ -7,7 +7,12 @@
  */
 
 import type { SessionStateEnum } from "@mcp-cli/core";
-import type { Assistant as AssistantMsg, CanUseTool as CanUseToolMsg, NdjsonMessage } from "./ndjson";
+import type {
+  AssistantFallback as AssistantFallbackMsg,
+  Assistant as AssistantMsg,
+  CanUseTool as CanUseToolMsg,
+  NdjsonMessage,
+} from "./ndjson";
 import {
   AssistantFallback,
   Assistant as AssistantSchema,
@@ -51,7 +56,7 @@ function createDefaultIdGenerator(): RequestIdGenerator {
 
 // ── Ignored message types ──
 
-const IGNORED_TYPES: ReadonlySet<string> = new Set([
+export const IGNORED_TYPES: ReadonlySet<string> = new Set([
   "keep_alive",
   "stream_event",
   "tool_progress",
@@ -205,7 +210,8 @@ export class SessionState {
       );
     }
 
-    // Even the fallback failed — still transition out of connecting
+    // unreachable: SystemInitFallback only requires type:"system" + subtype:"init",
+    // both already confirmed by dispatch. Kept as defensive last resort.
     this.parseMismatch = true;
     return this.applyInit(this.sessionId, "unknown", "/");
   }
@@ -249,15 +255,14 @@ export class SessionState {
       if (usage) {
         this.tokens += usage.input_tokens + usage.output_tokens;
       }
-      // Emit response with the raw message cast — consumers that need typed
-      // fields will see partial data, but the event still fires.
-      return [{ type: "session:response", message: msg as AssistantMsg }];
+      return [{ type: "session:response", message: buildFallbackAssistant(msg, loose.data) }];
     }
 
     // Even the fallback failed — still transition to active
+    // unreachable: AssistantFallback only requires type:"assistant", already confirmed by dispatch
     this.parseMismatch = true;
     this.state = "active";
-    return [{ type: "session:response", message: msg as AssistantMsg }];
+    return [{ type: "session:response", message: buildFallbackAssistant(msg) }];
   }
 
   private handleResult(msg: NdjsonMessage): SessionEvent[] {
@@ -292,9 +297,9 @@ export class SessionState {
     // Fallback: transition to idle for any result message, even if neither
     // strict schema matched. This prevents sessions from getting stuck in
     // "active" state when the CLI wire format drifts. Extract what we can.
-    this.parseMismatch = true;
     const fallback = ResultFallback.safeParse(msg);
     if (fallback.success) {
+      this.parseMismatch = true;
       const r = fallback.data;
       const cost = r.total_cost_usd ?? 0;
       const turns = r.num_turns ?? 0;
@@ -319,6 +324,7 @@ export class SessionState {
       ];
     }
 
+    // unreachable: ResultFallback only requires type:"result", already confirmed by dispatch
     return [];
   }
 
@@ -348,4 +354,31 @@ export class SessionState {
       },
     ];
   }
+}
+
+/**
+ * Construct a type-safe AssistantMsg from a fallback parse result (or raw message).
+ * Fills in required fields with safe defaults so downstream consumers of
+ * `session:response` never hit undefined access on typed fields.
+ */
+function buildFallbackAssistant(raw: NdjsonMessage, loose?: AssistantFallbackMsg): AssistantMsg {
+  const rawObj = raw as Record<string, unknown>;
+  const rawMsg = (rawObj.message as Record<string, unknown> | undefined) ?? {};
+  const looseMessage = loose?.message;
+  return {
+    type: "assistant",
+    message: {
+      id: (rawMsg.id as string) ?? "unknown",
+      type: "message",
+      role: "assistant",
+      model: (rawMsg.model as string) ?? "unknown",
+      content: (rawMsg.content as AssistantMsg["message"]["content"]) ?? [],
+      stop_reason: (rawMsg.stop_reason as string) ?? null,
+      usage: looseMessage?.usage ?? { input_tokens: 0, output_tokens: 0 },
+    },
+    parent_tool_use_id: (rawObj.parent_tool_use_id as string) ?? null,
+    error: rawObj.error as string | undefined,
+    uuid: (rawObj.uuid as string) ?? "unknown",
+    session_id: (rawObj.session_id as string) ?? "unknown",
+  };
 }
