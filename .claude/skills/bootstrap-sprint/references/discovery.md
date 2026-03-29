@@ -27,6 +27,19 @@ This is the single most important question. "Done" varies wildly:
 - Are there quality gates beyond CI? (Screenshots? Security review? Perf benchmarks?)
 - Is there a review process? (GHA bots? Human reviewers? Both?)
 
+**Survey 5 recent merged PRs and 5 open PRs.** Don't just read the workflow YAML —
+look at what actually happens on real PRs:
+- `gh pr view <N> --json statusCheckRollup` — what checks run, how long do they take,
+  which ones fail?
+- `gh pr view <N> --json reviews,comments` — do bots post review comments? Is there
+  an automated reviewer (Copilot, CodeRabbit, Claude GHA action)?
+- Do checks run on draft PRs or only on ready-for-review?
+- Are there required checks vs. optional checks?
+- What's the typical CI wall time? (2 min vs. 20 min changes the feedback loop design)
+
+The workflow YAML tells you what's *configured*. The PR history tells you what
+*actually runs* and how it behaves in practice. These often differ.
+
 ### 2. Testing and validation
 
 - What's the test command? (`npm test`, `bun test`, `pytest`, `go test`, etc.)
