@@ -1,6 +1,6 @@
 {
   "name": "@theshadow27/mcp-cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
   "type": "module",
   "workspaces": ["packages/*"],
