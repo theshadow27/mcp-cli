@@ -128,7 +128,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -179,19 +179,27 @@ const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withF
   .map((d) => `packages/${d.name}/src`);
 
 /**
- * Daemon integration test files in test/ that spawn real daemons.
- * These must run in run-2 (isolated process) to avoid hangs and segfaults.
+ * Allowlist: only these top-level test files run in run-1 (non-daemon process).
+ * Everything else in test/ defaults to run-2 (isolated daemon process).
+ * This is intentionally inverted — new test files land in run-2 (safe default)
+ * rather than run-1 where a daemon-spawning test could hang the coverage pass.
+ *
+ * Daemon test files are also listed in TIMING_EXCLUSIONS above for time budget
+ * purposes. If you move a file into this allowlist, consider whether it still
+ * needs a TIMING_EXCLUSIONS entry.
  */
-const DAEMON_TEST_FILES = new Set([
-  "test/daemon-integration.spec.ts",
-  "test/cli-orchestration.spec.ts",
-  "test/stress.spec.ts",
-  "test/transport-errors.spec.ts",
-]);
+const RUN1_TEST_FILES = new Set(["test/integration.spec.ts"]);
 
-/** Non-daemon test files from test/ — only these go in run-1 */
+// Validate that all allowlist entries exist on disk — catches renames/deletions
+for (const f of RUN1_TEST_FILES) {
+  if (!existsSync(resolve(import.meta.dir, "..", f))) {
+    throw new Error(`RUN1_TEST_FILES entry does not exist: ${f}`);
+  }
+}
+
+/** Non-daemon test files from test/ — only allowlisted files go in run-1 */
 const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
-  .filter((f) => f.endsWith(".spec.ts") && !DAEMON_TEST_FILES.has(`test/${f}`))
+  .filter((f) => f.endsWith(".spec.ts") && RUN1_TEST_FILES.has(`test/${f}`))
   .map((f) => `test/${f}`);
 
 const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles];
@@ -207,14 +215,26 @@ const [stdout1, stderr1] = await Promise.all([new Response(proc1.stdout).text(),
 const exitCode1 = await proc1.exited;
 
 // Run 2: daemon tests in isolated process (avoids segfault)
-// Includes packages/daemon/src AND daemon integration tests from test/
-const daemonTestFiles = [...DAEMON_TEST_FILES];
-const proc2 = Bun.spawn(["bun", "test", "packages/daemon/src", ...daemonTestFiles], {
+// Includes packages/daemon/src AND all non-allowlisted test files from test/
+const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
+  .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
+  .map((f) => `test/${f}`);
+const proc2 = Bun.spawn(["bun", "test", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles], {
   stdout: "pipe",
   stderr: "pipe",
 });
+
+// Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
+// after 120s rather than blocking pre-commit indefinitely.
+const RUN2_DEADLINE_MS = 120_000;
+const run2Deadline = setTimeout(() => {
+  console.error(`\nERROR: run-2 (daemon tests) exceeded ${RUN2_DEADLINE_MS / 1000}s deadline — killing process`);
+  proc2.kill();
+}, RUN2_DEADLINE_MS);
+
 const [stdout2, stderr2] = await Promise.all([new Response(proc2.stdout).text(), new Response(proc2.stderr).text()]);
 const exitCode2 = await proc2.exited;
+clearTimeout(run2Deadline);
 
 const testDuration = Date.now() - testStart;
 
