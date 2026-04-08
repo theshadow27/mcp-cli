@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
-import { projectConfigPath, silentLogger } from "@mcp-cli/core";
+import { options, projectConfigPath, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { loadConfig } from "./loader";
 
@@ -230,5 +230,59 @@ describe("loadConfig", () => {
     const projectSource = config.sources.find((s) => s.scope === "project");
     expect(projectSource).toBeDefined();
     expect(projectSource?.file).toBe(configPath);
+  });
+
+  test("worktree under a scope root loads the root's project config", async () => {
+    using opts = testOptions();
+
+    // Register a scope root
+    const root = join(opts.dir, "myproject");
+    mkdirSync(root, { recursive: true });
+    const scopesDir = options.SCOPES_DIR;
+    mkdirSync(scopesDir, { recursive: true });
+    writeJson(join(scopesDir, "myproject.json"), { root, created: new Date().toISOString() });
+
+    // Write config for the scope root
+    writeJson(projectConfigPath(root), fixtureConfig("filesystem"));
+
+    // Load config from a worktree path under the root
+    const worktree = join(root, ".claude", "worktrees", "claude-abc123");
+    mkdirSync(worktree, { recursive: true });
+
+    const config = await loadConfig(worktree, silentLogger);
+    expect(config.servers.has("filesystem")).toBe(true);
+    const source = config.servers.get("filesystem")?.source;
+    expect(source?.file).toBe(projectConfigPath(root));
+  });
+
+  test("subdirectory under a scope root loads the root's project config", async () => {
+    using opts = testOptions();
+
+    const root = join(opts.dir, "myproject");
+    mkdirSync(root, { recursive: true });
+    const scopesDir = options.SCOPES_DIR;
+    mkdirSync(scopesDir, { recursive: true });
+    writeJson(join(scopesDir, "myproject.json"), { root, created: new Date().toISOString() });
+
+    writeJson(projectConfigPath(root), fixtureConfig("notion"));
+
+    const subdir = join(root, "src", "lib");
+    mkdirSync(subdir, { recursive: true });
+
+    const config = await loadConfig(subdir, silentLogger);
+    expect(config.servers.has("notion")).toBe(true);
+  });
+
+  test("unscoped directory uses exact cwd for config lookup", async () => {
+    using opts = testOptions();
+
+    // No scope registered — should use exact cwd
+    const cwd = join(opts.dir, "unscoped-project");
+    mkdirSync(cwd, { recursive: true });
+
+    writeJson(projectConfigPath(cwd), fixtureConfig("sentry"));
+
+    const config = await loadConfig(cwd, silentLogger);
+    expect(config.servers.has("sentry")).toBe(true);
   });
 });
