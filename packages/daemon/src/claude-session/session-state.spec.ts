@@ -859,6 +859,68 @@ describe("SessionState", () => {
     });
   });
 
+  describe("rate limiting", () => {
+    const ASSISTANT_RATE_LIMITED = {
+      ...ASSISTANT_MSG,
+      error: "rate_limit",
+    };
+
+    test("emits session:rate_limited when assistant has error: rate_limit", () => {
+      const session = initSession();
+      const events = session.handleMessage(ASSISTANT_RATE_LIMITED);
+
+      expect(events).toHaveLength(2);
+      expect(events[0].type).toBe("session:response");
+      expect(events[1]).toEqual({ type: "session:rate_limited", sessionId: "sess-1" });
+      expect(session.rateLimited).toBe(true);
+    });
+
+    test("does not emit session:rate_limited for normal assistant messages", () => {
+      const session = initSession();
+      const events = session.handleMessage(ASSISTANT_MSG);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:response");
+      expect(session.rateLimited).toBe(false);
+    });
+
+    test("clears rateLimited on successful result", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_RATE_LIMITED);
+      expect(session.rateLimited).toBe(true);
+
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.rateLimited).toBe(false);
+    });
+
+    test("rateLimited flag persists across multiple assistant messages", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_RATE_LIMITED);
+      expect(session.rateLimited).toBe(true);
+
+      // A normal assistant message does not clear the flag
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.rateLimited).toBe(true);
+    });
+
+    test("rate limit detected in fallback assistant messages", () => {
+      const session = new SessionState("test-rl");
+      session.handleMessage(SYSTEM_INIT);
+      const events = session.handleMessage({
+        type: "assistant",
+        error: "rate_limit",
+        message: {
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      });
+
+      expect(session.rateLimited).toBe(true);
+      expect(session.parseMismatch).toBe(true);
+      expect(events).toHaveLength(2);
+      expect(events[1]).toEqual({ type: "session:rate_limited", sessionId: "test-rl" });
+    });
+  });
+
   describe("parseMismatch lifecycle", () => {
     test("parseMismatch is cleared on each handleMessage call", () => {
       const session = new SessionState("test");

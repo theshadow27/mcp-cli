@@ -747,7 +747,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
-    const state = colorState(s.state);
+    const stateStr = s.rateLimited ? `${colorState(s.state)} ${c.red}[RATE LIMITED]${c.reset}` : colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
@@ -757,7 +757,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     console.log(
-      `${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+      `${c.cyan}${id}${c.reset}   ${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
   }
 
@@ -803,10 +803,12 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
+  const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
+  const positional = args.filter((a) => a !== "--keep" && a !== "--keep-worktree");
+  const sessionPrefix = positional[0];
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude bye <session-id>");
+    d.printError("Usage: mcx claude bye <session-id> [--keep|--keep-worktree]");
     d.exit(1);
   }
 
@@ -818,7 +820,10 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 
   if (byeResult.worktree) {
-    if (byeResult.cwd) {
+    if (keepWorktree) {
+      const wtPath = byeResult.cwd ?? resolveKeptWorktreePath(byeResult);
+      d.printError(`Worktree preserved: ${wtPath}`);
+    } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else {
       // Daemon-created worktrees: cwd is null — resolve from local repo root
@@ -828,6 +833,13 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
       cleanupWorktree(byeResult.worktree, cwd, d, repoRoot);
     }
   }
+}
+
+/** Resolve the worktree path for --keep output when cwd is not provided */
+function resolveKeptWorktreePath(byeResult: ByeResult): string {
+  const repoRoot = process.cwd();
+  const wtConfig = readWorktreeConfig(repoRoot);
+  return resolveWorktreePath(repoRoot, byeResult.worktree as string, wtConfig);
 }
 
 export interface ByeResult {

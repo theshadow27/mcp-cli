@@ -67,6 +67,7 @@ import { MetricsServer } from "./metrics-server";
 import { MockServer, buildMockToolCache } from "./mock-server";
 import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
+import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
 
 /**
@@ -222,6 +223,8 @@ export interface StartDaemonOptions {
   skipLogSetup?: boolean;
   /** Skip booting virtual servers (_aliases, _claude). */
   skipVirtualServers?: boolean;
+  /** Skip printing MCPD_READY to stdout (useful for tests). */
+  skipReadySignal?: boolean;
   /** Logger for daemon output. Defaults to consoleLogger. */
   logger?: Logger;
   /** Override virtual servers used in the shutdown loop (test injection only). */
@@ -326,7 +329,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Mock server: always available (no external binary needed)
   const mockServer = new MockServer(db, daemonId, undefined, logger);
 
-  const metricsServer = new MetricsServer(metrics);
+  // Start quota poller for proactive usage monitoring
+  const quotaPoller = new QuotaPoller({ logger });
+  quotaPoller.start();
+
+  const metricsServer = new MetricsServer(metrics, quotaPoller);
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -457,6 +464,18 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     onReloadConfig: () => watcher.forceReload(),
     logger,
     getWsPortInfo: () => ({ actual: claudeServer.port, expected: wsPort }),
+    getQuotaStatus: () => {
+      const status = quotaPoller.status;
+      return {
+        fiveHour: status?.fiveHour ?? null,
+        sevenDay: status?.sevenDay ?? null,
+        sevenDaySonnet: status?.sevenDaySonnet ?? null,
+        sevenDayOpus: status?.sevenDayOpus ?? null,
+        extraUsage: status?.extraUsage ?? null,
+        fetchedAt: status?.fetchedAt ?? 0,
+        lastError: quotaPoller.lastError,
+      };
+    },
   });
   ipcServer.start();
 
@@ -479,8 +498,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     `[mcpd] Idle timer started ${Math.round(performance.now())}ms after process start (timeout=${idleTimeoutMs}ms)`,
   );
 
-  // Signal readiness to parent (IPC socket is open, commands can connect now)
-  console.log(DAEMON_READY_SIGNAL);
+  // Signal readiness to parent (IPC socket is open, commands can connect now).
+  // Uses console.log (stdout) because installDaemonLogCapture redirects
+  // console.info/error/warn to stderr — the parent process reads stdout.
+  // Tests pass skipReadySignal to suppress this output.
+  if (!opts?.skipReadySignal) {
+    console.log(DAEMON_READY_SIGNAL);
+  }
 
   // Boot virtual servers in the background — commands that need them will await
   if (!skipVirtualServers) {
@@ -645,6 +669,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
+      quotaPoller.stop();
       try {
         watcher.stop();
       } catch (err) {

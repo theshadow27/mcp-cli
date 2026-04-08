@@ -14,7 +14,7 @@
  *   mcx status                                   # daemon status
  */
 
-import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
+import type { DaemonStatus, QuotaStatusResult, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
@@ -34,6 +34,7 @@ import { cmdNote } from "./commands/note";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
+import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
@@ -294,6 +295,10 @@ async function main(): Promise<void> {
       case "opencode":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
+        break;
+
+      case "scope":
+        await cmdScope(cleanArgs.slice(1));
         break;
 
       case "serve":
@@ -577,11 +582,19 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     throw err;
   }
 
+  // Fetch quota status in parallel (non-blocking — don't fail status if quota unavailable)
+  let quota: QuotaStatusResult | null = null;
+  try {
+    quota = await ipcCall("quotaStatus", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  } catch {
+    // Quota monitoring unavailable — continue without it
+  }
+
   const staleWarning = getStaleDaemonWarning();
   const sourceWarning = getSourceStalenessWarning();
 
   if (json) {
-    let output = { ...status };
+    let output = { ...status, quota };
     if (staleWarning) output = { ...output, staleBuild: true, staleWarning } as typeof output;
     if (sourceWarning) output = { ...output, staleSource: true, sourceWarning } as typeof output;
     console.log(JSON.stringify(output, null, 2));
@@ -590,12 +603,41 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     console.log(`Uptime: ${Math.round(status.uptime)}s`);
     console.log(`Database: ${status.dbPath}\n`);
     printServerList(status.servers);
+    printQuotaStatus(quota);
     if (staleWarning) {
       console.error(`\n⚠ ${staleWarning}`);
     }
     if (sourceWarning) {
       console.error(`\n⚠ ${sourceWarning}`);
     }
+  }
+}
+
+function printQuotaStatus(quota: QuotaStatusResult | null): void {
+  if (!quota || quota.fetchedAt === 0) return;
+
+  console.log("\nQuota:");
+  if (quota.fiveHour) {
+    const reset = new Date(quota.fiveHour.resetsAt).toLocaleTimeString();
+    const warn = quota.fiveHour.utilization > 80 ? " ⚠" : "";
+    console.log(`  5h window:  ${quota.fiveHour.utilization}% used (resets ${reset})${warn}`);
+  }
+  if (quota.sevenDay) {
+    console.log(`  7d window:  ${quota.sevenDay.utilization}% used`);
+  }
+  if (quota.sevenDaySonnet) {
+    console.log(`  7d sonnet:  ${quota.sevenDaySonnet.utilization}% used`);
+  }
+  if (quota.sevenDayOpus) {
+    console.log(`  7d opus:    ${quota.sevenDayOpus.utilization}% used`);
+  }
+  if (quota.extraUsage) {
+    console.log(
+      `  Extra:      ${quota.extraUsage.utilization.toFixed(1)}% ($${quota.extraUsage.usedCredits} / $${quota.extraUsage.monthlyLimit})`,
+    );
+  }
+  if (quota.lastError) {
+    console.error(`  Last error: ${quota.lastError}`);
   }
 }
 
@@ -796,6 +838,9 @@ Usage:
   mcx agent codex spawn --task "..."   Start a Codex session
   mcx agent acp spawn --task "..."     Start an ACP agent session
   mcx claude <subcommand>              Alias for mcx agent claude <subcommand>
+  mcx scope init [name] [--force]     Register current directory as a scope
+  mcx scope list                      List all registered scopes
+  mcx scope rm <name>                 Remove a scope
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)

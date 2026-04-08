@@ -35,6 +35,14 @@ interface KeychainEntry {
 
 interface KeychainData {
   mcpOAuth?: Record<string, KeychainEntry>;
+  claudeAiOauth?: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: string[];
+    subscriptionType?: string;
+    rateLimitTier?: string;
+  };
 }
 
 /**
@@ -78,6 +86,49 @@ export async function readKeychainTokens(serverUrl: string): Promise<KeychainTok
     }
 
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Token info for Claude Code's own OAuth session (used for quota/usage APIs). */
+export interface ClaudeOAuthToken {
+  accessToken: string;
+  expiresAt?: number;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
+/**
+ * Read the Claude Code session OAuth token from macOS Keychain.
+ * This is stored under `claudeAiOauth` (separate from `mcpOAuth` used for MCP servers).
+ * Returns null if not on macOS, no token found, or token is expired.
+ */
+export async function readClaudeOAuthToken(): Promise<ClaudeOAuthToken | null> {
+  if (process.platform !== "darwin") return null;
+
+  try {
+    const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const raw = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) return null;
+
+    const data: KeychainData = JSON.parse(raw.trim());
+    const oauth = data.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+
+    // Check if token is expired
+    if (oauth.expiresAt && oauth.expiresAt < Date.now()) return null;
+
+    return {
+      accessToken: oauth.accessToken,
+      expiresAt: oauth.expiresAt,
+      subscriptionType: oauth.subscriptionType,
+      rateLimitTier: oauth.rateLimitTier,
+    };
   } catch {
     return null;
   }

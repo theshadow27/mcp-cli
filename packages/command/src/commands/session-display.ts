@@ -34,10 +34,11 @@ export function formatSessionShort(s: {
   cost?: number | null;
   tokens?: number;
   numTurns?: number;
+  rateLimited?: boolean;
   createdAt?: number | null;
 }): string {
   const id = s.sessionId.slice(0, 8);
-  const state = s.state;
+  const state = s.rateLimited ? `${s.state} [RATE LIMITED]` : s.state;
   const model = s.model ?? "—";
   const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
   const tokens = s.tokens && s.tokens > 0 ? String(s.tokens) : "—";
