@@ -13,7 +13,7 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
@@ -40,6 +40,7 @@ import {
   readCliConfig,
   readWorktreeConfig,
   resolveWorktreePath,
+  tryFlockExclusive,
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
@@ -59,34 +60,31 @@ import { reapOrphanedSessions } from "./orphan-reaper";
 import { ServerPool } from "./server-pool";
 
 /**
- * Kill the previous daemon process (from PID file) if it's still running.
- * Prevents duplicate daemons from sharing the Unix socket after unclean restarts.
+ * Acquire an exclusive flock on the PID file.
+ *
+ * Opens the PID file, acquires a non-blocking exclusive lock, and writes the PID data.
+ * The fd is kept open for the daemon's lifetime — the kernel releases the lock
+ * automatically on process death (even SIGKILL). No stale lock state.
+ *
+ * Returns the fd (caller must keep it open) or calls process.exit(1) if another
+ * daemon holds the lock.
  */
-function killStaleDaemons(logger: Logger): void {
-  try {
-    const data = JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
-    const pid = typeof data.pid === "number" ? data.pid : null;
-    if (pid == null || pid === process.pid) return;
-
-    // Check if it's still alive
-    process.kill(pid, 0);
-
-    // It's alive — send SIGTERM and wait briefly for it to exit
-    process.kill(pid, "SIGTERM");
-    logger.warn(`[mcpd] Killed previous daemon pid=${pid}`);
-
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-        Bun.sleepSync(50);
-      } catch {
-        break; // process exited
-      }
-    }
-  } catch {
-    // No PID file, unreadable, or process already dead — all fine
+export function acquirePidLock(logger: Logger): number {
+  const fd = openSync(options.PID_PATH, "w");
+  const acquired = tryFlockExclusive(fd);
+  if (!acquired) {
+    logger.error("[mcpd] Another daemon is already running (PID file locked)");
+    process.exit(1);
   }
+  return fd;
+}
+
+/**
+ * Write PID data to the already-locked PID file descriptor.
+ */
+function writePidData(fd: number, data: Record<string, unknown>): void {
+  const buf = Buffer.from(JSON.stringify(data));
+  writeSync(fd, buf, 0, buf.length, 0);
 }
 
 /** Git operations interface for dependency injection (testable without real git). */
@@ -210,6 +208,8 @@ export interface StartDaemonOptions {
   logger?: Logger;
   /** Override virtual servers used in the shutdown loop (test injection only). */
   _virtualServers?: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]>;
+  /** Skip flock acquisition (useful for tests that don't need singleton enforcement). */
+  skipFlock?: boolean;
 }
 
 /**
@@ -234,15 +234,18 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const serverNames = [...config.servers.keys()];
   logger.info(`[mcpd] Loaded config: ${serverNames.length} servers (${serverNames.join(", ")})`);
 
-  // Kill any stale daemon processes from previous runs. Without this, duplicate
-  // daemons accumulate (e.g., after unclean restarts) and share the Unix socket,
-  // causing requests to round-robin across daemons with different idle timer state.
-  killStaleDaemons(logger);
+  // Acquire exclusive flock on PID file — kernel-enforced singleton.
+  // The lock is held for the daemon's lifetime (fd stays open).
+  // On process death (even SIGKILL), the kernel releases it automatically.
+  let pidFd: number | null = null;
+  if (!opts?.skipFlock) {
+    pidFd = acquirePidLock(logger);
+  }
 
   // Generate daemon instance ID for trace context (stable for daemon lifetime)
   const daemonId = generateSpanId();
 
-  // Write PID file
+  // Write PID file (to the locked fd, or directly if flock is skipped)
   const startedAt = Date.now();
   const pidData = {
     pid: process.pid,
@@ -252,7 +255,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     protocolVersion: PROTOCOL_VERSION,
     buildVersion: BUILD_VERSION,
   };
-  writeFileSync(options.PID_PATH, JSON.stringify(pidData));
+  if (pidFd !== null) {
+    writePidData(pidFd, pidData);
+  } else {
+    writeFileSync(options.PID_PATH, JSON.stringify(pidData));
+  }
 
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
@@ -399,15 +406,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     } else {
       logger.info("[mcpd] Config reloaded (no server changes)");
     }
-    // Update PID file with new hash
+    // Update PID file with new hash (use locked fd if available)
     const updatedPid = {
       pid: process.pid,
       daemonId,
       configHash: event.hash,
       startedAt,
       protocolVersion: PROTOCOL_VERSION,
+      buildVersion: BUILD_VERSION,
     };
-    writeFileSync(options.PID_PATH, JSON.stringify(updatedPid));
+    if (pidFd !== null) {
+      writePidData(pidFd, updatedPid);
+    } else {
+      writeFileSync(options.PID_PATH, JSON.stringify(updatedPid));
+    }
   });
   watcher.start();
 

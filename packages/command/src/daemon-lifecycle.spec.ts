@@ -12,6 +12,7 @@ import {
   _resetStartCooldown,
   getSourceStalenessWarning,
   getStaleDaemonWarning,
+  isDaemonFlockHeld,
   isDaemonInitializing,
   isDaemonRunning,
   isProcessMcpd,
@@ -504,6 +505,52 @@ describe("getSourceStalenessWarning", () => {
     mkdirSync(root, { recursive: true });
     // Dev mode — returns null
     expect(getSourceStalenessWarning(root)).toBeNull();
+  });
+});
+
+// -- isDaemonFlockHeld --
+
+describe("isDaemonFlockHeld", () => {
+  it("returns false when no PID file exists", () => {
+    using opts = testOptions();
+    expect(isDaemonFlockHeld()).toBe(false);
+  });
+
+  it("returns false when PID file exists but no lock is held", () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+    writeFileSync(opts.PID_PATH, JSON.stringify({ pid: process.pid }));
+    expect(isDaemonFlockHeld()).toBe(false);
+  });
+
+  it("returns true when PID file lock is held by another fd", () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+
+    // Simulate a daemon holding the lock
+    const { tryFlockExclusive } = require("@mcp-cli/core");
+    const daemonFd = openSync(opts.PID_PATH, "w");
+    try {
+      expect(tryFlockExclusive(daemonFd)).toBe(true);
+      writeFileSync(daemonFd, JSON.stringify({ pid: process.pid }));
+
+      // Now the CLI check should see the lock as held
+      expect(isDaemonFlockHeld()).toBe(true);
+    } finally {
+      closeSync(daemonFd);
+    }
+  });
+
+  it("returns false after lock holder closes fd", () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+
+    const { tryFlockExclusive } = require("@mcp-cli/core");
+    const daemonFd = openSync(opts.PID_PATH, "w");
+    expect(tryFlockExclusive(daemonFd)).toBe(true);
+    closeSync(daemonFd); // release lock
+
+    expect(isDaemonFlockHeld()).toBe(false);
   });
 });
 

@@ -23,3 +23,4 @@ export * from "./claude-plan-adapter";
 export * from "./python-repr";
 export * from "./agent-tools";
 export * from "./config-file";
+export * from "./flock";
