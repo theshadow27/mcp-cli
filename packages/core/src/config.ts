@@ -16,6 +16,8 @@ export interface BaseServerConfig {
   clientSecret?: string;
   /** Optional: fixed port for OAuth callback server (default: random) */
   callbackPort?: number;
+  /** Optional: OAuth scope to request (e.g. "openid email profile" for OIDC providers) */
+  scope?: string;
 }
 
 /** Stdio transport: spawn a local process */

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StateDb } from "../db/state";
 import type { KeychainTokens } from "./keychain";
-import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
+import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
 
 const originalPlatform = process.platform;
 const originalWslDistro = process.env.WSL_DISTRO_NAME;
@@ -43,7 +43,7 @@ describe("McpOAuthProvider", () => {
 
   function createProvider(
     db: InstanceType<typeof StateDb>,
-    opts?: { clientId?: string; clientSecret?: string; callbackPort?: number },
+    opts?: { clientId?: string; clientSecret?: string; callbackPort?: number; scope?: string },
   ): InstanceType<typeof McpOAuthProvider> {
     return new McpOAuthProvider("srv", "https://api.example.com", db, {
       ...opts,
@@ -443,7 +443,17 @@ describe("McpOAuthProvider", () => {
       expect(meta.grant_types).toContain("refresh_token");
       expect(meta.response_types).toContain("code");
       expect(meta.redirect_uris).toEqual(["http://localhost/callback"]);
-      expect(meta.scope).toBe("openid email profile");
+      // No hardcoded scope — avoids breaking non-OIDC servers on registration/token exchange
+      expect(meta.scope).toBeUndefined();
+      db.close();
+    });
+
+    test("clientMetadata includes scope only when explicitly configured", () => {
+      const db = createDb();
+      const provider = createProvider(db, { scope: "read write" });
+
+      const meta = provider.clientMetadata;
+      expect(meta.scope).toBe("read write");
       db.close();
     });
 
@@ -504,6 +514,34 @@ describe("McpOAuthProvider", () => {
       expect(provider.redirectUrl).toBeUndefined();
       provider.setRedirectUrl("http://localhost:9999/callback");
       expect(provider.redirectUrl).toBe("http://localhost:9999/callback");
+      db.close();
+    });
+  });
+
+  // -- getEffectiveScope() --
+
+  describe("getEffectiveScope()", () => {
+    test("returns config scope when explicitly set", () => {
+      const db = createDb();
+      const provider = createProvider(db, { scope: "read write admin" });
+
+      expect(provider.getEffectiveScope()).toBe("read write admin");
+      db.close();
+    });
+
+    test("returns fallback when no config scope", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      expect(provider.getEffectiveScope()).toBe(DEFAULT_OAUTH_SCOPE);
+      db.close();
+    });
+
+    test("returns fallback when config scope is empty/whitespace", () => {
+      const db = createDb();
+      const provider = createProvider(db, { scope: "  " });
+
+      expect(provider.getEffectiveScope()).toBe(DEFAULT_OAUTH_SCOPE);
       db.close();
     });
   });

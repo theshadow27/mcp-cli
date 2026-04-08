@@ -291,8 +291,8 @@ export class ServerPool {
       let authProvider: OAuthClientProvider | undefined;
       const config = conn.resolved.config;
       if (this.db && (isSseConfig(config) || isHttpConfig(config))) {
-        const { clientId, clientSecret, callbackPort } = config;
-        authProvider = new McpOAuthProvider(name, config.url, this.db, { clientId, clientSecret, callbackPort });
+        const { clientId, clientSecret, callbackPort, scope } = config;
+        authProvider = new McpOAuthProvider(name, config.url, this.db, { clientId, clientSecret, callbackPort, scope });
       }
 
       let lastErr: Error = new Error("Connection failed");

@@ -33,10 +33,15 @@ export function getBrowserCommand(url: string): string[] {
   return ["xdg-open", url];
 }
 
+/** Default fallback scope for OIDC-compatible providers (matches mcp-remote). */
+export const DEFAULT_OAUTH_SCOPE = "openid email profile";
+
 export interface OAuthProviderOpts {
   clientId?: string;
   clientSecret?: string;
   callbackPort?: number;
+  /** OAuth scope from per-server config (highest priority in scope resolution). */
+  scope?: string;
   readKeychain?: (url: string) => Promise<KeychainTokens | null>;
 }
 
@@ -70,14 +75,38 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    return {
+    const meta: OAuthClientMetadata = {
       redirect_uris: [this._redirectUrl ?? "http://localhost/callback"],
       client_name: "mcp-cli",
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
-      scope: "openid email profile",
     };
+    // Only include scope in clientMetadata when explicitly configured per-server.
+    // A hardcoded fallback here would break non-OIDC servers on dynamic registration
+    // (RFC 7591) and token exchange (SDK reads clientMetadata.scope directly in fetchToken).
+    if (this.opts.scope) {
+      meta.scope = this.opts.scope;
+    }
+    return meta;
+  }
+
+  /**
+   * Compute the effective OAuth scope using a priority cascade:
+   *  1. Per-server config scope (from OAuthProviderOpts)
+   *  2. Fallback: "openid email profile" (matches mcp-remote)
+   *
+   * Tiers 2–5 of mcp-remote's cascade (WWW-Authenticate, Protected Resource
+   * Metadata, registration response, auth server metadata) are handled internally
+   * by the MCP SDK when this scope is passed to auth().
+   *
+   * Pass the result to the SDK's auth() `scope` parameter — NOT clientMetadata.
+   */
+  getEffectiveScope(): string {
+    if (this.opts.scope?.trim()) {
+      return this.opts.scope;
+    }
+    return DEFAULT_OAUTH_SCOPE;
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {

@@ -500,17 +500,26 @@ export class IpcServer {
 
       // Read OAuth config from server configuration
       const serverConfig = this.pool.getServerConfig(server);
-      const { clientId, clientSecret, callbackPort } = serverConfig ?? {};
+      const { clientId, clientSecret, callbackPort, scope } = serverConfig ?? {};
 
       // Start callback server for OAuth redirect (use configured port if available)
       const callback = startCallbackServer(callbackPort);
       try {
         // Create provider with callback URL and config-level OAuth credentials
-        const provider = new McpOAuthProvider(server, serverUrl, poolDb, { clientId, clientSecret, callbackPort });
+        const provider = new McpOAuthProvider(server, serverUrl, poolDb, {
+          clientId,
+          clientSecret,
+          callbackPort,
+          scope,
+        });
         provider.setRedirectUrl(callback.url);
 
+        // Compute effective scope (config > fallback) — passed to auth(), NOT clientMetadata.
+        // The SDK's internal cascade: explicit scope > resourceMetadata.scopes_supported > clientMetadata.scope
+        const effectiveScope = provider.getEffectiveScope();
+
         // Run the SDK auth orchestrator
-        const result = await auth(provider, { serverUrl });
+        const result = await auth(provider, { serverUrl, scope: effectiveScope });
 
         if (result === "AUTHORIZED") {
           // Already authorized (tokens were valid) — restart server to reconnect
@@ -522,7 +531,7 @@ export class IpcServer {
         const code = await callback.waitForCode;
 
         // Exchange code for tokens
-        await auth(provider, { serverUrl, authorizationCode: code });
+        await auth(provider, { serverUrl, authorizationCode: code, scope: effectiveScope });
 
         // Reconnect with new tokens
         await this.pool.restart(server);
@@ -559,6 +568,7 @@ export class IpcServer {
             const provider = new McpOAuthProvider(srv.name, serverUrl, poolDb, {
               clientId: serverConfig?.clientId,
               clientSecret: serverConfig?.clientSecret,
+              scope: serverConfig?.scope,
             });
             const tokens = await provider.tokens();
             if (tokens) {
