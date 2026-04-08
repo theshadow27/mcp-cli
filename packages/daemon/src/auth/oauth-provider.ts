@@ -76,6 +76,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
+      scope: "openid email profile",
     };
   }
 

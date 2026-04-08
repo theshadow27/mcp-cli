@@ -443,6 +443,7 @@ describe("McpOAuthProvider", () => {
       expect(meta.grant_types).toContain("refresh_token");
       expect(meta.response_types).toContain("code");
       expect(meta.redirect_uris).toEqual(["http://localhost/callback"]);
+      expect(meta.scope).toBe("openid email profile");
       db.close();
     });
 
