@@ -241,9 +241,15 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     case "wt":
       await claudeWorktrees(args.slice(1), d);
       break;
+    case "approve":
+      await claudeApprove(args.slice(1), d);
+      break;
+    case "deny":
+      await claudeDeny(args.slice(1), d);
+      break;
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", or "worktrees".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -976,6 +982,43 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 }
 
+async function claudeApprove(args: string[], d: ClaudeDeps): Promise<void> {
+  const sessionPrefix = args[0];
+  const requestId = args[1];
+
+  if (!sessionPrefix || !requestId) {
+    d.printError("Usage: mcx claude approve <session-id> <request-id>");
+    d.exit(1);
+  }
+
+  const sessionId = await resolveSessionId(sessionPrefix, d);
+  const result = await d.callTool("claude_approve", { sessionId, requestId });
+  console.log(formatToolResult(result));
+}
+
+async function claudeDeny(args: string[], d: ClaudeDeps): Promise<void> {
+  const sessionPrefix = args[0];
+  const requestId = args[1];
+
+  if (!sessionPrefix || !requestId) {
+    d.printError("Usage: mcx claude deny <session-id> <request-id> [--message <reason>]");
+    d.exit(1);
+  }
+
+  let message: string | undefined;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i] === "--message" || args[i] === "-m") {
+      message = args[++i];
+    }
+  }
+
+  const sessionId = await resolveSessionId(sessionPrefix, d);
+  const toolArgs: Record<string, unknown> = { sessionId, requestId };
+  if (message) toolArgs.message = message;
+  const result = await d.callTool("claude_deny", toolArgs);
+  console.log(formatToolResult(result));
+}
+
 export interface LogArgs {
   sessionPrefix: string | undefined;
   last: number;
@@ -1397,6 +1440,8 @@ Usage:
   mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
+  mcx claude approve <session> <request>   Approve a pending permission request
+  mcx claude deny <session> <request>      Deny a pending permission request
   mcx claude log <session> [--last N]      View session transcript
   mcx claude log <session> --json          Raw JSON transcript output
   mcx claude log <session> --json --jq '.' Apply jq filter to JSON output

@@ -3669,3 +3669,111 @@ describe("formatQuotaBanner", () => {
     expect(banner).toContain("resets");
   });
 });
+
+// ── approve / deny ──
+
+describe("mcx claude approve", () => {
+  test("calls claude_approve with sessionId and requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ approved: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["approve", "abc", "req-001"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_approve", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-001",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("errors when missing session-id", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["approve"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+
+  test("errors when missing request-id", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["approve", "abc"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+});
+
+describe("mcx claude deny", () => {
+  test("calls claude_deny with sessionId and requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["deny", "abc", "req-001"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_deny", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-001",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes --message to deny tool", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["deny", "abc", "req-001", "--message", "Not allowed"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_deny", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-001",
+        message: "Not allowed",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes -m shorthand to deny tool", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["deny", "abc", "req-001", "-m", "Nope"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_deny", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-001",
+        message: "Nope",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("errors when missing session-id", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["deny"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+
+  test("errors when missing request-id", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["deny", "abc"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+});
