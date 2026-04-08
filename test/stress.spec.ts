@@ -144,7 +144,7 @@ describe("S3: Slow server isolation", () => {
       slow: {
         command: "bun",
         args: [resolve("test/slow-echo-server.ts")],
-        env: { SLOW_MS: "3000" },
+        env: { SLOW_MS: "5000" },
       },
     });
   });
@@ -166,7 +166,7 @@ describe("S3: Slow server isolation", () => {
 
     const fastElapsed = (fastResult as Record<string, unknown>).elapsed as number;
 
-    // Fast should complete successfully — and well before the slow server's 3s delay
+    // Fast should complete successfully — well before the slow server's 5s delay
     expect(fastResult.stdout).toContain("fast");
     expect(fastResult.exitCode).toBe(0);
     expect(fastElapsed).toBeLessThan(3_000);
