@@ -244,8 +244,11 @@ async function main(): Promise<void> {
         break;
 
       case "alias":
-      case "aliases":
         await cmdAlias(cleanArgs.slice(1));
+        break;
+
+      case "aliases":
+        await cmdAlias(["ls", ...cleanArgs.slice(1)]);
         break;
 
       case "save":
