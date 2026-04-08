@@ -32,6 +32,18 @@ mcx status                             # verify daemon is up and running new cod
 If the daemon was started before the latest `bun run build`, restart it — otherwise
 sessions will run against stale code. Only restart when no sessions are active.
 
+### Quota check
+
+Check quota headroom before spawning the first batch:
+
+```bash
+mcx call _metrics quota_status
+```
+
+Parse the response and apply the gating rules described in [Quota gating](#quota-gating).
+If utilization is already ≥95%, do not start the sprint — report the reset time and wait.
+If ≥80%, start with QA/review-only work (no new impl sessions) until utilization drops.
+
 ## Pipeline
 
 For each issue, run the full lifecycle:
@@ -221,15 +233,29 @@ while issues remain:
   mcx copilot ls --short 2>/dev/null
   mcx gemini ls --short 2>/dev/null
 
+  # Quota gate — check before spawning (see "Quota gating" section)
+  quota = mcx call _metrics quota_status
+  utilization = quota.fiveHour.utilization  # may be unavailable — proceed if so
+
   for each session that completed (idle/result):
     if implementation session:
       bye → save worktree path → triage → spawn review or QA (--cwd)
-      spawn next issue from backlog (backfill the slot)
+      if utilization < 80%:
+        spawn next issue from backlog (backfill the slot)
+      else:
+        log "impl spawn skipped — quota at {utilization}%"
       # Use the issue's provider for the spawn command
     if review session:
-      bye → read findings → spawn repair (--cwd) if needed, else spawn QA (--cwd)
+      if utilization < 95%:
+        bye → read findings → spawn repair (--cwd) if needed, else spawn QA (--cwd)
+      else:
+        log "review/QA spawn deferred — quota at {utilization}%"
     if QA session:
       bye → record result (merged or failed)
+
+  if utilization >= 95%:
+    log "⚠ quota at {utilization}%, pausing until {quota.fiveHour.resetsAt}"
+    # don't spawn anything — wait for next cycle
 
   for each active session:
     if cost > $50: interrupt → bye → file issue about what went wrong
@@ -275,3 +301,52 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    the latest code (including any daemon fixes merged during this sprint).
 5. Run `/sprint review` to cut a release
 6. Run `/sprint retro` to capture learnings
+
+## Quota gating
+
+The daemon polls `/api/oauth/usage` and exposes utilization via `mcx call _metrics quota_status`.
+The response shape:
+
+```json
+{
+  "available": true,
+  "fiveHour": { "utilization": 82, "resetsAt": "2026-04-08T20:00:00Z" },
+  "sevenDay": { "utilization": 45, "resetsAt": "..." },
+  ...
+}
+```
+
+Use `fiveHour.utilization` for gating decisions:
+
+| Utilization | Action |
+|-------------|--------|
+| **< 80%** | Normal operation — spawn impl, review, and QA freely |
+| **≥ 80%** | **Impl freeze** — stop spawning new implementation sessions. Let in-flight review and QA finish. Existing impl sessions continue running. |
+| **≥ 95%** | **Full pause** — do not spawn any new sessions (impl, review, or QA). Wait for the reset window. |
+
+### Behavior in the monitor loop
+
+Check quota before every spawn decision:
+
+```bash
+mcx call _metrics quota_status
+```
+
+Parse `fiveHour.utilization` from the JSON response. Then:
+
+1. If **≥ 95%**: log a warning with the reset time (`fiveHour.resetsAt`), enter a
+   wait loop (`mcx claude wait --timeout 60000`) until utilization drops below 95%.
+   Do not spawn anything.
+2. If **≥ 80%**: skip spawning new implementation sessions. Continue spawning
+   review and QA sessions (sonnet — cheaper and necessary to land in-flight work).
+   Log that impl spawning is paused due to quota.
+3. If **< 80%**: proceed normally.
+
+Re-check quota each time through the monitor loop (every `wait` cycle). When
+utilization drops back below a threshold, resume normal spawning and log the
+transition.
+
+### When quota data is unavailable
+
+If `available` is `false` or the call fails, **proceed normally** — do not block
+the sprint on a monitoring failure. Log a warning so the operator is aware.
