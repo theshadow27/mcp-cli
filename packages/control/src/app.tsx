@@ -1,5 +1,5 @@
 import type { GetConfigResult, Plan } from "@mcp-cli/core";
-import { ipcCall, resolveConfigPath } from "@mcp-cli/core";
+import { ipcCall, projectConfigPath, resolveConfigPath } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSessionList } from "./components/agent-session-list.js";
@@ -11,6 +11,7 @@ import { LogViewer } from "./components/log-viewer.js";
 import { MailViewer } from "./components/mail-viewer.js";
 import { PlansTab } from "./components/plans-tab.js";
 import { RegistryBrowser } from "./components/registry-browser.js";
+import { ScopeSelector } from "./components/scope-selector.js";
 import { type AddServerState, ServerAddForm, initialAddServerState } from "./components/server-add-form.js";
 import { ServerList } from "./components/server-list.js";
 import { StatsView, buildStatsLines } from "./components/stats-view.js";
@@ -28,6 +29,7 @@ import { useMail } from "./hooks/use-mail.js";
 import { useMetrics } from "./hooks/use-metrics.js";
 import { usePlanMetrics, usePlans } from "./hooks/use-plans.js";
 import { useRegistryData } from "./hooks/use-registry-data.js";
+import { useScopes } from "./hooks/use-scopes.js";
 import { useTranscript } from "./hooks/use-transcript.js";
 import { useUnreadMail } from "./hooks/use-unread-mail.js";
 
@@ -38,6 +40,7 @@ const TRANSCRIPT_VIEW_HEIGHT = 15;
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
   const daemonProcessCount = useDaemonProcessCount();
+  const { scopes, selectedScope, cycleScope } = useScopes();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -98,13 +101,38 @@ export function App() {
     loadPopular: registryLoadPopular,
   } = useRegistryData();
 
-  const servers = status?.servers ?? [];
+  const allServers = status?.servers ?? [];
   // Poll faster on agents tab, slower off-tab (badge still updates)
   const {
-    sessions,
+    sessions: allSessions,
     loading: claudeLoading,
     error: claudeError,
   } = useAgentSessions({ intervalMs: view === "agents" ? 2500 : 10_000 });
+
+  // Scope filtering: filter servers and sessions when a scope is selected
+  const servers = useMemo(() => {
+    if (!selectedScope) return allServers;
+    const scopeConfigPrefix = projectConfigPath(selectedScope.root);
+    // Show servers whose config source matches the scope's project dir, plus global servers
+    return allServers.filter((s) => {
+      const info = configInfo[s.name];
+      if (!info) return true; // No config info yet — show it
+      // Project-scoped servers: match if source starts with scope's project config dir
+      if (info.scope === "project") {
+        return info.source.startsWith(scopeConfigPrefix.replace(/\/servers\.json$/, ""));
+      }
+      // User/global servers always visible
+      return true;
+    });
+  }, [allServers, selectedScope, configInfo]);
+
+  const sessions = useMemo(() => {
+    if (!selectedScope) return allSessions;
+    return allSessions.filter((s) => {
+      if (!s.cwd) return false;
+      return s.cwd === selectedScope.root || s.cwd.startsWith(`${selectedScope.root}/`);
+    });
+  }, [allSessions, selectedScope]);
 
   // Determine provider for expanded session's transcript
   const expandedProvider = sessions.find((s) => s.sessionId === expandedSession)?.provider ?? "claude";
@@ -429,6 +457,7 @@ export function App() {
       statusMessage: registryStatusMessage,
       setStatusMessage: setRegistryStatusMessage,
     },
+    onCycleScope: scopes.length > 0 ? cycleScope : undefined,
   });
 
   if (loading && !status) return <Loading />;
@@ -446,6 +475,7 @@ export function App() {
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} daemonProcessCount={daemonProcessCount} />
+      {scopes.length > 0 && <ScopeSelector scopes={scopes} selectedScope={selectedScope} />}
       <TabBar activeTab={view} badges={badges} />
       {view === "servers" ? (
         <>

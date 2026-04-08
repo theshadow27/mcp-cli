@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectScope } from "./scope";
+import { detectScope, listScopes } from "./scope";
 
 describe("detectScope", () => {
   let tmp: string;
@@ -95,5 +95,59 @@ describe("detectScope", () => {
 
     const result = detectScope(root, { scopesDir });
     expect(result).toEqual({ name: "myproject", root });
+  });
+});
+
+describe("listScopes", () => {
+  let tmp: string;
+  let scopesDir: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "scope-list-test-"));
+    scopesDir = join(tmp, "scopes");
+    mkdirSync(scopesDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function writeScope(name: string, root: string): void {
+    writeFileSync(join(scopesDir, `${name}.json`), JSON.stringify({ root, created: new Date().toISOString() }));
+  }
+
+  test("returns empty array when no scopes exist", () => {
+    const result = listScopes({ scopesDir });
+    expect(result).toEqual([]);
+  });
+
+  test("returns empty array when scopes directory does not exist", () => {
+    const result = listScopes({ scopesDir: join(tmp, "nonexistent") });
+    expect(result).toEqual([]);
+  });
+
+  test("lists all registered scopes sorted by name", () => {
+    const rootA = join(tmp, "project-a");
+    const rootB = join(tmp, "project-b");
+    mkdirSync(rootA, { recursive: true });
+    mkdirSync(rootB, { recursive: true });
+    writeScope("zebra", rootA);
+    writeScope("alpha", rootB);
+
+    const result = listScopes({ scopesDir });
+    expect(result).toEqual([
+      { name: "alpha", root: rootB },
+      { name: "zebra", root: rootA },
+    ]);
+  });
+
+  test("skips malformed scope files", () => {
+    const root = join(tmp, "project");
+    mkdirSync(root, { recursive: true });
+    writeScope("good", root);
+    writeFileSync(join(scopesDir, "bad.json"), "not json");
+
+    const result = listScopes({ scopesDir });
+    expect(result).toEqual([{ name: "good", root }]);
   });
 });
