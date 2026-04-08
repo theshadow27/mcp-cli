@@ -225,8 +225,11 @@ const proc2 = Bun.spawn(["bun", "test", "--timeout", "60000", "packages/daemon/s
 });
 
 // Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
-// after 120s rather than blocking pre-commit indefinitely.
-const RUN2_DEADLINE_MS = 120_000;
+// rather than blocking pre-commit indefinitely. 300s is generous enough for
+// the full daemon + integration test suite while still catching real hangs.
+// See #1078 — the previous 120s deadline was too aggressive and consistently
+// killed daemon tests that were still making progress.
+const RUN2_DEADLINE_MS = 300_000;
 const run2Deadline = setTimeout(() => {
   console.error(`\nERROR: run-2 (daemon tests) exceeded ${RUN2_DEADLINE_MS / 1000}s deadline — killing process`);
   proc2.kill();
