@@ -34,6 +34,7 @@ import { cmdNote } from "./commands/note";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
+import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
@@ -294,6 +295,10 @@ async function main(): Promise<void> {
       case "opencode":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
+        break;
+
+      case "scope":
+        await cmdScope(cleanArgs.slice(1));
         break;
 
       case "serve":
@@ -796,6 +801,9 @@ Usage:
   mcx agent codex spawn --task "..."   Start a Codex session
   mcx agent acp spawn --task "..."     Start an ACP agent session
   mcx claude <subcommand>              Alias for mcx agent claude <subcommand>
+  mcx scope init [name] [--force]     Register current directory as a scope
+  mcx scope list                      List all registered scopes
+  mcx scope rm <name>                 Remove a scope
   mcx serve                           Run as stdio MCP server (for .mcp.json)
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
