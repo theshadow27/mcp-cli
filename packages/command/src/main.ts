@@ -812,116 +812,42 @@ async function parseToolArgs(input: string): Promise<Record<string, unknown>> {
 function printUsage(): void {
   console.log(`mcx — MCP tools from the command line
 
-Usage:
-  mcx ls                              List configured servers
-  mcx ls <server>                     List tools for a server
-  mcx tools <server>                  Alias for ls <server>
-  mcx call <server> <tool> [json]     Call a tool (JSON from arg, @file, or stdin); --timeout <s> overrides 10m default
-  mcx call <server/tool> [json]       Slash notation
-  mcx <server> <tool> [json]          Shorthand for call
-  mcx <server/tool> [json]            Shorthand with slash notation
+Tools:
+  mcx ls [server]                     List servers or tools
+  mcx call <server> <tool> [json]     Call a tool (also: mcx <server> <tool>)
   mcx info <server> <tool>            Show tool schema
-  mcx info <server/tool>              Slash notation
   mcx grep <pattern>                  Search tools by name/description
-  mcx search <query>                  Search local tools, then registry
-  mcx install <slug>                  Install a server from the registry
-  mcx update <slug>                   Check for and apply server updates
-  mcx update --all                    Check all installed servers for updates
-  mcx registry search <query>         Search the MCP registry
-  mcx registry list                   List available registry servers
-  mcx import [source] [--scope ...]    Import servers from .mcp.json or config file
-  mcx import --claude [--all]          Import servers from ~/.claude.json
-  mcx export [file] [--scope ...]      Export servers to .mcp.json format
-  mcx add --transport {stdio|http|sse} <name> ...   Add a server
-  mcx add-json <name> '<json>'        Add a server from raw JSON
-  mcx add-from-claude-desktop         Import servers from Claude Desktop config
-  mcx remove <name>                   Remove a server
-  mcx get <name>                      Inspect a server's config and status
-  mcx auth                             List servers with auth status
-  mcx auth <server>                   Trigger authentication (OAuth or auth tool)
-  mcx auth <server> --status          Check auth status without login
-  mcx config show                     Show resolved server config
-  mcx config sources                  Show config file sources
-  mcx config set <key> <value>        Set a CLI option (e.g. trust-claude)
-  mcx config get <key>                Get a CLI option value
-  mcx config get <server>             Inspect a server's config (env, args, url)
-  mcx config set <srv> env <K>:<V>    Set an env var on a stdio server
-  mcx version                         Show CLI, daemon, and protocol versions
-  mcx status                          Daemon status
-  mcx metrics                         Show daemon metrics (Prometheus-style)
-  mcx metrics -j                      Metrics as JSON
-  mcx dump                            Snapshot daemon state for bug reports
-  mcx dump --stdout                   Dump JSON to stdout
-  mcx dump --include-transcripts      Include session transcripts
-  mcx mail -s "subject" <recipient>   Send a message (body from stdin)
-  mcx mail -H                        List message headers
-  mcx mail -u <user>                 Read a user's mailbox
-  mcx mail -r <msgnum>               Reply to a message (body from stdin)
-  mcx mail --wait [--timeout=N]      Block until a message arrives
-  mcx mail --wait --for=<name>       Wait for mail to specific recipient
-  mcx logs <server> [-f] [--lines N]  View server stderr output
-  mcx logs --daemon [-f] [--lines N]  View daemon log file
-  mcx spans [--trace-id ID]           View OpenTelemetry trace spans
-  mcx typegen                         Generate TypeScript types for alias scripts
-  mcx tty open <command>               Open command in new terminal tab
-  mcx tty open --window <command>      Open command in new terminal window
-  mcx tty open --headless <command>    Run command as background process
-  mcx agent <provider> <subcommand>     Manage agent sessions (claude, codex, acp, opencode)
-  mcx agent claude spawn --task "..."  Start a Claude Code session
-  mcx agent codex spawn --task "..."   Start a Codex session
-  mcx agent acp spawn --task "..."     Start an ACP agent session
-  mcx claude <subcommand>              Alias for mcx agent claude <subcommand>
-  mcx scope init [name] [--force]     Register current directory as a scope
-  mcx scope list                      List all registered scopes
-  mcx scope rm <name>                 Remove a scope
-  mcx serve                           Run as stdio MCP server (for .mcp.json)
-  mcx serve kill <pid>                Kill a serve instance by PID
-  mcx serve kill --all                Kill all serve instances
-  mcx completions {bash|zsh|fish}     Generate shell completion script
-  mcx restart [server]                Restart server connection(s)
-  mcx daemon restart                  Restart the daemon (kills sessions)
-  mcx daemon shutdown [--force]        Stop the daemon (--force if sessions active)
-  mcx shutdown [--force]              Stop the daemon (legacy)
 
-Notes:
-  mcx note set <srv>.<tool> "text"    Attach a note to a tool
-  mcx note get <srv>.<tool>           Get a tool's note
-  mcx note ls                         List all notes
-  mcx note rm <srv>.<tool>            Remove a note
+Sessions:
+  mcx claude <subcommand>             Manage Claude Code sessions
+  mcx agent <provider> <subcommand>   Manage agent sessions (codex, acp, opencode)
+
+Servers:
+  mcx status                          Server/daemon status
+  mcx auth [server]                   Auth status or trigger login
+  mcx restart [server]                Restart connection(s)
+  mcx add/remove/get <server>         Manage server config
+  mcx config <subcommand>             Show or modify configuration
+  mcx import/export [file]            Import/export server config
 
 Aliases:
-  mcx alias ls                        List saved aliases
-  mcx alias save <name> <@file | ->   Save a TypeScript alias script
-  mcx alias show <name>               Print alias source
-  mcx alias edit <name>               Open alias in $EDITOR
-  mcx alias rm <name>                 Delete an alias
-  mcx run <alias> [--key value ...]   Run an alias with arguments
-  mcx <alias> [--key value ...]       Shorthand for run
+  mcx alias ls|save|show|edit|rm      Manage alias scripts
+  mcx run <alias> [args]              Run an alias (also: mcx <alias>)
 
-Options:
-  --format json, -j                 Machine-readable JSON output (ls, info, grep, status)
-  --jq '<filter>'                   Apply jq filter to call output (client-side)
-  --full, -f                        Bypass output size protection (call)
-  --verbose, -V                     Show IPC requests/responses and debug info (stderr)
-  --quiet, -q                       Suppress informational prompts (e.g. first-run hint)
-  --dry-run                         Show what would be executed without running it (call)
+Utility:
+  mcx search/install/update           Registry search and install
+  mcx logs <server> [-f]              View server stderr
+  mcx mail <subcommand>               Inter-session messaging
+  mcx note <subcommand>               Tool annotations
+  mcx serve                           Run as stdio MCP server
+  mcx scope <subcommand>              Directory scope management
+  mcx dump/metrics/spans              Diagnostics and observability
+  mcx version                         Version info
+  mcx completions {bash|zsh|fish}     Shell completions
 
-Examples:
-  mcx ls atlassian
-  mcx ls --format json
-  mcx ls atlassian -j
-  mcx call atlassian search '{"query":"sprint planning"}'
-  mcx call atlassian/search '{"query":"sprint planning"}'
-  mcx atlassian search '{"query":"sprint planning"}'
-  mcx atlassian/search '{"query":"sprint planning"}'
-  mcx call atlassian getJiraIssue @issue.json
-  echo '{"query":"test"}' | mcx call atlassian search
-  mcx info atlassian getConfluencePage
-  mcx info atlassian/getConfluencePage -j
-  mcx grep confluence
-  mcx status -j
-  mcx alias save get-time @get-time.ts
-  mcx run get-time`);
+Options:  -j (JSON) | -V (verbose) | -q (quiet) | -f (full) | --dry-run | --jq '<filter>'
+
+Run 'mcx <command> --help' for details and examples.`);
 }
 
 if (import.meta.main) {
