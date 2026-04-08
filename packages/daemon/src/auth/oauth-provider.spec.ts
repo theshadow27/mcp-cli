@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StateDb } from "../db/state";
 import type { KeychainTokens } from "./keychain";
-import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
+import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
 
 const originalPlatform = process.platform;
 const originalWslDistro = process.env.WSL_DISTRO_NAME;
@@ -457,6 +457,15 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
+    test("clientMetadata excludes whitespace-only scope", () => {
+      const db = createDb();
+      const provider = createProvider(db, { scope: "  " });
+
+      const meta = provider.clientMetadata;
+      expect(meta.scope).toBeUndefined();
+      db.close();
+    });
+
     test("clientMetadata uses setRedirectUrl when set", () => {
       const db = createDb();
       const provider = createProvider(db);
@@ -529,19 +538,19 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("returns fallback when no config scope", () => {
+    test("returns undefined when no config scope (lets SDK cascade handle it)", () => {
       const db = createDb();
       const provider = createProvider(db);
 
-      expect(provider.getEffectiveScope()).toBe(DEFAULT_OAUTH_SCOPE);
+      expect(provider.getEffectiveScope()).toBeUndefined();
       db.close();
     });
 
-    test("returns fallback when config scope is empty/whitespace", () => {
+    test("returns undefined when config scope is empty/whitespace", () => {
       const db = createDb();
       const provider = createProvider(db, { scope: "  " });
 
-      expect(provider.getEffectiveScope()).toBe(DEFAULT_OAUTH_SCOPE);
+      expect(provider.getEffectiveScope()).toBeUndefined();
       db.close();
     });
   });

@@ -514,12 +514,12 @@ export class IpcServer {
         });
         provider.setRedirectUrl(callback.url);
 
-        // Compute effective scope (config > fallback) — passed to auth(), NOT clientMetadata.
-        // The SDK's internal cascade: explicit scope > resourceMetadata.scopes_supported > clientMetadata.scope
-        const effectiveScope = provider.getEffectiveScope();
+        // Pass configured scope to auth(), or undefined to let the SDK's own
+        // cascade handle discovery (resourceMetadata.scopes_supported, etc.).
+        const authScope = provider.getEffectiveScope();
 
         // Run the SDK auth orchestrator
-        const result = await auth(provider, { serverUrl, scope: effectiveScope });
+        const result = await auth(provider, { serverUrl, scope: authScope });
 
         if (result === "AUTHORIZED") {
           // Already authorized (tokens were valid) — restart server to reconnect
@@ -530,8 +530,8 @@ export class IpcServer {
         // result === "REDIRECT" — browser was opened, wait for callback
         const code = await callback.waitForCode;
 
-        // Exchange code for tokens
-        await auth(provider, { serverUrl, authorizationCode: code, scope: effectiveScope });
+        // Exchange code for tokens (scope not passed — SDK reads from clientMetadata for token exchange)
+        await auth(provider, { serverUrl, authorizationCode: code });
 
         // Reconnect with new tokens
         await this.pool.restart(server);
