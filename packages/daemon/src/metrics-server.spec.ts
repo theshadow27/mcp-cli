@@ -10,15 +10,16 @@ describe("METRICS_SERVER_NAME", () => {
 });
 
 describe("start() returns tool cache", () => {
-  test("returns 3 tools with correct server name", async () => {
+  test("returns 4 tools with correct server name", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector);
     try {
       const { tools } = await server.start();
-      expect(tools.size).toBe(3);
+      expect(tools.size).toBe(4);
       expect(tools.has("get_metrics")).toBe(true);
       expect(tools.has("get_metric")).toBe(true);
       expect(tools.has("get_health")).toBe(true);
+      expect(tools.has("quota_status")).toBe(true);
       for (const [, info] of tools) {
         expect(info.server).toBe("_metrics");
       }

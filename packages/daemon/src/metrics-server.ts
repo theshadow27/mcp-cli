@@ -13,6 +13,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { MetricsCollector } from "./metrics";
+import type { QuotaPoller } from "./quota";
 
 const TOOLS = [
   {
@@ -43,6 +44,14 @@ const TOOLS = [
       "Return a summary health object: uptime, connected servers, active sessions, total tool calls, and error count.",
     inputSchema: { type: "object" as const, properties: {} },
   },
+  {
+    name: "quota_status",
+    description:
+      "Return current Claude usage quota status: 5-hour and 7-day utilization percentages, " +
+      "reset timestamps, and extra usage budget. Utilization is 0-100 (percentage). " +
+      "Returns null fields if no OAuth token is available or the endpoint cannot be reached.",
+    inputSchema: { type: "object" as const, properties: {} },
+  },
 ] as const;
 
 export class MetricsServer {
@@ -51,7 +60,14 @@ export class MetricsServer {
   private serverTransport: Transport | null = null;
   private clientTransport: Transport | null = null;
 
-  constructor(private metrics: MetricsCollector) {}
+  private quotaPoller: QuotaPoller | null;
+
+  constructor(
+    private metrics: MetricsCollector,
+    quotaPoller?: QuotaPoller | null,
+  ) {
+    this.quotaPoller = quotaPoller ?? null;
+  }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
     if (this.server) {
@@ -84,6 +100,9 @@ export class MetricsServer {
 
         case "get_health":
           return { content: [{ type: "text" as const, text: JSON.stringify(this.buildHealth(), null, 2) }] };
+
+        case "quota_status":
+          return { content: [{ type: "text" as const, text: JSON.stringify(this.buildQuotaStatus(), null, 2) }] };
 
         default:
           return {
@@ -166,6 +185,26 @@ export class MetricsServer {
 
     return {
       content: [{ type: "text", text: JSON.stringify({ name: metricName, series: matches }, null, 2) }],
+    };
+  }
+
+  private buildQuotaStatus(): Record<string, unknown> {
+    const status = this.quotaPoller?.status;
+    if (!status) {
+      return {
+        available: false,
+        lastError: this.quotaPoller?.lastError ?? "Quota monitoring not started",
+      };
+    }
+    return {
+      available: true,
+      fiveHour: status.fiveHour,
+      sevenDay: status.sevenDay,
+      sevenDaySonnet: status.sevenDaySonnet,
+      sevenDayOpus: status.sevenDayOpus,
+      extraUsage: status.extraUsage,
+      fetchedAt: status.fetchedAt,
+      lastError: this.quotaPoller?.lastError ?? null,
     };
   }
 

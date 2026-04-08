@@ -14,7 +14,7 @@
  *   mcx status                                   # daemon status
  */
 
-import type { DaemonStatus, ServerStatus } from "@mcp-cli/core";
+import type { DaemonStatus, QuotaStatusResult, ServerStatus } from "@mcp-cli/core";
 import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
@@ -577,11 +577,19 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     throw err;
   }
 
+  // Fetch quota status in parallel (non-blocking — don't fail status if quota unavailable)
+  let quota: QuotaStatusResult | null = null;
+  try {
+    quota = await ipcCall("quotaStatus", undefined, { timeoutMs: PING_TIMEOUT_MS });
+  } catch {
+    // Quota monitoring unavailable — continue without it
+  }
+
   const staleWarning = getStaleDaemonWarning();
   const sourceWarning = getSourceStalenessWarning();
 
   if (json) {
-    let output = { ...status };
+    let output = { ...status, quota };
     if (staleWarning) output = { ...output, staleBuild: true, staleWarning } as typeof output;
     if (sourceWarning) output = { ...output, staleSource: true, sourceWarning } as typeof output;
     console.log(JSON.stringify(output, null, 2));
@@ -590,12 +598,41 @@ async function cmdStatus(args: string[] = []): Promise<void> {
     console.log(`Uptime: ${Math.round(status.uptime)}s`);
     console.log(`Database: ${status.dbPath}\n`);
     printServerList(status.servers);
+    printQuotaStatus(quota);
     if (staleWarning) {
       console.error(`\n⚠ ${staleWarning}`);
     }
     if (sourceWarning) {
       console.error(`\n⚠ ${sourceWarning}`);
     }
+  }
+}
+
+function printQuotaStatus(quota: QuotaStatusResult | null): void {
+  if (!quota || quota.fetchedAt === 0) return;
+
+  console.log("\nQuota:");
+  if (quota.fiveHour) {
+    const reset = new Date(quota.fiveHour.resetsAt).toLocaleTimeString();
+    const warn = quota.fiveHour.utilization > 80 ? " ⚠" : "";
+    console.log(`  5h window:  ${quota.fiveHour.utilization}% used (resets ${reset})${warn}`);
+  }
+  if (quota.sevenDay) {
+    console.log(`  7d window:  ${quota.sevenDay.utilization}% used`);
+  }
+  if (quota.sevenDaySonnet) {
+    console.log(`  7d sonnet:  ${quota.sevenDaySonnet.utilization}% used`);
+  }
+  if (quota.sevenDayOpus) {
+    console.log(`  7d opus:    ${quota.sevenDayOpus.utilization}% used`);
+  }
+  if (quota.extraUsage) {
+    console.log(
+      `  Extra:      ${quota.extraUsage.utilization.toFixed(1)}% ($${quota.extraUsage.usedCredits} / $${quota.extraUsage.monthlyLimit})`,
+    );
+  }
+  if (quota.lastError) {
+    console.error(`  Last error: ${quota.lastError}`);
   }
 }
 
