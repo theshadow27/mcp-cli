@@ -213,7 +213,11 @@ function handleSessionList(
 ): { content: Array<{ type: "text"; text: string }> } {
   let sessions = server.listSessions();
   const repoRoot = args.repoRoot as string | undefined;
-  if (repoRoot) {
+  const scopeRoot = args.scopeRoot as string | undefined;
+  if (scopeRoot) {
+    // Scope filter: include sessions whose cwd is under the scope root
+    sessions = sessions.filter((s) => s.cwd !== null && (s.cwd === scopeRoot || s.cwd.startsWith(`${scopeRoot}/`)));
+  } else if (repoRoot) {
     sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoRoot);
   }
   return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
@@ -312,11 +316,18 @@ async function handleWait(
   const timeoutMs = (args.timeout as number) ?? 300_000;
   const afterSeq = args.afterSeq as number | undefined;
   const repoRoot = args.repoRoot as string | undefined;
+  const scopeRoot = args.scopeRoot as string | undefined;
+
+  /** Check if a session's cwd is within the scope root. */
+  const matchesScope = (cwd: string | null | undefined): boolean =>
+    cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
 
   // Cursor-based path: use waitForEventsSince (errors propagate — no session-list fallback)
   if (afterSeq !== undefined) {
     const result: WaitResult = await server.waitForEventsSince(sessionId, afterSeq, timeoutMs);
-    if (repoRoot) {
+    if (scopeRoot) {
+      result.events = result.events.filter((e) => matchesScope(e.session?.cwd));
+    } else if (repoRoot) {
       result.events = result.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
     }
     return {
@@ -327,7 +338,10 @@ async function handleWait(
   // Legacy path: unified { event?, sessions } shape
   try {
     const event = await server.waitForEvent(sessionId, timeoutMs);
-    // Filter single event by repoRoot — if mismatched, return empty array (same as timeout)
+    // Filter single event by scope or repoRoot — if mismatched, return empty array (same as timeout)
+    if (scopeRoot && !matchesScope(event.session?.cwd)) {
+      return handleSessionList(server, { scopeRoot });
+    }
     if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot) {
       return handleSessionList(server, { repoRoot });
     }

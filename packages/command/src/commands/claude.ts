@@ -12,6 +12,7 @@ import {
   WorktreeError,
   cleanupWorktree,
   createWorktree,
+  detectScope,
   getDefaultBranch,
   listMcxWorktrees,
   parseWorktreeList,
@@ -692,11 +693,16 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   const showPr = args.includes("--pr");
   const showAll = args.includes("--all") || args.includes("-a");
 
-  // Pass repoRoot to daemon for server-side filtering unless --all
+  // Pass scopeRoot or repoRoot to daemon for server-side filtering unless --all
   const toolArgs: Record<string, unknown> = {};
   if (!showAll) {
-    const gitRoot = d.getGitRoot();
-    if (gitRoot) toolArgs.repoRoot = gitRoot;
+    const scope = detectScope();
+    if (scope) {
+      toolArgs.scopeRoot = scope.root;
+    } else {
+      const gitRoot = d.getGitRoot();
+      if (gitRoot) toolArgs.repoRoot = gitRoot;
+    }
   }
 
   const result = await d.callTool("claude_session_list", toolArgs);
@@ -804,11 +810,18 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
 
 async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
-  const positional = args.filter((a) => a !== "--keep" && a !== "--keep-worktree");
+  const showAll = args.includes("--all") || args.includes("-a");
+  const positional = args.filter((a) => !a.startsWith("-"));
   const sessionPrefix = positional[0];
 
+  // --all: end all sessions in scope (or all sessions if unscoped)
+  if (showAll) {
+    await claudeByeAll(args, d, keepWorktree);
+    return;
+  }
+
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude bye <session-id> [--keep|--keep-worktree]");
+    d.printError("Usage: mcx claude bye <session-id> [--keep|--keep-worktree] [--all]");
     d.exit(1);
   }
 
@@ -831,6 +844,60 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
       const wtConfig = readWorktreeConfig(repoRoot);
       const cwd = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
       cleanupWorktree(byeResult.worktree, cwd, d, repoRoot);
+    }
+  }
+}
+
+/** End all sessions in the detected scope (or all sessions if unscoped). */
+async function claudeByeAll(args: string[], d: ClaudeDeps, keepWorktree: boolean): Promise<void> {
+  // List sessions with scope filtering
+  const toolArgs: Record<string, unknown> = {};
+  const bypassScope = args.includes("--all") && !args.includes("--scoped");
+  if (!bypassScope) {
+    const scope = detectScope();
+    if (scope) {
+      toolArgs.scopeRoot = scope.root;
+    }
+  }
+
+  const listResult = await d.callTool("claude_session_list", toolArgs);
+  const text = formatToolResult(listResult);
+  let sessions: SessionInfo[];
+  try {
+    sessions = JSON.parse(text);
+  } catch {
+    d.printError("Failed to parse session list");
+    d.exit(1);
+  }
+
+  if (sessions.length === 0) {
+    console.error("No sessions to end.");
+    return;
+  }
+
+  console.error(`Ending ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`);
+
+  for (const s of sessions) {
+    try {
+      const result = await d.callTool("claude_bye", { sessionId: s.sessionId });
+      const byeResult = parseByeResult(result);
+      const id = s.sessionId.slice(0, 8);
+      console.error(`  ${id} ended`);
+
+      if (byeResult.worktree && !keepWorktree) {
+        if (byeResult.cwd) {
+          cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
+        } else {
+          const repoRoot = process.cwd();
+          const wtConfig = readWorktreeConfig(repoRoot);
+          const cwdPath = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
+          cleanupWorktree(byeResult.worktree, cwdPath, d, repoRoot);
+        }
+      }
+    } catch (err) {
+      const id = s.sessionId.slice(0, 8);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  ${id} error: ${msg}`);
     }
   }
 }
@@ -1048,13 +1115,20 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     toolArgs.afterSeq = parsed.afterSeq;
   }
 
-  // Pass repoRoot to daemon for server-side filtering (only when no explicit session and no --all)
+  // Pass scopeRoot or repoRoot to daemon for server-side filtering (only when no explicit session and no --all)
   let repoFilter: string | undefined;
+  let scopeFilter: string | undefined;
   if (!parsed.all && !parsed.sessionPrefix) {
-    const gitRoot = d.getGitRoot();
-    if (gitRoot) {
-      toolArgs.repoRoot = gitRoot;
-      repoFilter = gitRoot;
+    const scope = detectScope();
+    if (scope) {
+      toolArgs.scopeRoot = scope.root;
+      scopeFilter = scope.root;
+    } else {
+      const gitRoot = d.getGitRoot();
+      if (gitRoot) {
+        toolArgs.repoRoot = gitRoot;
+        repoFilter = gitRoot;
+      }
     }
   }
 
@@ -1086,7 +1160,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     data = { event: data, sessions: [] };
   }
 
-  // Apply repo filtering to unified { event?, sessions } shape
+  // Apply repo/scope filtering to unified { event?, sessions } shape
+  const activeFilter = scopeFilter ?? repoFilter;
+  const filterLabel = scopeFilter ? "other scopes" : "other repos";
   if (data && typeof data === "object" && "sessions" in data) {
     const unified = data as {
       event?: Record<string, unknown>;
@@ -1104,13 +1180,13 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     }
     if (!parsed.short) {
       console.log(JSON.stringify(unified, null, 2));
-      if (repoFilter && unified.sessions.length === 0) {
+      if (activeFilter && unified.sessions.length === 0) {
         const origData = JSON.parse(text);
         const orig = Array.isArray(origData)
           ? origData.length
           : ((origData as { sessions?: unknown[] }).sessions?.length ?? 0);
         if (orig > 0) {
-          console.error(`(${orig} session${orig === 1 ? "" : "s"} in other repos — use --all to see them)`);
+          console.error(`(${orig} session${orig === 1 ? "" : "s"} in ${filterLabel} — use --all to see them)`);
         }
       }
       return;
@@ -1133,9 +1209,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       for (const s of unified.sessions) {
         console.log(formatSessionShort(s as Parameters<typeof formatSessionShort>[0]));
       }
-      if (unified.sessions.length === 0 && totalBeforeFilter > 0 && repoFilter) {
+      if (unified.sessions.length === 0 && totalBeforeFilter > 0 && activeFilter) {
         console.error(
-          `(${totalBeforeFilter} session${totalBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+          `(${totalBeforeFilter} session${totalBeforeFilter === 1 ? "" : "s"} in ${filterLabel} — use --all to see them)`,
         );
       }
     }
@@ -1158,7 +1234,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       console.log(JSON.stringify(waitResult, null, 2));
       if (events.length === 0 && totalEventsBeforeFilter > 0) {
         console.error(
-          `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+          `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in ${filterLabel} — use --all to see them)`,
         );
       }
       return;
@@ -1172,9 +1248,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       const preview = (e.result as string) ? (e.result as string).slice(0, 100) : "";
       console.log(`${id} ${event} ${cost} ${turns}${preview ? ` ${preview}` : ""}`);
     }
-    if (events.length === 0 && totalEventsBeforeFilter > 0 && repoFilter) {
+    if (events.length === 0 && totalEventsBeforeFilter > 0 && activeFilter) {
       console.error(
-        `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in other repos — use --all to see them)`,
+        `(${totalEventsBeforeFilter} event${totalEventsBeforeFilter === 1 ? "" : "s"} in ${filterLabel} — use --all to see them)`,
       );
     }
     return;
