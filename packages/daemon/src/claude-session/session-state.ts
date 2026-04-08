@@ -36,6 +36,7 @@ export type SessionEvent =
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
+  | { type: "session:rate_limited"; sessionId: string }
   | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" }
   | { type: "session:cleared" }
@@ -74,6 +75,7 @@ export class SessionState {
   cost = 0;
   tokens = 0;
   numTurns = 0;
+  rateLimited = false;
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
   private readonly genRequestId: RequestIdGenerator;
 
@@ -243,7 +245,12 @@ export class SessionState {
       this.state = "active";
       const usage = strict.data.message.usage;
       this.tokens += usage.input_tokens + usage.output_tokens;
-      return [{ type: "session:response", message: strict.data }];
+      const events: SessionEvent[] = [{ type: "session:response", message: strict.data }];
+      if (strict.data.error === "rate_limit") {
+        this.rateLimited = true;
+        events.push({ type: "session:rate_limited", sessionId: this.sessionId });
+      }
+      return events;
     }
 
     // Fallback: still transition to active and extract tokens if possible
@@ -255,7 +262,13 @@ export class SessionState {
       if (usage) {
         this.tokens += usage.input_tokens + usage.output_tokens;
       }
-      return [{ type: "session:response", message: buildFallbackAssistant(msg, loose.data) }];
+      const assistant = buildFallbackAssistant(msg, loose.data);
+      const events: SessionEvent[] = [{ type: "session:response", message: assistant }];
+      if (assistant.error === "rate_limit") {
+        this.rateLimited = true;
+        events.push({ type: "session:rate_limited", sessionId: this.sessionId });
+      }
+      return events;
     }
 
     // Even the fallback failed — still transition to active
@@ -274,6 +287,7 @@ export class SessionState {
       this.numTurns += r.num_turns;
       this.tokens += resultTokens;
       this.state = "idle";
+      this.rateLimited = false;
       return [
         {
           type: "session:result",

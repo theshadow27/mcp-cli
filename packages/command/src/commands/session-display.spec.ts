@@ -196,4 +196,22 @@ describe("formatSessionShort with createdAt", () => {
     });
     expect(line).not.toContain("(");
   });
+
+  test("shows [RATE LIMITED] when rateLimited is true", () => {
+    const line = formatSessionShort({
+      sessionId: "84418297-1234-5678-9abc-def012345678",
+      state: "active",
+      rateLimited: true,
+    });
+    expect(line).toContain("[RATE LIMITED]");
+  });
+
+  test("does not show [RATE LIMITED] when rateLimited is false", () => {
+    const line = formatSessionShort({
+      sessionId: "84418297-1234-5678-9abc-def012345678",
+      state: "active",
+      rateLimited: false,
+    });
+    expect(line).not.toContain("[RATE LIMITED]");
+  });
 });
