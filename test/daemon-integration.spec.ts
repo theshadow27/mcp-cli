@@ -47,7 +47,7 @@ describe("P1: Daemon lifecycle", () => {
     const res = await rpc(daemon.socketPath, "shutdown");
     expect(res.result).toEqual({ ok: true });
 
-    const exitCode = await daemon.proc.exited;
+    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
     expect(exitCode).toBe(0);
 
     // PID file should be cleaned up
@@ -59,7 +59,8 @@ describe("P1: Daemon lifecycle", () => {
   test("shutdown via IPC logs reason and timing in stderr", async () => {
     daemon = await startTestDaemon({});
     await rpc(daemon.socketPath, "shutdown");
-    await daemon.proc.exited;
+    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    expect(exitCode).not.toBe("timeout");
 
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
     expect(stderr).toContain("Shutting down (IPC shutdown request)");
@@ -70,7 +71,8 @@ describe("P1: Daemon lifecycle", () => {
   test("shutdown via SIGTERM logs reason in stderr", async () => {
     daemon = await startTestDaemon({});
     daemon.proc.kill("SIGTERM");
-    await daemon.proc.exited;
+    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    expect(exitCode).not.toBe("timeout");
 
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
     expect(stderr).toContain("Shutting down (SIGTERM)");
@@ -484,20 +486,11 @@ describe("P5b: Error scenario edge cases", () => {
   });
 
   test("HTTP 401 error suggests 'mcx auth' in the error message", async () => {
-    // Start a local HTTP server that always returns 401
-    const authServer = Bun.spawn(["bun", resolve("test/http-401-server.ts")], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
+    // Start a local HTTP server that always returns 401, using harness for proper cleanup
+    const authServer = await startMockServer("test/http-401-server.ts");
     try {
-      // Read the port from stdout
-      const reader = authServer.stdout.getReader();
-      const { value } = await reader.read();
-      reader.releaseLock();
-      const port = Number(new TextDecoder().decode(value).trim());
-
       daemon = await startTestDaemon({
-        authfail: { type: "http", url: `http://127.0.0.1:${port}/mcp` },
+        authfail: { type: "http", url: `http://127.0.0.1:${authServer.port}/mcp` },
       });
 
       // Trigger a connection attempt — the 401 should produce an auth hint
@@ -511,8 +504,7 @@ describe("P5b: Error scenario edge cases", () => {
       const server = (list.result as Array<{ name: string; lastError?: string }>).find((s) => s.name === "authfail");
       expect(server?.lastError).toContain("mcx auth");
     } finally {
-      authServer.kill();
-      await authServer.exited;
+      await authServer.kill();
     }
   });
 

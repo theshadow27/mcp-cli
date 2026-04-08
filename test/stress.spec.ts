@@ -192,10 +192,10 @@ describe("S4: Resilience after errors", () => {
   });
 
   test("daemon stays healthy after a burst of error calls", async () => {
-    // Fire 5 calls to non-existent servers concurrently — generous timeout for process spawning
+    // Fire 5 calls to non-existent servers concurrently
     const errorResults = await Promise.all(
       Array.from({ length: 5 }, (_, i) =>
-        mcx(daemon.dir, ["call", `ghost-${i}`, "anything", "{}"], { timeout: 60_000 }),
+        mcx(daemon.dir, ["call", `ghost-${i}`, "anything", "{}"], { timeout: 15_000 }),
       ),
     );
 
@@ -211,14 +211,13 @@ describe("S4: Resilience after errors", () => {
   });
 
   test("interleaved success and failure calls all resolve correctly", async () => {
-    // Use generous timeout — 10 concurrent bun processes under load
     const results = await Promise.all(
       Array.from({ length: 10 }, (_, i) => {
         if (i % 3 === 0) {
           // Every 3rd call targets a non-existent server
-          return mcx(daemon.dir, ["call", "ghost", "nope", "{}"], { timeout: 60_000 });
+          return mcx(daemon.dir, ["call", "ghost", "nope", "{}"], { timeout: 15_000 });
         }
-        return mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: i })], { timeout: 60_000 });
+        return mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: i })], { timeout: 15_000 });
       }),
     );
 
