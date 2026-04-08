@@ -803,10 +803,12 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
+  const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
+  const positional = args.filter((a) => a !== "--keep" && a !== "--keep-worktree");
+  const sessionPrefix = positional[0];
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude bye <session-id>");
+    d.printError("Usage: mcx claude bye <session-id> [--keep|--keep-worktree]");
     d.exit(1);
   }
 
@@ -818,7 +820,10 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 
   if (byeResult.worktree) {
-    if (byeResult.cwd) {
+    if (keepWorktree) {
+      const wtPath = byeResult.cwd ?? resolveKeptWorktreePath(byeResult);
+      d.printError(`Worktree preserved: ${wtPath}`);
+    } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else {
       // Daemon-created worktrees: cwd is null — resolve from local repo root
@@ -828,6 +833,13 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
       cleanupWorktree(byeResult.worktree, cwd, d, repoRoot);
     }
   }
+}
+
+/** Resolve the worktree path for --keep output when cwd is not provided */
+function resolveKeptWorktreePath(byeResult: ByeResult): string {
+  const repoRoot = process.cwd();
+  const wtConfig = readWorktreeConfig(repoRoot);
+  return resolveWorktreePath(repoRoot, byeResult.worktree as string, wtConfig);
 }
 
 export interface ByeResult {

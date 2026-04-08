@@ -1356,6 +1356,59 @@ describe("mcx claude bye", () => {
     await expect(cmdClaude(["bye"], deps)).rejects.toThrow(ExitError);
   });
 
+  test("--keep skips worktree cleanup and prints preserved path", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
+    });
+    const exec: ClaudeDeps["exec"] = mock(() => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["bye", "def", "--keep"], deps);
+      // Should NOT call any git commands (no cleanup)
+      expect(exec).not.toHaveBeenCalled();
+      // Should print preserved message
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Worktree preserved:");
+      expect(errOutput).toContain("/repo");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--keep-worktree is an alias for --keep", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
+    });
+    const exec: ClaudeDeps["exec"] = mock(() => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["bye", "def", "--keep-worktree"], deps);
+      expect(exec).not.toHaveBeenCalled();
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Worktree preserved:");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("removes clean worktree after bye", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
