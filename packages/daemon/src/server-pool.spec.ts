@@ -1705,7 +1705,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     } finally {
       forceKill(pid);
     }
-  });
+  }, 10_000); // awaitDeath polls up to 5s; give headroom above the 5s bun default
 
   test("disconnect does not throw for non-stdio transports", async () => {
     const connectFn: ConnectFn = mock(() =>
