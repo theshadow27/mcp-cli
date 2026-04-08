@@ -178,7 +178,23 @@ const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withF
   .filter((d) => d.isDirectory() && d.name !== "daemon")
   .map((d) => `packages/${d.name}/src`);
 
-const nonDaemonPaths = [...packageDirs, "test"];
+/**
+ * Daemon integration test files in test/ that spawn real daemons.
+ * These must run in run-2 (isolated process) to avoid hangs and segfaults.
+ */
+const DAEMON_TEST_FILES = new Set([
+  "test/daemon-integration.spec.ts",
+  "test/cli-orchestration.spec.ts",
+  "test/stress.spec.ts",
+  "test/transport-errors.spec.ts",
+]);
+
+/** Non-daemon test files from test/ — only these go in run-1 */
+const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
+  .filter((f) => f.endsWith(".spec.ts") && !DAEMON_TEST_FILES.has(`test/${f}`))
+  .map((f) => `test/${f}`);
+
+const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles];
 
 const testStart = Date.now();
 
@@ -191,7 +207,9 @@ const [stdout1, stderr1] = await Promise.all([new Response(proc1.stdout).text(),
 const exitCode1 = await proc1.exited;
 
 // Run 2: daemon tests in isolated process (avoids segfault)
-const proc2 = Bun.spawn(["bun", "test", "packages/daemon/src"], {
+// Includes packages/daemon/src AND daemon integration tests from test/
+const daemonTestFiles = [...DAEMON_TEST_FILES];
+const proc2 = Bun.spawn(["bun", "test", "packages/daemon/src", ...daemonTestFiles], {
   stdout: "pipe",
   stderr: "pipe",
 });
