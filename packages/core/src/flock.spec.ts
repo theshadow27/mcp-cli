@@ -3,7 +3,7 @@ import { closeSync, openSync, unlinkSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flockUnlock, tryFlockExclusive } from "./flock";
+import { flockUnlock, resolveLinuxLibPath, tryFlockExclusive } from "./flock";
 
 const dir = mkdtempSync(join(tmpdir(), "flock-test-"));
 
@@ -75,6 +75,11 @@ describe("tryFlockExclusive", () => {
     flockUnlock(fd1);
     expect(tryFlockExclusive(fd1)).toBe(true);
   });
+
+  it("throws on bad fd instead of returning false", () => {
+    // fd -1 is always invalid — flock should throw (EBADF), not return false
+    expect(() => tryFlockExclusive(-1)).toThrow(/flock\(2\) failed with errno/);
+  });
 });
 
 describe("cross-process flock", () => {
@@ -115,6 +120,28 @@ describe("cross-process flock", () => {
     }
   });
 
+  it("child process sees throw on bad fd, not false", async () => {
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `
+        const { tryFlockExclusive } = require("${join(import.meta.dir, "flock.ts")}");
+        try {
+          tryFlockExclusive(-1);
+          process.stdout.write("no-throw");
+        } catch (e) {
+          process.stdout.write("threw:" + e.message);
+        }
+        process.exit(0);
+      `,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toStartWith("threw:flock(2) failed with errno");
+  });
+
   it("child can acquire lock after parent releases", async () => {
     const fd = openSync(file, "w");
     expect(tryFlockExclusive(fd)).toBe(true);
@@ -138,5 +165,15 @@ describe("cross-process flock", () => {
     );
     const stdout = await new Response(proc.stdout).text();
     expect(stdout).toBe("acquired");
+  });
+});
+
+describe("resolveLinuxLibPath", () => {
+  it("returns a string (fallback on non-Linux, probe on Linux)", () => {
+    // On macOS this exercises the fallback path (all candidates fail to dlopen).
+    // On Linux it finds the correct libc.
+    const result = resolveLinuxLibPath();
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
   });
 });

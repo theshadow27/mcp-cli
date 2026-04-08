@@ -13,7 +13,17 @@
  * 5. Shut down on idle timeout or SIGTERM
  */
 
-import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { constants } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  ftruncateSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
@@ -70,12 +80,17 @@ import { ServerPool } from "./server-pool";
  * daemon holds the lock.
  */
 export function acquirePidLock(logger: Logger): number {
-  const fd = openSync(options.PID_PATH, "w");
+  // Open without O_TRUNC — truncating before lock acquisition would zero out
+  // a running daemon's PID file. Truncate only after the lock is held.
+  const fd = openSync(options.PID_PATH, constants.O_WRONLY | constants.O_CREAT, 0o600);
   const acquired = tryFlockExclusive(fd);
   if (!acquired) {
+    closeSync(fd);
     logger.error("[mcpd] Another daemon is already running (PID file locked)");
     process.exit(1);
   }
+  // Now that we hold the lock, truncate to clear any previous content
+  ftruncateSync(fd, 0);
   return fd;
 }
 
@@ -83,6 +98,9 @@ export function acquirePidLock(logger: Logger): number {
  * Write PID data to the already-locked PID file descriptor.
  */
 function writePidData(fd: number, data: Record<string, unknown>): void {
+  // Truncate before writing — if new JSON is shorter than previous content,
+  // stale trailing bytes would corrupt the PID file.
+  ftruncateSync(fd, 0);
   const buf = Buffer.from(JSON.stringify(data));
   writeSync(fd, buf, 0, buf.length, 0);
 }
