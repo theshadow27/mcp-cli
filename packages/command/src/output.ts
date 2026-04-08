@@ -4,7 +4,7 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
-import { type JsonSchema, formatAliasSignature, jsonSchemaToTs } from "@mcp-cli/core";
+import { type JsonSchema, formatAliasSignature, jsonSchemaToTs, parsePythonRepr } from "@mcp-cli/core";
 import type { AliasDetail, AliasType } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client";
 
@@ -58,6 +58,8 @@ function formatJson(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text), null, 2);
   } catch {
+    const parsed = parsePythonRepr(text);
+    if (parsed !== undefined && parsed !== text) return JSON.stringify(parsed, null, 2);
     return text;
   }
 }
