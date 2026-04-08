@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StateDb } from "../db/state";
 import type { KeychainTokens } from "./keychain";
-import { McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
+import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
 
 const originalPlatform = process.platform;
 const originalWslDistro = process.env.WSL_DISTRO_NAME;
@@ -552,6 +552,14 @@ describe("McpOAuthProvider", () => {
 
       expect(provider.getEffectiveScope()).toBeUndefined();
       db.close();
+    });
+
+    test("DEFAULT_OAUTH_SCOPE is the OIDC fallback used when getEffectiveScope() returns undefined", () => {
+      // This constant is the fallback applied at the ipc-server.ts call-site:
+      //   provider.getEffectiveScope() ?? DEFAULT_OAUTH_SCOPE
+      // It ensures Atlassian-style providers (which require scope=openid email profile
+      // but don't publish scopes_supported in resource metadata) get a scope on the auth URL.
+      expect(DEFAULT_OAUTH_SCOPE).toBe("openid email profile");
     });
   });
 });

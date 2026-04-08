@@ -65,7 +65,7 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
 import { startCallbackServer } from "./auth/callback-server";
-import { McpOAuthProvider } from "./auth/oauth-provider";
+import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
@@ -514,9 +514,12 @@ export class IpcServer {
         });
         provider.setRedirectUrl(callback.url);
 
-        // Pass configured scope to auth(), or undefined to let the SDK's own
-        // cascade handle discovery (resourceMetadata.scopes_supported, etc.).
-        const authScope = provider.getEffectiveScope();
+        // Pass configured scope to auth(), or DEFAULT_OAUTH_SCOPE as fallback.
+        // The SDK's cascade (resourceMetadata.scopes_supported → clientMetadata.scope)
+        // runs between these; DEFAULT_OAUTH_SCOPE kicks in when none of those exist
+        // (e.g. Atlassian, which requires scope=openid email profile but publishes
+        // no scopes_supported in its protected resource metadata).
+        const authScope = provider.getEffectiveScope() ?? DEFAULT_OAUTH_SCOPE;
 
         // Run the SDK auth orchestrator
         const result = await auth(provider, { serverUrl, scope: authScope });
