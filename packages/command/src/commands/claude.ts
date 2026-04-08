@@ -29,7 +29,7 @@ import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
-import type { SessionInfo } from "@mcp-cli/core";
+import type { QuotaStatusResult, SessionInfo } from "@mcp-cli/core";
 
 // ── Dependency injection ──
 
@@ -687,6 +687,26 @@ async function resumeWorktree(
   console.log(formatToolResult(result));
 }
 
+/**
+ * Format a quota warning banner when 5-hour utilization exceeds 80%.
+ * Returns null if no warning needed.
+ */
+export function formatQuotaBanner(quota: QuotaStatusResult | null): string | null {
+  if (!quota || !quota.fiveHour || quota.fetchedAt === 0) return null;
+  const util = quota.fiveHour.utilization;
+  if (util <= 80) return null;
+
+  const reset = new Date(quota.fiveHour.resetsAt).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  if (util >= 95) {
+    return `🔴 Quota CRITICAL: 5h window at ${util}% (resets ${reset}) — pause all spawning`;
+  }
+  return `⚠  Quota: 5h window at ${util}% (resets ${reset}) — stop spawning new sessions`;
+}
+
 async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   const { json } = extractJsonFlag(args);
   const short = args.includes("--short");
@@ -721,12 +741,23 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     return;
   }
 
+  // Fetch quota status (non-blocking — don't fail ls if quota unavailable)
+  let quotaBanner: string | null = null;
+  try {
+    const quota = await ipcCall("quotaStatus", undefined, { timeoutMs: 2000 });
+    quotaBanner = formatQuotaBanner(quota);
+  } catch {
+    // Quota monitoring unavailable — continue without banner
+  }
+
   if (sessions.length === 0) {
+    if (quotaBanner) console.error(quotaBanner);
     console.error("No active sessions.");
     return;
   }
 
   if (short) {
+    if (quotaBanner) console.error(quotaBanner);
     for (const s of sessions) {
       console.log(formatSessionShort(s));
     }
@@ -743,6 +774,9 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 
   const hasAnyDiff = diffStats.some((stat) => stat !== null);
   const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+
+  // Quota warning banner (stderr, before table)
+  if (quotaBanner) console.error(quotaBanner);
 
   // Table output
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
