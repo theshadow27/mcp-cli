@@ -62,6 +62,7 @@ interface MockSession {
   state: "running" | "idle" | "ended";
   interrupted: boolean;
   transcript: Array<{ role: string; text: string }>;
+  createdAt: number;
   /** Resolves when the script finishes or is interrupted. */
   done: Promise<void>;
   resolveDone: () => void;
@@ -261,6 +262,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
     state: "running",
     interrupted: false,
     transcript: [{ role: "user", text: prompt }],
+    createdAt: Date.now(),
     done,
     resolveDone,
   };
@@ -306,6 +308,7 @@ function handleSessionList(): ToolResult {
     cwd: s.cwd,
     cost: 0,
     tokens: s.entries.length,
+    createdAt: s.createdAt,
   }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }

@@ -243,6 +243,81 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       expect(waitRes.error).toBeUndefined();
     });
 
+    test("wait --short shows compact format", async () => {
+      // Spawn a session and wait for it to complete
+      const spawnRes = await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_prompt",
+        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+      });
+      const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
+      const sessionId: string = spawnResult.sessionId;
+
+      // Run wait --short via CLI without sessionId — uses timeout fallback (short)
+      const result = await mcx(daemon.dir, ["agent", "mock", "wait", "--short", "--timeout", "500"]);
+      expect(result.stderr).not.toContain("Error");
+      expect(result.exitCode).toBe(0);
+
+      // --short output should be compact (single line per session, not pretty-printed JSON)
+      const lines = result.stdout
+        .trim()
+        .split("\n")
+        .filter((l: string) => l.trim());
+      expect(lines.length).toBeGreaterThanOrEqual(1);
+      // Compact format includes the session ID prefix
+      expect(lines.some((l: string) => l.includes(sessionId.slice(0, 8)))).toBe(true);
+      // Should not be pretty-printed JSON (no opening brace or bracket as the sole content on a line)
+      expect(result.stdout).not.toMatch(/^\s*[{[]\s*$/m);
+
+      // Clean up
+      await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_bye",
+        arguments: { sessionId },
+      });
+    });
+
+    test("wait with multiple sessions shows all", async () => {
+      // Write a second script
+      const script2 = writeScript(daemon.dir, "simple2", [{ delay: 0, text: "Session two" }]);
+
+      // Spawn two sessions and wait for both to complete
+      const [spawn1, spawn2] = await Promise.all([
+        rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_prompt",
+          arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        }),
+        rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_prompt",
+          arguments: { prompt: script2, cwd: daemon.dir, wait: true },
+        }),
+      ]);
+      const id1: string = JSON.parse((spawn1.result as { content: Array<{ text: string }> }).content[0].text).sessionId;
+      const id2: string = JSON.parse((spawn2.result as { content: Array<{ text: string }> }).content[0].text).sessionId;
+
+      // Wait without sessionId — should return list of all sessions
+      const waitRes = await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_wait",
+        arguments: { timeout: 2000 },
+      });
+      const waitResult = JSON.parse((waitRes.result as { content: Array<{ text: string }> }).content[0].text);
+      expect(Array.isArray(waitResult)).toBe(true);
+
+      // Both sessions should appear in the result
+      const ids = waitResult.map((s: { sessionId: string }) => s.sessionId);
+      expect(ids).toContain(id1);
+      expect(ids).toContain(id2);
+
+      // Clean up both
+      await Promise.all([
+        rpc(daemon.socketPath, "callTool", { server: "_mock", tool: "mock_bye", arguments: { sessionId: id1 } }),
+        rpc(daemon.socketPath, "callTool", { server: "_mock", tool: "mock_bye", arguments: { sessionId: id2 } }),
+      ]);
+    });
+
     test("wait detects state change from running script", async () => {
       // Write a slow script with a delay
       const slowScript = writeScript(daemon.dir, "slow", [
@@ -273,6 +348,37 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         tool: "mock_bye",
         arguments: { sessionId },
       });
+    });
+  });
+
+  // ── Session age display (#962 regression guard) ──────────────────
+
+  test("ls shows human-readable age, not raw timestamp (#962 regression guard)", async () => {
+    // Spawn a session so ls has something to show
+    const spawnRes = await rpc(daemon.socketPath, "callTool", {
+      server: "_mock",
+      tool: "mock_prompt",
+      arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+    });
+    const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
+    const sessionId: string = spawnResult.sessionId;
+
+    // Run ls in human-readable (non-JSON) mode
+    const result = await mcx(daemon.dir, ["agent", "mock", "ls"]);
+    expect(result.exitCode).toBe(0);
+
+    // The output should contain the session ID prefix
+    expect(result.stdout).toContain(sessionId.slice(0, 8));
+
+    // Regression guard: output must NOT contain a raw epoch timestamp (13-digit number)
+    // The createdAt field should either be formatted as "(Mon Day)" or omitted for recent sessions
+    expect(result.stdout).not.toMatch(/\b\d{13}\b/);
+
+    // Clean up
+    await rpc(daemon.socketPath, "callTool", {
+      server: "_mock",
+      tool: "mock_bye",
+      arguments: { sessionId },
     });
   });
 
