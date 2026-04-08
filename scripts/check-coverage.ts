@@ -130,6 +130,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { getStagedFiles, shouldSkipRun2 } from "./staged-files";
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
 import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTimings } from "./test-timings";
@@ -216,28 +217,41 @@ const exitCode1 = await proc1.exited;
 
 // Run 2: daemon tests in isolated process (avoids segfault)
 // Includes packages/daemon/src AND all non-allowlisted test files from test/
-const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
-  .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
-  .map((f) => `test/${f}`);
-const proc2 = Bun.spawn(["bun", "test", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles], {
-  stdout: "pipe",
-  stderr: "pipe",
-});
+// Skip run-2 when staged files don't touch daemon-related paths (#1085)
+const forceRun2 = process.argv.includes("--force-run2");
+const stagedFiles = await getStagedFiles();
+const skipRun2 = !forceRun2 && shouldSkipRun2(stagedFiles);
 
-// Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
-// rather than blocking pre-commit indefinitely. 300s is generous enough for
-// the full daemon + integration test suite while still catching real hangs.
-// See #1078 — the previous 120s deadline was too aggressive and consistently
-// killed daemon tests that were still making progress.
-const RUN2_DEADLINE_MS = 300_000;
-const run2Deadline = setTimeout(() => {
-  console.error(`\nERROR: run-2 (daemon tests) exceeded ${RUN2_DEADLINE_MS / 1000}s deadline — killing process`);
-  proc2.kill();
-}, RUN2_DEADLINE_MS);
+let stdout2 = "";
+let stderr2 = "";
+let exitCode2 = 0;
 
-const [stdout2, stderr2] = await Promise.all([new Response(proc2.stdout).text(), new Response(proc2.stderr).text()]);
-const exitCode2 = await proc2.exited;
-clearTimeout(run2Deadline);
+if (skipRun2) {
+  console.log("Skipping run-2 (daemon tests) — no daemon-related files staged (#1085)");
+} else {
+  const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
+    .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
+    .map((f) => `test/${f}`);
+  const proc2 = Bun.spawn(["bun", "test", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
+  // rather than blocking pre-commit indefinitely. 300s is generous enough for
+  // the full daemon + integration test suite while still catching real hangs.
+  // See #1078 — the previous 120s deadline was too aggressive and consistently
+  // killed daemon tests that were still making progress.
+  const RUN2_DEADLINE_MS = 300_000;
+  const run2Deadline = setTimeout(() => {
+    console.error(`\nERROR: run-2 (daemon tests) exceeded ${RUN2_DEADLINE_MS / 1000}s deadline — killing process`);
+    proc2.kill();
+  }, RUN2_DEADLINE_MS);
+
+  [stdout2, stderr2] = await Promise.all([new Response(proc2.stdout).text(), new Response(proc2.stderr).text()]);
+  exitCode2 = await proc2.exited;
+  clearTimeout(run2Deadline);
+}
 
 const testDuration = Date.now() - testStart;
 
