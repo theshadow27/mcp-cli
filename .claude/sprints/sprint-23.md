@@ -1,6 +1,6 @@
 # Sprint 23
 
-> Planned 2026-03-29 21:00. Target: 14 PRs.
+> Planned 2026-03-29 21:00. Updated 2026-04-08. Target: 15 PRs.
 
 ## Goal
 
@@ -13,6 +13,7 @@ Project scoping epic + quota monitoring + orchestrator DX
 | **1009** | **Scope registry: mcx scope init/list/rm** | **medium** | **1** | **opus** | **goal** |
 | **1010** | **Scope detection: walk-up cwd matching** | **medium** | **1** | **opus** | **goal (dep: #1009)** |
 | **1008** | **Quota monitoring via OAuth usage endpoint** | **medium** | **1** | **opus** | **goal** |
+| **1053** | **flock PID file to prevent duplicate daemons** | **medium** | **1** | **opus** | **P1 goal** |
 | **1011** | **Session filtering by scope in ls/wait/bye** | **medium** | **2** | **opus** | **goal (dep: #1010)** |
 | **1012** | **Config loader parent matching for worktrees** | **medium** | **2** | **opus** | **goal (dep: #1010)** |
 | **1013** | **mcpctl scope selector** | **medium** | **3** | **opus** | **goal (dep: #1011)** |
@@ -28,7 +29,9 @@ Project scoping epic + quota monitoring + orchestrator DX
 ## Batch Plan
 
 ### Batch 1 (immediate — 7 issues)
-#1009, #1008, #1043, #1048, #1014, #1026, #1015
+#1053, #1009, #1008, #1043, #1048, #1014, #1026, #1015
+
+#1053 is P1 — duplicate daemons after sleep/wake is a recurring problem. Fix with flock.
 
 #1009 (scope registry) is the foundation of the scoping epic — must land first so #1010 can start. #1008 (quota monitoring) is fully specced with proven API. #1043/#1048 are quick DX wins. #1014/#1026/#1015 are pre-commit blockers that need fixing.
 
