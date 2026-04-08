@@ -331,9 +331,22 @@ async function main(): Promise<void> {
           break;
         }
 
-        // Check if it looks like "mcx server tool" (missing "call")
+        // Check if subcommand matches a configured server name (case-insensitive).
+        // This handles "mcx grafana get_dashboard ..." → "mcx call grafana get_dashboard ..."
+        // Only check when daemon is already running to avoid 5s startup delay on typos.
+        if (!command.startsWith("-") && (await isDaemonRunning())) {
+          const servers: ServerStatus[] = await ipcCall("listServers");
+          const match = servers.find((s) => s.name.toLowerCase() === command.toLowerCase());
+          if (match) {
+            // Use the exact server name from config (handles case mismatch)
+            await cmdCall([match.name, ...cleanArgs.slice(1)]);
+            break;
+          }
+        }
+
+        // Fallback: if it looks like "mcx <word> <word> ..." (two non-flag args),
+        // try as call shorthand even if the daemon isn't running yet (auto-starts it).
         if (!command.startsWith("-") && cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")) {
-          // Treat as shorthand: mcx <server> <tool> [args]
           await cmdCall(cleanArgs);
           break;
         }
