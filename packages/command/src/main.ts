@@ -421,14 +421,15 @@ async function cmdLs(args: string[]): Promise<void> {
 }
 
 async function cmdCall(args: string[]): Promise<void> {
-  // Extract --full/-f, --jq, and --timeout flags before parsing positional args
+  // Extract known flags before parsing positional args (prevents flags from contaminating @file paths)
   const { full, rest: afterFull } = extractFullFlag(args);
   const { jq: jqFilter, rest: afterJq } = extractJqFlag(afterFull);
   const { timeoutMs, rest: afterTimeout } = extractTimeoutFlag(afterJq);
+  const { rest: afterJson } = extractJsonFlag(afterTimeout);
 
   // Support slash notation: "server/tool" → ["server", "tool"]
-  const split = afterTimeout.length >= 1 ? splitServerTool(afterTimeout[0]) : null;
-  const resolved = split ? [...split, ...afterTimeout.slice(1)] : afterTimeout;
+  const split = afterJson.length >= 1 ? splitServerTool(afterJson[0]) : null;
+  const resolved = split ? [...split, ...afterJson.slice(1)] : afterJson;
 
   if (resolved.length < 2) {
     printError("Usage: mcx call <server> <tool> [json|@file] [--jq '<filter>'] [--full] [--timeout <seconds>]");
