@@ -15,6 +15,7 @@ import type { SpanEvent } from "./trace";
 export type IpcMethod =
   | "ping"
   | "status"
+  | "quotaStatus"
   | "listServers"
   | "listTools"
   | "getToolInfo"
@@ -253,6 +254,35 @@ export interface DaemonStatus {
   wsPortHolder?: string | null;
   /** Active `mcx serve` instances registered with the daemon. */
   serveInstances?: ServeInstanceInfo[];
+}
+
+// -- Quota types --
+
+export interface QuotaUsageBucket {
+  /** Percentage used (0-100). */
+  utilization: number;
+  /** ISO 8601 timestamp when this window resets. */
+  resetsAt: string;
+}
+
+export interface QuotaExtraUsage {
+  isEnabled: boolean;
+  monthlyLimit: number;
+  usedCredits: number;
+  /** Percentage of extra usage budget consumed (0-100). */
+  utilization: number;
+}
+
+export interface QuotaStatusResult {
+  fiveHour: QuotaUsageBucket | null;
+  sevenDay: QuotaUsageBucket | null;
+  sevenDaySonnet: QuotaUsageBucket | null;
+  sevenDayOpus: QuotaUsageBucket | null;
+  extraUsage: QuotaExtraUsage | null;
+  /** When this data was last fetched (ms since epoch). */
+  fetchedAt: number;
+  /** Last error message if the most recent fetch failed. */
+  lastError: string | null;
 }
 
 export interface GetConfigResult {
@@ -498,6 +528,7 @@ export interface PruneSpansResult {
 export interface IpcMethodResult {
   ping: PingResult;
   status: DaemonStatus;
+  quotaStatus: QuotaStatusResult;
   listServers: ServerStatus[];
   listTools: ToolInfo[];
   getToolInfo: ToolInfo;

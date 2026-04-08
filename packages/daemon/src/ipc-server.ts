@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type {
   IpcError,
   IpcMethod,
+  IpcMethodResult,
   IpcRequest,
   IpcResponse,
   LiveSpan,
@@ -94,6 +95,7 @@ export class IpcServer {
   private serveInstances = new Map<string, ServeInstanceInfo>();
   private onReloadConfig: (() => Promise<void>) | null = null;
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
+  private getQuotaStatus: (() => IpcMethodResult["quotaStatus"]) | null = null;
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
@@ -116,6 +118,8 @@ export class IpcServer {
       getWsPortInfo?: () => { actual: number | null; expected: number };
       /** Max ms to wait for in-flight requests before forcing shutdown (default 5000) */
       drainTimeoutMs?: number;
+      /** Returns current quota status for the quotaStatus IPC method. */
+      getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
     },
   ) {
     this.daemonId = options.daemonId;
@@ -127,6 +131,7 @@ export class IpcServer {
     this.aliasServer = aliasServer;
     this.logger = options.logger ?? consoleLogger;
     this.getWsPortInfo = options.getWsPortInfo ?? null;
+    this.getQuotaStatus = options.getQuotaStatus ?? null;
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
     this.registerHandlers();
     // Prune expired ephemeral aliases on startup
@@ -883,6 +888,21 @@ export class IpcServer {
 
     this.handlers.set("getMetrics", async (_params, _ctx) => {
       return { ...metrics.toJSON(), daemonId: this.daemonId, startedAt: this.startedAt };
+    });
+
+    this.handlers.set("quotaStatus", async (_params, _ctx) => {
+      if (!this.getQuotaStatus) {
+        return {
+          fiveHour: null,
+          sevenDay: null,
+          sevenDaySonnet: null,
+          sevenDayOpus: null,
+          extraUsage: null,
+          fetchedAt: 0,
+          lastError: "Quota monitoring not available",
+        } satisfies IpcMethodResult["quotaStatus"];
+      }
+      return this.getQuotaStatus();
     });
 
     // -- Span handlers --
