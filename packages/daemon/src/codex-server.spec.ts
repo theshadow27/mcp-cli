@@ -1,10 +1,30 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { CODEX_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
 import { StateDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
+
+/** Minimal Worker stub that emits "ready" synchronously via postMessage. */
+function mockWorkerFactory() {
+  return (_scriptPath: string) => {
+    const w = {
+      postMessage: mock((_msg: unknown) => {
+        // Simulate the worker sending "ready" after receiving "init"
+        queueMicrotask(() => {
+          w.onmessage?.({ data: { type: "ready" } } as MessageEvent);
+        });
+      }),
+      terminate: mock(() => {}),
+      addEventListener: mock(() => {}),
+      removeEventListener: mock(() => {}),
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      onerror: null as ((event: ErrorEvent | Event) => void) | null,
+    };
+    return w as unknown as Worker;
+  };
+}
 
 // ── isWorkerEvent ──
 
@@ -542,7 +562,15 @@ describe("CodexServer", () => {
       },
       close: async () => {},
     };
-    server = new CodexServer(db, undefined, () => fakeClient as never, silentLogger);
+    server = new CodexServer(
+      db,
+      undefined,
+      () => fakeClient as never,
+      silentLogger,
+      undefined,
+      undefined,
+      mockWorkerFactory(),
+    );
 
     await expect(server.start()).rejects.toThrow("simulated connect failure");
 
@@ -581,7 +609,7 @@ describe("CodexServer connect timeout metric", () => {
     } as unknown as Client;
 
     const testMetrics = new MetricsCollector();
-    server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50, testMetrics);
+    server = new CodexServer(db, undefined, () => neverConnect, silentLogger, 50, testMetrics, mockWorkerFactory());
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
     expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
@@ -597,7 +625,15 @@ describe("CodexServer connect timeout metric", () => {
       close: async () => {},
     } as unknown as Client;
     const testMetrics = new MetricsCollector();
-    server = new CodexServer(db, undefined, () => instantConnect, silentLogger, 10_000, testMetrics);
+    server = new CodexServer(
+      db,
+      undefined,
+      () => instantConnect,
+      silentLogger,
+      10_000,
+      testMetrics,
+      mockWorkerFactory(),
+    );
 
     await server.start();
 
