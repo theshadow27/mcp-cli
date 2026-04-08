@@ -103,6 +103,7 @@ export function isWorkerEvent(data: unknown): data is WorkerEvent {
 // ── Server ──
 
 type ClientFactory = () => Client;
+type WorkerFactory = (scriptPath: string) => Worker;
 
 export class CodexServer {
   private worker: Worker | null = null;
@@ -110,6 +111,7 @@ export class CodexServer {
   private client: Client | null = null;
   private db: StateDb;
   private readonly clientFactory: ClientFactory;
+  private readonly workerFactory: WorkerFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private restartInProgress = false;
@@ -137,12 +139,14 @@ export class CodexServer {
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
     metricsCollector?: MetricsCollector,
+    workerFactory?: WorkerFactory,
   ) {
     this.db = db;
     this.clientFactory =
       clientFactory ?? (() => new Client({ name: `mcp-cli/${CODEX_SERVER_NAME}`, version: "0.1.0" }));
     this.logger = logger ?? consoleLogger;
     this.metrics = metricsCollector ?? defaultMetrics;
+    this.workerFactory = workerFactory ?? ((path) => new Worker(path));
   }
 
   /** Start the worker and connect the MCP client. */
@@ -150,7 +154,7 @@ export class CodexServer {
     if (this.worker) throw new Error("start() called while worker is already running");
     this.stopped = false;
     this.metrics.gauge("mcpd_codex_worker_crash_loop_stopped").set(0);
-    const worker = new Worker(workerPath("codex-session-worker.ts"));
+    const worker = this.workerFactory(workerPath("codex-session-worker.ts"));
     this.worker = worker;
 
     // Wait for the worker to report ready
