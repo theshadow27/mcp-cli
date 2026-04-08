@@ -282,18 +282,18 @@ export class SessionState {
     const successResult = ResultSuccess.safeParse(msg);
     if (successResult.success) {
       const r = successResult.data;
-      const resultTokens = r.usage.input_tokens + r.usage.output_tokens;
-      this.cost += r.total_cost_usd;
-      this.numTurns += r.num_turns;
-      this.tokens += resultTokens;
+      this.cost = r.total_cost_usd;
+      this.numTurns = r.num_turns;
+      // Don't add result usage to tokens — assistant messages already accumulate
+      // per-message usage throughout the turn. Result usage would double-count.
       this.state = "idle";
       this.rateLimited = false;
       return [
         {
           type: "session:result",
-          cost: r.total_cost_usd,
-          tokens: resultTokens,
-          numTurns: r.num_turns,
+          cost: this.cost,
+          tokens: this.tokens,
+          numTurns: this.numTurns,
           result: r.result,
         },
       ];
@@ -302,10 +302,10 @@ export class SessionState {
     const errorResult = ResultError.safeParse(msg);
     if (errorResult.success) {
       const r = errorResult.data;
-      this.cost += r.total_cost_usd;
-      this.numTurns += r.num_turns;
+      this.cost = r.total_cost_usd;
+      this.numTurns = r.num_turns;
       this.state = "idle";
-      return [{ type: "session:error", errors: r.errors, cost: r.total_cost_usd }];
+      return [{ type: "session:error", errors: r.errors, cost: this.cost }];
     }
 
     // Fallback: transition to idle for any result message, even if neither
@@ -315,24 +315,23 @@ export class SessionState {
     if (fallback.success) {
       this.parseMismatch = true;
       const r = fallback.data;
-      const cost = r.total_cost_usd ?? 0;
-      const turns = r.num_turns ?? 0;
-      const resultTokens = r.usage ? r.usage.input_tokens + r.usage.output_tokens : 0;
-      this.cost += cost;
-      this.numTurns += turns;
-      this.tokens += resultTokens;
+      // total_cost_usd and num_turns are cumulative — assign, don't add.
+      // Only fall back to += when the field is missing (0), since we can't
+      // tell if 0 means "zero cost" or "field absent".
+      if (r.total_cost_usd != null) this.cost = r.total_cost_usd;
+      if (r.num_turns != null) this.numTurns = r.num_turns;
       this.state = "idle";
 
       const errors = r.errors;
       if (r.subtype !== "success" && Array.isArray(errors) && errors.length > 0) {
-        return [{ type: "session:error", errors, cost }];
+        return [{ type: "session:error", errors, cost: this.cost }];
       }
       return [
         {
           type: "session:result",
-          cost,
-          tokens: resultTokens,
-          numTurns: turns,
+          cost: this.cost,
+          tokens: this.tokens,
+          numTurns: this.numTurns,
           result: r.result ?? "",
         },
       ];

@@ -207,18 +207,21 @@ describe("SessionState", () => {
   // -- result --
 
   describe("result messages", () => {
-    test("success transitions to idle and accumulates cost", () => {
+    test("success transitions to idle and sets cumulative cost", () => {
       const session = activeSession();
       const events = session.handleMessage(RESULT_SUCCESS);
 
       expect(session.state).toBe("idle");
       expect(session.cost).toBe(0.05);
       expect(session.numTurns).toBe(3);
+      // tokens = 150 from the assistant message; result usage is NOT added
+      // (assistant messages already accumulate per-message tokens)
+      expect(session.tokens).toBe(150);
       expect(events).toEqual([
         {
           type: "session:result",
           cost: 0.05,
-          tokens: 300,
+          tokens: 150,
           numTurns: 3,
           result: "Done!",
         },
@@ -240,17 +243,22 @@ describe("SessionState", () => {
       ]);
     });
 
-    test("accumulates cost across multiple turns", () => {
+    test("sets cumulative cost from SDK (not additive)", () => {
       const session = activeSession();
-      session.handleMessage(RESULT_SUCCESS);
+      session.handleMessage(RESULT_SUCCESS); // total_cost_usd=0.05, num_turns=3
 
-      // Start a new turn
+      // Start a new turn — SDK sends higher cumulative values
       session.queuePrompt("Next task");
       session.handleMessage(ASSISTANT_MSG);
-      session.handleMessage(RESULT_SUCCESS);
+      session.handleMessage({
+        ...RESULT_SUCCESS,
+        total_cost_usd: 0.1,
+        num_turns: 7,
+      });
 
+      // Cost/turns are SET to the cumulative value, not added
       expect(session.cost).toBe(0.1);
-      expect(session.numTurns).toBe(6);
+      expect(session.numTurns).toBe(7);
     });
   });
 
@@ -555,9 +563,15 @@ describe("SessionState", () => {
       session.queuePrompt("Now fix the bug");
       expect(session.state).toBe("active");
 
-      // 9. Quick response + result
+      // 9. Quick response + result (SDK sends higher cumulative values)
       allEvents.push(...session.handleMessage(ASSISTANT_MSG));
-      allEvents.push(...session.handleMessage(RESULT_SUCCESS));
+      allEvents.push(
+        ...session.handleMessage({
+          ...RESULT_SUCCESS,
+          total_cost_usd: 0.1,
+          num_turns: 7,
+        }),
+      );
       expect(session.state).toBe("idle");
 
       // 10. End
@@ -582,9 +596,9 @@ describe("SessionState", () => {
         "session:ended",
       ]);
 
-      // Verify accumulated stats
+      // Verify cumulative stats (set from SDK, not additive)
       expect(session.cost).toBe(0.1);
-      expect(session.numTurns).toBe(6);
+      expect(session.numTurns).toBe(7);
     });
   });
 
@@ -612,7 +626,8 @@ describe("SessionState", () => {
       if (events[0].type === "session:result") {
         expect(events[0].cost).toBe(0.03);
         expect(events[0].numTurns).toBe(2);
-        expect(events[0].tokens).toBe(225);
+        // tokens = 150 from the assistant message only (result usage not added)
+        expect(events[0].tokens).toBe(150);
       }
     });
 
@@ -635,10 +650,11 @@ describe("SessionState", () => {
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe("session:result");
       if (events[0].type === "session:result") {
-        // Fallback defaults for missing fields
+        // Fallback defaults for missing fields — cost/turns stay at 0 (no SDK data)
+        // tokens = 150 from the assistant message (cumulative)
         expect(events[0].cost).toBe(0);
         expect(events[0].numTurns).toBe(0);
-        expect(events[0].tokens).toBe(0);
+        expect(events[0].tokens).toBe(150);
         expect(events[0].result).toBe("All done");
       }
     });
@@ -678,7 +694,8 @@ describe("SessionState", () => {
       if (events[0].type === "session:result") {
         expect(events[0].cost).toBe(0.05);
         expect(events[0].numTurns).toBe(3);
-        expect(events[0].tokens).toBe(300);
+        // tokens = 150 from assistant message only (result usage not added)
+        expect(events[0].tokens).toBe(150);
       }
     });
 

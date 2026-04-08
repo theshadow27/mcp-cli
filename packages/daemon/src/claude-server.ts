@@ -137,6 +137,8 @@ export class ClaudeServer {
   private readonly sessionPidStartTimes = new Map<string, number>();
   /** Timestamp (ms) when each session was added to activeSessions — used to TTL pid-less zombies. */
   private readonly sessionAddedAt = new Map<string, number>();
+  /** Last known cumulative cost per session — used to compute delta for metrics counter. */
+  private readonly sessionLastCost = new Map<string, number>();
   private restartInProgress = false;
   private pendingCrashReason: string | null = null;
   private stopped = false;
@@ -395,6 +397,7 @@ export class ClaudeServer {
     this.sessionPids.clear();
     this.sessionPidStartTimes.clear();
     this.sessionAddedAt.clear();
+    this.sessionLastCost.clear();
     if (this.crashTimestamps.length > 0) {
       this.logger.error(`[claude-server] Cleared ${this.crashTimestamps.length} crash timestamp(s) on stop`);
     }
@@ -440,6 +443,7 @@ export class ClaudeServer {
       this.sessionPids.delete(sessionId);
       this.sessionPidStartTimes.delete(sessionId);
       this.sessionAddedAt.delete(sessionId);
+      this.sessionLastCost.delete(sessionId);
       this.db.endSession(sessionId);
       this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
       this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
@@ -451,6 +455,7 @@ export class ClaudeServer {
         this.activeSessions.delete(sessionId);
         this.sessionPids.delete(sessionId);
         this.sessionAddedAt.delete(sessionId);
+        this.sessionLastCost.delete(sessionId);
         this.db.endSession(sessionId);
         this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         this.logger.warn(`[claude-server] Pruned dead session ${sessionId} (pid ${pid} no longer alive)`);
@@ -530,6 +535,7 @@ export class ClaudeServer {
     this.activeSessions.clear();
     this.sessionPids.clear();
     this.sessionAddedAt.clear();
+    this.sessionLastCost.clear();
     this.metrics.gauge("mcpd_active_sessions").set(0);
 
     // Close MCP client to reject pending promises (matches stop() pattern)
@@ -561,6 +567,7 @@ export class ClaudeServer {
       this.sessionPids.clear();
       this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
+      this.sessionLastCost.clear();
       this.metrics.gauge("mcpd_active_sessions").set(0);
       this.metrics.gauge("mcpd_worker_crash_loop_stopped").set(1);
       return;
@@ -600,6 +607,7 @@ export class ClaudeServer {
               this.sessionPids.delete(sessionId);
               this.sessionPidStartTimes.delete(sessionId);
               this.sessionAddedAt.delete(sessionId);
+              this.sessionLastCost.delete(sessionId);
               this.db.endSession(sessionId);
             }
           }
@@ -623,6 +631,7 @@ export class ClaudeServer {
       this.sessionPids.clear();
       this.sessionPidStartTimes.clear();
       this.sessionAddedAt.clear();
+      this.sessionLastCost.clear();
       this.metrics.gauge("mcpd_active_sessions").set(0);
     } finally {
       this.restartInProgress = false;
@@ -677,12 +686,17 @@ export class ClaudeServer {
         this.db.updateSessionState(event.sessionId, event.state);
         this.onActivity?.();
         break;
-      case "db:cost":
+      case "db:cost": {
         this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionCost(event.sessionId, event.cost, event.tokens);
-        this.metrics.counter("mcpd_session_cost_usd").inc(event.cost);
+        // event.cost is cumulative — compute delta for the metrics counter
+        const prevCost = this.sessionLastCost.get(event.sessionId) ?? 0;
+        const costDelta = event.cost - prevCost;
+        if (costDelta > 0) this.metrics.counter("mcpd_session_cost_usd").inc(costDelta);
+        this.sessionLastCost.set(event.sessionId, event.cost);
         this.onActivity?.();
         break;
+      }
       case "db:disconnected":
         // Session lost transport but was NOT bye'd — keep in activeSessions
         this.logger.warn(`[claude-server] Session ${event.sessionId} disconnected: ${event.reason}`);
@@ -693,6 +707,7 @@ export class ClaudeServer {
         this.sessionPids.delete(event.sessionId);
         this.sessionPidStartTimes.delete(event.sessionId);
         this.sessionAddedAt.delete(event.sessionId);
+        this.sessionLastCost.delete(event.sessionId);
         this.db.endSession(event.sessionId);
         this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
         break;
