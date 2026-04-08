@@ -20,7 +20,8 @@ import type {
   ServerConfigMap,
 } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
-import { consoleLogger, expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
+import { consoleLogger, detectScope, expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
+import type { DetectScopeDeps } from "@mcp-cli/core";
 
 /**
  * Load and merge all config sources for the given working directory.
@@ -29,12 +30,21 @@ import { consoleLogger, expandEnvVarsDeep, options, projectConfigPath } from "@m
  *   1. ~/.mcp-cli/projects/{mangled-cwd}/servers.json (project-scoped, lower priority)
  *   2. ~/.mcp-cli/servers.json (global, highest priority)
  */
-export async function loadConfig(cwd = process.cwd(), logger: Logger = consoleLogger): Promise<ResolvedConfig> {
+export async function loadConfig(
+  cwd = process.cwd(),
+  logger: Logger = consoleLogger,
+  scopeDeps?: DetectScopeDeps,
+): Promise<ResolvedConfig> {
   const servers = new Map<string, ResolvedServer>();
   const sources: ConfigSource[] = [];
 
+  // Resolve scope: worktrees and subdirectories inherit the nearest scope root's config.
+  // Falls back to exact cwd when no scope matches.
+  const scope = detectScope(cwd, scopeDeps);
+  const configCwd = scope?.root ?? cwd;
+
   // Priority 2 (lower): project-scoped config
-  const projectPath = projectConfigPath(cwd);
+  const projectPath = projectConfigPath(configCwd);
   if (existsSync(projectPath)) {
     const projectConfig = await readJsonFile<McpConfigFile>(projectPath, logger);
     if (projectConfig?.mcpServers) {
