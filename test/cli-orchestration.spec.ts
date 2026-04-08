@@ -401,8 +401,17 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
 
-      // Wait a bit for the script to start, then interrupt
-      await Bun.sleep(100);
+      // Wait for the session to enter running state before interrupting
+      await pollUntil(async () => {
+        const statusRes = await rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_session_status",
+          arguments: { sessionId },
+        });
+        const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
+        return status.state === "running";
+      });
+
       const intRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_interrupt",
