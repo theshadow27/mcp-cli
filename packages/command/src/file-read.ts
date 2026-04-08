@@ -6,6 +6,8 @@
  */
 
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -14,9 +16,10 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
  * Throws if the file exceeds MAX_FILE_SIZE or doesn't exist.
  */
 export function readFileWithLimit(path: string): string {
-  const file = Bun.file(path);
+  const resolved = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+  const file = Bun.file(resolved);
   if (file.size > MAX_FILE_SIZE) {
-    throw new Error(`File "${path}" is ${(file.size / 1024 / 1024).toFixed(1)}MB — exceeds 10MB limit`);
+    throw new Error(`File "${resolved}" is ${(file.size / 1024 / 1024).toFixed(1)}MB — exceeds 10MB limit`);
   }
-  return readFileSync(path, "utf-8");
+  return readFileSync(resolved, "utf-8");
 }
