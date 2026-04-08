@@ -69,11 +69,10 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
  * Matches daemon log prefixes ([mcpd], [_claude], [_aliases]) and
  * production signals (MCPD_READY). Ratchet this down toward zero.
  *
- * Current sources (14 total):
- *   13 × MCPD_READY — index.spec.ts spawns real daemon processes
+ * Current sources (1 total):
  *    1 × [mcpd] test message — daemon-log.spec.ts intentionally tests capture
  */
-const NOISE_THRESHOLD = 21;
+const NOISE_THRESHOLD = 1;
 
 /** Per-file minimum coverage — every file must meet this unless excluded */
 const PER_FILE_MIN_LINES = 80;

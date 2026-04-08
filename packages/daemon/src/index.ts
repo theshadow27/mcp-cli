@@ -206,6 +206,8 @@ export interface StartDaemonOptions {
   skipLogSetup?: boolean;
   /** Skip booting virtual servers (_aliases, _claude). */
   skipVirtualServers?: boolean;
+  /** Skip printing MCPD_READY to stdout (useful for tests). */
+  skipReadySignal?: boolean;
   /** Logger for daemon output. Defaults to consoleLogger. */
   logger?: Logger;
   /** Override virtual servers used in the shutdown loop (test injection only). */
@@ -449,8 +451,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     `[mcpd] Idle timer started ${Math.round(performance.now())}ms after process start (timeout=${idleTimeoutMs}ms)`,
   );
 
-  // Signal readiness to parent (IPC socket is open, commands can connect now)
-  console.log(DAEMON_READY_SIGNAL);
+  // Signal readiness to parent (IPC socket is open, commands can connect now).
+  // Uses console.log (stdout) because installDaemonLogCapture redirects
+  // console.info/error/warn to stderr — the parent process reads stdout.
+  // Tests pass skipReadySignal to suppress this output.
+  if (!opts?.skipReadySignal) {
+    console.log(DAEMON_READY_SIGNAL);
+  }
 
   // Boot virtual servers in the background — commands that need them will await
   if (!skipVirtualServers) {
