@@ -25,6 +25,24 @@ describe("formatToolResult", () => {
     expect(formatToolResult(result)).toBe("plain text response");
   });
 
+  test("formats Python repr as JSON", () => {
+    const result = {
+      content: [{ type: "text", text: "{'records': [{'user_data': '{\"errors\":6}'}], 'dataprime_warnings': []}" }],
+    };
+    const formatted = formatToolResult(result);
+    const parsed = JSON.parse(formatted);
+    expect(parsed).toEqual({ records: [{ user_data: '{"errors":6}' }], dataprime_warnings: [] });
+  });
+
+  test("formats Python repr with True/False/None as JSON", () => {
+    const result = {
+      content: [{ type: "text", text: "{'active': True, 'deleted': False, 'data': None}" }],
+    };
+    const formatted = formatToolResult(result);
+    const parsed = JSON.parse(formatted);
+    expect(parsed).toEqual({ active: true, deleted: false, data: null });
+  });
+
   test("formats multiple content items", () => {
     const result = {
       content: [
