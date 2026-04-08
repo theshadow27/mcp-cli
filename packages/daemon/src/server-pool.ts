@@ -59,6 +59,10 @@ interface ServerConnection {
   virtual?: boolean;
   /** Plan protocol capabilities detected from tool names, if any. */
   planCapabilities?: PlanProtocolCapability;
+  /** Cached stdio child PID — set at connect time, cleared on disconnect. */
+  cachedChildPid?: number | null;
+  /** Start time of cachedChildPid (epoch ms), for PID-recycling protection. */
+  cachedChildPidStartTime?: number | null;
 }
 
 /**
@@ -337,6 +341,14 @@ export class ServerPool {
           conn.lastUsed = Date.now();
           conn.lastError = undefined;
 
+          // Cache stdio child PID at connect time so disconnect() can kill it
+          // even if the transport's _process is cleared by a close event first.
+          if (transport instanceof StdioClientTransport) {
+            conn.cachedChildPid = transport.pid;
+            conn.cachedChildPidStartTime =
+              conn.cachedChildPid != null ? getProcessStartTime(conn.cachedChildPid) : null;
+          }
+
           // Detect server crashes / transport close to reset stale "connected" state
           this.attachTransportLifecycle(name, transport, conn);
 
@@ -603,12 +615,18 @@ export class ServerPool {
     const conn = this.connections.get(name);
     if (!conn) return;
 
-    // Capture stdio child PID and its start time BEFORE closing the transport.
-    // The PID is only available while the transport is open, and we need the
-    // start time to verify PID ownership after close (prevents killing a
-    // recycled PID that now belongs to a different process).
-    const childPid = conn.transport instanceof StdioClientTransport ? conn.transport.pid : null;
-    const pidStartTime = childPid != null ? getProcessStartTime(childPid) : null;
+    // Use the PID cached at connect time — avoids reading conn.transport.pid after
+    // the transport's close event may have already cleared _process (setting pid → null).
+    // Fall back to reading the live transport PID for connections established before
+    // cachedChildPid was introduced (e.g. virtual servers or legacy code paths).
+    const childPid =
+      conn.cachedChildPid ?? (conn.transport instanceof StdioClientTransport ? conn.transport.pid : null);
+    const pidStartTime =
+      conn.cachedChildPidStartTime !== undefined
+        ? conn.cachedChildPidStartTime
+        : childPid != null
+          ? getProcessStartTime(childPid)
+          : null;
 
     // Flush and detach stderr listener
     if (conn.stderrCleanup) {
@@ -632,6 +650,8 @@ export class ServerPool {
 
     conn.client = null;
     conn.transport = null;
+    conn.cachedChildPid = null;
+    conn.cachedChildPidStartTime = null;
     conn.state = "disconnected";
     conn.tools.clear();
   }
