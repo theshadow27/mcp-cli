@@ -48,3 +48,25 @@ export function detectScope(cwd?: string, deps: DetectScopeDeps = {}): ScopeMatc
 
   return best;
 }
+
+/**
+ * List all registered scopes from `~/.mcp-cli/scopes/`.
+ */
+export function listScopes(deps: DetectScopeDeps = {}): ScopeMatch[] {
+  const scopesDir = deps.scopesDir ?? options.SCOPES_DIR;
+  if (!existsSync(scopesDir)) return [];
+
+  const results: ScopeMatch[] = [];
+  const entries = readdirSync(scopesDir).filter((f) => f.endsWith(".json"));
+  for (const entry of entries) {
+    const name = entry.replace(/\.json$/, "");
+    const filePath = `${scopesDir}/${entry}`;
+    try {
+      const data = JSON.parse(readFileSync(filePath, "utf-8")) as { root: string };
+      results.push({ name, root: resolve(data.root) });
+    } catch {
+      // Skip malformed scope files
+    }
+  }
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}

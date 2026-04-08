@@ -128,6 +128,7 @@ interface UseKeyboardOptions {
   plansNav: PlansNav;
   mailNav: MailNav;
   registryNav: RegistryNav;
+  onCycleScope?: () => void;
 }
 
 export function useKeyboard({
@@ -140,6 +141,7 @@ export function useKeyboard({
   plansNav,
   mailNav,
   registryNav,
+  onCycleScope,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
@@ -226,6 +228,12 @@ export function useKeyboard({
     }
     if (view === "registry" && registryNav.mode !== "browse") {
       handleRegistryInput(input, key, registryNav);
+      return;
+    }
+
+    // Global: cycle scope (Shift+S)
+    if (input === "S" && onCycleScope) {
+      onCycleScope();
       return;
     }
 
