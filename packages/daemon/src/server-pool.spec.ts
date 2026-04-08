@@ -1743,12 +1743,12 @@ describe("disconnect kills stdio child processes (#940)", () => {
       await pool.closeAll();
 
       // Poll until the process exits (replaces fixed Bun.sleep)
-      await awaitDeath(pid, 8_000);
+      await awaitDeath(pid);
       expect(isAlive(pid)).toBe(false);
     } finally {
       forceKill(pid);
     }
-  }, 12_000); // awaitDeath polls up to 8s; give headroom for slow CI runners
+  }, 10_000); // awaitDeath polls up to 5s; give headroom above the 5s bun default
 
   test("disconnect does not throw for non-stdio transports", async () => {
     const connectFn: ConnectFn = mock(() =>
