@@ -12,6 +12,7 @@ import {
   cmdClaude,
   defaultGetPrStatus,
   extractIssueNumber,
+  formatQuotaBanner,
   parseDiffShortstat,
   parseLogArgs,
   parseResumeArgs,
@@ -3611,5 +3612,60 @@ describe("cmdClaude resume", () => {
     const promptArgs = promptCall?.[1] as Record<string, unknown>;
     expect(promptArgs.wait).toBe(true);
     expect(promptArgs.timeout).toBe(30000);
+  });
+});
+// ── formatQuotaBanner ──
+
+describe("formatQuotaBanner", () => {
+  const makeQuota = (utilization: number, resetsAt = "2026-04-08T20:00:00Z") => ({
+    fiveHour: { utilization, resetsAt },
+    sevenDay: null,
+    sevenDaySonnet: null,
+    sevenDayOpus: null,
+    extraUsage: null,
+    fetchedAt: Date.now(),
+    lastError: null,
+  });
+
+  test("returns null when quota is null", () => {
+    expect(formatQuotaBanner(null)).toBeNull();
+  });
+
+  test("returns null when fetchedAt is 0", () => {
+    expect(formatQuotaBanner({ ...makeQuota(90), fetchedAt: 0 })).toBeNull();
+  });
+
+  test("returns null when fiveHour is null", () => {
+    expect(formatQuotaBanner({ ...makeQuota(90), fiveHour: null })).toBeNull();
+  });
+
+  test("returns null at 80% (threshold is >80)", () => {
+    expect(formatQuotaBanner(makeQuota(80))).toBeNull();
+  });
+
+  test("returns warning at 81%", () => {
+    const banner = formatQuotaBanner(makeQuota(81));
+    expect(banner).toContain("81%");
+    expect(banner).toContain("stop spawning new sessions");
+  });
+
+  test("returns critical at 95%", () => {
+    const banner = formatQuotaBanner(makeQuota(95));
+    expect(banner).toContain("95%");
+    expect(banner).toContain("pause all spawning");
+    expect(banner).toContain("CRITICAL");
+  });
+
+  test("returns critical at 100%", () => {
+    const banner = formatQuotaBanner(makeQuota(100));
+    expect(banner).toContain("CRITICAL");
+  });
+
+  test("warning tier does not say CRITICAL", () => {
+    const banner = formatQuotaBanner(makeQuota(87));
+    expect(banner).not.toBeNull();
+    expect(banner).not.toContain("CRITICAL");
+    expect(banner).toContain("87%");
+    expect(banner).toContain("resets");
   });
 });
