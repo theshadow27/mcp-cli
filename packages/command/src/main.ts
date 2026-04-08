@@ -36,6 +36,7 @@ import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
 import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
+import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
@@ -311,7 +312,11 @@ async function main(): Promise<void> {
         break;
 
       case "serve":
-        await cmdServe();
+        if (cleanArgs[1] === "kill") {
+          await cmdServeKill(cleanArgs.slice(2));
+        } else {
+          await cmdServe();
+        }
         break;
 
       case "connect":
@@ -869,6 +874,8 @@ Usage:
   mcx scope list                      List all registered scopes
   mcx scope rm <name>                 Remove a scope
   mcx serve                           Run as stdio MCP server (for .mcp.json)
+  mcx serve kill <pid>                Kill a serve instance by PID
+  mcx serve kill --all                Kill all serve instances
   mcx completions {bash|zsh|fish}     Generate shell completion script
   mcx restart [server]                Restart server connection(s)
   mcx daemon restart                  Restart the daemon (kills sessions)

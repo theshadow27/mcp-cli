@@ -79,6 +79,7 @@ export function App() {
   const [addServerMode, setAddServerMode] = useState(false);
   const [addServerState, setAddServerState] = useState<AddServerState>(initialAddServerState);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmKillServe, setConfirmKillServe] = useState(false);
   const [configInfo, setConfigInfo] = useState<Record<string, { source: string; scope: string }>>({});
 
   // Registry browser state
@@ -358,6 +359,9 @@ export function App() {
       confirmRemove,
       setConfirmRemove,
       configInfo,
+      serveInstances: status?.serveInstances,
+      confirmKillServe,
+      setConfirmKillServe,
     },
     logsNav: {
       logSource,
@@ -588,6 +592,8 @@ export function App() {
         addServerMode={addServerMode}
         confirmRemove={confirmRemove}
         confirmRemoveServer={servers[selectedIndex]?.name}
+        confirmKillServe={confirmKillServe}
+        confirmKillServeCount={status?.serveInstances?.length}
         registryMode={registryMode}
       />
     </Box>

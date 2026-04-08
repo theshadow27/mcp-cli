@@ -44,6 +44,9 @@ function makeNav(overrides: Partial<ServersNav> = {}): ServersNav {
       s1: { source: "/path/servers.json", scope: "user" },
       s2: { source: "/path/servers.json", scope: "project" },
     },
+    serveInstances: [],
+    confirmKillServe: false,
+    setConfirmKillServe: mock(() => {}),
     ...overrides,
   };
 }

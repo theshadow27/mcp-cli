@@ -41,6 +41,9 @@ function makeNav(overrides: Partial<ServersNav> = {}): ServersNav {
     confirmRemove: false,
     setConfirmRemove: mock(() => {}),
     configInfo: {},
+    serveInstances: [],
+    confirmKillServe: false,
+    setConfirmKillServe: mock(() => {}),
     ...overrides,
   };
 }
@@ -181,6 +184,51 @@ describe("handleServersInput", () => {
   });
 });
 
+describe("handleServersInput — kill serve", () => {
+  test("K activates kill-serve confirmation when instances exist", () => {
+    const nav = makeNav({
+      serveInstances: [{ instanceId: "abc", pid: 100, tools: [], startedAt: Date.now() }],
+    });
+    const consumed = handleServersInput("K", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setConfirmKillServe).toHaveBeenCalledWith(true);
+  });
+
+  test("K is no-op when no serve instances", () => {
+    const nav = makeNav({ serveInstances: [] });
+    const consumed = handleServersInput("K", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setConfirmKillServe).not.toHaveBeenCalled();
+  });
+
+  test("y in kill-serve confirm mode calls killServe and clears", () => {
+    const nav = makeNav({ confirmKillServe: true });
+    const consumed = handleServersInput("y", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setConfirmKillServe).toHaveBeenCalledWith(false);
+  });
+
+  test("n in kill-serve confirm mode cancels", () => {
+    const nav = makeNav({ confirmKillServe: true });
+    const consumed = handleServersInput("n", baseKey, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setConfirmKillServe).toHaveBeenCalledWith(false);
+  });
+
+  test("escape in kill-serve confirm mode cancels", () => {
+    const nav = makeNav({ confirmKillServe: true });
+    const consumed = handleServersInput("", { ...baseKey, escape: true }, nav);
+    expect(consumed).toBe(true);
+    expect(nav.setConfirmKillServe).toHaveBeenCalledWith(false);
+  });
+
+  test("other keys swallowed in kill-serve confirm mode", () => {
+    const nav = makeNav({ confirmKillServe: true });
+    const consumed = handleServersInput("x", baseKey, nav);
+    expect(consumed).toBe(true);
+  });
+});
+
 describe("clearServersState", () => {
   test("resets addServerMode, addServerState, and confirmRemove", () => {
     const nav = makeNav({
@@ -203,5 +251,6 @@ describe("clearServersState", () => {
     expect(nav.setAddServerMode).toHaveBeenCalledWith(false);
     expect(nav.setAddServerState).toHaveBeenCalled();
     expect(nav.setConfirmRemove).toHaveBeenCalledWith(false);
+    expect(nav.setConfirmKillServe).toHaveBeenCalledWith(false);
   });
 });

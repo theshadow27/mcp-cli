@@ -20,6 +20,8 @@ interface FooterProps {
   addServerMode?: boolean;
   confirmRemove?: boolean;
   confirmRemoveServer?: string;
+  confirmKillServe?: boolean;
+  confirmKillServeCount?: number;
   registryMode?: RegistryMode;
 }
 
@@ -40,6 +42,8 @@ export function Footer({
   addServerMode,
   confirmRemove,
   confirmRemoveServer,
+  confirmKillServe,
+  confirmKillServeCount,
   registryMode,
 }: FooterProps) {
   if (confirmRemove) {
@@ -47,6 +51,21 @@ export function Footer({
       <Box marginTop={1}>
         <Text>
           <Text color="yellow">Remove {confirmRemoveServer ?? "server"}?</Text>
+          {"  "}
+          <Text dimColor>y</Text> confirm{"  "}
+          <Text dimColor>n</Text> cancel
+        </Text>
+      </Box>
+    );
+  }
+
+  if (confirmKillServe) {
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text color="yellow">
+            Kill {confirmKillServeCount ?? "all"} serve instance{(confirmKillServeCount ?? 0) !== 1 ? "s" : ""}?
+          </Text>
           {"  "}
           <Text dimColor>y</Text> confirm{"  "}
           <Text dimColor>n</Text> cancel
