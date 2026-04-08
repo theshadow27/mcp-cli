@@ -201,4 +201,94 @@ describe("MetricsServer", () => {
       await server.stop();
     }
   });
+
+  test("listTools returns all 4 tools", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector);
+    try {
+      const { client } = await server.start();
+      const result = await client.listTools();
+      expect(result.tools).toHaveLength(4);
+      expect(result.tools.map((t) => t.name).sort()).toEqual(
+        ["get_health", "get_metric", "get_metrics", "quota_status"].sort(),
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("quota_status returns available:false when no poller", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector); // no quota poller
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const data = JSON.parse(text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).toBeDefined();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("quota_status returns available:true with data when poller has status", async () => {
+    const collector = new MetricsCollector();
+    const { QuotaPoller, parseUsageResponse } = await import("./quota");
+    const poller = new QuotaPoller({
+      intervalMs: 60_000,
+      readToken: async () => ({ accessToken: "tok", expiresAt: Date.now() + 3_600_000 }),
+      fetchUsage: async () =>
+        parseUsageResponse({
+          five_hour: { utilization: 55, resets_at: "2026-04-08T20:00:00Z" },
+          seven_day: { utilization: 10, resets_at: "2026-04-14T00:00:00Z" },
+        }),
+    });
+    poller.start();
+    await Bun.sleep(50);
+    poller.stop();
+
+    const server = new MetricsServer(collector, poller);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const data = JSON.parse(text);
+      expect(data.available).toBe(true);
+      expect(data.fiveHour?.utilization).toBe(55);
+      expect(data.sevenDay?.utilization).toBe(10);
+      expect(data.fetchedAt).toBeGreaterThan(0);
+      expect(data.lastError).toBeNull();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("quota_status returns available:false with lastError when poller has error", async () => {
+    const collector = new MetricsCollector();
+    const { QuotaPoller } = await import("./quota");
+    const poller = new QuotaPoller({
+      intervalMs: 60_000,
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      readToken: async () => ({ accessToken: "tok", expiresAt: Date.now() + 3_600_000 }),
+      fetchUsage: async () => {
+        throw new Error("API returned 503");
+      },
+    });
+    poller.start();
+    await Bun.sleep(50);
+    poller.stop();
+
+    const server = new MetricsServer(collector, poller);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const data = JSON.parse(text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).toContain("503");
+    } finally {
+      await server.stop();
+    }
+  });
 });
