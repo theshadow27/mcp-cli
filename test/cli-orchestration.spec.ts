@@ -277,7 +277,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
     beforeAll(() => {
       // Create a bare git repo in a temp directory for worktree tests
       gitDir = mkdtempSync(join(tmpdir(), "mcp-wt-test-"));
-      execSync("git init && git commit --allow-empty -m init", {
+      execSync('git init && git -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m init', {
         cwd: gitDir,
         stdio: "pipe",
       });
