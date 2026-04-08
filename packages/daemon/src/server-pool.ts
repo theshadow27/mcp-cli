@@ -80,14 +80,16 @@ export class ServerPool {
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
   private connectFn: ConnectFn;
+  private connectTimeoutMs: number;
   private logger: Logger;
   /** Set to true by closeAll() to prevent re-registration during shutdown. */
   private stopped = false;
 
-  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger) {
+  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger, connectTimeoutMs?: number) {
     this.config = config;
     this.db = db ?? null;
     this.connectFn = connectFn ?? defaultConnect;
+    this.connectTimeoutMs = connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.logger = logger ?? consoleLogger;
     // Pre-populate connection entries (disconnected, with cached tools if available)
     for (const [name, resolved] of config.servers) {
@@ -303,19 +305,26 @@ export class ServerPool {
           // The AbortController force-closes the transport when the timeout fires,
           // which is critical for SSE (EventSource retries internally and never rejects).
           const ac = new AbortController();
-          const timer = setTimeout(() => ac.abort(), CONNECT_TIMEOUT_MS);
+          const timeoutMs = this.connectTimeoutMs;
+          const timer = setTimeout(() => ac.abort(), timeoutMs);
           // Register timeout rejection BEFORE connectFn so it wins the race
           // when both fire on the same abort event.
           const timeoutPromise = new Promise<never>((_, reject) => {
             ac.signal.addEventListener("abort", () =>
-              reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
+              reject(new Error(`Connection to "${name}" timed out after ${timeoutMs}ms`)),
             );
           });
-          let result: { client: Client; transport: Transport };
+          let result!: { client: Client; transport: Transport };
+          const connectPromise = this.connectFn(name, config, authProvider, ac.signal);
           try {
-            result = await Promise.race([this.connectFn(name, config, authProvider, ac.signal), timeoutPromise]);
+            result = await Promise.race([connectPromise, timeoutPromise]);
           } finally {
             clearTimeout(timer);
+            // Suppress unhandled rejection from the abandoned connectFn promise.
+            // When the timeout wins the race, connectFn's promise may later reject
+            // (e.g. when transport.close() triggers an error in client.connect()).
+            // Without this, each timed-out attempt leaks a promise + unhandled rejection.
+            connectPromise.catch(() => {});
           }
           const { client, transport } = result;
 
