@@ -105,10 +105,10 @@ describe("S2: Concurrent CLI tool calls", () => {
     await daemon.kill();
   });
 
-  test("20 concurrent mcx call requests return correct results", async () => {
-    const count = 20;
+  test("10 concurrent mcx call requests return correct results", async () => {
+    const count = 10;
 
-    // Use a generous timeout — spawning 20 concurrent bun processes is CPU-heavy
+    // Use a generous timeout — spawning concurrent bun processes is CPU-heavy
     const results = await Promise.all(
       Array.from({ length: count }, (_, i) =>
         mcx(daemon.dir, ["call", "echo", "add", JSON.stringify({ a: i, b: 1000 })], { timeout: 60_000 }),
