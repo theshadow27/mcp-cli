@@ -780,6 +780,49 @@ describe("ServerPool stdio retry semantics", () => {
     // CONNECT_MAX_RETRIES = 2, so: initial attempt + 2 retries = 3 total
     expect(connectCount).toBe(3);
   });
+
+  test("connectFn receives an AbortSignal", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const connectFn: ConnectFn = mock((_name, _config, _auth, signal) => {
+      receivedSignal = signal;
+      // Reject immediately — we just want to verify the signal was passed
+      return Promise.reject(errWithCode("spawn ENOENT", "ENOENT"));
+    });
+    const pool = new ServerPool(makeConfig({ srv: { command: "nonexistent" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.listTools("srv")).rejects.toThrow();
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    expect(receivedSignal?.aborted).toBe(false); // didn't need to abort — error came immediately
+  });
+
+  test("abort signal terminates an indefinitely-hanging connectFn within timeout", async () => {
+    // Simulate an SSE EventSource that retries internally and never resolves/rejects
+    // until the abort signal fires — this is the actual bug scenario from #1023.
+    const TEST_TIMEOUT_MS = 200;
+    const connectFn: ConnectFn = mock((_name, _config, _auth, signal) => {
+      return new Promise<{ client: Client; transport: Transport }>((_, reject) => {
+        // Only settle when abort fires — simulates EventSource retry loop
+        signal?.addEventListener("abort", () => reject(new Error("aborted by signal")));
+      });
+    });
+    const pool = new ServerPool(
+      makeConfig({ srv: { type: "sse" as const, url: "https://hang.example.com/events" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+      TEST_TIMEOUT_MS,
+    );
+
+    const start = Date.now();
+    await expect(pool.listTools("srv")).rejects.toThrow(/timed out/);
+    const elapsed = Date.now() - start;
+
+    // Should complete close to TEST_TIMEOUT_MS, not hang indefinitely.
+    // Allow generous upper bound (3x) to avoid flakes in slow CI, but the key
+    // assertion is that it terminates at all rather than hanging for 72s+.
+    expect(elapsed).toBeGreaterThanOrEqual(TEST_TIMEOUT_MS - 50);
+    expect(elapsed).toBeLessThan(TEST_TIMEOUT_MS * 3);
+  });
 });
 
 // -- callTool auto-retry --

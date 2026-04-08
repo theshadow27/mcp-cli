@@ -21,6 +21,11 @@ import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
 import { createTestDir, rpc, startTestDaemon } from "./harness";
 
+// 30s covers individual test cases. The 72s hang observed in #1023 exceeded this
+// because SSE's EventSource retried internally, keeping the Bun event loop alive
+// past the test timeout (Bun's timeout can't interrupt a pending beforeAll-launched
+// daemon wait). The fix in server-pool.ts (abort signal + transport.close()) ensures
+// SSE connections are force-closed at CONNECT_TIMEOUT_MS (15s), well within this budget.
 setDefaultTimeout(30_000);
 
 /** Force a connection attempt and return the error (if any) from the RPC response. */

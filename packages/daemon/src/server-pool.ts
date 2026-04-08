@@ -69,6 +69,7 @@ export type ConnectFn = (
   name: string,
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
+  signal?: AbortSignal,
 ) => Promise<{ client: Client; transport: Transport }>;
 
 export class ServerPool {
@@ -79,14 +80,16 @@ export class ServerPool {
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
   private connectFn: ConnectFn;
+  private connectTimeoutMs: number;
   private logger: Logger;
   /** Set to true by closeAll() to prevent re-registration during shutdown. */
   private stopped = false;
 
-  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger) {
+  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger, connectTimeoutMs?: number) {
     this.config = config;
     this.db = db ?? null;
     this.connectFn = connectFn ?? defaultConnect;
+    this.connectTimeoutMs = connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.logger = logger ?? consoleLogger;
     // Pre-populate connection entries (disconnected, with cached tools if available)
     for (const [name, resolved] of config.servers) {
@@ -298,16 +301,32 @@ export class ServerPool {
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          // Connect with timeout to prevent permanent hang on unresponsive servers
-          const { client, transport } = await Promise.race([
-            this.connectFn(name, config, authProvider),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
-                CONNECT_TIMEOUT_MS,
-              ),
-            ),
-          ]);
+          // Connect with timeout to prevent permanent hang on unresponsive servers.
+          // The AbortController force-closes the transport when the timeout fires,
+          // which is critical for SSE (EventSource retries internally and never rejects).
+          const ac = new AbortController();
+          const timeoutMs = this.connectTimeoutMs;
+          const timer = setTimeout(() => ac.abort(), timeoutMs);
+          // Register timeout rejection BEFORE connectFn so it wins the race
+          // when both fire on the same abort event.
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            ac.signal.addEventListener("abort", () =>
+              reject(new Error(`Connection to "${name}" timed out after ${timeoutMs}ms`)),
+            );
+          });
+          let result!: { client: Client; transport: Transport };
+          const connectPromise = this.connectFn(name, config, authProvider, ac.signal);
+          try {
+            result = await Promise.race([connectPromise, timeoutPromise]);
+          } finally {
+            clearTimeout(timer);
+            // Suppress unhandled rejection from the abandoned connectFn promise.
+            // When the timeout wins the race, connectFn's promise may later reject
+            // (e.g. when transport.close() triggers an error in client.connect()).
+            // Without this, each timed-out attempt leaks a promise + unhandled rejection.
+            connectPromise.catch(() => {});
+          }
+          const { client, transport } = result;
 
           // Attach stderr capture (Node streams buffer in paused mode, so no data is lost)
           this.attachStderrCapture(name, transport, conn);
@@ -853,9 +872,18 @@ async function defaultConnect(
   name: string,
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
+  signal?: AbortSignal,
 ): Promise<{ client: Client; transport: Transport }> {
   const transport = createTransport(config, authProvider);
   const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+
+  // When the signal fires (timeout), force-close the transport to abort
+  // hanging connections — especially SSE EventSource which retries internally.
+  if (signal) {
+    const onAbort = () => transport.close().catch(() => {});
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   await client.connect(transport);
   return { client, transport };
 }
