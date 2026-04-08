@@ -48,6 +48,7 @@ export type IpcMethod =
   | "registerServe"
   | "unregisterServe"
   | "listServeInstances"
+  | "killServe"
   | "setNote"
   | "getNote"
   | "listNotes"
@@ -361,6 +362,15 @@ export const UnregisterServeParamsSchema = z.object({
   instanceId: z.string(),
 });
 
+export const KillServeParamsSchema = z.object({
+  /** Kill a specific instance by ID. */
+  instanceId: z.string().optional(),
+  /** Kill a specific instance by PID. */
+  pid: z.number().optional(),
+  /** Kill all serve instances. */
+  all: z.boolean().optional(),
+});
+
 // -- Note schemas --
 
 export const SetNoteParamsSchema = z.object({
@@ -561,6 +571,7 @@ export interface IpcMethodResult {
   registerServe: { ok: true };
   unregisterServe: { ok: true };
   listServeInstances: ServeInstanceInfo[];
+  killServe: { killed: number };
   setNote: { ok: true };
   getNote: { note: string | null };
   listNotes: NoteEntry[];

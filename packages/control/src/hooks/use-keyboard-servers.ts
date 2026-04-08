@@ -1,4 +1,5 @@
 import { addServerToConfig, ipcCall, removeServerFromConfig } from "@mcp-cli/core";
+import type { ServeInstanceInfo } from "@mcp-cli/core";
 import type { ServerConfig } from "@mcp-cli/core";
 import type { Key } from "ink";
 import {
@@ -85,6 +86,7 @@ export function clearServersState(nav: ServersNav): void {
   nav.setAddServerMode(false);
   nav.setAddServerState(initialAddServerState());
   nav.setConfirmRemove(false);
+  nav.setConfirmKillServe(false);
 }
 
 /**
@@ -110,7 +112,26 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     configInfo,
     onAddServer,
     onRemoveServer,
+    serveInstances,
+    confirmKillServe,
+    setConfirmKillServe,
   } = nav;
+
+  // ── Confirm kill-all-serve mode ──
+  if (confirmKillServe) {
+    if (input === "y") {
+      ipcCall("killServe", { all: true })
+        .then(refresh)
+        .catch(() => {});
+      setConfirmKillServe(false);
+      return true;
+    }
+    if (input === "n" || key.escape) {
+      setConfirmKillServe(false);
+      return true;
+    }
+    return true; // swallow all other input in confirm mode
+  }
 
   // ── Confirm remove mode ──
   if (confirmRemove) {
@@ -217,6 +238,15 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     ipcCall("restartServer", {})
       .then(refresh)
       .catch(() => {});
+    return true;
+  }
+
+  // Kill all serve instances (with confirmation)
+  if (input === "K") {
+    const instances = serveInstances ?? [];
+    if (instances.length > 0) {
+      setConfirmKillServe(true);
+    }
     return true;
   }
 

@@ -68,6 +68,11 @@ export interface ServersNav {
   onAddServer?: (scope: "user" | "project", name: string, config: import("@mcp-cli/core").ServerConfig) => void;
   /** Injected for testing — defaults to the real removeServerFromConfig. */
   onRemoveServer?: (scope: "user" | "project", name: string) => void;
+  /** Active serve instances from daemon status (for kill keybinds). */
+  serveInstances?: import("@mcp-cli/core").ServeInstanceInfo[];
+  /** Whether the kill-all-serve confirmation prompt is active. */
+  confirmKillServe: boolean;
+  setConfirmKillServe: (mode: boolean) => void;
 }
 
 export interface LogsNav {

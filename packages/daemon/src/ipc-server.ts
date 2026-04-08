@@ -34,6 +34,7 @@ import {
   GetToolInfoParamsSchema,
   GrepToolsParamsSchema,
   IPC_ERROR,
+  KillServeParamsSchema,
   ListToolsParamsSchema,
   MarkReadParamsSchema,
   MarkSpansExportedParamsSchema,
@@ -70,6 +71,7 @@ import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import { getPortHolder } from "./port-holder";
+import { killPid } from "./process-util";
 import type { ServerPool } from "./server-pool";
 
 /** Per-request context passed to every handler (fixes race condition on shared state). */
@@ -953,6 +955,47 @@ export class IpcServer {
     this.handlers.set("listServeInstances", async (_params, _ctx) => {
       this.pruneStaleServeInstances();
       return [...this.serveInstances.values()];
+    });
+
+    this.handlers.set("killServe", async (params, _ctx) => {
+      const { instanceId, pid, all } = KillServeParamsSchema.parse(params ?? {});
+
+      if (!instanceId && pid == null && !all) {
+        throw Object.assign(new Error("Specify instanceId, pid, or all"), {
+          code: IPC_ERROR.INVALID_PARAMS,
+        });
+      }
+
+      this.pruneStaleServeInstances();
+
+      const targets: ServeInstanceInfo[] = [];
+      if (all) {
+        targets.push(...this.serveInstances.values());
+      } else if (instanceId) {
+        const inst = this.serveInstances.get(instanceId);
+        if (!inst) {
+          throw Object.assign(new Error(`Serve instance "${instanceId}" not found`), {
+            code: IPC_ERROR.SERVER_NOT_FOUND,
+          });
+        }
+        targets.push(inst);
+      } else if (pid != null) {
+        for (const inst of this.serveInstances.values()) {
+          if (inst.pid === pid) targets.push(inst);
+        }
+        if (targets.length === 0) {
+          throw Object.assign(new Error(`No serve instance with PID ${pid}`), {
+            code: IPC_ERROR.SERVER_NOT_FOUND,
+          });
+        }
+      }
+
+      for (const inst of targets) {
+        await killPid(inst.pid, this.logger);
+        this.serveInstances.delete(inst.instanceId);
+      }
+
+      return { killed: targets.length };
     });
 
     // -- Note handlers --

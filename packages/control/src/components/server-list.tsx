@@ -96,6 +96,7 @@ export function ServerList({
             <Text bold dimColor>
               Serve Instances ({instances.length})
             </Text>
+            <Text dimColor> — K to kill all</Text>
           </Box>
           {instances.map((inst) => {
             const uptime = formatUptime(Date.now() - inst.startedAt);

@@ -107,6 +107,9 @@ describe("exported nav interfaces", () => {
       confirmRemove: false,
       setConfirmRemove: () => {},
       configInfo: {},
+      serveInstances: [],
+      confirmKillServe: false,
+      setConfirmKillServe: () => {},
     };
     expect(nav.servers).toBeArray();
     expect(nav.selectedIndex).toBe(0);
