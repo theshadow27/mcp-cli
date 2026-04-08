@@ -39,6 +39,7 @@ export function testOptions(input?: TestOptionsInput) {
   options.LOCK_PATH = join(dir, "mcpd.lock");
   options.DAEMON_LOG_PATH = join(dir, "mcpd.log");
   options.DAEMON_LOG_BACKUP_PATH = join(dir, "mcpd.log.1");
+  options.SCOPES_DIR = join(dir, "scopes");
 
   if (Object.keys(overrides).length > 0) Object.assign(options, overrides);
 
