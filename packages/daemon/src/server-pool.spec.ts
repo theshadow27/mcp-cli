@@ -780,6 +780,20 @@ describe("ServerPool stdio retry semantics", () => {
     // CONNECT_MAX_RETRIES = 2, so: initial attempt + 2 retries = 3 total
     expect(connectCount).toBe(3);
   });
+
+  test("connectFn receives an AbortSignal", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const connectFn: ConnectFn = mock((_name, _config, _auth, signal) => {
+      receivedSignal = signal;
+      // Reject immediately — we just want to verify the signal was passed
+      return Promise.reject(errWithCode("spawn ENOENT", "ENOENT"));
+    });
+    const pool = new ServerPool(makeConfig({ srv: { command: "nonexistent" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.listTools("srv")).rejects.toThrow();
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    expect(receivedSignal?.aborted).toBe(false); // didn't need to abort — error came immediately
+  });
 });
 
 // -- callTool auto-retry --

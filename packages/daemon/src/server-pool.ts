@@ -69,6 +69,7 @@ export type ConnectFn = (
   name: string,
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
+  signal?: AbortSignal,
 ) => Promise<{ client: Client; transport: Transport }>;
 
 export class ServerPool {
@@ -298,16 +299,25 @@ export class ServerPool {
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          // Connect with timeout to prevent permanent hang on unresponsive servers
-          const { client, transport } = await Promise.race([
-            this.connectFn(name, config, authProvider),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
-                CONNECT_TIMEOUT_MS,
-              ),
-            ),
-          ]);
+          // Connect with timeout to prevent permanent hang on unresponsive servers.
+          // The AbortController force-closes the transport when the timeout fires,
+          // which is critical for SSE (EventSource retries internally and never rejects).
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), CONNECT_TIMEOUT_MS);
+          // Register timeout rejection BEFORE connectFn so it wins the race
+          // when both fire on the same abort event.
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            ac.signal.addEventListener("abort", () =>
+              reject(new Error(`Connection to "${name}" timed out after ${CONNECT_TIMEOUT_MS}ms`)),
+            );
+          });
+          let result: { client: Client; transport: Transport };
+          try {
+            result = await Promise.race([this.connectFn(name, config, authProvider, ac.signal), timeoutPromise]);
+          } finally {
+            clearTimeout(timer);
+          }
+          const { client, transport } = result;
 
           // Attach stderr capture (Node streams buffer in paused mode, so no data is lost)
           this.attachStderrCapture(name, transport, conn);
@@ -853,9 +863,18 @@ async function defaultConnect(
   name: string,
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
+  signal?: AbortSignal,
 ): Promise<{ client: Client; transport: Transport }> {
   const transport = createTransport(config, authProvider);
   const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
+
+  // When the signal fires (timeout), force-close the transport to abort
+  // hanging connections — especially SSE EventSource which retries internally.
+  if (signal) {
+    const onAbort = () => transport.close().catch(() => {});
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   await client.connect(transport);
   return { client, transport };
 }
