@@ -37,11 +37,12 @@ async function withDaemonTimeout<T>(timeoutMs: string, fn: () => Promise<T>): Pr
   }
 }
 
-/** Start a daemon with test-appropriate defaults (skip log setup + virtual servers). */
+/** Start a daemon with test-appropriate defaults (skip log setup + virtual servers + ready signal). */
 async function startTestDaemonInProcess(overrides?: Partial<Parameters<typeof startDaemon>[0]>): Promise<DaemonHandle> {
   return startDaemon({
     skipLogSetup: true,
     skipVirtualServers: true,
+    skipReadySignal: true,
     logger: silentLogger,
     ...overrides,
   });
