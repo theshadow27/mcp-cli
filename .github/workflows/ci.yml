@@ -17,7 +17,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint:check
-      - run: bun test
+      # Split daemon tests into a separate invocation to avoid a non-deterministic
+      # Bun v1.3.11 segfault that triggers when daemon worker-thread tests run in
+      # the same process as all other tests. See #1004 for upstream tracking.
+      - run: bun test packages/acp packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts
+      - run: bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts
 
   build:
     runs-on: ubuntu-latest

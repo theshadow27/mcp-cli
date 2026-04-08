@@ -65,7 +65,7 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
 import { startCallbackServer } from "./auth/callback-server";
-import { McpOAuthProvider } from "./auth/oauth-provider";
+import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { metrics } from "./metrics";
@@ -500,17 +500,29 @@ export class IpcServer {
 
       // Read OAuth config from server configuration
       const serverConfig = this.pool.getServerConfig(server);
-      const { clientId, clientSecret, callbackPort } = serverConfig ?? {};
+      const { clientId, clientSecret, callbackPort, scope } = serverConfig ?? {};
 
       // Start callback server for OAuth redirect (use configured port if available)
       const callback = startCallbackServer(callbackPort);
       try {
         // Create provider with callback URL and config-level OAuth credentials
-        const provider = new McpOAuthProvider(server, serverUrl, poolDb, { clientId, clientSecret, callbackPort });
+        const provider = new McpOAuthProvider(server, serverUrl, poolDb, {
+          clientId,
+          clientSecret,
+          callbackPort,
+          scope,
+        });
         provider.setRedirectUrl(callback.url);
 
+        // Pass configured scope to auth(), or DEFAULT_OAUTH_SCOPE as fallback.
+        // The SDK's cascade (resourceMetadata.scopes_supported → clientMetadata.scope)
+        // runs between these; DEFAULT_OAUTH_SCOPE kicks in when none of those exist
+        // (e.g. Atlassian, which requires scope=openid email profile but publishes
+        // no scopes_supported in its protected resource metadata).
+        const authScope = provider.getEffectiveScope() ?? DEFAULT_OAUTH_SCOPE;
+
         // Run the SDK auth orchestrator
-        const result = await auth(provider, { serverUrl });
+        const result = await auth(provider, { serverUrl, scope: authScope });
 
         if (result === "AUTHORIZED") {
           // Already authorized (tokens were valid) — restart server to reconnect
@@ -521,7 +533,7 @@ export class IpcServer {
         // result === "REDIRECT" — browser was opened, wait for callback
         const code = await callback.waitForCode;
 
-        // Exchange code for tokens
+        // Exchange code for tokens (scope not passed — SDK reads from clientMetadata for token exchange)
         await auth(provider, { serverUrl, authorizationCode: code });
 
         // Reconnect with new tokens
@@ -559,6 +571,7 @@ export class IpcServer {
             const provider = new McpOAuthProvider(srv.name, serverUrl, poolDb, {
               clientId: serverConfig?.clientId,
               clientSecret: serverConfig?.clientSecret,
+              scope: serverConfig?.scope,
             });
             const tokens = await provider.tokens();
             if (tokens) {

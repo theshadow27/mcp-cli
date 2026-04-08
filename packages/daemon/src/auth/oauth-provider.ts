@@ -33,10 +33,15 @@ export function getBrowserCommand(url: string): string[] {
   return ["xdg-open", url];
 }
 
+/** Default fallback scope for OIDC-compatible providers (matches mcp-remote). */
+export const DEFAULT_OAUTH_SCOPE = "openid email profile";
+
 export interface OAuthProviderOpts {
   clientId?: string;
   clientSecret?: string;
   callbackPort?: number;
+  /** OAuth scope from per-server config (highest priority in scope resolution). */
+  scope?: string;
   readKeychain?: (url: string) => Promise<KeychainTokens | null>;
 }
 
@@ -70,13 +75,36 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    return {
+    const meta: OAuthClientMetadata = {
       redirect_uris: [this._redirectUrl ?? "http://localhost/callback"],
       client_name: "mcp-cli",
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     };
+    // Only include scope in clientMetadata when explicitly configured per-server.
+    // A hardcoded fallback here would break non-OIDC servers on dynamic registration
+    // (RFC 7591) and token exchange (SDK reads clientMetadata.scope directly in fetchToken).
+    if (this.opts.scope?.trim()) {
+      meta.scope = this.opts.scope;
+    }
+    return meta;
+  }
+
+  /**
+   * Return the explicitly-configured OAuth scope, or undefined.
+   *
+   * When undefined, the SDK's own cascade handles scope discovery:
+   *   resourceMetadata.scopes_supported → clientMetadata.scope
+   *
+   * The DEFAULT_OAUTH_SCOPE fallback is only used at the call-site when
+   * the SDK cascade also produces nothing (no scopes_supported in metadata).
+   */
+  getEffectiveScope(): string | undefined {
+    if (this.opts.scope?.trim()) {
+      return this.opts.scope;
+    }
+    return undefined;
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
