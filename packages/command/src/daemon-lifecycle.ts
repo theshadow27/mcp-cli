@@ -24,10 +24,12 @@ import {
   ipcCall as coreIpcCall,
   resolveDaemonCommand as coreResolveDaemonCommand,
   ensureStateDir,
+  flockUnlock,
   nextId,
   options,
   pingDaemon,
   rawFetch,
+  tryFlockExclusive,
 } from "@mcp-cli/core";
 
 /** Thrown when shutdown is refused because active sessions exist. */
@@ -123,6 +125,36 @@ export function _isTransientConnectionError(err: unknown): boolean {
 }
 
 /**
+ * Check if the daemon's PID file flock is held by another process.
+ *
+ * Tries to acquire the lock non-blocking:
+ * - If lock succeeds → no daemon holds it → release and return false
+ * - If lock fails → a daemon is alive (even if suspended) → return true
+ *
+ * This is the definitive liveness check: the kernel releases the lock
+ * on process death (even SIGKILL), so a held lock means a live daemon.
+ */
+export function isDaemonFlockHeld(): boolean {
+  let fd: number;
+  try {
+    fd = openSync(options.PID_PATH, "r");
+  } catch {
+    return false; // No PID file — no daemon
+  }
+  try {
+    const acquired = tryFlockExclusive(fd);
+    if (acquired) {
+      // We got the lock — no daemon holds it. Release and report not held.
+      flockUnlock(fd);
+      return false;
+    }
+    return true; // Lock held by another process — daemon is alive
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * Check if daemon is running, start it if not.
  * Uses an exclusive lock file to prevent concurrent startups (race condition).
  */
@@ -130,6 +162,14 @@ export async function ensureDaemon(): Promise<void> {
   // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
   if (await isDaemonRunning()) {
     verboseLog("daemon already running");
+    return;
+  }
+
+  // Check if the daemon holds the PID file flock — definitive kernel-level liveness.
+  // This catches sleep/wake scenarios where the daemon is suspended but alive.
+  if (isDaemonFlockHeld()) {
+    verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
+    await waitForDaemon();
     return;
   }
 
