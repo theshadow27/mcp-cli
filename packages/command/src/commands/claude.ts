@@ -747,7 +747,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
-    const state = colorState(s.state);
+    const stateStr = s.rateLimited ? `${colorState(s.state)} ${c.red}[RATE LIMITED]${c.reset}` : colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
@@ -757,7 +757,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     console.log(
-      `${c.cyan}${id}${c.reset}   ${state} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+      `${c.cyan}${id}${c.reset}   ${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
   }
 

@@ -380,6 +380,9 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
     case "session:cleared":
       self.postMessage({ type: "db:state", sessionId, state: "connecting" });
       break;
+    case "session:rate_limited":
+      self.postMessage({ type: "metrics:inc", name: "mcpd_session_rate_limited_total" });
+      break;
     case "session:model_changed":
       self.postMessage({ type: "db:upsert", session: { sessionId, model: event.model } });
       break;

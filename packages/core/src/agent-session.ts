@@ -48,6 +48,8 @@ export interface AgentSessionInfo {
   repoRoot: string | null;
   /** Whether the agent process is still alive. */
   processAlive: boolean;
+  /** Whether the session is currently rate-limited by the API. */
+  rateLimited: boolean;
   /** Unix timestamp (ms) when this session was created. Null if unknown. */
   createdAt: number | null;
 }

@@ -321,6 +321,7 @@ export class AcpSession {
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
       processAlive: this.proc?.alive ?? false,
+      rateLimited: false,
       createdAt: this.createdAt,
     };
   }

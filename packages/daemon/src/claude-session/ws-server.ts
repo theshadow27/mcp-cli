@@ -1302,6 +1302,17 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         break;
+      case "session:rate_limited":
+        session.pendingImmediate = true;
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:rate_limited",
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        break;
       case "session:disconnected":
         try {
           this.resolveEventWaiters(sessionId, {
@@ -1477,6 +1488,7 @@ export class ClaudeWsServer {
       worktree: s.config.worktree ?? null,
       repoRoot: s.config.repoRoot ?? null,
       processAlive: s.spawnAlive,
+      rateLimited: s.state.rateLimited,
       createdAt: s.createdAt,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,
