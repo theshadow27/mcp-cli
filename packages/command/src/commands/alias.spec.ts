@@ -141,6 +141,18 @@ describe("cmdAlias ls", () => {
     expect(deps.ipcCall).toHaveBeenCalledWith("listAliases");
   });
 
+  test("mcx aliases synonym: cmdAlias(['ls']) lists aliases (validates main.ts synonym dispatch)", async () => {
+    // The 'aliases' command synonym in main.ts calls cmdAlias(["ls", ...rest])
+    // This test verifies that dispatch path lists aliases correctly
+    const aliases: AliasInfo[] = [
+      { name: "test", description: "Test alias", filePath: "/test.ts", updatedAt: 1, aliasType: "freeform" },
+    ];
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve(aliases)) as AliasDeps["ipcCall"] });
+    await cmdAlias(["ls"], deps);
+    expect(deps.ipcCall).toHaveBeenCalledWith("listAliases");
+    expect(deps.printAliasList).toHaveBeenCalledWith(aliases, { verbose: false });
+  });
+
   test("passes verbose flag with -v", async () => {
     const deps = makeDeps({ ipcCall: mock(() => Promise.resolve([])) as AliasDeps["ipcCall"] });
     await cmdAlias(["ls", "-v"], deps);

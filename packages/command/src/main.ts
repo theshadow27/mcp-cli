@@ -141,6 +141,7 @@ async function main(): Promise<void> {
         break;
 
       case "grep":
+      case "find":
         await cmdGrep(cleanArgs.slice(1));
         break;
 
@@ -246,6 +247,14 @@ async function main(): Promise<void> {
         await cmdAlias(cleanArgs.slice(1));
         break;
 
+      case "aliases":
+        await cmdAlias(["ls", ...cleanArgs.slice(1)]);
+        break;
+
+      case "save":
+        await cmdAlias(["save", ...cleanArgs.slice(1)]);
+        break;
+
       case "run": {
         const { _recordPromise } = await cmdRun(cleanArgs.slice(1));
         await _recordPromise;
@@ -305,7 +314,12 @@ async function main(): Promise<void> {
         await cmdServe();
         break;
 
+      case "connect":
+        await cmdStatus(cleanArgs.slice(1));
+        break;
+
       case "restart":
+      case "reconnect":
         await cmdRestart(cleanArgs.slice(1));
         break;
 
