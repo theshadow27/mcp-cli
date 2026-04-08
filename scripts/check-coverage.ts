@@ -121,9 +121,6 @@ const EXCLUSIONS: Record<string, string> = {
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
   "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
 
-  // Incremental coverage bug — 100% on full run, 19% on incremental (#1036)
-  "daemon/src/claude-session/permission-router.ts": "Incremental coverage artifact, 100% on full run (#1036)",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
   // Test harness — not production code
