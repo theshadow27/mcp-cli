@@ -8,7 +8,9 @@
  * @see https://github.com/theshadow27/mcp-cli/issues/1007
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
 import { pollUntil, rpc, startTestDaemon } from "./harness";
@@ -22,11 +24,12 @@ const MCX_SCRIPT = resolve("packages/command/src/main.ts");
 async function mcx(
   dir: string,
   args: string[],
-  opts?: { timeout?: number },
+  opts?: { timeout?: number; cwd?: string },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    cwd: opts?.cwd,
     env: { ...process.env, MCP_CLI_DIR: dir },
   });
 
@@ -168,6 +171,77 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       expect(result.stdout).toContain("session:result");
     });
 
+    test("--allow does not eat --task positional arg (#910 regression)", async () => {
+      // Regression guard for #910 P1-3: --allow must stop consuming args
+      // at the next non-tool-name token. If --allow eats --task, the spawn
+      // will fail because no task is provided.
+      const result = await mcx(daemon.dir, [
+        "agent",
+        "mock",
+        "spawn",
+        "--allow",
+        "Bash",
+        "Read",
+        "--task",
+        scriptPath,
+        "--wait",
+      ]);
+      expect(result.stdout).toContain("session:result");
+      expect(result.exitCode).toBe(0);
+
+      // Double-check: parse the sessionId and verify transcript shows
+      // the script path as the user prompt (not "Bash" or "Read")
+      const waitResult = JSON.parse(result.stdout.trim());
+      const sessionId: string = waitResult.sessionId;
+
+      const transcriptRes = await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_transcript",
+        arguments: { sessionId },
+      });
+      const transcript = JSON.parse((transcriptRes.result as { content: Array<{ text: string }> }).content[0].text);
+      // First entry is the user prompt — should be the script file path
+      expect(transcript[0].role).toBe("user");
+      expect(transcript[0].text).toBe(scriptPath);
+
+      await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_bye",
+        arguments: { sessionId },
+      });
+    });
+
+    test("--model flag is accepted and forwarded", async () => {
+      const result = await mcx(daemon.dir, [
+        "agent",
+        "mock",
+        "spawn",
+        "--model",
+        "haiku",
+        "--task",
+        scriptPath,
+        "--wait",
+      ]);
+      // Spawn should succeed — model flag parsed without error
+      expect(result.stdout).toContain("session:result");
+      expect(result.exitCode).toBe(0);
+    });
+
+    test("--resume rejected for provider without native resume", async () => {
+      // Mock provider has resume: false — --resume should be rejected at parse time
+      const result = await mcx(daemon.dir, [
+        "agent",
+        "mock",
+        "spawn",
+        "--resume",
+        "fake-session-id",
+        "--task",
+        scriptPath,
+      ]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("--resume is not supported");
+    });
+
     test("mcx agent mock ls shows sessions", async () => {
       // Spawn a session first
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
@@ -187,6 +261,70 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       expect(found).toBeTruthy();
 
       // Clean up
+      await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_bye",
+        arguments: { sessionId },
+      });
+    });
+  });
+
+  // ── Worktree flag ──────────────────────────────────────────────────
+
+  describe("--worktree flag", () => {
+    let gitDir: string;
+
+    beforeAll(() => {
+      // Create a bare git repo in a temp directory for worktree tests
+      gitDir = mkdtempSync(join(tmpdir(), "mcp-wt-test-"));
+      execSync('git init && git -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m init', {
+        cwd: gitDir,
+        stdio: "pipe",
+      });
+      // Enable worktree creation without branch prefix
+      writeFileSync(join(gitDir, ".mcx-worktree.json"), JSON.stringify({ worktree: { branchPrefix: false } }));
+    });
+
+    afterAll(() => {
+      // Clean up worktrees before removing the dir (git requires this order)
+      try {
+        execSync("git worktree prune", { cwd: gitDir, stdio: "pipe" });
+      } catch {
+        // best-effort
+      }
+      rmSync(gitDir, { recursive: true, force: true });
+    });
+
+    test("--worktree creates worktree and session runs in it", async () => {
+      const wtName = `test-wt-${Date.now().toString(36)}`;
+      const result = await mcx(
+        daemon.dir,
+        ["agent", "mock", "spawn", "--worktree", wtName, "--task", scriptPath, "--wait"],
+        { cwd: gitDir },
+      );
+
+      expect(result.stderr).toContain("Created worktree:");
+      expect(result.stdout).toContain("session:result");
+      expect(result.exitCode).toBe(0);
+
+      // Verify worktree directory was created
+      const wtPath = join(gitDir, ".claude", "worktrees", wtName);
+      expect(existsSync(wtPath)).toBe(true);
+
+      // Verify session ran inside the worktree (cwd should be the worktree path)
+      const waitResult = JSON.parse(result.stdout.trim());
+      const sessionId: string = waitResult.sessionId;
+
+      const statusRes = await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_session_status",
+        arguments: { sessionId },
+      });
+      const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
+      // macOS /var → /private/var symlink: normalize both paths
+      const { realpathSync } = await import("node:fs");
+      expect(realpathSync(status.cwd)).toBe(realpathSync(wtPath));
+
       await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_bye",
