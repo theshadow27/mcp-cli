@@ -65,6 +65,9 @@ describe("P1: Daemon lifecycle", () => {
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
     expect(stderr).toContain("Shutting down (IPC shutdown request)");
     expect(stderr).toContain("Shutdown complete in ");
+    // Per-phase instrumentation should be visible at info level (#1103)
+    expect(stderr).toContain("Shutdown: pool.closeAll took ");
+    expect(stderr).toContain("Shutdown: db.close took ");
     daemon = undefined;
   });
 
