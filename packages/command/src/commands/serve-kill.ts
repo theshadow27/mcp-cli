@@ -2,8 +2,9 @@
  * `mcx serve kill` — kill running serve instances.
  *
  * Usage:
- *   mcx serve kill <pid>       Kill a specific serve instance by PID
- *   mcx serve kill --all       Kill all serve instances
+ *   mcx serve kill <pid>           Kill a specific serve instance by PID
+ *   mcx serve kill --all           Kill all serve instances
+ *   mcx serve kill --stale [hours] Kill instances older than N hours (default: 24)
  */
 
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
@@ -27,8 +28,9 @@ function printHelp(log: (msg: string) => void): void {
   log(`mcx serve kill — kill running serve instances
 
 Usage:
-  mcx serve kill <pid>       Kill a specific serve instance by PID
-  mcx serve kill --all       Kill all serve instances
+  mcx serve kill <pid>           Kill a specific serve instance by PID
+  mcx serve kill --all           Kill all serve instances
+  mcx serve kill --stale [hours] Kill instances older than N hours (default: 24)
 
 Flags:
   --json, -j     Output as JSON
@@ -45,10 +47,25 @@ export async function cmdServeKill(args: string[], deps?: Partial<ServeKillDeps>
   }
 
   const killAll = rest.includes("--all");
-  const positional = rest.filter((a) => !a.startsWith("-"));
+  const staleIdx = rest.indexOf("--stale");
+  let staleHours: number | undefined;
+  if (staleIdx !== -1) {
+    const next = rest[staleIdx + 1];
+    staleHours = next != null && !next.startsWith("-") ? Number(next) : 24;
+    if (Number.isNaN(staleHours) || staleHours < 0) {
+      d.logError(`Invalid --stale value: ${next}`);
+      return;
+    }
+  }
+
+  const positional = rest.filter((a, i) => {
+    if (a.startsWith("-")) return false;
+    if (staleIdx !== -1 && i === staleIdx + 1) return false;
+    return true;
+  });
   const pidArg = positional[0] ? Number(positional[0]) : undefined;
 
-  if (!killAll && pidArg == null) {
+  if (!killAll && pidArg == null && staleHours == null) {
     printHelp(d.logError);
     return;
   }
@@ -58,7 +75,7 @@ export async function cmdServeKill(args: string[], deps?: Partial<ServeKillDeps>
     return;
   }
 
-  const params = killAll ? { all: true } : { pid: pidArg };
+  const params = staleHours != null ? { staleHours } : killAll ? { all: true } : { pid: pidArg };
   const result = await d.ipcCall("killServe", params);
 
   if (isJson) {
