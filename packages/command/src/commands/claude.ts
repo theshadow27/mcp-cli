@@ -359,10 +359,12 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
 
-  // Handle worktree: use shim for hooks/branchPrefix, otherwise Claude handles natively.
+  // Handle worktree: always pre-create via shim so cwd points to the worktree.
+  // Without cwd, Claude inherits the daemon's cwd (main repo) and file
+  // operations leak into the main working tree (#1109).
   if (parsed.worktree) {
     try {
-      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), nativeWorktree: true }, d);
+      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd() }, d);
       Object.assign(toolArgs, result.toolArgs);
     } catch (e) {
       d.printError(e instanceof WorktreeError ? e.message : String(e));
