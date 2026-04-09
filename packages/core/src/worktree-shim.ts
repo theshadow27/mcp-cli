@@ -123,6 +123,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
     if (exitCode !== 0) {
       throw new WorktreeError(`Failed to create worktree: ${stderr}`);
     }
+    if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printError("Fixed core.bare=true after worktree add");
+    }
     deps.printError(`Created worktree: ${worktreePath}`);
     return {
       path: worktreePath,
@@ -146,6 +149,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", gitBranch, "HEAD"]);
   if (exitCode !== 0) {
     throw new WorktreeError(`Failed to create worktree: ${stderr}`);
+  }
+  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError("Fixed core.bare=true after worktree add");
   }
   deps.printError(`Created worktree: ${worktreePath}`);
   return {
