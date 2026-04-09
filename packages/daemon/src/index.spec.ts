@@ -258,6 +258,41 @@ describe("daemon index.ts", () => {
       expect(handle.isShuttingDown).toBe(true);
     });
 
+    test("shutdown completes when a virtual server stop() hangs (phase timeout)", async () => {
+      opts = testOptions();
+      const stopCalls: string[] = [];
+      handle = await startTestDaemonInProcess({
+        _virtualServers: [
+          [
+            "_hanging",
+            {
+              // Simulate a server whose stop() never resolves (e.g. stuck worker under contention)
+              stop: () => new Promise<void>(() => {}),
+            },
+          ],
+          [
+            "_normal",
+            {
+              stop: async () => {
+                stopCalls.push("_normal");
+              },
+            },
+          ],
+        ],
+      });
+
+      const t0 = Date.now();
+      await handle.shutdown("SIGTERM");
+      const elapsed = Date.now() - t0;
+
+      // Shutdown should complete within a reasonable bound (phase timeout + margin)
+      // rather than hanging indefinitely
+      expect(elapsed).toBeLessThan(15_000);
+      // The normal server after the hanging one should still be stopped
+      expect(stopCalls).toEqual(["_normal"]);
+      expect(handle.isShuttingDown).toBe(true);
+    });
+
     test("double shutdown is idempotent (no crash)", async () => {
       opts = testOptions();
       handle = await startTestDaemonInProcess();
