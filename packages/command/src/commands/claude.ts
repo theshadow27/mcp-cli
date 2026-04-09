@@ -983,37 +983,18 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 async function claudeApprove(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
-  const requestId = args[1];
+  const { sessionPrefix, requestId } = parseApproveArgs(args, d);
 
-  if (!sessionPrefix || !requestId) {
-    d.printError("Usage: mcx claude approve <session-id> <request-id>");
-    d.exit(1);
-  }
-
-  const sessionId = await resolveSessionId(sessionPrefix, d);
-  const result = await d.callTool("claude_approve", { sessionId, requestId });
+  const { sessionId, resolvedRequestId } = await resolvePermissionTarget(sessionPrefix, requestId, d);
+  const result = await d.callTool("claude_approve", { sessionId, requestId: resolvedRequestId });
   console.log(formatToolResult(result));
 }
 
 async function claudeDeny(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
-  const requestId = args[1];
+  const { sessionPrefix, requestId, message } = parseDenyArgs(args, d);
 
-  if (!sessionPrefix || !requestId) {
-    d.printError("Usage: mcx claude deny <session-id> <request-id> [--message <reason>]");
-    d.exit(1);
-  }
-
-  let message: string | undefined;
-  for (let i = 2; i < args.length; i++) {
-    if (args[i] === "--message" || args[i] === "-m") {
-      message = args[++i];
-    }
-  }
-
-  const sessionId = await resolveSessionId(sessionPrefix, d);
-  const toolArgs: Record<string, unknown> = { sessionId, requestId };
+  const { sessionId, resolvedRequestId } = await resolvePermissionTarget(sessionPrefix, requestId, d);
+  const toolArgs: Record<string, unknown> = { sessionId, requestId: resolvedRequestId };
   if (message) toolArgs.message = message;
   const result = await d.callTool("claude_deny", toolArgs);
   console.log(formatToolResult(result));
@@ -1026,6 +1007,113 @@ export interface LogArgs {
   full: boolean;
   jq: string | undefined;
   error: string | undefined;
+}
+
+// ── Approve/Deny arg parsing + resolution ──
+
+export function parseApproveArgs(
+  args: string[],
+  d: Pick<ClaudeDeps, "printError" | "exit">,
+): { sessionPrefix: string; requestId: string | undefined } {
+  let requestId: string | undefined;
+  const positional: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--request-id" || args[i] === "-r") {
+      requestId = args[++i];
+    } else if (!args[i].startsWith("-")) {
+      positional.push(args[i]);
+    }
+  }
+
+  // Support legacy positional: approve <session> <request-id>
+  if (!requestId && positional.length >= 2) {
+    requestId = positional[1];
+  }
+
+  const sessionPrefix = positional[0];
+  if (!sessionPrefix) {
+    d.printError("Usage: mcx claude approve <session-id> [--request-id <id>]");
+    d.exit(1);
+  }
+
+  return { sessionPrefix, requestId };
+}
+
+export function parseDenyArgs(
+  args: string[],
+  d: Pick<ClaudeDeps, "printError" | "exit">,
+): { sessionPrefix: string; requestId: string | undefined; message: string | undefined } {
+  let requestId: string | undefined;
+  let message: string | undefined;
+  const positional: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--request-id" || args[i] === "-r") {
+      requestId = args[++i];
+    } else if (args[i] === "--message" || args[i] === "-m") {
+      message = args[++i];
+    } else if (!args[i].startsWith("-")) {
+      positional.push(args[i]);
+    }
+  }
+
+  // Support legacy positional: deny <session> <request-id>
+  if (!requestId && positional.length >= 2) {
+    requestId = positional[1];
+  }
+
+  const sessionPrefix = positional[0];
+  if (!sessionPrefix) {
+    d.printError("Usage: mcx claude deny <session-id> [--request-id <id>] [--message <reason>]");
+    d.exit(1);
+  }
+
+  return { sessionPrefix, requestId, message };
+}
+
+/**
+ * Resolve sessionId (via prefix match) and requestId (explicit or auto-detect latest pending).
+ */
+async function resolvePermissionTarget(
+  sessionPrefix: string,
+  requestId: string | undefined,
+  d: SharedSessionDeps,
+): Promise<{ sessionId: string; resolvedRequestId: string }> {
+  // Fetch session list (same call resolveSessionId uses)
+  const result = await d.callTool("claude_session_list", {});
+  const text = formatToolResult(result);
+  let sessions: Array<{ sessionId: string; pendingPermissionDetails?: Array<{ requestId: string }> }>;
+  try {
+    sessions = JSON.parse(text);
+  } catch {
+    throw new Error("Failed to parse session list");
+  }
+
+  const matches = sessions.filter((s) => s.sessionId.startsWith(sessionPrefix));
+  if (matches.length === 0) {
+    d.printError(`No session matching "${sessionPrefix}"`);
+    d.exit(1);
+  }
+  if (matches.length > 1) {
+    d.printError(`Ambiguous session prefix "${sessionPrefix}" — matches ${matches.length} sessions`);
+    d.exit(1);
+  }
+
+  const session = matches[0];
+
+  if (requestId) {
+    return { sessionId: session.sessionId, resolvedRequestId: requestId };
+  }
+
+  // Auto-resolve: pick the most recent (last) pending permission
+  const pending = session.pendingPermissionDetails ?? [];
+  if (pending.length === 0) {
+    d.printError(`No pending permission requests for session ${session.sessionId.slice(0, 8)}`);
+    d.exit(1);
+  }
+
+  return { sessionId: session.sessionId, resolvedRequestId: pending[pending.length - 1].requestId };
 }
 
 export function parseLogArgs(args: string[]): LogArgs {
@@ -1440,8 +1528,8 @@ Usage:
   mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session>           Interrupt the current turn
-  mcx claude approve <session> <request>   Approve a pending permission request
-  mcx claude deny <session> <request>      Deny a pending permission request
+  mcx claude approve <session>              Approve latest pending permission request
+  mcx claude deny <session>                Deny latest pending permission request
   mcx claude log <session> [--last N]      View session transcript
   mcx claude log <session> --json          Raw JSON transcript output
   mcx claude log <session> --json --jq '.' Apply jq filter to JSON output
@@ -1477,6 +1565,10 @@ List/Wait options:
 Wait options:
   --after <seq>               Sequence cursor for race-free polling (from previous response)
   --timeout, -t <ms>          Max wait time (default: 300000)
+
+Approve/Deny options:
+  --request-id, -r <id>       Specific request ID (auto-detects latest if omitted)
+  --message, -m <reason>      Denial reason (deny only)
 
 Session IDs support prefix matching (like git SHAs).`);
 }
