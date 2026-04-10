@@ -70,8 +70,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
     this._redirectUrl = url;
   }
 
-  get redirectUrl(): string | URL | undefined {
-    return this._redirectUrl;
+  get redirectUrl(): string | URL {
+    // Always return a URL so the SDK (1.27.1+) treats this as an interactive
+    // (authorization_code) flow rather than a non-interactive flow.
+    //
+    // SDK 1.27.1 added: nonInteractiveFlow = !provider.redirectUrl
+    // When nonInteractiveFlow=true the SDK calls fetchToken() which requires
+    // prepareTokenRequest() — bypassing the refresh_token path entirely.
+    // Returning a default here keeps nonInteractiveFlow=false so that the
+    // SDK correctly tries refresh_token when the access_token has expired.
+    return this._redirectUrl ?? "http://localhost/callback";
   }
 
   get clientMetadata(): OAuthClientMetadata {
@@ -162,6 +170,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
+    if (!this._redirectUrl) {
+      // Not in explicit auth mode (setRedirectUrl was never called — this is a
+      // background connection attempt, not a user-initiated mcx auth flow).
+      // Suppress the browser open; the transport will get 'REDIRECT' → UnauthorizedError
+      // and the server will show as "error" until the user runs: mcx auth <server>
+      console.error(`[auth] "${this.serverName}" needs re-authorization. Run: mcx auth ${this.serverName}`);
+      return;
+    }
     const urlStr = authorizationUrl.toString();
     console.error(`[auth] Opening browser for ${this.serverName}: ${urlStr}`);
     Bun.spawn(getBrowserCommand(urlStr), { stdout: "ignore", stderr: "ignore" });

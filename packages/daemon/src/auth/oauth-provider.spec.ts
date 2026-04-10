@@ -476,9 +476,24 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("redirectToAuthorization calls Bun.spawn with platform command", () => {
+    test("redirectToAuthorization suppresses browser when setRedirectUrl not called", () => {
+      // In connection phase (server-pool.ts), setRedirectUrl is never called.
+      // redirectToAuthorization must NOT open a browser — just log the re-auth message.
       const db = createDb();
       const provider = createProvider(db);
+
+      // Should return without throwing and without calling Bun.spawn.
+      // (If Bun.spawn were called it would try to exec a real browser command in CI.)
+      expect(() => {
+        provider.redirectToAuthorization(new URL("https://auth.example.com/authorize?code=abc"));
+      }).not.toThrow();
+      db.close();
+    });
+
+    test("redirectToAuthorization opens browser when setRedirectUrl was called", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+      provider.setRedirectUrl("http://localhost:9999/callback");
 
       const origSpawn = Bun.spawn;
       let spawnedArgs: string[] | undefined;
@@ -516,11 +531,22 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("setRedirectUrl updates redirectUrl", () => {
+    test("redirectUrl returns default before setRedirectUrl (SDK 1.27.1 nonInteractiveFlow guard)", () => {
+      // SDK 1.27.1 added: nonInteractiveFlow = !provider.redirectUrl
+      // If redirectUrl is undefined the SDK skips refresh_token and calls fetchToken()
+      // which fails without prepareTokenRequest(). The default ensures the SDK uses
+      // the interactive path (authorization_code + refresh_token flow).
       const db = createDb();
       const provider = createProvider(db);
 
-      expect(provider.redirectUrl).toBeUndefined();
+      expect(provider.redirectUrl).toBe("http://localhost/callback");
+      db.close();
+    });
+
+    test("setRedirectUrl overrides the default redirectUrl", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
       provider.setRedirectUrl("http://localhost:9999/callback");
       expect(provider.redirectUrl).toBe("http://localhost:9999/callback");
       db.close();
