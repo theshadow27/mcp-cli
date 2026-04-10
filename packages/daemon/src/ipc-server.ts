@@ -958,10 +958,10 @@ export class IpcServer {
     });
 
     this.handlers.set("killServe", async (params, _ctx) => {
-      const { instanceId, pid, all } = KillServeParamsSchema.parse(params ?? {});
+      const { instanceId, pid, all, staleHours } = KillServeParamsSchema.parse(params ?? {});
 
-      if (!instanceId && pid == null && !all) {
-        throw Object.assign(new Error("Specify instanceId, pid, or all"), {
+      if (!instanceId && pid == null && !all && staleHours == null) {
+        throw Object.assign(new Error("Specify instanceId, pid, all, or staleHours"), {
           code: IPC_ERROR.INVALID_PARAMS,
         });
       }
@@ -969,7 +969,12 @@ export class IpcServer {
       this.pruneStaleServeInstances();
 
       const targets: ServeInstanceInfo[] = [];
-      if (all) {
+      if (staleHours != null) {
+        const cutoff = Date.now() - staleHours * 60 * 60 * 1000;
+        for (const inst of this.serveInstances.values()) {
+          if (inst.startedAt < cutoff) targets.push(inst);
+        }
+      } else if (all) {
         targets.push(...this.serveInstances.values());
       } else if (instanceId) {
         const inst = this.serveInstances.get(instanceId);

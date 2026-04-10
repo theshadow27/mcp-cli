@@ -75,4 +75,67 @@ describe("cmdServeKill", () => {
     await cmdServeKill(["abc"], deps);
     expect(deps.errors[0]).toContain("Invalid PID");
   });
+
+  test("kills stale with default 24h", async () => {
+    let calledWith: unknown;
+    const deps = makeDeps({
+      ipcCall: async <M extends IpcMethod>(_method: M, params?: unknown) => {
+        calledWith = params;
+        return { killed: 2 } as IpcMethodResult[M];
+      },
+    });
+    await cmdServeKill(["--stale"], deps);
+    expect(calledWith).toEqual({ staleHours: 24 });
+    expect(deps.errors[0]).toContain("Killed 2");
+  });
+
+  test("kills stale with custom hours", async () => {
+    let calledWith: unknown;
+    const deps = makeDeps({
+      ipcCall: async <M extends IpcMethod>(_method: M, params?: unknown) => {
+        calledWith = params;
+        return { killed: 1 } as IpcMethodResult[M];
+      },
+    });
+    await cmdServeKill(["--stale", "6"], deps);
+    expect(calledWith).toEqual({ staleHours: 6 });
+  });
+
+  test("kills stale with fractional hours", async () => {
+    let calledWith: unknown;
+    const deps = makeDeps({
+      ipcCall: async <M extends IpcMethod>(_method: M, params?: unknown) => {
+        calledWith = params;
+        return { killed: 1 } as IpcMethodResult[M];
+      },
+    });
+    await cmdServeKill(["--stale", "0.5"], deps);
+    expect(calledWith).toEqual({ staleHours: 0.5 });
+  });
+
+  test("rejects invalid --stale value", async () => {
+    const deps = makeDeps();
+    await cmdServeKill(["--stale", "abc"], deps);
+    expect(deps.errors[0]).toContain("Invalid --stale value");
+  });
+
+  test("--stale ignores negative-looking next arg and uses default", async () => {
+    let calledWith: unknown;
+    const deps = makeDeps({
+      ipcCall: async <M extends IpcMethod>(_method: M, params?: unknown) => {
+        calledWith = params;
+        return { killed: 0 } as IpcMethodResult[M];
+      },
+    });
+    await cmdServeKill(["--stale", "-5"], deps);
+    expect(calledWith).toEqual({ staleHours: 24 });
+  });
+
+  test("--stale with --json outputs JSON", async () => {
+    const deps = makeDeps({
+      ipcCall: async <M extends IpcMethod>() => ({ killed: 3 }) as IpcMethodResult[M],
+    });
+    await cmdServeKill(["--stale", "12", "--json"], deps);
+    expect(JSON.parse(deps.logs[0])).toEqual({ killed: 3 });
+  });
 });

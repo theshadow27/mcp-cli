@@ -369,6 +369,8 @@ export const KillServeParamsSchema = z.object({
   pid: z.number().optional(),
   /** Kill all serve instances. */
   all: z.boolean().optional(),
+  /** Kill instances older than this many hours. */
+  staleHours: z.number().optional(),
 });
 
 // -- Note schemas --
