@@ -15,27 +15,32 @@ async function main(): Promise<void> {
 
   const handle = await startDaemon();
 
+  // Track whether shutdown was triggered by an error (exit code 1) vs clean (exit code 0)
+  let exitCode = 0;
+
   process.on("SIGTERM", () => {
-    handle.shutdown("SIGTERM").then(() => process.exit(0));
+    handle.shutdown("SIGTERM");
   });
   process.on("SIGINT", () => {
-    handle.shutdown("SIGINT").then(() => process.exit(0));
+    handle.shutdown("SIGINT");
   });
 
   process.on("uncaughtException", (err) => {
     console.error("[mcpd] Uncaught exception:", err);
-    handle
-      .shutdown("uncaught exception")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
+    exitCode = 1;
+    handle.shutdown("uncaught exception");
   });
   process.on("unhandledRejection", (rejection) => {
     console.error("[mcpd] Unhandled rejection:", rejection);
-    handle
-      .shutdown("unhandled rejection")
-      .then(() => process.exit(1))
-      .catch(() => process.exit(1));
+    exitCode = 1;
+    handle.shutdown("unhandled rejection");
   });
+
+  // Single exit point for ALL shutdown paths (SIGTERM, SIGINT, IPC, idle, errors).
+  // Before this fix, IPC shutdown completed cleanup but never called process.exit(),
+  // leaving the process alive indefinitely under resource contention (#1103).
+  await handle.shutdownComplete;
+  process.exit(exitCode);
 }
 
 if (import.meta.main) {

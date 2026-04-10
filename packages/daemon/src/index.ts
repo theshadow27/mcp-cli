@@ -198,6 +198,27 @@ export function pruneOrphanedWorktrees(
   }
 }
 
+/** Per-phase timeout for shutdown steps (ms). Prevents any single phase from hanging the process. */
+const SHUTDOWN_PHASE_TIMEOUT_MS = 5_000;
+
+/** Race a promise against a deadline. Returns "timeout" if the deadline is reached. */
+async function withPhaseTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  logger: Logger,
+): Promise<T | "timeout"> {
+  const result = await Promise.race([
+    promise.then((v) => ({ ok: v as T })),
+    Bun.sleep(ms).then(() => ({ timeout: true as const })),
+  ]);
+  if ("timeout" in result) {
+    logger.warn(`[mcpd] Shutdown phase "${label}" timed out after ${ms}ms — skipping`);
+    return "timeout";
+  }
+  return result.ok;
+}
+
 export type ShutdownReason =
   | "SIGTERM"
   | "SIGINT"
@@ -683,11 +704,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // Wait for any in-progress virtual server startups before stopping them
       let phase = performance.now();
       try {
-        await pool.awaitPendingServers();
+        await withPhaseTimeout(pool.awaitPendingServers(), SHUTDOWN_PHASE_TIMEOUT_MS, "awaitPendingServers", logger);
       } catch (err) {
         logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
       }
-      logger.debug(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
+      logger.info(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
       // Stop each virtual server individually so one failure doesn't leak the rest
       const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
         opts?._virtualServers ?? [
@@ -705,7 +726,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         const serverStart = performance.now();
         try {
           if (server) {
-            await server.stop();
+            const result = await withPhaseTimeout(server.stop(), SHUTDOWN_PHASE_TIMEOUT_MS, `stop ${name}`, logger);
+            if (result === "timeout") {
+              logger.warn(`[mcpd] Force-unregistering ${name} after stop timeout`);
+            }
             pool.unregisterVirtualServer(name);
           }
         } catch (err) {
@@ -713,24 +737,24 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           pool.unregisterVirtualServer(name);
         }
         if (server) {
-          logger.debug(`[mcpd] Shutdown: stop ${name} took ${Math.round(performance.now() - serverStart)}ms`);
+          logger.info(`[mcpd] Shutdown: stop ${name} took ${Math.round(performance.now() - serverStart)}ms`);
         }
       }
-      logger.debug(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
+      logger.info(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
       phase = performance.now();
       try {
-        await pool.closeAll();
+        await withPhaseTimeout(pool.closeAll(), SHUTDOWN_PHASE_TIMEOUT_MS, "pool.closeAll", logger);
       } catch (err) {
         logger.error(`[mcpd] Error closing server pool: ${err}`);
       }
-      logger.debug(`[mcpd] Shutdown: pool.closeAll took ${Math.round(performance.now() - phase)}ms`);
+      logger.info(`[mcpd] Shutdown: pool.closeAll took ${Math.round(performance.now() - phase)}ms`);
       phase = performance.now();
       try {
         db.close();
       } catch (err) {
         logger.error(`[mcpd] Error closing database: ${err}`);
       }
-      logger.debug(`[mcpd] Shutdown: db.close took ${Math.round(performance.now() - phase)}ms`);
+      logger.info(`[mcpd] Shutdown: db.close took ${Math.round(performance.now() - phase)}ms`);
       if (!opts?.skipLogSetup) {
         try {
           closeDaemonLogFile();

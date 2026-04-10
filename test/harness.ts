@@ -153,15 +153,20 @@ export async function startMockServer(scriptPath: string): Promise<MockServer> {
     stderr: "pipe",
   });
 
-  // Read the port from the first line of stdout
+  // Read the port from the first line of stdout (bounded to 10s to prevent hangs under contention)
   const reader = proc.stdout.getReader();
-  const { value } = await reader.read();
+  const readResult = await Promise.race([
+    reader.read(),
+    Bun.sleep(10_000).then(() => ({ value: undefined, done: true as const, timeout: true as const })),
+  ]);
   reader.releaseLock();
 
+  const value = readResult.value;
   if (!value) {
     proc.kill();
     const stderr = await new Response(proc.stderr).text();
-    throw new Error(`Mock server failed to start: ${stderr}`);
+    const reason = "timeout" in readResult ? "timed out waiting for port" : "no output";
+    throw new Error(`Mock server failed to start (${reason}): ${stderr}`);
   }
 
   const port = Number(new TextDecoder().decode(value).trim());

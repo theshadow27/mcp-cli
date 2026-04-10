@@ -13,6 +13,8 @@ import {
   defaultGetPrStatus,
   extractIssueNumber,
   formatQuotaBanner,
+  parseApproveArgs,
+  parseDenyArgs,
   parseDiffShortstat,
   parseLogArgs,
   parseResumeArgs,
@@ -3672,8 +3674,86 @@ describe("formatQuotaBanner", () => {
 
 // ── approve / deny ──
 
+const SESSION_LIST_WITH_PERMS = [
+  {
+    ...SESSION_LIST[0],
+    pendingPermissionDetails: [
+      { requestId: "req-oldest", toolName: "Bash", inputSummary: "command=ls" },
+      { requestId: "req-latest", toolName: "Write", inputSummary: "file_path=/tmp/x" },
+    ],
+    pendingPermissions: 2,
+  },
+  SESSION_LIST[1],
+];
+
+describe("parseApproveArgs", () => {
+  const d = {
+    printError: mock(() => {}),
+    exit: mock(() => {
+      throw new ExitError(1);
+    }) as never,
+  };
+
+  test("parses positional session + request-id (legacy)", () => {
+    const result = parseApproveArgs(["abc", "req-001"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-001" });
+  });
+
+  test("parses --request-id flag", () => {
+    const result = parseApproveArgs(["abc", "--request-id", "req-002"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-002" });
+  });
+
+  test("parses -r shorthand", () => {
+    const result = parseApproveArgs(["abc", "-r", "req-003"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-003" });
+  });
+
+  test("session-only (no request-id) returns undefined requestId", () => {
+    const result = parseApproveArgs(["abc"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: undefined });
+  });
+
+  test("errors when missing session-id", () => {
+    expect(() => parseApproveArgs([], d)).toThrow(ExitError);
+  });
+});
+
+describe("parseDenyArgs", () => {
+  const d = {
+    printError: mock(() => {}),
+    exit: mock(() => {
+      throw new ExitError(1);
+    }) as never,
+  };
+
+  test("parses positional session + request-id (legacy)", () => {
+    const result = parseDenyArgs(["abc", "req-001"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-001", message: undefined });
+  });
+
+  test("parses --request-id flag with --message", () => {
+    const result = parseDenyArgs(["abc", "--request-id", "req-002", "--message", "Nope"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-002", message: "Nope" });
+  });
+
+  test("parses -r and -m shorthands", () => {
+    const result = parseDenyArgs(["abc", "-r", "req-003", "-m", "No"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: "req-003", message: "No" });
+  });
+
+  test("session-only with --message", () => {
+    const result = parseDenyArgs(["abc", "-m", "Bad idea"], d);
+    expect(result).toEqual({ sessionPrefix: "abc", requestId: undefined, message: "Bad idea" });
+  });
+
+  test("errors when missing session-id", () => {
+    expect(() => parseDenyArgs([], d)).toThrow(ExitError);
+  });
+});
+
 describe("mcx claude approve", () => {
-  test("calls claude_approve with sessionId and requestId", async () => {
+  test("calls claude_approve with explicit positional requestId (legacy)", async () => {
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ approved: true });
@@ -3692,21 +3772,63 @@ describe("mcx claude approve", () => {
     }
   });
 
+  test("calls claude_approve with --request-id flag", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ approved: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["approve", "abc", "--request-id", "req-flag"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_approve", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-flag",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("auto-resolves latest pending request when no requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST_WITH_PERMS);
+      return toolResult({ approved: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["approve", "abc"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_approve", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-latest",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("errors when no pending permissions and no requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ approved: true });
+    });
+    const deps = makeDeps({ callTool });
+    await expect(cmdClaude(["approve", "abc"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No pending permission"));
+  });
+
   test("errors when missing session-id", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["approve"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
-
-  test("errors when missing request-id", async () => {
-    const deps = makeDeps();
-    await expect(cmdClaude(["approve", "abc"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
-  });
 });
 
 describe("mcx claude deny", () => {
-  test("calls claude_deny with sessionId and requestId", async () => {
+  test("calls claude_deny with explicit positional requestId (legacy)", async () => {
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ denied: true });
@@ -3725,7 +3847,46 @@ describe("mcx claude deny", () => {
     }
   });
 
-  test("passes --message to deny tool", async () => {
+  test("auto-resolves latest pending request when no requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST_WITH_PERMS);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["deny", "abc"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_deny", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-latest",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes --message with auto-resolved requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST_WITH_PERMS);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["deny", "abc", "--message", "Not allowed"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_deny", {
+        sessionId: SESSION_LIST[0].sessionId,
+        requestId: "req-latest",
+        message: "Not allowed",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes --message to deny tool with explicit requestId", async () => {
     const callTool = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ denied: true });
@@ -3771,9 +3932,13 @@ describe("mcx claude deny", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
 
-  test("errors when missing request-id", async () => {
-    const deps = makeDeps();
+  test("errors when no pending permissions and no requestId", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ denied: true });
+    });
+    const deps = makeDeps({ callTool });
     await expect(cmdClaude(["deny", "abc"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No pending permission"));
   });
 });
