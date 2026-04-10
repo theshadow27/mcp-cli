@@ -527,11 +527,14 @@ describe("mcx claude spawn", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["spawn", "--task", "x", "--worktree", "feat", "--allow", "Read", "Glob"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
-        prompt: "x",
-        worktree: "feat",
-        allowedTools: ["Read", "Glob"],
-      });
+      const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+      expect(toolCalls[0][0]).toBe("claude_prompt");
+      expect(toolCalls[0][1].prompt).toBe("x");
+      expect(toolCalls[0][1].worktree).toBe("feat");
+      expect(toolCalls[0][1].allowedTools).toEqual(["Read", "Glob"]);
+      // Worktree is pre-created: cwd and repoRoot must be set (#1109)
+      expect(toolCalls[0][1].cwd).toBeDefined();
+      expect(toolCalls[0][1].repoRoot).toBeDefined();
     } finally {
       console.log = origLog;
     }
@@ -798,18 +801,25 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
     }
   });
 
-  test("headless --worktree delegates to daemon when branchPrefix is not false", async () => {
+  test("headless --worktree pre-creates worktree and passes cwd", async () => {
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const callTool = mock(async () => toolResult({ sessionId: "s1" }));
-    const deps = makeDeps({ callTool });
+    const deps = makeDeps({ exec, callTool });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["spawn", "--task", "x", "--worktree", "my-feat"], deps);
-      // Should pass worktree to daemon (no cwd pre-creation)
+      // Worktree is pre-created via git worktree add (#1109)
+      const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
+      const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
+      expect(wtCall).toBeDefined();
+      expect(wtCall?.[0]).toContain("my-feat");
+      // cwd must be set so daemon spawns Claude in the worktree, not the main repo
       const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
       expect(toolCalls[0][1].worktree).toBe("my-feat");
-      expect(toolCalls[0][1].cwd).toBeUndefined();
+      expect(toolCalls[0][1].cwd).toBeDefined();
+      expect(toolCalls[0][1].repoRoot).toBeDefined();
     } finally {
       console.log = origLog;
     }

@@ -175,6 +175,47 @@ describe("createWorktree", () => {
     );
   });
 
+  test("shimmed worktree: fixes core.bare=true after worktree add", () => {
+    tmpDir = makeTmpDir();
+    // Create .git dir so fixCoreBare detects a non-bare repo
+    mkdirSync(join(tmpDir, ".git"), { recursive: true });
+
+    const execCalls: string[][] = [];
+    const deps = makeDeps({
+      exec: mock((cmd: string[]) => {
+        execCalls.push(cmd);
+        // Simulate git reporting core.bare=true (the bug we're guarding against)
+        if (cmd.includes("config") && cmd.includes("core.bare") && cmd.length === 5) {
+          return { stdout: "true", stderr: "", exitCode: 0 };
+        }
+        // git config core.bare false — the fix
+        if (cmd.includes("config") && cmd.includes("core.bare") && cmd.includes("false")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+
+    const result = createWorktree({ name: "my-feat", repoRoot: tmpDir, branchPrefix: "claude/" }, deps);
+    expect(result.shimmed).toBe(true);
+
+    // Verify core.bare was checked after worktree add
+    const coreBareReadIdx = execCalls.findIndex(
+      (c) => c.includes("config") && c.includes("core.bare") && c.length === 5,
+    );
+    const worktreeAddIdx = execCalls.findIndex((c) => c.includes("worktree") && c.includes("add"));
+    expect(coreBareReadIdx).toBeGreaterThan(worktreeAddIdx);
+
+    // Verify it was fixed (core.bare set to false)
+    const coreBareFixIdx = execCalls.findIndex(
+      (c) => c.includes("config") && c.includes("core.bare") && c.includes("false"),
+    );
+    expect(coreBareFixIdx).toBeGreaterThan(coreBareReadIdx);
+
+    // Should log the fix
+    expect(deps.printError).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
+  });
+
   test("branchPrefix: false creates with raw branch name", () => {
     tmpDir = makeTmpDir();
     writeFileSync(join(tmpDir, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
