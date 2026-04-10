@@ -40,6 +40,7 @@ export function testOptions(input?: TestOptionsInput) {
   options.DAEMON_LOG_PATH = join(dir, "mcpd.log");
   options.DAEMON_LOG_BACKUP_PATH = join(dir, "mcpd.log.1");
   options.SCOPES_DIR = join(dir, "scopes");
+  options.SPRINT_STATE_PATH = join(dir, "sprint-state.json");
 
   if (Object.keys(overrides).length > 0) Object.assign(options, overrides);
 

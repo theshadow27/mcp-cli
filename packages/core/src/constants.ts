@@ -126,6 +126,8 @@ const _originalOptions = {
   ALIAS_PRUNE_INTERVAL: 20,
   /** Run count threshold to trigger ephemeral alias promotion hint */
   EPHEMERAL_ALIAS_PROMOTION_THRESHOLD: 3,
+  /** Sprint state file path (pause/resume state) */
+  SPRINT_STATE_PATH: join(MCP_CLI_DIR, "sprint-state.json"),
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
