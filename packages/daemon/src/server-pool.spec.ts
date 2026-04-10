@@ -1666,13 +1666,14 @@ describe("disconnect kills stdio child processes (#940)", () => {
     }
   }
 
-  /** Poll until process is dead or deadline reached. */
+  /** Poll until process is dead or throw on timeout. */
   async function awaitDeath(pid: number, deadlineMs = 8_000): Promise<void> {
     const deadline = Date.now() + deadlineMs;
     while (Date.now() < deadline) {
       if (!isAlive(pid)) return;
       await Bun.sleep(5);
     }
+    throw new Error(`process ${pid} still alive after ${deadlineMs}ms`);
   }
 
   /** Force-kill a PID if still alive (test cleanup safety net). */
