@@ -1077,13 +1077,14 @@ export function parseDenyArgs(
 /**
  * Resolve sessionId (via prefix match) and requestId (explicit or auto-detect latest pending).
  */
-async function resolvePermissionTarget(
+export async function resolvePermissionTarget(
   sessionPrefix: string,
   requestId: string | undefined,
   d: SharedSessionDeps,
+  listToolName = "claude_session_list",
 ): Promise<{ sessionId: string; resolvedRequestId: string }> {
   // Fetch session list (same call resolveSessionId uses)
-  const result = await d.callTool("claude_session_list", {});
+  const result = await d.callTool(listToolName, {});
   const text = formatToolResult(result);
   let sessions: Array<{ sessionId: string; pendingPermissionDetails?: Array<{ requestId: string }> }>;
   try {

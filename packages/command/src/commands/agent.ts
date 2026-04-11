@@ -4,7 +4,7 @@
  * Dispatches subcommands parameterized by the provider registry, eliminating
  * the duplication that existed across the former per-provider command files.
  *
- * Subcommands: spawn, ls, send, bye, wait, interrupt, log, resume, worktrees
+ * Subcommands: spawn, ls, send, bye, wait, interrupt, log, resume, approve, deny, worktrees
  * Provider-specific flags (--headed, --agent, --provider) are gated by feature flags.
  */
 
@@ -33,7 +33,10 @@ import {
   buildResumePrompt,
   cleanupWorktree,
   extractIssueNumber,
+  parseApproveArgs,
   parseByeResult,
+  parseDenyArgs,
+  resolvePermissionTarget,
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
@@ -265,9 +268,15 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
     case "wt":
       await agentWorktrees(args.slice(2), provider, d);
       break;
+    case "approve":
+      await agentApprove(args.slice(2), provider, d);
+      break;
+    case "deny":
+      await agentDeny(args.slice(2), provider, d);
+      break;
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", or "worktrees".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -1359,6 +1368,38 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
 
 // ── Usage ──
 
+// ── Approve / Deny ──
+
+async function agentApprove(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
+  const P = provider.toolPrefix;
+  const { sessionPrefix, requestId } = parseApproveArgs(args, d);
+
+  const { sessionId, resolvedRequestId } = await resolvePermissionTarget(
+    sessionPrefix,
+    requestId,
+    d,
+    `${P}_session_list`,
+  );
+  const result = await d.callTool(`${P}_approve`, { sessionId, requestId: resolvedRequestId });
+  console.log(formatToolResult(result));
+}
+
+async function agentDeny(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
+  const P = provider.toolPrefix;
+  const { sessionPrefix, requestId, message } = parseDenyArgs(args, d);
+
+  const { sessionId, resolvedRequestId } = await resolvePermissionTarget(
+    sessionPrefix,
+    requestId,
+    d,
+    `${P}_session_list`,
+  );
+  const toolArgs: Record<string, unknown> = { sessionId, requestId: resolvedRequestId };
+  if (message) toolArgs.message = message;
+  const result = await d.callTool(`${P}_deny`, toolArgs);
+  console.log(formatToolResult(result));
+}
+
 function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {
   const out = log ?? console.log;
   const providers = getAllProviders()
@@ -1404,6 +1445,8 @@ Usage:
   mcx agent ${name} interrupt <session>          Interrupt current turn
   mcx agent ${name} log <session> [--last N]     View transcript
   mcx agent ${name} resume <worktree>            ${resumeNote}
+  mcx agent ${name} approve <session> [req-id]  Approve pending permission request
+  mcx agent ${name} deny <session> [req-id]     Deny pending permission request
   mcx agent ${name} worktrees [--prune]          List mcx-created worktrees
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
