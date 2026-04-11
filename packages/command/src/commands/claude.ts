@@ -364,7 +364,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // operations leak into the main working tree (#1109).
   if (parsed.worktree) {
     try {
-      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd() }, d);
+      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "claude/" }, d);
       Object.assign(toolArgs, result.toolArgs);
     } catch (e) {
       d.printError(e instanceof WorktreeError ? e.message : String(e));
