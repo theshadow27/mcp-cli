@@ -11,6 +11,7 @@ import { type UseAgentSessionsOptions, useAgentSessions } from "./use-agent-sess
 function session(id: string, provider: "claude" | "codex" = "claude"): AgentSessionInfo {
   return {
     sessionId: id,
+    name: null,
     provider,
     state: "active",
     model: "opus",
