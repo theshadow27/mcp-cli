@@ -688,7 +688,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       (async () => {
         try {
           const workItemDb = new WorkItemDb(db.database);
-          workItemsServer = new WorkItemsServer(workItemDb);
+
+          // Create the poller first so we can pass pollNow to the server
+          workItemPoller = new WorkItemPoller({
+            db: workItemDb,
+            logger,
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
+          });
+
+          workItemsServer = new WorkItemsServer(workItemDb, {
+            onTrack: () => workItemPoller?.pollNow(),
+          });
           const {
             client: workItemsClient,
             transport: workItemsTransport,
@@ -699,11 +709,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           // Start the GitHub work item poller — forwards events to the claude session worker
           // so `mcx wait --any` / `--pr` / `--checks` can race work item events.
-          workItemPoller = new WorkItemPoller({
-            db: workItemDb,
-            logger,
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
-          });
           workItemPoller.start();
           logger.info("[mcpd] Work item poller started");
         } catch (err) {

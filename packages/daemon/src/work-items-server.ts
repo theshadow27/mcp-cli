@@ -126,8 +126,15 @@ export class WorkItemsServer {
   private client: Client | null = null;
   private serverTransport: Transport | null = null;
   private clientTransport: Transport | null = null;
+  private workItemDb: WorkItemDb;
 
-  constructor(private workItemDb: WorkItemDb) {}
+  /** Called after a work item is tracked/updated so the poller can run immediately. */
+  private onTrack: (() => void) | null;
+
+  constructor(workItemDb: WorkItemDb, opts?: { onTrack?: () => void }) {
+    this.workItemDb = workItemDb;
+    this.onTrack = opts?.onTrack ?? null;
+  }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
     if (this.server) {
@@ -193,6 +200,7 @@ export class WorkItemsServer {
               prUrl: a.prUrl !== undefined ? String(a.prUrl) : undefined,
               phase: (a.phase as WorkItemPhase | undefined) ?? (existing ? undefined : "impl"),
             });
+            this.onTrack?.();
             return { content: [{ type: "text" as const, text: JSON.stringify(item) }] };
           }
 
