@@ -365,7 +365,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   let worktreeResult: { path: string } | undefined;
   if (parsed.worktree) {
     try {
-      const wt = createWorktree({ name: parsed.worktree, repoRoot: process.cwd() }, d);
+      const wt = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "claude/" }, d);
       Object.assign(toolArgs, wt.toolArgs);
       worktreeResult = wt;
     } catch (e) {
