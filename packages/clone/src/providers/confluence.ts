@@ -85,9 +85,13 @@ interface McpToolResult {
   isError?: boolean;
 }
 
-/** Extract and parse JSON from an MCP tool call result. */
+/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
 function unwrapToolResult(result: unknown): unknown {
   const mcpResult = result as McpToolResult;
+  if (mcpResult?.isError) {
+    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
+    throw new Error(`MCP tool error: ${text}`);
+  }
   if (mcpResult?.content?.[0]?.type === "text") {
     const text = mcpResult.content[0].text;
     try {
