@@ -21,7 +21,6 @@ import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
 import { cmdClaude } from "./commands/claude";
-import { cmdClone } from "./commands/clone";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
@@ -32,8 +31,6 @@ import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdNote } from "./commands/note";
-import { cmdPull } from "./commands/pull";
-import { cmdPush } from "./commands/push";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -47,6 +44,7 @@ import { cmdTypegen } from "./commands/typegen";
 import { cmdUpdate } from "./commands/update";
 import { cmdUpgrade } from "./commands/upgrade";
 import { cmdVersion } from "./commands/version";
+import { cmdVfs } from "./commands/vfs";
 import {
   ShutdownRefusedError,
   getSourceStalenessWarning,
@@ -328,16 +326,8 @@ async function main(): Promise<void> {
         await cmdAgent([command, ...cleanArgs.slice(1)]);
         break;
 
-      case "clone":
-        await cmdClone(cleanArgs.slice(1));
-        break;
-
-      case "pull":
-        await cmdPull(cleanArgs.slice(1));
-        break;
-
-      case "push":
-        await cmdPush(cleanArgs.slice(1), { dryRun: _dryRun });
+      case "vfs":
+        await cmdVfs(cleanArgs.slice(1), { dryRun: _dryRun });
         break;
 
       case "scope":
