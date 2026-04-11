@@ -1,15 +1,16 @@
 /**
  * mcx track/untrack/tracked — work item tracking commands.
  *
- * Track:   mcx track <number>           Track a PR or issue
+ * Track:   mcx track <number>           Track an issue/PR by number
  *          mcx track --branch <name>    Track a branch
- * Untrack: mcx untrack <number>         Stop tracking
+ * Untrack: mcx untrack <number>         Stop tracking by number
+ *          mcx untrack --branch <name>  Stop tracking by branch
  * List:    mcx tracked                  Human-readable table
  *          mcx tracked --json           Machine-readable output
  */
 
-import type { IpcMethod, IpcMethodResult, WorkItem } from "@mcp-cli/core";
-import { ipcCall } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import { WORK_ITEM_PHASES, ipcCall } from "@mcp-cli/core";
 import { c, printError } from "../output";
 
 export interface TrackDeps {
@@ -34,42 +35,77 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     const branch = args[1];
     if (!branch) {
       printError("Usage: mcx track --branch <name>");
-      deps.exit(1);
+      return deps.exit(1);
     }
-    const item = await deps.ipcCall("trackWorkItem", { branch });
-    console.error(`Tracking branch ${branch} (${item.id})`);
+    try {
+      const item = await deps.ipcCall("trackWorkItem", { branch });
+      console.error(`Tracking branch ${branch} (${item.id})`);
+    } catch (err) {
+      printError(`Failed to track branch: ${err instanceof Error ? err.message : String(err)}`);
+      return deps.exit(1);
+    }
     return;
   }
 
   const num = Number(args[0]);
   if (!Number.isInteger(num) || num <= 0) {
     printError(`Invalid number: ${args[0]}`);
-    deps.exit(1);
+    return deps.exit(1);
   }
 
-  const item = await deps.ipcCall("trackWorkItem", { number: num });
-  console.error(`Tracking #${num} (${item.id})`);
+  try {
+    const item = await deps.ipcCall("trackWorkItem", { number: num });
+    console.error(`Tracking #${num} (${item.id})`);
+  } catch (err) {
+    printError(`Failed to track #${num}: ${err instanceof Error ? err.message : String(err)}`);
+    return deps.exit(1);
+  }
 }
 
 // -- mcx untrack --
 
 export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
   if (!args.length || args[0] === "--help" || args[0] === "-h") {
-    console.log("Usage: mcx untrack <number>");
+    console.log("Usage: mcx untrack <number>\n       mcx untrack --branch <name>");
+    return;
+  }
+
+  if (args[0] === "--branch") {
+    const branch = args[1];
+    if (!branch) {
+      printError("Usage: mcx untrack --branch <name>");
+      return deps.exit(1);
+    }
+    try {
+      const result = await deps.ipcCall("untrackWorkItem", { branch });
+      if (result.deleted) {
+        console.error(`Untracked branch ${branch}`);
+      } else {
+        console.error(`Branch ${branch} was not tracked`);
+      }
+    } catch (err) {
+      printError(`Failed to untrack branch: ${err instanceof Error ? err.message : String(err)}`);
+      return deps.exit(1);
+    }
     return;
   }
 
   const num = Number(args[0]);
   if (!Number.isInteger(num) || num <= 0) {
     printError(`Invalid number: ${args[0]}`);
-    deps.exit(1);
+    return deps.exit(1);
   }
 
-  const result = await deps.ipcCall("untrackWorkItem", { number: num });
-  if (result.deleted) {
-    console.error(`Untracked #${num}`);
-  } else {
-    console.error(`#${num} was not tracked`);
+  try {
+    const result = await deps.ipcCall("untrackWorkItem", { number: num });
+    if (result.deleted) {
+      console.error(`Untracked #${num}`);
+    } else {
+      console.error(`#${num} was not tracked`);
+    }
+  } catch (err) {
+    printError(`Failed to untrack #${num}: ${err instanceof Error ? err.message : String(err)}`);
+    return deps.exit(1);
   }
 }
 
@@ -83,22 +119,40 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
 
   const jsonFlag = args.includes("--json");
   const phaseIdx = args.indexOf("--phase");
-  const phase = phaseIdx >= 0 ? args[phaseIdx + 1] : undefined;
+  let phase: WorkItemPhase | undefined;
 
-  const items = await deps.ipcCall("listWorkItems", phase ? { phase } : {});
-
-  if (jsonFlag) {
-    console.log(JSON.stringify(items, null, 2));
-    return;
+  if (phaseIdx >= 0) {
+    const raw = args[phaseIdx + 1];
+    if (!raw || raw.startsWith("--")) {
+      printError(`--phase requires a value: ${WORK_ITEM_PHASES.join(", ")}`);
+      return deps.exit(1);
+    }
+    if (!WORK_ITEM_PHASES.includes(raw as WorkItemPhase)) {
+      printError(`Unknown phase "${raw}". Valid phases: ${WORK_ITEM_PHASES.join(", ")}`);
+      return deps.exit(1);
+    }
+    phase = raw as WorkItemPhase;
   }
 
-  if (items.length === 0) {
-    console.error("No tracked work items. Use `mcx track <number>` to start tracking.");
-    return;
-  }
+  try {
+    const items = await deps.ipcCall("listWorkItems", phase ? { phase } : {});
 
-  for (const item of items) {
-    console.log(formatWorkItemRow(item));
+    if (jsonFlag) {
+      console.log(JSON.stringify(items, null, 2));
+      return;
+    }
+
+    if (items.length === 0) {
+      console.error("No tracked work items. Use `mcx track <number>` to start tracking.");
+      return;
+    }
+
+    for (const item of items) {
+      console.log(formatWorkItemRow(item));
+    }
+  } catch (err) {
+    printError(`Failed to list work items: ${err instanceof Error ? err.message : String(err)}`);
+    return deps.exit(1);
   }
 }
 
@@ -139,9 +193,10 @@ function printTrackHelp(): void {
   console.log(`mcx track — work item tracking
 
 Usage:
-  mcx track <number>           Track a PR or issue number
+  mcx track <number>           Track an issue/PR by number
   mcx track --branch <name>    Track a branch (PR may not exist yet)
-  mcx untrack <number>         Stop tracking a work item
+  mcx untrack <number>         Stop tracking by number
+  mcx untrack --branch <name>  Stop tracking by branch
   mcx tracked                  List all tracked work items
   mcx tracked --json           Machine-readable output
   mcx tracked --phase <phase>  Filter by phase (impl, review, repair, qa, done)
@@ -150,6 +205,7 @@ Examples:
   mcx track 1135
   mcx track --branch feat/new-feature
   mcx untrack 1135
+  mcx untrack --branch feat/new-feature
   mcx tracked
   mcx tracked --json`);
 }

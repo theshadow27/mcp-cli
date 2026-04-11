@@ -31,7 +31,7 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     id: "#1135",
     issueNumber: 1135,
     branch: "feat/issue-1135-cleanup",
-    prNumber: 1135,
+    prNumber: null,
     prState: "open",
     prUrl: null,
     ciStatus: "passed",
@@ -94,6 +94,15 @@ describe("cmdTrack", () => {
     const deps = makeDeps();
     await expect(cmdTrack(["--branch"], deps)).rejects.toThrow("exit(1)");
   });
+
+  test("handles IPC error gracefully", async () => {
+    const deps = makeDeps({
+      trackWorkItem: () => {
+        throw new Error("daemon unavailable");
+      },
+    });
+    await expect(cmdTrack(["1135"], deps)).rejects.toThrow("exit(1)");
+  });
 });
 
 describe("cmdUntrack", () => {
@@ -110,6 +119,19 @@ describe("cmdUntrack", () => {
     expect(captured).toEqual({ number: 1135 });
   });
 
+  test("untracks a branch", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["--branch", "feat/test"], deps);
+    expect(captured).toEqual({ branch: "feat/test" });
+  });
+
   test("handles not tracked", async () => {
     const deps = makeDeps({
       untrackWorkItem: () => ({ ok: true, deleted: false }),
@@ -119,14 +141,36 @@ describe("cmdUntrack", () => {
     await cmdUntrack(["999"], deps);
   });
 
+  test("handles branch not tracked", async () => {
+    const deps = makeDeps({
+      untrackWorkItem: () => ({ ok: true, deleted: false }),
+    });
+
+    await cmdUntrack(["--branch", "feat/nonexistent"], deps);
+  });
+
   test("rejects invalid number", async () => {
     const deps = makeDeps();
     await expect(cmdUntrack(["abc"], deps)).rejects.toThrow("exit(1)");
   });
 
+  test("rejects missing branch name", async () => {
+    const deps = makeDeps();
+    await expect(cmdUntrack(["--branch"], deps)).rejects.toThrow("exit(1)");
+  });
+
   test("prints help with no args", async () => {
     const deps = makeDeps();
     await cmdUntrack([], deps);
+  });
+
+  test("handles IPC error gracefully", async () => {
+    const deps = makeDeps({
+      untrackWorkItem: () => {
+        throw new Error("daemon unavailable");
+      },
+    });
+    await expect(cmdUntrack(["1135"], deps)).rejects.toThrow("exit(1)");
   });
 });
 
@@ -194,11 +238,36 @@ describe("cmdTracked", () => {
     await cmdTracked(["--phase", "qa"], deps);
     expect(captured).toEqual({ phase: "qa" });
   });
+
+  test("rejects --phase with no value", async () => {
+    const deps = makeDeps();
+    await expect(cmdTracked(["--phase"], deps)).rejects.toThrow("exit(1)");
+  });
+
+  test("rejects --phase followed by another flag", async () => {
+    const deps = makeDeps();
+    await expect(cmdTracked(["--phase", "--json"], deps)).rejects.toThrow("exit(1)");
+  });
+
+  test("rejects unknown phase value", async () => {
+    const deps = makeDeps();
+    await expect(cmdTracked(["--phase", "bogus"], deps)).rejects.toThrow("exit(1)");
+  });
+
+  test("handles IPC error gracefully", async () => {
+    const deps = makeDeps({
+      listWorkItems: () => {
+        throw new Error("daemon unavailable");
+      },
+    });
+    await expect(cmdTracked(["--json"], deps)).rejects.toThrow("exit(1)");
+  });
 });
 
 describe("formatWorkItemRow", () => {
   test("formats a work item with all fields", () => {
     const item = makeWorkItem({
+      prNumber: 1135,
       ciStatus: "passed",
       reviewStatus: "approved",
       phase: "qa",

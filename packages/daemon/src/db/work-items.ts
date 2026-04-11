@@ -198,4 +198,9 @@ export class WorkItemDb {
       .get(issueNumber);
     return row ? rowToWorkItem(row) : null;
   }
+
+  getWorkItemByBranch(branch: string): WorkItem | null {
+    const row = this.db.query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ?").get(branch);
+    return row ? rowToWorkItem(row) : null;
+  }
 }

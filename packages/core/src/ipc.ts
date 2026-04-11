@@ -397,17 +397,27 @@ export const DeleteNoteParamsSchema = z.object({
 
 // -- Work item schemas --
 
-export const TrackWorkItemParamsSchema = z.object({
-  /** Issue or PR number to track. */
-  number: z.number().optional(),
-  /** Branch name to track (PR may not exist yet). */
-  branch: z.string().optional(),
-});
+export const TrackWorkItemParamsSchema = z
+  .object({
+    /** Issue or PR number to track. */
+    number: z.number().optional(),
+    /** Branch name to track (PR may not exist yet). */
+    branch: z.string().optional(),
+  })
+  .refine((p) => p.number != null || p.branch != null, {
+    message: "Either number or branch is required",
+  });
 
-export const UntrackWorkItemParamsSchema = z.object({
-  /** Issue or PR number to untrack. */
-  number: z.number(),
-});
+export const UntrackWorkItemParamsSchema = z
+  .object({
+    /** Issue or PR number to untrack. */
+    number: z.number().optional(),
+    /** Branch name to untrack. */
+    branch: z.string().optional(),
+  })
+  .refine((p) => p.number != null || p.branch != null, {
+    message: "Either number or branch is required",
+  });
 
 export const ListWorkItemsParamsSchema = z.object({
   /** Filter by phase. */

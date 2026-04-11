@@ -1037,39 +1037,47 @@ export class IpcServer {
 
     this.handlers.set("trackWorkItem", async (params, _ctx) => {
       const { number, branch } = TrackWorkItemParamsSchema.parse(params);
-      if (!number && !branch) {
-        throw Object.assign(new Error("Either number or branch is required"), {
-          code: IPC_ERROR.INVALID_PARAMS,
-        });
-      }
 
       // Check if already tracked
       if (number) {
-        const existing = this.workItemDb.getWorkItemByPr(number) ?? this.workItemDb.getWorkItemByIssue(number);
+        const existing = this.workItemDb.getWorkItemByIssue(number) ?? this.workItemDb.getWorkItem(`#${number}`);
+        if (existing) return existing;
+      } else if (branch) {
+        const existing = this.workItemDb.getWorkItemByBranch(branch);
         if (existing) return existing;
       }
 
-      // Create new work item
+      // Create new work item — only set issueNumber for number-based tracking.
+      // prNumber is set later when a PR is actually associated.
       const id = number ? `#${number}` : `branch:${branch}`;
       return this.workItemDb.createWorkItem({
         id,
         issueNumber: number ?? null,
-        prNumber: number ?? null,
+        prNumber: null,
         branch: branch ?? null,
       });
     });
 
     this.handlers.set("untrackWorkItem", async (params, _ctx) => {
-      const { number } = UntrackWorkItemParamsSchema.parse(params);
-      const existing = this.workItemDb.getWorkItemByPr(number) ?? this.workItemDb.getWorkItemByIssue(number);
+      const { number, branch } = UntrackWorkItemParamsSchema.parse(params);
+
+      if (branch) {
+        const existing = this.workItemDb.getWorkItemByBranch(branch) ?? this.workItemDb.getWorkItem(`branch:${branch}`);
+        if (existing) {
+          this.workItemDb.deleteWorkItem(existing.id);
+          return { ok: true as const, deleted: true };
+        }
+        return { ok: true as const, deleted: false };
+      }
+
+      // Number-based lookup (number is guaranteed non-null when branch is absent per schema refine)
+      const num = number as number;
+      const existing =
+        this.workItemDb.getWorkItemByPr(num) ??
+        this.workItemDb.getWorkItemByIssue(num) ??
+        this.workItemDb.getWorkItem(`#${num}`);
       if (existing) {
         this.workItemDb.deleteWorkItem(existing.id);
-        return { ok: true as const, deleted: true };
-      }
-      // Also try the id pattern
-      const byId = this.workItemDb.getWorkItem(`#${number}`);
-      if (byId) {
-        this.workItemDb.deleteWorkItem(byId.id);
         return { ok: true as const, deleted: true };
       }
       return { ok: true as const, deleted: false };
