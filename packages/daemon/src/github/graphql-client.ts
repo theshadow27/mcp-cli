@@ -306,14 +306,14 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
       __typename
       ... on PullRequest { number }
       ... on Issue {
-        timelineItems(itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT], first: 10) {
+        timelineItems(itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT], first: 50) {
           nodes {
             __typename
             ... on ConnectedEvent {
-              subject { __typename ... on PullRequest { number } }
+              subject { __typename ... on PullRequest { number state } }
             }
             ... on CrossReferencedEvent {
-              source { __typename ... on PullRequest { number } }
+              source { __typename ... on PullRequest { number state } }
             }
           }
         }
@@ -324,8 +324,8 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
 
 interface RawTimelineNode {
   __typename?: string;
-  subject?: { __typename?: string; number?: number };
-  source?: { __typename?: string; number?: number };
+  subject?: { __typename?: string; number?: number; state?: string };
+  source?: { __typename?: string; number?: number; state?: string };
 }
 
 interface RawIssueOrPR {
@@ -374,22 +374,39 @@ export async function resolveNumber(repo: RepoInfo, number: number, opts?: Fetch
     return { isPR: true, prNumber: node.number ?? number };
   }
 
-  // It's an issue — look for linked PRs in timeline
+  // It's an issue — collect all linked PRs from timeline, then pick the best one
   const timelineNodes = node.timelineItems?.nodes ?? [];
+  const linkedPRs: Array<{ number: number; state: string }> = [];
   for (const tNode of timelineNodes) {
     if (tNode.__typename === "ConnectedEvent" && tNode.subject?.__typename === "PullRequest" && tNode.subject.number) {
-      return { isPR: false, prNumber: tNode.subject.number };
+      linkedPRs.push({ number: tNode.subject.number, state: tNode.subject.state ?? "UNKNOWN" });
     }
     if (
       tNode.__typename === "CrossReferencedEvent" &&
       tNode.source?.__typename === "PullRequest" &&
       tNode.source.number
     ) {
-      return { isPR: false, prNumber: tNode.source.number };
+      linkedPRs.push({ number: tNode.source.number, state: tNode.source.state ?? "UNKNOWN" });
     }
   }
 
-  return { isPR: false, prNumber: null };
+  if (linkedPRs.length === 0) return { isPR: false, prNumber: null };
+
+  // Prefer open PRs over closed; among same-state, prefer highest number (most recent)
+  const best = pickBestLinkedPR(linkedPRs);
+  return { isPR: false, prNumber: best };
+}
+
+// ---------- PR selection ----------
+
+/**
+ * Pick the best linked PR: prefer OPEN over non-OPEN, then highest number (most recent).
+ * Exported for testing.
+ */
+export function pickBestLinkedPR(prs: ReadonlyArray<{ number: number; state: string }>): number {
+  const open = prs.filter((p) => p.state === "OPEN");
+  const candidates = open.length > 0 ? open : prs;
+  return candidates.reduce((best, p) => (p.number > best.number ? p : best)).number;
 }
 
 // ---------- Fetch (internal) ----------

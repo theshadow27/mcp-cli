@@ -258,6 +258,36 @@ export class IpcServer {
     }
   }
 
+  /**
+   * Fire-and-forget: resolve PR number via GitHub API and update the work item.
+   * Handles UNIQUE constraint collisions by merging with an existing item that
+   * already tracks the same PR number.
+   */
+  private resolveAndUpdateWorkItem(itemId: string, issueNumber: number): void {
+    if (!this.resolveIssuePr) return;
+    this.resolveIssuePr(issueNumber)
+      .then((resolved) => {
+        if (!resolved.prNumber) return;
+
+        // Check for UNIQUE constraint: another item may already track this PR
+        const existingByPr = this.workItemDb.getWorkItemByPr(resolved.prNumber);
+        if (existingByPr && existingByPr.id !== itemId) {
+          this.logger.info(
+            `[mcpd] PR #${resolved.prNumber} already tracked by ${existingByPr.id}, skipping update for ${itemId}`,
+          );
+          return;
+        }
+
+        this.workItemDb.updateWorkItem(itemId, { prNumber: resolved.prNumber });
+        this.logger.info(`[mcpd] Resolved #${issueNumber} → PR #${resolved.prNumber}`);
+      })
+      .catch((err) => {
+        this.logger.warn(
+          `[mcpd] Failed to resolve PR for #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   /** If draining and no requests in flight, trigger shutdown on next tick (lets Bun flush responses) */
   private checkDrain(): void {
     if (this.draining && this.inflightCount === 0 && !this.shutdownScheduled) {
@@ -1045,36 +1075,33 @@ export class IpcServer {
       // Check if already tracked
       if (number) {
         const existing = this.workItemDb.getWorkItemByIssue(number) ?? this.workItemDb.getWorkItem(`#${number}`);
-        if (existing) return existing;
+        if (existing) {
+          // 🔴 Backfill: if prNumber is null, kick off background re-resolution
+          if (existing.prNumber === null && this.resolveIssuePr) {
+            this.resolveAndUpdateWorkItem(existing.id, number);
+          }
+          return existing;
+        }
       } else if (branch) {
         const existing = this.workItemDb.getWorkItemByBranch(branch);
         if (existing) return existing;
       }
 
-      // For number-based tracking, resolve the PR number via GitHub API.
-      // If the number is a PR, use it directly. If it's an issue with a linked PR,
-      // use the linked PR number so the poller can track CI/review state.
-      let prNumber: number | null = null;
-      if (number && this.resolveIssuePr) {
-        try {
-          const resolved = await this.resolveIssuePr(number);
-          prNumber = resolved.prNumber;
-        } catch (err) {
-          // Best-effort: if GitHub is unreachable, create without prNumber.
-          // The poller won't track it until prNumber is set, but the item is still visible.
-          this.logger.warn(
-            `[mcpd] Failed to resolve PR for #${number}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-
+      // Create the item immediately (non-blocking) so the caller isn't waiting on GitHub
       const id = number ? `#${number}` : `branch:${branch}`;
-      return this.workItemDb.createWorkItem({
+      const item = this.workItemDb.createWorkItem({
         id,
         issueNumber: number ?? null,
-        prNumber,
+        prNumber: null,
         branch: branch ?? null,
       });
+
+      // Fire-and-forget: resolve PR number in the background
+      if (number && this.resolveIssuePr) {
+        this.resolveAndUpdateWorkItem(id, number);
+      }
+
+      return item;
     });
 
     this.handlers.set("untrackWorkItem", async (params, _ctx) => {
