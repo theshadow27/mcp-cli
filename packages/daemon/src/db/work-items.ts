@@ -8,28 +8,14 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-// ---------- Types (local until #1136 lands in core) ----------
-
-export type WorkItemPhase = "impl" | "review" | "repair" | "qa" | "done";
-export type PrState = "open" | "closed" | "merged" | "draft";
-export type CiStatus = "none" | "pending" | "running" | "passed" | "failed";
-export type ReviewStatus = "none" | "pending" | "approved" | "changes_requested";
-
-export interface WorkItem {
-  id: string;
-  issueNumber: number | null;
-  branch: string | null;
-  prNumber: number | null;
-  prState: PrState;
-  prUrl: string | null;
-  ciStatus: CiStatus;
-  ciRunId: number | null;
-  ciSummary: string | null;
-  reviewStatus: ReviewStatus;
-  phase: WorkItemPhase;
-  createdAt: string;
-  updatedAt: string;
-}
+export type {
+  WorkItemPhase,
+  PrState,
+  CiStatus,
+  ReviewStatus,
+  WorkItem,
+} from "@mcp-cli/core";
+import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 
 /** Snake-case row shape from SQLite. */
 interface WorkItemRow {
@@ -80,8 +66,8 @@ export class WorkItemDb {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS work_items (
         id              TEXT PRIMARY KEY,
-        issue_number    INTEGER,
-        branch          TEXT,
+        issue_number    INTEGER UNIQUE,
+        branch          TEXT UNIQUE,
         pr_number       INTEGER UNIQUE,
         pr_state        TEXT DEFAULT 'open',
         pr_url          TEXT,
@@ -92,7 +78,13 @@ export class WorkItemDb {
         phase           TEXT DEFAULT 'impl',
         created_at      TEXT DEFAULT (datetime('now')),
         updated_at      TEXT DEFAULT (datetime('now'))
-      )
+      );
+      -- For existing tables that lack these constraints, add indexes.
+      -- CREATE UNIQUE INDEX IF NOT EXISTS is a no-op if the index already exists.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_issue_number
+        ON work_items(issue_number) WHERE issue_number IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
+        ON work_items(branch) WHERE branch IS NOT NULL;
     `);
   }
 
@@ -173,8 +165,9 @@ export class WorkItemDb {
     return updated;
   }
 
-  deleteWorkItem(id: string): void {
+  deleteWorkItem(id: string): boolean {
     this.db.query("DELETE FROM work_items WHERE id = ?").run(id);
+    return (this.db.query<{ c: number }, []>("SELECT changes() as c").get()?.c ?? 0) > 0;
   }
 
   listWorkItems(filter?: { phase?: string }): WorkItem[] {
@@ -197,5 +190,51 @@ export class WorkItemDb {
       .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE issue_number = ?")
       .get(issueNumber);
     return row ? rowToWorkItem(row) : null;
+  }
+
+  getWorkItemByBranch(branch: string): WorkItem | null {
+    const row = this.db.query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ?").get(branch);
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  /**
+   * Atomically create or update a work item.
+   * Uses INSERT ... ON CONFLICT(id) DO UPDATE to avoid TOCTOU races.
+   */
+  upsertWorkItem(item: Partial<WorkItem> & { id: string }): WorkItem {
+    this.db
+      .query(
+        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, phase)
+         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $phase)
+         ON CONFLICT(id) DO UPDATE SET
+           issue_number  = COALESCE($issue_number, issue_number),
+           branch        = COALESCE($branch, branch),
+           pr_number     = COALESCE($pr_number, pr_number),
+           pr_state      = COALESCE($pr_state, pr_state),
+           pr_url        = COALESCE($pr_url, pr_url),
+           ci_status     = COALESCE($ci_status, ci_status),
+           ci_run_id     = COALESCE($ci_run_id, ci_run_id),
+           ci_summary    = COALESCE($ci_summary, ci_summary),
+           review_status = COALESCE($review_status, review_status),
+           phase         = COALESCE($phase, phase),
+           updated_at    = datetime('now')`,
+      )
+      .run({
+        $id: item.id,
+        $issue_number: item.issueNumber ?? null,
+        $branch: item.branch ?? null,
+        $pr_number: item.prNumber ?? null,
+        $pr_state: item.prState ?? null,
+        $pr_url: item.prUrl ?? null,
+        $ci_status: item.ciStatus ?? null,
+        $ci_run_id: item.ciRunId ?? null,
+        $ci_summary: item.ciSummary ?? null,
+        $review_status: item.reviewStatus ?? null,
+        $phase: item.phase ?? null,
+      });
+
+    const result = this.getWorkItem(item.id);
+    if (!result) throw new Error(`failed to read back work item: ${item.id}`);
+    return result;
   }
 }
