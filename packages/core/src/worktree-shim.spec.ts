@@ -185,11 +185,11 @@ describe("createWorktree", () => {
       exec: mock((cmd: string[]) => {
         execCalls.push(cmd);
         // Simulate git reporting core.bare=true (the bug we're guarding against)
-        if (cmd.includes("config") && cmd.includes("core.bare") && cmd.length === 5) {
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
           return { stdout: "true", stderr: "", exitCode: 0 };
         }
-        // git config core.bare false — the fix
-        if (cmd.includes("config") && cmd.includes("core.bare") && cmd.includes("false")) {
+        // git config --unset core.bare — the fix
+        if (cmd.includes("--unset") && cmd.includes("core.bare")) {
           return { stdout: "", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "", exitCode: 0 };
@@ -201,15 +201,13 @@ describe("createWorktree", () => {
 
     // Verify core.bare was checked after worktree add
     const coreBareReadIdx = execCalls.findIndex(
-      (c) => c.includes("config") && c.includes("core.bare") && c.length === 5,
+      (c) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset"),
     );
     const worktreeAddIdx = execCalls.findIndex((c) => c.includes("worktree") && c.includes("add"));
     expect(coreBareReadIdx).toBeGreaterThan(worktreeAddIdx);
 
-    // Verify it was fixed (core.bare set to false)
-    const coreBareFixIdx = execCalls.findIndex(
-      (c) => c.includes("config") && c.includes("core.bare") && c.includes("false"),
-    );
+    // Verify it was fixed (core.bare unset)
+    const coreBareFixIdx = execCalls.findIndex((c) => c.includes("--unset") && c.includes("core.bare"));
     expect(coreBareFixIdx).toBeGreaterThan(coreBareReadIdx);
 
     // Should log the fix

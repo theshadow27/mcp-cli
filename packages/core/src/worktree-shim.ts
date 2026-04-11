@@ -362,6 +362,15 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
     }
   }
 
+  // Final guard: check core.bare one last time after all removals complete.
+  // Individual per-removal fixes can be undone by subsequent removals in the
+  // same batch. This ensures the repo is in a valid state when we return. #1206
+  if (pruned > 0) {
+    if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printError("Fixed core.bare=true after batch worktree prune");
+    }
+  }
+
   return { pruned, skippedUnmerged };
 }
 

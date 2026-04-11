@@ -17,17 +17,17 @@ function makeFakeBareRepo(): string {
 }
 
 describe("fixCoreBare", () => {
-  test("resets core.bare when it is true", () => {
+  test("unsets core.bare when it is true", () => {
     const cwd = makeFakeWorktree();
     try {
       const calls: string[][] = [];
       const exec: ExecFn = mock((cmd: string[]) => {
         calls.push(cmd);
-        if (cmd.length === 5) {
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
           // git config core.bare (read)
           return { stdout: "true\n", exitCode: 0 };
         }
-        // git config core.bare false (write)
+        // git config --unset core.bare
         return { stdout: "", exitCode: 0 };
       });
 
@@ -36,23 +36,23 @@ describe("fixCoreBare", () => {
       expect(result).toBe(true);
       expect(calls).toHaveLength(2);
       expect(calls[0]).toEqual(["git", "-C", cwd, "config", "core.bare"]);
-      expect(calls[1]).toEqual(["git", "-C", cwd, "config", "core.bare", "false"]);
+      expect(calls[1]).toEqual(["git", "-C", cwd, "config", "--unset", "core.bare"]);
     } finally {
       rmSync(cwd, { recursive: true });
     }
   });
 
-  test("returns false when write fails", () => {
+  test("returns false when unset fails", () => {
     const cwd = makeFakeWorktree();
     try {
       const calls: string[][] = [];
       const exec: ExecFn = mock((cmd: string[]) => {
         calls.push(cmd);
-        if (cmd.length === 5) {
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
           // read — core.bare is true
           return { stdout: "true\n", exitCode: 0 };
         }
-        // write fails
+        // unset fails
         return { stdout: "", exitCode: 1 };
       });
 
