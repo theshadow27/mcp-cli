@@ -794,6 +794,54 @@ describe("pruneOrphanedWorktrees", () => {
     // Should not throw — catches internally
     pruneOrphanedWorktrees(db, silentLogger, mockGitOps());
   });
+
+  test("batch guard: calls fixCoreBare after all removals when core.bare=true (#1206)", () => {
+    // fixCoreBare guards against non-existent repos via existsSync(.git), so we
+    // need a real temp dir with a .git marker for the repoRoot.
+    opts = testOptions();
+    const repoDir = join(opts.dir, "repo-batch-guard");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      // Two sessions in the same repo — simulates a batch wind-down
+      for (const id of ["ended-1", "ended-2"]) {
+        db.upsertSession({ sessionId: id, pid: 99999, model: "sonnet", cwd: repoDir, worktree: `wt-${id}` });
+        db.endSession(id);
+      }
+
+      const execCalls: string[][] = [];
+      const warnMessages: string[] = [];
+      const logger = { ...silentLogger, warn: (msg: string) => warnMessages.push(msg) };
+
+      pruneOrphanedWorktrees(
+        db,
+        logger,
+        mockGitOps({
+          pathExists: () => true,
+          status: () => ({ exitCode: 0, stdout: "" }),
+          removeWorktree: () => ({ exitCode: 0 }),
+          exec: (cmd: string[]) => {
+            execCalls.push(cmd);
+            // Simulate core.bare=true on every read (per-removal and batch guard)
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      // The batch guard should have called --unset at least once (once per affected repo)
+      const unsetCalls = execCalls.filter((c) => c.includes("--unset") && c.includes("core.bare"));
+      expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
+      // And logged a warning
+      expect(warnMessages.some((m) => m.includes("core.bare"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

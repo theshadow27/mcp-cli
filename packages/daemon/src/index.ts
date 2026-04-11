@@ -159,6 +159,7 @@ export function pruneOrphanedWorktrees(
       .listSessions(false)
       .filter((s) => s.endedAt && Date.now() - new Date(s.endedAt).getTime() < RETENTION_MS);
     let pruned = 0;
+    const affectedRepoRoots = new Set<string>();
 
     for (const session of endedSessions) {
       if (!session.worktree || !session.cwd) continue;
@@ -183,6 +184,7 @@ export function pruneOrphanedWorktrees(
         if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
           logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
         }
+        affectedRepoRoots.add(repoRoot);
         pruned++;
         logger.info(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
         // Delete merged branch
@@ -196,6 +198,13 @@ export function pruneOrphanedWorktrees(
     }
 
     if (pruned > 0) {
+      // Final guard: check core.bare after all removals complete. Individual
+      // per-removal fixes can be undone by subsequent removals. #1206
+      for (const root of affectedRepoRoots) {
+        if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
+          logger.warn("[mcpd] Fixed core.bare=true after batch worktree prune");
+        }
+      }
       logger.info(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
     }
   } catch (err) {

@@ -28,8 +28,12 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
 
   const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "core.bare"]);
   if (exitCode === 0 && stdout.trim() === "true") {
-    const write = exec(["git", "-C", cwd, "config", "core.bare", "false"]);
-    return write.exitCode === 0;
+    // Unset the key entirely rather than setting to "false". Without the key,
+    // git auto-detects bare status from the directory structure (.git dir = non-bare).
+    // This prevents the recurrence where concurrent worktree operations flip an
+    // existing "false" value back to "true". See #1206.
+    const unset = exec(["git", "-C", cwd, "config", "--unset", "core.bare"]);
+    return unset.exitCode === 0;
   }
   return false;
 }
