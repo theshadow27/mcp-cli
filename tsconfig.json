@@ -30,7 +30,9 @@
       "@mcp-cli/command": ["./packages/command/src/main.ts"],
       "@mcp-cli/command/*": ["./packages/command/src/*"],
       "@mcp-cli/control": ["./packages/control/src/main.tsx"],
-      "@mcp-cli/control/*": ["./packages/control/src/*"]
+      "@mcp-cli/control/*": ["./packages/control/src/*"],
+      "@mcp-cli/clone": ["./packages/clone/src/index.ts"],
+      "@mcp-cli/clone/*": ["./packages/clone/src/*"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "test/**/*.ts"],

@@ -21,6 +21,7 @@ import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
 import { cmdClaude } from "./commands/claude";
+import { cmdClone } from "./commands/clone";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
@@ -323,6 +324,10 @@ async function main(): Promise<void> {
       case "opencode":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
+        break;
+
+      case "clone":
+        await cmdClone(cleanArgs.slice(1));
         break;
 
       case "scope":
