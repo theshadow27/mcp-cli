@@ -289,6 +289,42 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
         url: baseUrl ? `${baseUrl}/pages/${entry.id}` : undefined,
       };
     },
+
+    async push(scope: ResolvedScope, id: string, content: string, baseVersion: number) {
+      // First, check if the remote version has advanced (conflict detection)
+      const currentPage = (await callAtlassian("getConfluencePage", {
+        cloudId: scope.cloudId,
+        pageId: id,
+      })) as ConfluencePage;
+
+      if (currentPage.version.number > baseVersion) {
+        return {
+          ok: false,
+          error: `Version conflict: local base is v${baseVersion}, remote is v${currentPage.version.number}. Pull first.`,
+        };
+      }
+
+      // Push the update
+      try {
+        const resp = (await callAtlassian("updateConfluencePage", {
+          cloudId: scope.cloudId,
+          pageId: id,
+          body: content,
+          contentFormat: "markdown",
+          versionMessage: "Updated via mcx clone",
+        })) as ConfluencePage;
+
+        return {
+          ok: true,
+          newVersion: resp?.version?.number ?? baseVersion + 1,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
   };
 
   return provider;

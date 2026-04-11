@@ -32,6 +32,8 @@ import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdNote } from "./commands/note";
+import { cmdPull } from "./commands/pull";
+import { cmdPush } from "./commands/push";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -328,6 +330,14 @@ async function main(): Promise<void> {
 
       case "clone":
         await cmdClone(cleanArgs.slice(1));
+        break;
+
+      case "pull":
+        await cmdPull(cleanArgs.slice(1));
+        break;
+
+      case "push":
+        await cmdPush(cleanArgs.slice(1), { dryRun: _dryRun });
         break;
 
       case "scope":

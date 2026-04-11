@@ -151,6 +151,15 @@ export class CloneCache {
     return { key: row.key, cloudId: row.cloudId, resolved: JSON.parse(row.resolved) };
   }
 
+  /** Find the first scope for a provider (when we don't know the key). */
+  findFirstScope(provider: string): ResolvedScope | null {
+    const row = this.db
+      .query("SELECT scope_key as key, cloud_id as cloudId, resolved FROM scope_meta WHERE provider = ? LIMIT 1")
+      .get(provider) as { key: string; cloudId: string; resolved: string } | null;
+    if (!row) return null;
+    return { key: row.key, cloudId: row.cloudId, resolved: JSON.parse(row.resolved) };
+  }
+
   /** Remove an entry. */
   remove(provider: string, cloudId: string, id: string): void {
     this.db.query("DELETE FROM entries WHERE provider = ? AND cloud_id = ? AND id = ?").run(provider, cloudId, id);
