@@ -112,6 +112,24 @@ const devtoolsStubPlugin: BunPlugin = {
 
 await $`mkdir -p dist`;
 
+// Bun 1.3.12 produces truncated code signatures on macOS (oven-sh/bun#29120).
+// Workaround: disable Bun's built-in signing, ad-hoc sign after compile.
+process.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
+
+/** Ad-hoc sign macOS binaries after compile. No-op on non-darwin. */
+async function codesignIfDarwin(...paths: string[]): Promise<void> {
+  const isDarwin = (target?: string) => !target || target.includes("darwin");
+  const darwinPaths = paths.filter((p) => {
+    // In release mode, only sign darwin binaries
+    const parts = p.split("-");
+    return parts.length <= 2 || parts.some((s) => s.startsWith("darwin"));
+  });
+  if (darwinPaths.length === 0) return;
+  for (const p of darwinPaths) {
+    await $`codesign --force --sign - ${p}`.quiet().nothrow();
+  }
+}
+
 // mcpd worker entrypoints — must be listed explicitly for bun build --compile
 const daemonWorkers = [
   "packages/daemon/src/alias-executor.ts",
@@ -202,6 +220,9 @@ if (releaseMode) {
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
+    if (target.includes("darwin")) {
+      await codesignIfDarwin(`dist/mcpd-${suffix}`, `dist/mcx-${suffix}`, `dist/mcpctl-${suffix}`);
+    }
   }
 
   // Clean up intermediate bundles after all compiles finish
@@ -218,6 +239,10 @@ if (releaseMode) {
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
+  // Ad-hoc sign on macOS (oven-sh/bun#29120 workaround)
+  if (process.platform === "darwin") {
+    await codesignIfDarwin("dist/mcpd", "dist/mcx", "dist/mcpctl");
+  }
   // Clean up intermediate bundles after all compiles finish
   for (const p of bundleCleanup) {
     try {
