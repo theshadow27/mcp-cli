@@ -126,6 +126,14 @@ export interface RemoteProvider {
   delete?(scope: ResolvedScope, id: string): Promise<void>;
 }
 
+/** Function signature for calling MCP tools via the daemon. */
+export type McpToolCaller = (
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+  timeoutMs?: number,
+) => Promise<unknown>;
+
 /** Fully resolved scope with all provider-specific IDs. */
 export interface ResolvedScope extends Scope {
   /** Resolved cloud/instance ID. */

@@ -10,10 +10,15 @@
  *         _index.md
  *         child-task.md
  */
-import type { ChangeEvent, FetchResult, RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "./provider";
-
-// Re-use shared types from confluence provider
-import type { McpToolCaller } from "./confluence";
+import type {
+  ChangeEvent,
+  FetchResult,
+  McpToolCaller,
+  RemoteEntry,
+  RemoteProvider,
+  ResolvedScope,
+  Scope,
+} from "./provider";
 
 /** MCP tool call result shape. */
 interface McpToolResult {
@@ -21,9 +26,13 @@ interface McpToolResult {
   isError?: boolean;
 }
 
-/** Extract and parse JSON from an MCP tool call result. */
+/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
 function unwrapToolResult(result: unknown): unknown {
   const mcpResult = result as McpToolResult;
+  if (mcpResult?.isError) {
+    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
+    throw new Error(`MCP tool error: ${text}`);
+  }
   if (mcpResult?.content?.[0]?.type === "text") {
     const text = mcpResult.content[0].text;
     try {
@@ -89,14 +98,18 @@ function validateScopeKey(key: string): void {
   }
 }
 
+/** Deterministic sentinel for tasks with no timestamp — avoids re-syncing on every poll. */
+const EPOCH_SENTINEL = "1970-01-01T00:00:00.000Z";
+
 /** Convert an Asana task to a RemoteEntry. */
 function toRemoteEntry(task: AsanaTask, sectionName?: string): RemoteEntry {
+  const lastModified = task.modified_at ?? task.created_at ?? EPOCH_SENTINEL;
   return {
     id: task.gid,
     title: task.name,
     parentId: task.parent?.gid,
-    version: 1, // Asana has no version numbers; we use modified_at for conflict detection
-    lastModified: task.modified_at ?? task.created_at ?? new Date().toISOString(),
+    version: new Date(lastModified).getTime(), // Use modified_at timestamp as version for conflict detection
+    lastModified,
     content: task.notes ?? "",
     metadata: {
       completed: task.completed,
@@ -173,24 +186,16 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
 
       const tasks = Array.isArray(tasksResp) ? tasksResp : ((tasksResp as { data: AsanaTask[] }).data ?? []);
 
-      // Also fetch subtasks for any task that has them
-      const subtaskQueue: Array<{ parentTask: AsanaTask; sectionName?: string }> = [];
+      const MAX_SUBTASK_DEPTH = 5;
 
-      for (const task of tasks) {
-        const sectionName = task.memberships?.[0]?.section?.gid
-          ? (sectionMap.get(task.memberships[0].section.gid) ?? task.memberships[0].section.name)
-          : undefined;
-        yield toRemoteEntry(task, sectionName);
-
-        if ((task.num_subtasks ?? 0) > 0) {
-          subtaskQueue.push({ parentTask: task, sectionName });
-        }
-      }
-
-      // Fetch subtasks
-      for (const { parentTask, sectionName } of subtaskQueue) {
+      // Recursively fetch subtasks up to MAX_SUBTASK_DEPTH levels
+      async function* fetchSubtasks(
+        parentGid: string,
+        sectionName: string | undefined,
+        depth: number,
+      ): AsyncGenerator<RemoteEntry> {
         const subtasksResp = (await callAsana("getSubtasksForTask", {
-          task_gid: parentTask.gid,
+          task_gid: parentGid,
           opt_fields:
             "gid,name,notes,completed,due_on,due_at,assignee,assignee.email,assignee.name,tags,tags.name,parent,parent.gid,permalink_url,modified_at,created_at,num_subtasks",
         })) as { data: AsanaTask[] } | AsanaTask[];
@@ -200,8 +205,28 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
           : ((subtasksResp as { data: AsanaTask[] }).data ?? []);
 
         for (const subtask of subtasks) {
-          // Subtasks inherit section from parent
           yield toRemoteEntry(subtask, sectionName);
+
+          if ((subtask.num_subtasks ?? 0) > 0) {
+            if (depth + 1 >= MAX_SUBTASK_DEPTH) {
+              console.error(
+                `[asana] Warning: subtask "${subtask.name}" (${subtask.gid}) has children beyond max depth ${MAX_SUBTASK_DEPTH}. Deeper levels are not fetched.`,
+              );
+            } else {
+              yield* fetchSubtasks(subtask.gid, sectionName, depth + 1);
+            }
+          }
+        }
+      }
+
+      for (const task of tasks) {
+        const sectionName = task.memberships?.[0]?.section?.gid
+          ? (sectionMap.get(task.memberships[0].section.gid) ?? task.memberships[0].section.name)
+          : undefined;
+        yield toRemoteEntry(task, sectionName);
+
+        if ((task.num_subtasks ?? 0) > 0) {
+          yield* fetchSubtasks(task.gid, sectionName, 0);
         }
       }
     },
@@ -224,6 +249,20 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
     async *changes(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent> {
       const projectGid = scope.resolved.projectGid as string;
 
+      // Fetch sections for section name resolution
+      const sectionsResp = (await callAsana("getSectionsForProject", {
+        project_gid: projectGid,
+      })) as { data: AsanaSection[] } | AsanaSection[];
+
+      const sections = Array.isArray(sectionsResp)
+        ? sectionsResp
+        : ((sectionsResp as { data: AsanaSection[] }).data ?? []);
+
+      const sectionMap = new Map<string, string>();
+      for (const s of sections) {
+        sectionMap.set(s.gid, s.name);
+      }
+
       const tasksResp = (await callAsana("getTasksForProject", {
         project_gid: projectGid,
         modified_since: since,
@@ -233,57 +272,111 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
 
       const tasks = Array.isArray(tasksResp) ? tasksResp : ((tasksResp as { data: AsanaTask[] }).data ?? []);
 
+      const sinceDate = new Date(since);
+
       for (const task of tasks) {
+        const sectionName = task.memberships?.[0]?.section?.gid
+          ? (sectionMap.get(task.memberships[0].section.gid) ?? task.memberships[0].section.name)
+          : undefined;
+
+        // Determine if created or updated by comparing created_at to since
+        const createdAt = task.created_at ? new Date(task.created_at) : null;
+        const type: ChangeEvent["type"] = createdAt && createdAt > sinceDate ? "created" : "updated";
+
         yield {
-          entry: { ...toRemoteEntry(task), content: task.notes ?? "" },
-          type: "updated",
+          entry: { ...toRemoteEntry(task, sectionName), content: task.notes ?? "" },
+          type,
         };
+
+        // Also check subtasks for modifications
+        if ((task.num_subtasks ?? 0) > 0) {
+          const subtasksResp = (await callAsana("getSubtasksForTask", {
+            task_gid: task.gid,
+            opt_fields:
+              "gid,name,notes,completed,due_on,due_at,assignee,assignee.email,assignee.name,tags,tags.name,parent,parent.gid,permalink_url,modified_at,created_at,num_subtasks",
+          })) as { data: AsanaTask[] } | AsanaTask[];
+
+          const subtasks = Array.isArray(subtasksResp)
+            ? subtasksResp
+            : ((subtasksResp as { data: AsanaTask[] }).data ?? []);
+
+          for (const subtask of subtasks) {
+            const subModified = subtask.modified_at ? new Date(subtask.modified_at) : null;
+            if (subModified && subModified > sinceDate) {
+              const subCreatedAt = subtask.created_at ? new Date(subtask.created_at) : null;
+              const subType: ChangeEvent["type"] = subCreatedAt && subCreatedAt > sinceDate ? "created" : "updated";
+
+              yield {
+                entry: { ...toRemoteEntry(subtask, sectionName), content: subtask.notes ?? "" },
+                type: subType,
+              };
+            }
+          }
+        }
       }
     },
 
-    toPath(entry: RemoteEntry, entries: RemoteEntry[]): string {
-      const sectionName = entry.metadata.section as string | null;
-      const hasChildren = entries.some((e) => e.parentId === entry.id);
+    toPath: (() => {
+      // Cache indexes across calls for the same entries array to avoid O(n^2)
+      let cachedEntries: RemoteEntry[] | null = null;
+      let entryById: Map<string, RemoteEntry>;
+      let childSet: Set<string>;
+      let sanitizedNames: Map<string, string>;
 
-      const segments: string[] = [];
-
-      // Section as top-level directory
-      if (sectionName) {
-        segments.push(sanitizeFilename(sectionName));
-      }
-
-      // If this is a subtask, walk up parent chain (only one level — Asana subtasks are direct children)
-      if (entry.parentId) {
-        const entryById = new Map(entries.map((e) => [e.id, e]));
-        const parent = entryById.get(entry.parentId);
-        if (parent) {
-          segments.push(sanitizeFilename(parent.title));
+      function buildIndex(entries: RemoteEntry[]) {
+        if (cachedEntries === entries) return;
+        cachedEntries = entries;
+        entryById = new Map(entries.map((e) => [e.id, e]));
+        childSet = new Set<string>();
+        sanitizedNames = new Map<string, string>();
+        for (const e of entries) {
+          if (e.parentId) childSet.add(e.parentId);
+          sanitizedNames.set(e.id, sanitizeFilename(e.title));
         }
       }
 
-      let name = sanitizeFilename(entry.title);
+      return function toPath(entry: RemoteEntry, entries: RemoteEntry[]): string {
+        buildIndex(entries);
 
-      // Disambiguate siblings with the same sanitized name
-      const siblings = entries.filter(
-        (e) =>
-          e.id !== entry.id &&
-          e.parentId === entry.parentId &&
-          (e.metadata.section as string | null) === sectionName &&
-          sanitizeFilename(e.title) === name,
-      );
-      if (siblings.length > 0) {
-        name = `${name}-${entry.id}`;
-      }
+        const sectionName = entry.metadata.section as string | null;
+        const hasChildren = childSet.has(entry.id);
+        const segments: string[] = [];
 
-      if (hasChildren) {
-        segments.push(name);
-        segments.push("_index.md");
-      } else {
-        segments.push(`${name}.md`);
-      }
+        if (sectionName) {
+          segments.push(sanitizeFilename(sectionName));
+        }
 
-      return segments.join("/");
-    },
+        if (entry.parentId) {
+          const parent = entryById.get(entry.parentId);
+          if (parent) {
+            segments.push(sanitizedNames.get(parent.id) ?? sanitizeFilename(parent.title));
+          }
+        }
+
+        let name = sanitizedNames.get(entry.id) ?? sanitizeFilename(entry.title);
+
+        // Disambiguate siblings with the same sanitized name
+        const hasDuplicate = entries.some(
+          (e) =>
+            e.id !== entry.id &&
+            e.parentId === entry.parentId &&
+            (e.metadata.section as string | null) === sectionName &&
+            (sanitizedNames.get(e.id) ?? sanitizeFilename(e.title)) === name,
+        );
+        if (hasDuplicate) {
+          name = `${name}-${entry.id}`;
+        }
+
+        if (hasChildren) {
+          segments.push(name);
+          segments.push("_index.md");
+        } else {
+          segments.push(`${name}.md`);
+        }
+
+        return segments.join("/");
+      };
+    })(),
 
     frontmatter(entry: RemoteEntry, scope: ResolvedScope): Record<string, unknown> {
       const meta = entry.metadata;
@@ -307,10 +400,11 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
         })) as AsanaTask | { data: AsanaTask };
 
         const t = "data" in (resp as { data: AsanaTask }) ? (resp as { data: AsanaTask }).data : (resp as AsanaTask);
+        const modifiedAt = t.modified_at ?? t.created_at ?? EPOCH_SENTINEL;
 
         return {
           ok: true,
-          newVersion: 1, // Asana doesn't version task content
+          newVersion: new Date(modifiedAt).getTime(),
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -323,10 +417,13 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
       const args: Record<string, unknown> = {
         name: title,
         notes: content,
-        projects: [projectGid],
       };
       if (parentId) {
+        // Subtasks inherit project membership from their parent — setting both
+        // causes the task to appear as both a top-level project member AND a subtask.
         args.parent = parentId;
+      } else {
+        args.projects = [projectGid];
       }
 
       const resp = (await callAsana("createTask", args)) as AsanaTask | { data: AsanaTask };

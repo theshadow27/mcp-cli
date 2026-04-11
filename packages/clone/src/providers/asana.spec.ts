@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createAsanaProvider } from "./asana";
-import type { RemoteEntry, ResolvedScope } from "./provider";
+import type { ChangeEvent, RemoteEntry, ResolvedScope } from "./provider";
 
 function makeScope(key = "1234567890"): ResolvedScope {
   return {
@@ -19,7 +19,7 @@ function makeEntry(overrides: Partial<RemoteEntry> = {}): RemoteEntry {
   return {
     id: "task-1",
     title: "My Task",
-    version: 1,
+    version: new Date("2026-01-01T00:00:00Z").getTime(),
     lastModified: "2026-01-01T00:00:00Z",
     metadata: {
       completed: false,
@@ -35,10 +35,19 @@ function makeEntry(overrides: Partial<RemoteEntry> = {}): RemoteEntry {
   };
 }
 
-function makeCallTool(
-  responses: Record<string, unknown> = {},
-): (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown> {
-  return async (_server, tool, _args) => responses[tool] ?? null;
+/** Tracks calls with arguments for assertion. */
+function makeCallTool(responses: Record<string, unknown> = {}): {
+  callTool: (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown>;
+  calls: Array<{ server: string; tool: string; args: Record<string, unknown> }>;
+} {
+  const calls: Array<{ server: string; tool: string; args: Record<string, unknown> }> = [];
+  return {
+    callTool: async (server, tool, args) => {
+      calls.push({ server, tool, args });
+      return responses[tool] ?? null;
+    },
+    calls,
+  };
 }
 
 function makeTask(
@@ -54,6 +63,8 @@ function makeTask(
     assignee: { gid: string; email: string; name: string } | null;
     due_on: string | null;
     permalink_url: string;
+    modified_at: string;
+    created_at: string;
   }> = {},
 ) {
   return {
@@ -67,8 +78,8 @@ function makeTask(
     tags: overrides.tags ?? [],
     parent: overrides.parent ?? null,
     permalink_url: overrides.permalink_url ?? `https://app.asana.com/0/proj/${gid}`,
-    modified_at: "2026-01-01T00:00:00Z",
-    created_at: "2026-01-01T00:00:00Z",
+    modified_at: overrides.modified_at ?? "2026-01-01T00:00:00Z",
+    created_at: overrides.created_at ?? "2026-01-01T00:00:00Z",
     num_subtasks: overrides.num_subtasks ?? 0,
   };
 }
@@ -77,14 +88,20 @@ function wrapMcpResult(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
+function wrapMcpError(message: string) {
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
 describe("validateScopeKey (via resolveScope)", () => {
   test("rejects keys with special characters", async () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     await expect(provider.resolveScope({ key: "foo bar" })).rejects.toThrow("Invalid scope key");
   });
 
   test("rejects keys with quotes", async () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     await expect(provider.resolveScope({ key: '"injection' })).rejects.toThrow("Invalid scope key");
   });
 
@@ -156,16 +173,54 @@ describe("resolveScope", () => {
   });
 });
 
+describe("unwrapToolResult — isError handling", () => {
+  test("throws on MCP error response", async () => {
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getProject") {
+          return wrapMcpError("Rate limit exceeded");
+        }
+        return null;
+      },
+    });
+
+    await expect(provider.resolveScope({ key: "proj-1" })).rejects.toThrow("MCP tool error: Rate limit exceeded");
+  });
+
+  test("throws on isError during list", async () => {
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpError("403 Forbidden");
+        }
+        return null;
+      },
+    });
+
+    const entries: RemoteEntry[] = [];
+    await expect(async () => {
+      for await (const entry of provider.list(makeScope())) {
+        entries.push(entry);
+      }
+    }).toThrow("MCP tool error");
+  });
+});
+
 describe("toPath", () => {
   test("task with no section or parent returns <title>.md", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const entry = makeEntry({ id: "t1", title: "My Task", metadata: { ...makeEntry().metadata, section: null } });
     const result = provider.toPath(entry, [entry]);
     expect(result).toBe("My Task.md");
   });
 
   test("task in a section returns Section/<title>.md", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const entry = makeEntry({
       id: "t1",
       title: "My Task",
@@ -176,7 +231,8 @@ describe("toPath", () => {
   });
 
   test("task with children returns <title>/_index.md", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const parent = makeEntry({ id: "t1", title: "Parent Task", metadata: { ...makeEntry().metadata, section: null } });
     const child = makeEntry({
       id: "t2",
@@ -189,7 +245,8 @@ describe("toPath", () => {
   });
 
   test("subtask builds path under parent directory", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const parent = makeEntry({ id: "t1", title: "Parent", metadata: { ...makeEntry().metadata, section: "Done" } });
     const child = makeEntry({
       id: "t2",
@@ -202,7 +259,8 @@ describe("toPath", () => {
   });
 
   test("disambiguates siblings with same title", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const t1 = makeEntry({ id: "t1", title: "Duplicate", metadata: { ...makeEntry().metadata, section: null } });
     const t2 = makeEntry({ id: "t2", title: "Duplicate", metadata: { ...makeEntry().metadata, section: null } });
     const r1 = provider.toPath(t1, [t1, t2]);
@@ -212,7 +270,8 @@ describe("toPath", () => {
   });
 
   test("sanitizes unsafe characters in title", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const entry = makeEntry({
       id: "t1",
       title: 'Task: "Fix" <bugs>',
@@ -228,7 +287,8 @@ describe("toPath", () => {
 
 describe("frontmatter", () => {
   test("returns expected fields", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const scope = makeScope();
     const entry = makeEntry({
       id: "t1",
@@ -256,7 +316,8 @@ describe("frontmatter", () => {
   });
 
   test("omits undefined optional fields", () => {
-    const provider = createAsanaProvider({ callTool: makeCallTool() });
+    const { callTool } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
     const scope = makeScope();
     const entry = makeEntry({
       id: "t1",
@@ -344,6 +405,45 @@ describe("list", () => {
     expect(entries[2].parentId).toBe("t1");
   });
 
+  test("recursively fetches nested subtasks", async () => {
+    const scope = makeScope();
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpResult({
+            data: [makeTask("t1", "Root", { num_subtasks: 1 })],
+          });
+        }
+        if (tool === "getSubtasksForTask") {
+          const gid = (args as Record<string, unknown>).task_gid;
+          if (gid === "t1") {
+            return wrapMcpResult({
+              data: [makeTask("sub1", "Child", { parent: { gid: "t1", name: "Root" }, num_subtasks: 1 })],
+            });
+          }
+          if (gid === "sub1") {
+            return wrapMcpResult({
+              data: [makeTask("sub2", "Grandchild", { parent: { gid: "sub1", name: "Child" } })],
+            });
+          }
+          return wrapMcpResult({ data: [] });
+        }
+        return null;
+      },
+    });
+
+    const entries: RemoteEntry[] = [];
+    for await (const entry of provider.list(scope)) {
+      entries.push(entry);
+    }
+    expect(entries).toHaveLength(3); // Root + Child + Grandchild
+    expect(entries[2].title).toBe("Grandchild");
+    expect(entries[2].parentId).toBe("sub1");
+  });
+
   test("handles array response format (no data wrapper)", async () => {
     const scope = makeScope();
     const provider = createAsanaProvider({
@@ -406,6 +506,9 @@ describe("changes", () => {
     const scope = makeScope();
     const provider = createAsanaProvider({
       callTool: async (_server, tool, args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
         if (tool === "getTasksForProject") {
           expect((args as Record<string, unknown>).modified_since).toBe("2026-01-01T00:00:00Z");
           return wrapMcpResult({
@@ -417,29 +520,126 @@ describe("changes", () => {
     });
 
     const changesMethod = provider.changes as NonNullable<typeof provider.changes>;
-    const changes: unknown[] = [];
+    const changes: ChangeEvent[] = [];
     for await (const change of changesMethod(scope, "2026-01-01T00:00:00Z")) {
       changes.push(change);
     }
     expect(changes).toHaveLength(1);
   });
-});
 
-describe("push", () => {
-  test("returns ok: true on success", async () => {
+  test("classifies new tasks as created", async () => {
     const scope = makeScope();
     const provider = createAsanaProvider({
       callTool: async (_server, tool, _args) => {
-        if (tool === "updateTask") {
-          return wrapMcpResult(makeTask("t1", "Task", { notes: "updated" }));
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpResult({
+            data: [
+              // created_at is after the since timestamp
+              makeTask("t1", "New Task", { created_at: "2026-03-01T00:00:00Z", modified_at: "2026-03-01T00:00:00Z" }),
+            ],
+          });
         }
         return null;
       },
     });
 
+    const changesMethod = provider.changes as NonNullable<typeof provider.changes>;
+    const changes: ChangeEvent[] = [];
+    for await (const change of changesMethod(scope, "2026-01-01T00:00:00Z")) {
+      changes.push(change);
+    }
+    expect(changes).toHaveLength(1);
+    expect(changes[0].type).toBe("created");
+  });
+
+  test("classifies old tasks as updated", async () => {
+    const scope = makeScope();
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpResult({
+            data: [
+              // created_at is before the since timestamp
+              makeTask("t1", "Old Task", { created_at: "2025-06-01T00:00:00Z", modified_at: "2026-03-01T00:00:00Z" }),
+            ],
+          });
+        }
+        return null;
+      },
+    });
+
+    const changesMethod = provider.changes as NonNullable<typeof provider.changes>;
+    const changes: ChangeEvent[] = [];
+    for await (const change of changesMethod(scope, "2026-01-01T00:00:00Z")) {
+      changes.push(change);
+    }
+    expect(changes).toHaveLength(1);
+    expect(changes[0].type).toBe("updated");
+  });
+
+  test("includes modified subtasks", async () => {
+    const scope = makeScope();
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpResult({
+            data: [makeTask("t1", "Parent", { num_subtasks: 1, modified_at: "2026-03-01T00:00:00Z" })],
+          });
+        }
+        if (tool === "getSubtasksForTask") {
+          return wrapMcpResult({
+            data: [
+              makeTask("sub1", "Modified Sub", {
+                parent: { gid: "t1", name: "Parent" },
+                modified_at: "2026-03-01T00:00:00Z",
+                created_at: "2025-06-01T00:00:00Z",
+              }),
+            ],
+          });
+        }
+        return null;
+      },
+    });
+
+    const changesMethod = provider.changes as NonNullable<typeof provider.changes>;
+    const changes: ChangeEvent[] = [];
+    for await (const change of changesMethod(scope, "2026-01-01T00:00:00Z")) {
+      changes.push(change);
+    }
+    expect(changes).toHaveLength(2); // parent + subtask
+    expect(changes[1].entry.id).toBe("sub1");
+    expect(changes[1].type).toBe("updated");
+  });
+});
+
+describe("push", () => {
+  test("returns ok: true and passes correct args", async () => {
+    const scope = makeScope();
+    const { callTool, calls } = makeCallTool({
+      updateTask: wrapMcpResult(
+        makeTask("t1", "Task", { notes: "updated content", modified_at: "2026-03-15T00:00:00Z" }),
+      ),
+    });
+    const provider = createAsanaProvider({ callTool });
+
     const pushFn = provider.push as NonNullable<typeof provider.push>;
     const result = await pushFn(scope, "t1", "updated content", 1);
     expect(result.ok).toBe(true);
+    expect(result.newVersion).toBe(new Date("2026-03-15T00:00:00Z").getTime());
+
+    // Verify correct arguments were passed
+    const updateCall = calls.find((c) => c.tool === "updateTask");
+    expect(updateCall?.args.task_gid).toBe("t1");
+    expect(updateCall?.args.notes).toBe("updated content");
   });
 
   test("returns ok: false with error on failure", async () => {
@@ -458,58 +658,54 @@ describe("push", () => {
 });
 
 describe("create", () => {
-  test("creates a task and returns the entry", async () => {
+  test("creates a top-level task with project, not parent", async () => {
     const scope = makeScope();
-    const provider = createAsanaProvider({
-      callTool: async (_server, tool, args) => {
-        if (tool === "createTask") {
-          const a = args as Record<string, unknown>;
-          expect(a.name).toBe("New Task");
-          expect(a.notes).toBe("Task content");
-          expect((a.projects as string[])[0]).toBe("1234567890");
-          return wrapMcpResult(makeTask("new-1", "New Task"));
-        }
-        return null;
-      },
+    const { callTool, calls } = makeCallTool({
+      createTask: wrapMcpResult(makeTask("new-1", "New Task")),
     });
+    const provider = createAsanaProvider({ callTool });
 
     const createFn = provider.create as NonNullable<typeof provider.create>;
     const entry = await createFn(scope, undefined, "New Task", "Task content");
     expect(entry.id).toBe("new-1");
     expect(entry.title).toBe("New Task");
+
+    // Verify args: projects set, no parent
+    const createCall = calls.find((c) => c.tool === "createTask");
+    expect(createCall?.args.name).toBe("New Task");
+    expect(createCall?.args.notes).toBe("Task content");
+    expect(createCall?.args.projects).toEqual(["1234567890"]);
+    expect(createCall?.args.parent).toBeUndefined();
   });
 
-  test("passes parentId when provided", async () => {
+  test("creates a subtask with parent, not projects", async () => {
     const scope = makeScope();
-    const provider = createAsanaProvider({
-      callTool: async (_server, tool, args) => {
-        if (tool === "createTask") {
-          expect((args as Record<string, unknown>).parent).toBe("parent-1");
-          return wrapMcpResult(makeTask("new-1", "Subtask"));
-        }
-        return null;
-      },
+    const { callTool, calls } = makeCallTool({
+      createTask: wrapMcpResult(makeTask("new-1", "Subtask")),
     });
+    const provider = createAsanaProvider({ callTool });
 
     const createFn = provider.create as NonNullable<typeof provider.create>;
     await createFn(scope, "parent-1", "Subtask", "content");
+
+    // Verify args: parent set, no projects
+    const createCall = calls.find((c) => c.tool === "createTask");
+    expect(createCall?.args.parent).toBe("parent-1");
+    expect(createCall?.args.projects).toBeUndefined();
   });
 });
 
 describe("delete", () => {
-  test("calls deleteTask with task_gid", async () => {
+  test("calls deleteTask with correct task_gid", async () => {
     const scope = makeScope();
-    const calls: string[] = [];
-    const provider = createAsanaProvider({
-      callTool: async (_server, tool, _args) => {
-        calls.push(tool);
-        return null;
-      },
-    });
+    const { callTool, calls } = makeCallTool();
+    const provider = createAsanaProvider({ callTool });
 
     const deleteFn = provider.delete as NonNullable<typeof provider.delete>;
     await deleteFn(scope, "t1");
-    expect(calls).toContain("deleteTask");
+
+    const deleteCall = calls.find((c) => c.tool === "deleteTask");
+    expect(deleteCall?.args.task_gid).toBe("t1");
   });
 
   test("throws on API error", async () => {
@@ -522,5 +718,52 @@ describe("delete", () => {
 
     const deleteFn = provider.delete as NonNullable<typeof provider.delete>;
     await expect(deleteFn(scope, "t1")).rejects.toThrow("Failed to delete task t1");
+  });
+});
+
+describe("version from modified_at", () => {
+  test("uses modified_at timestamp as version", async () => {
+    const scope = makeScope();
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getSectionsForProject") {
+          return wrapMcpResult({ data: [] });
+        }
+        if (tool === "getTasksForProject") {
+          return wrapMcpResult({
+            data: [makeTask("t1", "Task", { modified_at: "2026-03-15T12:00:00Z" })],
+          });
+        }
+        return null;
+      },
+    });
+
+    const entries: RemoteEntry[] = [];
+    for await (const entry of provider.list(scope)) {
+      entries.push(entry);
+    }
+    expect(entries[0].version).toBe(new Date("2026-03-15T12:00:00Z").getTime());
+  });
+
+  test("uses epoch sentinel when no timestamps available", async () => {
+    const scope = makeScope();
+    const provider = createAsanaProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getTask") {
+          return wrapMcpResult({
+            gid: "t1",
+            name: "No Dates",
+            notes: "",
+            completed: false,
+            // No modified_at or created_at
+          });
+        }
+        return null;
+      },
+    });
+
+    const result = await provider.fetch(scope, "t1");
+    expect(result.entry.lastModified).toBe("1970-01-01T00:00:00.000Z");
+    expect(result.entry.version).toBe(0);
   });
 });
