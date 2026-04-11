@@ -326,6 +326,45 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
         };
       }
     },
+
+    async create(scope: ResolvedScope, parentId: string | undefined, title: string, content: string) {
+      const spaceId = scope.resolved.spaceId as string;
+      const args: Record<string, unknown> = {
+        cloudId: scope.cloudId,
+        spaceId,
+        title,
+        body: content,
+        contentFormat: "markdown",
+        status: "current",
+      };
+      if (parentId) args.parentId = parentId;
+
+      const resp = (await callAtlassian("createConfluencePage", args)) as ConfluencePage;
+
+      return toRemoteEntry(resp);
+    },
+
+    async delete(scope: ResolvedScope, id: string) {
+      // Confluence v2 API doesn't have a dedicated delete tool in the MCP,
+      // but we can set status to "trashed" via update, or use the REST API.
+      // For now, we'll use the update to set status to "trashed".
+      // If that fails, we report the error gracefully.
+      try {
+        await callAtlassian("updateConfluencePage", {
+          cloudId: scope.cloudId,
+          pageId: id,
+          status: "trashed" as string,
+          body: "", // required field
+          contentFormat: "markdown",
+          versionMessage: "Deleted via mcx vfs",
+        });
+      } catch (err) {
+        // Some MCP servers may not support status=trashed
+        throw new Error(
+          `Failed to delete page ${id}: ${err instanceof Error ? err.message : String(err)}. Delete may not be supported by your Atlassian MCP server.`,
+        );
+      }
+    },
   };
 
   return provider;
