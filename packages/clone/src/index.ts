@@ -1,4 +1,5 @@
 export * from "./providers/provider";
+export * from "./providers/asana";
 export * from "./providers/confluence";
 export * from "./providers/jira";
 export * from "./engine/cache";
