@@ -376,14 +376,15 @@ describe("push", () => {
     const scope = makeScope();
     const provider = createConfluenceProvider({
       callTool: async () => {
-        throw new Error("Network timeout");
+        throw new Error("Internal server error");
       },
     });
 
     const pushFn3 = provider.push as NonNullable<typeof provider.push>;
     const result = await pushFn3(scope, "p1", "Content", 1);
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Network timeout");
+    // Error message now includes page URL context and friendly wrapping
+    expect(result.error).toContain("example.com/pages/p1");
   });
 });
 

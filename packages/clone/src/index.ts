@@ -2,6 +2,7 @@ export * from "./providers/provider";
 export * from "./providers/asana";
 export * from "./providers/confluence";
 export * from "./providers/jira";
+export * from "./providers/resilient-caller";
 export * from "./engine/cache";
 export * from "./engine/clone";
 export * from "./engine/frontmatter";

@@ -10,6 +10,13 @@ import type {
   ResolvedScope,
   Scope,
 } from "./provider";
+import {
+  type RetryOptions,
+  type VfsError,
+  VfsError as VfsErrorClass,
+  createResilientCaller,
+  friendlyMessage,
+} from "./resilient-caller";
 
 /** Thrown when CQL search returns truncated results, signaling the caller to fall back to full sync. */
 export class TruncatedChangesError extends Error {
@@ -109,6 +116,10 @@ export interface ConfluenceProviderOptions {
   callTool: McpToolCaller;
   /** Concurrency for individual page fetches when needed (default: 5). */
   fetchConcurrency?: number;
+  /** Retry/backoff options for rate limiting. */
+  retry?: RetryOptions;
+  /** Disable tool name discovery/fallback (default: false). */
+  disableToolDiscovery?: boolean;
 }
 
 /** Validate a scope key to prevent CQL injection. Only alphanumeric, hyphens, and underscores allowed. */
@@ -144,11 +155,17 @@ function sanitizeFilename(title: string): string {
 }
 
 export function createConfluenceProvider(opts: ConfluenceProviderOptions): RemoteProvider {
-  const { callTool } = opts;
   const SERVER = "atlassian";
 
+  // Wrap the base caller with retry + tool discovery
+  const resilientCallTool = createResilientCaller({
+    callTool: opts.callTool,
+    toolDiscovery: !opts.disableToolDiscovery,
+    ...opts.retry,
+  });
+
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
-    const raw = await callTool(SERVER, tool, args, 30_000);
+    const raw = await resilientCallTool(SERVER, tool, args, 30_000);
     return unwrapToolResult(raw);
   }
 
@@ -348,6 +365,9 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     async push(scope: ResolvedScope, id: string, content: string, baseVersion: number) {
       // Pass version.number in the update request — Confluence v2 API returns 409 on mismatch,
       // which is atomic and avoids the TOCTOU race of a separate read-then-write.
+      const baseUrl = (scope.resolved.baseUrl as string) ?? "";
+      const pageUrl = baseUrl ? `${baseUrl}/pages/${id}` : `page ${id}`;
+
       try {
         const resp = (await callAtlassian("updateConfluencePage", {
           cloudId: scope.cloudId,
@@ -363,8 +383,17 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
           newVersion: resp?.version?.number ?? baseVersion + 1,
         };
       } catch (err) {
+        // Use VfsError classification if available, otherwise fall back to string matching
+        if (err instanceof VfsErrorClass) {
+          if (err.kind === "conflict") {
+            return {
+              ok: false,
+              error: `Version conflict: local base is v${baseVersion}. Pull first to get the latest version.`,
+            };
+          }
+          return { ok: false, error: `${friendlyMessage(err, pageUrl)}` };
+        }
         const message = err instanceof Error ? err.message : String(err);
-        // Confluence returns 409 on version mismatch
         const isConflict = message.includes("409") || message.includes("conflict") || message.includes("version");
         if (isConflict) {
           return {
@@ -372,7 +401,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
             error: `Version conflict: local base is v${baseVersion}. Pull first to get the latest version.`,
           };
         }
-        return { ok: false, error: message };
+        return { ok: false, error: `Push failed for ${pageUrl}: ${message}` };
       }
     },
 

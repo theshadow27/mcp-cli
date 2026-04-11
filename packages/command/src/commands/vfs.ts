@@ -10,14 +10,16 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   CloneCache,
+  VfsError,
   clone,
   createAsanaProvider,
   createConfluenceProvider,
   createJiraProvider,
+  friendlyMessage,
   pull,
   push,
 } from "@mcp-cli/clone";
-import type { McpToolCaller } from "@mcp-cli/clone";
+import type { CloneResult, McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError } from "../output";
 
@@ -38,6 +40,54 @@ function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
 
 const callTool = makeToolCaller(ipcCall);
 const log = (msg: string) => process.stderr.write(`${msg}\n`);
+
+/** Map provider name → the MCP server name it requires. */
+const PROVIDER_SERVER: Record<string, string> = {
+  confluence: "atlassian",
+  jira: "atlassian",
+  asana: "asana",
+};
+
+/**
+ * Preflight check: verify the required MCP server is configured and reachable.
+ * Returns normally if OK; throws with an actionable error message if not.
+ */
+async function preflightCheck(providerName: string): Promise<void> {
+  const serverName = PROVIDER_SERVER[providerName];
+  if (!serverName) return; // Unknown provider — skip preflight, let it fail normally
+
+  try {
+    const servers = (await ipcCall("listServers", {})) as Array<{ name: string; status?: string }>;
+    const server = servers.find((s) => s.name === serverName);
+
+    if (!server) {
+      printError(
+        `MCP server "${serverName}" is not configured.\n\nThe "${providerName}" provider requires the "${serverName}" MCP server.\nAdd it with:\n\n  mcx add ${serverName}\n\nOr configure it manually in ~/.claude.json or .mcp.json`,
+      );
+      process.exit(1);
+    }
+
+    // Verify the server has tools available (i.e., it's connected and responding)
+    const tools = (await ipcCall("listTools", { server: serverName }, { timeoutMs: 10_000 })) as unknown[];
+    if (!tools || (Array.isArray(tools) && tools.length === 0)) {
+      printError(
+        `MCP server "${serverName}" is configured but returned no tools.\n\nThis usually means:\n  - The server failed to start (check: mcx status)\n  - Authentication is needed (check: mcx auth ${serverName})\n  - The server binary is missing or misconfigured\n\nTry restarting: mcx ctl restart ${serverName}`,
+      );
+      process.exit(1);
+    }
+  } catch (err) {
+    // If the daemon itself isn't running, listServers will fail — that's a different error
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("ECONNREFUSED") || message.includes("not running")) {
+      printError(
+        "The mcpd daemon is not running.\n\nStart it with:\n\n  mcpd\n\nOr run your command again — mcx auto-starts the daemon.",
+      );
+      process.exit(1);
+    }
+    // Non-fatal: if preflight itself fails, let the clone proceed and fail naturally
+    log(`Warning: preflight check failed: ${message}`);
+  }
+}
 
 export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?: VfsDeps): Promise<void> {
   const d = deps ?? {
@@ -92,14 +142,25 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 
   if (!targetDir) targetDir = `./${scopeKey}`;
 
+  await preflightCheck(providerName);
+
   const provider = deps.resolveProvider(providerName);
-  const result = await deps.clone({
-    targetDir: resolve(targetDir),
-    provider,
-    scope: { key: scopeKey, cloudId },
-    limit,
-    onProgress: log,
-  });
+  let result: CloneResult;
+  try {
+    result = await deps.clone({
+      targetDir: resolve(targetDir),
+      provider,
+      scope: { key: scopeKey, cloudId },
+      limit,
+      onProgress: log,
+    });
+  } catch (err) {
+    if (err instanceof VfsError) {
+      printError(friendlyMessage(err, `clone ${providerName}/${scopeKey}`));
+      deps.exit(1);
+    }
+    throw err;
+  }
 
   console.log(
     JSON.stringify(
@@ -122,8 +183,16 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const provider = deps.resolveProviderFromCache(repoDir);
 
-  const result = await deps.pull({ repoDir, provider, full, onProgress: log });
-  console.log(JSON.stringify(result, null, 2));
+  try {
+    const result = await deps.pull({ repoDir, provider, full, onProgress: log });
+    console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    if (err instanceof VfsError) {
+      printError(friendlyMessage(err, "pull"));
+      deps.exit(1);
+    }
+    throw err;
+  }
 }
 
 async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDeps): Promise<void> {
@@ -133,18 +202,32 @@ async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDep
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const provider = deps.resolveProviderFromCache(repoDir);
 
-  const result = await deps.push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
-  console.log(JSON.stringify(result, null, 2));
+  try {
+    const result = await deps.push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
+    console.log(JSON.stringify(result, null, 2));
 
-  if (result.conflicts > 0 || result.errors > 0) {
-    deps.exit(1);
+    if (result.conflicts > 0 || result.errors > 0) {
+      deps.exit(1);
+    }
+  } catch (err) {
+    if (err instanceof VfsError) {
+      printError(friendlyMessage(err, "push"));
+      deps.exit(1);
+    }
+    throw err;
   }
 }
 
+function onRetry(attempt: number, delayMs: number, error: string): void {
+  const delaySec = (delayMs / 1000).toFixed(1);
+  log(`Rate limited (attempt ${attempt}), retrying in ${delaySec}s... (${error})`);
+}
+
 export function resolveProvider(name: string) {
+  const retry = { onRetry };
   switch (name) {
     case "confluence":
-      return createConfluenceProvider({ callTool });
+      return createConfluenceProvider({ callTool, retry });
     case "asana":
       return createAsanaProvider({ callTool });
     case "jira":
