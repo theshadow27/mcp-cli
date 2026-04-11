@@ -8,13 +8,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-export type {
-  WorkItemPhase,
-  PrState,
-  CiStatus,
-  ReviewStatus,
-  WorkItem,
-} from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 
 /** Snake-case row shape from SQLite. */
