@@ -98,8 +98,8 @@ case ":$PATH:" in
     fi
     if [ "$added" = false ]; then
       # No rc file found — create .profile entry as fallback
-      printf '\n# mcp-cli\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$HOME/.profile"
-      echo "Added $INSTALL_DIR to PATH in ~/.profile"
+      touch "$HOME/.profile"
+      add_to_path "$HOME/.profile"
     fi
     echo "Restart your shell or run: export PATH=\"$INSTALL_DIR:\$PATH\""
     ;;
