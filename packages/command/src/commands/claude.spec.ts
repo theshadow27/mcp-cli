@@ -801,7 +801,7 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
     }
   });
 
-  test("headless --worktree pre-creates worktree and passes cwd", async () => {
+  test("headless --worktree pre-creates worktree with claude/ prefix and passes cwd", async () => {
     const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const callTool = mock(async () => toolResult({ sessionId: "s1" }));
     const deps = makeDeps({ exec, callTool });
@@ -814,7 +814,8 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
       const execCalls = exec.mock.calls as unknown as Array<[string[]]>;
       const wtCall = execCalls.find((c) => c[0][0] === "git" && c[0][1] === "worktree");
       expect(wtCall).toBeDefined();
-      expect(wtCall?.[0]).toContain("my-feat");
+      // Branch name must use claude/ prefix to avoid collisions with main-repo branches (#1115)
+      expect(wtCall?.[0]).toContain("claude/my-feat");
       // cwd must be set so daemon spawns Claude in the worktree, not the main repo
       const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
       expect(toolCalls[0][1].worktree).toBe("my-feat");
