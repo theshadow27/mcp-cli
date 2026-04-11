@@ -175,6 +175,12 @@ export class CloneCache {
       .run(new Date().toISOString(), provider, scopeKey);
   }
 
+  /** Find the provider name from the first scope_meta row (when we don't know which provider was used). */
+  findProviderName(): string | null {
+    const row = this.db.query("SELECT provider FROM scope_meta LIMIT 1").get() as { provider: string } | null;
+    return row?.provider ?? null;
+  }
+
   /** Remove an entry. */
   remove(provider: string, cloudId: string, id: string): void {
     this.db.query("DELETE FROM entries WHERE provider = ? AND cloud_id = ? AND id = ?").run(provider, cloudId, id);
