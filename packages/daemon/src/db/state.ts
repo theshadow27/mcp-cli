@@ -291,6 +291,7 @@ export class StateDb {
       );
       CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
       CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
     `);
   }
 
@@ -1134,6 +1135,158 @@ export class StateDb {
     }));
   }
 
+  /** Query spans with flexible filters. Returns matching spans (no exported_at). */
+  querySpans(opts?: {
+    daemonId?: string;
+    traceId?: string;
+    server?: string;
+    tool?: string;
+    status?: string;
+    sinceMs?: number;
+    untilMs?: number;
+    limit?: number;
+    afterId?: number;
+  }): Omit<SpanRow, "exportedAt">[] {
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (opts?.daemonId) {
+      conditions.push("daemon_id = ?");
+      params.push(opts.daemonId);
+    }
+    if (opts?.traceId) {
+      conditions.push("trace_id = ?");
+      params.push(opts.traceId);
+    }
+    if (opts?.server) {
+      conditions.push("name LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(opts.server)}%`);
+    }
+    if (opts?.tool) {
+      // Tool names appear after the last colon in structured span names (e.g. "tool_call:server:tool")
+      conditions.push("name LIKE ? ESCAPE '\\'");
+      params.push(`%:${escapeLike(opts.tool)}`);
+    }
+    if (opts?.status) {
+      conditions.push("status = ?");
+      params.push(opts.status);
+    }
+    if (opts?.sinceMs !== undefined) {
+      conditions.push("start_time_ms >= ?");
+      params.push(opts.sinceMs);
+    }
+    if (opts?.untilMs !== undefined) {
+      conditions.push("start_time_ms <= ?");
+      params.push(opts.untilMs);
+    }
+    if (opts?.afterId !== undefined) {
+      conditions.push("id < ?");
+      params.push(opts.afterId);
+    }
+
+    const limit = Math.min(Math.max(1, opts?.limit ?? 100), 1000);
+    params.push(limit);
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT id, trace_id, span_id, parent_span_id, trace_flags, name,
+          start_time_ms, end_time_ms, duration_ms, status, attributes_json,
+          events_json, daemon_id
+         FROM spans ${where} ORDER BY start_time_ms DESC, id DESC LIMIT ?`,
+      )
+      .all(...params) as Array<{
+      id: number;
+      trace_id: string;
+      span_id: string;
+      parent_span_id: string | null;
+      trace_flags: string;
+      name: string;
+      start_time_ms: number;
+      end_time_ms: number;
+      duration_ms: number;
+      status: string;
+      attributes_json: string | null;
+      events_json: string | null;
+      daemon_id: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      traceId: row.trace_id,
+      spanId: row.span_id,
+      parentSpanId: row.parent_span_id,
+      traceFlags: row.trace_flags,
+      name: row.name,
+      startTimeMs: row.start_time_ms,
+      endTimeMs: row.end_time_ms,
+      durationMs: row.duration_ms,
+      status: row.status,
+      attributes: row.attributes_json ? safeJsonParse(row.attributes_json, {}) : {},
+      events: row.events_json ? safeJsonParse(row.events_json, []) : [],
+      daemonId: row.daemon_id,
+    }));
+  }
+
+  /** Get all spans for a specific trace, ordered by start time ASC. */
+  getTraceSpans(traceId: string): Omit<SpanRow, "exportedAt">[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, trace_id, span_id, parent_span_id, trace_flags, name,
+          start_time_ms, end_time_ms, duration_ms, status, attributes_json,
+          events_json, daemon_id
+         FROM spans WHERE trace_id = ? ORDER BY start_time_ms ASC`,
+      )
+      .all(traceId) as Array<{
+      id: number;
+      trace_id: string;
+      span_id: string;
+      parent_span_id: string | null;
+      trace_flags: string;
+      name: string;
+      start_time_ms: number;
+      end_time_ms: number;
+      duration_ms: number;
+      status: string;
+      attributes_json: string | null;
+      events_json: string | null;
+      daemon_id: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      traceId: row.trace_id,
+      spanId: row.span_id,
+      parentSpanId: row.parent_span_id,
+      traceFlags: row.trace_flags,
+      name: row.name,
+      startTimeMs: row.start_time_ms,
+      endTimeMs: row.end_time_ms,
+      durationMs: row.duration_ms,
+      status: row.status,
+      attributes: row.attributes_json ? safeJsonParse(row.attributes_json, {}) : {},
+      events: row.events_json ? safeJsonParse(row.events_json, []) : [],
+      daemonId: row.daemon_id,
+    }));
+  }
+
+  /** List distinct daemon instances with span counts and time ranges. */
+  listDaemons(): Array<{ daemonId: string; spanCount: number; earliestMs: number; latestMs: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT daemon_id, COUNT(*) as span_count, MIN(start_time_ms) as earliest_ms, MAX(start_time_ms) as latest_ms
+         FROM spans WHERE daemon_id IS NOT NULL GROUP BY daemon_id ORDER BY latest_ms DESC`,
+      )
+      .all() as Array<{ daemon_id: string; span_count: number; earliest_ms: number; latest_ms: number }>;
+
+    return rows.map((r) => ({
+      daemonId: r.daemon_id,
+      spanCount: r.span_count,
+      earliestMs: r.earliest_ms,
+      latestMs: r.latest_ms,
+    }));
+  }
+
   markSpansExported(ids: number[]): number {
     if (ids.length === 0) return 0;
     const placeholders = ids.map(() => "?").join(",");
@@ -1211,6 +1364,11 @@ export class StateDb {
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
 function formatSqliteDatetime(ms: number): string {
   return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+}
+
+/** Escape SQL LIKE wildcards (% and _) with backslash. Use with ESCAPE '\\'. */
+function escapeLike(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
 /** Parse JSON safely, returning fallback on corrupt/invalid data. */

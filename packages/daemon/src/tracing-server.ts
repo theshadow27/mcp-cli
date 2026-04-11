@@ -2,7 +2,7 @@
  * Virtual MCP server that exposes trace data as MCP tools.
  *
  * Uses an in-process MCP Server with InMemoryTransport (no Workers).
- * Read-only — queries spans and usage_stats tables.
+ * Read-only — queries spans table via StateDb API.
  */
 
 import type { ToolInfo } from "@mcp-cli/core";
@@ -14,19 +14,25 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
 
+/** Maximum serialized response size in bytes (5 MB). */
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
 const TOOLS = [
   {
     name: "query_traces",
     description:
       "Query trace spans with optional filters. Returns matching spans ordered by start time (newest first). " +
-      "Use to search by daemon, trace, server, tool, status, or time range.",
+      "Use to search by daemon, trace, server, tool, status, or time range. Supports cursor-based pagination via after_id.",
     inputSchema: {
       type: "object" as const,
       properties: {
         daemon_id: { type: "string", description: "Filter by daemon instance ID" },
         trace_id: { type: "string", description: "Filter by trace ID" },
-        server: { type: "string", description: "Filter by server name (substring match on span name)" },
-        tool: { type: "string", description: "Filter by tool name (substring match on span name)" },
+        server: { type: "string", description: "Filter spans whose name contains this server name" },
+        tool: {
+          type: "string",
+          description: "Filter spans whose name ends with :toolName (structured span name convention)",
+        },
         status: {
           type: "string",
           enum: ["OK", "ERROR", "UNSET"],
@@ -43,6 +49,11 @@ const TOOLS = [
         limit: {
           type: "number",
           description: "Maximum number of spans to return (default: 100, max: 1000)",
+        },
+        after_id: {
+          type: "number",
+          description:
+            "Cursor for pagination: only return spans with id < this value (use last span's id from previous page)",
         },
       },
     },
@@ -143,76 +154,26 @@ export class TracingServer {
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
   } {
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    const spans = this.db.querySpans({
+      daemonId: typeof args?.daemon_id === "string" && args.daemon_id ? args.daemon_id : undefined,
+      traceId: typeof args?.trace_id === "string" && args.trace_id ? args.trace_id : undefined,
+      server: typeof args?.server === "string" && args.server ? args.server : undefined,
+      tool: typeof args?.tool === "string" && args.tool ? args.tool : undefined,
+      status: typeof args?.status === "string" && args.status ? args.status : undefined,
+      sinceMs: typeof args?.since_ms === "number" ? args.since_ms : undefined,
+      untilMs: typeof args?.until_ms === "number" ? args.until_ms : undefined,
+      limit: typeof args?.limit === "number" ? args.limit : undefined,
+      afterId: typeof args?.after_id === "number" ? args.after_id : undefined,
+    });
 
-    if (typeof args?.daemon_id === "string" && args.daemon_id) {
-      conditions.push("daemon_id = ?");
-      params.push(args.daemon_id);
-    }
-    if (typeof args?.trace_id === "string" && args.trace_id) {
-      conditions.push("trace_id = ?");
-      params.push(args.trace_id);
-    }
-    if (typeof args?.server === "string" && args.server) {
-      conditions.push("name LIKE ?");
-      params.push(`%${args.server}%`);
-    }
-    if (typeof args?.tool === "string" && args.tool) {
-      conditions.push("name LIKE ?");
-      params.push(`%${args.tool}%`);
-    }
-    if (typeof args?.status === "string" && args.status) {
-      conditions.push("status = ?");
-      params.push(args.status);
-    }
-    if (typeof args?.since_ms === "number") {
-      conditions.push("start_time_ms >= ?");
-      params.push(args.since_ms);
-    }
-    if (typeof args?.until_ms === "number") {
-      conditions.push("start_time_ms <= ?");
-      params.push(args.until_ms);
-    }
-
-    const rawLimit = typeof args?.limit === "number" ? args.limit : 100;
-    const limit = Math.min(Math.max(1, rawLimit), 1000);
-    params.push(limit);
-
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const sql = `SELECT id, trace_id, span_id, parent_span_id, trace_flags, name,
-      start_time_ms, end_time_ms, duration_ms, status, attributes_json,
-      events_json, daemon_id, exported_at
-     FROM spans ${where} ORDER BY start_time_ms DESC LIMIT ?`;
-
-    const rows = this.db.database.prepare(sql).all(...params) as SpanRawRow[];
-    const spans = rows.map(mapSpanRow);
-
-    return {
-      content: [{ type: "text", text: JSON.stringify({ count: spans.length, spans }, null, 2) }],
-    };
+    return sizeGuardedResponse({ spans });
   }
 
   private handleListDaemons(): {
     content: Array<{ type: "text"; text: string }>;
   } {
-    const rows = this.db.database
-      .prepare(
-        `SELECT
-          daemon_id,
-          COUNT(*) as span_count,
-          MIN(start_time_ms) as earliest_ms,
-          MAX(start_time_ms) as latest_ms
-        FROM spans
-        WHERE daemon_id IS NOT NULL
-        GROUP BY daemon_id
-        ORDER BY latest_ms DESC`,
-      )
-      .all() as Array<{ daemon_id: string; span_count: number; earliest_ms: number; latest_ms: number }>;
-
-    return {
-      content: [{ type: "text", text: JSON.stringify({ count: rows.length, daemons: rows }, null, 2) }],
-    };
+    const daemons = this.db.listDaemons();
+    return { content: [{ type: "text", text: JSON.stringify({ daemons }, null, 2) }] };
   }
 
   private handleGetTrace(args: Record<string, unknown> | undefined): {
@@ -227,21 +188,35 @@ export class TracingServer {
       };
     }
 
-    const rows = this.db.database
-      .prepare(
-        `SELECT id, trace_id, span_id, parent_span_id, trace_flags, name,
-          start_time_ms, end_time_ms, duration_ms, status, attributes_json,
-          events_json, daemon_id, exported_at
-        FROM spans WHERE trace_id = ? ORDER BY start_time_ms ASC`,
-      )
-      .all(traceId) as SpanRawRow[];
-
-    const spans = rows.map(mapSpanRow);
-
-    return {
-      content: [{ type: "text", text: JSON.stringify({ trace_id: traceId, count: spans.length, spans }, null, 2) }],
-    };
+    const spans = this.db.getTraceSpans(traceId);
+    return sizeGuardedResponse({ trace_id: traceId, spans });
   }
+}
+
+/** Serialize response JSON with a size guard. If over MAX_RESPONSE_BYTES, truncate spans. */
+function sizeGuardedResponse(data: { spans: unknown[]; [key: string]: unknown }): {
+  content: Array<{ type: "text"; text: string }>;
+} {
+  const json = JSON.stringify(data, null, 2);
+  if (json.length <= MAX_RESPONSE_BYTES) {
+    return { content: [{ type: "text", text: json }] };
+  }
+
+  // Binary search for safe span count
+  let lo = 0;
+  let hi = data.spans.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    const trial = JSON.stringify({ ...data, spans: data.spans.slice(0, mid), truncated: true }, null, 2);
+    if (trial.length <= MAX_RESPONSE_BYTES) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  const truncated = { ...data, spans: data.spans.slice(0, lo), truncated: true };
+  return { content: [{ type: "text", text: JSON.stringify(truncated, null, 2) }] };
 }
 
 /** Pre-build tool cache for pool registration. */
@@ -256,50 +231,4 @@ export function buildTracingToolCache(): Map<string, ToolInfo> {
     });
   }
   return cache;
-}
-
-// -- Internal helpers --
-
-interface SpanRawRow {
-  id: number;
-  trace_id: string;
-  span_id: string;
-  parent_span_id: string | null;
-  trace_flags: string;
-  name: string;
-  start_time_ms: number;
-  end_time_ms: number;
-  duration_ms: number;
-  status: string;
-  attributes_json: string | null;
-  events_json: string | null;
-  daemon_id: string | null;
-  exported_at: number | null;
-}
-
-function mapSpanRow(row: SpanRawRow) {
-  return {
-    id: row.id,
-    traceId: row.trace_id,
-    spanId: row.span_id,
-    parentSpanId: row.parent_span_id,
-    traceFlags: row.trace_flags,
-    name: row.name,
-    startTimeMs: row.start_time_ms,
-    endTimeMs: row.end_time_ms,
-    durationMs: row.duration_ms,
-    status: row.status,
-    attributes: row.attributes_json ? safeJsonParse(row.attributes_json, {}) : {},
-    events: row.events_json ? safeJsonParse(row.events_json, []) : [],
-    daemonId: row.daemon_id,
-    exportedAt: row.exported_at,
-  };
-}
-
-function safeJsonParse<T>(json: string, fallback: T): T {
-  try {
-    return JSON.parse(json) as T;
-  } catch {
-    return fallback;
-  }
 }
