@@ -408,12 +408,33 @@ describe("create", () => {
 });
 
 describe("delete", () => {
-  test("trashes a page by fetching content then updating status", async () => {
+  test("uses deleteConfluencePage when available", async () => {
     const scope = makeScope();
     const calls: string[] = [];
     const provider = createConfluenceProvider({
       callTool: async (_server, tool, _args) => {
         calls.push(tool);
+        if (tool === "deleteConfluencePage") {
+          return wrapMcpResult({ status: "ok" });
+        }
+        return null;
+      },
+    });
+
+    const deleteFn = provider.delete as NonNullable<typeof provider.delete>;
+    await deleteFn(scope, "p1");
+    expect(calls).toEqual(["deleteConfluencePage"]);
+  });
+
+  test("falls back to status=trashed when deleteConfluencePage is not found", async () => {
+    const scope = makeScope();
+    const calls: string[] = [];
+    const provider = createConfluenceProvider({
+      callTool: async (_server, tool, _args) => {
+        calls.push(tool);
+        if (tool === "deleteConfluencePage") {
+          throw new Error("Unknown tool: deleteConfluencePage");
+        }
         if (tool === "getConfluencePage") {
           return wrapMcpResult(makePageResponse("p1", "My Page", 2));
         }
@@ -426,15 +447,34 @@ describe("delete", () => {
 
     const deleteFn = provider.delete as NonNullable<typeof provider.delete>;
     await deleteFn(scope, "p1");
-    expect(calls).toContain("getConfluencePage"); // fetches content first
-    expect(calls).toContain("updateConfluencePage"); // then trashes
+    expect(calls).toContain("deleteConfluencePage");
+    expect(calls).toContain("getConfluencePage");
+    expect(calls).toContain("updateConfluencePage");
   });
 
-  test("throws an error when the API call fails", async () => {
+  test("throws when deleteConfluencePage fails with non-tool-not-found error", async () => {
     const scope = makeScope();
     const provider = createConfluenceProvider({
-      callTool: async () => {
-        throw new Error("Permission denied");
+      callTool: async (_server, tool) => {
+        if (tool === "deleteConfluencePage") {
+          throw new Error("Permission denied");
+        }
+        return null;
+      },
+    });
+
+    const deleteFn = provider.delete as NonNullable<typeof provider.delete>;
+    await expect(deleteFn(scope, "p1")).rejects.toThrow("Failed to delete page p1");
+  });
+
+  test("throws when fallback also fails", async () => {
+    const scope = makeScope();
+    const provider = createConfluenceProvider({
+      callTool: async (_server, tool) => {
+        if (tool === "deleteConfluencePage") {
+          throw new Error("Unknown tool: deleteConfluencePage");
+        }
+        throw new Error("Server error");
       },
     });
 
