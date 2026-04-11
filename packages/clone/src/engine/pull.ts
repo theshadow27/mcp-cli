@@ -18,7 +18,13 @@ import { dirname, join } from "node:path";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
+import { computeDepth } from "./clone";
 import { injectFrontmatter } from "./frontmatter";
+
+const STUB_BODY = `> **Shallow clone stub** — this page was not fetched (depth limit).
+>
+> Run \`mcx vfs pull\` to fetch all pages, or \`mcx vfs pull --depth N\` with a larger depth.
+`;
 
 export interface PullOptions {
   /** Root directory of the cloned repo. */
@@ -29,6 +35,8 @@ export interface PullOptions {
   onProgress?: (message: string) => void;
   /** Force full sync instead of incremental. */
   full?: boolean;
+  /** Maximum hierarchy depth. 0 = unlimited (deepens shallow clones). */
+  depth?: number;
 }
 
 export interface PullResult {
@@ -38,6 +46,8 @@ export interface PullResult {
   created: number;
   /** Number of pages deleted. */
   deleted: number;
+  /** Number of stubs replaced with full content (deepened). */
+  deepened: number;
   /** Whether a new commit was created. */
   committed: boolean;
   /** Whether incremental sync was used. */
@@ -62,7 +72,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
   }
 
   const cache = new CloneCache(cachePath);
-  const result: PullResult = { updated: 0, created: 0, deleted: 0, committed: false, incremental: false };
+  const result: PullResult = { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: false };
 
   try {
     // ── Load scope from cache ────────────────────────────────
@@ -73,9 +83,25 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     log(opts, `Pulling ${provider.name}/${scope.key}...`);
 
+    // ── Decide depth ─────────────────────────────────────────
+    // If user specifies --depth, use it. Otherwise, use the stored clone depth.
+    // Pull without --depth on a shallow clone deepens (fetches everything).
+    const { depth: userDepth = 0 } = opts;
+    const storedDepth = cache.getCloneDepth(provider.name, scope.key);
+    const hasStubs = cache.countStubs(provider.name, scope.key) > 0;
+    // If user didn't specify depth and there are stubs, deepen (depth=0 means unlimited)
+    const effectiveDepth = userDepth > 0 ? userDepth : hasStubs ? 0 : storedDepth;
+    const isDeepening = hasStubs && effectiveDepth === 0;
+
+    if (isDeepening) {
+      log(opts, "Deepening shallow clone — fetching all pages...");
+    }
+
     // ── Decide: incremental or full ──────────────────────────
     const lastSynced = cache.getLastSynced(provider.name, scope.key);
-    const canIncremental = !full && lastSynced && provider.changes;
+    // Force full sync when deepening (stubs need to be replaced)
+    const forceFullForDeepen = isDeepening || (effectiveDepth !== storedDepth && storedDepth > 0);
+    const canIncremental = !full && !forceFullForDeepen && lastSynced && provider.changes;
 
     if (canIncremental) {
       try {
@@ -84,20 +110,26 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         if (err instanceof TruncatedChangesError) {
           log(opts, `  ${err.message}`);
           result.incremental = false;
-          await fullPull(opts, cache, scope, result);
+          await fullPull(opts, cache, scope, result, effectiveDepth);
         } else {
           throw err;
         }
       }
     } else {
-      if (!full && lastSynced) {
+      if (!full && !forceFullForDeepen && lastSynced) {
         log(opts, "Provider doesn't support incremental sync, falling back to full sync.");
       }
-      await fullPull(opts, cache, scope, result);
+      await fullPull(opts, cache, scope, result, effectiveDepth);
+    }
+
+    // ── Update stored depth if it changed ─────────────────────
+    if (effectiveDepth !== storedDepth) {
+      const updatedResolved = { ...scope, resolved: { ...scope.resolved, cloneDepth: effectiveDepth || undefined } };
+      cache.saveScopeMeta(provider.name, updatedResolved);
     }
 
     // ── Git commit ───────────────────────────────────────────
-    const totalChanges = result.created + result.updated + result.deleted;
+    const totalChanges = result.created + result.updated + result.deleted + result.deepened;
     if (totalChanges > 0) {
       // Strip GIT_* env vars so inherited env (e.g. from git hooks) doesn't
       // redirect git commands to the parent repo.
@@ -116,6 +148,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         if (result.created > 0) parts.push(`${result.created} new`);
         if (result.updated > 0) parts.push(`${result.updated} updated`);
         if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
+        if (result.deepened > 0) parts.push(`${result.deepened} deepened`);
         const mode = result.incremental ? "incremental" : "full";
         const commitMsg = `Pull ${provider.name}/${scope.key} (${mode}): ${parts.join(", ")}`;
         spawnSync("git", ["commit", "-m", commitMsg], gitOpts);
@@ -127,10 +160,18 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
     // ── Update last_synced (after commit so interrupted syncs don't advance watermark) ──
     cache.updateLastSynced(provider.name, scope.key);
 
-    if (result.created + result.updated + result.deleted === 0) {
+    if (totalChanges === 0) {
       log(opts, "Already up to date.");
     } else {
-      log(opts, `\nPull complete. ${result.created} new, ${result.updated} updated, ${result.deleted} deleted.`);
+      const summary = [
+        result.created > 0 ? `${result.created} new` : null,
+        result.updated > 0 ? `${result.updated} updated` : null,
+        result.deleted > 0 ? `${result.deleted} deleted` : null,
+        result.deepened > 0 ? `${result.deepened} deepened` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      log(opts, `\nPull complete. ${summary}.`);
     }
   } finally {
     cache.close();
@@ -237,7 +278,13 @@ async function incrementalPull(
 }
 
 /** Full pull — fetch all pages and diff against cache. */
-async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedScope, result: PullResult): Promise<void> {
+async function fullPull(
+  opts: PullOptions,
+  cache: CloneCache,
+  scope: ResolvedScope,
+  result: PullResult,
+  effectiveDepth = 0,
+): Promise<void> {
   const { repoDir, provider } = opts;
 
   log(opts, "Full sync...");
@@ -261,18 +308,43 @@ async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedSco
 
   log(opts, `  → ${remoteEntries.length} remote pages`);
 
+  // Compute depth map if depth filtering is active
+  const entryById = new Map(remoteEntries.map((e) => [e.id, e]));
+  const depthMap = new Map<string, number>();
+  if (effectiveDepth > 0) {
+    for (const entry of remoteEntries) {
+      depthMap.set(entry.id, computeDepth(entry, entryById));
+    }
+  }
+
+  const isIncluded = (id: string) => effectiveDepth <= 0 || (depthMap.get(id) ?? 1) <= effectiveDepth;
+  const isStubEntry = (id: string) => effectiveDepth > 0 && !isIncluded(id);
+
   const remoteById = new Map(remoteEntries.map((e) => [e.id, e]));
 
-  // Diff
+  // Diff — categorize into full entries, stubs, and deletions
   const toUpdate: RemoteEntry[] = [];
   const toCreate: RemoteEntry[] = [];
+  const toDeepen: RemoteEntry[] = []; // stubs being replaced with full content
+  const toStub: RemoteEntry[] = []; // entries that should become stubs (new depth-limited entries)
   const toDelete: string[] = [];
 
   for (const remote of remoteEntries) {
     const cached = cachedById.get(remote.id);
+    const included = isIncluded(remote.id);
+
     if (!cached) {
-      toCreate.push(remote);
-    } else if (remote.version > cached.version || remote.lastModified > cached.lastModified) {
+      if (included) {
+        toCreate.push(remote);
+      } else {
+        toStub.push(remote);
+      }
+    } else if (cached.isStub && included) {
+      // Was a stub, now included (deepening)
+      toDeepen.push(remote);
+    } else if (!cached.isStub && isStubEntry(remote.id)) {
+      // Was included, now excluded (re-shallowing) — keep as-is, don't downgrade
+    } else if (included && (remote.version > cached.version || remote.lastModified > cached.lastModified)) {
       toUpdate.push(remote);
     }
   }
@@ -283,13 +355,22 @@ async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedSco
     }
   }
 
-  const totalChanges = toCreate.length + toUpdate.length + toDelete.length;
+  const totalChanges = toCreate.length + toUpdate.length + toDelete.length + toDeepen.length + toStub.length;
   if (totalChanges === 0) return;
 
-  log(opts, `Changes: ${toCreate.length} new, ${toUpdate.length} updated, ${toDelete.length} deleted`);
+  const changeParts = [
+    toCreate.length > 0 ? `${toCreate.length} new` : null,
+    toUpdate.length > 0 ? `${toUpdate.length} updated` : null,
+    toDelete.length > 0 ? `${toDelete.length} deleted` : null,
+    toDeepen.length > 0 ? `${toDeepen.length} to deepen` : null,
+    toStub.length > 0 ? `${toStub.length} stubs` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  log(opts, `Changes: ${changeParts}`);
 
-  // Fetch content for entries without inline content
-  const needsFetch = [...toCreate, ...toUpdate].filter((e) => !remoteContentMap.has(e.id));
+  // Fetch content for included entries without inline content
+  const needsFetch = [...toCreate, ...toUpdate, ...toDeepen].filter((e) => !remoteContentMap.has(e.id));
   if (needsFetch.length > 0) {
     log(opts, `Fetching content for ${needsFetch.length} pages...`);
     const BATCH_SIZE = 10;
@@ -307,8 +388,8 @@ async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedSco
     }
   }
 
-  // Apply changes
-  for (const entry of [...toCreate, ...toUpdate]) {
+  // Apply full-content changes
+  for (const entry of [...toCreate, ...toUpdate, ...toDeepen]) {
     const relPath = provider.toPath(entry, remoteEntries);
     const absPath = join(repoDir, relPath);
     const content = remoteContentMap.get(entry.id) ?? "";
@@ -319,7 +400,14 @@ async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedSco
     writeFileSync(absPath, withFrontmatter, "utf-8");
     cache.upsert(provider.name, scope, entry, relPath, contentHash(content));
 
-    if (cachedById.has(entry.id)) {
+    if (toDeepen.includes(entry)) {
+      const oldCached = cachedById.get(entry.id);
+      if (oldCached && oldCached.localPath !== relPath) {
+        const oldAbsPath = join(repoDir, oldCached.localPath);
+        if (existsSync(oldAbsPath)) unlinkSync(oldAbsPath);
+      }
+      result.deepened++;
+    } else if (cachedById.has(entry.id)) {
       const oldCached = cachedById.get(entry.id);
       if (oldCached && oldCached.localPath !== relPath) {
         const oldAbsPath = join(repoDir, oldCached.localPath);
@@ -329,6 +417,18 @@ async function fullPull(opts: PullOptions, cache: CloneCache, scope: ResolvedSco
     } else {
       result.created++;
     }
+  }
+
+  // Write stubs for new depth-limited entries
+  for (const entry of toStub) {
+    const relPath = provider.toPath(entry, remoteEntries);
+    const absPath = join(repoDir, relPath);
+    const fm = { ...provider.frontmatter(entry, scope), stub: true };
+    const withFrontmatter = injectFrontmatter(STUB_BODY, fm);
+
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, withFrontmatter, "utf-8");
+    cache.upsert(provider.name, scope, entry, relPath, null, true);
   }
 
   for (const id of toDelete) {

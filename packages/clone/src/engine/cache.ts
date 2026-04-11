@@ -22,6 +22,7 @@ export interface CachedEntry {
   lastModified: string;
   fetchedAt: string;
   contentHash: string | null;
+  isStub: number;
 }
 
 const SCHEMA = `
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS entries (
   last_modified TEXT NOT NULL,
   fetched_at  TEXT NOT NULL,
   content_hash TEXT,
+  is_stub     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider, cloud_id, id)
 );
 
@@ -61,6 +63,12 @@ export class CloneCache {
     this.db = new Database(dbPath);
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec(SCHEMA);
+    // Migrate: add is_stub column for databases created before --depth support
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN is_stub INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // Column already exists — expected for new databases
+    }
   }
 
   /** Upsert an entry after fetch. */
@@ -70,12 +78,13 @@ export class CloneCache {
     entry: RemoteEntry,
     localPath: string,
     contentHash: string | null,
+    isStub = false,
   ): void {
     this.db
       .query(
         `INSERT OR REPLACE INTO entries
-				(id, provider, scope_key, cloud_id, title, parent_id, local_path, version, last_modified, fetched_at, content_hash)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, provider, scope_key, cloud_id, title, parent_id, local_path, version, last_modified, fetched_at, content_hash, is_stub)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.id,
@@ -89,6 +98,7 @@ export class CloneCache {
         entry.lastModified,
         new Date().toISOString(),
         contentHash,
+        isStub ? 1 : 0,
       );
   }
 
@@ -98,7 +108,8 @@ export class CloneCache {
       .query(
         `SELECT id, provider, scope_key as scopeKey, cloud_id as cloudId, title,
 				parent_id as parentId, local_path as localPath, version,
-				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash
+				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash,
+				is_stub as isStub
 				FROM entries WHERE local_path = ?`,
       )
       .get(localPath) as CachedEntry | null;
@@ -111,7 +122,8 @@ export class CloneCache {
       .query(
         `SELECT id, provider, scope_key as scopeKey, cloud_id as cloudId, title,
 				parent_id as parentId, local_path as localPath, version,
-				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash
+				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash,
+				is_stub as isStub
 				FROM entries WHERE provider = ? AND cloud_id = ? AND id = ?`,
       )
       .get(provider, cloudId, id) as CachedEntry | null;
@@ -124,7 +136,8 @@ export class CloneCache {
       .query(
         `SELECT id, provider, scope_key as scopeKey, cloud_id as cloudId, title,
 				parent_id as parentId, local_path as localPath, version,
-				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash
+				last_modified as lastModified, fetched_at as fetchedAt, content_hash as contentHash,
+				is_stub as isStub
 				FROM entries WHERE provider = ? AND scope_key = ?`,
       )
       .all(provider, scopeKey) as CachedEntry[];
@@ -181,6 +194,20 @@ export class CloneCache {
       provider: string;
     } | null;
     return row?.provider ?? null;
+  }
+
+  /** Get the clone depth stored in scope_meta (0 = unlimited). */
+  getCloneDepth(provider: string, scopeKey: string): number {
+    const scope = this.loadScopeMeta(provider, scopeKey);
+    return (scope?.resolved?.cloneDepth as number) ?? 0;
+  }
+
+  /** Count stub entries for a scope. */
+  countStubs(provider: string, scopeKey: string): number {
+    const row = this.db
+      .query("SELECT COUNT(*) as count FROM entries WHERE provider = ? AND scope_key = ? AND is_stub = 1")
+      .get(provider, scopeKey) as { count: number } | null;
+    return row?.count ?? 0;
   }
 
   /** Remove an entry. */

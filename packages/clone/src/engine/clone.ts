@@ -27,13 +27,17 @@ export interface CloneOptions {
   onProgress?: (message: string) => void;
   /** Maximum pages to fetch (for testing/debugging). 0 = unlimited. */
   limit?: number;
+  /** Maximum hierarchy depth to clone. 0 = unlimited. Depth 1 = root pages only. */
+  depth?: number;
 }
 
 export interface CloneResult {
   /** Absolute path to the cloned directory. */
   path: string;
-  /** Number of pages cloned. */
+  /** Number of pages cloned (full content). */
   pageCount: number;
+  /** Number of pages written as stubs (depth-limited). */
+  stubCount: number;
   /** Resolved scope info. */
   scope: ResolvedScope;
 }
@@ -47,8 +51,29 @@ function contentHash(content: string): string {
   return Bun.hash(content).toString(16);
 }
 
+/** Compute hierarchy depth of an entry (1 = root, 2 = child of root, etc.). */
+export function computeDepth(entry: RemoteEntry, entryById: Map<string, RemoteEntry>): number {
+  let depth = 1;
+  let current = entry;
+  const visited = new Set<string>();
+  while (current.parentId && entryById.has(current.parentId)) {
+    if (visited.has(current.id)) break;
+    visited.add(current.id);
+    const parent = entryById.get(current.parentId);
+    if (!parent) break;
+    current = parent;
+    depth++;
+  }
+  return depth;
+}
+
+const STUB_BODY = `> **Shallow clone stub** — this page was not fetched (depth limit).
+>
+> Run \`mcx vfs pull\` to fetch all pages, or \`mcx vfs pull --depth N\` with a larger depth.
+`;
+
 export async function clone(opts: CloneOptions): Promise<CloneResult> {
-  const { targetDir, provider, scope, limit = 0 } = opts;
+  const { targetDir, provider, scope, limit = 0, depth = 0 } = opts;
   const absTarget = resolve(targetDir);
 
   // ── Preflight checks ───────────────────────────────────────
@@ -93,8 +118,25 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
 
   log(opts, `  → ${entries.length} pages fetched`);
 
-  // Fetch content individually only for entries that didn't include it inline
-  const missingContent = entries.filter((e) => !contentMap.has(e.id));
+  // ── Step 2b: Depth filtering ───────────────────────────────
+  let includedEntries: RemoteEntry[];
+  let stubEntries: RemoteEntry[] = [];
+
+  if (depth > 0) {
+    const entryById = new Map(entries.map((e) => [e.id, e]));
+    const depthMap = new Map<string, number>();
+    for (const entry of entries) {
+      depthMap.set(entry.id, computeDepth(entry, entryById));
+    }
+    includedEntries = entries.filter((e) => (depthMap.get(e.id) ?? 1) <= depth);
+    stubEntries = entries.filter((e) => (depthMap.get(e.id) ?? 1) > depth);
+    log(opts, `  → depth ${depth}: ${includedEntries.length} included, ${stubEntries.length} stubs`);
+  } else {
+    includedEntries = entries;
+  }
+
+  // Fetch content individually only for included entries that didn't include it inline
+  const missingContent = includedEntries.filter((e) => !contentMap.has(e.id));
   if (missingContent.length > 0) {
     log(opts, `Fetching content for ${missingContent.length} pages without inline content...`);
     const BATCH_SIZE = 10;
@@ -109,8 +151,8 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
       );
       for (const r of results) {
         contentMap.set(r.id, r.content);
-        const idx = entries.findIndex((e) => e.id === r.id);
-        if (idx >= 0) entries[idx] = r.entry;
+        const idx = includedEntries.findIndex((e) => e.id === r.id);
+        if (idx >= 0) includedEntries[idx] = r.entry;
         contentFetched++;
       }
       if (contentFetched % 50 === 0 || contentFetched === missingContent.length) {
@@ -120,6 +162,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
 
   // ── Step 3: Build path map ─────────────────────────────────
+  // Use all entries for path computation (stubs need parent context for correct paths)
   log(opts, "Building directory tree...");
   const pathMap = new Map<string, string>();
   for (const entry of entries) {
@@ -132,7 +175,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   mkdirSync(absTarget, { recursive: true });
 
   let written = 0;
-  for (const entry of entries) {
+  for (const entry of includedEntries) {
     const relPath = pathMap.get(entry.id) ?? `${entry.id}.md`;
     const absPath = join(absTarget, relPath);
     const content = contentMap.get(entry.id) ?? "";
@@ -143,21 +186,45 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
     writeFileSync(absPath, withFrontmatter, "utf-8");
     written++;
   }
-  log(opts, `  → ${written} files written`);
+
+  // Write stubs for depth-excluded pages
+  for (const entry of stubEntries) {
+    const relPath = pathMap.get(entry.id) ?? `${entry.id}.md`;
+    const absPath = join(absTarget, relPath);
+    const fm = { ...provider.frontmatter(entry, resolved), stub: true };
+    const withFrontmatter = injectFrontmatter(STUB_BODY, fm);
+
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, withFrontmatter, "utf-8");
+  }
+
+  if (stubEntries.length > 0) {
+    log(opts, `  → ${written} files + ${stubEntries.length} stubs written`);
+  } else {
+    log(opts, `  → ${written} files written`);
+  }
 
   // ── Step 5: Populate cache (before git init so interrupted clones can be repaired) ──
   log(opts, "Building cache...");
   const cacheDir = join(absTarget, ".clone");
   const cache = new CloneCache(join(cacheDir, "cache.sqlite"));
 
-  cache.saveScopeMeta(provider.name, resolved);
-  for (const entry of entries) {
+  // Store depth in resolved metadata so pull can read it
+  const resolvedWithDepth =
+    depth > 0 ? { ...resolved, resolved: { ...resolved.resolved, cloneDepth: depth } } : resolved;
+  cache.saveScopeMeta(provider.name, resolvedWithDepth);
+
+  for (const entry of includedEntries) {
     const relPath = pathMap.get(entry.id) ?? `${entry.id}.md`;
     const content = contentMap.get(entry.id) ?? "";
-    cache.upsert(provider.name, resolved, entry, relPath, contentHash(content));
+    cache.upsert(provider.name, resolvedWithDepth, entry, relPath, contentHash(content));
+  }
+  for (const entry of stubEntries) {
+    const relPath = pathMap.get(entry.id) ?? `${entry.id}.md`;
+    cache.upsert(provider.name, resolvedWithDepth, entry, relPath, null, true);
   }
   cache.close();
-  log(opts, `  → cache populated (${entries.length} entries)`);
+  log(opts, `  → cache populated (${includedEntries.length} entries, ${stubEntries.length} stubs)`);
 
   // ── Step 6: Initialize git repo ────────────────────────────
   log(opts, "Initializing git repository...");
@@ -179,15 +246,18 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   writeFileSync(join(absTarget, ".gitignore"), ".clone/\n", "utf-8");
   execSync("git add .gitignore", gitOpts);
 
-  const commitMsg = `Clone ${provider.name}/${scope.key}: ${spaceName} (${entries.length} pages)`;
+  const depthNote = depth > 0 ? `, depth ${depth}` : "";
+  const stubNote = stubEntries.length > 0 ? `, ${stubEntries.length} stubs` : "";
+  const commitMsg = `Clone ${provider.name}/${scope.key}: ${spaceName} (${includedEntries.length} pages${stubNote}${depthNote})`;
   spawnSync("git", ["commit", "-m", commitMsg, "--allow-empty"], gitOpts);
   log(opts, "  → initial commit created");
 
-  log(opts, `\nDone! Cloned ${entries.length} pages to ${absTarget}`);
+  log(opts, `\nDone! Cloned ${includedEntries.length} pages${stubNote} to ${absTarget}`);
 
   return {
     path: absTarget,
-    pageCount: entries.length,
-    scope: resolved,
+    pageCount: includedEntries.length,
+    stubCount: stubEntries.length,
+    scope: resolvedWithDepth,
   };
 }
