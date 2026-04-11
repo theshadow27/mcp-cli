@@ -54,6 +54,9 @@ export const SUBCOMMANDS = [
   "help",
   "agent",
   "claude",
+  "track",
+  "untrack",
+  "tracked",
 ] as const;
 
 /** Subcommands for `mcx alias` */

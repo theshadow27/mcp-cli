@@ -38,6 +38,7 @@ import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSpans } from "./commands/spans";
+import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdUpdate } from "./commands/update";
@@ -281,6 +282,18 @@ async function main(): Promise<void> {
 
       case "note":
         await cmdNote(cleanArgs.slice(1));
+        break;
+
+      case "track":
+        await cmdTrack(cleanArgs.slice(1));
+        break;
+
+      case "untrack":
+        await cmdUntrack(cleanArgs.slice(1));
+        break;
+
+      case "tracked":
+        await cmdTracked(cleanArgs.slice(1));
         break;
 
       case "typegen":

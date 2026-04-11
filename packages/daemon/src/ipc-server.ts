@@ -36,6 +36,7 @@ import {
   IPC_ERROR,
   KillServeParamsSchema,
   ListToolsParamsSchema,
+  ListWorkItemsParamsSchema,
   MarkReadParamsSchema,
   MarkSpansExportedParamsSchema,
   PROTOCOL_VERSION,
@@ -50,8 +51,10 @@ import {
   SetNoteParamsSchema,
   ShutdownParamsSchema,
   TouchAliasParamsSchema,
+  TrackWorkItemParamsSchema,
   TriggerAuthParamsSchema,
   UnregisterServeParamsSchema,
+  UntrackWorkItemParamsSchema,
   WaitForMailParamsSchema,
   bundleAlias,
   consoleLogger,
@@ -69,6 +72,7 @@ import { startCallbackServer } from "./auth/callback-server";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
+import { WorkItemDb } from "./db/work-items";
 import { metrics } from "./metrics";
 import { getPortHolder } from "./port-holder";
 import { killPid } from "./process-util";
@@ -94,6 +98,7 @@ export class IpcServer {
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
   private drainTimeoutMs: number;
 
+  private workItemDb: WorkItemDb;
   private serveInstances = new Map<string, ServeInstanceInfo>();
   private onReloadConfig: (() => Promise<void>) | null = null;
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
@@ -135,6 +140,7 @@ export class IpcServer {
     this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.getQuotaStatus = options.getQuotaStatus ?? null;
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
+    this.workItemDb = new WorkItemDb(this.db.getDatabase());
     this.registerHandlers();
     // Prune expired ephemeral aliases on startup
     this.db.pruneExpiredAliases();
@@ -1025,6 +1031,53 @@ export class IpcServer {
       const { server, tool } = DeleteNoteParamsSchema.parse(params);
       const deleted = this.db.deleteNote(server, tool);
       return { ok: true as const, deleted };
+    });
+
+    // -- Work item tracking --
+
+    this.handlers.set("trackWorkItem", async (params, _ctx) => {
+      const { number, branch } = TrackWorkItemParamsSchema.parse(params);
+      if (!number && !branch) {
+        throw Object.assign(new Error("Either number or branch is required"), {
+          code: IPC_ERROR.INVALID_PARAMS,
+        });
+      }
+
+      // Check if already tracked
+      if (number) {
+        const existing = this.workItemDb.getWorkItemByPr(number) ?? this.workItemDb.getWorkItemByIssue(number);
+        if (existing) return existing;
+      }
+
+      // Create new work item
+      const id = number ? `#${number}` : `branch:${branch}`;
+      return this.workItemDb.createWorkItem({
+        id,
+        issueNumber: number ?? null,
+        prNumber: number ?? null,
+        branch: branch ?? null,
+      });
+    });
+
+    this.handlers.set("untrackWorkItem", async (params, _ctx) => {
+      const { number } = UntrackWorkItemParamsSchema.parse(params);
+      const existing = this.workItemDb.getWorkItemByPr(number) ?? this.workItemDb.getWorkItemByIssue(number);
+      if (existing) {
+        this.workItemDb.deleteWorkItem(existing.id);
+        return { ok: true as const, deleted: true };
+      }
+      // Also try the id pattern
+      const byId = this.workItemDb.getWorkItem(`#${number}`);
+      if (byId) {
+        this.workItemDb.deleteWorkItem(byId.id);
+        return { ok: true as const, deleted: true };
+      }
+      return { ok: true as const, deleted: false };
+    });
+
+    this.handlers.set("listWorkItems", async (params, _ctx) => {
+      const { phase } = ListWorkItemsParamsSchema.parse(params ?? {});
+      return this.workItemDb.listWorkItems(phase ? { phase } : undefined);
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {
