@@ -46,8 +46,15 @@ function toYaml(obj: Record<string, unknown>): string {
 
 function formatYamlValue(value: unknown): string {
   if (typeof value === "string") {
-    // Quote strings that contain special YAML characters
-    if (/[:#\[\]{},&*!|>'"%@`]/.test(value) || value.includes("\n") || value.trim() !== value) {
+    // Quote strings that contain special YAML characters or look like numbers/booleans
+    if (
+      /[:#\[\]{},&*!|>'"%@`]/.test(value) ||
+      value.includes("\n") ||
+      value.trim() !== value ||
+      /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(value) ||
+      value === "true" ||
+      value === "false"
+    ) {
       return JSON.stringify(value);
     }
     return value;

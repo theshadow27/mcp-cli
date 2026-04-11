@@ -4,7 +4,7 @@ import { hasFrontmatter, injectFrontmatter, stripFrontmatter } from "./frontmatt
 describe("injectFrontmatter", () => {
   test("injects frontmatter into plain content", () => {
     const result = injectFrontmatter("Hello world", { id: "123", title: "My Page" });
-    expect(result).toBe("---\nid: 123\ntitle: My Page\n---\n\nHello world");
+    expect(result).toBe('---\nid: "123"\ntitle: My Page\n---\n\nHello world');
   });
 
   test("replaces existing frontmatter", () => {
@@ -22,7 +22,7 @@ describe("injectFrontmatter", () => {
     const result = injectFrontmatter("body", { id: "1", url: undefined, extra: null });
     expect(result).not.toContain("url");
     expect(result).not.toContain("extra");
-    expect(result).toContain("id: 1");
+    expect(result).toContain('id: "1"');
   });
 
   test("handles numbers and booleans", () => {
@@ -33,7 +33,7 @@ describe("injectFrontmatter", () => {
 
   test("handles empty content", () => {
     const result = injectFrontmatter("", { id: "1" });
-    expect(result).toBe("---\nid: 1\n---\n\n");
+    expect(result).toBe('---\nid: "1"\n---\n\n');
   });
 });
 
@@ -79,6 +79,26 @@ describe("stripFrontmatter", () => {
     expect(content).toBe(original);
     expect(fields?.id).toBe("abc-123");
     expect(fields?.version).toBe(7);
+  });
+
+  test("round-trips numeric string IDs without type loss", () => {
+    const original = "Page content";
+    const fm = { id: "1234567890", version: 3, title: "Confluence Page" };
+    const injected = injectFrontmatter(original, fm);
+    const { content, fields } = stripFrontmatter(injected);
+    expect(content).toBe(original);
+    expect(fields?.id).toBe("1234567890");
+    expect(typeof fields?.id).toBe("string");
+    expect(fields?.version).toBe(3);
+  });
+
+  test("round-trips boolean-like strings without type loss", () => {
+    const injected = injectFrontmatter("body", { flag: "true", label: "false" });
+    const { fields } = stripFrontmatter(injected);
+    expect(fields?.flag).toBe("true");
+    expect(typeof fields?.flag).toBe("string");
+    expect(fields?.label).toBe("false");
+    expect(typeof fields?.label).toBe("string");
   });
 });
 
