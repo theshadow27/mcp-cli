@@ -52,6 +52,10 @@ function wrapMcpResult(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
+function wrapMcpError(message: string) {
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
 describe("validateScopeKey (via resolveScope)", () => {
   function makeCallTool(): (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown> {
     return async () => null;
@@ -300,16 +304,18 @@ describe("fetch", () => {
 });
 
 describe("push", () => {
-  test("returns ok: true on success", async () => {
+  test("returns ok: true on success with version from update_issue response", async () => {
     const scope = makeScope();
     const baseVersion = new Date("2026-01-01T00:00:00Z").getTime();
+    const toolCalls: string[] = [];
     const provider = createGitHubIssuesProvider({
       callTool: async (_server, tool) => {
+        toolCalls.push(tool);
         if (tool === "get_issue") {
           return wrapMcpResult(makeIssueResponse(1, "Issue", "open", "2026-01-01T00:00:00Z"));
         }
         if (tool === "update_issue") {
-          return wrapMcpResult({});
+          return wrapMcpResult(makeIssueResponse(1, "Issue", "open", "2026-01-02T00:00:00Z"));
         }
         return null;
       },
@@ -318,6 +324,9 @@ describe("push", () => {
     const pushFn = provider.push as NonNullable<typeof provider.push>;
     const result = await pushFn(scope, "1", "Updated content", baseVersion);
     expect(result.ok).toBe(true);
+    expect(result.newVersion).toBe(new Date("2026-01-02T00:00:00Z").getTime());
+    // Should only call get_issue (conflict check) + update_issue — no re-fetch
+    expect(toolCalls).toEqual(["get_issue", "update_issue"]);
   });
 
   test("detects conflict via updated_at timestamp", async () => {
@@ -363,7 +372,7 @@ describe("push", () => {
         }
         if (tool === "update_issue") {
           capturedArgs = args;
-          return wrapMcpResult({});
+          return wrapMcpResult(makeIssueResponse(1, "New Title", "open", "2026-01-01T00:00:00Z"));
         }
         return null;
       },
@@ -386,7 +395,7 @@ describe("push", () => {
         }
         if (tool === "update_issue") {
           capturedArgs = args;
-          return wrapMcpResult({});
+          return wrapMcpResult(makeIssueResponse(1, "Same Title", "open", "2026-01-01T00:00:00Z"));
         }
         return null;
       },
@@ -408,7 +417,7 @@ describe("push", () => {
         }
         if (tool === "update_issue") {
           capturedArgs = args;
-          return wrapMcpResult({});
+          return wrapMcpResult(makeIssueResponse(1, "Issue", "closed", "2026-01-01T00:00:00Z"));
         }
         return null;
       },
@@ -547,5 +556,98 @@ describe("toRemoteEntry (NaN guard)", () => {
     const result = await provider.fetch(scope, "1");
     expect(result.entry.version).toBe(0);
     expect(Number.isNaN(result.entry.version)).toBe(false);
+  });
+});
+
+describe("unwrapToolResult — isError handling", () => {
+  test("throws on MCP error response during fetch", async () => {
+    const scope = makeScope();
+    const provider = createGitHubIssuesProvider({
+      callTool: async () => wrapMcpError("Not Found"),
+    });
+    await expect(provider.fetch(scope, "1")).rejects.toThrow("MCP tool error: Not Found");
+  });
+
+  test("throws on isError during list", async () => {
+    const scope = makeScope();
+    const provider = createGitHubIssuesProvider({
+      callTool: async () => wrapMcpError("Rate limit exceeded"),
+    });
+    const entries: RemoteEntry[] = [];
+    await expect(async () => {
+      for await (const entry of provider.list(scope)) {
+        entries.push(entry);
+      }
+    }).toThrow("MCP tool error: Rate limit exceeded");
+  });
+
+  test("throws on isError during push conflict check", async () => {
+    const scope = makeScope();
+    const provider = createGitHubIssuesProvider({
+      callTool: async () => wrapMcpError("Server error"),
+    });
+    const pushFn = provider.push as NonNullable<typeof provider.push>;
+    const result = await pushFn(scope, "1", "Content", 1);
+    // push catches errors and returns ok: false
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("MCP tool error: Server error");
+  });
+});
+
+describe("slugify — non-ASCII fallback", () => {
+  test("returns 'issue' for all-emoji title", () => {
+    const provider = createGitHubIssuesProvider({ callTool: async () => null });
+    const entry = makeEntry({
+      title: "⚡🔥",
+      metadata: { ...makeEntry().metadata, number: 42, state: "open" },
+    });
+    expect(provider.toPath(entry, [entry])).toBe("open/42-issue.md");
+  });
+
+  test("returns 'issue' for all-non-ASCII title", () => {
+    const provider = createGitHubIssuesProvider({ callTool: async () => null });
+    const entry = makeEntry({
+      title: "日本語タイトル",
+      metadata: { ...makeEntry().metadata, number: 7, state: "closed" },
+    });
+    expect(provider.toPath(entry, [entry])).toBe("closed/7-issue.md");
+  });
+});
+
+describe("changes — deduplication", () => {
+  test("deduplicates issues seen across pages", async () => {
+    const scope = makeScope();
+    let callCount = 0;
+    const provider = createGitHubIssuesProvider({
+      callTool: async (_server, tool) => {
+        if (tool === "list_issues") {
+          callCount++;
+          if (callCount === 1) {
+            // Page 1: issues 1, 2, 3 — simulate 100 results to trigger pagination
+            const issues = Array.from({ length: 100 }, (_, i) =>
+              makeIssueResponse(i + 1, `Issue ${i + 1}`, "open", "2026-02-01T00:00:00Z"),
+            );
+            return wrapMcpResult(issues);
+          }
+          // Page 2: issue 1 appears again (moved due to sort order shift) plus issue 101
+          return wrapMcpResult([
+            makeIssueResponse(1, "Issue 1", "open", "2026-02-01T00:00:00Z"),
+            makeIssueResponse(101, "Issue 101", "open", "2026-02-01T00:00:00Z"),
+          ]);
+        }
+        return null;
+      },
+    });
+
+    const changesFn = provider.changes as NonNullable<typeof provider.changes>;
+    const changes: Array<{ entry: RemoteEntry; type: string }> = [];
+    for await (const change of changesFn(scope, "2026-01-01T00:00:00Z")) {
+      changes.push(change as { entry: RemoteEntry; type: string });
+    }
+    // 100 from page 1 + 1 new from page 2 (issue 1 deduped)
+    expect(changes).toHaveLength(101);
+    const ids = changes.map((c) => c.entry.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(101);
   });
 });

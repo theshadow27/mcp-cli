@@ -41,9 +41,13 @@ interface McpToolResult {
   isError?: boolean;
 }
 
-/** Extract and parse JSON from an MCP tool call result. */
+/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
 function unwrapToolResult(result: unknown): unknown {
   const mcpResult = result as McpToolResult;
+  if (mcpResult?.isError) {
+    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
+    throw new Error(`MCP tool error: ${text}`);
+  }
   if (mcpResult?.content?.[0]?.type === "text") {
     const text = mcpResult.content[0].text;
     try {
@@ -67,13 +71,14 @@ function validateScopeKey(key: string): void {
   }
 }
 
-/** Sanitize a title for use as a filename. */
+/** Sanitize a title for use as a filename. Falls back to "issue" if title has no ASCII chars. */
 function slugify(title: string): string {
-  return title
+  const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+  return slug || "issue";
 }
 
 /** Normalize labels from GitHub's mixed format (string or {name: string}). */
@@ -112,6 +117,15 @@ function toRemoteEntry(issue: GitHubIssue): RemoteEntry {
   };
 }
 
+/** Extract and validate owner/repo from a resolved scope. */
+function getOwnerRepo(scope: ResolvedScope): { owner: string; repo: string } {
+  const { owner, repo } = scope.resolved as { owner: string; repo: string };
+  if (!owner || !repo) {
+    throw new Error(`Malformed resolved scope: missing owner or repo in scope "${scope.key}"`);
+  }
+  return { owner, repo };
+}
+
 export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): RemoteProvider {
   const { callTool } = opts;
   const SERVER = "github";
@@ -138,7 +152,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
     },
 
     async *list(scope: ResolvedScope): AsyncIterable<RemoteEntry> {
-      const { owner, repo } = scope.resolved as { owner: string; repo: string };
+      const { owner, repo } = getOwnerRepo(scope);
       // Fetch open and closed issues separately to get all issues
       for (const state of ["open", "closed"] as const) {
         let page = 1;
@@ -170,7 +184,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
     },
 
     async fetch(scope: ResolvedScope, id: string): Promise<FetchResult> {
-      const { owner, repo } = scope.resolved as { owner: string; repo: string };
+      const { owner, repo } = getOwnerRepo(scope);
       const resp = (await callGitHub("get_issue", {
         owner,
         repo,
@@ -185,7 +199,8 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
     },
 
     async *changes(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent> {
-      const { owner, repo } = scope.resolved as { owner: string; repo: string };
+      const { owner, repo } = getOwnerRepo(scope);
+      const seen = new Set<number>();
       let page = 1;
       let hasMore = true;
 
@@ -203,7 +218,8 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
 
         const issues = Array.isArray(resp) ? resp : [];
         for (const issue of issues) {
-          if (!issue.pull_request) {
+          if (!issue.pull_request && !seen.has(issue.number)) {
+            seen.add(issue.number);
             yield {
               entry: toRemoteEntry(issue),
               type: "updated",
@@ -246,7 +262,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
       baseVersion: number,
       frontmatter?: Record<string, unknown>,
     ) {
-      const { owner, repo } = scope.resolved as { owner: string; repo: string };
+      const { owner, repo } = getOwnerRepo(scope);
       try {
         // Fetch current issue to check for conflicts
         const current = (await callGitHub("get_issue", {
@@ -286,14 +302,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
           updateArgs.labels = frontmatter.labels;
         }
 
-        await callGitHub("update_issue", updateArgs);
-
-        // Re-fetch to get new version
-        const updated = (await callGitHub("get_issue", {
-          owner,
-          repo,
-          issue_number: Number.parseInt(id, 10),
-        })) as GitHubIssue;
+        const updated = (await callGitHub("update_issue", updateArgs)) as GitHubIssue;
 
         return {
           ok: true,
@@ -306,7 +315,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
     },
 
     async create(scope: ResolvedScope, _parentId: string | undefined, title: string, content: string) {
-      const { owner, repo } = scope.resolved as { owner: string; repo: string };
+      const { owner, repo } = getOwnerRepo(scope);
       const resp = (await callGitHub("create_issue", {
         owner,
         repo,

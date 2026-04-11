@@ -1,18 +1,1 @@
-# Dependencies
-node_modules/
-
-# Build output
-dist/
-build/
-tsconfig.tsbuildinfo
-
-# Environment
-.env
-
-# OS
-.DS_Store
-
-# Project-specific
 .clone/
-.claude/worktrees/
-test-timings.json
