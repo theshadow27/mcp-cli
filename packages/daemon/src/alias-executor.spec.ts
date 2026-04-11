@@ -108,6 +108,10 @@ describe("alias-executor subprocess protocol", () => {
   });
 
   test("cache() writes to disk and returns cached value on second call", async () => {
+    // Clean up BEFORE test to handle stale state from prior crashes (#1146)
+    const cacheDir = join(homedir(), ".mcp-cli", "cache", "alias", "executor-cache-test");
+    if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true });
+
     const dir = makeTmpDir();
     const scriptPath = join(dir, "cached.ts");
     // Script uses cache() — on first call writes file, on second call reads it
@@ -149,10 +153,7 @@ describe("alias-executor subprocess protocol", () => {
     expect(JSON.parse(second.stdout).result).toBe("original");
 
     // Clean up cache files
-    const cacheDir = join(homedir(), ".mcp-cli", "cache", "alias", "executor-cache-test");
-    if (existsSync(cacheDir)) {
-      rmSync(cacheDir, { recursive: true });
-    }
+    if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true });
   });
 
   test("cycle detection: errors when alias is already in callChain", async () => {
