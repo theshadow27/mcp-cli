@@ -1359,7 +1359,7 @@ describe("mcx claude send", () => {
 // ── bye ──
 
 describe("mcx claude bye", () => {
-  test("ends resolved session", async () => {
+  test("ends resolved session with message", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true });
@@ -1369,10 +1369,33 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
+      await cmdClaude(["bye", "def", "PR pushed and verified"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_bye", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+        message: "PR pushed and verified",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("warns when no closing message provided", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true });
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
       await cmdClaude(["bye", "def"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_bye", {
         sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
       });
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("no closing message");
     } finally {
       console.log = origLog;
     }
@@ -1388,9 +1411,10 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["quit", "abc"], deps);
+      await cmdClaude(["quit", "abc", "done"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_bye", {
         sessionId: "abc12345-1111-2222-3333-444444444444",
+        message: "done",
       });
     } finally {
       console.log = origLog;
@@ -1577,12 +1601,14 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "worktree gone test"], deps);
       // Should call git status but not git worktree remove
       expect(exec).toHaveBeenCalledTimes(1);
       expect((exec as ReturnType<typeof mock>).mock.calls[0][0]).toContain("status");
-      // No removal messages
-      expect(printError).not.toHaveBeenCalled();
+      // No removal messages (only the bye warning if any)
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).not.toContain("Removed worktree");
+      expect(errOutput).not.toContain("uncommitted");
     } finally {
       console.log = origLog;
     }
@@ -2533,11 +2559,12 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
       // Should print formatted entries (at least 4 transcript entries)
       expect(logSpy.mock.calls.length).toBeGreaterThanOrEqual(4);
 
-      // 5. Bye — end the session
+      // 5. Bye — end the session (with closing message)
       logSpy.mockClear();
-      await cmdClaude(["bye", "lifecycle"], deps);
+      await cmdClaude(["bye", "lifecycle", "test complete"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_bye", {
         sessionId: "lifecycle-1111-2222-3333-444444444444",
+        message: "test complete",
       });
       expect(sessions[0].state).toBe("ended");
     } finally {

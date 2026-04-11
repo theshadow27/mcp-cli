@@ -261,7 +261,8 @@ async function handleBye(
 ): Promise<{
   content: Array<{ type: "text"; text: string }>;
 }> {
-  const { worktree, cwd, repoRoot } = await server.bye(args.sessionId as string);
+  const message = typeof args.message === "string" ? args.message : undefined;
+  const { worktree, cwd, repoRoot } = await server.bye(args.sessionId as string, message);
   return { content: [{ type: "text", text: JSON.stringify({ ended: true, worktree, cwd, repoRoot }) }] };
 }
 

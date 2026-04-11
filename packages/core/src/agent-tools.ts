@@ -221,6 +221,10 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         type: "object" as const,
         properties: {
           sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to end" },
+          message: {
+            type: "string",
+            description: "Closing message explaining why the session is being ended. Logged to the session transcript.",
+          },
           ...ov("bye")?.extraProperties,
         },
         required: ["sessionId"] as const,
