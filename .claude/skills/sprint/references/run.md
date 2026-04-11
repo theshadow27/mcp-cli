@@ -98,22 +98,16 @@ All sessions in an issue's lifecycle use the same provider.
 
 ### Triage
 
-After implementation completes, end the session. The `bye` response includes
-the worktree path — **save it** for reuse in subsequent phases:
+After implementation completes, end the session:
 
 ```bash
-# bye returns JSON: {"ended":true,"worktree":"claude-xxx","cwd":"/path/...","repoRoot":"/path/..."}
 mcx claude bye <sessionId>
 ```
 
-**Track the worktree path** from the `bye` response. If `cwd` is null (daemon-
-created worktrees), resolve it: `.claude/worktrees/<worktree-name>` relative
-to the repo root.
-
-Run triage from the worktree directory:
+Run PR-based triage (works from any directory — no worktree needed):
 
 ```bash
-cd <worktree-path> && bun .claude/skills/estimate/triage.ts --base main --json
+bun .claude/skills/estimate/triage.ts --pr <pr-number> --json
 ```
 
 **High scrutiny** if ANY of:
@@ -239,7 +233,7 @@ while issues remain:
 
   for each session that completed (idle/result):
     if implementation session:
-      bye → save worktree path → triage → spawn review or QA (--cwd)
+      bye → triage (--pr N) → spawn review or QA (--worktree)
       if utilization < 80%:
         spawn next issue from backlog (backfill the slot)
       else:
@@ -267,7 +261,7 @@ while issues remain:
 **Key rules:**
 - Use `mcx claude wait`, never `sleep` — wait is event-driven and interruptible
 - Check `session:result` in wait output — it means idle (waiting for input), NOT ended
-- Always `bye` before triaging (need the worktree path for triage.ts)
+- Triage uses `--pr N` (no worktree needed) — run it after `bye`
 - Don't `bye` a session before verifying the PR was pushed
 - Spawn fresh sessions per phase — never reuse across implement/review/QA
 - Reuse worktrees across phases via `--cwd` — prefer `--cwd`, but use `--worktree` if the worktree was auto-cleaned by `bye`

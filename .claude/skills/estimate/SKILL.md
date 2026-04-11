@@ -17,12 +17,12 @@ Predicting effort before implementation is unreliable (validated: best model ach
 
 ## Usage
 
-After implementation completes, in the worktree:
+After implementation completes, run triage against the PR (works from any directory):
 
 ```bash
-bun .claude/skills/estimate/triage.ts
-bun .claude/skills/estimate/triage.ts --json    # machine-readable
-bun .claude/skills/estimate/triage.ts --base develop
+bun .claude/skills/estimate/triage.ts --pr 1152 --json   # PR-based (preferred)
+bun .claude/skills/estimate/triage.ts                      # local diff vs main
+bun .claude/skills/estimate/triage.ts --base develop       # local diff vs develop
 ```
 
 ## Triage Rules
