@@ -248,6 +248,27 @@ describe("LiveSpan", () => {
     expect(mid.parentSpanId).toBe(root.spanId);
   });
 
+  test("full causal chain: mcx → daemon → worker → claude", () => {
+    // Simulate the full propagation chain
+    const mcxSpan = startSpan("mcx");
+    const callSpan = mcxSpan.child("ipc.callTool");
+
+    // Daemon receives callSpan's traceparent
+    const daemonSpan = startSpan("ipc.callTool", {
+      parentTraceparent: callSpan.traceparent(),
+    });
+    expect(daemonSpan.traceId).toBe(mcxSpan.traceId);
+    expect(daemonSpan.parentSpanId).toBe(callSpan.spanId);
+
+    // Worker has its own startup span
+    const workerSpan = startSpan("claude-worker");
+    // Worker passes its traceparent to spawned process
+    const workerTp = workerSpan.traceparent();
+    const parsed = parseTraceparent(workerTp);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.parentId).toBe(workerSpan.spanId);
+  });
+
   test("end() snapshots attributes (mutations don't leak)", () => {
     const live = startSpan("test.snapshot");
     live.setAttribute("before", true);

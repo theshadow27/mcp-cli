@@ -8,7 +8,21 @@
 import { IPC_REQUEST_TIMEOUT_MS, PING_TIMEOUT_MS, options } from "./constants";
 import type { IpcError, IpcMethod, IpcMethodResult, IpcRequest, IpcResponse } from "./ipc";
 import { nextId } from "./ipc";
-import { formatTraceparent, generateSpanId, generateTraceId } from "./trace";
+import type { LiveSpan } from "./trace";
+import { startSpan } from "./trace";
+
+/**
+ * Module-level startup span for the mcx CLI process.
+ * Constant for the process lifetime — per-call spans are children of this.
+ */
+let _processSpan: LiveSpan | null = null;
+
+function getProcessSpan(): LiveSpan {
+  if (!_processSpan) {
+    _processSpan = startSpan("mcx");
+  }
+  return _processSpan;
+}
 
 /**
  * Structured error thrown by ipcCall() when the daemon returns an error response.
@@ -84,11 +98,12 @@ export async function ipcCall<M extends IpcMethod>(
   params?: unknown,
   opts?: { timeoutMs?: number },
 ): Promise<IpcMethodResult[M]> {
+  const callSpan = getProcessSpan().child(`ipc.${method}`);
   const request: IpcRequest = {
     id: nextId(),
     method,
     params,
-    traceparent: formatTraceparent(generateTraceId(), generateSpanId()),
+    traceparent: callSpan.traceparent(),
   };
   const response = await sendRequest(request, opts?.timeoutMs);
 

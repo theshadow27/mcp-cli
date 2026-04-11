@@ -181,7 +181,13 @@ export interface SessionResult {
 /** Dependency-injectable process spawner for testing. */
 export type SpawnFn = (
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ) => {
   pid: number;
   exited: Promise<number>;
@@ -566,8 +572,9 @@ export class ClaudeWsServer {
   /**
    * Spawn the Claude CLI process for a prepared session.
    * Returns the PID of the spawned process.
+   * @param traceparent Optional W3C traceparent to propagate via TRACEPARENT env var.
    */
-  spawnClaude(sessionId: string): number {
+  spawnClaude(sessionId: string, traceparent?: string): number {
     const session = this.getSession(sessionId);
     const port = this.port;
     if (!port) throw new Error("WS server not started");
@@ -613,6 +620,7 @@ export class ClaudeWsServer {
       stdout: "ignore",
       stderr: "pipe",
       stdin: "ignore",
+      env: traceparent ? { TRACEPARENT: traceparent } : undefined,
     });
 
     session.pid = proc.pid;
@@ -1909,7 +1917,13 @@ function isAddrInUse(err: unknown): boolean {
 
 function defaultSpawn(
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ): {
   pid: number;
   exited: Promise<number>;
@@ -1918,7 +1932,7 @@ function defaultSpawn(
 } {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
-  const env = { ...process.env };
+  const env = { ...process.env, ...opts.env };
   env.CLAUDECODE = undefined;
   // Shells set PWD on cd; Bun.spawn only does chdir(). Without this,
   // the spawned process inherits the daemon's PWD and tools that read
