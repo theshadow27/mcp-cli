@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { buildQuery, clearTokenCache, fetchTrackedPRs, getGhToken, parseRemoteUrl } from "./graphql-client";
+import {
+  buildQuery,
+  clearTokenCache,
+  fetchTrackedPRs,
+  getGhToken,
+  parseRemoteUrl,
+  resolveNumber,
+} from "./graphql-client";
 
 afterEach(() => {
   clearTokenCache();
@@ -262,5 +269,147 @@ describe("fetchTrackedPRs", () => {
     expect(result[0].ciState).toBeNull();
     expect(result[0].ciChecks).toEqual([]);
     expect(result[0].reviews).toEqual([]);
+  });
+});
+
+// ---------- resolveNumber ----------
+
+describe("resolveNumber", () => {
+  const repo = { owner: "test", repo: "repo" };
+  const mockGetToken = async () => "fake-token";
+
+  function mockFetch(body: unknown, status = 200) {
+    return async () => new Response(JSON.stringify(body), { status });
+  }
+
+  test("identifies a PR number directly", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "PullRequest",
+            number: 42,
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 42, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: true, prNumber: 42 });
+  });
+
+  test("resolves linked PR from issue via ConnectedEvent", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ConnectedEvent",
+                  subject: { __typename: "PullRequest", number: 99 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 99 });
+  });
+
+  test("resolves linked PR from issue via CrossReferencedEvent", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "CrossReferencedEvent",
+                  source: { __typename: "PullRequest", number: 77 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 77 });
+  });
+
+  test("returns null prNumber when issue has no linked PR", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: null });
+  });
+
+  test("returns null when number not found", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: null,
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 9999, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: null });
+  });
+
+  test("throws on API error", async () => {
+    await expect(
+      resolveNumber(repo, 1, { getToken: mockGetToken, fetch: mockFetch("Server Error", 500) }),
+    ).rejects.toThrow("GitHub GraphQL API returned 500");
+  });
+
+  test("throws on GraphQL errors", async () => {
+    const body = { errors: [{ message: "Something went wrong" }] };
+    await expect(resolveNumber(repo, 1, { getToken: mockGetToken, fetch: mockFetch(body) })).rejects.toThrow(
+      "GitHub GraphQL errors",
+    );
+  });
+
+  test("ignores non-PR timeline events", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "CrossReferencedEvent",
+                  source: { __typename: "Issue", number: 55 },
+                },
+                {
+                  __typename: "ConnectedEvent",
+                  subject: { __typename: "Issue", number: 66 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: null });
   });
 });

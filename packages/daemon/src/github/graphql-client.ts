@@ -291,11 +291,114 @@ export async function fetchTrackedPRs(
   return results;
 }
 
+// ---------- Issue/PR resolution ----------
+
+export interface ResolvedNumber {
+  /** Whether the number is a pull request. */
+  isPR: boolean;
+  /** The PR number (same as input if isPR, or linked PR if issue). null if no PR found. */
+  prNumber: number | null;
+}
+
+const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on PullRequest { number }
+      ... on Issue {
+        timelineItems(itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT], first: 10) {
+          nodes {
+            __typename
+            ... on ConnectedEvent {
+              subject { __typename ... on PullRequest { number } }
+            }
+            ... on CrossReferencedEvent {
+              source { __typename ... on PullRequest { number } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+interface RawTimelineNode {
+  __typename?: string;
+  subject?: { __typename?: string; number?: number };
+  source?: { __typename?: string; number?: number };
+}
+
+interface RawIssueOrPR {
+  __typename?: string;
+  number?: number;
+  timelineItems?: { nodes?: RawTimelineNode[] };
+}
+
+/**
+ * Resolve a GitHub issue/PR number to determine if it's a PR or find a linked PR.
+ * Returns { isPR: true, prNumber: N } if the number is a PR,
+ * { isPR: false, prNumber: M } if it's an issue with a linked PR,
+ * or { isPR: false, prNumber: null } if no PR is associated.
+ */
+export async function resolveNumber(repo: RepoInfo, number: number, opts?: FetchPRsOptions): Promise<ResolvedNumber> {
+  const getToken = opts?.getToken ?? getGhToken;
+  const doFetch: FetchFn = opts?.fetch ?? globalThis.fetch;
+
+  const variables = { owner: repo.owner, repo: repo.repo, number };
+
+  let token = await getToken();
+  let resp = await doGraphQL(doFetch, token, RESOLVE_QUERY, variables);
+
+  if (resp.status === 401) {
+    clearTokenCache();
+    token = await getToken();
+    resp = await doGraphQL(doFetch, token, RESOLVE_QUERY, variables);
+  }
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`GitHub GraphQL API returned ${resp.status}: ${body}`);
+  }
+
+  const json: { data?: { repository?: { issueOrPullRequest?: RawIssueOrPR } }; errors?: Array<{ message: string }> } =
+    await resp.json();
+
+  if (json.errors?.length) {
+    throw new Error(`GitHub GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`);
+  }
+
+  const node = json.data?.repository?.issueOrPullRequest;
+  if (!node) return { isPR: false, prNumber: null };
+
+  if (node.__typename === "PullRequest") {
+    return { isPR: true, prNumber: node.number ?? number };
+  }
+
+  // It's an issue — look for linked PRs in timeline
+  const timelineNodes = node.timelineItems?.nodes ?? [];
+  for (const tNode of timelineNodes) {
+    if (tNode.__typename === "ConnectedEvent" && tNode.subject?.__typename === "PullRequest" && tNode.subject.number) {
+      return { isPR: false, prNumber: tNode.subject.number };
+    }
+    if (
+      tNode.__typename === "CrossReferencedEvent" &&
+      tNode.source?.__typename === "PullRequest" &&
+      tNode.source.number
+    ) {
+      return { isPR: false, prNumber: tNode.source.number };
+    }
+  }
+
+  return { isPR: false, prNumber: null };
+}
+
+// ---------- Fetch (internal) ----------
+
 async function doGraphQL(
   doFetch: FetchFn,
   token: string,
   query: string,
-  variables: Record<string, string>,
+  variables: Record<string, string | number>,
 ): Promise<Response> {
   return doFetch(GITHUB_GRAPHQL_URL, {
     method: "POST",

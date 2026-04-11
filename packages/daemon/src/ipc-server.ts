@@ -103,6 +103,7 @@ export class IpcServer {
   private onReloadConfig: (() => Promise<void>) | null = null;
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
   private getQuotaStatus: (() => IpcMethodResult["quotaStatus"]) | null = null;
+  private resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null = null;
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
@@ -127,6 +128,8 @@ export class IpcServer {
       drainTimeoutMs?: number;
       /** Returns current quota status for the quotaStatus IPC method. */
       getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
+      /** Resolve an issue/PR number to its associated PR number via GitHub API. */
+      resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -139,6 +142,7 @@ export class IpcServer {
     this.logger = options.logger ?? consoleLogger;
     this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.getQuotaStatus = options.getQuotaStatus ?? null;
+    this.resolveIssuePr = options.resolveIssuePr ?? null;
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
     this.workItemDb = new WorkItemDb(this.db.getDatabase());
     this.registerHandlers();
@@ -1047,13 +1051,28 @@ export class IpcServer {
         if (existing) return existing;
       }
 
-      // Create new work item — only set issueNumber for number-based tracking.
-      // prNumber is set later when a PR is actually associated.
+      // For number-based tracking, resolve the PR number via GitHub API.
+      // If the number is a PR, use it directly. If it's an issue with a linked PR,
+      // use the linked PR number so the poller can track CI/review state.
+      let prNumber: number | null = null;
+      if (number && this.resolveIssuePr) {
+        try {
+          const resolved = await this.resolveIssuePr(number);
+          prNumber = resolved.prNumber;
+        } catch (err) {
+          // Best-effort: if GitHub is unreachable, create without prNumber.
+          // The poller won't track it until prNumber is set, but the item is still visible.
+          this.logger.warn(
+            `[mcpd] Failed to resolve PR for #${number}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       const id = number ? `#${number}` : `branch:${branch}`;
       return this.workItemDb.createWorkItem({
         id,
         issueNumber: number ?? null,
-        prNumber: null,
+        prNumber,
         branch: branch ?? null,
       });
     });

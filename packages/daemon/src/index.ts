@@ -62,6 +62,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import { detectRepo, resolveNumber } from "./github/graphql-client";
 import { WorkItemPoller } from "./github/work-item-poller";
 import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
@@ -505,6 +506,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         fetchedAt: status?.fetchedAt ?? 0,
         lastError: quotaPoller.lastError,
       };
+    },
+    resolveIssuePr: async (number: number) => {
+      const repo = await detectRepo();
+      const resolved = await resolveNumber(repo, number);
+      return { prNumber: resolved.prNumber };
     },
   });
   ipcServer.start();
