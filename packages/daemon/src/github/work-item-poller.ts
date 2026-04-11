@@ -11,7 +11,8 @@
 
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
-import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemDb } from "../db/work-items";
+import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
+import type { WorkItemDb } from "../db/work-items";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
 const ACTIVE_INTERVAL_MS = 30_000;
