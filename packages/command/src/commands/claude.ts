@@ -983,9 +983,7 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
-  const toolArgs: Record<string, unknown> = { sessionId };
-  if (message) toolArgs.message = message;
-  const result = await d.callTool("claude_bye", toolArgs);
+  const result = await d.callTool("claude_bye", { sessionId, ...(message && { message }) });
 
   // Extract worktree info from bye response
   const byeResult = parseByeResult(result);
@@ -1034,6 +1032,9 @@ async function claudeByeAll(args: string[], d: ClaudeDeps, keepWorktree: boolean
     return;
   }
 
+  d.printError(
+    "Warning: --all ends sessions without individual closing messages. A message will be required in a future release.",
+  );
   console.error(`Ending ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`);
 
   for (const s of sessions) {

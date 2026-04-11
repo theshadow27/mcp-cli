@@ -869,7 +869,7 @@ describe("ClaudeWsServer", () => {
     expect(server.sessionCount).toBe(0);
   });
 
-  test("bye with message logs closing message to transcript", async () => {
+  test("bye accepts optional closing message and cleans up session", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     await server.start();
@@ -877,19 +877,15 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("msg-session", { prompt: "Hello" });
     server.spawnClaude("msg-session");
 
-    // Get transcript before bye
-    const before = server.getTranscript("msg-session", 50);
-    const countBefore = before.length;
-
     ms.exitResolve(0);
     await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
-    await server.bye("msg-session", "PR #42 pushed and verified");
+    const result = await server.bye("msg-session", "PR #42 pushed and verified");
     expect(server.sessionCount).toBe(0);
-
-    // Can't check transcript after bye (session removed), but we verified it didn't throw
-    // and the message was accepted. The transcript entry is added before termination.
-    expect(countBefore).toBeGreaterThanOrEqual(0); // sanity
+    // bye returns worktree metadata regardless of message
+    expect(result).toHaveProperty("worktree");
+    expect(result).toHaveProperty("cwd");
+    expect(result).toHaveProperty("repoRoot");
   });
 
   test("bye with message uses message in termination reason", async () => {
