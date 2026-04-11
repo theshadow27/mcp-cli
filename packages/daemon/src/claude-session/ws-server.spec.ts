@@ -888,6 +888,34 @@ describe("ClaudeWsServer", () => {
     expect(result).toHaveProperty("repoRoot");
   });
 
+  test("bye with message logs [bye] entry to transcript", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("transcript-bye-session", { prompt: "Hello" });
+    server.spawnClaude("transcript-bye-session");
+
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    const transcriptCalls: Array<[string, string, unknown]> = [];
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    const origAddTranscript = (server as any).addTranscript.bind(server);
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    (server as any).addTranscript = (session: unknown, direction: string, message: unknown) => {
+      transcriptCalls.push([direction, JSON.stringify(message), session as string]);
+      return origAddTranscript(session, direction, message);
+    };
+
+    await server.bye("transcript-bye-session", "PR #99 pushed and verified");
+
+    const byeEntry = transcriptCalls.find(
+      ([direction, msg]) => direction === "outbound" && msg.includes("[bye] PR #99 pushed and verified"),
+    );
+    expect(byeEntry).toBeDefined();
+  });
+
   test("bye with message uses message in termination reason", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
