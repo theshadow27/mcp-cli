@@ -1,7 +1,15 @@
 /**
  * Confluence provider — maps a Confluence space to a local directory of markdown files.
  */
-import type { ChangeEvent, FetchResult, RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "./provider";
+import type {
+  ChangeEvent,
+  FetchResult,
+  McpToolCaller,
+  RemoteEntry,
+  RemoteProvider,
+  ResolvedScope,
+  Scope,
+} from "./provider";
 
 /** Thrown when CQL search returns truncated results, signaling the caller to fall back to full sync. */
 export class TruncatedChangesError extends Error {
@@ -68,13 +76,8 @@ interface ResourcesResponse {
   avatarUrl?: string;
 }
 
-/** Function signature for calling MCP tools via the daemon. */
-export type McpToolCaller = (
-  server: string,
-  tool: string,
-  args: Record<string, unknown>,
-  timeoutMs?: number,
-) => Promise<unknown>;
+// McpToolCaller is now defined in provider.ts and re-exported here for backwards compatibility.
+export type { McpToolCaller } from "./provider";
 
 /** MCP tool call result shape. */
 interface McpToolResult {
