@@ -43,7 +43,7 @@ export type WorkItemEvent =
   | { type: "pr:opened"; prNumber: number }
   | { type: "pr:merged"; prNumber: number }
   | { type: "pr:closed"; prNumber: number }
-  | { type: "checks:started"; prNumber: number; runId: number }
+  | { type: "checks:started"; prNumber: number }
   | { type: "checks:passed"; prNumber: number }
   | { type: "checks:failed"; prNumber: number; failedJob: string }
   | { type: "review:approved"; prNumber: number }
