@@ -499,4 +499,68 @@ describe("pruneWorktrees", () => {
     expect(result.pruned).toBe(0);
     expect(result.skippedUnmerged).toEqual(["claude/feat-wip"]);
   });
+
+  test("batch guard: calls fixCoreBare after pruning when core.bare=true on last removal", () => {
+    // Simulate the recurrence bug: individual per-removal fix runs but a subsequent
+    // removal flips core.bare back to true. The final batch guard should catch it.
+    // fixCoreBare guards against non-existent repos via existsSync(.git), so we need
+    // a real temp dir with a .git marker.
+    const repoRoot = makeTmpDir();
+    try {
+      writeFileSync(join(repoRoot, ".git"), "gitdir: /some/repo\n");
+      const wt1 = join(repoRoot, ".claude", "worktrees", "feat-a");
+      const wt2 = join(repoRoot, ".claude", "worktrees", "feat-b");
+
+      const porcelainOutput = [
+        `worktree ${repoRoot}`,
+        "HEAD abc123",
+        "branch refs/heads/main",
+        "",
+        `worktree ${wt1}`,
+        "HEAD def456",
+        "branch refs/heads/claude/feat-a",
+        "",
+        `worktree ${wt2}`,
+        "HEAD ghi789",
+        "branch refs/heads/claude/feat-b",
+        "",
+      ].join("\n");
+
+      const execCalls: string[][] = [];
+      const exec = mock((cmd: string[]) => {
+        execCalls.push(cmd);
+        if (cmd.includes("list") && cmd.includes("--porcelain"))
+          return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+        if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+        if (cmd.includes("--merged"))
+          return { stdout: "  main\n  claude/feat-a\n  claude/feat-b\n", stderr: "", exitCode: 0 };
+        if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+        if (cmd.includes("worktree") && cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+        if (cmd.includes("branch") && cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+        // Simulate core.bare=true after all removals complete
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+          return { stdout: "true", stderr: "", exitCode: 0 };
+        }
+        // --unset succeeds
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      const printErrors: string[] = [];
+      const printError = mock((msg: string) => printErrors.push(msg));
+
+      const result = pruneWorktrees({
+        repoRoot,
+        activeWorktrees: new Set(),
+        deps: { exec, printError },
+      });
+
+      expect(result.pruned).toBe(2);
+      // Verify the batch-guard --unset call was made
+      const unsetCalls = execCalls.filter((c) => c.includes("--unset") && c.includes("core.bare"));
+      expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
+      // Verify the batch guard printed the fix
+      expect(printErrors.some((m) => m.includes("batch worktree prune"))).toBe(true);
+    } finally {
+      rmSync(repoRoot, { recursive: true });
+    }
+  });
 });
