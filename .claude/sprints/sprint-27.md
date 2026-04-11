@@ -1,6 +1,6 @@
 # Sprint 27
 
-> Planned 2026-04-10 23:30. Target: 10 PRs.
+> Planned 2026-04-10 23:30. Started 2026-04-10 23:45. Completed 2026-04-11 01:30. Result: 7/7 merged.
 
 ## Goal
 
@@ -36,3 +36,12 @@ Worktree cleanup fixes from adversarial review of #1114. #957/#577 are segfault 
 ## Context
 
 Sprint 26 completed all 8 issues. v1.1.3 released. Pre-commit was taking 4 minutes — PR #1128 cuts it to 15s. Bun 1.3.12 just released and local full test suite (3932 tests) passed without segfault — first time daemon tests didn't crash. This sprint validates that fix across CI and cleans up the auth/worktree follow-ups.
+
+## Results
+
+- **Released**: v1.1.4
+- **PRs merged**: 7 (#1127, #1128, #1130, #1131, #1132, #1134, #1135)
+- **Issues closed**: 10 (#1122, #1125, #1129, #1120, #1121, #1115, #1116, #957, #577, #929)
+- **Issues dropped**: 1 (#1126 — Bun 1.3.12 doesn't fix segfaults, reduced to version ref update)
+- **New issues filed**: 3 (#1129 build codesign, #1133 coverage gap, #1126 Bun upgrade)
+- **Segfault tracking consolidated**: #577, #929, #957 closed as duplicates of #1004
