@@ -301,5 +301,84 @@ describe("WorkItemDb", () => {
       // Second call should be fine (CREATE TABLE IF NOT EXISTS)
       expect(() => new WorkItemDb(raw)).not.toThrow();
     });
+
+    test("sets user_version to 1 on fresh database", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      new WorkItemDb(raw);
+      const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
+      expect(version).toBe(1);
+    });
+
+    test("skips migration when user_version is already current", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+
+      // Manually create the table and set version to simulate existing DB
+      raw.exec(`
+        CREATE TABLE work_items (
+          id              TEXT PRIMARY KEY,
+          issue_number    INTEGER UNIQUE,
+          branch          TEXT UNIQUE,
+          pr_number       INTEGER UNIQUE,
+          pr_state        TEXT DEFAULT 'open',
+          pr_url          TEXT,
+          ci_status       TEXT DEFAULT 'none',
+          ci_run_id       INTEGER,
+          ci_summary      TEXT,
+          review_status   TEXT DEFAULT 'none',
+          phase           TEXT DEFAULT 'impl',
+          created_at      TEXT DEFAULT (datetime('now')),
+          updated_at      TEXT DEFAULT (datetime('now'))
+        );
+        PRAGMA user_version = 1;
+      `);
+
+      // Should not error — migration is a no-op
+      expect(() => new WorkItemDb(raw)).not.toThrow();
+    });
+
+    test("upgrades pre-versioned database (user_version = 0) with existing table", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+
+      // Simulate pre-versioned DB: table exists but user_version is 0
+      raw.exec(`
+        CREATE TABLE work_items (
+          id              TEXT PRIMARY KEY,
+          issue_number    INTEGER UNIQUE,
+          branch          TEXT UNIQUE,
+          pr_number       INTEGER UNIQUE,
+          pr_state        TEXT DEFAULT 'open',
+          pr_url          TEXT,
+          ci_status       TEXT DEFAULT 'none',
+          ci_run_id       INTEGER,
+          ci_summary      TEXT,
+          review_status   TEXT DEFAULT 'none',
+          phase           TEXT DEFAULT 'impl',
+          created_at      TEXT DEFAULT (datetime('now')),
+          updated_at      TEXT DEFAULT (datetime('now'))
+        );
+      `);
+
+      // Insert data before migration
+      raw.exec("INSERT INTO work_items (id, issue_number) VALUES ('existing-1', 99)");
+
+      // Migration should succeed (CREATE TABLE IF NOT EXISTS is idempotent)
+      const db = new WorkItemDb(raw);
+      const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
+      expect(version).toBe(1);
+
+      // Existing data should be preserved
+      const item = db.getWorkItemByIssue(99);
+      expect(item).not.toBeNull();
+      expect(item?.id).toBe("existing-1");
+    });
   });
 });
