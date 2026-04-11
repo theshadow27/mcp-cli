@@ -40,6 +40,7 @@ import {
   MOCK_SERVER_NAME,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
+  TRACING_SERVER_NAME,
   WORK_ITEMS_SERVER_NAME,
   auditRuntimePermissions,
   consoleLogger,
@@ -73,6 +74,7 @@ import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
+import { TracingServer } from "./tracing-server";
 import { WorkItemsServer } from "./work-items-server";
 
 /**
@@ -372,6 +374,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   quotaPoller.start();
 
   const metricsServer = new MetricsServer(metrics, quotaPoller);
+  const tracingServer = new TracingServer(db);
 
   // Work items server: constructed lazily inside registerPendingVirtualServer
   // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
@@ -693,6 +696,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     );
 
     pool.registerPendingVirtualServer(
+      TRACING_SERVER_NAME,
+      (async () => {
+        try {
+          const {
+            client: tracingClient,
+            transport: tracingTransport,
+            tools: tracingTools,
+          } = await tracingServer.start();
+          pool.registerVirtualServer(TRACING_SERVER_NAME, tracingClient, tracingTransport, tracingTools);
+          logger.info("[mcpd] Tracing server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start tracing server: ${err}`);
+        }
+      })(),
+    );
+
+    pool.registerPendingVirtualServer(
       MAIL_SERVER_NAME,
       (async () => {
         try {
@@ -785,6 +805,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           [MOCK_SERVER_NAME, mockServer],
           [ALIAS_SERVER_NAME, aliasServer],
           [METRICS_SERVER_NAME, metricsServer],
+          [TRACING_SERVER_NAME, tracingServer],
           [MAIL_SERVER_NAME, mailServer],
           [WORK_ITEMS_SERVER_NAME, workItemsServer],
         ];

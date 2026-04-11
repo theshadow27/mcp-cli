@@ -243,3 +243,4 @@ export const METRICS_SERVER_NAME = "_metrics";
 export const MAIL_SERVER_NAME = "_mail";
 export const WORK_ITEMS_SERVER_NAME = "_work_items";
 export const MOCK_SERVER_NAME = "_mock";
+export const TRACING_SERVER_NAME = "_tracing";
