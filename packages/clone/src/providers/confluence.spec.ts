@@ -432,6 +432,7 @@ describe("delete", () => {
     const scope = makeScope();
     const calls: string[] = [];
     const provider = createConfluenceProvider({
+      disableToolDiscovery: true,
       callTool: async (_server, tool, _args) => {
         calls.push(tool);
         if (tool === "deleteConfluencePage") {
@@ -457,6 +458,7 @@ describe("delete", () => {
   test("throws when deleteConfluencePage fails with non-tool-not-found error", async () => {
     const scope = makeScope();
     const provider = createConfluenceProvider({
+      disableToolDiscovery: true,
       callTool: async (_server, tool) => {
         if (tool === "deleteConfluencePage") {
           throw new Error("Permission denied");
