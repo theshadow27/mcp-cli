@@ -21,6 +21,7 @@ import {
   PING_TIMEOUT_MS,
   ProtocolMismatchError,
   VERSION,
+  maybeShowTelemetryNotice,
   recordCommand,
 } from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
@@ -125,8 +126,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // First-run telemetry notice — show once, before any data is sent
+  if (!quiet) {
+    maybeShowTelemetryNotice();
+  }
+
   // Fire-and-forget telemetry — never blocks, never throws
-  recordCommand(command, cleanArgs[1]);
+  // Skip for the telemetry command itself (don't track opt-out attempts)
+  if (command !== "telemetry") {
+    recordCommand(command, cleanArgs[1]);
+  }
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
   if (dryRun && command && command !== "call") {

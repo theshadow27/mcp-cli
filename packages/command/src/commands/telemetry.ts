@@ -30,14 +30,14 @@ export function cmdTelemetry(args: string[]): void {
     case "on": {
       const config = readCliConfig();
       writeCliConfig({ ...config, telemetry: true });
-      console.error("Telemetry enabled.");
+      console.log("Telemetry enabled.");
       break;
     }
 
     case "off": {
       const config = readCliConfig();
       writeCliConfig({ ...config, telemetry: false });
-      console.error("Telemetry disabled.");
+      console.log("Telemetry disabled.");
       break;
     }
 

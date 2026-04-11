@@ -79,6 +79,8 @@ export interface CliConfig {
   promptedDirs?: string[];
   /** Whether anonymous usage telemetry is enabled (default: true). Set false to opt out. */
   telemetry?: boolean;
+  /** Whether the first-run telemetry notice has been shown */
+  telemetryNoticeShown?: boolean;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */
