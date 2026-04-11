@@ -1,6 +1,6 @@
-# Lessons from 28 Sprints
+# Lessons from 30 Sprints
 
-These lessons were extracted from retrospectives across 28 autonomous sprints that
+These lessons were extracted from retrospectives across 30 autonomous sprints that
 shipped over 1,000 issues. They are general-purpose — not about any specific
 technology, but about how autonomous sprint systems behave in practice.
 
@@ -183,3 +183,23 @@ across files — these are tasks where the strongest model adds no value over th
 cheapest. Opus spending 5 minutes on sequential find-and-replace edits is a waste of
 both tokens and the operator's patience. Spawn a haiku for mechanical work, save opus
 for reasoning.
+
+**24. Workers are conversations, not batch jobs.**
+Spawned sessions are full Claude sessions with the same tools and capabilities as the
+orchestrator. They can ask questions, request plan approval, get confused, or go off
+track. When a worker stops early or behaves unexpectedly, the orchestrator's first
+response should be `mcx claude log <id>` — not `bye`. A worker that asked "Shall I
+proceed with this plan?" needs `mcx claude send <id> "Yes, proceed"`, not a respawn.
+A worker producing a 125k-deletion PR needs `send "Stop — your worktree is corrupted"`,
+not a silent close. Respawning discards all context and costs money. A single `send`
+is almost always cheaper and faster. Before responding, ask: what additional context
+would allow this task to complete as intended? Send that.
+
+**25. Persist memories across machines via git-tracked symlink.**
+Claude Code's memory system (`~/.claude/projects/<slug>/memory/`) accumulates useful
+context — feedback, patterns, project facts — without permission prompts. But it's
+machine-local. Sprint learnings saved as memories on one machine are invisible to
+sessions on another. The fix: symlink `.claude/memory/` in the repo to the Claude Code
+memory path. Memories stay auto-writable (Claude writes to the symlinked path without
+prompts) but become git-tracked and shared via `git pull`. Without this, performance
+varies unpredictably between machines as some have accumulated context and others don't.

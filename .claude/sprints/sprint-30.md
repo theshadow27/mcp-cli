@@ -1,6 +1,6 @@
 # Sprint 30
 
-> Planned 2026-04-11 07:30. Target: 15 PRs.
+> Planned 2026-04-11 07:30. Started 2026-04-11 08:15. Completed 2026-04-11 09:03. Result: 12/15 merged (2 already fixed, 1 broken PR re-done).
 
 ## Goal
 
@@ -46,3 +46,12 @@ Asana spike — we have an Asana server configured (SSE, 44 tools). Explore the 
 ## Context
 
 Sprints 28-29 shipped a lot: work item tracker (all 3 phases), mcx clone, auto-update. This sprint stabilizes it all — CI blocker, missing tests, bug fixes, schema hardening. The Jira and Asana providers extend the clone ecosystem while the core stabilizes.
+
+## Results
+
+- **Released**: v1.3.1
+- **PRs merged**: 12 (#1190, #1191, #1192, #1193, #1194, #1195, #1196, #1197, #1198, #1200, #1201, #1202)
+- **Issues closed**: 14 (12 via PR + #1159 and #1157 already fixed)
+- **Issues dropped**: 0
+- **New issues filed**: #1206 (core.bare recurrence)
+- **Key learning**: Orchestrator must interact with workers via `send`, not treat them as fire-and-forget. Updated run.md.

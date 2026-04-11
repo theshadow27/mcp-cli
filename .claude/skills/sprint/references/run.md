@@ -3,6 +3,13 @@
 Run the implementation pipeline. You are the orchestrator — you never write
 code directly, you spawn sessions and manage the pipeline.
 
+**Spawned sessions are not batch jobs.** They are full Claude sessions with
+the same tools and capabilities you have. They can ask questions, request
+plan approval, get stuck, or need course corrections — just like you do
+when working with the user. You are their user. Treat them accordingly:
+read their logs, answer their questions, approve their plans, and redirect
+them when they go wrong.
+
 ## Input
 
 Determine what to run, in priority order:
@@ -85,6 +92,69 @@ impl → qa → done              (low scrutiny, skip review)
 review → repair → review      (repair cycle)
 qa → repair → review → qa     (QA rejection cycle)
 ```
+
+## Interacting with workers
+
+Spawned sessions are conversations, not fire-and-forget scripts. The
+orchestrator must actively participate when workers need input.
+
+### Recognizing when a worker needs you
+
+| Signal | What it means | What to do |
+|--------|---------------|------------|
+| `session:permission_request` in wait output | Worker is waiting for tool approval | Check `mcx claude log <id>` — see what tool/path it's requesting. If reasonable, send approval or instructions. |
+| `session:result` with low cost / few turns | Worker may have stopped early (asked a question, hit a wall) | Read the log. If it asked "Shall I proceed?", respond via `send`. If it errored, investigate. |
+| `waiting_permission` state in `ls` output | Worker blocked on a permission gate | Same as permission_request — check the log and respond. |
+| Token count stalled across multiple polls | Worker may be stuck or waiting | Check the log for the last activity. Send a nudge if needed. |
+
+### Responding to workers
+
+```bash
+# Answer a question or approve a plan
+mcx claude send <id> "Yes, proceed with the implementation"
+
+# Redirect a worker that's going off track
+mcx claude send <id> "Stop — your PR has 125k deletions. Your worktree state is corrupted. Investigate before pushing."
+
+# Provide missing context
+mcx claude send <id> "The dependency #1188 already merged. You can import pollNow directly."
+
+# Nudge a stalled session
+mcx claude send <id> "continue"
+```
+
+### When to intervene vs wait
+
+- **Plan approval requests**: Always respond. The `/implement` skill asks for
+  plan approval on complex changes. This is expected — review the plan and
+  approve (`"Looks good, proceed"`) or redirect (`"Don't touch X, focus on Y"`).
+- **Permission requests**: Check the log to understand what's being requested.
+  If the worker is editing files in its worktree with allowed tools, the
+  permission system may just be surfacing routine events — wait a cycle.
+  If the worker is genuinely blocked, respond.
+- **Abnormal PR diffs**: If triage shows implausible metrics (e.g., 125k
+  deletions on a test-only issue), **do not spawn QA**. Close the PR, investigate
+  the worktree state, and respawn.
+- **Sessions that complete very cheaply** (<$0.50, <15 turns): Read the log.
+  The worker may have asked a question and stopped, or discovered the issue
+  was already fixed. Don't assume failure — check before respawning.
+
+### Theory of mind
+
+Workers have the same model, tools, and context as you. They can:
+- Read code, write code, run tests, create PRs
+- Ask clarifying questions when the issue is ambiguous
+- Enter plan mode and wait for approval
+- File issues when they discover problems
+- Get confused, make mistakes, or go in circles
+
+When a worker does something unexpected, your first response should be to
+**read the log and understand why**, not to bye and respawn. Respawning
+discards all the worker's context and costs money. Often a single `send`
+is cheaper and faster than a fresh session.
+
+Before responding, ask yourself: what additional context would allow this
+task to complete as intended? `send` that.
 
 ## Pipeline
 
@@ -383,8 +453,16 @@ while issues remain:
 
   # --- React to session events ---
   if event.source == "session" or timeout:
+    for each session with permission_request:
+      check log — if worker is asking a question or waiting for approval:
+        mcx claude send <id> "<answer or approval>"
+      if worker is making steady progress (edits succeeding), wait
+
     for each session that completed (idle/result):
-      if implementation session:
+      # ALWAYS read the log before bye-ing. Cheap completions (<$0.50,
+      # <15 turns) often mean the worker asked a question or needs input.
+      # Don't assume failure — check first, respond via send if needed.
+      if implementation session (and log confirms PR was pushed):
         bye → attach PR to tracker → triage (--pr N)
         → advance phase (review or qa) → spawn next phase (--worktree)
         if utilization < 80%:

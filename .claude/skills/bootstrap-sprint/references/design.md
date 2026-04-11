@@ -175,6 +175,35 @@ If the project has more than 2-3 promotion gates, a separate gates reference hel
 the orchestrator check them systematically. List each gate, how to verify it, and
 what to do if it fails.
 
+## Memory persistence
+
+Claude Code has a built-in memory system — files in `~/.claude/projects/<slug>/memory/`
+that Claude can write to without permission prompts. This is by design: the training
+encourages saving useful context (feedback, patterns, project facts) naturally during
+conversations.
+
+The problem: these files are machine-local. If a different machine runs the next sprint,
+or the user reinstalls, all accumulated learnings are gone. Sprint retros capture
+patterns in the diary, but feedback ("don't mock the database", "user prefers bundled
+PRs") lives only in memory.
+
+The fix: symlink `.claude/memory/` in the repo to the Claude Code memory path. This
+preserves the auto-allowed write behavior (Claude writes to the symlinked path without
+permission prompts) while making the files git-tracked. Memories get committed alongside
+sprint files and diary entries, shared across machines via `git pull`.
+
+```bash
+mkdir -p .claude/memory
+rm -rf ~/.claude/projects/<project-slug>/memory
+ln -s <repo>/.claude/memory ~/.claude/projects/<project-slug>/memory
+```
+
+Strongly recommend setting this up during bootstrap. Without it, sprint learnings
+accumulate on one machine and are invisible everywhere else — performance becomes
+unpredictable depending on which machine (or which fresh checkout) runs the next sprint.
+The setup is two commands and a one-line CLAUDE.md note. See `references/iteration.md`
+for the full checklist item.
+
 ## The deprecation question
 
 When introducing a sprint skill into a project with existing automation, some

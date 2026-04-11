@@ -134,6 +134,19 @@ item should be confirmed before proceeding to the next.
     - Commands replaced by the sprint pipeline are removed (noted in commit message)
     - Commands that serve different purposes (interactive use) are kept
 
+[ ] Memory persistence configured
+    - Create .claude/memory/ in the repo (git-tracked)
+    - Symlink it to the Claude Code memory path:
+      rm -rf ~/.claude/projects/<project-slug>/memory
+      ln -s <repo>/.claude/memory ~/.claude/projects/<project-slug>/memory
+    - This preserves Claude's auto-allowed memory writes (no permission prompts)
+      while making memories git-tracked and shared across machines
+    - Without this, memories accumulate locally and are invisible to other
+      machines/sessions. Sprint learnings, feedback, and patterns get lost
+      on reinstall or when a different machine runs the next sprint.
+    - Add a note to CLAUDE.md: "Memory files in .claude/memory/ must be
+      committed and pushed when changed."
+
 [ ] Infrastructure verified
     - mcx daemon is running
     - Worktrees can be created and tests run in them
