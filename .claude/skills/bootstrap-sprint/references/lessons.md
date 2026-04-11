@@ -176,3 +176,10 @@ bottleneck is often wrong. In one case, the orchestrator assumed `bun install` (
 was the problem when the actual bottleneck was daemon integration tests (136s). The
 fix was obvious once measured — but unmeasured, three wrong fixes would have shipped.
 This applies to any optimization work: profile first, then fix what the data shows.
+
+**23. Delegate mechanical edits to the cheapest capable model.**
+Renumbering lists, reformatting tables, fixing indentation, updating version strings
+across files — these are tasks where the strongest model adds no value over the
+cheapest. Opus spending 5 minutes on sequential find-and-replace edits is a waste of
+both tokens and the operator's patience. Spawn a haiku for mechanical work, save opus
+for reasoning.
