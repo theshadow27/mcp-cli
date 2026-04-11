@@ -24,12 +24,18 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
-import { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
+import {
+  colorState,
+  extractContentSummary,
+  formatAge,
+  formatLifecycleLine,
+  formatSessionShort,
+} from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
-import type { QuotaStatusResult, SessionInfo } from "@mcp-cli/core";
+import type { QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
 
 // ── Dependency injection ──
 
@@ -748,19 +754,35 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
 
-  const result = await d.callTool("claude_session_list", toolArgs);
+  // Fetch sessions and work items in parallel
+  const [result, workItems] = await Promise.all([
+    d.callTool("claude_session_list", toolArgs),
+    ipcCall("listWorkItems", {}, { timeoutMs: 2000 }).catch((): WorkItem[] => []),
+  ]);
   const text = formatToolResult(result);
-
-  if (json) {
-    console.log(text);
-    return;
-  }
 
   let sessions: SessionInfo[];
   try {
     sessions = JSON.parse(text);
   } catch {
-    console.log(text);
+    if (json) {
+      console.log(text);
+    } else {
+      console.log(text);
+    }
+    return;
+  }
+
+  // Join sessions → work items via worktree branch matching
+  const sessionWorkItems = joinSessionsToWorkItems(sessions, workItems);
+
+  if (json) {
+    // Enrich session objects with work_item field
+    const enriched = sessions.map((s) => ({
+      ...s,
+      workItem: sessionWorkItems.get(s.sessionId) ?? null,
+    }));
+    console.log(JSON.stringify(enriched, null, 2));
     return;
   }
 
@@ -822,6 +844,12 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     console.log(
       `${c.cyan}${id}${c.reset}   ${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
+
+    // Work item lifecycle line (indented under the session)
+    const wi = sessionWorkItems.get(s.sessionId);
+    if (wi) {
+      console.log(`  ${formatLifecycleLine(wi)}`);
+    }
   }
 
   const staleWarning = getStaleDaemonWarning();
@@ -831,11 +859,76 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 // formatSessionShort, extractContentSummary, colorState → ./session-display.ts
-export { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
+export {
+  colorState,
+  extractContentSummary,
+  formatAge,
+  formatLifecycleLine,
+  formatSessionShort,
+} from "./session-display";
 
 function formatPrStatus(pr: PrStatus | null): string {
   if (!pr) return "—";
   return `#${pr.number} ${pr.state}`;
+}
+
+/** Get the current git branch for a worktree path. Returns null on failure. */
+function getWorktreeBranch(worktreePath: string): string | null {
+  try {
+    const result = Bun.spawnSync(["git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 3000,
+    });
+    if (result.exitCode !== 0) return null;
+    const branch = result.stdout.toString().trim();
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a map from session → work item by matching worktree branches to work item branches.
+ * Also matches by issue number extracted from branch name (e.g. feat/issue-1142-slug → #1142).
+ */
+function joinSessionsToWorkItems(sessions: SessionInfo[], workItems: WorkItem[]): Map<string, WorkItem> {
+  const byBranch = new Map<string, WorkItem>();
+  const byIssue = new Map<number, WorkItem>();
+  const byPr = new Map<number, WorkItem>();
+
+  for (const wi of workItems) {
+    if (wi.branch) byBranch.set(wi.branch, wi);
+    if (wi.issueNumber != null) byIssue.set(wi.issueNumber, wi);
+    if (wi.prNumber != null) byPr.set(wi.prNumber, wi);
+  }
+
+  const result = new Map<string, WorkItem>();
+
+  for (const s of sessions) {
+    if (!s.worktree) continue;
+    const branch = getWorktreeBranch(s.worktree);
+    if (!branch) continue;
+
+    // Try exact branch match first
+    const byBranchMatch = byBranch.get(branch);
+    if (byBranchMatch) {
+      result.set(s.sessionId, byBranchMatch);
+      continue;
+    }
+
+    // Try extracting issue number from branch name (e.g. feat/issue-1142-slug)
+    const issueMatch = branch.match(/issue-(\d+)/);
+    if (issueMatch) {
+      const num = Number(issueMatch[1]);
+      const byIssueMatch = byIssue.get(num);
+      if (byIssueMatch) {
+        result.set(s.sessionId, byIssueMatch);
+      }
+    }
+  }
+
+  return result;
 }
 
 async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
