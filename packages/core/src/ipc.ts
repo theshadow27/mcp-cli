@@ -9,6 +9,7 @@ import { z } from "zod/v4";
 import type { AliasType } from "./alias";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
+import type { WorkItem } from "./work-item";
 
 // -- Methods --
 
@@ -52,7 +53,10 @@ export type IpcMethod =
   | "setNote"
   | "getNote"
   | "listNotes"
-  | "deleteNote";
+  | "deleteNote"
+  | "trackWorkItem"
+  | "untrackWorkItem"
+  | "listWorkItems";
 
 // -- Request/Response --
 
@@ -391,6 +395,35 @@ export const DeleteNoteParamsSchema = z.object({
   tool: z.string(),
 });
 
+// -- Work item schemas --
+
+export const TrackWorkItemParamsSchema = z
+  .object({
+    /** Issue or PR number to track. */
+    number: z.number().optional(),
+    /** Branch name to track (PR may not exist yet). */
+    branch: z.string().optional(),
+  })
+  .refine((p) => p.number != null || p.branch != null, {
+    message: "Either number or branch is required",
+  });
+
+export const UntrackWorkItemParamsSchema = z
+  .object({
+    /** Issue or PR number to untrack. */
+    number: z.number().optional(),
+    /** Branch name to untrack. */
+    branch: z.string().optional(),
+  })
+  .refine((p) => p.number != null || p.branch != null, {
+    message: "Either number or branch is required",
+  });
+
+export const ListWorkItemsParamsSchema = z.object({
+  /** Filter by phase. */
+  phase: z.string().optional(),
+});
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -578,6 +611,9 @@ export interface IpcMethodResult {
   getNote: { note: string | null };
   listNotes: NoteEntry[];
   deleteNote: { ok: true; deleted: boolean };
+  trackWorkItem: WorkItem;
+  untrackWorkItem: { ok: true; deleted: boolean };
+  listWorkItems: WorkItem[];
 }
 
 // -- Error codes --

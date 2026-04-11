@@ -22,7 +22,7 @@ export type ReviewStatus = "none" | "pending" | "approved" | "changes_requested"
 
 /** A tracked work item matching the SQLite schema from #1049. */
 export interface WorkItem {
-  /** Primary key — e.g. "pr:1135" or "issue:1116". */
+  /** Primary key — e.g. "#1135" (number-tracked) or "branch:feat/foo" (branch-tracked). */
   id: string;
   issueNumber: number | null;
   branch: string | null;

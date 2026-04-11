@@ -62,6 +62,11 @@ export class StateDb {
     this.migrate();
   }
 
+  /** Expose the raw bun:sqlite Database for sibling modules (e.g. WorkItemDb). */
+  getDatabase(): Database {
+    return this.db;
+  }
+
   // -- Migrations --
 
   private migrate(): void {

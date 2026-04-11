@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,6 +54,7 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     getServerLogs: () => [],
     getCachedTools: () => [],
     listSessions: () => [],
+    getDatabase: () => new Database(":memory:"),
     ...overrides,
   } as never;
 }
