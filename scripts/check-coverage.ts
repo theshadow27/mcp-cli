@@ -130,7 +130,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { getStagedFiles, shouldSkipRun2 } from "./staged-files";
+// staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
 import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTimings } from "./test-timings";
@@ -173,6 +173,10 @@ await installProc.exited;
 // Running all tests (especially daemon worker-thread tests) in a single
 // `bun test --coverage` process triggers a non-deterministic segfault in
 // Bun v1.3.11.  Splitting daemon tests into a separate invocation avoids it.
+//
+// Pre-commit (default): skips run-2 entirely — daemon tests take ~136s and
+// segfault on macOS (#957). CI is the gate for daemon tests. See #1125.
+// CI (--ci flag): runs both phases with segfault retry at the workflow level.
 
 /** Discover non-daemon package test directories */
 const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withFileTypes: true })
@@ -191,10 +195,19 @@ const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withF
  */
 const RUN1_TEST_FILES = new Set(["test/integration.spec.ts"]);
 
+/**
+ * Pure-unit daemon test files: spec files from packages/daemon/src that have
+ * NO daemon connection dependencies and can safely run in run-1.  Add files
+ * here when their coverage would otherwise be excluded due to run-2 being
+ * skipped pre-commit.  Never add files that spawn Workers or connect to the
+ * daemon socket — those belong in run-2.
+ */
+const RUN1_DAEMON_UNIT_TESTS = ["packages/daemon/src/claude-session/permission-router.spec.ts"];
+
 // Validate that all allowlist entries exist on disk — catches renames/deletions
-for (const f of RUN1_TEST_FILES) {
+for (const f of [...RUN1_TEST_FILES, ...RUN1_DAEMON_UNIT_TESTS]) {
   if (!existsSync(resolve(import.meta.dir, "..", f))) {
-    throw new Error(`RUN1_TEST_FILES entry does not exist: ${f}`);
+    throw new Error(`Allowlist entry does not exist: ${f}`);
   }
 }
 
@@ -203,7 +216,7 @@ const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
   .filter((f) => f.endsWith(".spec.ts") && RUN1_TEST_FILES.has(`test/${f}`))
   .map((f) => `test/${f}`);
 
-const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles];
+const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles, ...RUN1_DAEMON_UNIT_TESTS];
 
 const testStart = Date.now();
 
@@ -218,16 +231,17 @@ const exitCode1 = await proc1.exited;
 // Run 2: daemon tests in isolated process (avoids segfault)
 // Includes packages/daemon/src AND all non-allowlisted test files from test/
 // Skip run-2 when staged files don't touch daemon-related paths (#1085)
-const forceRun2 = process.argv.includes("--force-run2");
-const stagedFiles = await getStagedFiles();
-const skipRun2 = !forceRun2 && shouldSkipRun2(stagedFiles);
+const ciMode = process.argv.includes("--ci");
+const forceRun2 = process.argv.includes("--force-run2") || ciMode;
+// Pre-commit: always skip run-2 (daemon tests take ~136s + segfault). CI is the gate. (#1125)
+const skipRun2 = !forceRun2;
 
 let stdout2 = "";
 let stderr2 = "";
 let exitCode2 = 0;
 
 if (skipRun2) {
-  console.log("Skipping run-2 (daemon tests) — no daemon-related files staged (#1085)");
+  console.log("Skipping run-2 (daemon tests) — pre-commit fast path (#1125). Use --ci or --force-run2 for full suite.");
 } else {
   const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
     .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
@@ -372,92 +386,99 @@ if (noiseLines.length > NOISE_THRESHOLD) {
 // Budget violations warn to stderr but NEVER block commits.
 
 const fullMode = process.argv.includes("--full");
+const runProfiling = fullMode || ciMode;
 const TIMING_CACHE_PATH = resolve(import.meta.dir, "../test-timings.json");
 
-const cache = loadTimings(TIMING_CACHE_PATH);
-const testFiles = await findTestFiles();
-
-// Prune entries for deleted test files
-const currentFileSet = new Set(testFiles);
-const pruned = pruneStaleEntries(cache, currentFileSet);
-
-const { changed, hashes } = await findChangedFiles(testFiles, cache);
-const filesToTime = fullMode ? testFiles : changed;
-
-if (filesToTime.length > 0) {
-  console.log(`\n--- Test Timing Profile (${fullMode ? "full" : "incremental"}) ---`);
-  console.log(`${filesToTime.length} of ${testFiles.length} test file(s) to profile`);
-  if (pruned > 0) console.log(`Pruned ${pruned} stale cache entries`);
-
-  const profileStart = performance.now();
-  const timings = await profileTestFiles(filesToTime, PROFILE_CONCURRENCY);
-  const profileDuration = Math.round(performance.now() - profileStart);
-  const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
-
-  console.log(
-    `Profiled ${timings.length} file(s) in ${(profileDuration / 1000).toFixed(1)}s ` +
-      `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
-  );
-
-  // Update cache with fresh timings
-  for (const { file, ms } of timings) {
-    cache[file] = { hash: hashes[file], timeMs: ms };
-  }
-
-  saveTimings(TIMING_CACHE_PATH, cache);
+if (!runProfiling) {
+  // Pre-commit: skip profiling entirely — it re-runs tests individually (#1125)
+  console.log("\n--- Test Timing Profile ---");
+  console.log("Skipped (pre-commit fast path). Use --full or --ci to profile.");
 } else {
-  console.log("\n--- Test Timing Profile (incremental) ---");
-  console.log("All test files unchanged — skipping profiling.");
-  if (pruned > 0) {
-    console.log(`Pruned ${pruned} stale cache entries`);
-    saveTimings(TIMING_CACHE_PATH, cache);
-  }
-}
+  const cache = loadTimings(TIMING_CACHE_PATH);
+  const testFiles = await findTestFiles();
 
-// Report top 10 slowest from the full cache (including cached entries)
-const allTimings = testFiles
-  .filter((f) => cache[f]?.timeMs != null)
-  .map((f) => ({ file: f, ms: cache[f].timeMs }))
-  .sort((a, b) => b.ms - a.ms);
+  // Prune entries for deleted test files
+  const currentFileSet = new Set(testFiles);
+  const pruned = pruneStaleEntries(cache, currentFileSet);
 
-if (allTimings.length > 0) {
-  console.log(
-    `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
-  );
-  for (const { file, ms } of allTimings.slice(0, 10)) {
-    const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
-    const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
-    console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
-  }
+  const { changed, hashes } = await findChangedFiles(testFiles, cache);
+  const filesToTime = fullMode ? testFiles : changed;
 
-  // Warn (never fail) on budget violations
-  const overBudget = allTimings.filter((t) => {
-    if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
-    return !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
-  });
-  if (overBudget.length > 0) {
-    console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
-    for (const { file, ms } of overBudget) {
-      console.warn(`  ${ms}ms  ${file}`);
-    }
-    console.warn("\nConsider extracting pure logic into unit tests or splitting the file.");
-  }
+  if (filesToTime.length > 0) {
+    console.log(`\n--- Test Timing Profile (${fullMode ? "full" : "incremental"}) ---`);
+    console.log(`${filesToTime.length} of ${testFiles.length} test file(s) to profile`);
+    if (pruned > 0) console.log(`Pruned ${pruned} stale cache entries`);
 
-  // --- Aggregate time ratchet (sequential sum of non-excluded files) ---
-  const nonExcludedTimings = allTimings.filter(
-    (t) => !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern)),
-  );
-  const aggregateMs = nonExcludedTimings.reduce((sum, t) => sum + t.ms, 0);
-  console.log(
-    `\nAggregate test time (non-excluded): ${(aggregateMs / 1000).toFixed(1)}s ` +
-      `(budget: ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s, ${nonExcludedTimings.length} files)`,
-  );
-  if (aggregateMs > AGGREGATE_TIME_BUDGET_MS) {
-    console.warn(
-      `\nWARN: Aggregate test time ${(aggregateMs / 1000).toFixed(1)}s exceeds ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s budget. Optimize slow test files or raise the budget if justified.`,
+    const profileStart = performance.now();
+    const timings = await profileTestFiles(filesToTime, PROFILE_CONCURRENCY);
+    const profileDuration = Math.round(performance.now() - profileStart);
+    const sequentialSum = timings.reduce((sum, t) => sum + t.ms, 0);
+
+    console.log(
+      `Profiled ${timings.length} file(s) in ${(profileDuration / 1000).toFixed(1)}s ` +
+        `(sequential sum: ${(sequentialSum / 1000).toFixed(1)}s, concurrency: ${PROFILE_CONCURRENCY})`,
     );
+
+    // Update cache with fresh timings
+    for (const { file, ms } of timings) {
+      cache[file] = { hash: hashes[file], timeMs: ms };
+    }
+
+    saveTimings(TIMING_CACHE_PATH, cache);
+  } else {
+    console.log("\n--- Test Timing Profile (incremental) ---");
+    console.log("All test files unchanged — skipping profiling.");
+    if (pruned > 0) {
+      console.log(`Pruned ${pruned} stale cache entries`);
+      saveTimings(TIMING_CACHE_PATH, cache);
+    }
   }
-}
+
+  // Report top 10 slowest from the full cache (including cached entries)
+  const allTimings = testFiles
+    .filter((f) => cache[f]?.timeMs != null)
+    .map((f) => ({ file: f, ms: cache[f].timeMs }))
+    .sort((a, b) => b.ms - a.ms);
+
+  if (allTimings.length > 0) {
+    console.log(
+      `\nTop 10 slowest test files (budget: ${PER_FILE_TIME_BUDGET_MS}ms, ${Object.keys(TIMING_EXCLUSIONS).length} excluded):`,
+    );
+    for (const { file, ms } of allTimings.slice(0, 10)) {
+      const excluded = Object.keys(TIMING_EXCLUSIONS).some((pattern) => file.endsWith(pattern));
+      const marker = ms > PER_FILE_TIME_BUDGET_MS ? (excluded ? " (excluded)" : " ← OVER BUDGET") : "";
+      console.log(`  ${String(ms).padStart(6)}ms  ${file}${marker}`);
+    }
+
+    // Warn (never fail) on budget violations
+    const overBudget = allTimings.filter((t) => {
+      if (t.ms <= PER_FILE_TIME_BUDGET_MS) return false;
+      return !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern));
+    });
+    if (overBudget.length > 0) {
+      console.warn(`\nWARN: ${overBudget.length} test file(s) exceed ${PER_FILE_TIME_BUDGET_MS}ms per-file budget:`);
+      for (const { file, ms } of overBudget) {
+        console.warn(`  ${ms}ms  ${file}`);
+      }
+      console.warn("\nConsider extracting pure logic into unit tests or splitting the file.");
+    }
+
+    // --- Aggregate time ratchet (sequential sum of non-excluded files) ---
+    const nonExcludedTimings = allTimings.filter(
+      (t) => !Object.keys(TIMING_EXCLUSIONS).some((pattern) => t.file.endsWith(pattern)),
+    );
+    const aggregateMs = nonExcludedTimings.reduce((sum, t) => sum + t.ms, 0);
+    console.log(
+      `\nAggregate test time (non-excluded): ${(aggregateMs / 1000).toFixed(1)}s ` +
+        `(budget: ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s, ${nonExcludedTimings.length} files)`,
+    );
+    if (aggregateMs > AGGREGATE_TIME_BUDGET_MS) {
+      console.warn(
+        `\nWARN: Aggregate test time ${(aggregateMs / 1000).toFixed(1)}s exceeds ${(AGGREGATE_TIME_BUDGET_MS / 1000).toFixed(0)}s budget. Optimize slow test files or raise the budget if justified.`,
+      );
+    }
+  } // end runProfiling
+} // end if (!runProfiling) else
 
 if (failed) {
   process.exit(1);
