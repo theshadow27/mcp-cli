@@ -74,6 +74,19 @@ export class WorkItemPoller {
     this.scheduleNext(0);
   }
 
+  /** Trigger an immediate poll cycle and reschedule the next tick.
+   *  Useful when a new item is tracked — avoids waiting up to 5 minutes. */
+  pollNow(): void {
+    if (this.stopped) return;
+    // Cancel the current timer and reschedule with 0 delay so the
+    // next tick runs immediately, then resumes at currentIntervalMs.
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.scheduleNext(0);
+  }
+
   /** Stop polling and clean up. In-flight polls will bail before writing. */
   stop(): void {
     this.stopped = true;
