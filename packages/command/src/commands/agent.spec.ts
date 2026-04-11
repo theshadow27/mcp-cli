@@ -1557,3 +1557,101 @@ describe("agent log non-JSON response", () => {
     expect(allOutput).toContain("error: no transcript");
   });
 });
+
+// ── approve / deny ──
+
+const SESSION_WITH_PENDING = [
+  {
+    ...SESSION_LIST[0],
+    pendingPermissions: 1,
+    pendingPermissionDetails: [{ requestId: "req-pending-001" }],
+  },
+  SESSION_LIST[1],
+];
+
+describe("agent approve", () => {
+  test("calls provider_approve with explicit requestId", async () => {
+    const con = mockConsole();
+    try {
+      const callTool = mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_WITH_PENDING);
+        return toolResult({ approved: true });
+      });
+      const deps = makeDeps({ callTool });
+      await cmdAgent(["codex", "approve", "abc12345", "req-explicit"], deps);
+      expect(callTool).toHaveBeenCalledWith("codex_approve", {
+        sessionId: SESSION_WITH_PENDING[0].sessionId,
+        requestId: "req-explicit",
+      });
+    } finally {
+      con.restore();
+    }
+  });
+
+  test("auto-resolves latest pending requestId when omitted", async () => {
+    const con = mockConsole();
+    try {
+      const callTool = mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_WITH_PENDING);
+        return toolResult({ approved: true });
+      });
+      const deps = makeDeps({ callTool });
+      await cmdAgent(["codex", "approve", "abc12345"], deps);
+      expect(callTool).toHaveBeenCalledWith("codex_approve", {
+        sessionId: SESSION_WITH_PENDING[0].sessionId,
+        requestId: "req-pending-001",
+      });
+    } finally {
+      con.restore();
+    }
+  });
+
+  test("errors when no session prefix provided", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["codex", "approve"], deps)).rejects.toThrow(ExitError);
+  });
+});
+
+describe("agent deny", () => {
+  test("calls provider_deny with explicit requestId", async () => {
+    const con = mockConsole();
+    try {
+      const callTool = mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_WITH_PENDING);
+        return toolResult({ denied: true });
+      });
+      const deps = makeDeps({ callTool });
+      await cmdAgent(["codex", "deny", "abc12345", "req-explicit"], deps);
+      expect(callTool).toHaveBeenCalledWith("codex_deny", {
+        sessionId: SESSION_WITH_PENDING[0].sessionId,
+        requestId: "req-explicit",
+      });
+    } finally {
+      con.restore();
+    }
+  });
+
+  test("passes --message to deny tool", async () => {
+    const con = mockConsole();
+    try {
+      const callTool = mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_WITH_PENDING);
+        return toolResult({ denied: true });
+      });
+      const deps = makeDeps({ callTool });
+      await cmdAgent(["codex", "deny", "abc12345", "--message", "Not allowed"], deps);
+      expect(callTool).toHaveBeenCalledWith("codex_deny", {
+        sessionId: SESSION_WITH_PENDING[0].sessionId,
+        requestId: "req-pending-001",
+        message: "Not allowed",
+      });
+    } finally {
+      con.restore();
+    }
+  });
+
+  test("errors when no session prefix provided", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["codex", "deny"], deps)).rejects.toThrow(ExitError);
+  });
+});
