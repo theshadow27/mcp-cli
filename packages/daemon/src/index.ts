@@ -62,6 +62,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import { WorkItemPoller } from "./github/work-item-poller";
 import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
@@ -362,6 +363,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Work items server: constructed lazily inside registerPendingVirtualServer
   // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
   let workItemsServer: WorkItemsServer | null = null;
+
+  // GitHub poller: starts after work items DB is available.
+  // Polls tracked PRs and updates state in the work_items table.
+  let workItemPoller: WorkItemPoller | null = null;
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -694,6 +699,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           } = await workItemsServer.start();
           pool.registerVirtualServer(WORK_ITEMS_SERVER_NAME, workItemsClient, workItemsTransport, workItemsTools);
           logger.info("[mcpd] Work items server started");
+
+          // Start GitHub poller now that work items DB is ready
+          workItemPoller = new WorkItemPoller({
+            db: workItemDb,
+            logger,
+            onEvent: (event) => {
+              logger.info(`[mcpd] Work item event: ${JSON.stringify(event)}`);
+            },
+          });
+          workItemPoller.start();
+          logger.info("[mcpd] Work item poller started");
         } catch (err) {
           logger.error(`[mcpd] Failed to start work items server: ${err}`);
         }
@@ -717,6 +733,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
       quotaPoller.stop();
+      if (workItemPoller) workItemPoller.stop();
       try {
         watcher.stop();
       } catch (err) {
