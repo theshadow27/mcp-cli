@@ -41,6 +41,7 @@ import { cmdSpans } from "./commands/spans";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
 import { cmdUpdate } from "./commands/update";
+import { cmdUpgrade } from "./commands/upgrade";
 import { cmdVersion } from "./commands/version";
 import {
   ShutdownRefusedError,
@@ -194,6 +195,10 @@ async function main(): Promise<void> {
 
       case "update":
         await cmdUpdate(cleanArgs.slice(1));
+        break;
+
+      case "upgrade":
+        await cmdUpgrade(cleanArgs.slice(1));
         break;
 
       case "registry":
