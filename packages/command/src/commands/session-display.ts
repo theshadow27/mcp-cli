@@ -3,6 +3,7 @@
  */
 
 import { dirname, resolve } from "node:path";
+import type { WorkItem } from "@mcp-cli/core";
 import { c } from "../output";
 
 /** Transcript entry shape shared across providers. */
@@ -186,4 +187,61 @@ export function colorState(state: string): string {
     default:
       return padded;
   }
+}
+
+/**
+ * Format a work item lifecycle pipeline for display as a second line under a session.
+ *
+ * Examples:
+ *   impl → PR #1135 open → CI ✓ → QA pending
+ *   impl → PR #1134 merged ✓
+ *   impl (no PR yet)
+ */
+export function formatLifecycleLine(wi: WorkItem): string {
+  const parts: string[] = [wi.phase];
+
+  if (wi.prNumber != null) {
+    const prLabel = `PR #${wi.prNumber}`;
+    if (wi.prState === "merged") {
+      parts.push(`${prLabel} merged ${c.green}✓${c.reset}`);
+    } else if (wi.prState === "closed") {
+      parts.push(`${prLabel} ${c.red}closed${c.reset}`);
+    } else {
+      // open or draft
+      parts.push(`${prLabel} ${wi.prState ?? "open"}`);
+
+      // CI status (only relevant for open PRs)
+      switch (wi.ciStatus) {
+        case "passed":
+          parts.push(`CI ${c.green}✓${c.reset}`);
+          break;
+        case "failed":
+          parts.push(`CI ${c.red}✗${c.reset}`);
+          break;
+        case "running":
+        case "pending":
+          parts.push(`CI ${c.yellow}${wi.ciStatus}${c.reset}`);
+          break;
+        // "none" → omit
+      }
+
+      // Review status (only relevant for open PRs)
+      switch (wi.reviewStatus) {
+        case "approved":
+          parts.push(`review ${c.green}✓${c.reset}`);
+          break;
+        case "changes_requested":
+          parts.push(`review ${c.red}changes requested${c.reset}`);
+          break;
+        case "pending":
+          parts.push(`review ${c.yellow}pending${c.reset}`);
+          break;
+        // "none" → omit
+      }
+    }
+  } else {
+    parts.push("(no PR yet)");
+  }
+
+  return parts.join(" → ");
 }

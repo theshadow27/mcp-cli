@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { WorkItem } from "@mcp-cli/core";
 import {
   type TranscriptEntry,
   compactTranscript,
@@ -6,6 +7,7 @@ import {
   filterByRepo,
   formatAge,
   formatCost,
+  formatLifecycleLine,
   formatSessionShort,
 } from "./session-display";
 
@@ -213,5 +215,134 @@ describe("formatSessionShort with createdAt", () => {
       rateLimited: false,
     });
     expect(line).not.toContain("[RATE LIMITED]");
+  });
+});
+
+// Strip ANSI escape codes for test assertions
+const ESC = String.fromCharCode(0x1b);
+const ANSI_RE = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+function stripAnsi(str: string): string {
+  return str.replace(ANSI_RE, "");
+}
+
+function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: "#1135",
+    issueNumber: 1135,
+    branch: "feat/issue-1135-test",
+    prNumber: null,
+    prState: null,
+    prUrl: null,
+    ciStatus: "none",
+    ciRunId: null,
+    ciSummary: null,
+    reviewStatus: "none",
+    phase: "impl",
+    createdAt: "2026-04-10T00:00:00Z",
+    updatedAt: "2026-04-10T00:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("formatLifecycleLine", () => {
+  test("impl phase with no PR", () => {
+    const line = stripAnsi(formatLifecycleLine(makeWorkItem()));
+    expect(line).toBe("impl → (no PR yet)");
+  });
+
+  test("open PR with CI passed and review approved", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1135,
+          prState: "open",
+          ciStatus: "passed",
+          reviewStatus: "approved",
+        }),
+      ),
+    );
+    expect(line).toBe("impl → PR #1135 open → CI ✓ → review ✓");
+  });
+
+  test("open PR with CI failed", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1135,
+          prState: "open",
+          ciStatus: "failed",
+        }),
+      ),
+    );
+    expect(line).toBe("impl → PR #1135 open → CI ✗");
+  });
+
+  test("open PR with CI running and review pending", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1135,
+          prState: "open",
+          ciStatus: "running",
+          reviewStatus: "pending",
+        }),
+      ),
+    );
+    expect(line).toBe("impl → PR #1135 open → CI running → review pending");
+  });
+
+  test("merged PR shows merged checkmark", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1134,
+          prState: "merged",
+          phase: "done",
+          ciStatus: "passed",
+          reviewStatus: "approved",
+        }),
+      ),
+    );
+    expect(line).toBe("done → PR #1134 merged ✓");
+  });
+
+  test("closed PR shows closed", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1136,
+          prState: "closed",
+        }),
+      ),
+    );
+    expect(line).toBe("impl → PR #1136 closed");
+  });
+
+  test("draft PR state", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          prNumber: 1137,
+          prState: "draft",
+          ciStatus: "none",
+        }),
+      ),
+    );
+    expect(line).toBe("impl → PR #1137 draft");
+  });
+
+  test("review phase with changes requested", () => {
+    const line = stripAnsi(
+      formatLifecycleLine(
+        makeWorkItem({
+          phase: "review",
+          prNumber: 1138,
+          prState: "open",
+          ciStatus: "passed",
+          reviewStatus: "changes_requested",
+        }),
+      ),
+    );
+    expect(line).toBe("review → PR #1138 open → CI ✓ → review changes requested");
   });
 });
