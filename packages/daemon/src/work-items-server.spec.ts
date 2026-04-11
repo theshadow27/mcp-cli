@@ -492,6 +492,22 @@ describe("WorkItemsServer", () => {
     expect(content[0].text).toContain("Expected integer");
   });
 
+  test("work_items_track calls onTrack callback", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+
+    let trackCallCount = 0;
+    server = new WorkItemsServer(db, { onTrack: () => trackCallCount++ });
+
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 99 } });
+    expect(trackCallCount).toBe(1);
+
+    // Second track call also fires
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 100 } });
+    expect(trackCallCount).toBe(2);
+  });
+
   test("start() throws if called twice", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;

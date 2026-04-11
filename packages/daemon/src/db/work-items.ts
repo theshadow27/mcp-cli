@@ -8,13 +8,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-export type {
-  WorkItemPhase,
-  PrState,
-  CiStatus,
-  ReviewStatus,
-  WorkItem,
-} from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 
 /** Snake-case row shape from SQLite. */
@@ -62,30 +55,41 @@ export class WorkItemDb {
     this.migrate();
   }
 
+  /**
+   * Versioned migration using PRAGMA user_version.
+   *
+   * NOTE: user_version is database-wide. This works because WorkItemDb is
+   * currently the only consumer. If StateDb (which shares this connection)
+   * ever needs versioned migrations, switch to a per-table schema_versions table.
+   */
   private migrate(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS work_items (
-        id              TEXT PRIMARY KEY,
-        issue_number    INTEGER UNIQUE,
-        branch          TEXT UNIQUE,
-        pr_number       INTEGER UNIQUE,
-        pr_state        TEXT DEFAULT 'open',
-        pr_url          TEXT,
-        ci_status       TEXT DEFAULT 'none',
-        ci_run_id       INTEGER,
-        ci_summary      TEXT,
-        review_status   TEXT DEFAULT 'none',
-        phase           TEXT DEFAULT 'impl',
-        created_at      TEXT DEFAULT (datetime('now')),
-        updated_at      TEXT DEFAULT (datetime('now'))
-      );
-      -- For existing tables that lack these constraints, add indexes.
-      -- CREATE UNIQUE INDEX IF NOT EXISTS is a no-op if the index already exists.
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_issue_number
-        ON work_items(issue_number) WHERE issue_number IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
-        ON work_items(branch) WHERE branch IS NOT NULL;
-    `);
+    const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+
+    if (version < 1) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS work_items (
+          id              TEXT PRIMARY KEY,
+          issue_number    INTEGER UNIQUE,
+          branch          TEXT UNIQUE,
+          pr_number       INTEGER UNIQUE,
+          pr_state        TEXT DEFAULT 'open',
+          pr_url          TEXT,
+          ci_status       TEXT DEFAULT 'none',
+          ci_run_id       INTEGER,
+          ci_summary      TEXT,
+          review_status   TEXT DEFAULT 'none',
+          phase           TEXT DEFAULT 'impl',
+          created_at      TEXT DEFAULT (datetime('now')),
+          updated_at      TEXT DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_issue_number
+          ON work_items(issue_number) WHERE issue_number IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
+          ON work_items(branch) WHERE branch IS NOT NULL;
+        PRAGMA user_version = 1;
+      `);
+    }
+    // Future: if (version < 2) { ALTER TABLE work_items ADD COLUMN ...; PRAGMA user_version = 2; }
   }
 
   createWorkItem(item: Partial<WorkItem>): WorkItem {

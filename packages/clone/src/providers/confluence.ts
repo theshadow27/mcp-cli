@@ -76,7 +76,7 @@ interface ResourcesResponse {
   avatarUrl?: string;
 }
 
-// Re-export for backwards compatibility
+// McpToolCaller is now defined in provider.ts and re-exported here for backwards compatibility.
 export type { McpToolCaller } from "./provider";
 
 /** MCP tool call result shape. */

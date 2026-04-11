@@ -62,6 +62,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
 import { WorkItemPoller } from "./github/work-item-poller";
 import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
@@ -266,6 +267,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Allow env-based override for subprocess integration tests
   const skipVirtualServers = opts?.skipVirtualServers ?? process.env.MCP_DAEMON_SKIP_VIRTUAL_SERVERS === "1";
   const logger = opts?.logger ?? consoleLogger;
+
+  // Cached repo info for resolveIssuePr — detected once from daemon startup cwd
+  let cachedRepo: RepoInfo | null = null;
 
   if (!opts?.skipLogSetup) {
     installDaemonLogCapture();
@@ -506,6 +510,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         lastError: quotaPoller.lastError,
       };
     },
+    resolveIssuePr: async (number: number) => {
+      // Cache repo detection so we don't re-run `git remote` on every track call.
+      // Uses the daemon's startup cwd which is the project root at launch time.
+      if (!cachedRepo) {
+        cachedRepo = await detectRepo(process.cwd());
+      }
+      const resolved = await resolveNumber(cachedRepo, number);
+      return { prNumber: resolved.prNumber };
+    },
   });
   ipcServer.start();
 
@@ -688,7 +701,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       (async () => {
         try {
           const workItemDb = new WorkItemDb(db.database);
-          workItemsServer = new WorkItemsServer(workItemDb);
+
+          // Create the poller first so we can pass pollNow to the server
+          workItemPoller = new WorkItemPoller({
+            db: workItemDb,
+            logger,
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
+          });
+
+          workItemsServer = new WorkItemsServer(workItemDb, {
+            onTrack: () => workItemPoller?.pollNow(),
+          });
           const {
             client: workItemsClient,
             transport: workItemsTransport,
@@ -699,11 +722,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           // Start the GitHub work item poller — forwards events to the claude session worker
           // so `mcx wait --any` / `--pr` / `--checks` can race work item events.
-          workItemPoller = new WorkItemPoller({
-            db: workItemDb,
-            logger,
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
-          });
           workItemPoller.start();
           logger.info("[mcpd] Work item poller started");
         } catch (err) {

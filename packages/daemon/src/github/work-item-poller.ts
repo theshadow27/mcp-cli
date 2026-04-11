@@ -11,7 +11,8 @@
 
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
-import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemDb } from "../db/work-items";
+import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
+import type { WorkItemDb } from "../db/work-items";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
 const ACTIVE_INTERVAL_MS = 30_000;
@@ -71,6 +72,19 @@ export class WorkItemPoller {
   /** Start polling. Does an immediate first poll, then chains via setTimeout. */
   start(): void {
     if (this.timer || this.stopped) return;
+    this.scheduleNext(0);
+  }
+
+  /** Trigger an immediate poll cycle and reschedule the next tick.
+   *  Useful when a new item is tracked — avoids waiting up to 5 minutes. */
+  pollNow(): void {
+    if (this.stopped) return;
+    // Cancel the current timer and reschedule with 0 delay so the
+    // next tick runs immediately, then resumes at currentIntervalMs.
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.scheduleNext(0);
   }
 

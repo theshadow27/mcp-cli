@@ -128,7 +128,7 @@ export async function push(opts: PushOptions): Promise<PushSyncResult> {
     const localFileSet = new Set(localFiles);
 
     // ── Categorize changes ───────────────────────────────────
-    const modified: Array<{ cached: CachedEntry; rawContent: string }> = [];
+    const modified: Array<{ cached: CachedEntry; rawContent: string; fields: Record<string, unknown> | null }> = [];
     const created: Array<{ relPath: string; rawContent: string; title: string }> = [];
     const deleted: CachedEntry[] = [];
 
@@ -141,11 +141,11 @@ export async function push(opts: PushOptions): Promise<PushSyncResult> {
 
       const absPath = join(repoDir, cached.localPath);
       const localContent = readFileSync(absPath, "utf-8");
-      const { content: rawContent } = stripFrontmatter(localContent);
+      const { content: rawContent, fields } = stripFrontmatter(localContent);
       const hash = contentHash(rawContent);
 
       if (hash !== cached.contentHash) {
-        modified.push({ cached, rawContent });
+        modified.push({ cached, rawContent, fields });
       }
     }
 
@@ -209,8 +209,8 @@ export async function push(opts: PushOptions): Promise<PushSyncResult> {
 
     // ── Push modifications ───────────────────────────────────
     if (provider.push) {
-      for (const { cached, rawContent } of modified) {
-        await pushModified(opts, provider, scope, cache, cached, rawContent, result);
+      for (const { cached, rawContent, fields } of modified) {
+        await pushModified(opts, provider, scope, cache, cached, rawContent, fields, result);
       }
     }
 
@@ -253,11 +253,12 @@ async function pushModified(
   cache: CloneCache,
   cached: CachedEntry,
   rawContent: string,
+  fields: Record<string, unknown> | null,
   result: PushSyncResult,
 ): Promise<void> {
   log(opts, `  pushing ${cached.localPath}...`);
   try {
-    const pushResult = await provider.push?.(scope, cached.id, rawContent, cached.version);
+    const pushResult = await provider.push?.(scope, cached.id, rawContent, cached.version, fields ?? undefined);
     if (!pushResult) throw new Error("Provider push returned no result");
 
     if (pushResult.ok) {

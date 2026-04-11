@@ -44,6 +44,48 @@ Parse the response and apply the gating rules described in [Quota gating](#quota
 If utilization is already ≥95%, do not start the sprint — report the reset time and wait.
 If ≥80%, start with QA/review-only work (no new impl sessions) until utilization drops.
 
+## Work Item Tracking
+
+The work item tracker replaces manual `gh pr view` / `gh run list` polling.
+Track every issue at spawn time, attach PRs when they appear, and let the
+poller + event system drive the pipeline.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `mcx track <issue-number>` | Start tracking an issue (creates work item in `impl` phase) |
+| `mcx tracked --json` | List all tracked items with PR/CI/review state |
+| `mcx tracked --phase impl` | Filter by phase (`impl`, `review`, `repair`, `qa`, `done`) |
+| `mcx untrack <number>` | Stop tracking |
+| `mcx wait --any --timeout 30000` | Block until a session event OR work item event fires |
+| `mcx wait --pr <number> --checks` | Block until CI passes or fails for a specific PR |
+
+### Event types
+
+The poller emits these events (used by `mcx wait --any` and `mcx wait --pr`):
+
+| Event | Meaning |
+|-------|---------|
+| `checks:passed` | CI passed — ready for next phase |
+| `checks:failed` | CI failed — needs repair |
+| `review:approved` | Review approved — advance to QA |
+| `review:changes_requested` | Reviewer requested changes — spawn repair |
+| `pr:merged` | PR merged — mark done |
+| `pr:closed` | PR closed without merge — investigate |
+
+### Phase lifecycle
+
+Each work item moves through phases. Use the MCP tool `work_items_update` (or
+`mcx call _work_items work_items_update`) to advance phases:
+
+```
+impl → review → qa → done
+impl → qa → done              (low scrutiny, skip review)
+review → repair → review      (repair cycle)
+qa → repair → review → qa     (QA rejection cycle)
+```
+
 ## Pipeline
 
 For each issue, run the full lifecycle:
@@ -96,6 +138,15 @@ mcx acp spawn --agent <custom-agent> --worktree -t "/implement N" --allow Read G
 The provider flag also applies to review, repair, and QA sessions for that issue.
 All sessions in an issue's lifecycle use the same provider.
 
+**Immediately after spawning**, track the issue:
+
+```bash
+mcx track <issue-number>
+```
+
+This creates a work item in `impl` phase. The poller won't watch it yet (no PR
+attached), but it establishes the item for status tracking via `mcx tracked`.
+
 ### Triage
 
 After implementation completes, end the session:
@@ -103,6 +154,17 @@ After implementation completes, end the session:
 ```bash
 mcx claude bye <sessionId>
 ```
+
+**Attach the PR to the tracked work item** so the poller can watch CI/review:
+
+```bash
+# Get the PR number from the session output or branch
+PR=$(gh pr list --head <branch> --json number -q '.[0].number')
+mcx call _work_items work_items_update '{"id":"#<issue>","prNumber":'$PR'}'
+```
+
+This links the issue's work item to its PR. The poller will start watching
+CI status and review state on the next poll cycle.
 
 Run PR-based triage (works from any directory — no worktree needed):
 
@@ -117,6 +179,16 @@ bun .claude/skills/estimate/triage.ts --pr <pr-number> --json
 - 4+ source files across 2+ packages
 
 Everything else is **low scrutiny**.
+
+Advance the work item phase based on triage result:
+
+```bash
+# High scrutiny → review phase
+mcx call _work_items work_items_update '{"id":"#<issue>","phase":"review"}'
+
+# Low scrutiny → straight to QA
+mcx call _work_items work_items_update '{"id":"#<issue>","phase":"qa"}'
+```
 
 ### Review (high scrutiny only)
 
@@ -210,6 +282,10 @@ Only the final `bye` (after QA merge or failure) should clean up the worktree.
 This is the main loop. The goal is maximum throughput — keep 5 opus
 implementation slots full, with unlimited sonnet review/QA slots.
 
+The loop is **event-driven**: `mcx wait --any` blocks until either a session
+event or a work item event fires, then you react. No manual `gh pr view` or
+`gh run list` polling needed — the work item poller handles GitHub state.
+
 Track the **provider** for each issue from the sprint plan. When spawning any
 session (implement, review, repair, QA), use `mcx <provider>` instead of
 `mcx claude` if the issue has a non-default provider. For `acp:<agent>`,
@@ -219,33 +295,112 @@ Also track ACP sessions separately: `mcx copilot ls`, `mcx gemini ls`, or
 `mcx acp ls` to check provider-specific session lists. `mcx claude ls` only
 shows Claude sessions.
 
+### Dashboard
+
+Use `mcx tracked --json` for a unified view of all work items instead of
+per-PR GitHub API calls:
+
+```bash
+mcx tracked --json          # all items with PR/CI/review state
+mcx tracked --phase impl    # just implementation items
+mcx tracked --phase review  # items awaiting review
+mcx tracked --phase qa      # items in QA
+```
+
+### Main loop
+
 ```
 while issues remain:
-  mcx claude wait --timeout 30000 --short   # block until event or 30s
-  mcx claude ls --short                      # check claude session states
+  # Block until session event OR work item event (30s timeout)
+  event = mcx wait --any --timeout 30000 --short
+
+  # Check session states
+  mcx claude ls --short
   # If any issues use ACP providers, also check those:
   mcx copilot ls --short 2>/dev/null
   mcx gemini ls --short 2>/dev/null
+
+  # Dashboard — unified status from tracker
+  mcx tracked --json
 
   # Quota gate — check before spawning (see "Quota gating" section)
   quota = mcx call _metrics quota_status
   utilization = quota.fiveHour.utilization  # may be unavailable — proceed if so
 
-  for each session that completed (idle/result):
-    if implementation session:
-      bye → triage (--pr N) → spawn review or QA (--worktree)
-      if utilization < 80%:
-        spawn next issue from backlog (backfill the slot)
-      else:
-        log "impl spawn skipped — quota at {utilization}%"
-      # Use the issue's provider for the spawn command
-    if review session:
-      if utilization < 95%:
-        bye → read findings → spawn repair (--cwd) if needed, else spawn QA (--cwd)
-      else:
-        log "review/QA spawn deferred — quota at {utilization}%"
-    if QA session:
-      bye → record result (merged or failed)
+  # --- React to work item events ---
+  if event.source == "work_item":
+    match event.workItemEvent.type:
+      "checks:passed":
+        # CI passed — advance to next phase
+        item = mcx tracked --json | find item by event.prNumber
+        if item.phase == "impl":
+          # Implementation CI passed — proceed to triage
+          # (triage was already run at bye time, but CI confirms it's green)
+          log "CI passed for PR #{prNumber}, ready for review/QA"
+        if item.phase == "review" or item.phase == "repair":
+          log "CI passed after repair for PR #{prNumber}"
+        if item.phase == "qa":
+          log "CI green for PR #{prNumber} — QA can proceed to merge"
+
+      "checks:failed":
+        # CI failed — spawn repair session
+        item = mcx tracked --json | find item by event.prNumber
+        mcx call _work_items work_items_update '{"id":"<item.id>","phase":"repair"}'
+        if utilization < 95%:
+          spawn repair session (--worktree) to fix CI failures
+          # Instruct repairer: "CI failed on PR #N. Check `gh run view <runId>` for details."
+        else:
+          log "repair deferred — quota at {utilization}%"
+
+      "review:approved":
+        # Review approved — advance to QA
+        item = mcx tracked --json | find item by event.prNumber
+        mcx call _work_items work_items_update '{"id":"<item.id>","phase":"qa"}'
+        if utilization < 95%:
+          spawn QA session (--worktree)
+        else:
+          log "QA spawn deferred — quota at {utilization}%"
+
+      "review:changes_requested":
+        # Reviewer requested changes — spawn repair
+        item = mcx tracked --json | find item by event.prNumber
+        mcx call _work_items work_items_update '{"id":"<item.id>","phase":"repair"}'
+        if utilization < 95%:
+          spawn repair session (--worktree)
+          # Instruct repairer to read PR comments first
+        else:
+          log "repair deferred — quota at {utilization}%"
+
+      "pr:merged":
+        # PR merged — mark done
+        mcx call _work_items work_items_update '{"id":"<item.id>","phase":"done"}'
+        mcx untrack <item.issueNumber>
+        log "✓ PR #{prNumber} merged — issue #{issueNumber} done"
+
+      "pr:closed":
+        # PR closed without merge — investigate
+        log "⚠ PR #{prNumber} closed without merge — investigate"
+
+  # --- React to session events ---
+  if event.source == "session" or timeout:
+    for each session that completed (idle/result):
+      if implementation session:
+        bye → attach PR to tracker → triage (--pr N)
+        → advance phase (review or qa) → spawn next phase (--worktree)
+        if utilization < 80%:
+          spawn next issue from backlog (backfill the slot)
+        else:
+          log "impl spawn skipped — quota at {utilization}%"
+        # Use the issue's provider for the spawn command
+      if review session:
+        bye
+        # Wait for work item events (review:approved, review:changes_requested)
+        # to drive next action — no need to manually check review status
+      if QA session:
+        bye → record result (merged or failed)
+        if merged:
+          mcx call _work_items work_items_update '{"id":"#<issue>","phase":"done"}'
+          mcx untrack <issue>
 
   if utilization >= 95%:
     log "⚠ quota at {utilization}%, pausing until {quota.fiveHour.resetsAt}"
@@ -259,8 +414,11 @@ while issues remain:
 ```
 
 **Key rules:**
-- Use `mcx claude wait`, never `sleep` — wait is event-driven and interruptible
+- Use `mcx wait --any`, never `sleep` — event-driven, handles both session and work item events
 - Check `session:result` in wait output — it means idle (waiting for input), NOT ended
+- Attach PRs to tracked items after `bye` — the poller can't watch items without a prNumber
+- Use `mcx tracked --json` for status — don't poll GitHub directly
+- Let work item events drive phase transitions — don't manually check CI/review status
 - Triage uses `--pr N` (no worktree needed) — run it after `bye`
 - Don't `bye` a session before verifying the PR was pushed
 - Spawn fresh sessions per phase — never reuse across implement/review/QA
@@ -288,13 +446,16 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    ```
 2. **Start planning the next sprint** — run `/sprint plan` while waiting for
    the last sessions to complete. This overlaps planning with execution.
-3. After all sessions complete: report what merged, what failed, what's in progress
-4. Pull main and rebuild: `git checkout main && git pull && bun run build`
-4. Restart the daemon so it picks up the new build: verify no sessions active
+3. After all sessions complete: report what merged, what failed, what's in progress.
+   Use `mcx tracked --json` for the final status dashboard — items in `done` phase
+   were merged, items in other phases need follow-up.
+4. Clean up tracking: `mcx untrack` any remaining items (they'll carry into next sprint otherwise)
+5. Pull main and rebuild: `git checkout main && git pull && bun run build`
+6. Restart the daemon so it picks up the new build: verify no sessions active
    with `mcx claude ls`, then restart. This ensures the next sprint runs on
    the latest code (including any daemon fixes merged during this sprint).
-5. Run `/sprint review` to cut a release
-6. Run `/sprint retro` to capture learnings
+7. Run `/sprint review` to cut a release
+8. Run `/sprint retro` to capture learnings
 
 ## Quota gating
 

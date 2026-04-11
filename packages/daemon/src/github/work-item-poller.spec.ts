@@ -434,6 +434,51 @@ describe("WorkItemPoller", () => {
     }
   });
 
+  test("pollNow triggers an immediate poll cycle", async () => {
+    db.createWorkItem({ id: "pr:50", prNumber: 50, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      intervalMs: 60_000, // Long interval — pollNow should bypass it
+      fetchPRs: async () => [makePRStatus({ number: 50, state: "MERGED" })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    poller.start();
+    // Wait for the initial poll from start() to complete
+    await Bun.sleep(50);
+    expect(poller.pollCount).toBe(1);
+
+    // Reset state so the next poll sees a change
+    db.updateWorkItem("pr:50", { prState: "open" });
+    events.length = 0;
+
+    poller.pollNow();
+    // Wait for the triggered poll to complete
+    await Bun.sleep(50);
+
+    expect(poller.pollCount).toBe(2);
+    expect(events).toContainEqual({ type: "pr:merged", prNumber: 50 });
+    poller.stop();
+  });
+
+  test("pollNow is a no-op when stopped", () => {
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [],
+      detectRepo: async () => TEST_REPO,
+    });
+
+    poller.stop();
+    // Should not throw
+    poller.pollNow();
+    expect(poller.pollCount).toBe(0);
+  });
+
   test("EXPECTED status maps to pending, not running", async () => {
     db.createWorkItem({ id: "pr:12", prNumber: 12, ciStatus: "none" });
 

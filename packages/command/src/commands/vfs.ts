@@ -8,7 +8,15 @@
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CloneCache, clone, createAsanaProvider, createConfluenceProvider, pull, push } from "@mcp-cli/clone";
+import {
+  CloneCache,
+  clone,
+  createAsanaProvider,
+  createConfluenceProvider,
+  createJiraProvider,
+  pull,
+  push,
+} from "@mcp-cli/clone";
 import type { McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError } from "../output";
@@ -122,8 +130,10 @@ function resolveProvider(name: string) {
       return createConfluenceProvider({ callTool });
     case "asana":
       return createAsanaProvider({ callTool });
+    case "jira":
+      return createJiraProvider({ callTool });
     default:
-      printError(`Unknown provider: "${name}". Available: confluence, asana`);
+      printError(`Unknown provider: "${name}". Available: confluence, asana, jira`);
       process.exit(1);
   }
 }
@@ -136,15 +146,7 @@ function resolveProviderFromCache(repoDir: string) {
   }
 
   const cache = new CloneCache(cachePath);
-  // Try each known provider
-  const providers = ["confluence", "asana"] as const;
-  let providerName: string | undefined;
-  for (const name of providers) {
-    if (cache.findFirstScope(name)) {
-      providerName = name;
-      break;
-    }
-  }
+  const providerName = cache.findProviderName();
   cache.close();
 
   if (!providerName) {
@@ -159,24 +161,27 @@ function printUsage(): void {
   process.stderr.write(`mcx vfs — virtual filesystem: clone, sync, and edit remote content locally
 
 Usage:
-  mcx vfs clone <provider> <scope> [dir]   Clone a remote source as a local git repo
+  mcx vfs clone <provider> <scope> [dir]   Clone remote content as a local git repo
   mcx vfs pull [dir]                       Pull remote changes (incremental)
   mcx vfs pull --full [dir]                Pull all items (detects deletions)
   mcx vfs push [dir]                       Push local changes to the remote
   mcx --dry-run vfs push [dir]             Show what would be pushed
 
 Providers:
-  confluence    Clone a Confluence space (scope = space key)
-  asana         Clone an Asana project (scope = project GID)
+  confluence   Clone a Confluence space (scope = space key)
+  asana        Clone an Asana project (scope = project GID)
+  jira         Clone Jira project issues (scope = project key)
 
 Options:
   --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
   --limit <n>         Max items to fetch (for testing)
   --full              Force full sync instead of incremental
+  --create            Create new remote items from local files (push only)
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo
   mcx vfs clone asana 1234567890 ~/asana/my-project
+  mcx vfs clone jira FOO ~/jira/foo
   cd ~/atlassian/foo && mcx vfs pull
   $EDITOR some-page.md && mcx vfs push
 `);

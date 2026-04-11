@@ -108,8 +108,14 @@ export interface RemoteProvider {
 
   // ── Phase 2: Write support ─────────────────────────────────
 
-  /** Push updated content to the remote. */
-  push?(scope: ResolvedScope, id: string, content: string, baseVersion: number): Promise<PushResult>;
+  /** Push updated content to the remote. Frontmatter fields (if provided) allow updating metadata like summary/title. */
+  push?(
+    scope: ResolvedScope,
+    id: string,
+    content: string,
+    baseVersion: number,
+    frontmatter?: Record<string, unknown>,
+  ): Promise<PushResult>;
 
   /** Validate content before push. */
   validate?(content: string): ValidationResult;
