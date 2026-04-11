@@ -1043,14 +1043,6 @@ export class StateDb {
       .map(toSessionRow);
   }
 
-  /** Get the set of session names currently in use by active sessions. */
-  getActiveSessionNames(): Set<string> {
-    const rows = this.db
-      .query<{ name: string }, []>("SELECT name FROM agent_sessions WHERE ended_at IS NULL AND name IS NOT NULL")
-      .all();
-    return new Set(rows.map((r) => r.name));
-  }
-
   pruneOldSessions(maxAgeDays = 30): number {
     const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const result = this.db.run("DELETE FROM agent_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);

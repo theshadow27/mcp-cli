@@ -835,14 +835,17 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Table output
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
   const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
-  const header = `${"SESSION".padEnd(16)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
+  const sessionColWidth = 20;
+  const header = `${"SESSION".padEnd(sessionColWidth)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
-    const nameLabel = s.name ? ` ${s.name}` : "";
-    const sessionCol = `${id}${nameLabel}`.padEnd(16);
+    const maxNameLen = sessionColWidth - id.length - 1; // 1 for leading space
+    const truncatedName = s.name && s.name.length > maxNameLen ? `${s.name.slice(0, maxNameLen - 1)}…` : s.name;
+    const nameLabel = truncatedName ? ` ${truncatedName}` : "";
+    const sessionCol = `${id}${nameLabel}`.padEnd(sessionColWidth);
     const stateStr = s.rateLimited ? `${colorState(s.state)} ${c.red}[RATE LIMITED]${c.reset}` : colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
@@ -853,7 +856,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     console.log(
-      `${c.cyan}${id}${c.reset}${c.bold}${nameLabel}${c.reset}${" ".repeat(Math.max(1, 16 - id.length - nameLabel.length))}${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+      `${c.cyan}${id}${c.reset}${c.bold}${nameLabel}${c.reset}${" ".repeat(Math.max(1, sessionColWidth - id.length - nameLabel.length))}${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
 
     // Work item lifecycle line (indented under the session)
@@ -1614,10 +1617,20 @@ export async function resolveSessionId(
   // Try exact name match first (case-insensitive)
   const prefixLower = prefix.toLowerCase();
   const nameMatches = sessions.filter((s) => s.name?.toLowerCase() === prefixLower);
-  if (nameMatches.length === 1) return nameMatches[0].sessionId;
 
-  // Fall back to UUID prefix match
+  // Also check UUID prefix matches
   const matches = sessions.filter((s) => s.sessionId.startsWith(prefix));
+
+  if (nameMatches.length === 1) {
+    // Warn if a UUID prefix match is being shadowed by the name match
+    const shadowedById = matches.filter((s) => s.sessionId !== nameMatches[0].sessionId);
+    if (shadowedById.length > 0) {
+      d.printError(
+        `Warning: name "${prefix}" shadows UUID prefix match (${shadowedById.map((s) => s.sessionId.slice(0, 8)).join(", ")}). Using named session.`,
+      );
+    }
+    return nameMatches[0].sessionId;
+  }
 
   if (matches.length === 0 && nameMatches.length === 0) {
     d.printError(`No session matching "${prefix}"`);

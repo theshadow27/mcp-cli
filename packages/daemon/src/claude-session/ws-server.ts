@@ -550,6 +550,15 @@ export class ClaudeWsServer {
     const router = new PermissionRouter(config.permissionStrategy ?? "auto", config.permissionRules);
 
     // Auto-generate a name if not explicitly provided
+    // If an explicit name was given, reject duplicates among active sessions
+    if (config.name) {
+      const nameLower = config.name.toLowerCase();
+      for (const s of this.sessions.values()) {
+        if (s.name?.toLowerCase() === nameLower) {
+          throw new Error(`Session name "${config.name}" is already in use`);
+        }
+      }
+    }
     const name = config.name ?? this.generateName();
 
     this.sessions.set(sessionId, {
