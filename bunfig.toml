@@ -1,8 +1,9 @@
 [test]
 
-# Always generate coverage report when running tests
-coverage = true
-coverageReporter = ["text"]
+# Coverage is collected on-demand via `--coverage` in scripts/check-coverage.ts.
+# Do NOT enable `coverage = true` here — Bun 1.3.12 on Linux exits non-zero
+# when coverage is collected on files with 0% coverage, even without a
+# configured threshold. This broke CI (see #1181).
 
 # Prune directories that should not be scanned for tests
 pathIgnorePatterns = ["scripts/**", ".claude/**", "dist/**", ".git-hooks/**"]
