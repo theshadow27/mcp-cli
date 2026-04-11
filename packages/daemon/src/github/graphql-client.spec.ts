@@ -204,6 +204,38 @@ describe("fetchTrackedPRs", () => {
     expect(result).toEqual([]);
   });
 
+  test("clears token cache on 403 non-rate-limit", async () => {
+    const doFetch = async () => new Response("Forbidden", { status: 403, headers: {} });
+
+    let tokenCallCount = 0;
+    const getToken = async () => {
+      tokenCallCount++;
+      return `token-${tokenCallCount}`;
+    };
+
+    await expect(fetchTrackedPRs(repo, [1], { getToken, fetch: doFetch })).rejects.toThrow(
+      "403 (possible token scope change)",
+    );
+    // Token should have been fetched once, then cache cleared for next poll
+    expect(tokenCallCount).toBe(1);
+  });
+
+  test("throws rate limit error on 403 with exhausted limit", async () => {
+    const resetTime = Math.floor(Date.now() / 1000) + 3600;
+    const doFetch = async () =>
+      new Response("Rate limited", {
+        status: 403,
+        headers: {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(resetTime),
+        },
+      });
+
+    await expect(fetchTrackedPRs(repo, [1], { getToken: mockGetToken, fetch: doFetch })).rejects.toThrow(
+      "rate limit exhausted",
+    );
+  });
+
   test("handles PR with no CI or reviews", async () => {
     const body = {
       data: {

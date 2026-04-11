@@ -39,6 +39,9 @@ export class WorkItemPoller {
   private _repo: RepoInfo | null = null;
   private _lastError: string | null = null;
   private _pollCount = 0;
+  private polling = false;
+  private stopped = false;
+  private repoDetectFailures = 0;
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
@@ -65,27 +68,54 @@ export class WorkItemPoller {
     return this._repo;
   }
 
-  /** Start polling. Does an immediate first poll. */
+  /** Start polling. Does an immediate first poll, then chains via setTimeout. */
   start(): void {
-    if (this.timer) return;
-    this.poll();
-    this.timer = setInterval(() => this.poll(), this.currentIntervalMs);
+    if (this.timer || this.stopped) return;
+    this.scheduleNext(0);
   }
 
-  /** Stop polling and clean up. */
+  /** Stop polling and clean up. In-flight polls will bail before writing. */
   stop(): void {
+    this.stopped = true;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
 
+  private scheduleNext(delayMs: number): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(async () => {
+      await this.poll();
+      this.scheduleNext(this.currentIntervalMs);
+    }, delayMs);
+  }
+
   /** Run a single poll cycle. Exported for testing. */
   async poll(): Promise<void> {
+    if (this.polling || this.stopped) return;
+    this.polling = true;
     try {
-      // Detect repo on first poll
+      // Detect repo (with failure caching — stop retrying after 3 failures)
       if (!this._repo) {
-        this._repo = await this.detectRepoFn();
+        if (this.repoDetectFailures >= 3) {
+          this._pollCount++;
+          return;
+        }
+        try {
+          this._repo = await this.detectRepoFn();
+        } catch (err) {
+          this.repoDetectFailures++;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (this.repoDetectFailures >= 3) {
+            this.logger.warn(`[mcpd] Repo detection failed ${this.repoDetectFailures} times, giving up: ${msg}`);
+          } else {
+            this.logger.warn(`[mcpd] Repo detection failed (attempt ${this.repoDetectFailures}/3): ${msg}`);
+          }
+          this._lastError = msg;
+          this._pollCount++;
+          return;
+        }
       }
 
       const allItems = this.db.listWorkItems();
@@ -107,6 +137,8 @@ export class WorkItemPoller {
       const prNumbers = tracked.map((item) => item.prNumber as number);
       const statuses = await this.fetchPRs(this._repo, prNumbers);
 
+      if (this.stopped) return; // bail before writing if stopped during fetch
+
       // Build lookup by PR number
       const statusMap = new Map<number, PRStatus>();
       for (const s of statuses) {
@@ -115,6 +147,7 @@ export class WorkItemPoller {
 
       // Compare and update
       for (const item of tracked) {
+        if (this.stopped) return; // bail before writing if stopped mid-reconcile
         const status = statusMap.get(item.prNumber as number);
         if (!status) continue;
         this.reconcile(item, status);
@@ -128,6 +161,8 @@ export class WorkItemPoller {
       this._lastError = msg;
       this._pollCount++;
       this.logger.warn(`[mcpd] Work item poll failed: ${msg}`);
+    } finally {
+      this.polling = false;
     }
   }
 
@@ -152,7 +187,7 @@ export class WorkItemPoller {
     if (newCiStatus !== item.ciStatus) {
       patch.ciStatus = newCiStatus;
       changed = true;
-      this.emitCiEvent(prNumber, newCiStatus, item.ciRunId ?? 0, status);
+      this.emitCiEvent(prNumber, newCiStatus, status);
     }
 
     // Review status changes
@@ -182,7 +217,7 @@ export class WorkItemPoller {
     }
   }
 
-  private emitCiEvent(prNumber: number, newStatus: CiStatus, ciRunId: number, status: PRStatus): void {
+  private emitCiEvent(prNumber: number, newStatus: CiStatus, status: PRStatus): void {
     switch (newStatus) {
       case "passed":
         this.onEvent({ type: "checks:passed", prNumber });
@@ -194,7 +229,7 @@ export class WorkItemPoller {
       }
       case "running":
       case "pending":
-        this.onEvent({ type: "checks:started", prNumber, runId: ciRunId });
+        this.onEvent({ type: "checks:started", prNumber });
         break;
     }
   }
@@ -218,11 +253,6 @@ export class WorkItemPoller {
     const target = hasActive ? ACTIVE_INTERVAL_MS : STABLE_INTERVAL_MS;
     if (target !== this.currentIntervalMs) {
       this.currentIntervalMs = target;
-      // Restart the timer with the new interval
-      if (this.timer) {
-        clearInterval(this.timer);
-        this.timer = setInterval(() => this.poll(), this.currentIntervalMs);
-      }
       this.logger.info(`[mcpd] Work item poll interval adjusted to ${target / 1000}s`);
     }
   }
@@ -254,7 +284,7 @@ function mapCiStatus(status: PRStatus): CiStatus {
     case "PENDING":
       return "pending";
     case "EXPECTED":
-      return "running";
+      return "pending";
     default:
       return "none";
   }
@@ -262,17 +292,17 @@ function mapCiStatus(status: PRStatus): CiStatus {
 
 function mapReviewStatus(status: PRStatus): ReviewStatus {
   if (status.reviews.length === 0) return "none";
-  // Use the most recent review state
-  const latest = status.reviews[status.reviews.length - 1];
+  // Filter to decisive review states — ignore COMMENTED/PENDING/DISMISSED
+  // which don't change the approval status. Take the latest decisive review.
+  const decisive = status.reviews.filter((r) => r.state === "APPROVED" || r.state === "CHANGES_REQUESTED");
+  if (decisive.length === 0) return "pending";
+  const latest = decisive[decisive.length - 1];
   switch (latest.state) {
     case "APPROVED":
       return "approved";
     case "CHANGES_REQUESTED":
       return "changes_requested";
-    case "COMMENTED":
-    case "PENDING":
-      return "pending";
     default:
-      return "none";
+      return "pending";
   }
 }

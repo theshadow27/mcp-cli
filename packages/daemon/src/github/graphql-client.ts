@@ -57,7 +57,7 @@ export function buildQuery(prNumbers: readonly number[]): string {
           commit {
             statusCheckRollup {
               state
-              contexts(first: 10) {
+              contexts(first: 50) {
                 nodes {
                   ... on CheckRun {
                     name
@@ -247,11 +247,25 @@ export async function fetchTrackedPRs(
   let token = await getToken();
   let resp = await doGraphQL(doFetch, token, query, variables);
 
-  // Retry once on 401
+  // Retry once on 401 (expired token)
   if (resp.status === 401) {
     clearTokenCache();
     token = await getToken();
     resp = await doGraphQL(doFetch, token, query, variables);
+  }
+
+  // Handle 403: rate limit exhaustion or token scope change
+  if (resp.status === 403) {
+    const remaining = resp.headers.get("x-ratelimit-remaining");
+    const resetHeader = resp.headers.get("x-ratelimit-reset");
+    if (remaining === "0" && resetHeader) {
+      const resetAt = new Date(Number(resetHeader) * 1000);
+      throw new Error(`GitHub API rate limit exhausted, resets at ${resetAt.toISOString()}`);
+    }
+    // Scope change or other auth issue — clear token cache so next poll gets a fresh token
+    clearTokenCache();
+    const body = await resp.text().catch(() => "");
+    throw new Error(`GitHub API returned 403 (possible token scope change): ${body}`);
   }
 
   if (!resp.ok) {

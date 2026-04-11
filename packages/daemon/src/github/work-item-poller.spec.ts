@@ -311,4 +311,142 @@ describe("WorkItemPoller", () => {
     expect(events).toContainEqual({ type: "pr:merged", prNumber: 1 });
     expect(events).toContainEqual({ type: "pr:closed", prNumber: 2 });
   });
+
+  test("concurrency guard prevents overlapping polls", async () => {
+    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+
+    let concurrentCalls = 0;
+    let maxConcurrent = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        concurrentCalls++;
+        maxConcurrent = Math.max(maxConcurrent, concurrentCalls);
+        await Bun.sleep(50);
+        concurrentCalls--;
+        return [makePRStatus({ number: 1 })];
+      },
+      detectRepo: async () => TEST_REPO,
+    });
+
+    // Fire two polls simultaneously — second should be skipped
+    const [, secondResult] = await Promise.all([poller.poll(), poller.poll()]);
+    expect(maxConcurrent).toBe(1);
+    // Only one poll should have completed
+    expect(poller.pollCount).toBe(1);
+  });
+
+  test("stopped flag prevents DB writes during shutdown", async () => {
+    db.createWorkItem({ id: "pr:1", prNumber: 1, prState: "open" });
+
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        // Simulate stop being called during fetch
+        poller.stop();
+        return [makePRStatus({ number: 1, state: "MERGED" })];
+      },
+      detectRepo: async () => TEST_REPO,
+    });
+
+    await poller.poll();
+    // PR state should NOT have been updated because stop() was called
+    const item = db.getWorkItem("pr:1");
+    expect(item?.prState).toBe("open");
+  });
+
+  test("detectRepo failure caches after 3 attempts", async () => {
+    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+
+    let detectCalls = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [],
+      detectRepo: async () => {
+        detectCalls++;
+        throw new Error("not a github repo");
+      },
+    });
+
+    // First 3 attempts should try detectRepo
+    await poller.poll();
+    await poller.poll();
+    await poller.poll();
+    expect(detectCalls).toBe(3);
+    expect(poller.lastError).toBe("not a github repo");
+
+    // 4th attempt should skip detectRepo entirely
+    await poller.poll();
+    expect(detectCalls).toBe(3);
+  });
+
+  test("review status ignores COMMENTED after APPROVED", async () => {
+    db.createWorkItem({ id: "pr:9", prNumber: 9, reviewStatus: "none" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 9,
+          reviews: [
+            { state: "APPROVED", author: "alice" },
+            { state: "COMMENTED", author: "bob" },
+          ],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    // Should be approved, not pending — COMMENTED doesn't override APPROVED
+    const item = db.getWorkItem("pr:9");
+    expect(item?.reviewStatus).toBe("approved");
+    expect(events).toContainEqual({ type: "review:approved", prNumber: 9 });
+  });
+
+  test("checks:started event has no runId", async () => {
+    db.createWorkItem({ id: "pr:11", prNumber: 11, ciStatus: "none" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 11, ciState: "PENDING" })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    expect(events).toContainEqual({ type: "checks:started", prNumber: 11 });
+    // Verify no runId field
+    const startedEvent = events.find((e) => e.type === "checks:started");
+    expect(startedEvent).toBeDefined();
+    if (startedEvent) {
+      expect("runId" in startedEvent).toBe(false);
+    }
+  });
+
+  test("EXPECTED status maps to pending, not running", async () => {
+    db.createWorkItem({ id: "pr:12", prNumber: 12, ciStatus: "none" });
+
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 12, ciState: "EXPECTED" })],
+      detectRepo: async () => TEST_REPO,
+    });
+
+    await poller.poll();
+
+    const item = db.getWorkItem("pr:12");
+    expect(item?.ciStatus).toBe("pending");
+  });
 });
