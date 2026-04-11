@@ -40,6 +40,7 @@ import {
   MOCK_SERVER_NAME,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
+  WORK_ITEMS_SERVER_NAME,
   auditRuntimePermissions,
   consoleLogger,
   ensureStateDir,
@@ -60,6 +61,7 @@ import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
+import { WorkItemDb } from "./db/work-items";
 import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
@@ -69,6 +71,7 @@ import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
+import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
 
 /**
  * Acquire an exclusive flock on the PID file.
@@ -355,6 +358,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   quotaPoller.start();
 
   const metricsServer = new MetricsServer(metrics, quotaPoller);
+
+  // Work items server: reuse the daemon's database connection
+  const workItemDb = new WorkItemDb(db.database);
+  const workItemsServer = new WorkItemsServer(workItemDb);
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -673,6 +680,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         }
       })(),
     );
+
+    pool.registerPendingVirtualServer(
+      WORK_ITEMS_SERVER_NAME,
+      (async () => {
+        try {
+          const {
+            client: workItemsClient,
+            transport: workItemsTransport,
+            tools: workItemsTools,
+          } = await workItemsServer.start();
+          pool.registerVirtualServer(WORK_ITEMS_SERVER_NAME, workItemsClient, workItemsTransport, workItemsTools);
+          logger.info("[mcpd] Work items server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start work items server: ${err}`);
+        }
+      })(),
+    );
   }
 
   // Graceful shutdown — re-entrant safe
@@ -720,6 +744,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           [ALIAS_SERVER_NAME, aliasServer],
           [METRICS_SERVER_NAME, metricsServer],
           [MAIL_SERVER_NAME, mailServer],
+          [WORK_ITEMS_SERVER_NAME, workItemsServer],
         ];
       phase = performance.now();
       for (const [name, server] of virtualServers) {
