@@ -1,8 +1,15 @@
-import type { McpToolCaller } from "./confluence";
 /**
  * Jira provider — maps a Jira project's issues to a local directory of markdown files.
  */
-import type { ChangeEvent, FetchResult, RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "./provider";
+import type {
+  ChangeEvent,
+  FetchResult,
+  McpToolCaller,
+  RemoteEntry,
+  RemoteProvider,
+  ResolvedScope,
+  Scope,
+} from "./provider";
 
 /** Shape of an issue from the Jira REST/MCP API. */
 interface JiraIssue {
@@ -68,13 +75,17 @@ function validateScopeKey(key: string): void {
 export interface JiraProviderOptions {
   /** Function to call an MCP tool: (server, tool, args, timeoutMs?) → result */
   callTool: McpToolCaller;
+  /** Default issue type name for create (default: "Task"). */
+  defaultIssueType?: string;
 }
 
 /** Convert a Jira issue to a RemoteEntry. */
 function toRemoteEntry(issue: JiraIssue): RemoteEntry {
   const f = issue.fields;
-  // Jira has no version number — use updated timestamp as epoch ms for ordering
-  const updatedMs = new Date(f.updated).getTime();
+  // Jira has no version number — use updated timestamp as epoch ms for ordering.
+  // Guard against null/malformed dates: default to 0 so conflict detection remains functional.
+  const parsedMs = new Date(f.updated).getTime();
+  const updatedMs = Number.isNaN(parsedMs) ? 0 : parsedMs;
   return {
     id: issue.key,
     title: f.summary,
@@ -110,7 +121,7 @@ const SEARCH_FIELDS = [
 ];
 
 export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
-  const { callTool } = opts;
+  const { callTool, defaultIssueType = "Task" } = opts;
   const SERVER = "atlassian";
 
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
@@ -124,6 +135,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);
       let cloudId = scope.cloudId;
+      let siteUrl: string | undefined;
 
       // Auto-discover cloudId if not provided
       if (!cloudId) {
@@ -131,8 +143,15 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
         if (!resources || (Array.isArray(resources) && resources.length === 0)) {
           throw new Error("No accessible Atlassian resources found. Check your authentication.");
         }
+        if (Array.isArray(resources) && resources.length > 1) {
+          console.error(
+            `[jira] Warning: ${resources.length} Atlassian instances found (${resources.map((r) => r.name).join(", ")}). ` +
+              `Using "${resources[0].name}". Pass --cloud-id explicitly to select a different instance.`,
+          );
+        }
         const resource = Array.isArray(resources) ? resources[0] : resources;
         cloudId = resource.id;
+        siteUrl = resource.url;
       }
 
       return {
@@ -140,6 +159,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
         cloudId,
         resolved: {
           projectKey: scope.key,
+          ...(siteUrl ? { siteUrl } : {}),
         },
       };
     },
@@ -183,9 +203,9 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
     },
 
     async *changes(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent> {
-      // Convert ISO timestamp to JQL date format (yyyy-MM-dd HH:mm)
+      // Convert ISO timestamp to JQL date format (yyyy-MM-dd HH:mm) using UTC to avoid timezone drift
       const sinceDate = new Date(since);
-      const jqlDate = `${sinceDate.getFullYear()}-${String(sinceDate.getMonth() + 1).padStart(2, "0")}-${String(sinceDate.getDate()).padStart(2, "0")} ${String(sinceDate.getHours()).padStart(2, "0")}:${String(sinceDate.getMinutes()).padStart(2, "0")}`;
+      const jqlDate = `${sinceDate.getUTCFullYear()}-${String(sinceDate.getUTCMonth() + 1).padStart(2, "0")}-${String(sinceDate.getUTCDate()).padStart(2, "0")} ${String(sinceDate.getUTCHours()).padStart(2, "0")}:${String(sinceDate.getUTCMinutes()).padStart(2, "0")}`;
 
       const jql = `project = "${scope.key}" AND updated >= "${jqlDate}" ORDER BY updated DESC`;
       let nextPageToken: string | undefined;
@@ -220,6 +240,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
 
     frontmatter(entry: RemoteEntry, scope: ResolvedScope): Record<string, unknown> {
       const m = entry.metadata;
+      const siteUrl = (scope.resolved.siteUrl as string) ?? `https://${scope.cloudId}.atlassian.net`;
       return {
         key: entry.id,
         id: m.numericId as string,
@@ -231,11 +252,17 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
         labels: m.labels,
         ...(m.parent ? { parent: m.parent } : {}),
         updated: entry.lastModified,
-        url: `https://${scope.cloudId}.atlassian.net/browse/${entry.id}`,
+        url: `${siteUrl.replace(/\/$/, "")}/browse/${entry.id}`,
       };
     },
 
-    async push(scope: ResolvedScope, id: string, content: string, baseVersion: number) {
+    async push(
+      scope: ResolvedScope,
+      id: string,
+      content: string,
+      baseVersion: number,
+      frontmatter?: Record<string, unknown>,
+    ) {
       try {
         // Fetch current issue to check for conflicts via updated timestamp
         const current = (await callAtlassian("getJiraIssue", {
@@ -245,6 +272,12 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
         })) as JiraIssue;
 
         const currentVersion = new Date(current.fields.updated).getTime();
+        if (Number.isNaN(currentVersion)) {
+          return {
+            ok: false,
+            error: `Cannot determine remote version for issue ${id}: 'updated' field is missing or malformed.`,
+          };
+        }
         if (currentVersion > baseVersion) {
           return {
             ok: false,
@@ -252,10 +285,16 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
           };
         }
 
+        // Build fields to push — always include description, plus any editable frontmatter fields
+        const fields: Record<string, unknown> = { description: content };
+        if (frontmatter?.summary && frontmatter.summary !== current.fields.summary) {
+          fields.summary = frontmatter.summary;
+        }
+
         await callAtlassian("editJiraIssue", {
           cloudId: scope.cloudId,
           issueIdOrKey: id,
-          fields: { description: content },
+          fields,
           contentFormat: "markdown",
         });
 
@@ -280,7 +319,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
       const args: Record<string, unknown> = {
         cloudId: scope.cloudId,
         projectKey: scope.key,
-        issueTypeName: "Task",
+        issueTypeName: defaultIssueType,
         summary: title,
         description: content,
         contentFormat: "markdown",

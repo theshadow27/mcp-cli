@@ -177,7 +177,9 @@ export class CloneCache {
 
   /** Find the provider name from the first scope_meta row (when we don't know which provider was used). */
   findProviderName(): string | null {
-    const row = this.db.query("SELECT provider FROM scope_meta LIMIT 1").get() as { provider: string } | null;
+    const row = this.db.query("SELECT provider FROM scope_meta ORDER BY rowid LIMIT 1").get() as {
+      provider: string;
+    } | null;
     return row?.provider ?? null;
   }
 

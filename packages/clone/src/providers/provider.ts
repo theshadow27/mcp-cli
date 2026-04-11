@@ -108,8 +108,14 @@ export interface RemoteProvider {
 
   // ── Phase 2: Write support ─────────────────────────────────
 
-  /** Push updated content to the remote. */
-  push?(scope: ResolvedScope, id: string, content: string, baseVersion: number): Promise<PushResult>;
+  /** Push updated content to the remote. Frontmatter fields (if provided) allow updating metadata like summary/title. */
+  push?(
+    scope: ResolvedScope,
+    id: string,
+    content: string,
+    baseVersion: number,
+    frontmatter?: Record<string, unknown>,
+  ): Promise<PushResult>;
 
   /** Validate content before push. */
   validate?(content: string): ValidationResult;
@@ -133,3 +139,11 @@ export interface ResolvedScope extends Scope {
   /** Provider-specific resolved metadata (e.g., spaceId for Confluence). */
   resolved: Record<string, unknown>;
 }
+
+/** Function type for calling an MCP tool on a named server. */
+export type McpToolCaller = (
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+  timeoutMs?: number,
+) => Promise<unknown>;

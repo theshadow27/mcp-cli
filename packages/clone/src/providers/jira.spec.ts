@@ -6,7 +6,7 @@ function makeScope(key = "FOO"): ResolvedScope {
   return {
     key,
     cloudId: "cloud-123",
-    resolved: { projectKey: key },
+    resolved: { projectKey: key, siteUrl: "https://mycompany.atlassian.net" },
   };
 }
 
@@ -138,7 +138,31 @@ describe("frontmatter", () => {
     expect(fm.assignee).toBe("Jane Developer");
     expect(fm.labels).toEqual(["auth", "captain"]);
     expect(fm.parent).toBe("FOO-1000");
-    expect(fm.url).toContain("FOO-1234");
+    expect(fm.url).toBe("https://mycompany.atlassian.net/browse/FOO-1234");
+  });
+
+  test("uses siteUrl from resolved scope for URL, not cloudId", () => {
+    const provider = createJiraProvider({ callTool: async () => null });
+    const scope: ResolvedScope = {
+      key: "FOO",
+      cloudId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      resolved: { projectKey: "FOO", siteUrl: "https://acme.atlassian.net" },
+    };
+    const entry = makeEntry({ id: "FOO-42" });
+    const fm = provider.frontmatter(entry, scope);
+    expect(fm.url).toBe("https://acme.atlassian.net/browse/FOO-42");
+  });
+
+  test("falls back to cloudId-based URL when siteUrl not in scope", () => {
+    const provider = createJiraProvider({ callTool: async () => null });
+    const scope: ResolvedScope = {
+      key: "FOO",
+      cloudId: "cloud-123",
+      resolved: { projectKey: "FOO" },
+    };
+    const entry = makeEntry({ id: "FOO-42" });
+    const fm = provider.frontmatter(entry, scope);
+    expect(fm.url).toBe("https://cloud-123.atlassian.net/browse/FOO-42");
   });
 
   test("omits parent field when not present", () => {
@@ -333,6 +357,166 @@ describe("create", () => {
     await createFn(scope, "FOO-1", "Subtask", "Sub content");
     expect(capturedArgs.parent).toBe("FOO-1");
   });
+
+  test("uses configurable defaultIssueType", async () => {
+    const scope = makeScope();
+    let capturedArgs: Record<string, unknown> = {};
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool === "createJiraIssue") {
+          capturedArgs = args;
+          return wrapMcpResult(makeIssueResponse("FOO-101", "Story Issue"));
+        }
+        return null;
+      },
+      defaultIssueType: "Story",
+    });
+
+    const createFn = provider.create as NonNullable<typeof provider.create>;
+    await createFn(scope, undefined, "Story Issue", "Content");
+    expect(capturedArgs.issueTypeName).toBe("Story");
+  });
+});
+
+describe("push (frontmatter fields)", () => {
+  test("pushes summary from frontmatter when changed", async () => {
+    const scope = makeScope();
+    const baseVersion = new Date("2026-01-01T00:00:00Z").getTime();
+    let capturedFields: Record<string, unknown> = {};
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool === "getJiraIssue") {
+          return wrapMcpResult(makeIssueResponse("FOO-1", "Old Title", "2026-01-01T00:00:00Z"));
+        }
+        if (tool === "editJiraIssue") {
+          capturedFields = args.fields as Record<string, unknown>;
+          return wrapMcpResult({});
+        }
+        return null;
+      },
+    });
+
+    const pushFn = provider.push as NonNullable<typeof provider.push>;
+    const result = await pushFn(scope, "FOO-1", "Updated body", baseVersion, { summary: "New Title" });
+    expect(result.ok).toBe(true);
+    expect(capturedFields.summary).toBe("New Title");
+    expect(capturedFields.description).toBe("Updated body");
+  });
+
+  test("does not push summary when unchanged", async () => {
+    const scope = makeScope();
+    const baseVersion = new Date("2026-01-01T00:00:00Z").getTime();
+    let capturedFields: Record<string, unknown> = {};
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool === "getJiraIssue") {
+          return wrapMcpResult(makeIssueResponse("FOO-1", "Same Title", "2026-01-01T00:00:00Z"));
+        }
+        if (tool === "editJiraIssue") {
+          capturedFields = args.fields as Record<string, unknown>;
+          return wrapMcpResult({});
+        }
+        return null;
+      },
+    });
+
+    const pushFn = provider.push as NonNullable<typeof provider.push>;
+    await pushFn(scope, "FOO-1", "Body", baseVersion, { summary: "Same Title" });
+    expect(capturedFields.summary).toBeUndefined();
+  });
+});
+
+describe("push (NaN version guard)", () => {
+  test("returns error when remote updated field is malformed", async () => {
+    const scope = makeScope();
+    const provider = createJiraProvider({
+      callTool: async (_server, tool) => {
+        if (tool === "getJiraIssue") {
+          return wrapMcpResult({
+            id: "10001",
+            key: "FOO-1",
+            fields: {
+              summary: "Issue",
+              updated: "not-a-date",
+              created: "2026-01-01T00:00:00Z",
+            },
+          });
+        }
+        return null;
+      },
+    });
+
+    const pushFn = provider.push as NonNullable<typeof provider.push>;
+    const result = await pushFn(scope, "FOO-1", "Content", 1);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("missing or malformed");
+  });
+});
+
+describe("toRemoteEntry (NaN guard)", () => {
+  test("defaults version to 0 for null updated field", async () => {
+    const scope = makeScope();
+    const provider = createJiraProvider({
+      callTool: async (_server, tool) => {
+        if (tool === "getJiraIssue") {
+          return wrapMcpResult({
+            id: "10001",
+            key: "FOO-1",
+            fields: {
+              summary: "Issue",
+              description: "Body",
+              updated: null,
+              created: "2026-01-01T00:00:00Z",
+            },
+          });
+        }
+        return null;
+      },
+    });
+
+    const result = await provider.fetch(scope, "FOO-1");
+    expect(result.entry.version).toBe(0);
+    expect(Number.isNaN(result.entry.version)).toBe(false);
+  });
+});
+
+describe("resolveScope", () => {
+  test("stores siteUrl from resources response", async () => {
+    const provider = createJiraProvider({
+      callTool: async (_server, tool) => {
+        if (tool === "getAccessibleAtlassianResources") {
+          return [{ id: "cloud-1", url: "https://acme.atlassian.net", name: "Acme", scopes: [] }];
+        }
+        return null;
+      },
+    });
+    const resolved = await provider.resolveScope({ key: "FOO" });
+    expect(resolved.resolved.siteUrl).toBe("https://acme.atlassian.net");
+  });
+
+  test("warns on multiple resources but still resolves", async () => {
+    const stderrMessages: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => stderrMessages.push(args.join(" "));
+    try {
+      const provider = createJiraProvider({
+        callTool: async (_server, tool) => {
+          if (tool === "getAccessibleAtlassianResources") {
+            return [
+              { id: "cloud-1", url: "https://acme.atlassian.net", name: "Acme", scopes: [] },
+              { id: "cloud-2", url: "https://corp.atlassian.net", name: "Corp", scopes: [] },
+            ];
+          }
+          return null;
+        },
+      });
+      const resolved = await provider.resolveScope({ key: "FOO" });
+      expect(resolved.cloudId).toBe("cloud-1");
+      expect(stderrMessages.some((m) => m.includes("2 Atlassian instances"))).toBe(true);
+    } finally {
+      console.error = origError;
+    }
+  });
 });
 
 describe("changes", () => {
@@ -355,6 +539,28 @@ describe("changes", () => {
       changes.push(change);
     }
     expect(changes).toHaveLength(1);
+  });
+
+  test("formats JQL date in UTC", async () => {
+    const scope = makeScope();
+    let capturedJql = "";
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool === "searchJiraIssuesUsingJql") {
+          capturedJql = args.jql as string;
+          return wrapMcpResult({ issues: [] });
+        }
+        return null;
+      },
+    });
+
+    const changesFn = provider.changes as NonNullable<typeof provider.changes>;
+    // Use a timestamp where UTC and local time differ for most timezones
+    for await (const _change of changesFn(scope, "2026-03-15T03:30:00Z")) {
+      // drain
+    }
+    // The JQL date should be in UTC: 2026-03-15 03:30
+    expect(capturedJql).toContain('updated >= "2026-03-15 03:30"');
   });
 
   test("paginates changes via nextPageToken", async () => {
