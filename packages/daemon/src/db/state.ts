@@ -26,6 +26,7 @@ export type { UsageStat } from "@mcp-cli/core";
 
 export interface AgentSessionRow {
   sessionId: string;
+  name: string | null;
   provider: string;
   pid: number | null;
   pidStartTime: number | null;
@@ -266,6 +267,11 @@ export class StateDb {
     }
     try {
       this.db.exec("ALTER TABLE agent_sessions ADD COLUMN pid_start_time INTEGER");
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN name TEXT");
     } catch {
       /* column already exists */
     }
@@ -962,6 +968,7 @@ export class StateDb {
 
   upsertSession(session: {
     sessionId: string;
+    name?: string;
     provider?: string;
     pid?: number;
     pidStartTime?: number;
@@ -972,9 +979,10 @@ export class StateDb {
     repoRoot?: string;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
+         name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
          pid = COALESCE(excluded.pid, agent_sessions.pid),
          pid_start_time = COALESCE(excluded.pid_start_time, agent_sessions.pid_start_time),
@@ -985,6 +993,7 @@ export class StateDb {
          repo_root = COALESCE(excluded.repo_root, agent_sessions.repo_root)`,
       [
         session.sessionId,
+        session.name ?? null,
         session.provider ?? "claude",
         session.pid ?? null,
         session.pidStartTime ?? null,
@@ -1018,7 +1027,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1028,10 +1037,18 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
+  }
+
+  /** Get the set of session names currently in use by active sessions. */
+  getActiveSessionNames(): Set<string> {
+    const rows = this.db
+      .query<{ name: string }, []>("SELECT name FROM agent_sessions WHERE ended_at IS NULL AND name IS NOT NULL")
+      .all();
+    return new Set(rows.map((r) => r.name));
   }
 
   pruneOldSessions(maxAgeDays = 30): number {
@@ -1224,6 +1241,7 @@ function safeJsonParse<T>(json: string, fallback: T): T {
 
 interface RawSessionRow {
   session_id: string;
+  name: string | null;
   provider: string;
   pid: number | null;
   pid_start_time: number | null;
@@ -1241,6 +1259,7 @@ interface RawSessionRow {
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
   return {
     sessionId: row.session_id,
+    name: row.name,
     provider: row.provider,
     pid: row.pid,
     pidStartTime: row.pid_start_time,

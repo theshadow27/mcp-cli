@@ -270,12 +270,15 @@ export interface SpawnArgs extends SharedSpawnArgs {
   worktree: string | undefined;
   resume: string | undefined;
   headed: boolean;
+  /** Human-readable session name. Auto-generated if omitted. */
+  name: string | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
   let worktree: string | undefined;
   let resume: string | undefined;
   let headed = false;
+  let name: string | undefined;
   let extraError: string | undefined;
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
@@ -298,11 +301,16 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       if (!resume) extraError = "--resume requires a session ID";
       return 1;
     }
+    if (arg === "--name" || arg === "-n") {
+      name = allArgs[i + 1];
+      if (!name) extraError = "--name requires a value";
+      return 1;
+    }
     return undefined;
   });
 
   // shared.error wins: it reflects a bad shared flag; extraError covers provider-specific failures
-  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed };
+  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed, name };
 }
 
 /**
@@ -363,6 +371,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
+  if (parsed.name) toolArgs.name = parsed.name;
   if (parsed.wait) toolArgs.wait = true;
 
   // Handle worktree: always pre-create via shim so cwd points to the worktree.
@@ -826,12 +835,14 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Table output
   const diffHeader = hasAnyDiff ? ` ${"DIFF".padEnd(16)}` : "";
   const prHeader = hasAnyPr ? ` ${"PR".padEnd(12)}` : "";
-  const header = `${"SESSION".padEnd(10)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
+  const header = `${"SESSION".padEnd(16)} ${"STATE".padEnd(12)} ${"MODEL".padEnd(16)} ${"COST".padEnd(8)} ${"TOKENS".padEnd(10)}${diffHeader}${prHeader} CWD`;
   console.log(`${c.dim}${header}${c.reset}`);
 
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
     const id = s.sessionId.slice(0, 8);
+    const nameLabel = s.name ? ` ${s.name}` : "";
+    const sessionCol = `${id}${nameLabel}`.padEnd(16);
     const stateStr = s.rateLimited ? `${colorState(s.state)} ${c.red}[RATE LIMITED]${c.reset}` : colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
@@ -842,7 +853,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     console.log(
-      `${c.cyan}${id}${c.reset}   ${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+      `${c.cyan}${id}${c.reset}${c.bold}${nameLabel}${c.reset}${" ".repeat(Math.max(1, 16 - id.length - nameLabel.length))}${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
     );
 
     // Work item lifecycle line (indented under the session)
@@ -1593,22 +1604,34 @@ export async function resolveSessionId(
 ): Promise<string> {
   const result = await d.callTool(listTool, {});
   const text = formatToolResult(result);
-  let sessions: Array<{ sessionId: string }>;
+  let sessions: Array<{ sessionId: string; name?: string | null }>;
   try {
     sessions = JSON.parse(text);
   } catch {
     throw new Error("Failed to parse session list");
   }
 
+  // Try exact name match first (case-insensitive)
+  const prefixLower = prefix.toLowerCase();
+  const nameMatches = sessions.filter((s) => s.name?.toLowerCase() === prefixLower);
+  if (nameMatches.length === 1) return nameMatches[0].sessionId;
+
+  // Fall back to UUID prefix match
   const matches = sessions.filter((s) => s.sessionId.startsWith(prefix));
 
-  if (matches.length === 0) {
+  if (matches.length === 0 && nameMatches.length === 0) {
     d.printError(`No session matching "${prefix}"`);
     d.exit(1);
   }
 
   if (matches.length > 1) {
     d.printError(`Ambiguous session prefix "${prefix}" — matches ${matches.length} sessions`);
+    d.exit(1);
+  }
+
+  if (matches.length === 0) {
+    // Multiple name matches
+    d.printError(`Ambiguous session name "${prefix}" — matches ${nameMatches.length} sessions`);
     d.exit(1);
   }
 
@@ -1649,6 +1672,7 @@ Options:
                              e.g. Bash Read Write Edit Glob Grep Skill
                              Supports globs: mcp__grafana__*
   --headed                   Open in a visible terminal tab (via tty)
+  --name, -n <name>          Human-readable session name (auto-generated if omitted)
   --resume <id>              Resume a previous session by ID
   --model, -m <name>         Model: opus, sonnet, haiku, or full ID (default: opus)
   --cwd <path>               Working directory for the session

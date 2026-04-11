@@ -161,6 +161,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
           },
           worktree: { type: "string", description: "Git worktree name for isolation" },
+          name: { type: "string", description: "Human-readable session name (auto-generated if omitted)" },
           timeout: timeoutProp,
           wait: { type: "boolean", description: "Block until result (default: false)" },
           ...ov("prompt")?.extraProperties,

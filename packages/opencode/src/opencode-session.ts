@@ -291,6 +291,7 @@ export class OpenCodeSession {
   getInfo(): AgentSessionInfo {
     return {
       sessionId: this.sessionId,
+      name: null,
       provider: "opencode",
       state: this.state,
       model: this.model,

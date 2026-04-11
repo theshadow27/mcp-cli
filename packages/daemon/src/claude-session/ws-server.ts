@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum, WorkItemEvent } from "@mcp-cli/core";
-import { consoleLogger } from "@mcp-cli/core";
+import { consoleLogger, generateSessionName } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
 import type { NdjsonMessage } from "./ndjson";
@@ -55,6 +55,8 @@ export class WaitTimeoutError extends Error {
 
 export interface SessionConfig {
   prompt: string;
+  /** Human-readable session name. Auto-generated if not provided. */
+  name?: string;
   permissionStrategy?: PermissionStrategy;
   permissionRules?: PermissionRule[];
   allowedTools?: string[];
@@ -254,6 +256,8 @@ interface WsSession {
   ws: ServerWebSocket<WsData> | null;
   transcript: TranscriptEntry[];
   config: SessionConfig;
+  /** Human-readable session name. */
+  name: string | null;
   pid: number | null;
   /** Process start time (epoch ms) — used to detect PID reuse before sending signals. */
   pidStartTime: number | null;
@@ -484,6 +488,7 @@ export class ClaudeWsServer {
   restoreSessions(
     sessions: Array<{
       sessionId: string;
+      name?: string | null;
       pid: number | null;
       pidStartTime?: number | null;
       state: string;
@@ -515,6 +520,7 @@ export class ClaudeWsServer {
         ws: null,
         transcript: [],
         config: { prompt: "", worktree: s.worktree ?? undefined },
+        name: s.name ?? null,
         pid: s.pid,
         pidStartTime: s.pidStartTime ?? null,
         proc: null,
@@ -538,9 +544,13 @@ export class ClaudeWsServer {
    * Prepare a session for an incoming Claude CLI connection.
    * Call this before spawning the Claude process.
    */
-  prepareSession(sessionId: string, config: SessionConfig): void {
+  /** Prepare a session and return the assigned name. */
+  prepareSession(sessionId: string, config: SessionConfig): string {
     const state = new SessionState(sessionId);
     const router = new PermissionRouter(config.permissionStrategy ?? "auto", config.permissionRules);
+
+    // Auto-generate a name if not explicitly provided
+    const name = config.name ?? this.generateName();
 
     this.sessions.set(sessionId, {
       state,
@@ -548,6 +558,7 @@ export class ClaudeWsServer {
       ws: null,
       transcript: [],
       config,
+      name,
       pid: null,
       pidStartTime: null,
       proc: null,
@@ -561,6 +572,7 @@ export class ClaudeWsServer {
       createdAt: Date.now(),
       pendingImmediate: false,
     });
+    return name;
   }
 
   /**
@@ -1633,6 +1645,7 @@ export class ClaudeWsServer {
     }
     return {
       sessionId,
+      name: s.name,
       provider: "claude",
       state: s.state.state,
       model: s.state.model,
@@ -1652,6 +1665,15 @@ export class ClaudeWsServer {
       spawnAlive: s.spawnAlive,
       snapshotTs: Date.now(),
     };
+  }
+
+  /** Generate a unique session name by checking names already in use. */
+  private generateName(): string {
+    const usedNames = new Set<string>();
+    for (const s of this.sessions.values()) {
+      if (s.name) usedNames.add(s.name);
+    }
+    return generateSessionName(usedNames);
   }
 
   private sendToWs(session: WsSession, message: string): void {

@@ -256,6 +256,7 @@ export class CodexSession {
   getInfo(): AgentSessionInfo {
     return {
       sessionId: this.sessionId,
+      name: null,
       provider: "codex",
       state: this.state,
       model: this.model,

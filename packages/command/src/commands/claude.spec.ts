@@ -223,6 +223,26 @@ describe("parseSpawnArgs", () => {
     const result = parseSpawnArgs(["--task", "fix bug"]);
     expect(result.headed).toBe(false);
   });
+
+  test("parses --name flag", () => {
+    const result = parseSpawnArgs(["--name", "Alice", "--task", "fix bug"]);
+    expect(result.name).toBe("Alice");
+  });
+
+  test("parses -n shorthand", () => {
+    const result = parseSpawnArgs(["-n", "Bob", "-t", "fix bug"]);
+    expect(result.name).toBe("Bob");
+  });
+
+  test("name defaults to undefined", () => {
+    const result = parseSpawnArgs(["--task", "fix bug"]);
+    expect(result.name).toBeUndefined();
+  });
+
+  test("errors on missing --name value", () => {
+    const result = parseSpawnArgs(["--name"]);
+    expect(result.error).toBe("--name requires a value");
+  });
 });
 
 // ── resolveModelName ──
@@ -425,6 +445,30 @@ describe("resolveSessionId", () => {
     });
     await expect(resolveSessionId("abc", deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Ambiguous"));
+  });
+
+  test("resolves by name (case-insensitive)", async () => {
+    const sessions = [
+      { sessionId: "abc12345-1111-2222-3333-444444444444", name: "Alice" },
+      { sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd", name: "Bob" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+    });
+    const id = await resolveSessionId("alice", deps);
+    expect(id).toBe("abc12345-1111-2222-3333-444444444444");
+  });
+
+  test("name match takes priority over UUID prefix", async () => {
+    const sessions = [
+      { sessionId: "abc12345-1111-2222-3333-444444444444", name: "Alice" },
+      { sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd", name: "Bob" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+    });
+    const id = await resolveSessionId("Bob", deps);
+    expect(id).toBe("def67890-aaaa-bbbb-cccc-dddddddddddd");
   });
 });
 

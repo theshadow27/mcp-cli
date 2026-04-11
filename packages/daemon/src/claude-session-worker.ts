@@ -166,8 +166,9 @@ async function handlePrompt(
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
 
-    server.prepareSession(sessionId, {
+    const sessionName = server.prepareSession(sessionId, {
       prompt,
+      name: args.name as string | undefined,
       cwd: args.cwd as string | undefined,
       permissionStrategy: permissionMode,
       permissionRules: rules,
@@ -183,6 +184,7 @@ async function handlePrompt(
       type: "db:upsert",
       session: {
         sessionId,
+        name: sessionName,
         state: "connecting",
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,
