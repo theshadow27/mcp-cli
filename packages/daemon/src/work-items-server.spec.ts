@@ -387,6 +387,111 @@ describe("WorkItemsServer", () => {
     expect(content[0].text).toContain("Unknown tool");
   });
 
+  test("work_items_track deduplicates by branch (branch → PR workflow)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+
+    // Step 1: track by branch first
+    await client.callTool({
+      name: "work_items_track",
+      arguments: { branch: "feat/my-feature", issueNumber: 42 },
+    });
+
+    // Step 2: track by PR + branch — should find existing by branch, not create duplicate
+    const result = await client.callTool({
+      name: "work_items_track",
+      arguments: { prNumber: 100, branch: "feat/my-feature" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    // Should have merged onto the existing record
+    expect(item.branch).toBe("feat/my-feature");
+    expect(item.prNumber).toBe(100);
+    expect(item.issueNumber).toBe(42);
+
+    // Verify only one item exists
+    const listResult = await client.callTool({ name: "work_items_list", arguments: {} });
+    const listContent = listResult.content as Array<{ type: string; text: string }>;
+    const parsed = JSON.parse(listContent[0].text);
+    expect(parsed.count).toBe(1);
+  });
+
+  test("work_items_untrack returns error for nonexistent ID", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "work_items_untrack",
+      arguments: { id: "nonexistent" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("not found");
+  });
+
+  test("work_items_update rejects invalid phase transition", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 50, phase: "done" } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:50", phase: "impl" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("Invalid phase transition");
+  });
+
+  test("work_items_update allows valid phase transition", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 50 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:50", phase: "review" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.phase).toBe("review");
+  });
+
+  test("work_items_track rejects NaN numeric input", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "work_items_track",
+      arguments: { prNumber: "abc" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("Expected integer");
+  });
+
   test("start() throws if called twice", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;

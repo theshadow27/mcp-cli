@@ -71,7 +71,7 @@ import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
-import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
+import { WorkItemsServer } from "./work-items-server";
 
 /**
  * Acquire an exclusive flock on the PID file.
@@ -359,9 +359,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   const metricsServer = new MetricsServer(metrics, quotaPoller);
 
-  // Work items server: reuse the daemon's database connection
-  const workItemDb = new WorkItemDb(db.database);
-  const workItemsServer = new WorkItemsServer(workItemDb);
+  // Work items server: constructed lazily inside registerPendingVirtualServer
+  // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
+  let workItemsServer: WorkItemsServer | null = null;
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -685,6 +685,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       WORK_ITEMS_SERVER_NAME,
       (async () => {
         try {
+          const workItemDb = new WorkItemDb(db.database);
+          workItemsServer = new WorkItemsServer(workItemDb);
           const {
             client: workItemsClient,
             transport: workItemsTransport,
