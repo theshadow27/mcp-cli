@@ -160,6 +160,21 @@ export class CloneCache {
     return { key: row.key, cloudId: row.cloudId, resolved: JSON.parse(row.resolved) };
   }
 
+  /** Get the last sync timestamp for a scope. */
+  getLastSynced(provider: string, scopeKey: string): string | null {
+    const row = this.db
+      .query("SELECT last_synced FROM scope_meta WHERE provider = ? AND scope_key = ?")
+      .get(provider, scopeKey) as { last_synced: string | null } | null;
+    return row?.last_synced ?? null;
+  }
+
+  /** Update the last sync timestamp for a scope. */
+  updateLastSynced(provider: string, scopeKey: string): void {
+    this.db
+      .query("UPDATE scope_meta SET last_synced = ? WHERE provider = ? AND scope_key = ?")
+      .run(new Date().toISOString(), provider, scopeKey);
+  }
+
   /** Remove an entry. */
   remove(provider: string, cloudId: string, id: string): void {
     this.db.query("DELETE FROM entries WHERE provider = ? AND cloud_id = ? AND id = ?").run(provider, cloudId, id);

@@ -92,10 +92,12 @@ async function vfsClone(args: string[]): Promise<void> {
 }
 
 async function vfsPull(args: string[]): Promise<void> {
-  const repoDir = resolve(args[0] ?? ".");
+  const full = args.includes("--full");
+  const filteredArgs = args.filter((a) => a !== "--full");
+  const repoDir = resolve(filteredArgs[0] ?? ".");
   const provider = resolveProviderFromCache(repoDir);
 
-  const result = await pull({ repoDir, provider, onProgress: log });
+  const result = await pull({ repoDir, provider, full, onProgress: log });
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -148,13 +150,15 @@ function printUsage(): void {
 
 Usage:
   mcx vfs clone confluence <space> [dir]   Clone a Confluence space as a local git repo
-  mcx vfs pull [dir]                       Pull remote changes into a cloned repo
+  mcx vfs pull [dir]                       Pull remote changes (incremental)
+  mcx vfs pull --full [dir]                Pull all pages (detects deletions)
   mcx vfs push [dir]                       Push local changes to the remote
   mcx --dry-run vfs push [dir]             Show what would be pushed
 
 Options:
   --cloud-id <id>     Atlassian cloud ID (auto-discovered if omitted)
   --limit <n>         Max pages to fetch (for testing)
+  --full              Force full sync instead of incremental
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo

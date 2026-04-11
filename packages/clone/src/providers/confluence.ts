@@ -214,24 +214,25 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     },
 
     async *changes(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent> {
-      // CQL-based change detection
-      const cql = `space = "${scope.key}" AND type = page AND lastModified >= "${since}" ORDER BY lastModified DESC`;
+      // Convert ISO timestamp to CQL date format (yyyy-MM-dd HH:mm)
+      const sinceDate = new Date(since);
+      const cqlDate = `${sinceDate.getFullYear()}-${String(sinceDate.getMonth() + 1).padStart(2, "0")}-${String(sinceDate.getDate()).padStart(2, "0")} ${String(sinceDate.getHours()).padStart(2, "0")}:${String(sinceDate.getMinutes()).padStart(2, "0")}`;
+
+      const cql = `space = "${scope.key}" AND type = page AND lastModified >= "${cqlDate}" ORDER BY lastModified DESC`;
       const resp = (await callAtlassian("searchConfluenceUsingCql", {
         cloudId: scope.cloudId,
         cql,
         limit: 250,
       })) as { results: Array<{ content: { id: string }; lastModified: string }>; totalSize: number };
 
-      // CQL search doesn't return full page data, so we yield minimal entries
-      // that the engine can use to trigger individual fetches
+      // CQL search doesn't return full page data — fetch each changed page
       for (const result of resp.results ?? []) {
         const pageId = result.content?.id;
         if (!pageId) continue;
 
-        // Fetch full page to get complete metadata
         const fetched = await provider.fetch(scope, pageId);
         yield {
-          entry: fetched.entry,
+          entry: { ...fetched.entry, content: fetched.content },
           type: "updated",
         };
       }
