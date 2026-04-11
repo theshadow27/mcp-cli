@@ -390,28 +390,40 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     },
 
     async delete(scope: ResolvedScope, id: string) {
-      // Fetch the current page content first so we don't blank it if trash fails.
-      // The Confluence v2 API requires a body on update — use the existing content
-      // so the page isn't blanked if the MCP server ignores the status field.
+      // Use deleteConfluencePage if available (Confluence REST v2: DELETE /wiki/api/v2/pages/{id}).
+      // Fall back to updateConfluencePage with status="trashed" for older MCP server versions.
       try {
-        const currentPage = (await callAtlassian("getConfluencePage", {
+        await callAtlassian("deleteConfluencePage", {
           cloudId: scope.cloudId,
           pageId: id,
-          contentFormat: "markdown",
-        })) as ConfluencePage;
-
-        await callAtlassian("updateConfluencePage", {
-          cloudId: scope.cloudId,
-          pageId: id,
-          status: "trashed" as string,
-          body: currentPage.body ?? "", // preserve existing content
-          contentFormat: "markdown",
-          versionMessage: "Deleted via mcx vfs",
         });
-      } catch (err) {
-        throw new Error(
-          `Failed to delete page ${id}: ${err instanceof Error ? err.message : String(err)}. Delete may not be supported by your Atlassian MCP server.`,
-        );
+      } catch (deleteErr) {
+        const msg = deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+        // If the tool doesn't exist, fall back to status-based trash
+        if (msg.includes("not found") || msg.includes("unknown tool") || msg.includes("Unknown tool")) {
+          try {
+            const currentPage = (await callAtlassian("getConfluencePage", {
+              cloudId: scope.cloudId,
+              pageId: id,
+              contentFormat: "markdown",
+            })) as ConfluencePage;
+
+            await callAtlassian("updateConfluencePage", {
+              cloudId: scope.cloudId,
+              pageId: id,
+              status: "trashed",
+              body: currentPage.body ?? "",
+              contentFormat: "markdown",
+              versionMessage: "Deleted via mcx vfs",
+            });
+          } catch (fallbackErr) {
+            throw new Error(
+              `Failed to delete page ${id}: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}. Delete may not be supported by your Atlassian MCP server.`,
+            );
+          }
+        } else {
+          throw new Error(`Failed to delete page ${id}: ${msg}`);
+        }
       }
     },
   };
