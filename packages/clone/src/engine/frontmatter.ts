@@ -13,6 +13,12 @@ export function injectFrontmatter(content: string, fields: Record<string, unknow
   return `---\n${yaml}---\n\n${stripped.content}`;
 }
 
+/** Check if a file has VFS frontmatter (contains an `id` field). */
+export function hasFrontmatter(content: string): boolean {
+  const { fields } = stripFrontmatter(content);
+  return fields != null && "id" in fields;
+}
+
 /** Strip YAML frontmatter from markdown content. */
 export function stripFrontmatter(content: string): { content: string; fields: Record<string, unknown> | null } {
   const match = content.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);

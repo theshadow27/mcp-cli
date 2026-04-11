@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CloneCache, clone, createConfluenceProvider, pull, push } from "@mcp-cli/clone";
-import type { McpToolCaller } from "@mcp-cli/clone/providers/confluence";
+import type { McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError } from "../output";
 
@@ -102,12 +102,13 @@ async function vfsPull(args: string[]): Promise<void> {
 }
 
 async function vfsPush(args: string[], dryRun?: boolean): Promise<void> {
-  const filteredArgs = args.filter((a) => a !== "--dry-run");
+  const isCreate = args.includes("--create");
+  const filteredArgs = args.filter((a) => a !== "--dry-run" && a !== "--create");
   const isDryRun = dryRun ?? args.includes("--dry-run");
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const provider = resolveProviderFromCache(repoDir);
 
-  const result = await push({ repoDir, provider, dryRun: isDryRun, onProgress: log });
+  const result = await push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
   console.log(JSON.stringify(result, null, 2));
 
   if (result.conflicts > 0 || result.errors > 0) {

@@ -9,7 +9,7 @@
  * 5. Initialize git repo with initial commit
  * 6. Populate SQLite cache
  */
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
@@ -54,6 +54,17 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   // ── Preflight checks ───────────────────────────────────────
   if (existsSync(absTarget) && existsSync(join(absTarget, ".git"))) {
     throw new Error(`Directory "${absTarget}" already exists and is a git repo. Use pull to update.`);
+  }
+
+  // Detect interrupted clone: directory exists with cache but no git repo
+  if (
+    existsSync(absTarget) &&
+    existsSync(join(absTarget, ".clone", "cache.sqlite")) &&
+    !existsSync(join(absTarget, ".git"))
+  ) {
+    throw new Error(
+      `Directory "${absTarget}" contains a partial clone (cache exists but no git repo). Delete the directory and re-run clone, or use "git init && git add -A && git commit" to recover.`,
+    );
   }
 
   // ── Step 1: Resolve scope ──────────────────────────────────
@@ -134,21 +145,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
   log(opts, `  → ${written} files written`);
 
-  // ── Step 5: Initialize git repo ────────────────────────────
-  log(opts, "Initializing git repository...");
-  const gitOpts = { cwd: absTarget, stdio: "pipe" as const };
-  execSync("git init", gitOpts);
-  execSync("git add -A", gitOpts);
-
-  // Write .gitignore for the cache directory
-  writeFileSync(join(absTarget, ".gitignore"), ".clone/\n", "utf-8");
-  execSync("git add .gitignore", gitOpts);
-
-  const commitMsg = `Clone ${provider.name}/${scope.key}: ${spaceName} (${entries.length} pages)`;
-  execSync(`git commit -m ${JSON.stringify(commitMsg)} --allow-empty`, gitOpts);
-  log(opts, "  → initial commit created");
-
-  // ── Step 6: Populate cache ─────────────────────────────────
+  // ── Step 5: Populate cache (before git init so interrupted clones can be repaired) ──
   log(opts, "Building cache...");
   const cacheDir = join(absTarget, ".clone");
   const cache = new CloneCache(join(cacheDir, "cache.sqlite"));
@@ -161,6 +158,20 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
   cache.close();
   log(opts, `  → cache populated (${entries.length} entries)`);
+
+  // ── Step 6: Initialize git repo ────────────────────────────
+  log(opts, "Initializing git repository...");
+  const gitOpts = { cwd: absTarget, stdio: "pipe" as const };
+  execSync("git init", gitOpts);
+  execSync("git add -A", gitOpts);
+
+  // Write .gitignore for the cache directory
+  writeFileSync(join(absTarget, ".gitignore"), ".clone/\n", "utf-8");
+  execSync("git add .gitignore", gitOpts);
+
+  const commitMsg = `Clone ${provider.name}/${scope.key}: ${spaceName} (${entries.length} pages)`;
+  spawnSync("git", ["commit", "-m", commitMsg, "--allow-empty"], gitOpts);
+  log(opts, "  → initial commit created");
 
   log(opts, `\nDone! Cloned ${entries.length} pages to ${absTarget}`);
 

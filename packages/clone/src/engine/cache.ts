@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS entries (
   PRIMARY KEY (provider, cloud_id, id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_entries_path ON entries(local_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_local_path ON entries(provider, scope_key, local_path);
 CREATE INDEX IF NOT EXISTS idx_entries_scope ON entries(provider, scope_key);
 
 CREATE TABLE IF NOT EXISTS scope_meta (

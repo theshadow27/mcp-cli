@@ -3,6 +3,19 @@
  */
 import type { ChangeEvent, FetchResult, RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "./provider";
 
+/** Thrown when CQL search returns truncated results, signaling the caller to fall back to full sync. */
+export class TruncatedChangesError extends Error {
+  constructor(
+    public totalSize: number,
+    public returnedSize: number,
+  ) {
+    super(
+      `Incremental sync truncated: ${totalSize} changes but only ${returnedSize} returned. Falling back to full sync.`,
+    );
+    this.name = "TruncatedChangesError";
+  }
+}
+
 /** Shape of a page from the Confluence v2 API. */
 interface ConfluencePage {
   id: string;
@@ -91,6 +104,13 @@ export interface ConfluenceProviderOptions {
   fetchConcurrency?: number;
 }
 
+/** Validate a scope key to prevent CQL injection. Only alphanumeric, hyphens, and underscores allowed. */
+function validateScopeKey(key: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+    throw new Error(`Invalid scope key "${key}": must contain only alphanumeric characters, hyphens, and underscores.`);
+  }
+}
+
 function toRemoteEntry(page: ConfluencePage, includeContent = false): RemoteEntry {
   return {
     id: page.id,
@@ -129,6 +149,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     name: "confluence",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
+      validateScopeKey(scope.key);
       let cloudId = scope.cloudId;
 
       // Auto-discover cloudId if not provided
@@ -225,14 +246,31 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
         limit: 250,
       })) as { results: Array<{ content: { id: string }; lastModified: string }>; totalSize: number };
 
-      // CQL search doesn't return full page data — fetch each changed page
-      for (const result of resp.results ?? []) {
-        const pageId = result.content?.id;
-        if (!pageId) continue;
+      // If results were truncated, throw so the caller falls back to full sync
+      // rather than silently missing pages and advancing the watermark
+      if (resp.totalSize > (resp.results?.length ?? 0)) {
+        throw new TruncatedChangesError(resp.totalSize, resp.results?.length ?? 0);
+      }
 
-        const fetched = await provider.fetch(scope, pageId);
+      // Batch-fetch changed pages (CQL search doesn't return content)
+      const pageIds = (resp.results ?? []).map((r) => r.content?.id).filter(Boolean) as string[];
+      const BATCH_SIZE = 10;
+      const fetched: Array<{ entry: RemoteEntry; content: string }> = [];
+
+      for (let i = 0; i < pageIds.length; i += BATCH_SIZE) {
+        const batch = pageIds.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(
+          batch.map(async (pageId) => {
+            const f = await provider.fetch(scope, pageId);
+            return { entry: f.entry, content: f.content };
+          }),
+        );
+        fetched.push(...results);
+      }
+
+      for (const { entry, content } of fetched) {
         yield {
-          entry: { ...fetched.entry, content: fetched.content },
+          entry: { ...entry, content },
           type: "updated",
         };
       }
@@ -240,7 +278,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
     toPath(entry: RemoteEntry, entries: RemoteEntry[]): string {
       // Build parent chain to construct directory path
-      const segments: string[] = [];
+      const entryById = new Map(entries.map((e) => [e.id, e]));
       let current: RemoteEntry | undefined = entry;
 
       // Walk up the parent chain
@@ -250,23 +288,32 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
         if (visited.has(current.id)) break; // cycle guard
         visited.add(current.id);
         chain.unshift(current);
-        current = current.parentId ? entries.find((e) => e.id === current?.parentId) : undefined;
+        current = current.parentId ? entryById.get(current.parentId) : undefined;
       }
 
       // Check if this entry has children (is a directory)
       const hasChildren = entries.some((e) => e.parentId === entry.id);
 
       // Build path from chain
+      const segments: string[] = [];
       for (let i = 0; i < chain.length; i++) {
         const node = chain[i];
         const isLast = i === chain.length - 1;
-        const name = sanitizeFilename(node.title);
+        let name = sanitizeFilename(node.title);
+
+        // Disambiguate siblings with the same sanitized name by appending page ID
+        if (isLast) {
+          const siblings = entries.filter(
+            (e) => e.parentId === node.parentId && e.id !== node.id && sanitizeFilename(e.title) === name,
+          );
+          if (siblings.length > 0) {
+            name = `${name}-${node.id}`;
+          }
+        }
 
         if (isLast && !hasChildren) {
-          // Leaf page → file
           segments.push(`${name}.md`);
         } else {
-          // Parent page → directory
           segments.push(name);
         }
       }
@@ -292,20 +339,8 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     },
 
     async push(scope: ResolvedScope, id: string, content: string, baseVersion: number) {
-      // First, check if the remote version has advanced (conflict detection)
-      const currentPage = (await callAtlassian("getConfluencePage", {
-        cloudId: scope.cloudId,
-        pageId: id,
-      })) as ConfluencePage;
-
-      if (currentPage.version.number > baseVersion) {
-        return {
-          ok: false,
-          error: `Version conflict: local base is v${baseVersion}, remote is v${currentPage.version.number}. Pull first.`,
-        };
-      }
-
-      // Push the update
+      // Pass version.number in the update request — Confluence v2 API returns 409 on mismatch,
+      // which is atomic and avoids the TOCTOU race of a separate read-then-write.
       try {
         const resp = (await callAtlassian("updateConfluencePage", {
           cloudId: scope.cloudId,
@@ -313,6 +348,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
           body: content,
           contentFormat: "markdown",
           versionMessage: "Updated via mcx clone",
+          versionNumber: baseVersion + 1,
         })) as ConfluencePage;
 
         return {
@@ -320,10 +356,16 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
           newVersion: resp?.version?.number ?? baseVersion + 1,
         };
       } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        // Confluence returns 409 on version mismatch
+        const isConflict = message.includes("409") || message.includes("conflict") || message.includes("version");
+        if (isConflict) {
+          return {
+            ok: false,
+            error: `Version conflict: local base is v${baseVersion}. Pull first to get the latest version.`,
+          };
+        }
+        return { ok: false, error: message };
       }
     },
 
@@ -345,21 +387,25 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
     },
 
     async delete(scope: ResolvedScope, id: string) {
-      // Confluence v2 API doesn't have a dedicated delete tool in the MCP,
-      // but we can set status to "trashed" via update, or use the REST API.
-      // For now, we'll use the update to set status to "trashed".
-      // If that fails, we report the error gracefully.
+      // Fetch the current page content first so we don't blank it if trash fails.
+      // The Confluence v2 API requires a body on update — use the existing content
+      // so the page isn't blanked if the MCP server ignores the status field.
       try {
+        const currentPage = (await callAtlassian("getConfluencePage", {
+          cloudId: scope.cloudId,
+          pageId: id,
+          contentFormat: "markdown",
+        })) as ConfluencePage;
+
         await callAtlassian("updateConfluencePage", {
           cloudId: scope.cloudId,
           pageId: id,
           status: "trashed" as string,
-          body: "", // required field
+          body: currentPage.body ?? "", // preserve existing content
           contentFormat: "markdown",
           versionMessage: "Deleted via mcx vfs",
         });
       } catch (err) {
-        // Some MCP servers may not support status=trashed
         throw new Error(
           `Failed to delete page ${id}: ${err instanceof Error ? err.message : String(err)}. Delete may not be supported by your Atlassian MCP server.`,
         );

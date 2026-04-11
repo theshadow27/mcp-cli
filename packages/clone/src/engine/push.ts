@@ -22,6 +22,8 @@ export interface PushOptions {
   onProgress?: (message: string) => void;
   /** Dry run — show what would be pushed without pushing. */
   dryRun?: boolean;
+  /** Allow creating new pages from local .md files not in the cache. Off by default to prevent accidental uploads. */
+  create?: boolean;
 }
 
 export interface PushFileResult {
@@ -147,9 +149,17 @@ export async function push(opts: PushOptions): Promise<PushSyncResult> {
       }
     }
 
-    // Check local files for new ones (not in cache)
-    for (const relPath of localFiles) {
-      if (!cachedByPath.has(relPath)) {
+    // Check local files for new ones (not in cache).
+    // Require --create flag to prevent accidental page creation from user files (README.md, etc.).
+    const uncachedFiles = localFiles.filter((p) => !cachedByPath.has(p));
+    if (uncachedFiles.length > 0 && !opts.create) {
+      log(
+        opts,
+        `  ${uncachedFiles.length} uncached .md file(s) found but --create not set (skipping new page creation):`,
+      );
+      for (const relPath of uncachedFiles) log(opts, `    ? ${relPath}`);
+    } else {
+      for (const relPath of uncachedFiles) {
         const absPath = join(repoDir, relPath);
         const localContent = readFileSync(absPath, "utf-8");
         const { content: rawContent } = stripFrontmatter(localContent);

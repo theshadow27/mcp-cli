@@ -12,9 +12,10 @@
  *   2. Diff against cache to find created/updated/deleted
  *   3. Write/update/delete files, git add + commit
  */
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { injectFrontmatter } from "./frontmatter";
@@ -77,16 +78,23 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
     const canIncremental = !full && lastSynced && provider.changes;
 
     if (canIncremental) {
-      await incrementalPull(opts, cache, scope, lastSynced, result);
+      try {
+        await incrementalPull(opts, cache, scope, lastSynced, result);
+      } catch (err) {
+        if (err instanceof TruncatedChangesError) {
+          log(opts, `  ${err.message}`);
+          result.incremental = false;
+          await fullPull(opts, cache, scope, result);
+        } else {
+          throw err;
+        }
+      }
     } else {
       if (!full && lastSynced) {
         log(opts, "Provider doesn't support incremental sync, falling back to full sync.");
       }
       await fullPull(opts, cache, scope, result);
     }
-
-    // ── Update last_synced ───────────────────────────────────
-    cache.updateLastSynced(provider.name, scope.key);
 
     // ── Git commit ───────────────────────────────────────────
     const totalChanges = result.created + result.updated + result.deleted;
@@ -104,11 +112,14 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         if (result.deleted > 0) parts.push(`${result.deleted} deleted`);
         const mode = result.incremental ? "incremental" : "full";
         const commitMsg = `Pull ${provider.name}/${scope.key} (${mode}): ${parts.join(", ")}`;
-        execSync(`git commit -m ${JSON.stringify(commitMsg)}`, gitOpts);
+        spawnSync("git", ["commit", "-m", commitMsg], gitOpts);
         result.committed = true;
         log(opts, `  → committed: ${commitMsg}`);
       }
     }
+
+    // ── Update last_synced (after commit so interrupted syncs don't advance watermark) ──
+    cache.updateLastSynced(provider.name, scope.key);
 
     if (result.created + result.updated + result.deleted === 0) {
       log(opts, "Already up to date.");
