@@ -207,6 +207,27 @@ export class McpOAuthProvider implements OAuthClientProvider {
     return kc?.discoveryState;
   }
 
+  /**
+   * Accept the server's advertised resource URL if it shares the same origin.
+   *
+   * The SDK default rejects resources whose path doesn't prefix-match the
+   * configured server URL (e.g. Asana advertises `/v2` but the SSE endpoint
+   * is `/sse`). Same-origin is sufficient — the server is authoritative about
+   * which resource it protects.
+   */
+  async validateResourceURL(serverUrl: string | URL, resource?: string): Promise<URL | undefined> {
+    if (!resource) return undefined;
+
+    const server = new URL(typeof serverUrl === "string" ? serverUrl : serverUrl.href);
+    const resourceUrl = new URL(resource);
+
+    if (server.origin !== resourceUrl.origin) {
+      throw new Error(`Protected resource ${resource} origin does not match server ${server.origin}`);
+    }
+
+    return resourceUrl;
+  }
+
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
     switch (scope) {
       case "all":

@@ -553,6 +553,73 @@ describe("McpOAuthProvider", () => {
     });
   });
 
+  // -- validateResourceURL() --
+
+  describe("validateResourceURL()", () => {
+    test("returns resource URL when same origin with different path", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      const result = await provider.validateResourceURL("https://api.example.com/sse", "https://api.example.com/v2");
+
+      expect(result).toEqual(new URL("https://api.example.com/v2"));
+      db.close();
+    });
+
+    test("returns resource URL when paths match", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      const result = await provider.validateResourceURL("https://api.example.com/api", "https://api.example.com/api");
+
+      expect(result).toEqual(new URL("https://api.example.com/api"));
+      db.close();
+    });
+
+    test("returns undefined when no resource provided", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      const result = await provider.validateResourceURL("https://api.example.com/sse");
+
+      expect(result).toBeUndefined();
+      db.close();
+    });
+
+    test("throws when origins differ", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      await expect(
+        provider.validateResourceURL("https://api.example.com/sse", "https://evil.example.com/v2"),
+      ).rejects.toThrow("origin does not match");
+      db.close();
+    });
+
+    test("throws when schemes differ", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      await expect(
+        provider.validateResourceURL("https://api.example.com/sse", "http://api.example.com/v2"),
+      ).rejects.toThrow("origin does not match");
+      db.close();
+    });
+
+    test("accepts URL objects as serverUrl", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      const result = await provider.validateResourceURL(
+        new URL("https://api.example.com/sse"),
+        "https://api.example.com/v2",
+      );
+
+      expect(result).toEqual(new URL("https://api.example.com/v2"));
+      db.close();
+    });
+  });
+
   // -- getEffectiveScope() --
 
   describe("getEffectiveScope()", () => {
