@@ -99,7 +99,13 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
     // ── Git commit ───────────────────────────────────────────
     const totalChanges = result.created + result.updated + result.deleted;
     if (totalChanges > 0) {
-      const gitOpts = { cwd: repoDir, stdio: "pipe" as const };
+      // Strip GIT_* env vars so inherited env (e.g. from git hooks) doesn't
+      // redirect git commands to the parent repo.
+      const cleanEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (!k.startsWith("GIT_") && v !== undefined) cleanEnv[k] = v;
+      }
+      const gitOpts = { cwd: repoDir, stdio: "pipe" as const, env: cleanEnv };
       execSync("git add -A", gitOpts);
 
       try {

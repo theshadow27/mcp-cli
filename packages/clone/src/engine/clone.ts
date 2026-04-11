@@ -161,7 +161,13 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
 
   // ── Step 6: Initialize git repo ────────────────────────────
   log(opts, "Initializing git repository...");
-  const gitOpts = { cwd: absTarget, stdio: "pipe" as const };
+  // Strip GIT_* env vars so inherited env (e.g. from git hooks) doesn't
+  // redirect git init to the parent repo instead of creating a fresh one.
+  const cleanEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) cleanEnv[k] = v;
+  }
+  const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
   execSync("git init", gitOpts);
   execSync("git add -A", gitOpts);
 
