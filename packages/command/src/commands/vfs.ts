@@ -13,6 +13,7 @@ import {
   clone,
   createAsanaProvider,
   createConfluenceProvider,
+  createGitHubIssuesProvider,
   createJiraProvider,
   pull,
   push,
@@ -132,8 +133,10 @@ function resolveProvider(name: string) {
       return createAsanaProvider({ callTool });
     case "jira":
       return createJiraProvider({ callTool });
+    case "github-issues":
+      return createGitHubIssuesProvider({ callTool });
     default:
-      printError(`Unknown provider: "${name}". Available: confluence, asana, jira`);
+      printError(`Unknown provider: "${name}". Available: confluence, asana, jira, github-issues`);
       process.exit(1);
   }
 }
@@ -168,9 +171,10 @@ Usage:
   mcx --dry-run vfs push [dir]             Show what would be pushed
 
 Providers:
-  confluence   Clone a Confluence space (scope = space key)
-  asana        Clone an Asana project (scope = project GID)
-  jira         Clone Jira project issues (scope = project key)
+  confluence      Clone a Confluence space (scope = space key)
+  asana           Clone an Asana project (scope = project GID)
+  jira            Clone Jira project issues (scope = project key)
+  github-issues   Clone GitHub repo issues (scope = owner/repo)
 
 Options:
   --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
@@ -182,6 +186,7 @@ Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo
   mcx vfs clone asana 1234567890 ~/asana/my-project
   mcx vfs clone jira FOO ~/jira/foo
+  mcx vfs clone github-issues octocat/hello-world ~/github-issues/hello-world
   cd ~/atlassian/foo && mcx vfs pull
   $EDITOR some-page.md && mcx vfs push
 `);
