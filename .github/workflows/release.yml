@@ -72,6 +72,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          sparse-checkout: scripts/install.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -80,12 +85,15 @@ jobs:
         run: |
           cd artifacts
           sha256sum *.tar.gz > checksums.txt
+      - name: Copy install script
+        run: cp scripts/install.sh artifacts/install.sh
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
+            artifacts/install.sh
 
   publish-platform:
     needs: build

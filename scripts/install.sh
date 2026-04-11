@@ -1,10 +1,10 @@
 #!/bin/sh
-# Install mcp-cli
-# Usage: curl -fsSL https://raw.githubusercontent.com/theshadow27/mcp-cli/main/scripts/install.sh | sh
+# Install mcp-cli from GitHub releases
+# Usage: curl -fsSL https://github.com/theshadow27/mcp-cli/releases/latest/download/install.sh | sh
 set -e
 
 REPO="theshadow27/mcp-cli"
-INSTALL_DIR="${MCP_CLI_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${MCP_CLI_INSTALL_DIR:-$HOME/.mcp-cli/bin}"
 
 # Detect platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -23,12 +23,19 @@ esac
 
 TARGET="${OS}-${ARCH}"
 
-# Get latest release tag
+# Require curl
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required but not installed." >&2
   exit 1
 fi
 
+# Require tar
+if ! command -v tar >/dev/null 2>&1; then
+  echo "tar is required but not installed." >&2
+  exit 1
+fi
+
+# Get latest release tag
 VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 if [ -z "$VERSION" ]; then
   echo "Failed to determine latest version." >&2
@@ -46,18 +53,54 @@ trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$URL" -o "$TMP/mcx.tar.gz"
 tar xzf "$TMP/mcx.tar.gz" -C "$TMP"
 
-mv "$TMP/mcx-${TARGET}" "$INSTALL_DIR/mcx"
-mv "$TMP/mcpd-${TARGET}" "$INSTALL_DIR/mcpd"
-mv "$TMP/mcpctl-${TARGET}" "$INSTALL_DIR/mcpctl"
-chmod +x "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcpd" "$INSTALL_DIR/mcpctl"
+# Install binaries (overwrites existing — idempotent)
+for bin in mcx mcpd mcpctl; do
+  mv "$TMP/${bin}-${TARGET}" "$INSTALL_DIR/$bin"
+  chmod +x "$INSTALL_DIR/$bin"
+done
 
-# Transitional symlink: mcp → mcx (deprecated name)
+# Transitional symlink: mcp -> mcx (deprecated name)
 ln -sf "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcp"
 
-echo "Installed mcx, mcpd, mcpctl, and mcp (deprecated symlink) to $INSTALL_DIR"
+# Ad-hoc codesign on macOS (required for unsigned binaries)
+if [ "$OS" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+  for bin in mcx mcpd mcpctl; do
+    codesign -s - -f "$INSTALL_DIR/$bin" 2>/dev/null || true
+  done
+fi
 
-# Check if install dir is in PATH
+echo "Installed mcx, mcpd, mcpctl to $INSTALL_DIR"
+
+# Add install dir to PATH in shell rc files if not already present
+add_to_path() {
+  rc_file="$1"
+  [ -f "$rc_file" ] || return 0
+  if ! grep -q "$INSTALL_DIR" "$rc_file" 2>/dev/null; then
+    printf '\n# mcp-cli\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$rc_file"
+    echo "Added $INSTALL_DIR to PATH in $rc_file"
+  fi
+}
+
 case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *) echo "Add $INSTALL_DIR to your PATH:"; echo "  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+  *":$INSTALL_DIR:"*)
+    # Already in PATH
+    ;;
+  *)
+    # Try to add to rc files
+    added=false
+    if [ -f "$HOME/.zshrc" ]; then
+      add_to_path "$HOME/.zshrc"
+      added=true
+    fi
+    if [ -f "$HOME/.bashrc" ]; then
+      add_to_path "$HOME/.bashrc"
+      added=true
+    fi
+    if [ "$added" = false ]; then
+      # No rc file found — create .profile entry as fallback
+      printf '\n# mcp-cli\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$HOME/.profile"
+      echo "Added $INSTALL_DIR to PATH in ~/.profile"
+    fi
+    echo "Restart your shell or run: export PATH=\"$INSTALL_DIR:\$PATH\""
+    ;;
 esac
