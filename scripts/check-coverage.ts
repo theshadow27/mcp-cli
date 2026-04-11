@@ -102,6 +102,10 @@ const EXCLUSIONS: Record<string, string> = {
   "command/src/alias-runner.ts": "Virtual module + import(), integration-only (#52)",
   "command/src/output.ts": "Formatting output, low-risk — tracked in #47",
 
+  // Clone engine — requires MCP server connections to test, tracked in #1221
+  "clone/src/engine/clone.ts": "4% coverage, requires live MCP servers (#1221)",
+  "clone/src/engine/pull.ts": "2% in pre-commit (run-2 skipped), 98% in full suite (#1221)",
+
   // Commands below PER_FILE_MIN — tracked in open issues
   "command/src/commands/alias.ts": "5% coverage, tracked in #47",
   "command/src/commands/logs.ts": "19% coverage, tracked in #47",

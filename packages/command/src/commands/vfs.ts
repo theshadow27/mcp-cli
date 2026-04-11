@@ -21,6 +21,15 @@ import type { McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError } from "../output";
 
+export interface VfsDeps {
+  clone: typeof clone;
+  pull: typeof pull;
+  push: typeof push;
+  exit: (code: number) => never;
+  resolveProvider: (name: string) => ReturnType<typeof createConfluenceProvider>;
+  resolveProviderFromCache: (repoDir: string) => ReturnType<typeof createConfluenceProvider>;
+}
+
 function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
   return async (server, tool, args, timeoutMs) => {
     return ipc("callTool", { server, tool, arguments: args }, timeoutMs ? { timeoutMs } : undefined);
@@ -30,30 +39,38 @@ function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
 const callTool = makeToolCaller(ipcCall);
 const log = (msg: string) => process.stderr.write(`${msg}\n`);
 
-export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }): Promise<void> {
+export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?: VfsDeps): Promise<void> {
+  const d = deps ?? {
+    clone,
+    pull,
+    push,
+    exit: (code: number): never => process.exit(code),
+    resolveProvider: (name: string) => resolveProvider(name),
+    resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
+  };
   const sub = args[0];
 
   switch (sub) {
     case "clone":
-      await vfsClone(args.slice(1));
+      await vfsClone(args.slice(1), d);
       break;
     case "pull":
-      await vfsPull(args.slice(1));
+      await vfsPull(args.slice(1), d);
       break;
     case "push":
-      await vfsPush(args.slice(1), opts?.dryRun);
+      await vfsPush(args.slice(1), opts?.dryRun, d);
       break;
     default:
       printUsage();
       if (sub) printError(`Unknown subcommand: "${sub}"`);
-      process.exit(1);
+      d.exit(1);
   }
 }
 
-async function vfsClone(args: string[]): Promise<void> {
+async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   if (args.length < 2) {
     printError("Usage: mcx vfs clone <provider> <scope> [target-dir] [--limit N] [--cloud-id ID]");
-    process.exit(1);
+    deps.exit(1);
   }
 
   const providerName = args[0];
@@ -75,8 +92,8 @@ async function vfsClone(args: string[]): Promise<void> {
 
   if (!targetDir) targetDir = `./${scopeKey}`;
 
-  const provider = resolveProvider(providerName);
-  const result = await clone({
+  const provider = deps.resolveProvider(providerName);
+  const result = await deps.clone({
     targetDir: resolve(targetDir),
     provider,
     scope: { key: scopeKey, cloudId },
@@ -99,32 +116,32 @@ async function vfsClone(args: string[]): Promise<void> {
   );
 }
 
-async function vfsPull(args: string[]): Promise<void> {
+async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const full = args.includes("--full");
   const filteredArgs = args.filter((a) => a !== "--full");
   const repoDir = resolve(filteredArgs[0] ?? ".");
-  const provider = resolveProviderFromCache(repoDir);
+  const provider = deps.resolveProviderFromCache(repoDir);
 
-  const result = await pull({ repoDir, provider, full, onProgress: log });
+  const result = await deps.pull({ repoDir, provider, full, onProgress: log });
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function vfsPush(args: string[], dryRun?: boolean): Promise<void> {
+async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDeps): Promise<void> {
   const isCreate = args.includes("--create");
   const filteredArgs = args.filter((a) => a !== "--dry-run" && a !== "--create");
   const isDryRun = dryRun ?? args.includes("--dry-run");
   const repoDir = resolve(filteredArgs[0] ?? ".");
-  const provider = resolveProviderFromCache(repoDir);
+  const provider = deps.resolveProviderFromCache(repoDir);
 
-  const result = await push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
+  const result = await deps.push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
   console.log(JSON.stringify(result, null, 2));
 
   if (result.conflicts > 0 || result.errors > 0) {
-    process.exit(1);
+    deps.exit(1);
   }
 }
 
-function resolveProvider(name: string) {
+export function resolveProvider(name: string) {
   switch (name) {
     case "confluence":
       return createConfluenceProvider({ callTool });
