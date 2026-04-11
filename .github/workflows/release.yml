@@ -72,6 +72,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          sparse-checkout: scripts/install.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -80,12 +85,15 @@ jobs:
         run: |
           cd artifacts
           sha256sum *.tar.gz > checksums.txt
+      - name: Copy install script
+        run: cp scripts/install.sh artifacts/install.sh
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
+            artifacts/install.sh
 
   publish-platform:
     needs: build
@@ -171,45 +179,3 @@ jobs:
         run: npm publish --access public
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  update-homebrew:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - name: Compute SHA256 checksums and update formula
-        env:
-          VERSION: ${{ env.RELEASE_TAG }}
-        run: |
-          SHA_DARWIN_ARM64=$(sha256sum artifacts/mcx-darwin-arm64.tar.gz | cut -d' ' -f1)
-          SHA_DARWIN_X64=$(sha256sum artifacts/mcx-darwin-x64.tar.gz | cut -d' ' -f1)
-          SHA_LINUX_ARM64=$(sha256sum artifacts/mcx-linux-arm64.tar.gz | cut -d' ' -f1)
-          SHA_LINUX_X64=$(sha256sum artifacts/mcx-linux-x64.tar.gz | cut -d' ' -f1)
-          CLEAN_VERSION="${VERSION#v}"
-
-          sed -e "s/VERSION/${CLEAN_VERSION}/g" \
-              -e "s/SHA256_DARWIN_ARM64/${SHA_DARWIN_ARM64}/g" \
-              -e "s/SHA256_DARWIN_X64/${SHA_DARWIN_X64}/g" \
-              -e "s/SHA256_LINUX_ARM64/${SHA_LINUX_ARM64}/g" \
-              -e "s/SHA256_LINUX_X64/${SHA_LINUX_X64}/g" \
-              scripts/homebrew-formula.rb > Formula-mcp-cli.rb
-      - name: Push formula to homebrew tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/theshadow27/homebrew-mcp-cli.git tap
-          mkdir -p tap/Formula
-          cp Formula-mcp-cli.rb tap/Formula/mcp-cli.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/mcp-cli.rb
-          git diff --cached --quiet && echo "No changes to formula" && exit 0
-          git commit -m "Update mcp-cli to ${VERSION}"
-          git push
