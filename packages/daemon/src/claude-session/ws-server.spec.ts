@@ -869,6 +869,67 @@ describe("ClaudeWsServer", () => {
     expect(server.sessionCount).toBe(0);
   });
 
+  test("bye accepts optional closing message and cleans up session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("msg-session", { prompt: "Hello" });
+    server.spawnClaude("msg-session");
+
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    const result = await server.bye("msg-session", "PR #42 pushed and verified");
+    expect(server.sessionCount).toBe(0);
+    // bye returns worktree metadata regardless of message
+    expect(result).toHaveProperty("worktree");
+    expect(result).toHaveProperty("cwd");
+    expect(result).toHaveProperty("repoRoot");
+  });
+
+  test("bye with message logs [bye] entry to transcript", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("transcript-bye-session", { prompt: "Hello" });
+    server.spawnClaude("transcript-bye-session");
+
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    const transcriptCalls: Array<[string, string, unknown]> = [];
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    const origAddTranscript = (server as any).addTranscript.bind(server);
+    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
+    (server as any).addTranscript = (session: unknown, direction: string, message: unknown) => {
+      transcriptCalls.push([direction, JSON.stringify(message), session as string]);
+      return origAddTranscript(session, direction, message);
+    };
+
+    await server.bye("transcript-bye-session", "PR #99 pushed and verified");
+
+    const byeEntry = transcriptCalls.find(
+      ([direction, msg]) => direction === "outbound" && msg.includes("[bye] PR #99 pushed and verified"),
+    );
+    expect(byeEntry).toBeDefined();
+  });
+
+  test("bye with message uses message in termination reason", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("reason-session", { prompt: "Hello" });
+    server.spawnClaude("reason-session");
+
+    const eventPromise = server.waitForEvent("reason-session", 5000);
+    void server.bye("reason-session", "stuck in retry loop");
+
+    await expect(eventPromise).rejects.toThrow("Session ended: stuck in retry loop");
+  });
+
   test("WS reconnect after disconnect transitions back to connecting without resending prompt", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

@@ -890,16 +890,29 @@ export class ClaudeWsServer {
    * Awaits process exit (SIGTERM → SIGKILL escalation), so may take up to ~7s if the
    * process is stuck. Callers that need a fast return should fire-and-forget this.
    */
-  async bye(sessionId: string): Promise<{ worktree: string | null; cwd: string | null; repoRoot: string | null }> {
+  async bye(
+    sessionId: string,
+    message?: string,
+  ): Promise<{ worktree: string | null; cwd: string | null; repoRoot: string | null }> {
     const resolvedId = this.resolveSessionId(sessionId);
     const session = this.sessions.get(resolvedId);
     if (!session) throw new Error(`No session with id ${resolvedId}`);
+
+    // Log the closing message to the transcript so it appears in `mcx claude log`
+    if (message) {
+      this.addTranscript(session, "outbound", {
+        type: "user",
+        message: { role: "user", content: `[bye] ${message}` },
+      });
+    }
+
     const info = {
       worktree: session.worktree,
       cwd: session.config.cwd ?? null,
       repoRoot: session.config.repoRoot ?? null,
     };
-    await this.terminateSession(resolvedId, session, "Session ended by user");
+    const reason = message ? `Session ended: ${message}` : "Session ended by user";
+    await this.terminateSession(resolvedId, session, reason);
     return info;
   }
 

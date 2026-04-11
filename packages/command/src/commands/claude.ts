@@ -971,12 +971,19 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude bye <session-id> [--keep|--keep-worktree] [--all]");
+    d.printError('Usage: mcx claude bye <session-id> "<message>" [--keep|--keep-worktree] [--all]');
     d.exit(1);
   }
 
+  // Remaining positional args after session ID form the closing message
+  const message = positional.slice(1).join(" ").trim() || undefined;
+  if (!message) {
+    d.printError("Warning: no closing message provided. A message will be required in a future release.");
+    d.printError('  Usage: mcx claude bye <id> "reason for ending session"');
+  }
+
   const sessionId = await resolveSessionId(sessionPrefix, d);
-  const result = await d.callTool("claude_bye", { sessionId });
+  const result = await d.callTool("claude_bye", { sessionId, ...(message && { message }) });
 
   // Extract worktree info from bye response
   const byeResult = parseByeResult(result);
@@ -1025,11 +1032,14 @@ async function claudeByeAll(args: string[], d: ClaudeDeps, keepWorktree: boolean
     return;
   }
 
+  d.printError(
+    "Warning: --all ends sessions without individual closing messages. A message will be required in a future release.",
+  );
   console.error(`Ending ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`);
 
   for (const s of sessions) {
     try {
-      const result = await d.callTool("claude_bye", { sessionId: s.sessionId });
+      const result = await d.callTool("claude_bye", { sessionId: s.sessionId, message: "Batch end (--all)" });
       const byeResult = parseByeResult(result);
       const id = s.sessionId.slice(0, 8);
       console.error(`  ${id} ended`);
