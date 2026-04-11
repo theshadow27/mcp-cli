@@ -96,6 +96,10 @@ describe("cmdUpgrade --check", () => {
 });
 
 describe("cmdUpgrade (install)", () => {
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
   test("prints already up to date when no update", async () => {
     const { deps, logs } = makeDeps();
     await cmdUpgrade(["--yes"], deps);
@@ -130,7 +134,6 @@ describe("cmdUpgrade (install)", () => {
     });
     await cmdUpgrade(["--yes"], deps);
     expect(process.exitCode).toBe(1);
-    process.exitCode = undefined;
   });
 
   test("outputs JSON when already up to date", async () => {
@@ -159,7 +162,6 @@ describe("cmdUpgrade (install)", () => {
     });
     await cmdUpgrade(["--yes"], deps);
     expect(process.exitCode).toBe(1);
-    process.exitCode = undefined;
   });
 
   test("fails when download returns non-OK", async () => {
@@ -175,7 +177,24 @@ describe("cmdUpgrade (install)", () => {
     });
     await cmdUpgrade(["--yes"], deps);
     expect(process.exitCode).toBe(1);
-    process.exitCode = undefined;
+  });
+
+  test("catches thrown errors and sets exit code", async () => {
+    const { deps, errors } = makeDeps({
+      checkForUpdate: () => Promise.reject(new Error("DNS resolution failed")),
+    });
+    await cmdUpgrade(["--yes"], deps);
+    expect(process.exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("DNS resolution failed"))).toBe(true);
+  });
+
+  test("catches thrown errors in --check mode", async () => {
+    const { deps, errors } = makeDeps({
+      checkForUpdate: () => Promise.reject(new Error("network timeout")),
+    });
+    await cmdUpgrade(["--check"], deps);
+    expect(process.exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("network timeout"))).toBe(true);
   });
 });
 

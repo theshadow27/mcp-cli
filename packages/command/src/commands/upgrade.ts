@@ -7,7 +7,7 @@
  *   --json / -j   JSON output
  */
 
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION, options } from "@mcp-cli/core";
 import {
@@ -17,8 +17,8 @@ import {
   checkForUpdate,
   fetchLatestRelease,
   selectAsset,
+  writeCheckCache,
 } from "@mcp-cli/core";
-import { printError } from "../output";
 
 export interface UpgradeDeps {
   version: string;
@@ -71,12 +71,17 @@ export async function cmdUpgrade(args: string[], deps?: Partial<UpgradeDeps>): P
   const d = { ...defaultDeps, ...deps };
   const parsed = parseUpgradeArgs(args);
 
-  if (parsed.check) {
-    await runCheck(d, parsed.json);
-    return;
-  }
+  try {
+    if (parsed.check) {
+      await runCheck(d, parsed.json);
+      return;
+    }
 
-  await runUpgrade(d, parsed);
+    await runUpgrade(d, parsed);
+  } catch (err) {
+    d.error(`Upgrade failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
 }
 
 async function runCheck(d: UpgradeDeps, json: boolean): Promise<void> {
@@ -98,7 +103,7 @@ async function runCheck(d: UpgradeDeps, json: boolean): Promise<void> {
 async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   const assetName = d.selectAsset();
   if (!assetName) {
-    printError(`Unsupported platform: ${process.platform}-${process.arch}`);
+    d.error(`Unsupported platform: ${process.platform}-${process.arch}`);
     process.exitCode = 1;
     return;
   }
@@ -129,7 +134,7 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   const release = await d.fetchLatestRelease({ fetch: d.fetch });
   const asset = release.assets.find((a) => a.name === assetName);
   if (!asset) {
-    printError(`Asset ${assetName} not found in release ${release.tag}`);
+    d.error(`Asset ${assetName} not found in release ${release.tag}`);
     process.exitCode = 1;
     return;
   }
@@ -145,7 +150,8 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     redirect: "follow",
   });
   if (!resp.ok) {
-    printError(`Download failed: HTTP ${resp.status}`);
+    d.error(`Download failed: HTTP ${resp.status}`);
+    cleanup(stageDir);
     process.exitCode = 1;
     return;
   }
@@ -158,7 +164,7 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   const tarExit = await tar.exited;
   if (tarExit !== 0) {
     const stderr = await new Response(tar.stderr).text();
-    printError(`Extraction failed (exit ${tarExit}): ${stderr.trim()}`);
+    d.error(`Extraction failed (exit ${tarExit}): ${stderr.trim()}`);
     cleanup(stageDir);
     process.exitCode = 1;
     return;
@@ -170,7 +176,7 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   const stagedMcpctl = join(stageDir, "mcpctl");
 
   if (!existsSync(stagedMcx)) {
-    printError("Staged mcx binary not found after extraction");
+    d.error("Staged mcx binary not found after extraction");
     cleanup(stageDir);
     process.exitCode = 1;
     return;
@@ -178,15 +184,32 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
 
   d.error("Verifying staged binary...");
   const verify = d.spawn([stagedMcx, "version", "--json"], { stdout: "pipe", stderr: "ignore" });
+  const verifyOut = await new Response(verify.stdout).text();
   const verifyExit = await verify.exited;
   if (verifyExit !== 0) {
-    printError(`Verification failed: staged mcx exited with ${verifyExit}`);
+    d.error(`Verification failed: staged mcx exited with ${verifyExit}`);
     cleanup(stageDir);
     process.exitCode = 1;
     return;
   }
 
-  // Atomic swap: rename staged binaries over existing ones
+  // Confirm the staged binary reports the expected version
+  try {
+    const verifyVersion = (JSON.parse(verifyOut) as { version: string }).version;
+    if (verifyVersion !== release.version) {
+      d.error(`Version mismatch: staged binary reports ${verifyVersion}, expected ${release.version}`);
+      cleanup(stageDir);
+      process.exitCode = 1;
+      return;
+    }
+  } catch {
+    d.error("Verification failed: could not parse version output from staged binary");
+    cleanup(stageDir);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Swap: install staged binaries with backup-based rollback
   const installDir = dirname(d.execPath);
   d.error(`Installing to ${installDir}...`);
 
@@ -196,13 +219,51 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     [stagedMcpctl, join(installDir, "mcpctl")],
   ];
 
-  for (const [staged, target] of binaries) {
-    if (existsSync(staged)) {
-      renameSync(staged, target);
+  // Filter to only binaries that exist in the staging dir
+  const toInstall = binaries.filter(([staged]) => existsSync(staged));
+
+  // Phase 1: back up existing binaries
+  const backedUp: Array<[string, string]> = [];
+  try {
+    for (const [, target] of toInstall) {
+      const bak = `${target}.bak`;
+      if (existsSync(target)) {
+        moveFile(target, bak);
+        backedUp.push([target, bak]);
+      }
     }
+
+    // Phase 2: move staged binaries into place
+    for (const [staged, target] of toInstall) {
+      moveFile(staged, target);
+    }
+  } catch (err) {
+    // Rollback: restore backups
+    d.error(`Install failed: ${err instanceof Error ? err.message : String(err)}`);
+    for (const [target, bak] of backedUp) {
+      try {
+        moveFile(bak, target);
+      } catch {
+        /* best effort rollback */
+      }
+    }
+    cleanup(stageDir);
+    process.exitCode = 1;
+    return;
   }
 
+  // Phase 3: clean up backups and staging
+  for (const [, bak] of backedUp) {
+    try {
+      rmSync(bak, { force: true });
+    } catch {
+      /* best effort */
+    }
+  }
   cleanup(stageDir);
+
+  // Invalidate update-check cache so --check reflects new version
+  writeCheckCache(result.latest);
 
   if (parsed.json) {
     d.log(JSON.stringify({ status: "updated", from: result.current, to: result.latest }, null, 2));
@@ -217,6 +278,20 @@ function cleanup(stageDir: string): void {
     rmSync(stageDir, { recursive: true, force: true });
   } catch {
     /* best effort */
+  }
+}
+
+/** Rename a file, falling back to copy+delete on EXDEV (cross-filesystem). */
+function moveFile(src: string, dst: string): void {
+  try {
+    renameSync(src, dst);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+      copyFileSync(src, dst);
+      unlinkSync(src);
+    } else {
+      throw err;
+    }
   }
 }
 

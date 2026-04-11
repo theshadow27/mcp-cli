@@ -53,24 +53,33 @@ export function selectAsset(platform: string = process.platform, arch: string = 
  * Compare two semver-ish version strings.
  * Returns positive if b > a, negative if a > b, 0 if equal.
  * Strips leading 'v' and ignores build metadata (+epoch).
+ * Pre-release versions (e.g. 1.0.0-dev) are ordered before their
+ * release counterparts per semver: 1.0.0-dev < 1.0.0.
  */
 export function compareVersions(a: string, b: string): number {
-  const normalize = (v: string): number[] =>
-    v
-      .replace(/^v/, "")
-      .split("+")[0]
-      .split("-")[0]
-      .split(".")
-      .map((n) => Number.parseInt(n, 10) || 0);
+  const parse = (v: string): { parts: number[]; prerelease: string | null } => {
+    const stripped = v.replace(/^v/, "").split("+")[0];
+    const dashIdx = stripped.indexOf("-");
+    const core = dashIdx === -1 ? stripped : stripped.slice(0, dashIdx);
+    const prerelease = dashIdx === -1 ? null : stripped.slice(dashIdx + 1);
+    return {
+      parts: core.split(".").map((n) => Number.parseInt(n, 10) || 0),
+      prerelease,
+    };
+  };
 
-  const pa = normalize(a);
-  const pb = normalize(b);
-  const len = Math.max(pa.length, pb.length);
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.parts.length, pb.parts.length);
 
   for (let i = 0; i < len; i++) {
-    const diff = (pb[i] ?? 0) - (pa[i] ?? 0);
+    const diff = (pb.parts[i] ?? 0) - (pa.parts[i] ?? 0);
     if (diff !== 0) return diff;
   }
+
+  // Equal core versions: a pre-release is less than no pre-release
+  if (pa.prerelease !== null && pb.prerelease === null) return 1; // b > a
+  if (pa.prerelease === null && pb.prerelease !== null) return -1; // a > b
   return 0;
 }
 
@@ -103,8 +112,9 @@ export interface FetchReleaseDeps {
 /**
  * Fetch the latest release from GitHub API.
  * Falls back to `gh auth token` if unauthenticated request gets 403.
+ * The `retried` flag prevents infinite recursion if the token doesn't help.
  */
-export async function fetchLatestRelease(deps?: Partial<FetchReleaseDeps>): Promise<ReleaseInfo> {
+export async function fetchLatestRelease(deps?: Partial<FetchReleaseDeps>, retried = false): Promise<ReleaseInfo> {
   const fetchFn = deps?.fetch ?? globalThis.fetch;
 
   const headers: Record<string, string> = {
@@ -117,11 +127,11 @@ export async function fetchLatestRelease(deps?: Partial<FetchReleaseDeps>): Prom
 
   const resp = await fetchFn(RELEASES_API, { headers });
 
-  if (resp.status === 403 && !deps?.ghToken) {
-    // Try with gh auth token
+  if (resp.status === 403 && !deps?.ghToken && !retried) {
+    // Try with gh auth token (once)
     const token = await getGhToken();
     if (token) {
-      return fetchLatestRelease({ ...deps, fetch: fetchFn, ghToken: token });
+      return fetchLatestRelease({ ...deps, fetch: fetchFn, ghToken: token }, true);
     }
   }
 
