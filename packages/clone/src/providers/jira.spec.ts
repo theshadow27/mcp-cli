@@ -52,6 +52,10 @@ function wrapMcpResult(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
+function wrapMcpError(message: string) {
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
 describe("validateScopeKey (via resolveScope)", () => {
   function makeCallTool(): (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown> {
     return async () => null;
@@ -591,5 +595,39 @@ describe("changes", () => {
     }
     expect(changes).toHaveLength(2);
     expect(callCount).toBe(2);
+  });
+});
+
+describe("unwrapToolResult — isError handling", () => {
+  test("throws on MCP error response during resolveScope", async () => {
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getAccessibleAtlassianResources") {
+          return wrapMcpError("Rate limit exceeded");
+        }
+        return null;
+      },
+    });
+
+    await expect(provider.resolveScope({ key: "FOO" })).rejects.toThrow("MCP tool error: Rate limit exceeded");
+  });
+
+  test("throws on isError during list", async () => {
+    const scope = makeScope();
+    const provider = createJiraProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "searchJiraIssuesUsingJql") {
+          return wrapMcpError("403 Forbidden");
+        }
+        return null;
+      },
+    });
+
+    const entries: unknown[] = [];
+    await expect(async () => {
+      for await (const entry of provider.list(scope)) {
+        entries.push(entry);
+      }
+    }).toThrow("MCP tool error: 403 Forbidden");
   });
 });

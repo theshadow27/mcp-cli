@@ -265,6 +265,10 @@ function wrapMcpResult(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
 
+function wrapMcpError(message: string) {
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
 describe("list", () => {
   test("yields all pages from a single page response", async () => {
     const scope = makeScope();
@@ -476,5 +480,39 @@ describe("bulkFetchPages", () => {
     });
 
     expect(progressCalls).toContain(1);
+  });
+});
+
+describe("unwrapToolResult — isError handling", () => {
+  test("throws on MCP error response during resolveScope", async () => {
+    const provider = createConfluenceProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getAccessibleAtlassianResources") {
+          return wrapMcpError("Rate limit exceeded");
+        }
+        return null;
+      },
+    });
+
+    await expect(provider.resolveScope({ key: "TEST" })).rejects.toThrow("MCP tool error: Rate limit exceeded");
+  });
+
+  test("throws on isError during list", async () => {
+    const scope = makeScope();
+    const provider = createConfluenceProvider({
+      callTool: async (_server, tool, _args) => {
+        if (tool === "getPagesInConfluenceSpace") {
+          return wrapMcpError("403 Forbidden");
+        }
+        return null;
+      },
+    });
+
+    const entries: unknown[] = [];
+    await expect(async () => {
+      for await (const entry of provider.list(scope)) {
+        entries.push(entry);
+      }
+    }).toThrow("MCP tool error: 403 Forbidden");
   });
 });
