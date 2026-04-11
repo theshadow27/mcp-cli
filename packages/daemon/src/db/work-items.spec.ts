@@ -152,16 +152,16 @@ describe("WorkItemDb", () => {
   });
 
   describe("deleteWorkItem", () => {
-    test("removes item", () => {
+    test("removes item and returns true", () => {
       const db = createDb();
       const item = db.createWorkItem({ issueNumber: 1 });
-      db.deleteWorkItem(item.id);
+      expect(db.deleteWorkItem(item.id)).toBe(true);
       expect(db.getWorkItem(item.id)).toBeNull();
     });
 
-    test("no-op for missing id", () => {
+    test("returns false for missing id", () => {
       const db = createDb();
-      expect(() => db.deleteWorkItem("missing")).not.toThrow();
+      expect(db.deleteWorkItem("missing")).toBe(false);
     });
   });
 
@@ -226,6 +226,68 @@ describe("WorkItemDb", () => {
     test("returns null for unknown issue", () => {
       const db = createDb();
       expect(db.getWorkItemByIssue(999)).toBeNull();
+    });
+  });
+
+  describe("getWorkItemByBranch", () => {
+    test("finds by branch name", () => {
+      const db = createDb();
+      db.createWorkItem({ branch: "feat/my-feature", issueNumber: 10 });
+      const item = db.getWorkItemByBranch("feat/my-feature");
+      expect(item).not.toBeNull();
+      expect(item?.issueNumber).toBe(10);
+    });
+
+    test("returns null for unknown branch", () => {
+      const db = createDb();
+      expect(db.getWorkItemByBranch("nonexistent")).toBeNull();
+    });
+  });
+
+  describe("upsertWorkItem", () => {
+    test("creates a new item", () => {
+      const db = createDb();
+      const item = db.upsertWorkItem({ id: "pr:100", prNumber: 100, phase: "impl" });
+      expect(item.id).toBe("pr:100");
+      expect(item.prNumber).toBe(100);
+      expect(item.phase).toBe("impl");
+    });
+
+    test("updates existing item on conflict", () => {
+      const db = createDb();
+      db.upsertWorkItem({ id: "pr:100", prNumber: 100, phase: "impl" });
+      const updated = db.upsertWorkItem({ id: "pr:100", prNumber: 100, branch: "feat/x", phase: "review" });
+      expect(updated.id).toBe("pr:100");
+      expect(updated.branch).toBe("feat/x");
+      expect(updated.phase).toBe("review");
+    });
+
+    test("preserves existing fields when upsert supplies null", () => {
+      const db = createDb();
+      db.upsertWorkItem({ id: "pr:100", prNumber: 100, branch: "feat/x" });
+      const updated = db.upsertWorkItem({ id: "pr:100" });
+      expect(updated.branch).toBe("feat/x");
+      expect(updated.prNumber).toBe(100);
+    });
+  });
+
+  describe("unique constraints", () => {
+    test("rejects duplicate issue_number", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "a", issueNumber: 42 });
+      expect(() => db.createWorkItem({ id: "b", issueNumber: 42 })).toThrow();
+    });
+
+    test("rejects duplicate branch", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "a", branch: "feat/x" });
+      expect(() => db.createWorkItem({ id: "b", branch: "feat/x" })).toThrow();
+    });
+
+    test("allows multiple null issue_numbers", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "a" });
+      expect(() => db.createWorkItem({ id: "b" })).not.toThrow();
     });
   });
 

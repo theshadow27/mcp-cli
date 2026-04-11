@@ -49,6 +49,11 @@ export class StateDb {
   private mailOpCount = 0;
   private aliasOpCount = 0;
 
+  /** Expose the raw bun:sqlite Database for modules that share this connection (e.g. WorkItemDb). */
+  get database(): Database {
+    return this.db;
+  }
+
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
     hardenFile(dbPath);
