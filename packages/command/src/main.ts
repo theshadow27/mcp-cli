@@ -44,6 +44,7 @@ import { cmdTypegen } from "./commands/typegen";
 import { cmdUpdate } from "./commands/update";
 import { cmdUpgrade } from "./commands/upgrade";
 import { cmdVersion } from "./commands/version";
+import { cmdVfs } from "./commands/vfs";
 import {
   ShutdownRefusedError,
   getSourceStalenessWarning,
@@ -323,6 +324,10 @@ async function main(): Promise<void> {
       case "opencode":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
+        break;
+
+      case "vfs":
+        await cmdVfs(cleanArgs.slice(1), { dryRun: _dryRun });
         break;
 
       case "scope":

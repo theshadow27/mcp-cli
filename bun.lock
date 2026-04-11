@@ -30,6 +30,13 @@
         "@mcp-cli/permissions": "workspace:*",
       },
     },
+    "packages/clone": {
+      "name": "@mcp-cli/clone",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mcp-cli/core": "workspace:*",
+      },
+    },
     "packages/codex": {
       "name": "@mcp-cli/codex",
       "version": "0.1.0",
@@ -43,6 +50,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@mcp-cli/acp": "workspace:*",
+        "@mcp-cli/clone": "workspace:*",
         "@mcp-cli/core": "workspace:*",
         "jq-web": "^0.6.2",
         "zod": "^3.25 || ^4.0",
@@ -118,6 +126,8 @@
     "@hono/node-server": ["@hono/node-server@1.19.11", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g=="],
 
     "@mcp-cli/acp": ["@mcp-cli/acp@workspace:packages/acp"],
+
+    "@mcp-cli/clone": ["@mcp-cli/clone@workspace:packages/clone"],
 
     "@mcp-cli/codex": ["@mcp-cli/codex@workspace:packages/codex"],
 
