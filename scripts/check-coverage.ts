@@ -120,9 +120,6 @@ const EXCLUSIONS: Record<string, string> = {
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
   "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
 
-  // Permission routing — tested via daemon integration tests in run-2
-  "daemon/src/claude-session/permission-router.ts": "19% coverage, requires daemon integration tests (run-2)",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
   // Test harness — not production code
@@ -198,10 +195,19 @@ const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withF
  */
 const RUN1_TEST_FILES = new Set(["test/integration.spec.ts"]);
 
+/**
+ * Pure-unit daemon test files: spec files from packages/daemon/src that have
+ * NO daemon connection dependencies and can safely run in run-1.  Add files
+ * here when their coverage would otherwise be excluded due to run-2 being
+ * skipped pre-commit.  Never add files that spawn Workers or connect to the
+ * daemon socket — those belong in run-2.
+ */
+const RUN1_DAEMON_UNIT_TESTS = ["packages/daemon/src/claude-session/permission-router.spec.ts"];
+
 // Validate that all allowlist entries exist on disk — catches renames/deletions
-for (const f of RUN1_TEST_FILES) {
+for (const f of [...RUN1_TEST_FILES, ...RUN1_DAEMON_UNIT_TESTS]) {
   if (!existsSync(resolve(import.meta.dir, "..", f))) {
-    throw new Error(`RUN1_TEST_FILES entry does not exist: ${f}`);
+    throw new Error(`Allowlist entry does not exist: ${f}`);
   }
 }
 
@@ -210,7 +216,7 @@ const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
   .filter((f) => f.endsWith(".spec.ts") && RUN1_TEST_FILES.has(`test/${f}`))
   .map((f) => `test/${f}`);
 
-const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles];
+const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles, ...RUN1_DAEMON_UNIT_TESTS];
 
 const testStart = Date.now();
 
