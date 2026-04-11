@@ -9,26 +9,46 @@ function unsetEnv(key: string): void {
   delete process.env[key];
 }
 
+/** All env vars checked by isCI() — must be saved and restored across tests */
+const CI_ENV_VARS = [
+  "CI",
+  "GITHUB_ACTIONS",
+  "JENKINS_URL",
+  "BUILDKITE",
+  "CIRCLECI",
+  "GITLAB_CI",
+  "TRAVIS",
+  "TF_BUILD",
+] as const;
+
+function unsetAllCIVars(): void {
+  for (const v of CI_ENV_VARS) unsetEnv(v);
+}
+
 describe("isTelemetryEnabled", () => {
   const originalEnv = process.env.MCX_NO_TELEMETRY;
-  const originalCI = process.env.CI;
+  const originalCIVars: Record<string, string | undefined> = {};
+  for (const v of CI_ENV_VARS) originalCIVars[v] = process.env[v];
+
   afterEach(() => {
     if (originalEnv === undefined) {
       unsetEnv("MCX_NO_TELEMETRY");
     } else {
       process.env.MCX_NO_TELEMETRY = originalEnv;
     }
-    if (originalCI === undefined) {
-      unsetEnv("CI");
-    } else {
-      process.env.CI = originalCI;
+    for (const v of CI_ENV_VARS) {
+      if (originalCIVars[v] === undefined) {
+        unsetEnv(v);
+      } else {
+        process.env[v] = originalCIVars[v];
+      }
     }
   });
 
   test("returns true by default", () => {
     using _opts = testOptions();
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
     expect(isTelemetryEnabled()).toBe(true);
   });
 
@@ -41,14 +61,14 @@ describe("isTelemetryEnabled", () => {
   test("returns false when config.telemetry is false", () => {
     using _opts = testOptions({ files: { "config.json": { telemetry: false } } });
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
     expect(isTelemetryEnabled()).toBe(false);
   });
 
   test("returns true when config.telemetry is true", () => {
     using _opts = testOptions({ files: { "config.json": { telemetry: true } } });
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
     expect(isTelemetryEnabled()).toBe(true);
   });
 
@@ -58,10 +78,19 @@ describe("isTelemetryEnabled", () => {
     expect(isTelemetryEnabled()).toBe(false);
   });
 
-  test("returns false in CI environment", () => {
+  test("returns false in CI environment (CI var)", () => {
     using _opts = testOptions();
     unsetEnv("MCX_NO_TELEMETRY");
+    unsetAllCIVars();
     process.env.CI = "true";
+    expect(isTelemetryEnabled()).toBe(false);
+  });
+
+  test("returns false in CI environment (GITHUB_ACTIONS var)", () => {
+    using _opts = testOptions();
+    unsetEnv("MCX_NO_TELEMETRY");
+    unsetAllCIVars();
+    process.env.GITHUB_ACTIONS = "true";
     expect(isTelemetryEnabled()).toBe(false);
   });
 });

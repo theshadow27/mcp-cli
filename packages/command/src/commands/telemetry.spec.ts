@@ -3,12 +3,30 @@ import { readFileSync } from "node:fs";
 import { testOptions } from "../../../../test/test-options";
 import { cmdTelemetry } from "./telemetry";
 
+/** All env vars checked by isCI() — must be saved and restored across tests */
+const CI_ENV_VARS = [
+  "CI",
+  "GITHUB_ACTIONS",
+  "JENKINS_URL",
+  "BUILDKITE",
+  "CIRCLECI",
+  "GITLAB_CI",
+  "TRAVIS",
+  "TF_BUILD",
+] as const;
+
 describe("cmdTelemetry", () => {
   const originalEnv = process.env.MCX_NO_TELEMETRY;
+  const originalCIVars: Record<string, string | undefined> = {};
+  for (const v of CI_ENV_VARS) originalCIVars[v] = process.env[v];
 
   /** Unset an env var properly (not assigning undefined which coerces to string "undefined") */
   function unsetEnv(key: string): void {
     delete process.env[key];
+  }
+
+  function unsetAllCIVars(): void {
+    for (const v of CI_ENV_VARS) unsetEnv(v);
   }
 
   afterEach(() => {
@@ -17,12 +35,19 @@ describe("cmdTelemetry", () => {
     } else {
       process.env.MCX_NO_TELEMETRY = originalEnv;
     }
+    for (const v of CI_ENV_VARS) {
+      if (originalCIVars[v] === undefined) {
+        unsetEnv(v);
+      } else {
+        process.env[v] = originalCIVars[v];
+      }
+    }
   });
 
   test("status shows enabled by default", () => {
     using _opts = testOptions();
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
 
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -38,7 +63,7 @@ describe("cmdTelemetry", () => {
   test("status shows disabled when config is false", () => {
     using _opts = testOptions({ files: { "config.json": { telemetry: false } } });
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
 
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -96,7 +121,7 @@ describe("cmdTelemetry", () => {
   test("default subcommand is status", () => {
     using _opts = testOptions();
     unsetEnv("MCX_NO_TELEMETRY");
-    unsetEnv("CI");
+    unsetAllCIVars();
 
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
