@@ -10,6 +10,15 @@ import { pull } from "./pull";
 
 const TMP = join(import.meta.dir, "__test_pull_tmp__");
 
+/** Build env without GIT_* vars so git commands target the test repo, not the parent. */
+function cleanEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
+  }
+  return env;
+}
+
 function makeScope(key = "TEST", cloudId = "cloud-123"): ResolvedScope {
   return { key, cloudId, resolved: { spaceId: "space-456" } };
 }
@@ -44,7 +53,8 @@ let scope: ResolvedScope;
 
 /** Initialize a git repo with an initial commit so pull can commit on top. */
 function initGitRepo(): void {
-  const gitOpts = { cwd: repoDir, stdio: "pipe" as const };
+  const env = cleanEnv();
+  const gitOpts = { cwd: repoDir, stdio: "pipe" as const, env };
   execSync("git init", gitOpts);
   execSync("git config user.name Test", gitOpts);
   execSync("git config user.email test@test.com", gitOpts);
@@ -80,7 +90,7 @@ describe("pull", () => {
   test("throws when no scope in cache", async () => {
     const noScopeDir = join(TMP, "no-scope");
     mkdirSync(join(noScopeDir, ".clone"), { recursive: true });
-    execSync("git init", { cwd: noScopeDir, stdio: "pipe" });
+    execSync("git init", { cwd: noScopeDir, stdio: "pipe", env: cleanEnv() });
     const noScopeCache = new CloneCache(join(noScopeDir, ".clone", "cache.sqlite"));
     noScopeCache.close();
 
@@ -121,7 +131,7 @@ describe("pull", () => {
       const body = "Original content";
       cache.upsert("test", scope, makeEntry({ id: "p1", title: "Page One", version: 1 }), "Page One.md", "oldhash");
       writeFileSync(join(repoDir, "Page One.md"), injectFrontmatter(body, { id: "p1", version: 1 }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.close();
 
       const entries = [makeEntry({ id: "p1", title: "Page One", version: 2, content: "Updated content" })];
@@ -147,7 +157,7 @@ describe("pull", () => {
       cache.upsert("test", scope, makeEntry({ id: "p2", title: "Goner" }), "Goner.md", "h2");
       writeFileSync(join(repoDir, "Keeper.md"), injectFrontmatter("keep", { id: "p1" }));
       writeFileSync(join(repoDir, "Goner.md"), injectFrontmatter("gone", { id: "p2" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.close();
 
       // Remote only has p1
@@ -202,7 +212,7 @@ describe("pull", () => {
       // Seed a cached entry so there's something to compare against
       cache.upsert("test", scope, makeEntry({ id: "p1", title: "Existing" }), "Existing.md", "h1");
       writeFileSync(join(repoDir, "Existing.md"), injectFrontmatter("old", { id: "p1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       // Ensure lastSynced is set
       cache.updateLastSynced("test", "TEST");
       cache.close();
@@ -228,7 +238,7 @@ describe("pull", () => {
     test("handles updated entries in incremental mode", async () => {
       cache.upsert("test", scope, makeEntry({ id: "p1", title: "Page One", version: 1 }), "Page One.md", "h1");
       writeFileSync(join(repoDir, "Page One.md"), injectFrontmatter("old body", { id: "p1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.updateLastSynced("test", "TEST");
       cache.close();
 
@@ -256,7 +266,7 @@ describe("pull", () => {
     test("handles deleted entries in incremental mode", async () => {
       cache.upsert("test", scope, makeEntry({ id: "p1", title: "Doomed" }), "Doomed.md", "h1");
       writeFileSync(join(repoDir, "Doomed.md"), injectFrontmatter("content", { id: "p1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.updateLastSynced("test", "TEST");
       cache.close();
 
@@ -330,7 +340,7 @@ describe("pull", () => {
     test("handles rename (path change) in incremental mode", async () => {
       cache.upsert("test", scope, makeEntry({ id: "p1", title: "Old Title", version: 1 }), "Old Title.md", "h1");
       writeFileSync(join(repoDir, "Old Title.md"), injectFrontmatter("body", { id: "p1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.updateLastSynced("test", "TEST");
       cache.close();
 
@@ -423,7 +433,7 @@ describe("pull", () => {
 
       await pull({ repoDir, provider, onProgress: () => {} });
 
-      const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8" });
+      const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8", env: cleanEnv() });
       expect(log).toContain("Pull test/TEST (full)");
       expect(log).toContain("2 new");
     });
