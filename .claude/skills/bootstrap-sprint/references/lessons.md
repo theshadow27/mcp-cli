@@ -1,6 +1,6 @@
-# Lessons from 22 Sprints
+# Lessons from 28 Sprints
 
-These lessons were extracted from retrospectives across 22 autonomous sprints that
+These lessons were extracted from retrospectives across 28 autonomous sprints that
 shipped over 1,000 issues. They are general-purpose — not about any specific
 technology, but about how autonomous sprint systems behave in practice.
 
@@ -169,3 +169,10 @@ but the model should always offer. Every sprint should be more efficient than th
 The measure of success is not sprint velocity or PR count. It's this: **is the
 backlog getting cleared?** If yes, the system is working. If no, the retro should
 figure out why and the skill files should change. Everything else is noise.
+
+**22. Measure before assuming.**
+When diagnosing a slow pipeline step, time each component individually. The assumed
+bottleneck is often wrong. In one case, the orchestrator assumed `bun install` (64ms)
+was the problem when the actual bottleneck was daemon integration tests (136s). The
+fix was obvious once measured — but unmeasured, three wrong fixes would have shipped.
+This applies to any optimization work: profile first, then fix what the data shows.
