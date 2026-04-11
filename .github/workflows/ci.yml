@@ -26,21 +26,25 @@ jobs:
       - name: Test (non-daemon)
         run: |
           set +e
-          bun test packages/acp packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts
-          code=$?
-          if [ $code -eq 132 ]; then
-            echo "::warning::Bun segfault (exit 132) after tests passed — retrying once (see #1004)"
-            bun test packages/acp packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts
+          bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts 2>&1 | tee /tmp/test_non_daemon.txt
+          code=${PIPESTATUS[0]}
+          if [ $code -eq 0 ]; then
+            exit 0
+          elif grep -q "^ 0 fail$" /tmp/test_non_daemon.txt; then
+            echo "::warning::Bun crash (exit $code, all tests passed) — retrying once (see #1004)"
+            bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts
           else
             exit $code
           fi
       - name: Test (daemon)
         run: |
           set +e
-          bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts
-          code=$?
-          if [ $code -eq 132 ]; then
-            echo "::warning::Bun segfault (exit 132) after tests passed — retrying once (see #1004)"
+          bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts 2>&1 | tee /tmp/test_daemon.txt
+          code=${PIPESTATUS[0]}
+          if [ $code -eq 0 ]; then
+            exit 0
+          elif grep -q "^ 0 fail$" /tmp/test_daemon.txt; then
+            echo "::warning::Bun crash (exit $code, all tests passed) — retrying once (see #1004)"
             bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts
           else
             exit $code
