@@ -1960,6 +1960,50 @@ describe("parseWaitArgs", () => {
     const result = parseWaitArgs([]);
     expect(result.all).toBe(false);
   });
+
+  test("parses --any flag", () => {
+    const result = parseWaitArgs(["--any"]);
+    expect(result.any).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --pr flag with number", () => {
+    const result = parseWaitArgs(["--pr", "1047"]);
+    expect(result.pr).toBe(1047);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("errors on missing --pr value", () => {
+    const result = parseWaitArgs(["--pr"]);
+    expect(result.error).toBe("--pr requires a PR number");
+  });
+
+  test("errors on non-numeric --pr", () => {
+    const result = parseWaitArgs(["--pr", "abc"]);
+    expect(result.error).toBe("--pr must be a number");
+  });
+
+  test("parses --checks flag", () => {
+    const result = parseWaitArgs(["--checks"]);
+    expect(result.checks).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --any --pr --checks combined", () => {
+    const result = parseWaitArgs(["--any", "--pr", "42", "--checks", "--timeout", "30000"]);
+    expect(result.any).toBe(true);
+    expect(result.pr).toBe(42);
+    expect(result.checks).toBe(true);
+    expect(result.timeout).toBe(30000);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("defaults any/pr/checks to false/undefined/false", () => {
+    const result = parseWaitArgs([]);
+    expect(result.any).toBe(false);
+    expect(result.pr).toBeUndefined();
+    expect(result.checks).toBe(false);
+  });
 });
 
 // ── wait ──

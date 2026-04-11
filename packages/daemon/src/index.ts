@@ -363,9 +363,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Work items server: constructed lazily inside registerPendingVirtualServer
   // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
   let workItemsServer: WorkItemsServer | null = null;
-
-  // GitHub poller: starts after work items DB is available.
-  // Polls tracked PRs and updates state in the work_items table.
   let workItemPoller: WorkItemPoller | null = null;
 
   // Register uptime and server metrics
@@ -700,13 +697,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           pool.registerVirtualServer(WORK_ITEMS_SERVER_NAME, workItemsClient, workItemsTransport, workItemsTools);
           logger.info("[mcpd] Work items server started");
 
-          // Start GitHub poller now that work items DB is ready
+          // Start the GitHub work item poller — forwards events to the claude session worker
+          // so `mcx wait --any` / `--pr` / `--checks` can race work item events.
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
-            onEvent: (event) => {
-              logger.info(`[mcpd] Work item event: ${JSON.stringify(event)}`);
-            },
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
           });
           workItemPoller.start();
           logger.info("[mcpd] Work item poller started");
@@ -733,7 +729,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
       quotaPoller.stop();
-      if (workItemPoller) workItemPoller.stop();
+      workItemPoller?.stop();
       try {
         watcher.stop();
       } catch (err) {

@@ -1236,6 +1236,12 @@ export interface WaitArgs {
   afterSeq: number | undefined;
   short: boolean;
   all: boolean;
+  /** Race session + work item events (returns whichever fires first). */
+  any: boolean;
+  /** Block until a specific PR changes state. */
+  pr: number | undefined;
+  /** Block until any tracked PR's CI completes. */
+  checks: boolean;
   error: string | undefined;
 }
 
@@ -1245,6 +1251,9 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   let afterSeq: number | undefined;
   let short = false;
   let all = false;
+  let any = false;
+  let pr: number | undefined;
+  let checks = false;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -1269,12 +1278,24 @@ export function parseWaitArgs(args: string[]): WaitArgs {
       short = true;
     } else if (arg === "--all" || arg === "-a") {
       all = true;
+    } else if (arg === "--any") {
+      any = true;
+    } else if (arg === "--pr") {
+      const val = args[++i];
+      if (!val) {
+        error = "--pr requires a PR number";
+      } else {
+        pr = Number(val);
+        if (Number.isNaN(pr)) error = "--pr must be a number";
+      }
+    } else if (arg === "--checks") {
+      checks = true;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, timeout, afterSeq, short, all, error };
+  return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, error };
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1296,6 +1317,15 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   }
   if (parsed.afterSeq !== undefined) {
     toolArgs.afterSeq = parsed.afterSeq;
+  }
+  if (parsed.any) {
+    toolArgs.any = true;
+  }
+  if (parsed.pr !== undefined) {
+    toolArgs.pr = parsed.pr;
+  }
+  if (parsed.checks) {
+    toolArgs.checks = true;
   }
 
   // Pass scopeRoot or repoRoot to daemon for server-side filtering (only when no explicit session and no --all)
@@ -1348,7 +1378,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   const filterLabel = scopeFilter ? "other scopes" : "other repos";
   if (data && typeof data === "object" && "sessions" in data) {
     const unified = data as {
+      source?: string;
       event?: Record<string, unknown>;
+      workItemEvent?: Record<string, unknown>;
       sessions: Array<Record<string, unknown>>;
     };
     if (repoFilter) {
@@ -1374,7 +1406,15 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       }
       return;
     }
-    // --short: print event line if present, then session dashboard
+    // --short: work item event
+    if (unified.source === "work_item" && unified.workItemEvent) {
+      const wie = unified.workItemEvent;
+      const type = (wie.type as string) ?? "—";
+      const prNum = wie.prNumber !== undefined ? `PR #${wie.prNumber}` : "—";
+      console.log(`work_item ${type} ${prNum}`);
+      return;
+    }
+    // --short: session event
     if (unified.event) {
       const evt = unified.event;
       const id = evt.sessionId ? String(evt.sessionId).slice(0, 8) : "—";

@@ -12,7 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum } from "@mcp-cli/core";
+import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum, WorkItemEvent } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
@@ -217,6 +217,12 @@ export interface WaitResult {
   events: SessionWaitEvent[];
 }
 
+/** Event returned when a work item event resolves a waiter. */
+export interface WorkItemWaitEvent {
+  source: "work_item";
+  workItemEvent: WorkItemEvent;
+}
+
 interface BufferedEvent {
   event: SessionWaitEvent & { seq: number };
   ts: number;
@@ -225,6 +231,14 @@ interface BufferedEvent {
 interface EventWaiter {
   sessionId: string | null; // null = any session
   resolve: (e: SessionWaitEvent) => void;
+  reject: (e: Error) => void;
+  timer: Timer;
+}
+
+interface WorkItemWaiter {
+  prNumber: number | null; // null = any PR
+  checksOnly: boolean; // true = only checks:* events
+  resolve: (e: WorkItemWaitEvent) => void;
   reject: (e: Error) => void;
   timer: Timer;
 }
@@ -291,6 +305,7 @@ export class ClaudeWsServer {
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
+  private readonly workItemWaiters: WorkItemWaiter[] = [];
   private readonly spawn: SpawnFn;
   private readonly killTimeoutMs: number;
   private readonly portRetryCount: number;
@@ -1030,6 +1045,56 @@ export class ClaudeWsServer {
 
       this.eventWaiters.push(waiter);
     });
+  }
+
+  // ── Work item event support ──
+
+  /**
+   * Wait for the next work item event matching the given filters.
+   * Used by `mcx wait --pr` and `mcx wait --checks`.
+   */
+  waitForWorkItemEvent(prNumber: number | null, checksOnly: boolean, timeoutMs: number): Promise<WorkItemWaitEvent> {
+    return new Promise<WorkItemWaitEvent>((resolve, reject) => {
+      const waiter: WorkItemWaiter = {
+        prNumber,
+        checksOnly,
+        resolve: (e) => {
+          clearTimeout(waiter.timer);
+          resolve(e);
+        },
+        reject: (e) => {
+          clearTimeout(waiter.timer);
+          reject(e);
+        },
+        timer: setTimeout(() => {
+          const idx = this.workItemWaiters.indexOf(waiter);
+          if (idx >= 0) this.workItemWaiters.splice(idx, 1);
+          reject(new WaitTimeoutError(`Timeout waiting for work item event after ${timeoutMs}ms`));
+        }, timeoutMs),
+      };
+      this.workItemWaiters.push(waiter);
+    });
+  }
+
+  /**
+   * Dispatch a work item event from the poller. Resolves any matching work item waiters.
+   * Called from the worker's control message handler when the main thread forwards events.
+   */
+  dispatchWorkItemEvent(event: WorkItemEvent): void {
+    const waitEvent: WorkItemWaitEvent = { source: "work_item", workItemEvent: event };
+    const eventPrNumber = "prNumber" in event ? event.prNumber : null;
+    const remaining: WorkItemWaiter[] = [];
+    for (const waiter of this.workItemWaiters) {
+      const matchesPr = waiter.prNumber === null || (eventPrNumber !== null && waiter.prNumber === eventPrNumber);
+      const matchesChecks = !waiter.checksOnly || event.type.startsWith("checks:");
+      if (matchesPr && matchesChecks) {
+        waiter.resolve(waitEvent);
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.workItemWaiters.length = 0;
+    this.workItemWaiters.push(...remaining);
   }
 
   // ── WebSocket handlers ──
