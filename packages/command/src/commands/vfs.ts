@@ -29,7 +29,10 @@ export interface VfsDeps {
   push: typeof push;
   exit: (code: number) => never;
   resolveProvider: (name: string) => ReturnType<typeof createConfluenceProvider>;
-  resolveProviderFromCache: (repoDir: string) => { provider: ReturnType<typeof createConfluenceProvider>; providerName: string };
+  resolveProviderFromCache: (repoDir: string) => {
+    provider: ReturnType<typeof createConfluenceProvider>;
+    providerName: string;
+  };
   preflightCheck: (providerName: string) => Promise<void>;
 }
 
