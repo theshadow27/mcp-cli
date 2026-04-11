@@ -169,6 +169,10 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
   const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
   execSync("git init", gitOpts);
+  // Set user identity for this repo so commits work even in environments
+  // without a global git config (e.g. CI runners, fresh machines).
+  execSync("git config user.name mcx", gitOpts);
+  execSync("git config user.email mcx@localhost", gitOpts);
   execSync("git add -A", gitOpts);
 
   // Write .gitignore for the cache directory
