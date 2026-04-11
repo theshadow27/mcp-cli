@@ -30,6 +30,7 @@ export interface VfsDeps {
   exit: (code: number) => never;
   resolveProvider: (name: string) => ReturnType<typeof createConfluenceProvider>;
   resolveProviderFromCache: (repoDir: string) => { provider: ReturnType<typeof createConfluenceProvider>; providerName: string };
+  preflightCheck: (providerName: string) => Promise<void>;
 }
 
 function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
@@ -98,6 +99,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
     exit: (code: number): never => process.exit(code),
     resolveProvider: (name: string) => resolveProvider(name),
     resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
+    preflightCheck: (name: string) => preflightCheck(name),
   };
   const sub = args[0];
 
@@ -143,7 +145,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 
   if (!targetDir) targetDir = `./${scopeKey}`;
 
-  await preflightCheck(providerName);
+  await deps.preflightCheck(providerName);
 
   const provider = deps.resolveProvider(providerName);
   let result: CloneResult;
@@ -184,7 +186,7 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
 
-  await preflightCheck(providerName);
+  await deps.preflightCheck(providerName);
 
   try {
     const result = await deps.pull({ repoDir, provider, full, onProgress: log });
@@ -205,7 +207,7 @@ async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDep
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
 
-  await preflightCheck(providerName);
+  await deps.preflightCheck(providerName);
 
   try {
     const result = await deps.push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });

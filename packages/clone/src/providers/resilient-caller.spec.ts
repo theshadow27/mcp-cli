@@ -272,13 +272,11 @@ describe("createResilientCaller", () => {
       maxRetries: 4,
       baseDelayMs: 60_000, // Very long delay — should be aborted
       signal: controller.signal,
+      onRetry: () => controller.abort(), // Deterministic: abort on first retry
       toolDiscovery: false,
     });
 
-    const promise = caller("server", "tool", {});
-    // Abort after a short delay
-    setTimeout(() => controller.abort(), 50);
-    await expect(promise).rejects.toThrow();
+    await expect(caller("server", "tool", {})).rejects.toThrow();
   });
 
   test("alias discovery continues on api errors (server 500 for unknown tool)", async () => {

@@ -38,6 +38,7 @@ function makeDeps(overrides: Partial<VfsDeps> = {}): VfsDeps {
     },
     resolveProvider: () => fakeProvider,
     resolveProviderFromCache: () => ({ provider: fakeProvider, providerName: "confluence" }),
+    preflightCheck: async () => {},
     ...overrides,
   };
 }
