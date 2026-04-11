@@ -825,6 +825,38 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
       console.log = origLog;
     }
   });
+
+  test("cleans up worktree when IPC callTool fails (#1116)", async () => {
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const callTool = mock(async () => {
+      throw new Error("daemon unreachable");
+    });
+    const printError = mock(() => {});
+    const deps = makeDeps({ exec, callTool, printError });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--worktree", "my-feat"], deps);
+      throw new Error("should have exited");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ExitError);
+      expect((e as ExitError).code).toBe(1);
+
+      // Verify cleanup was attempted: git status --porcelain on the worktree path
+      const execCalls = exec.mock.calls as unknown as Array<[string[], { env?: Record<string, string> }?]>;
+      const statusCall = execCalls.find(
+        (c) => c[0][0] === "git" && c[0][1] === "-C" && c[0].includes("status") && c[0].includes("--porcelain"),
+      );
+      expect(statusCall).toBeDefined();
+
+      // Verify the error message was printed
+      const errorCalls = printError.mock.calls as unknown as Array<[string]>;
+      expect(errorCalls.some((c) => c[0].includes("daemon unreachable"))).toBe(true);
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── ls ──

@@ -362,18 +362,33 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // Handle worktree: always pre-create via shim so cwd points to the worktree.
   // Without cwd, Claude inherits the daemon's cwd (main repo) and file
   // operations leak into the main working tree (#1109).
+  let worktreeResult: { path: string } | undefined;
   if (parsed.worktree) {
     try {
-      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "claude/" }, d);
-      Object.assign(toolArgs, result.toolArgs);
+      const wt = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "claude/" }, d);
+      Object.assign(toolArgs, wt.toolArgs);
+      worktreeResult = wt;
     } catch (e) {
       d.printError(e instanceof WorktreeError ? e.message : String(e));
       d.exit(1);
     }
   }
 
-  const result = await d.callTool("claude_prompt", toolArgs);
-  console.log(formatToolResult(result));
+  try {
+    const result = await d.callTool("claude_prompt", toolArgs);
+    console.log(formatToolResult(result));
+  } catch (e) {
+    // IPC failed after worktree was created — clean up to avoid orphans (#1116)
+    if (parsed.worktree && worktreeResult) {
+      try {
+        cleanupWorktree(parsed.worktree, worktreeResult.path, d, process.cwd());
+      } catch {
+        // Best-effort cleanup — don't mask the original error
+      }
+    }
+    d.printError(String(e));
+    d.exit(1);
+  }
 }
 
 async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void> {
