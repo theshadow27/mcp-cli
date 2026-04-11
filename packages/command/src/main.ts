@@ -15,7 +15,14 @@
  */
 
 import type { DaemonStatus, QuotaStatusResult, ServerStatus } from "@mcp-cli/core";
-import { IpcCallError, MCP_TOOL_TIMEOUT_MS, PING_TIMEOUT_MS, ProtocolMismatchError, VERSION } from "@mcp-cli/core";
+import {
+  IpcCallError,
+  MCP_TOOL_TIMEOUT_MS,
+  PING_TIMEOUT_MS,
+  ProtocolMismatchError,
+  VERSION,
+  recordCommand,
+} from "@mcp-cli/core";
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
@@ -38,6 +45,7 @@ import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSpans } from "./commands/spans";
+import { cmdTelemetry } from "./commands/telemetry";
 import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
 import { cmdTty } from "./commands/tty";
 import { cmdTypegen } from "./commands/typegen";
@@ -116,6 +124,9 @@ async function main(): Promise<void> {
       // Best-effort — never block CLI startup
     }
   }
+
+  // Fire-and-forget telemetry — never blocks, never throws
+  recordCommand(command, cleanArgs[1]);
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
   if (dryRun && command && command !== "call") {
@@ -225,6 +236,10 @@ async function main(): Promise<void> {
 
       case "config":
         await cmdConfig(cleanArgs.slice(1));
+        break;
+
+      case "telemetry":
+        cmdTelemetry(cleanArgs.slice(1));
         break;
 
       case "add":
@@ -865,6 +880,7 @@ Utility:
   mcx serve                           Run as stdio MCP server
   mcx scope <subcommand>              Directory scope management
   mcx dump/metrics/spans              Diagnostics and observability
+  mcx telemetry [on|off|status]       Control anonymous usage telemetry
   mcx version                         Version info
   mcx completions {bash|zsh|fish}     Shell completions
 

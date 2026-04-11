@@ -77,6 +77,8 @@ export interface CliConfig {
   ephemeralAliases?: EphemeralAliasConfig;
   /** Directories where the first-run import prompt has already been shown */
   promptedDirs?: string[];
+  /** Whether anonymous usage telemetry is enabled (default: true). Set false to opt out. */
+  telemetry?: boolean;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */
