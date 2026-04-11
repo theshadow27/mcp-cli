@@ -105,12 +105,21 @@ export async function ipcCall<M extends IpcMethod>(
     params,
     traceparent: callSpan.traceparent(),
   };
-  const response = await sendRequest(request, opts?.timeoutMs);
+  try {
+    const response = await sendRequest(request, opts?.timeoutMs);
 
-  if (response.error) {
-    throw new IpcCallError(response.error);
+    if (response.error) {
+      callSpan.setStatus("ERROR");
+      throw new IpcCallError(response.error);
+    }
+    callSpan.setStatus("OK");
+    return response.result as IpcMethodResult[M];
+  } catch (err) {
+    callSpan.setStatus("ERROR");
+    throw err;
+  } finally {
+    callSpan.end();
   }
-  return response.result as IpcMethodResult[M];
 }
 
 /** Send a request via HTTP-over-Unix-socket and return the response */

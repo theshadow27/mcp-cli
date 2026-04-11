@@ -47,6 +47,8 @@ interface InitMessage {
   wsPort?: number;
   /** Suppress worker-side console logging (used in tests). */
   quiet?: boolean;
+  /** Daemon's W3C traceparent — worker span becomes a child of this. */
+  traceparent?: string;
 }
 
 interface ToolsChangedMessage {
@@ -652,7 +654,9 @@ self.onmessage = async (event: MessageEvent) => {
   const data = event.data;
   if (isControlMessage(data) && data.type === "init") {
     daemonId = data.daemonId;
-    workerSpan = startSpan("claude-worker");
+    workerSpan = startSpan("claude-worker", {
+      parentTraceparent: data.traceparent,
+    });
     try {
       const port = await startServer(data.wsPort, data.quiet);
       self.postMessage({ type: "ready", port });
@@ -662,8 +666,14 @@ self.onmessage = async (event: MessageEvent) => {
       wsServer = null;
       mcpServer = null;
       transport = null;
+      workerSpan?.end();
       const message = err instanceof Error ? err.message : String(err);
       self.postMessage({ type: "error", message });
     }
   }
 };
+
+// End the worker span when the worker is terminated
+self.addEventListener("close", () => {
+  workerSpan?.end();
+});

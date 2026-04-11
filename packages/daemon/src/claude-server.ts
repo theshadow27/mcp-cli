@@ -9,8 +9,8 @@
  * Follows the same pattern as AliasServer (alias-server.ts).
  */
 
-import type { JsonSchema, Logger, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
-import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger } from "@mcp-cli/core";
+import type { JsonSchema, LiveSpan, Logger, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger, startSpan } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { closeClientWithTimeout } from "./close-timeout";
@@ -148,6 +148,8 @@ export class ClaudeServer {
   private readonly logger: Logger;
   private readonly metrics: MetricsCollector;
   private readonly restartPolicy = DEFAULT_RESTART_POLICY;
+  /** Daemon-level span — children (worker, sessions) inherit its traceId. */
+  private readonly daemonSpan: LiveSpan;
   /** Sessions without PIDs that stay disconnected longer than this are pruned as zombies. */
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -172,6 +174,7 @@ export class ClaudeServer {
       clientFactory ?? (() => new Client({ name: `mcp-cli/${CLAUDE_SERVER_NAME}`, version: "0.1.0" }));
     this.logger = logger ?? consoleLogger;
     this.metrics = metricsCollector ?? defaultMetrics;
+    this.daemonSpan = startSpan("mcpd");
   }
 
   /** Start the worker and connect the MCP client. */
@@ -214,12 +217,14 @@ export class ClaudeServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`Claude session worker error: ${msg}`));
       };
-      // Send init to start the worker
+      // Send init to start the worker — include daemon traceparent so the worker
+      // span becomes a child of the daemon span, completing the causal chain.
       worker.postMessage({
         type: "init",
         daemonId: this.daemonId,
         wsPort: this.configuredWsPort,
         quiet: this.logger === silentLogger,
+        traceparent: this.daemonSpan.traceparent(),
       });
     });
 

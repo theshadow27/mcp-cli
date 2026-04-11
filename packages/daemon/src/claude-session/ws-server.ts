@@ -275,6 +275,8 @@ interface WsSession {
   connectTimer: Timer | null;
   /** Unix timestamp (ms) when this session was created. */
   createdAt: number;
+  /** W3C traceparent used for the last spawn — reused on respawn after clear. */
+  traceparent: string | null;
   /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
@@ -533,6 +535,7 @@ export class ClaudeWsServer {
         connectTimer: null,
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
+        traceparent: null,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -566,6 +569,7 @@ export class ClaudeWsServer {
       connectTimer: null,
       createdAt: Date.now(),
       pendingImmediate: false,
+      traceparent: null,
     });
   }
 
@@ -576,6 +580,8 @@ export class ClaudeWsServer {
    */
   spawnClaude(sessionId: string, traceparent?: string): number {
     const session = this.getSession(sessionId);
+    // Store traceparent so respawn after clear can reuse it
+    if (traceparent) session.traceparent = traceparent;
     const port = this.port;
     if (!port) throw new Error("WS server not started");
 
@@ -867,8 +873,8 @@ export class ClaudeWsServer {
     // Clear transcript for fresh start
     session.transcript.length = 0;
 
-    // Respawn
-    this.spawnClaude(sessionId);
+    // Respawn — reuse stored traceparent to maintain trace continuity across clears
+    this.spawnClaude(sessionId, session.traceparent ?? undefined);
     session.clearing = false;
   }
 
