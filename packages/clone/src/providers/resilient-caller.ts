@@ -66,8 +66,8 @@ export function classifyError(message: string): VfsErrorKind {
     return "not_found";
   }
 
-  // Version conflict
-  if (lower.includes("409") || lower.includes("conflict") || lower.includes("version")) {
+  // Version conflict — match "version conflict" or "version mismatch" as phrases, not bare "version"
+  if (lower.includes("409") || lower.includes("conflict") || lower.includes("version mismatch")) {
     return "conflict";
   }
 
@@ -85,6 +85,10 @@ export function friendlyMessage(err: VfsError, context?: string): string {
     case "network":
       return `Network error${ctx}. Check your connection and that the MCP server is running:\n  mcx status`;
     case "not_found":
+      // Preserve diagnostic content (e.g. alias discovery details) when present
+      if (err.message.includes("Tried aliases") || err.message.includes("mcx ls")) {
+        return err.message;
+      }
       return `Resource not found${ctx}. The page or tool may have been removed.`;
     case "conflict":
       return `Version conflict${ctx}. Someone else edited this page — pull first:\n  mcx vfs pull`;
@@ -141,10 +145,26 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /** Progress callback for backoff waits. */
   onRetry?: (attempt: number, delayMs: number, error: string) => void;
+  /** AbortSignal to cancel in-flight retries (e.g. on SIGINT). */
+  signal?: AbortSignal;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Aborted"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error("Aborted"));
+      },
+      { once: true },
+    );
+  });
 }
 
 function computeBackoff(attempt: number, baseMs: number, maxMs: number): number {
@@ -171,7 +191,15 @@ export interface ResilientCallerOptions extends RetryOptions {
  * - Error classification into VfsError types
  */
 export function createResilientCaller(opts: ResilientCallerOptions): McpToolCaller {
-  const { callTool, maxRetries = 4, baseDelayMs = 1000, maxDelayMs = 30_000, onRetry, toolDiscovery = true } = opts;
+  const {
+    callTool,
+    maxRetries = 4,
+    baseDelayMs = 1000,
+    maxDelayMs = 30_000,
+    onRetry,
+    signal,
+    toolDiscovery = true,
+  } = opts;
 
   // Cache of resolved tool names: canonical → actual working name
   const resolvedToolNames = new Map<string, string>();
@@ -194,7 +222,7 @@ export function createResilientCaller(opts: ResilientCallerOptions): McpToolCall
         if (kind === "rate_limit" && attempt < maxRetries) {
           const delay = computeBackoff(attempt, baseDelayMs, maxDelayMs);
           onRetry?.(attempt + 1, delay, lastError.message);
-          await sleep(delay);
+          await sleep(delay, signal);
           continue;
         }
 
@@ -226,7 +254,8 @@ export function createResilientCaller(opts: ResilientCallerOptions): McpToolCall
       resolvedToolNames.set(canonicalTool, canonicalTool);
       return result;
     } catch (err) {
-      if (!(err instanceof VfsError) || err.kind !== "not_found") {
+      // Only try aliases for not_found and api errors (some servers return 500 for unknown tools)
+      if (!(err instanceof VfsError) || (err.kind !== "not_found" && err.kind !== "api")) {
         throw err;
       }
 
@@ -243,10 +272,12 @@ export function createResilientCaller(opts: ResilientCallerOptions): McpToolCall
           resolvedToolNames.set(canonicalTool, alias);
           return result;
         } catch (aliasErr) {
-          if (aliasErr instanceof VfsError && aliasErr.kind === "not_found") {
-            continue; // Try next alias
+          // Continue trying aliases on not_found and api errors (some servers return
+          // 500 instead of proper not-found for unknown tools)
+          if (aliasErr instanceof VfsError && (aliasErr.kind === "not_found" || aliasErr.kind === "api")) {
+            continue;
           }
-          throw aliasErr; // Different error — propagate
+          throw aliasErr; // Auth, rate_limit, network — propagate immediately
         }
       }
 

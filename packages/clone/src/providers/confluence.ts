@@ -12,7 +12,6 @@ import type {
 } from "./provider";
 import {
   type RetryOptions,
-  type VfsError,
   VfsError as VfsErrorClass,
   createResilientCaller,
   friendlyMessage,
@@ -394,7 +393,8 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
           return { ok: false, error: `${friendlyMessage(err, pageUrl)}` };
         }
         const message = err instanceof Error ? err.message : String(err);
-        const isConflict = message.includes("409") || message.includes("conflict") || message.includes("version");
+        const isConflict =
+          message.includes("409") || message.includes("conflict") || message.includes("version mismatch");
         if (isConflict) {
           return {
             ok: false,

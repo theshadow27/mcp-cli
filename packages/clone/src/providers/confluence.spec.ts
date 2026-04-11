@@ -378,6 +378,7 @@ describe("push", () => {
       callTool: async () => {
         throw new Error("Internal server error");
       },
+      disableToolDiscovery: true,
     });
 
     const pushFn3 = provider.push as NonNullable<typeof provider.push>;

@@ -29,7 +29,7 @@ export interface VfsDeps {
   push: typeof push;
   exit: (code: number) => never;
   resolveProvider: (name: string) => ReturnType<typeof createConfluenceProvider>;
-  resolveProviderFromCache: (repoDir: string) => ReturnType<typeof createConfluenceProvider>;
+  resolveProviderFromCache: (repoDir: string) => { provider: ReturnType<typeof createConfluenceProvider>; providerName: string };
 }
 
 function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
@@ -84,8 +84,9 @@ async function preflightCheck(providerName: string): Promise<void> {
       );
       process.exit(1);
     }
-    // Non-fatal: if preflight itself fails, let the clone proceed and fail naturally
-    log(`Warning: preflight check failed: ${message}`);
+    // Unexpected error — fail closed rather than proceeding to a confusing double-error
+    printError(`Preflight check failed: ${message}`);
+    process.exit(1);
   }
 }
 
@@ -181,7 +182,9 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const full = args.includes("--full");
   const filteredArgs = args.filter((a) => a !== "--full");
   const repoDir = resolve(filteredArgs[0] ?? ".");
-  const provider = deps.resolveProviderFromCache(repoDir);
+  const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
+
+  await preflightCheck(providerName);
 
   try {
     const result = await deps.pull({ repoDir, provider, full, onProgress: log });
@@ -200,7 +203,9 @@ async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDep
   const filteredArgs = args.filter((a) => a !== "--dry-run" && a !== "--create");
   const isDryRun = dryRun ?? args.includes("--dry-run");
   const repoDir = resolve(filteredArgs[0] ?? ".");
-  const provider = deps.resolveProviderFromCache(repoDir);
+  const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
+
+  await preflightCheck(providerName);
 
   try {
     const result = await deps.push({ repoDir, provider, dryRun: isDryRun, create: isCreate, onProgress: log });
@@ -229,16 +234,19 @@ export function resolveProvider(name: string) {
     case "confluence":
       return createConfluenceProvider({ callTool, retry });
     case "asana":
-      return createAsanaProvider({ callTool });
+      return createAsanaProvider({ callTool, retry });
     case "jira":
-      return createJiraProvider({ callTool });
+      return createJiraProvider({ callTool, retry });
     default:
       printError(`Unknown provider: "${name}". Available: confluence, asana, jira`);
       process.exit(1);
   }
 }
 
-function resolveProviderFromCache(repoDir: string) {
+function resolveProviderFromCache(repoDir: string): {
+  provider: ReturnType<typeof resolveProvider>;
+  providerName: string;
+} {
   const cachePath = join(repoDir, ".clone", "cache.sqlite");
   if (!existsSync(cachePath)) {
     printError(`Not a cloned repo: ${repoDir}\nUse "mcx vfs clone" first.`);
@@ -254,7 +262,7 @@ function resolveProviderFromCache(repoDir: string) {
     process.exit(1);
   }
 
-  return resolveProvider(providerName);
+  return { provider: resolveProvider(providerName), providerName };
 }
 
 function printUsage(): void {

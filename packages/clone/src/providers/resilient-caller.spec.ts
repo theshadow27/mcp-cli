@@ -262,4 +262,79 @@ describe("createResilientCaller", () => {
     await caller("server", "tool", {}, 5000);
     expect(receivedTimeout).toBe(5000);
   });
+
+  test("sleep is abortable via signal", async () => {
+    const controller = new AbortController();
+    const caller = createResilientCaller({
+      callTool: async () => {
+        throw new Error("429 Too Many Requests");
+      },
+      maxRetries: 4,
+      baseDelayMs: 60_000, // Very long delay — should be aborted
+      signal: controller.signal,
+      toolDiscovery: false,
+    });
+
+    const promise = caller("server", "tool", {});
+    // Abort after a short delay
+    setTimeout(() => controller.abort(), 50);
+    await expect(promise).rejects.toThrow();
+  });
+
+  test("alias discovery continues on api errors (server 500 for unknown tool)", async () => {
+    const triedTools: string[] = [];
+
+    const caller = createResilientCaller({
+      callTool: async (_server, tool) => {
+        triedTools.push(tool);
+        if (tool === "getConfluenceSpaces") {
+          throw new Error("Internal server error"); // classified as "api", not "not_found"
+        }
+        if (tool === "get_confluence_spaces") {
+          return "found-via-alias";
+        }
+        throw new Error(`Internal server error for ${tool}`);
+      },
+      toolDiscovery: true,
+      baseDelayMs: 10,
+    });
+
+    const result = await caller("atlassian", "getConfluenceSpaces", {});
+    expect(result).toBe("found-via-alias");
+    expect(triedTools).toContain("get_confluence_spaces");
+  });
+});
+
+describe("classifyError regression tests", () => {
+  test("'unsupported API version 3' should NOT be classified as conflict", () => {
+    expect(classifyError("unsupported API version 3")).not.toBe("conflict");
+  });
+
+  test("'MCP protocol version mismatch' should be classified as conflict", () => {
+    // "version mismatch" is a valid conflict phrase
+    expect(classifyError("MCP protocol version mismatch")).toBe("conflict");
+  });
+
+  test("'node version too old' should NOT be classified as conflict", () => {
+    expect(classifyError("node version too old")).not.toBe("conflict");
+  });
+});
+
+describe("friendlyMessage regression tests", () => {
+  test("not_found with alias discovery details preserves the message", () => {
+    const err = new VfsError(
+      "not_found",
+      'Tool "getConfluenceSpaces" not found. Tried aliases: a, b, c. Check mcx ls atlassian.',
+    );
+    const msg = friendlyMessage(err, "clone confluence/FOO");
+    expect(msg).toContain("Tried aliases");
+    expect(msg).toContain("mcx ls atlassian");
+  });
+
+  test("not_found without alias details uses generic message", () => {
+    const err = new VfsError("not_found", "404 Not Found");
+    const msg = friendlyMessage(err, "clone confluence/FOO");
+    expect(msg).toContain("Resource not found");
+    expect(msg).toContain("clone confluence/FOO");
+  });
 });
