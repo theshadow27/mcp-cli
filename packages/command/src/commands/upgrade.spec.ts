@@ -97,7 +97,7 @@ describe("cmdUpgrade --check", () => {
 
 describe("cmdUpgrade (install)", () => {
   afterEach(() => {
-    process.exitCode = undefined;
+    process.exitCode = 0;
   });
 
   test("prints already up to date when no update", async () => {
@@ -215,7 +215,7 @@ describe("cmdUpgrade full flow", () => {
   afterEach(() => {
     options.MCP_CLI_DIR = origMcpCliDir;
     rmSync(tmpDir, { recursive: true, force: true });
-    process.exitCode = undefined;
+    process.exitCode = 0;
   });
 
   async function createTarball(): Promise<Uint8Array> {
