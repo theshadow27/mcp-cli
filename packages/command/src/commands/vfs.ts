@@ -8,7 +8,7 @@
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CloneCache, clone, createConfluenceProvider, pull, push } from "@mcp-cli/clone";
+import { CloneCache, clone, createAsanaProvider, createConfluenceProvider, pull, push } from "@mcp-cli/clone";
 import type { McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError } from "../output";
@@ -120,8 +120,10 @@ function resolveProvider(name: string) {
   switch (name) {
     case "confluence":
       return createConfluenceProvider({ callTool });
+    case "asana":
+      return createAsanaProvider({ callTool });
     default:
-      printError(`Unknown provider: "${name}". Available: confluence`);
+      printError(`Unknown provider: "${name}". Available: confluence, asana`);
       process.exit(1);
   }
 }
@@ -134,35 +136,47 @@ function resolveProviderFromCache(repoDir: string) {
   }
 
   const cache = new CloneCache(cachePath);
-  const scope = cache.findFirstScope("confluence");
+  // Try each known provider
+  const providers = ["confluence", "asana"] as const;
+  let providerName: string | undefined;
+  for (const name of providers) {
+    if (cache.findFirstScope(name)) {
+      providerName = name;
+      break;
+    }
+  }
   cache.close();
 
-  if (!scope) {
+  if (!providerName) {
     printError("No provider scope found in cache.");
     process.exit(1);
   }
 
-  // For now, only Confluence. Extend when more providers land.
-  return createConfluenceProvider({ callTool });
+  return resolveProvider(providerName);
 }
 
 function printUsage(): void {
   process.stderr.write(`mcx vfs — virtual filesystem: clone, sync, and edit remote content locally
 
 Usage:
-  mcx vfs clone confluence <space> [dir]   Clone a Confluence space as a local git repo
+  mcx vfs clone <provider> <scope> [dir]   Clone a remote source as a local git repo
   mcx vfs pull [dir]                       Pull remote changes (incremental)
-  mcx vfs pull --full [dir]                Pull all pages (detects deletions)
+  mcx vfs pull --full [dir]                Pull all items (detects deletions)
   mcx vfs push [dir]                       Push local changes to the remote
   mcx --dry-run vfs push [dir]             Show what would be pushed
 
+Providers:
+  confluence    Clone a Confluence space (scope = space key)
+  asana         Clone an Asana project (scope = project GID)
+
 Options:
-  --cloud-id <id>     Atlassian cloud ID (auto-discovered if omitted)
-  --limit <n>         Max pages to fetch (for testing)
+  --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
+  --limit <n>         Max items to fetch (for testing)
   --full              Force full sync instead of incremental
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo
+  mcx vfs clone asana 1234567890 ~/asana/my-project
   cd ~/atlassian/foo && mcx vfs pull
   $EDITOR some-page.md && mcx vfs push
 `);
