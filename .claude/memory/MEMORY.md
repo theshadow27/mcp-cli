@@ -39,20 +39,10 @@
 - Tag push triggers Release workflow (cross-platform binary builds + GitHub Release).
 - Deleted `version.yml` (was broken: re-created v0.2.0 on every push to main).
 
-## Next Sprint (16)
-- **#697**: Auto-promote ephemeral aliases (deferred from Sprint 15, depends on #696 which is now merged)
-- **#812**: Replace test time budget with hash-based timing cache (P1 — caused $2700 waste in Sprint 15)
-- **jq in `mcx serve`**: Customer-filed issue — see [project_jq_serve_issue.md](project_jq_serve_issue.md)
-- **ACP/OpenCode spikes**: #518, #503 (need validation before impl)
-
-## Completed (Sprint 15, 2026-03-17 — 14 PRs)
-- Ephemeral aliases #696 (2 adversarial reviews, 2 repair rounds, PR #800)
-- Plans tab stabilization: #775, #778, #763, #762, #780, #783, #782, #779
-- Serve/DX: #764, #787, #788
-- Infra: #789 (pre-commit optimization), #784 (double-fire guard)
-
-## Completed (Sprint 14, 2026-03-16 — 14 PRs)
-- P1 serve bug #754, plans tab features #705/#706/#707, verbose/dry-run #90
+## Sprint 31 candidates
+- **#1207**: Human-readable session names (fight bye-reflex via identity anchoring)
+- **#1208**: `mcx claude bye` requires a closing message (friction against premature disposal)
+- **#1206**: core.bare=true recurrence (may be fixed by .gitignore, monitor first)
 
 ## Skills
 - `/sprint` — survey board, pick issues, run full pipeline. Sprint files include timestamps.
