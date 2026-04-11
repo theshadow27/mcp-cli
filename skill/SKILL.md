@@ -30,9 +30,23 @@ mcx claude send <session> <msg>           # send follow-up prompt
 mcx claude bye <session>                  # end a session
 mcx claude log <session>                  # view session transcript
 mcx claude wait <session>                 # wait for session to idle
+mcx claude wait --any                     # race: session idle or work item event
 mcx claude interrupt <session>            # interrupt a running session
 mcx mail -H                               # list inter-session message headers
 mcx mail -s "subject" <recipient>         # send message (body from stdin)
+
+# Work Item Tracking
+mcx track <number>                        # track an issue or PR by number
+mcx track --branch <name>                 # track a branch (before PR exists)
+mcx untrack <number>                      # stop tracking
+mcx tracked                               # list all tracked work items (table)
+mcx tracked --json                        # machine-readable list
+mcx tracked --phase impl                  # filter by phase
+
+# Virtual Filesystem (clone/push/pull remote content)
+mcx vfs clone confluence <space> [dir]   # clone a Confluence space as git repo
+mcx vfs pull [dir]                        # pull remote changes
+mcx vfs push [dir]                        # push local changes back to remote
 
 # Server Management
 mcx status                                # daemon health + server status
@@ -41,6 +55,8 @@ mcx daemon restart                        # restart the daemon
 mcx daemon shutdown                       # stop the daemon
 mcx logs <server>                         # view server stderr output
 mcx install <server>                      # install server from registry
+mcx upgrade                               # install latest mcx release binaries
+mcx upgrade --check                       # check for updates
 mcx config show                           # resolved config
 ```
 

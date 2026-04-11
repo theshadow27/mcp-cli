@@ -27,6 +27,14 @@ $ mcx grep page
 
 ## Install
 
+**One-line installer** (macOS/Linux):
+
+```bash
+curl -fsSL https://github.com/theshadow27/mcp-cli/releases/latest/download/install.sh | sh
+```
+
+Installs `mcx`, `mcpd`, and `mcpctl` to `~/.mcp-cli/bin` and adds it to your PATH.
+
 **From source** (requires [Bun](https://bun.sh)):
 
 ```bash
@@ -34,6 +42,13 @@ git clone https://github.com/theshadow27/mcp-cli.git
 cd mcp-cli
 bun install
 bun run build    # binaries in dist/
+```
+
+### Keeping up to date
+
+```bash
+mcx upgrade              # install latest release
+mcx upgrade --check      # check without installing
 ```
 
 ## Zero Config
@@ -110,6 +125,8 @@ mcx daemon restart                  # restart daemon (kills sessions)
 mcx daemon shutdown                 # stop the daemon (alias: daemon stop)
 mcx shutdown                        # stop the daemon (legacy shorthand)
 mcx version                         # show CLI, daemon, and protocol versions
+mcx upgrade                         # install latest release binaries
+mcx upgrade --check                 # check for updates without installing
 mcx metrics                         # show daemon metrics (Prometheus-style)
 mcx spans                           # list trace spans
 mcx spans prune                     # delete exported spans
@@ -150,6 +167,7 @@ mcx claude spawn -w --task "work in isolation" # start in a git worktree
 mcx claude ls                                  # list active sessions (alias: list)
 mcx claude send <session> <message>            # send follow-up prompt
 mcx claude wait [session]                      # block until session event
+mcx claude wait --any                          # race: session idle or work item event
 mcx claude log <session> [--last N]            # view session transcript
 mcx claude interrupt <session>                 # interrupt current turn
 mcx claude bye <session>                       # end session (alias: quit)
@@ -160,6 +178,22 @@ mcx claude worktrees --prune                   # remove orphaned worktrees + mer
 ```
 
 Session IDs support prefix matching (like git SHAs). Use `--wait` on `spawn` or `send` to block until Claude produces a result. Use `--json` on `ls` or `log` for machine-readable output.
+
+### Agent Sessions
+
+`mcx agent` is the unified command for managing non-Claude agent providers (Codex, ACP, OpenCode, Copilot, Gemini):
+
+```bash
+mcx agent <provider> spawn --task "..."   # start an agent session
+mcx agent <provider> ls                   # list sessions for this provider
+mcx agent <provider> send <session> <msg> # send a message
+mcx agent <provider> wait [session]       # wait for session to idle
+mcx agent <provider> log <session>        # view session transcript
+mcx agent <provider> bye <session>        # end session
+mcx agent <provider> worktrees            # list worktrees for this provider
+```
+
+Supported providers: `codex`, `acp`, `opencode`, `copilot`, `gemini`. Each provider supports the same core subcommands as `mcx claude`.
 
 ### Aliases
 
@@ -217,10 +251,60 @@ mcx config set terminal <name>       # set preferred terminal
 
 Supports: iTerm, Kitty, tmux, WezTerm, Ghostty, Terminal.app. Auto-detects from `$TERM_PROGRAM`.
 
+### Work Item Tracking
+
+Track GitHub issues and PRs through their sprint lifecycle:
+
+```bash
+mcx track <number>               # track an issue or PR by number
+mcx track --branch <name>        # track a branch (before PR exists)
+mcx untrack <number>             # stop tracking by number
+mcx untrack --branch <name>      # stop tracking by branch
+mcx tracked                      # list all tracked work items
+mcx tracked --json               # machine-readable output
+mcx tracked --phase <phase>      # filter by phase (impl/review/repair/qa/done)
+```
+
+### Virtual Filesystem
+
+Clone remote content (e.g. Confluence spaces) as local git repos, edit locally, and push changes back:
+
+```bash
+mcx vfs clone confluence <space> [dir]   # clone a Confluence space
+mcx vfs clone confluence <space> [dir] --cloud-id <id>  # specify cloud ID
+mcx vfs pull [dir]                       # pull remote changes into local repo
+mcx vfs push [dir]                       # push local changes back to remote
+mcx vfs push [dir] --dry-run             # preview push without applying
+```
+
+### Notes
+
+Attach annotations to MCP tools — useful for prompt engineering hints or usage reminders:
+
+```bash
+mcx note set <server>.<tool> "note text"  # attach a note to a tool
+mcx note get <server>.<tool>              # read a note
+mcx note ls                               # list all notes
+mcx note rm <server>.<tool>              # remove a note
+```
+
+### Scopes
+
+Register directory roots by name for use with other commands:
+
+```bash
+mcx scope init [name]            # register current dir as a named scope
+mcx scope ls                     # list all registered scopes
+mcx scope rm <name>              # remove a scope
+```
+
 ### Utilities
 
 ```bash
 mcx serve                           # run mcx as stdio MCP server
+mcx serve kill <pid>                # kill a specific serve instance
+mcx serve kill --all                # kill all serve instances
+mcx serve kill --stale [hours]      # kill instances older than N hours
 mcx typegen                         # generate TypeScript types for aliases
 mcx completions {bash|zsh|fish}     # generate shell completions
 ```
