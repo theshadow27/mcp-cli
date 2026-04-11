@@ -228,6 +228,11 @@ interface BufferedEvent {
   ts: number;
 }
 
+interface BufferedWorkItemEvent {
+  event: WorkItemWaitEvent;
+  ts: number;
+}
+
 interface EventWaiter {
   sessionId: string | null; // null = any session
   resolve: (e: SessionWaitEvent) => void;
@@ -282,6 +287,8 @@ const KEEP_ALIVE_MS = 30_000;
 const WS_OPEN = 1;
 const MAX_EVENT_BUFFER = 1000;
 const EVENT_BUFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_WORK_ITEM_BUFFER = 100;
+const WORK_ITEM_BUFFER_TTL_MS = 60 * 1000; // 1 minute — work item events are polled, not streamed
 
 /** Summarize tool input to a short display string (max 80 chars). */
 export function summarizeInput(input: Record<string, unknown>): string {
@@ -306,6 +313,7 @@ export class ClaudeWsServer {
   private readonly sessions = new Map<string, WsSession>();
   private readonly eventWaiters: EventWaiter[] = [];
   private readonly workItemWaiters: WorkItemWaiter[] = [];
+  private readonly workItemBuffer: BufferedWorkItemEvent[] = [];
   private readonly spawn: SpawnFn;
   private readonly killTimeoutMs: number;
   private readonly portRetryCount: number;
@@ -970,7 +978,7 @@ export class ClaudeWsServer {
    * If a matching session is already idle or has pending permissions, resolves immediately
    * with a synthetic event instead of blocking until timeout.
    */
-  waitForEvent(sessionId: string | null, timeoutMs: number): Promise<SessionWaitEvent> {
+  waitForEvent(sessionId: string | null, timeoutMs: number, signal?: AbortSignal): Promise<SessionWaitEvent> {
     const { error, resolvedId } = this.validateWaitTarget(sessionId);
     if (error) return Promise.reject(error);
 
@@ -996,6 +1004,19 @@ export class ClaudeWsServer {
         }, timeoutMs),
       };
 
+      // Support cancellation via AbortSignal (used by --any race cleanup)
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(waiter.timer);
+            const idx = this.eventWaiters.indexOf(waiter);
+            if (idx >= 0) this.eventWaiters.splice(idx, 1);
+          },
+          { once: true },
+        );
+      }
+
       this.eventWaiters.push(waiter);
     });
   }
@@ -1004,7 +1025,12 @@ export class ClaudeWsServer {
    * Cursor-based event wait: return buffered events after `afterSeq`, or block until one arrives.
    * On timeout, returns `{ seq: currentSeq, events: [] }` instead of throwing.
    */
-  waitForEventsSince(sessionId: string | null, afterSeq: number, timeoutMs: number): Promise<WaitResult> {
+  waitForEventsSince(
+    sessionId: string | null,
+    afterSeq: number,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<WaitResult> {
     const { error, resolvedId } = this.validateWaitTarget(sessionId);
     if (error) return Promise.reject(error);
 
@@ -1043,6 +1069,19 @@ export class ClaudeWsServer {
         }, timeoutMs),
       };
 
+      // Support cancellation via AbortSignal (used by --any race cleanup)
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(waiter.timer);
+            const idx = this.eventWaiters.indexOf(waiter);
+            if (idx >= 0) this.eventWaiters.splice(idx, 1);
+          },
+          { once: true },
+        );
+      }
+
       this.eventWaiters.push(waiter);
     });
   }
@@ -1053,7 +1092,16 @@ export class ClaudeWsServer {
    * Wait for the next work item event matching the given filters.
    * Used by `mcx wait --pr` and `mcx wait --checks`.
    */
-  waitForWorkItemEvent(prNumber: number | null, checksOnly: boolean, timeoutMs: number): Promise<WorkItemWaitEvent> {
+  waitForWorkItemEvent(
+    prNumber: number | null,
+    checksOnly: boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<WorkItemWaitEvent> {
+    // Check buffer for a matching event that arrived before the waiter was registered
+    const buffered = this.findBufferedWorkItemEvent(prNumber, checksOnly);
+    if (buffered) return Promise.resolve(buffered);
+
     return new Promise<WorkItemWaitEvent>((resolve, reject) => {
       const waiter: WorkItemWaiter = {
         prNumber,
@@ -1072,6 +1120,20 @@ export class ClaudeWsServer {
           reject(new WaitTimeoutError(`Timeout waiting for work item event after ${timeoutMs}ms`));
         }, timeoutMs),
       };
+
+      // Support cancellation via AbortSignal (used by --any race cleanup)
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(waiter.timer);
+            const idx = this.workItemWaiters.indexOf(waiter);
+            if (idx >= 0) this.workItemWaiters.splice(idx, 1);
+          },
+          { once: true },
+        );
+      }
+
       this.workItemWaiters.push(waiter);
     });
   }
@@ -1095,6 +1157,37 @@ export class ClaudeWsServer {
     }
     this.workItemWaiters.length = 0;
     this.workItemWaiters.push(...remaining);
+
+    // Buffer the event so waiters registered after dispatch can still see it
+    this.workItemBuffer.push({ event: waitEvent, ts: Date.now() });
+    this.trimWorkItemBuffer();
+  }
+
+  /** Find and consume a buffered work item event matching the given filters. */
+  private findBufferedWorkItemEvent(prNumber: number | null, checksOnly: boolean): WorkItemWaitEvent | null {
+    this.trimWorkItemBuffer();
+    for (let i = 0; i < this.workItemBuffer.length; i++) {
+      const entry = this.workItemBuffer[i];
+      const event = entry.event.workItemEvent;
+      const eventPrNumber = "prNumber" in event ? event.prNumber : null;
+      const matchesPr = prNumber === null || (eventPrNumber !== null && prNumber === eventPrNumber);
+      const matchesChecks = !checksOnly || event.type.startsWith("checks:");
+      if (matchesPr && matchesChecks) {
+        // Consume — remove from buffer so the same event isn't returned twice
+        this.workItemBuffer.splice(i, 1);
+        return entry.event;
+      }
+    }
+    return null;
+  }
+
+  private trimWorkItemBuffer(): void {
+    const cutoff = Date.now() - WORK_ITEM_BUFFER_TTL_MS;
+    let dropCount = Math.max(0, this.workItemBuffer.length - MAX_WORK_ITEM_BUFFER);
+    while (dropCount < this.workItemBuffer.length && this.workItemBuffer[dropCount].ts < cutoff) {
+      dropCount++;
+    }
+    if (dropCount > 0) this.workItemBuffer.splice(0, dropCount);
   }
 
   // ── WebSocket handlers ──

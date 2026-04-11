@@ -433,36 +433,57 @@ async function handleAnyWait(
   const matchesScope = (cwd: string | null | undefined): boolean =>
     cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
 
-  // Create a shared timeout — both waiters race against it
+  // AbortController for cancelling the losing racer after Promise.race settles.
+  // Without this, the loser's internal timeout timer fires and rejects an unobserved
+  // promise, causing an unhandled rejection on every successful --any call.
+  const abort = new AbortController();
+
   const workItemPromise = server
-    .waitForWorkItemEvent(prNumber, checksOnly, timeoutMs)
+    .waitForWorkItemEvent(prNumber, checksOnly, timeoutMs, abort.signal)
     .then((r) => ({ kind: "work_item" as const, result: r }));
 
   type SessionResult = { kind: "session"; result: unknown };
-  const never = new Promise<never>(() => {}); // never resolves — used to let the other racer win
 
   let sessionPromise: Promise<SessionResult>;
   if (afterSeq !== undefined) {
-    sessionPromise = server.waitForEventsSince(sessionId, afterSeq, timeoutMs).then((r) => {
-      if (scopeRoot) {
-        r.events = r.events.filter((e) => matchesScope(e.session?.cwd));
-      } else if (repoRoot) {
-        r.events = r.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+    // Wrap in a re-subscribing loop: if scope/repoRoot filtering empties the result,
+    // re-subscribe with the updated seq instead of returning a never-resolving promise.
+    sessionPromise = (async (): Promise<SessionResult> => {
+      let currentSeq = afterSeq;
+      while (!abort.signal.aborted) {
+        const r = await server.waitForEventsSince(sessionId, currentSeq, timeoutMs, abort.signal);
+        // Advance cursor even if events are filtered — prevents re-reading the same batch
+        currentSeq = r.seq;
+        if (scopeRoot) {
+          r.events = r.events.filter((e) => matchesScope(e.session?.cwd));
+        } else if (repoRoot) {
+          r.events = r.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+        }
+        if (r.events.length > 0) {
+          return { kind: "session" as const, result: r };
+        }
+        // Empty events after filtering = timeout expired with no in-scope events.
+        // If the wait itself timed out (returned empty without blocking), bail out
+        // to let the work item side or overall timeout win.
+        if (r.events.length === 0) {
+          // waitForEventsSince returns empty on timeout — don't loop forever
+          return new Promise<never>(() => {}); // let the other racer or timeout win
+        }
       }
-      // If all events were filtered out, this is effectively a timeout — don't let it win the race
-      if (r.events.length === 0) return never;
-      return { kind: "session" as const, result: r };
-    });
+      // Aborted — return a never-resolving promise (race already settled)
+      return new Promise<never>(() => {});
+    })();
   } else {
     sessionPromise = server
-      .waitForEvent(sessionId, timeoutMs)
+      .waitForEvent(sessionId, timeoutMs, abort.signal)
       .then<SessionResult>((event) => {
-        if (scopeRoot && !matchesScope(event.session?.cwd)) return never;
-        if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot) return never;
+        if (scopeRoot && !matchesScope(event.session?.cwd)) return new Promise<never>(() => {});
+        if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot)
+          return new Promise<never>(() => {});
         return { kind: "session" as const, result: event };
       })
       .catch((err) => {
-        if (err instanceof WaitTimeoutError) return never; // let work item win
+        if (err instanceof WaitTimeoutError) return new Promise<never>(() => {}); // let work item win
         throw err;
       });
   }
@@ -470,6 +491,9 @@ async function handleAnyWait(
   // Race — whichever resolves first wins
   try {
     const winner = await Promise.race([sessionPromise, workItemPromise]);
+
+    // Cancel the loser's timer and remove it from the waiter array
+    abort.abort();
 
     if (winner.kind === "work_item") {
       const wiEvent = winner.result as WorkItemWaitEvent;
@@ -487,10 +511,19 @@ async function handleAnyWait(
       };
     }
 
-    // Session event — preserve existing response shapes
+    // Session event — always include source field for consumer disambiguation
     if (afterSeq !== undefined) {
       return {
-        content: [{ type: "text", text: JSON.stringify(winner.result, null, 2) }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { source: "session", ...(winner.result as object), sessions: server.listSessions() },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     }
     return {
@@ -502,6 +535,7 @@ async function handleAnyWait(
       ],
     };
   } catch (err) {
+    abort.abort();
     if (err instanceof WaitTimeoutError) {
       return {
         content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
