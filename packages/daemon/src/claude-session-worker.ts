@@ -14,13 +14,19 @@
  *   { type: "db:end", sessionId }
  */
 
-import { CLAUDE_SERVER_NAME, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
+import { CLAUDE_SERVER_NAME, type WorkItemEvent, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import { ClaudeWsServer, type WaitResult, WaitTimeoutError, compactifyEntry } from "./claude-session/ws-server";
+import {
+  ClaudeWsServer,
+  type WaitResult,
+  WaitTimeoutError,
+  type WorkItemWaitEvent,
+  compactifyEntry,
+} from "./claude-session/ws-server";
 import { aggregatePlans } from "./plan-aggregator";
 import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
@@ -55,12 +61,18 @@ interface RestoreSessionsMessage {
   }>;
 }
 
-type ControlMessage = InitMessage | ToolsChangedMessage | RestoreSessionsMessage;
+interface WorkItemEventMessage {
+  type: "work_item_event";
+  event: WorkItemEvent;
+}
+
+type ControlMessage = InitMessage | ToolsChangedMessage | RestoreSessionsMessage | WorkItemEventMessage;
 
 const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<ControlMessage["type"]>([
   "init",
   "tools_changed",
   "restore_sessions",
+  "work_item_event",
 ]);
 const isControlMessage = createIsControlMessage<ControlMessage>(CONTROL_MESSAGE_TYPES);
 
@@ -317,10 +329,23 @@ async function handleWait(
   const afterSeq = args.afterSeq as number | undefined;
   const repoRoot = args.repoRoot as string | undefined;
   const scopeRoot = args.scopeRoot as string | undefined;
+  const any = args.any === true;
+  const prNumber = typeof args.pr === "number" ? args.pr : null;
+  const checks = args.checks === true;
 
   /** Check if a session's cwd is within the scope root. */
   const matchesScope = (cwd: string | null | undefined): boolean =>
     cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
+
+  // Work-item-only paths: --pr or --checks without --any
+  if ((prNumber !== null || checks) && !any) {
+    return handleWorkItemWait(server, prNumber, checks, timeoutMs);
+  }
+
+  // --any: race session events against work item events
+  if (any) {
+    return handleAnyWait(server, sessionId, prNumber, checks, timeoutMs, afterSeq, repoRoot, scopeRoot);
+  }
 
   // Cursor-based path: use waitForEventsSince (errors propagate — no session-list fallback)
   if (afterSeq !== undefined) {
@@ -346,9 +371,171 @@ async function handleWait(
       return handleSessionList(server, { repoRoot });
     }
     return {
-      content: [{ type: "text", text: JSON.stringify({ event, sessions: server.listSessions() }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ source: "session", event, sessions: server.listSessions() }, null, 2),
+        },
+      ],
     };
   } catch (err) {
+    if (err instanceof WaitTimeoutError) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
+      };
+    }
+    throw err;
+  }
+}
+
+/** Handle wait for work item events only (--pr or --checks without --any). */
+async function handleWorkItemWait(
+  server: ClaudeWsServer,
+  prNumber: number | null,
+  checksOnly: boolean,
+  timeoutMs: number,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  try {
+    const result = await server.waitForWorkItemEvent(prNumber, checksOnly, timeoutMs);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            { source: "work_item", workItemEvent: result.workItemEvent, sessions: server.listSessions() },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  } catch (err) {
+    if (err instanceof WaitTimeoutError) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
+      };
+    }
+    throw err;
+  }
+}
+
+/** Handle --any: race session events against work item events. */
+async function handleAnyWait(
+  server: ClaudeWsServer,
+  sessionId: string | null,
+  prNumber: number | null,
+  checksOnly: boolean,
+  timeoutMs: number,
+  afterSeq: number | undefined,
+  repoRoot: string | undefined,
+  scopeRoot: string | undefined,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const matchesScope = (cwd: string | null | undefined): boolean =>
+    cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
+
+  // AbortController for cancelling the losing racer after Promise.race settles.
+  // Without this, the loser's internal timeout timer fires and rejects an unobserved
+  // promise, causing an unhandled rejection on every successful --any call.
+  const abort = new AbortController();
+
+  const workItemPromise = server
+    .waitForWorkItemEvent(prNumber, checksOnly, timeoutMs, abort.signal)
+    .then((r) => ({ kind: "work_item" as const, result: r }));
+
+  type SessionResult = { kind: "session"; result: unknown };
+
+  let sessionPromise: Promise<SessionResult>;
+  if (afterSeq !== undefined) {
+    // Wrap in a re-subscribing loop: if scope/repoRoot filtering empties the result,
+    // re-subscribe with the updated seq instead of returning a never-resolving promise.
+    sessionPromise = (async (): Promise<SessionResult> => {
+      let currentSeq = afterSeq;
+      while (!abort.signal.aborted) {
+        const r = await server.waitForEventsSince(sessionId, currentSeq, timeoutMs, abort.signal);
+        // Advance cursor even if events are filtered — prevents re-reading the same batch
+        currentSeq = r.seq;
+        if (scopeRoot) {
+          r.events = r.events.filter((e) => matchesScope(e.session?.cwd));
+        } else if (repoRoot) {
+          r.events = r.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+        }
+        if (r.events.length > 0) {
+          return { kind: "session" as const, result: r };
+        }
+        // Empty events after filtering = timeout expired with no in-scope events.
+        // If the wait itself timed out (returned empty without blocking), bail out
+        // to let the work item side or overall timeout win.
+        if (r.events.length === 0) {
+          // waitForEventsSince returns empty on timeout — don't loop forever
+          return new Promise<never>(() => {}); // let the other racer or timeout win
+        }
+      }
+      // Aborted — return a never-resolving promise (race already settled)
+      return new Promise<never>(() => {});
+    })();
+  } else {
+    sessionPromise = server
+      .waitForEvent(sessionId, timeoutMs, abort.signal)
+      .then<SessionResult>((event) => {
+        if (scopeRoot && !matchesScope(event.session?.cwd)) return new Promise<never>(() => {});
+        if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot)
+          return new Promise<never>(() => {});
+        return { kind: "session" as const, result: event };
+      })
+      .catch((err) => {
+        if (err instanceof WaitTimeoutError) return new Promise<never>(() => {}); // let work item win
+        throw err;
+      });
+  }
+
+  // Race — whichever resolves first wins
+  try {
+    const winner = await Promise.race([sessionPromise, workItemPromise]);
+
+    // Cancel the loser's timer and remove it from the waiter array
+    abort.abort();
+
+    if (winner.kind === "work_item") {
+      const wiEvent = winner.result as WorkItemWaitEvent;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { source: "work_item", workItemEvent: wiEvent.workItemEvent, sessions: server.listSessions() },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    // Session event — always include source field for consumer disambiguation
+    if (afterSeq !== undefined) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { source: "session", ...(winner.result as object), sessions: server.listSessions() },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ source: "session", event: winner.result, sessions: server.listSessions() }, null, 2),
+        },
+      ],
+    };
+  } catch (err) {
+    abort.abort();
     if (err instanceof WaitTimeoutError) {
       return {
         content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
@@ -439,6 +626,8 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
         await mcpServer?.notification({ method: "notifications/tools/list_changed" });
       } else if (data.type === "restore_sessions" && wsServer) {
         wsServer.restoreSessions(data.sessions);
+      } else if (data.type === "work_item_event" && wsServer) {
+        wsServer.dispatchWorkItemEvent(data.event);
       }
       return;
     }

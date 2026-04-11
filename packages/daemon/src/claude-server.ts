@@ -9,7 +9,7 @@
  * Follows the same pattern as AliasServer (alias-server.ts).
  */
 
-import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
+import type { JsonSchema, Logger, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
 import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -402,6 +402,11 @@ export class ClaudeServer {
       this.logger.error(`[claude-server] Cleared ${this.crashTimestamps.length} crash timestamp(s) on stop`);
     }
     this.crashTimestamps.length = 0;
+  }
+
+  /** Forward a work item event from the poller to the session worker. */
+  forwardWorkItemEvent(event: WorkItemEvent): void {
+    this.worker?.postMessage({ type: "work_item_event", event });
   }
 
   /** Get the WebSocket server port (available after start). */

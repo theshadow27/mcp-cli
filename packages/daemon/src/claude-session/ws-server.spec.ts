@@ -3411,4 +3411,88 @@ describe("restoreSessions", () => {
       }
     });
   });
+
+  // ── Work item event support ──
+
+  describe("work item events", () => {
+    test("waitForWorkItemEvent resolves on dispatched event", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      const promise = server.waitForWorkItemEvent(null, false, 5000);
+
+      // Dispatch a work item event
+      server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 42 });
+
+      const result = await promise;
+      expect(result.source).toBe("work_item");
+      expect(result.workItemEvent.type).toBe("checks:passed");
+      expect("prNumber" in result.workItemEvent && result.workItemEvent.prNumber).toBe(42);
+    });
+
+    test("waitForWorkItemEvent filters by PR number", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      // Wait for PR #42 specifically
+      const promise = server.waitForWorkItemEvent(42, false, 5000);
+
+      // Dispatch event for wrong PR — should NOT resolve
+      server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 99 });
+
+      // Dispatch event for correct PR — should resolve
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+
+      const result = await promise;
+      expect(result.workItemEvent.type).toBe("pr:merged");
+      expect("prNumber" in result.workItemEvent && result.workItemEvent.prNumber).toBe(42);
+    });
+
+    test("waitForWorkItemEvent filters checks-only events", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      // Wait for checks events only
+      const promise = server.waitForWorkItemEvent(null, true, 5000);
+
+      // Dispatch non-checks event — should NOT resolve
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+
+      // Dispatch checks event — should resolve
+      server.dispatchWorkItemEvent({ type: "checks:failed", prNumber: 42, failedJob: "test" });
+
+      const result = await promise;
+      expect(result.workItemEvent.type).toBe("checks:failed");
+    });
+
+    test("waitForWorkItemEvent times out", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      await expect(server.waitForWorkItemEvent(null, false, 100)).rejects.toThrow(WaitTimeoutError);
+    });
+
+    test("waitForWorkItemEvent with PR filter and checks-only", async () => {
+      const ms = mockSpawn();
+      server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+      await server.start();
+
+      const promise = server.waitForWorkItemEvent(42, true, 5000);
+
+      // Wrong PR, right type — no match
+      server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 99 });
+      // Right PR, wrong type — no match
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+      // Right PR, right type — match
+      server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 42 });
+
+      const result = await promise;
+      expect(result.workItemEvent.type).toBe("checks:passed");
+      expect("prNumber" in result.workItemEvent && result.workItemEvent.prNumber).toBe(42);
+    });
+  });
 });
