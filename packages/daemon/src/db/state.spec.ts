@@ -1797,8 +1797,19 @@ describe("StateDb", () => {
         "INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at) VALUES ('/repo', 'ns', 'bad', ?, unixepoch())",
         ["{not-json"],
       );
-      expect(db.getAliasState("/repo", "ns", "bad")).toBeUndefined();
-      expect(db.listAliasState("/repo", "ns")).toEqual({ good: 1 });
+      const originalWarn = console.warn;
+      const warned: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        warned.push(args.map(String).join(" "));
+      };
+      try {
+        expect(db.getAliasState("/repo", "ns", "bad")).toBeUndefined();
+        expect(db.listAliasState("/repo", "ns")).toEqual({ good: 1 });
+      } finally {
+        console.warn = originalWarn;
+      }
+      expect(warned.every((l) => l.startsWith("[alias-state] corrupt value_json"))).toBe(true);
+      expect(warned.length).toBeGreaterThan(0);
       db.close();
     });
   });
