@@ -195,6 +195,49 @@ describe("readWorktreeConfig migration (#1288)", () => {
       errSpy.mockRestore();
     }
   });
+  test("migrates legacy .mcx-worktree.json into an existing .mcx.yml manifest", () => {
+    const dir = makeTempDir();
+    const existingYaml = "initial: impl\nphases:\n  impl:\n    source: ./a.ts\n";
+    writeFileSync(join(dir, ".mcx.yml"), existingYaml);
+    const hooks = { setup: "./s.sh", teardown: "./t.sh" };
+    writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: hooks }));
+
+    expect(readWorktreeConfig(dir)).toEqual(hooks);
+
+    const updated = readFileSync(join(dir, ".mcx.yml"), "utf-8");
+    expect(updated.startsWith(existingYaml)).toBe(true);
+    expect(updated).toContain("worktree:");
+    expect(updated).toContain('setup: "./s.sh"');
+    expect(updated).toContain('teardown: "./t.sh"');
+    // .mcx.yaml should NOT be created
+    expect(existsSync(join(dir, ".mcx.yaml"))).toBe(false);
+  });
+
+  test("skips migration and warns when manifest exists but is unparseable", () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, ".mcx.yaml"), "{ invalid yaml: [unterminated");
+    const hooks = { setup: "./s.sh" };
+    writeFileSync(join(dir, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: hooks }));
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = readWorktreeConfig(dir);
+      // Returns legacy config, does not migrate
+      expect(result).toEqual(hooks);
+      // Warns user about the broken manifest
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      const msg = String(errSpy.mock.calls[0]?.[0]);
+      expect(msg).toContain(".mcx.yaml");
+      expect(msg).toContain("could not be parsed");
+      // Broken manifest is untouched (not overwritten)
+      const unchanged = readFileSync(join(dir, ".mcx.yaml"), "utf-8");
+      expect(unchanged).toBe("{ invalid yaml: [unterminated");
+      // No shadow .mcx.yaml created alongside .mcx.json
+      expect(existsSync(join(dir, ".mcx.json"))).toBe(false);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });
 
 describe("resolveWorktreeBase", () => {

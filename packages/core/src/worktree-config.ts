@@ -7,7 +7,7 @@
  * and a nag is emitted on every subsequent run until the user removes it.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { MANIFEST_FILENAMES, findManifest, parseManifestText } from "./manifest";
@@ -63,25 +63,45 @@ function readLegacyFile(repoRoot: string): WorktreeHooksConfig | null {
   }
 }
 
+/**
+ * Atomically write `content` to `filePath` via a sibling temp file.
+ * Prevents truncated-file corruption on SIGKILL / disk-full mid-write.
+ */
+function atomicWrite(filePath: string, content: string): void {
+  const tmp = `${filePath}.tmp.${process.pid}`;
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // ignore cleanup failure
+    }
+    throw err;
+  }
+}
+
 /** Read the manifest's `worktree:` key without full validation. */
 function readManifestWorktree(manifestPath: string): {
   worktree: WorktreeHooksConfig | null;
   raw: Record<string, unknown> | null;
+  parseError: boolean;
 } {
   try {
     const text = readFileSync(manifestPath, "utf-8");
     const parsed = parseManifestText(text, manifestPath);
     if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { worktree: null, raw: null };
+      return { worktree: null, raw: null, parseError: false };
     }
     const raw = parsed as Record<string, unknown>;
     const w = raw.worktree;
     if (w && typeof w === "object" && !Array.isArray(w)) {
-      return { worktree: w as WorktreeHooksConfig, raw };
+      return { worktree: w as WorktreeHooksConfig, raw, parseError: false };
     }
-    return { worktree: null, raw };
+    return { worktree: null, raw, parseError: false };
   } catch {
-    return { worktree: null, raw: null };
+    return { worktree: null, raw: null, parseError: true };
   }
 }
 
@@ -90,19 +110,19 @@ function appendWorktreeToYaml(manifestPath: string, config: WorktreeHooksConfig)
   const existing = readFileSync(manifestPath, "utf-8");
   const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
   const block = serializeWorktreeBlock(config);
-  writeFileSync(manifestPath, `${existing}${sep}${block}\n`);
+  atomicWrite(manifestPath, `${existing}${sep}${block}\n`);
 }
 
 /** Merge a worktree section into an existing JSON manifest. */
 function mergeWorktreeIntoJson(manifestPath: string, raw: Record<string, unknown>, config: WorktreeHooksConfig): void {
   raw.worktree = config;
-  writeFileSync(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
+  atomicWrite(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
 }
 
 /** Create a new `.mcx.yaml` in repoRoot holding just the worktree section. */
 function createYamlWithWorktree(repoRoot: string, config: WorktreeHooksConfig): string {
   const newPath = join(repoRoot, MANIFEST_FILENAMES[0]);
-  writeFileSync(newPath, `${serializeWorktreeBlock(config)}\n`);
+  atomicWrite(newPath, `${serializeWorktreeBlock(config)}\n`);
   return newPath;
 }
 
@@ -138,9 +158,11 @@ export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null
   const legacyConfig = legacyExists ? readLegacyFile(repoRoot) : null;
 
   const manifestPath = findManifest(repoRoot);
-  const { worktree: manifestWorktree, raw: manifestRaw } = manifestPath
-    ? readManifestWorktree(manifestPath)
-    : { worktree: null, raw: null };
+  const {
+    worktree: manifestWorktree,
+    raw: manifestRaw,
+    parseError,
+  } = manifestPath ? readManifestWorktree(manifestPath) : { worktree: null, raw: null, parseError: false };
 
   if (manifestWorktree) {
     if (legacyExists) emitNag(legacyPath, manifestPath as string);
@@ -148,6 +170,14 @@ export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null
   }
 
   if (legacyConfig) {
+    if (manifestPath && parseError) {
+      // Manifest exists but couldn't be parsed — don't risk overwriting or shadowing it.
+      // Surface the problem and return legacy config without migrating.
+      console.error(
+        `Warning: ${manifestPath} could not be parsed; skipping worktree migration. Fix the manifest first.`,
+      );
+      return legacyConfig;
+    }
     if (manifestPath && manifestRaw) {
       if (manifestPath.toLowerCase().endsWith(".json")) {
         mergeWorktreeIntoJson(manifestPath, manifestRaw, legacyConfig);
