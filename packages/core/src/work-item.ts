@@ -57,7 +57,7 @@ export type WorkItemEvent =
  * and any active phase can jump to done (e.g. issue dropped or PR merged).
  */
 const VALID_TRANSITIONS: Record<WorkItemPhase, ReadonlySet<WorkItemPhase>> = {
-  impl: new Set(["review", "done"]),
+  impl: new Set(["review", "qa", "done"]),
   review: new Set(["repair", "qa", "done"]),
   repair: new Set(["review", "done"]),
   qa: new Set(["repair", "done"]),

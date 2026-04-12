@@ -4,6 +4,7 @@ import { WORK_ITEM_PHASES, type WorkItemPhase, canTransition, createWorkItem, re
 describe("canTransition", () => {
   const allowed: [WorkItemPhase, WorkItemPhase][] = [
     ["impl", "review"],
+    ["impl", "qa"],
     ["impl", "done"],
     ["review", "repair"],
     ["review", "qa"],
@@ -22,7 +23,6 @@ describe("canTransition", () => {
 
   const forbidden: [WorkItemPhase, WorkItemPhase][] = [
     ["impl", "repair"],
-    ["impl", "qa"],
     ["impl", "impl"],
     ["review", "impl"],
     ["review", "review"],
@@ -46,8 +46,8 @@ describe("canTransition", () => {
 });
 
 describe("reachablePhases", () => {
-  it("returns review and done from impl", () => {
-    expect([...reachablePhases("impl")].sort()).toEqual(["done", "review"]);
+  it("returns review, qa, and done from impl", () => {
+    expect([...reachablePhases("impl")].sort()).toEqual(["done", "qa", "review"]);
   });
 
   it("returns nothing from done", () => {
