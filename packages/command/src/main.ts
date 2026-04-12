@@ -34,6 +34,7 @@ import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
 import { cmdGet } from "./commands/get";
+import { isGitRemoteHelperInvocation, runGitRemoteHelper } from "./commands/git-remote-helper";
 import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
@@ -95,6 +96,14 @@ import { searchRegistry } from "./registry/client";
 let _dryRun = false;
 
 async function main(): Promise<void> {
+  // When invoked via the `git-remote-mcx` symlink, git passes the remote
+  // name + URL on argv and drives the helper protocol on stdin/stdout.
+  // This check must run before any normal CLI dispatch.
+  if (isGitRemoteHelperInvocation(process.argv[1] ?? "")) {
+    await runGitRemoteHelper();
+    return;
+  }
+
   checkDeprecatedName(process.argv[1] ?? "");
   const args = process.argv.slice(2);
 
