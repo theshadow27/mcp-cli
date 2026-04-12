@@ -870,6 +870,23 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
     }
   });
 
+  test("--worktree uses getGitRoot for repoRoot (#1243)", async () => {
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const callTool = mock(async () => toolResult({ sessionId: "s1" }));
+    const getGitRoot = mock(() => "/resolved/repo/root");
+    const deps = makeDeps({ exec, callTool, getGitRoot });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--worktree", "my-feat"], deps);
+      const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+      expect(toolCalls[0][1].repoRoot).toBe("/resolved/repo/root");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("cleans up worktree when IPC callTool fails (#1116)", async () => {
     const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const callTool = mock(async () => {

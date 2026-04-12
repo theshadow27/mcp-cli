@@ -380,7 +380,10 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   let worktreeResult: { path: string } | undefined;
   if (parsed.worktree) {
     try {
-      const wt = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "claude/" }, d);
+      // Prefer getGitRoot() so repoRoot resolves to the main repo even when
+      // invoked from a worktree or when core.bare=true is set (#1243).
+      const repoRoot = d.getGitRoot() ?? process.cwd();
+      const wt = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "claude/" }, d);
       Object.assign(toolArgs, wt.toolArgs);
       worktreeResult = wt;
     } catch (e) {
@@ -420,7 +423,8 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   let cwd = parsed.cwd;
   if (parsed.worktree) {
     try {
-      const result = createWorktree({ name: parsed.worktree, repoRoot: process.cwd(), branchPrefix: "headed/" }, d);
+      const repoRoot = d.getGitRoot() ?? process.cwd();
+      const result = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "headed/" }, d);
       cwd = result.path;
     } catch (e) {
       d.printError(e instanceof WorktreeError ? e.message : String(e));

@@ -521,7 +521,10 @@ async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProvider,
 
 /** Set up a worktree for spawn — shared logic across all providers. */
 function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, d: AgentDeps): void {
-  const repoRoot = d.getCwd();
+  // Prefer getGitRoot() over getCwd(): it resolves to the main repo even when
+  // invoked from a worktree, and works when core.bare=true is set on the
+  // ambient repo (see #1243, #1206).
+  const repoRoot = d.getGitRoot() ?? d.getCwd();
   const wtConfig = readWorktreeConfig(repoRoot);
 
   if (hasWorktreeHooks(wtConfig)) {
@@ -552,7 +555,11 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
     toolArgs.repoRoot = repoRoot;
     d.printError(`Created worktree: ${worktreePath}`);
   } else {
+    // Native worktree path (provider creates the worktree itself). We still
+    // record repoRoot so session scoping, hook lookup at teardown, and
+    // cross-repo filters work correctly (#1243).
     toolArgs.worktree = worktreeName;
+    toolArgs.repoRoot = repoRoot;
   }
 }
 
