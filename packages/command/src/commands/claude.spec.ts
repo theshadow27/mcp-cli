@@ -2523,6 +2523,35 @@ describe("mcx claude wait", () => {
     }
   });
 
+  test("passes through event when session has null repoRoot and null cwd under no filter (#1308)", async () => {
+    // Ghost sessions (crashed workers, recorded before cwd was set) have both
+    // repoRoot and cwd null. They must still surface when no --repo/--scope filter
+    // is active, so the caller can observe and clean them up.
+    const ghostEvent = {
+      source: "session",
+      event: {
+        sessionId: "dead0000-cafe-babe-dead-000000000000",
+        event: "session:result",
+        session: { sessionId: "dead0000-cafe-babe-dead-000000000000", repoRoot: null, cwd: null },
+      },
+      sessions: [],
+    };
+    const callTool = mock(async () => toolResult(ghostEvent));
+    // No getGitRoot override — defaults to null, meaning no repo filter is applied
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      expect(logSpy.mock.calls.length).toBe(1);
+      expect((logSpy.mock.calls[0] as string[])[0]).toContain("dead0000");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   // ── old daemon compat (pre-unification response shapes) ──
 
   test("--short handles bare event object from old daemon", async () => {

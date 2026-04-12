@@ -243,7 +243,10 @@ async function handlePrompt(
  * Check if a session's cwd is within the scope root.
  * Returns true when scopeRoot is undefined (no filter).
  */
-function matchesScopeRoot(session: Pick<SessionInfo, "cwd"> | undefined, scopeRoot: string | undefined): boolean {
+export function matchesScopeRoot(
+  session: Pick<SessionInfo, "cwd"> | undefined,
+  scopeRoot: string | undefined,
+): boolean {
   if (!scopeRoot) return true;
   if (!session) return false;
   const cwd = session.cwd;
@@ -255,7 +258,7 @@ function matchesScopeRoot(session: Pick<SessionInfo, "cwd"> | undefined, scopeRo
  * Falls back to cwd prefix for sessions missing repoRoot (fixes #1242, #1308).
  * Returns true when repoRoot is undefined (no filter).
  */
-function matchesRepoRoot(
+export function matchesRepoRoot(
   session: Pick<SessionInfo, "cwd" | "repoRoot"> | undefined,
   repoRoot: string | undefined,
 ): boolean {
