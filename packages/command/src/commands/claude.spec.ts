@@ -2433,6 +2433,96 @@ describe("mcx claude wait", () => {
     }
   });
 
+  // ── cross-repo event leak (#1308) ──
+
+  test("drops single event whose session has foreign repoRoot (#1308)", async () => {
+    // Daemon wakeup returns an event with a cross-repo session snapshot. The
+    // client must drop the event rather than surfacing it on --short output.
+    const leakedEvent = {
+      source: "session",
+      event: {
+        sessionId: "ff008800-aaaa-bbbb-cccc-dddddddddddd",
+        event: "session:result",
+        session: { sessionId: "ff008800-aaaa-bbbb-cccc-dddddddddddd", repoRoot: "/repo/b", cwd: "/repo/b" },
+      },
+      sessions: [],
+    };
+    const callTool = mock(async () => toolResult(leakedEvent));
+    const deps = makeDeps({ callTool, getGitRoot: mock(() => "/repo/a") });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      for (const call of logSpy.mock.calls as string[][]) {
+        expect(call[0]).not.toContain("ff008800");
+      }
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("drops event when session has null repoRoot but cwd is in another repo (#1308)", async () => {
+    // Session missing repoRoot (core.bare ambient repo — #1243) must still be
+    // filtered by cwd prefix so wait does not leak cross-repo wakeups.
+    const leakedEvent = {
+      source: "session",
+      event: {
+        sessionId: "ff008800-aaaa-bbbb-cccc-dddddddddddd",
+        event: "session:result",
+        session: { sessionId: "ff008800-aaaa-bbbb-cccc-dddddddddddd", repoRoot: null, cwd: "/repo/b/sub" },
+      },
+      sessions: [],
+    };
+    const callTool = mock(async () => toolResult(leakedEvent));
+    const deps = makeDeps({ callTool, getGitRoot: mock(() => "/repo/a") });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      for (const call of logSpy.mock.calls as string[][]) {
+        expect(call[0]).not.toContain("ff008800");
+      }
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("keeps event when session matches repo via cwd fallback (#1308)", async () => {
+    // Mirror of the drop case: null repoRoot + matching cwd must still surface.
+    const inScopeEvent = {
+      source: "session",
+      event: {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+        event: "session:result",
+        cost: 0.01,
+        numTurns: 1,
+        session: {
+          sessionId: "abc12345-1111-2222-3333-444444444444",
+          repoRoot: null,
+          cwd: "/repo/a/worktree",
+        },
+      },
+      sessions: [],
+    };
+    const callTool = mock(async () => toolResult(inScopeEvent));
+    const deps = makeDeps({ callTool, getGitRoot: mock(() => "/repo/a") });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
+      expect(logSpy.mock.calls.length).toBe(1);
+      expect((logSpy.mock.calls[0] as string[])[0]).toContain("abc12345");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   // ── old daemon compat (pre-unification response shapes) ──
 
   test("--short handles bare event object from old daemon", async () => {

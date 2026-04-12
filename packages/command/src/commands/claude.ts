@@ -1514,19 +1514,33 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       workItemEvent?: Record<string, unknown>;
       sessions: Array<Record<string, unknown>>;
     };
+    const matchesRepo = (s: Record<string, unknown>): boolean => {
+      if (!repoFilter) return true;
+      if (typeof s.repoRoot === "string") return s.repoRoot === repoFilter;
+      // Legacy sessions without repoRoot: fall back to cwd prefix match (fixes #1242)
+      const cwd = typeof s.cwd === "string" ? s.cwd : null;
+      return cwd !== null && (cwd === repoFilter || cwd.startsWith(`${repoFilter}/`));
+    };
+    const matchesScope = (s: Record<string, unknown>): boolean => {
+      if (!scopeFilter) return true;
+      const cwd = typeof s.cwd === "string" ? s.cwd : null;
+      return cwd !== null && (cwd === scopeFilter || cwd.startsWith(`${scopeFilter}/`));
+    };
     if (repoFilter) {
-      unified.sessions = unified.sessions.filter((s) => {
-        if (s.repoRoot) return s.repoRoot === repoFilter;
-        // Legacy sessions without repoRoot: fall back to cwd prefix match (fixes #1242)
-        const cwd = typeof s.cwd === "string" ? s.cwd : null;
-        return cwd !== null && (cwd === repoFilter || cwd.startsWith(`${repoFilter}/`));
-      });
-      // Filter event if its session snapshot is from another repo
-      if (unified.event?.session) {
-        const eventRepo = (unified.event.session as Record<string, unknown>).repoRoot;
-        if (eventRepo && eventRepo !== repoFilter) {
-          unified.event = undefined;
-        }
+      unified.sessions = unified.sessions.filter(matchesRepo);
+    } else if (scopeFilter) {
+      unified.sessions = unified.sessions.filter(matchesScope);
+    }
+    // Filter event if its session snapshot is from another repo/scope (fixes #1308).
+    // Drop events without session info when any filter is active — we can't verify scope.
+    if (unified.event && (repoFilter || scopeFilter)) {
+      const session = unified.event.session as Record<string, unknown> | undefined;
+      if (!session) {
+        unified.event = undefined;
+      } else if (repoFilter && !matchesRepo(session)) {
+        unified.event = undefined;
+      } else if (scopeFilter && !matchesScope(session)) {
+        unified.event = undefined;
       }
     }
     if (!parsed.short) {
