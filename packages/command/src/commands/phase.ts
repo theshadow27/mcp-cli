@@ -297,7 +297,15 @@ export function phaseRun(
   return { manifest, forced: decision.forced, from: decision.from };
 }
 
-export type DriftKind = "manifest" | "phase-source" | "phase-missing" | "phase-extra";
+export type DriftKind = "manifest" | "phase-source" | "phase-missing" | "phase-extra" | "corrupt-lockfile";
+
+export interface DriftDeps {
+  loadManifest: typeof loadManifest;
+  hashFileSync: typeof hashFileSync;
+  readFileSync: (path: string) => string;
+  existsSync: (path: string) => boolean;
+  cwd: () => string;
+}
 
 export interface DriftEntry {
   kind: DriftKind;
@@ -315,10 +323,11 @@ export type DriftResult =
 /**
  * Detect drift between `.mcx.lock` and the on-disk manifest + phase sources.
  *
- * Called before phase dispatch. Any mismatch aborts execution — the operator
- * must review the diff and re-run `mcx phase install` explicitly.
+ * Must be called before phase dispatch. Any mismatch aborts execution — the
+ * operator must review the diff and re-run `mcx phase install` explicitly.
  */
-export function detectDrift(cwd: string, deps: PhaseInstallDeps): DriftResult {
+export function detectDrift(deps: DriftDeps): DriftResult {
+  const cwd = deps.cwd();
   const lockPath = resolvePath(cwd, LOCKFILE_NAME);
   if (!deps.existsSync(lockPath)) return { status: "no-lockfile" };
 
@@ -333,7 +342,7 @@ export function detectDrift(cwd: string, deps: PhaseInstallDeps): DriftResult {
       status: "drift",
       entries: [
         {
-          kind: "manifest",
+          kind: "corrupt-lockfile",
           path: LOCKFILE_NAME,
           expected: "valid lockfile",
           actual: err instanceof Error ? err.message : String(err),
@@ -447,11 +456,14 @@ function labelFor(kind: DriftKind): string {
       return "NOT INSTALLED";
     case "phase-extra":
       return "STALE LOCK ENTRY";
+    case "corrupt-lockfile":
+      return "CORRUPT LOCKFILE";
   }
 }
 
 function shortHash(s: string): string {
-  return /^[a-f0-9]{64}$/.test(s) ? s.slice(0, 6) : s;
+  if (/^[a-f0-9]{40,}$/.test(s)) return s.slice(0, 6);
+  return s.length > 40 ? `${s.slice(0, 37)}...` : s;
 }
 
 export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>): Promise<void> {
@@ -498,8 +510,7 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
     }
 
     if (sub === "check") {
-      const cwd = d.cwd();
-      const result = detectDrift(cwd, d);
+      const result = detectDrift(d);
       switch (result.status) {
         case "no-lockfile":
           d.logError(`no ${LOCKFILE_NAME} — run \`mcx phase install\` to create one`);

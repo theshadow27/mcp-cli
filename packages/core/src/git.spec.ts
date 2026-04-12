@@ -126,6 +126,10 @@ function cleanGitEnv(): Record<string, string | undefined> {
 }
 
 describe("findGitRoot", () => {
+  // Strip hook-injected git env vars so fixture git calls work even under pre-commit.
+  const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_INDEX_FILE: _i, ...cleanEnv } = process.env;
+  const gitOpts = { env: cleanEnv, stdout: "ignore" as const, stderr: "ignore" as const };
+
   test("returns the repo root from a subdirectory inside a real repo", () => {
     const repo = mkdtempSync(join(tmpdir(), "git-root-"));
     try {
@@ -146,6 +150,42 @@ describe("findGitRoot", () => {
       expect(findGitRoot(dir)).toBeNull();
     } finally {
       rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("returns main checkout root from inside a linked worktree", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-wt-main-"));
+    const wt = join(repo, "linked-wt");
+    try {
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], gitOpts);
+      Bun.spawnSync(["git", "-C", repo, "commit", "--allow-empty", "-m", "init", "-q"], {
+        ...gitOpts,
+        env: {
+          ...cleanEnv,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@t",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@t",
+        },
+      });
+      Bun.spawnSync(["git", "-C", repo, "worktree", "add", wt, "-b", "wt-branch", "-q"], gitOpts);
+      const got = findGitRoot(wt);
+      expect(got).not.toBeNull();
+      // The linked worktree's common-dir parent should equal the main checkout.
+      expect(got && (got === repo || got.endsWith(repo.replace(/^\/private/, "")))).toBeTruthy();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("returns git directory for a bare repo", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-bare-"));
+    try {
+      Bun.spawnSync(["git", "-C", repo, "init", "--bare", "-q"], gitOpts);
+      const got = findGitRoot(repo);
+      expect(got).not.toBeNull();
+    } finally {
+      rmSync(repo, { recursive: true });
     }
   });
 });

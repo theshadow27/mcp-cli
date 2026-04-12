@@ -706,7 +706,7 @@ describe("detectDrift", () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("no-lockfile");
   });
 
@@ -714,14 +714,14 @@ describe("detectDrift", () => {
     await installFixture();
     rmSync(join(dir, ".mcx.yaml"));
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("no-manifest");
   });
 
   test("reports ok when nothing changed", async () => {
     await installFixture();
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("ok");
   }, 15_000);
 
@@ -729,7 +729,7 @@ describe("detectDrift", () => {
     await installFixture();
     writeFileSync(join(dir, ".mcx.yaml"), `${simpleManifest}\n# change\n`);
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
       expect(result.entries.some((e) => e.kind === "manifest")).toBe(true);
@@ -740,7 +740,7 @@ describe("detectDrift", () => {
     await installFixture();
     writeFileSync(join(dir, "impl.ts"), `${simpleAlias}\n// mutated\n`);
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
       const phase = result.entries.find((e) => e.kind === "phase-source");
@@ -749,14 +749,14 @@ describe("detectDrift", () => {
     }
   }, 15_000);
 
-  test("detects lockfile corruption as manifest drift", async () => {
+  test("detects lockfile corruption as corrupt-lockfile", async () => {
     await installFixture();
     writeFileSync(join(dir, ".mcx.lock"), "{ not json");
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
-      expect(result.entries[0].kind).toBe("manifest");
+      expect(result.entries[0].kind).toBe("corrupt-lockfile");
     }
   }, 15_000);
 
@@ -764,7 +764,7 @@ describe("detectDrift", () => {
     await installFixture();
     rmSync(join(dir, "impl.ts"));
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
       expect(result.entries.some((e) => e.kind === "phase-source" && e.actual.includes("missing"))).toBe(true);
@@ -785,7 +785,7 @@ phases:
 `;
     writeFileSync(join(dir, ".mcx.yaml"), twoPhaseManifest);
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
       expect(result.entries.some((e) => e.kind === "phase-missing")).toBe(true);
@@ -800,7 +800,7 @@ phases:
     const minimalManifest = "initial: other\nphases:\n  other:\n    source: ./impl.ts\n    next: []\n";
     writeFileSync(join(dir, ".mcx.yaml"), minimalManifest);
     const { deps } = makeDriftDeps(dir);
-    const result = detectDrift(dir, deps);
+    const result = detectDrift(deps);
     expect(result.status).toBe("drift");
     if (result.status === "drift") {
       expect(result.entries.some((e) => e.kind === "phase-extra")).toBe(true);
@@ -813,7 +813,7 @@ phases:
     const { deps: reDeps } = makeDriftDeps(dir);
     await cmdPhase(["install"], reDeps);
     const { deps: checkDeps } = makeDriftDeps(dir);
-    expect(detectDrift(dir, checkDeps).status).toBe("ok");
+    expect(detectDrift(checkDeps).status).toBe("ok");
   }, 20_000);
 });
 
@@ -840,6 +840,36 @@ describe("formatDriftWarning", () => {
     expect(msg).toContain("malicious PR");
     expect(msg).toContain("mcx phase install");
     expect(msg).not.toMatch(/run `mcx phase install` to fix/);
+  });
+
+  test("labels phase-missing as NOT INSTALLED", () => {
+    const msg = formatDriftWarning([
+      { kind: "phase-missing", path: "phases/qa.ts", expected: 'phase "qa" in lockfile', actual: "(not installed)" },
+    ]);
+    expect(msg).toContain("NOT INSTALLED");
+  });
+
+  test("labels phase-extra as STALE LOCK ENTRY", () => {
+    const msg = formatDriftWarning([
+      { kind: "phase-extra", path: "phases/old.ts", expected: "(not in manifest)", actual: 'phase "old" in lockfile' },
+    ]);
+    expect(msg).toContain("STALE LOCK ENTRY");
+  });
+
+  test("labels corrupt-lockfile as CORRUPT LOCKFILE", () => {
+    const msg = formatDriftWarning([
+      { kind: "corrupt-lockfile", path: ".mcx.lock", expected: "valid lockfile", actual: "Unexpected token" },
+    ]);
+    expect(msg).toContain("CORRUPT LOCKFILE");
+  });
+
+  test("truncates long non-hex actual values", () => {
+    const longErr = "x".repeat(80);
+    const msg = formatDriftWarning([
+      { kind: "corrupt-lockfile", path: ".mcx.lock", expected: "valid lockfile", actual: longErr },
+    ]);
+    expect(msg).not.toContain(longErr);
+    expect(msg).toContain("...");
   });
 });
 
