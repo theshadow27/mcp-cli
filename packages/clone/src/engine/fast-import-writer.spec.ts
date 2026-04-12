@@ -107,6 +107,135 @@ describe("generateFastImport", () => {
     expect(stream).toContain("committer Alice <alice@example.com> 1700000000 +0000\n");
   });
 
+  test("paths with special characters are C-quoted", () => {
+    const { stream } = generateFastImport({
+      entries: [
+        { path: 'weird"name.md', content: "x" },
+        { path: "with\nnewline.md", content: "y" },
+        { path: "with\ttab.md", content: "z" },
+        { path: "back\\slash.md", content: "w" },
+      ],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    expect(stream).toContain('M 100644 :1 "weird\\"name.md"\n');
+    expect(stream).toContain('M 100644 :2 "with\\nnewline.md"\n');
+    expect(stream).toContain('M 100644 :3 "with\\ttab.md"\n');
+    expect(stream).toContain('M 100644 :4 "back\\\\slash.md"\n');
+  });
+
+  test("paths with spaces pass through unquoted (spec allows it)", () => {
+    const { stream } = generateFastImport({
+      entries: [{ path: "my file.md", content: "x" }],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    expect(stream).toContain("M 100644 :1 my file.md\n");
+  });
+
+  test("paths starting with double-quote are quoted", () => {
+    const { stream } = generateFastImport({
+      entries: [{ path: '"leading.md', content: "x" }],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    expect(stream).toContain('M 100644 :1 "\\"leading.md"\n');
+  });
+
+  test("empty entries + parent throws (would wipe branch)", () => {
+    expect(() =>
+      generateFastImport({
+        entries: [],
+        ref: "refs/heads/main",
+        message: "m",
+        parent: ":5",
+      }),
+    ).toThrow(/branch-wiping/);
+  });
+
+  test("empty entries without parent is allowed (initial empty commit is fine to skip guard)", () => {
+    // No parent means this is just an orphan commit on a ref with no blobs —
+    // not the branch-wiping case. Should not throw.
+    const { stream } = generateFastImport({
+      entries: [],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    expect(stream).toContain("commit refs/heads/main\n");
+  });
+
+  test("commitMark colliding with blob range throws", () => {
+    expect(() =>
+      generateFastImport({
+        entries: [
+          { path: "a", content: "A" },
+          { path: "b", content: "B" },
+        ],
+        ref: "refs/heads/main",
+        message: "m",
+        startMark: 1,
+        commitMark: 1,
+      }),
+    ).toThrow(/collides/);
+  });
+
+  test("commitMark outside blob range is accepted", () => {
+    const { commitMark } = generateFastImport({
+      entries: [{ path: "a", content: "A" }],
+      ref: "refs/heads/main",
+      message: "m",
+      startMark: 1,
+      commitMark: 99,
+    });
+    expect(commitMark).toBe(99);
+  });
+
+  test("round-trip: path with space survives git fast-import", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-sp-"));
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      const { stream } = generateFastImport({
+        entries: [{ path: "my file.md", content: "hi\n" }],
+        ref: "refs/heads/main",
+        message: "m",
+        timestamp: 1700000000,
+      });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream });
+      expect(r.status).toBe(0);
+      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:my file.md"]);
+      expect(show.status).toBe(0);
+      expect(show.stdout.toString()).toBe("hi\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("round-trip: quoted path with double-quote survives git fast-import", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-q-"));
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      const { stream } = generateFastImport({
+        entries: [{ path: 'weird"name.md', content: "ok\n" }],
+        ref: "refs/heads/main",
+        message: "m",
+        timestamp: 1700000000,
+      });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream });
+      expect(r.status).toBe(0);
+      const show = spawnSync("git", ["-C", dir, "show", 'refs/heads/main:weird"name.md']);
+      expect(show.status).toBe(0);
+      expect(show.stdout.toString()).toBe("ok\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("round-trip: git fast-import reproduces the commit and content", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;

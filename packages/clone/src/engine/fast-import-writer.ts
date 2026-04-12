@@ -40,6 +40,30 @@ export interface GenerateFastImportResult {
 }
 
 /**
+ * C-quote a path per the fast-import spec. Paths containing control characters,
+ * backslashes, or double quotes — or paths starting with `"` — must be quoted.
+ * Regular paths (including those with spaces) pass through unchanged.
+ */
+function quoteFastImportPath(path: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control chars is the point
+  const needsQuoting = /[\x00-\x1f"\\]/.test(path) || path.startsWith('"');
+  if (!needsQuoting) return path;
+  let out = '"';
+  for (let i = 0; i < path.length; i++) {
+    const ch = path[i];
+    const code = path.charCodeAt(i);
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (code < 0x20) out += `\\${code.toString(8).padStart(3, "0")}`;
+    else out += ch;
+  }
+  return `${out}"`;
+}
+
+/**
  * Generate a fast-import stream. Pure function — same inputs produce the same output.
  */
 export function generateFastImport(opts: GenerateFastImportOptions): GenerateFastImportResult {
@@ -48,6 +72,23 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   const committerEmail = opts.committerEmail ?? "mcx@local";
   const timestamp = opts.timestamp ?? 0;
   const encoder = new TextEncoder();
+
+  // Guard: empty entries + parent would emit `deleteall` with no M lines,
+  // silently replacing the branch tip with an empty tree.
+  if (opts.entries.length === 0 && opts.parent) {
+    throw new Error("generateFastImport: refusing to emit branch-wiping commit (entries is empty but parent is set)");
+  }
+
+  const resolvedCommitMark = opts.commitMark ?? startMark + opts.entries.length;
+  // Guard: caller-supplied commitMark must not overlap the blob mark range.
+  if (opts.commitMark !== undefined && opts.entries.length > 0) {
+    const lastBlobMark = startMark + opts.entries.length - 1;
+    if (opts.commitMark >= startMark && opts.commitMark <= lastBlobMark) {
+      throw new Error(
+        `generateFastImport: commitMark ${opts.commitMark} collides with blob mark range :${startMark}..:${lastBlobMark}`,
+      );
+    }
+  }
 
   const parts: string[] = [];
   const marks: Record<string, number> = {};
@@ -59,12 +100,11 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
     parts.push(`blob\nmark :${mark}\ndata ${byteLen}\n${entry.content}\n`);
   });
 
-  const commitMark = opts.commitMark ?? startMark + opts.entries.length;
   const messageBytes = encoder.encode(opts.message).length;
 
   let commit = "";
   commit += `commit ${opts.ref}\n`;
-  commit += `mark :${commitMark}\n`;
+  commit += `mark :${resolvedCommitMark}\n`;
   commit += `committer ${committerName} <${committerEmail}> ${timestamp} +0000\n`;
   commit += `data ${messageBytes}\n${opts.message}\n`;
   if (opts.parent) {
@@ -75,13 +115,13 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   }
   for (const entry of opts.entries) {
     const mark = marks[entry.path];
-    commit += `M 100644 :${mark} ${entry.path}\n`;
+    commit += `M 100644 :${mark} ${quoteFastImportPath(entry.path)}\n`;
   }
   commit += "\n";
   parts.push(commit);
   parts.push("done\n");
 
-  return { stream: parts.join(""), marks, commitMark };
+  return { stream: parts.join(""), marks, commitMark: resolvedCommitMark };
 }
 
 /**
