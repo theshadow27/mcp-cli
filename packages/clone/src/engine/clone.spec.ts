@@ -157,6 +157,34 @@ describe("clone", () => {
     expect(log).toContain("2 pages");
   });
 
+  test("sets mcx:// remote and upstream tracking on main", async () => {
+    const provider = makeProvider({
+      list: async function* () {
+        yield makeEntry({ id: "p1", title: "Page One", version: 1, content: "body" });
+      },
+    });
+
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {} });
+
+    const remotes = execSync("git remote -v", { cwd: targetDir, encoding: "utf-8", env: cleanEnv() });
+    expect(remotes).toContain("origin\tmcx://test/FOO (fetch)");
+    expect(remotes).toContain("origin\tmcx://test/FOO (push)");
+
+    const branchRemote = execSync("git config branch.main.remote", {
+      cwd: targetDir,
+      encoding: "utf-8",
+      env: cleanEnv(),
+    }).trim();
+    expect(branchRemote).toBe("origin");
+
+    const branchMerge = execSync("git config branch.main.merge", {
+      cwd: targetDir,
+      encoding: "utf-8",
+      env: cleanEnv(),
+    }).trim();
+    expect(branchMerge).toBe("refs/heads/main");
+  });
+
   test("populates cache with all entries", async () => {
     const entries = [
       makeEntry({ id: "p1", title: "Alpha", version: 1, content: "alpha body" }),

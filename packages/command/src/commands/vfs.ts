@@ -200,6 +200,9 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 }
 
 async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
+  log(
+    'Warning: "mcx vfs pull" is deprecated. Use "git pull" instead.\n         The command will be removed in a future release.',
+  );
   const full = args.includes("--full");
   let depth = 0;
   const filteredArgs: string[] = [];
@@ -229,6 +232,9 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
 }
 
 async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDeps): Promise<void> {
+  log(
+    'Warning: "mcx vfs push" is deprecated. Use "git push" instead.\n         The command will be removed in a future release.',
+  );
   const isCreate = args.includes("--create");
   const filteredArgs = args.filter((a) => a !== "--dry-run" && a !== "--create");
   const isDryRun = dryRun ?? args.includes("--dry-run");

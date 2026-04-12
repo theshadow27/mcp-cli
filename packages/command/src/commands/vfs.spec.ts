@@ -241,6 +241,36 @@ describe("cmdVfs", () => {
     });
   });
 
+  describe("deprecation warnings", () => {
+    function captureStderr<T>(fn: () => Promise<T>): Promise<{ result: T; stderr: string }> {
+      const orig = process.stderr.write.bind(process.stderr);
+      let captured = "";
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
+        return true;
+      }) as typeof process.stderr.write;
+      return fn()
+        .then((result) => ({ result, stderr: captured }))
+        .finally(() => {
+          process.stderr.write = orig;
+        });
+    }
+
+    test("vfs pull warns that it is deprecated", async () => {
+      const deps = makeDeps();
+      const { stderr } = await captureStderr(() => cmdVfs(["pull", "/tmp/repo"], undefined, deps));
+      expect(stderr).toContain('"mcx vfs pull" is deprecated');
+      expect(stderr).toContain('Use "git pull" instead');
+    });
+
+    test("vfs push warns that it is deprecated", async () => {
+      const deps = makeDeps();
+      const { stderr } = await captureStderr(() => cmdVfs(["push", "/tmp/repo"], undefined, deps));
+      expect(stderr).toContain('"mcx vfs push" is deprecated');
+      expect(stderr).toContain('Use "git push" instead');
+    });
+  });
+
   describe("push flags", () => {
     test("--dry-run from opts is forwarded", async () => {
       let capturedDryRun: boolean | undefined;

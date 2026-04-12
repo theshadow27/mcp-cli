@@ -248,6 +248,17 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   spawnSync("git", ["commit", "-m", commitMsg, "--allow-empty"], gitOpts);
   log(opts, "  → initial commit created");
 
+  // Wire up the mcx:// remote so standard `git push`/`git pull` work via the
+  // git-remote-mcx helper (see #1209).
+  const remoteUrl = `mcx://${provider.name}/${scope.key}`;
+  spawnSync("git", ["remote", "add", "origin", remoteUrl], gitOpts);
+  // Configure upstream tracking via git config directly — `git branch
+  // --set-upstream-to=origin/main` would fail because we haven't fetched yet
+  // and origin/main doesn't exist locally.
+  spawnSync("git", ["config", "branch.main.remote", "origin"], gitOpts);
+  spawnSync("git", ["config", "branch.main.merge", "refs/heads/main"], gitOpts);
+  log(opts, `  → remote "origin" set to ${remoteUrl}`);
+
   log(opts, `\nDone! Cloned ${includedEntries.length} pages${stubNote} to ${absTarget}`);
 
   return {
