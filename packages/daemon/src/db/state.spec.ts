@@ -1775,6 +1775,32 @@ describe("StateDb", () => {
       expect(db.getAliasState("/repo", "ns", "nope")).toBeUndefined();
       db.close();
     });
+
+    test("setting undefined throws (use delete instead)", () => {
+      const db = createDb();
+      expect(() => db.setAliasState("/repo", "ns", "k", undefined)).toThrow(/undefined/);
+      db.close();
+    });
+
+    test("oversize values are rejected", () => {
+      const db = createDb();
+      const big = "x".repeat(256 * 1024 + 1);
+      expect(() => db.setAliasState("/repo", "ns", "k", big)).toThrow(/max size/);
+      db.close();
+    });
+
+    test("corrupt value_json does not poison get/list", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "ns", "good", 1);
+      // Simulate a corrupt row (e.g. manual sqlite3 edit).
+      db.getDatabase().run(
+        "INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at) VALUES ('/repo', 'ns', 'bad', ?, unixepoch())",
+        ["{not-json"],
+      );
+      expect(db.getAliasState("/repo", "ns", "bad")).toBeUndefined();
+      expect(db.listAliasState("/repo", "ns")).toEqual({ good: 1 });
+      db.close();
+    });
   });
 
   test("database persists across instances", () => {

@@ -15,6 +15,7 @@ import {
   GLOBAL_STATE_NAMESPACE,
   type McpProxy,
   NO_REPO_ROOT,
+  aliasUserNamespace,
   bundleAlias,
   createAliasCache,
   createAliasState,
@@ -53,7 +54,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
     file: (path: string) => Bun.file(path).text(),
     json: async (path: string) => JSON.parse(await Bun.file(path).text()),
     cache: createAliasCache(aliasName),
-    state: createAliasState({ repoRoot, namespace: aliasName }),
+    state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
   };
 
@@ -130,6 +131,7 @@ function createMcpProxy(): McpProxy {
               server: serverName,
               tool: toolName,
               arguments: toolArgs ?? {},
+              cwd: process.cwd(),
             });
             return extractContent(result);
           };

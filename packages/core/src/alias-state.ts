@@ -14,6 +14,15 @@ export const GLOBAL_STATE_NAMESPACE = "__global__";
 /** Sentinel repo_root used when the caller is not inside a git repository. */
 export const NO_REPO_ROOT = "__none__";
 
+/**
+ * Per-alias namespaces are prefixed so they can never collide with the
+ * reserved `__global__` sentinel — an alias literally named `__global__`
+ * would otherwise share a bucket with everyone's `ctx.globalState`.
+ */
+export function aliasUserNamespace(aliasName: string): string {
+  return `alias:${aliasName}`;
+}
+
 export interface AliasStateOptions {
   repoRoot: string;
   namespace: string;

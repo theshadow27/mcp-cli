@@ -41,21 +41,52 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
 /**
  * Resolve the git repository root from a working directory.
  * Returns an absolute path, or null if `cwd` is not inside a git repository.
- * Uses `git rev-parse --git-common-dir` so the same value is returned from
- * the main checkout and any of its worktrees.
+ *
+ * Prefers `--show-toplevel` (the working-tree root). For linked worktrees,
+ * maps back to the main checkout's root via `--git-common-dir` so every
+ * worktree of a repo shares one key. For bare repos, `--show-toplevel`
+ * errors and we fall back to `--git-common-dir` as-is (no parent-dir strip,
+ * which would have collapsed two bare repos in one directory).
  */
 export function findGitRoot(cwd: string = process.cwd()): string | null {
   try {
-    const result = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+    const top = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--show-toplevel"], {
       stdout: "pipe",
       stderr: "ignore",
       timeout: 5000,
     });
-    if (result.exitCode !== 0) return null;
-    const commonDir = result.stdout.toString().trim();
+    if (top.exitCode === 0) {
+      const toplevel = top.stdout.toString().trim();
+      if (!toplevel) return null;
+      const gitDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], {
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 5000,
+      });
+      const commonDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 5000,
+      });
+      if (gitDir.exitCode === 0 && commonDir.exitCode === 0) {
+        const gitDirAbs = resolve(cwd, gitDir.stdout.toString().trim());
+        const commonDirAbs = resolve(cwd, commonDir.stdout.toString().trim());
+        if (gitDirAbs !== commonDirAbs) {
+          return commonDirAbs.endsWith("/.git") || commonDirAbs.endsWith(".git") ? dirname(commonDirAbs) : commonDirAbs;
+        }
+      }
+      return toplevel;
+    }
+    // Bare repo fallback — no working tree, use the common dir directly.
+    const common = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    if (common.exitCode !== 0) return null;
+    const commonDir = common.stdout.toString().trim();
     if (!commonDir) return null;
-    const absolute = resolve(cwd, commonDir);
-    return absolute.endsWith("/.git") || absolute.endsWith(".git") ? dirname(absolute) : absolute;
+    return resolve(cwd, commonDir);
   } catch {
     return null;
   }

@@ -2033,4 +2033,61 @@ describe("IpcServer HTTP transport", () => {
 
     expect(buffer).toContain("pool-line");
   });
+
+  // Bug #1 regression: callTool → _aliases must forward the caller's cwd so
+  // the executor subprocess can resolve repo root from the caller, not from
+  // the daemon's cwd. See PR #1307 adversarial review.
+  test("callTool routed to _aliases forwards cwd to alias server", async () => {
+    socketPath = tmpSocket();
+    const calls: Array<{ tool: string; chain: string[]; cwd?: string }> = [];
+    const fakeAliasServer = {
+      callToolWithChain: async (tool: string, _args: Record<string, unknown>, chain: string[], cwd?: string) => {
+        calls.push({ tool, chain, cwd });
+        return { content: [{ type: "text" as const, text: "ok" }] };
+      },
+    };
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), fakeAliasServer as never, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "cwd1",
+      method: "callTool",
+      params: { server: "_aliases", tool: "my-alias", arguments: {}, cwd: "/some/caller/path" },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].tool).toBe("my-alias");
+    expect(calls[0].cwd).toBe("/some/caller/path");
+    expect(calls[0].chain).toEqual([]);
+  });
+
+  test("callTool routed to _aliases forwards cwd together with callChain", async () => {
+    socketPath = tmpSocket();
+    const calls: Array<{ tool: string; chain: string[]; cwd?: string }> = [];
+    const fakeAliasServer = {
+      callToolWithChain: async (tool: string, _args: Record<string, unknown>, chain: string[], cwd?: string) => {
+        calls.push({ tool, chain, cwd });
+        return { content: [{ type: "text" as const, text: "ok" }] };
+      },
+    };
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), fakeAliasServer as never, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "cwd2",
+      method: "callTool",
+      params: {
+        server: "_aliases",
+        tool: "child",
+        arguments: {},
+        callChain: ["parent"],
+        cwd: "/caller/repo",
+      },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(calls[0].cwd).toBe("/caller/repo");
+    expect(calls[0].chain).toEqual(["parent"]);
+  });
 });

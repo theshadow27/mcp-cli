@@ -20,6 +20,7 @@ import {
   GLOBAL_STATE_NAMESPACE,
   type McpProxy,
   NO_REPO_ROOT,
+  aliasUserNamespace,
   createAliasCache,
   createAliasState,
   executeAliasBundled,
@@ -40,13 +41,16 @@ interface ExecutorInput {
   aliasName?: string;
   /** Chain of alias names that led to this execution, for cycle detection. */
   callChain?: string[];
+  /** Caller's working directory used to resolve repo root for ctx.state. */
+  cwd?: string;
 }
 
 /**
  * Create a real MCP proxy that calls tools via IPC back to the daemon.
- * For _aliases calls, includes the callChain for cycle detection.
+ * For _aliases calls, includes the callChain for cycle detection and the
+ * original caller's cwd so nested aliases scope state to the same repo.
  */
-function createExecutorProxy(callChain: string[]): McpProxy {
+function createExecutorProxy(callChain: string[], cwd: string | undefined): McpProxy {
   return new Proxy({} as McpProxy, {
     get(_target, serverName: string) {
       return new Proxy({} as Record<string, (args?: Record<string, unknown>) => Promise<unknown>>, {
@@ -57,6 +61,7 @@ function createExecutorProxy(callChain: string[]): McpProxy {
               tool: toolName,
               arguments: toolArgs ?? {},
               callChain,
+              ...(cwd ? { cwd } : {}),
             });
             return extractContent(result);
           };
@@ -77,7 +82,7 @@ async function main(): Promise<void> {
 
   // Read input from stdin
   const stdinText = await Bun.stdin.text();
-  const { bundledJs, input, isDefineAlias, mode, aliasName, callChain } = JSON.parse(stdinText) as ExecutorInput;
+  const { bundledJs, input, isDefineAlias, mode, aliasName, callChain, cwd } = JSON.parse(stdinText) as ExecutorInput;
 
   if (mode === "validate") {
     const validation = await validateAliasBundled(bundledJs);
@@ -101,9 +106,12 @@ async function main(): Promise<void> {
   // Build the updated chain including the current alias
   const updatedChain = [...chain, currentAlias];
 
-  const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
+  // Scope state to the caller's repo — NOT the daemon's cwd. Without an
+  // explicit cwd from the caller, every alias invocation via the MCP server
+  // would collapse into the NO_REPO_ROOT bucket (see PR #1307 review).
+  const repoRoot = cwd ? (findGitRoot(cwd) ?? NO_REPO_ROOT) : NO_REPO_ROOT;
   const ctx: AliasContext = {
-    mcp: createExecutorProxy(updatedChain),
+    mcp: createExecutorProxy(updatedChain, cwd),
     args:
       typeof input === "object" && input !== null
         ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
@@ -111,7 +119,7 @@ async function main(): Promise<void> {
     file: (path: string) => readFile(path, "utf-8"),
     json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
     cache: createAliasCache(currentAlias),
-    state: createAliasState({ repoRoot, namespace: currentAlias }),
+    state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
   };
 

@@ -457,18 +457,19 @@ export class IpcServer {
     });
 
     this.handlers.set("callTool", async (params, ctx) => {
-      const { server, tool, arguments: args, timeoutMs, callChain } = CallToolParamsSchema.parse(params);
+      const { server, tool, arguments: args, timeoutMs, callChain, cwd } = CallToolParamsSchema.parse(params);
       const toolSpan = ctx.span.child(`tool.${server}.${tool}`);
       toolSpan.setAttribute("tool.server", server);
       toolSpan.setAttribute("tool.name", tool);
       if (callChain) toolSpan.setAttribute("alias.callChainDepth", callChain.length);
       const toolLabels = { server, tool };
       try {
-        // For cross-alias composition: route _aliases calls with a callChain
-        // directly through the alias server to thread cycle detection.
+        // Route every _aliases call through the alias server directly so the
+        // caller's cwd (for repo-root scoping) and optional callChain reach
+        // the executor subprocess. The pool route has no cwd channel.
         const result =
-          callChain && server === ALIAS_SERVER_NAME && this.aliasServer
-            ? await this.aliasServer.callToolWithChain(tool, args, callChain)
+          server === ALIAS_SERVER_NAME && this.aliasServer
+            ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd)
             : await this.pool.callTool(server, tool, args, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
