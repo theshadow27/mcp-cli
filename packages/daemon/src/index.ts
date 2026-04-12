@@ -47,6 +47,7 @@ import {
   ensureStateDir,
   fixCoreBare,
   generateSpanId,
+  loadManifest,
   options,
   pruneExpiredCache,
   readCliConfig,
@@ -740,6 +741,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           workItemsServer = new WorkItemsServer(workItemDb, {
             onTrack: () => workItemPoller?.pollNow(),
+            loadManifest: (repoRoot) => {
+              try {
+                return loadManifest(repoRoot)?.manifest ?? null;
+              } catch {
+                // Malformed manifest — behave as if absent so callers don't hard-fail.
+                return null;
+              }
+            },
           });
           const {
             client: workItemsClient,

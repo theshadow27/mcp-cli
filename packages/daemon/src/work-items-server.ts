@@ -5,7 +5,7 @@
  * Tools: track, untrack, list, get, update — mapping to WorkItemDb CRUD.
  */
 
-import type { ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import type { Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 import { WORK_ITEMS_SERVER_NAME, canTransition } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -95,8 +95,20 @@ const TOOLS = [
         id: { type: "string", description: "Work item ID" },
         phase: {
           type: "string",
-          enum: ["impl", "review", "repair", "qa", "done"],
-          description: "New pipeline phase",
+          description:
+            "New pipeline phase. When a .mcx manifest exists, must be a declared phase; otherwise must be one of: impl, review, repair, qa, done.",
+        },
+        repoRoot: {
+          type: "string",
+          description: "Absolute path to repo root; used to locate a .mcx manifest for phase-name validation.",
+        },
+        force: {
+          type: "boolean",
+          description: "Bypass transition validation. The transition is still recorded with forced=true.",
+        },
+        forceReason: {
+          type: "string",
+          description: "Human-readable reason recorded in the transition log when force=true.",
         },
         prNumber: { type: "number", description: "PR number" },
         prState: { type: "string", enum: ["draft", "open", "merged", "closed"], description: "PR state" },
@@ -131,9 +143,19 @@ export class WorkItemsServer {
   /** Called after a work item is tracked/updated so the poller can run immediately. */
   private onTrack: (() => void) | null;
 
-  constructor(workItemDb: WorkItemDb, opts?: { onTrack?: () => void }) {
+  /** Resolves a manifest for a given repo root, or returns null. Injected for testability. */
+  private loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
+
+  constructor(
+    workItemDb: WorkItemDb,
+    opts?: {
+      onTrack?: () => void;
+      loadManifest?: (repoRoot: string) => Manifest | null;
+    },
+  ) {
     this.workItemDb = workItemDb;
     this.onTrack = opts?.onTrack ?? null;
+    this.loadManifestFn = opts?.loadManifest ?? null;
   }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
@@ -250,14 +272,39 @@ export class WorkItemsServer {
               return { content: [{ type: "text" as const, text: "id is required" }], isError: true };
             }
 
-            // Validate phase transition if a new phase is being set
+            const force = a.force === true;
+            const forceReason = a.forceReason !== undefined ? String(a.forceReason) : undefined;
+            const repoRoot = a.repoRoot !== undefined ? String(a.repoRoot) : undefined;
+
+            // Validate phase if a new phase is being set
             if (a.phase !== undefined) {
               const existing = this.workItemDb.getWorkItem(id);
               if (!existing) {
                 return { content: [{ type: "text" as const, text: `work item not found: ${id}` }], isError: true };
               }
-              const newPhase = String(a.phase) as WorkItemPhase;
-              if (existing.phase !== newPhase && !canTransition(existing.phase, newPhase)) {
+              const newPhase = String(a.phase);
+
+              // Manifest-aware phase-name validation (no-op if no manifest or no loader)
+              const manifest = repoRoot && this.loadManifestFn ? this.loadManifestFn(repoRoot) : null;
+              if (manifest) {
+                const declared = Object.keys(manifest.phases);
+                if (!declared.includes(newPhase)) {
+                  return {
+                    content: [
+                      {
+                        type: "text" as const,
+                        text: `unknown phase "${newPhase}". declared phases: ${declared.join(", ")}`,
+                      },
+                    ],
+                    isError: true,
+                  };
+                }
+                // Manifest-driven mode: skip the hardcoded transition graph.
+              } else if (
+                !force &&
+                existing.phase !== newPhase &&
+                !canTransition(existing.phase, newPhase as WorkItemPhase)
+              ) {
                 return {
                   content: [
                     {
@@ -282,7 +329,7 @@ export class WorkItemsServer {
             if (a.branch !== undefined) patch.branch = String(a.branch);
             if (a.issueNumber !== undefined) patch.issueNumber = requireInt(a.issueNumber, "issueNumber");
 
-            const updated = this.workItemDb.updateWorkItem(id, patch);
+            const updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
             return { content: [{ type: "text" as const, text: JSON.stringify(updated) }] };
           }
 

@@ -17,6 +17,7 @@ import type {
   ServeInstanceInfo,
   ServerAuthStatus,
   ToolInfo,
+  WorkItemPhase,
 } from "@mcp-cli/core";
 import {
   ALIAS_SERVER_NAME,
@@ -36,6 +37,7 @@ import {
   GetNoteParamsSchema,
   GetSpansParamsSchema,
   GetToolInfoParamsSchema,
+  GetWorkItemParamsSchema,
   GrepToolsParamsSchema,
   IPC_ERROR,
   KillServeParamsSchema,
@@ -1100,7 +1102,7 @@ export class IpcServer {
     // -- Work item tracking --
 
     this.handlers.set("trackWorkItem", async (params, _ctx) => {
-      const { number, branch } = TrackWorkItemParamsSchema.parse(params);
+      const { number, branch, initialPhase } = TrackWorkItemParamsSchema.parse(params);
 
       // Check if already tracked
       if (number) {
@@ -1119,11 +1121,14 @@ export class IpcServer {
 
       // Create the item immediately (non-blocking) so the caller isn't waiting on GitHub
       const id = number ? `#${number}` : `branch:${branch}`;
+      // initialPhase comes from the caller's manifest (#1287), so it's already identifier-validated.
+      // Cast to WorkItemPhase to satisfy the narrower type; DB stores arbitrary phase strings.
       const item = this.workItemDb.createWorkItem({
         id,
         issueNumber: number ?? null,
         prNumber: null,
         branch: branch ?? null,
+        ...(initialPhase ? { phase: initialPhase as WorkItemPhase } : {}),
       });
 
       // Fire-and-forget: resolve PR number in the background
@@ -1162,6 +1167,16 @@ export class IpcServer {
     this.handlers.set("listWorkItems", async (params, _ctx) => {
       const { phase } = ListWorkItemsParamsSchema.parse(params ?? {});
       return this.workItemDb.listWorkItems(phase ? { phase } : undefined);
+    });
+
+    this.handlers.set("getWorkItem", async (params, _ctx) => {
+      const { id, number, branch } = GetWorkItemParamsSchema.parse(params);
+      if (id) return this.workItemDb.getWorkItem(id);
+      if (number !== undefined) {
+        return this.workItemDb.getWorkItemByPr(number) ?? this.workItemDb.getWorkItemByIssue(number);
+      }
+      if (branch) return this.workItemDb.getWorkItemByBranch(branch);
+      return null;
     });
 
     // -- Alias state (per-work-item / per-alias scratchpad) --

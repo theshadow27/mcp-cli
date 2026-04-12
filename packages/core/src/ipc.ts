@@ -57,6 +57,7 @@ export type IpcMethod =
   | "trackWorkItem"
   | "untrackWorkItem"
   | "listWorkItems"
+  | "getWorkItem"
   | "aliasStateGet"
   | "aliasStateSet"
   | "aliasStateDelete"
@@ -435,6 +436,8 @@ export const TrackWorkItemParamsSchema = z
     number: z.number().optional(),
     /** Branch name to track (PR may not exist yet). */
     branch: z.string().optional(),
+    /** Optional starting phase (e.g. from manifest `initial:`). Default: "impl". */
+    initialPhase: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -455,6 +458,16 @@ export const ListWorkItemsParamsSchema = z.object({
   /** Filter by phase. */
   phase: z.string().optional(),
 });
+
+export const GetWorkItemParamsSchema = z
+  .object({
+    id: z.string().optional(),
+    number: z.number().optional(),
+    branch: z.string().optional(),
+  })
+  .refine((p) => p.id != null || p.number != null || p.branch != null, {
+    message: "One of id, number, or branch is required",
+  });
 
 // -- Alias state schemas --
 
@@ -677,6 +690,7 @@ export interface IpcMethodResult {
   trackWorkItem: WorkItem;
   untrackWorkItem: { ok: true; deleted: boolean };
   listWorkItems: WorkItem[];
+  getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;

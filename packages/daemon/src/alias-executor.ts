@@ -17,6 +17,7 @@
 import { readFile } from "node:fs/promises";
 import {
   type AliasContext,
+  type AliasWorkItemInfo,
   GLOBAL_STATE_NAMESPACE,
   type McpProxy,
   NO_REPO_ROOT,
@@ -71,6 +72,42 @@ function createExecutorProxy(callChain: string[], cwd: string | undefined): McpP
   });
 }
 
+/**
+ * Resolve the tracked work item backing the current invocation by mapping
+ * caller cwd → current git branch → work_items row. Returns null when the
+ * branch is unknown, detached, or not tracked. Errors are swallowed: alias
+ * execution should proceed even if the lookup fails.
+ */
+async function resolveWorkItem(cwd: string): Promise<AliasWorkItemInfo | null> {
+  try {
+    const head = Bun.spawnSync(["git", "-C", cwd, "symbolic-ref", "--short", "HEAD"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 3000,
+    });
+    if (head.exitCode !== 0) return null;
+    const branch = head.stdout.toString().trim();
+    if (!branch) return null;
+    const item = (await ipcCall("getWorkItem", { branch })) as {
+      id: string;
+      issueNumber: number | null;
+      prNumber: number | null;
+      branch: string | null;
+      phase: string;
+    } | null;
+    if (!item) return null;
+    return {
+      id: item.id,
+      issueNumber: item.issueNumber,
+      prNumber: item.prNumber,
+      branch: item.branch,
+      phase: item.phase,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   // Redirect console to stderr so alias scripts' console.log doesn't corrupt stdout JSON protocol
   const stderrWrite = (data: string) => process.stderr.write(`${data}\n`);
@@ -110,6 +147,7 @@ async function main(): Promise<void> {
   // explicit cwd from the caller, every alias invocation via the MCP server
   // would collapse into the NO_REPO_ROOT bucket (see PR #1307 review).
   const repoRoot = cwd ? (findGitRoot(cwd) ?? NO_REPO_ROOT) : NO_REPO_ROOT;
+  const workItem = cwd ? await resolveWorkItem(cwd) : null;
   const ctx: AliasContext = {
     mcp: createExecutorProxy(updatedChain, cwd),
     args:
@@ -121,6 +159,7 @@ async function main(): Promise<void> {
     cache: createAliasCache(currentAlias),
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
+    workItem,
   };
 
   const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);

@@ -309,7 +309,7 @@ describe("WorkItemDb", () => {
       raw.exec("PRAGMA journal_mode = WAL");
       new WorkItemDb(raw);
       const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
-      expect(version).toBe(1);
+      expect(version).toBe(2);
     });
 
     test("skips migration when user_version is already current", () => {
@@ -373,12 +373,51 @@ describe("WorkItemDb", () => {
       // Migration should succeed (CREATE TABLE IF NOT EXISTS is idempotent)
       const db = new WorkItemDb(raw);
       const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
-      expect(version).toBe(1);
+      expect(version).toBe(2);
 
       // Existing data should be preserved
       const item = db.getWorkItemByIssue(99);
       expect(item).not.toBeNull();
       expect(item?.id).toBe("existing-1");
+    });
+  });
+
+  describe("transitions", () => {
+    test("createWorkItem records an initial transition (from_phase=null)", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 7, phase: "impl" });
+      const log = db.listTransitions(item.id);
+      expect(log).toHaveLength(1);
+      expect(log[0].fromPhase).toBeNull();
+      expect(log[0].toPhase).toBe("impl");
+      expect(log[0].forced).toBe(false);
+    });
+
+    test("updateWorkItem logs a phase transition when phase changes", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 8 });
+      db.updateWorkItem(item.id, { phase: "review" });
+      const log = db.listTransitions(item.id);
+      expect(log).toHaveLength(2);
+      expect(log[1].fromPhase).toBe("impl");
+      expect(log[1].toPhase).toBe("review");
+      expect(log[1].forced).toBe(false);
+    });
+
+    test("updateWorkItem without phase change does not append transition", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 9 });
+      db.updateWorkItem(item.id, { prUrl: "https://example/pr/1" });
+      expect(db.listTransitions(item.id)).toHaveLength(1);
+    });
+
+    test("forced transitions record forced=true with reason", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 10 });
+      db.updateWorkItem(item.id, { phase: "done" }, { forced: true, forceReason: "abandoned" });
+      const log = db.listTransitions(item.id);
+      expect(log[1].forced).toBe(true);
+      expect(log[1].forceReason).toBe("abandoned");
     });
   });
 });
