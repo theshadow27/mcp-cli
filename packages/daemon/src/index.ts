@@ -742,15 +742,30 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           // Wire the alias executor's work-item resolver — resolves the caller
           // cwd's branch → tracked work item in-process, so alias subprocesses
           // don't need to phone home via IPC to answer ctx.workItem.
-          aliasServer.setWorkItemResolver((cwd) => {
+          aliasServer.setWorkItemResolver(async (cwd) => {
             try {
-              const head = Bun.spawnSync(["git", "-C", cwd, "symbolic-ref", "--short", "HEAD"], {
-                stdout: "pipe",
-                stderr: "ignore",
-                timeout: 3000,
-              });
-              if (head.exitCode !== 0) return null;
-              const branch = head.stdout.toString().trim();
+              // Read .git/HEAD directly — `git symbolic-ref --short HEAD` just
+              // parses this file, and forking git blocks the event loop (up to
+              // 3s on slow FS or under .git/index.lock contention). For
+              // worktrees, `.git` is a file "gitdir: <path>" pointing at the
+              // real git dir; follow it to find the per-worktree HEAD.
+              let gitDir = `${cwd}/.git`;
+              const dotGit = Bun.file(gitDir);
+              if (!(await dotGit.exists())) return null;
+              const dotGitStat = await dotGit.stat();
+              if (dotGitStat.isFile()) {
+                const gitdirLine = (await dotGit.text()).trim();
+                const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
+                const target = match?.[1]?.trim();
+                if (!target) return null;
+                gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
+              }
+              const headFile = Bun.file(`${gitDir}/HEAD`);
+              if (!(await headFile.exists())) return null;
+              const headContent = (await headFile.text()).trim();
+              // "ref: refs/heads/<branch>" for attached HEAD; bare SHA for detached
+              const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
+              const branch = refMatch?.[1]?.trim();
               if (!branch) return null;
               const item = workItemDb.getWorkItemByBranch(branch);
               if (!item) return null;

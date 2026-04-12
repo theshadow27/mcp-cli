@@ -64,7 +64,7 @@ export class AliasServer {
   private db: StateDb;
   private executorPath: string;
   private semaphore = new Semaphore(MAX_CONCURRENT_SUBPROCESSES);
-  private workItemResolver: ((cwd: string) => AliasWorkItemInfo | null) | null = null;
+  private workItemResolver: ((cwd: string) => Promise<AliasWorkItemInfo | null>) | null = null;
 
   constructor(
     db: StateDb,
@@ -80,7 +80,7 @@ export class AliasServer {
    * has to open an IPC connection back to ask the daemon about itself.
    * Late-bound because WorkItemDb starts after AliasServer.
    */
-  setWorkItemResolver(resolver: (cwd: string) => AliasWorkItemInfo | null): void {
+  setWorkItemResolver(resolver: (cwd: string) => Promise<AliasWorkItemInfo | null>): void {
     this.workItemResolver = resolver;
   }
 
@@ -248,7 +248,7 @@ export class AliasServer {
     let workItem: AliasWorkItemInfo | null = null;
     if (cwd && this.workItemResolver) {
       try {
-        workItem = this.workItemResolver(cwd);
+        workItem = await this.workItemResolver(cwd);
       } catch {
         workItem = null;
       }
