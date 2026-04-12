@@ -79,6 +79,40 @@ describe("validateTransition — unknown phase", () => {
   test("throws when --from is unknown too", () => {
     expect(() => validateTransition({ manifest, from: "bogus", target: "qa" })).toThrow(UnknownPhaseError);
   });
+
+  test("--force bypasses unknown-from (recovery from renamed manifest phase)", () => {
+    // A manifest rename mid-sprint leaves in-flight work items referencing a stale phase.
+    // --force must allow recovery; unknown-target stays fatal.
+    const result = validateTransition({
+      manifest,
+      from: "old-phase-name",
+      target: "qa",
+      force: { message: "manifest renamed mid-sprint" },
+    });
+    expect(result.forced).toBe(true);
+  });
+});
+
+describe("validateTransition — initial phase enforcement", () => {
+  test("first transition must target manifest.initial", () => {
+    expect(() => validateTransition({ manifest, from: null, target: "done" })).toThrow(DisallowedTransitionError);
+  });
+
+  test("first transition to manifest.initial is allowed", () => {
+    const result = validateTransition({ manifest, from: null, target: "impl" });
+    expect(result).toEqual({ from: null, target: "impl", forced: false });
+  });
+
+  test("--force bypasses initial phase check", () => {
+    const result = validateTransition({ manifest, from: null, target: "done", force: { message: "intentional skip" } });
+    expect(result.forced).toBe(true);
+  });
+
+  test("initial enforcement is skipped once history is non-empty (from is inferred by caller)", () => {
+    // history non-empty means the work item is in progress; from is resolved before this call.
+    const result = validateTransition({ manifest, from: "impl", target: "qa", history: ["impl"] });
+    expect(result.forced).toBe(false);
+  });
 });
 
 describe("validateTransition — disallowed", () => {
@@ -114,13 +148,15 @@ describe("validateTransition — disallowed", () => {
 });
 
 describe("validateTransition — regression", () => {
-  test("throws when target is earlier in history", () => {
+  test("throws when target is in history and not a declared back-edge", () => {
+    // qa.next = [done, needs-attention] — impl is NOT a declared edge from qa.
+    // impl is in history → RegressionError, not DisallowedTransitionError.
     try {
       validateTransition({
         manifest,
-        from: "needs-attention",
+        from: "qa",
         target: "impl",
-        history: ["impl", "qa", "needs-attention"],
+        history: ["impl", "adversarial-review", "qa"],
         workItemId: "#1241",
       });
       throw new Error("expected throw");
@@ -129,16 +165,16 @@ describe("validateTransition — regression", () => {
       const e = err as RegressionError;
       expect(e.message).toContain("would regress the flow");
       expect(e.message).toContain("#1241");
-      expect(e.message).toContain("impl → qa → needs-attention");
+      expect(e.message).toContain("impl → adversarial-review → qa");
     }
   });
 
   test("--force bypasses regression with message", () => {
     const result = validateTransition({
       manifest,
-      from: "needs-attention",
+      from: "qa",
       target: "impl",
-      history: ["impl", "qa", "needs-attention"],
+      history: ["impl", "adversarial-review", "qa"],
       force: { message: "rewriting from scratch" },
     });
     expect(result.forced).toBe(true);
@@ -149,16 +185,27 @@ describe("validateTransition — regression", () => {
     expect(result.forced).toBe(false);
   });
 
-  test("legal cycle via .next still trips regression (spec: any repeat = regression)", () => {
-    // Per issue #1293: "Regression = target phase appears earlier in the work item's
-    // transition history." The graph can contain cycles, but re-entering a cycle
-    // intentionally requires --force so the model has to articulate why.
+  test("declared back-edge (graph cycle) does NOT throw regression", () => {
+    // repair.next includes adversarial-review — this is a declared cycle.
+    // Traversing a declared edge never requires --force, even if the target
+    // was visited before. RegressionError is reserved for undeclared revisits.
+    const result = validateTransition({
+      manifest,
+      from: "repair",
+      target: "adversarial-review",
+      history: ["impl", "adversarial-review", "repair"],
+    });
+    expect(result.forced).toBe(false);
+  });
+
+  test("undeclared revisit (not in from.next) throws RegressionError", () => {
+    // qa.next = [done, needs-attention] — impl is not reachable from qa, and was visited.
     expect(() =>
       validateTransition({
         manifest,
-        from: "repair",
-        target: "adversarial-review",
-        history: ["impl", "adversarial-review", "repair"],
+        from: "qa",
+        target: "impl",
+        history: ["impl", "adversarial-review", "qa"],
       }),
     ).toThrow(RegressionError);
   });

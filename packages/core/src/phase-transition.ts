@@ -125,8 +125,20 @@ export interface ValidateTransitionInput {
 
 /**
  * Validate a proposed transition. Throws one of three typed errors or
- * returns the decision. Unknown target always throws — `--force` cannot
- * bypass rule #1 because a misspelled phase has no registered source.
+ * returns the decision.
+ *
+ * Check order:
+ *   1. Unknown target — never bypassable (misspelled phase has no registered source).
+ *   2. Force bypass   — skips all remaining checks, including unknown-from.
+ *                       This provides a recovery path when the manifest renames a
+ *                       phase mid-sprint and in-flight work items reference the old name.
+ *   3. Unknown from   — bypassable via --force (see above).
+ *   4. Initial phase  — first transition for a work item must target manifest.initial.
+ *   5. Graph walk     — target must be in phases[from].next.
+ *                       Declared back-edges (graph cycles) are allowed without --force;
+ *                       only moves to phases not reachable from the current phase are
+ *                       flagged, using RegressionError when the target was previously
+ *                       visited and DisallowedTransitionError otherwise.
  */
 export function validateTransition(input: ValidateTransitionInput): {
   from: string | null;
@@ -136,28 +148,41 @@ export function validateTransition(input: ValidateTransitionInput): {
   const { manifest, from, target, history = [], workItemId = null, force = null, manifestPath = ".mcx.yaml" } = input;
   const declared = Object.keys(manifest.phases);
 
+  // Rule 1: unknown target is never bypassable.
   if (!declared.includes(target)) {
     throw new UnknownPhaseError(target, suggestPhases(target, declared));
   }
 
-  if (from !== null && !declared.includes(from)) {
-    // `from` is user-provided (via --from or work item state). Suggest for it too.
-    throw new UnknownPhaseError(from, suggestPhases(from, declared));
-  }
-
+  // Rule 2: force bypass — skips rules 3-5.
   if (force) {
     return { from, target, forced: true };
   }
 
+  // Rule 3: unknown from — bypassable via --force above.
+  if (from !== null && !declared.includes(from)) {
+    throw new UnknownPhaseError(from, suggestPhases(from, declared));
+  }
+
+  // Rule 4: initial phase enforcement.
+  if (from === null && history.length === 0 && target !== manifest.initial) {
+    throw new DisallowedTransitionError("(initial)", target, [manifest.initial], manifestPath);
+  }
+
+  // Rule 5: graph walk.
+  // Declared back-edges (cycles) are not regressions — they require no --force.
+  // Only moves to phases that are not in from.next are errors; within those we
+  // distinguish regressions (target already visited) from novel disallowed moves.
   if (from !== null) {
     const allowed = manifest.phases[from]?.next ?? [];
     if (!allowed.includes(target)) {
+      if (history.includes(target)) {
+        throw new RegressionError(from, target, workItemId, history);
+      }
       throw new DisallowedTransitionError(from, target, [...allowed], manifestPath);
     }
-  }
-
-  if (history.includes(target)) {
-    throw new RegressionError(from ?? "(initial)", target, workItemId, history);
+  } else if (history.includes(target)) {
+    // from === null with a non-empty history: target was already visited.
+    throw new RegressionError("(initial)", target, workItemId, history);
   }
 
   return { from, target, forced: false };

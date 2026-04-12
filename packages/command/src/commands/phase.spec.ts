@@ -249,13 +249,17 @@ describe("phaseRun", () => {
     ).toThrow(DisallowedTransitionError);
   });
 
-  test("regression throws RegressionError", () => {
+  test("regression throws RegressionError for undeclared revisit", () => {
+    // impl → adversarial-review → repair → qa, then try qa → impl.
+    // impl is in history but NOT in qa.next → RegressionError.
+    // (needs-attention → impl is a declared back-edge and would be allowed.)
     phaseRun({ target: "impl", from: null, workItemId: "#9", forceMessage: null }, { cwd: dir });
-    phaseRun({ target: "qa", from: "impl", workItemId: "#9", forceMessage: null }, { cwd: dir });
-    phaseRun({ target: "needs-attention", from: "qa", workItemId: "#9", forceMessage: null }, { cwd: dir });
-    expect(() =>
-      phaseRun({ target: "impl", from: "needs-attention", workItemId: "#9", forceMessage: null }, { cwd: dir }),
-    ).toThrow(RegressionError);
+    phaseRun({ target: "adversarial-review", from: "impl", workItemId: "#9", forceMessage: null }, { cwd: dir });
+    phaseRun({ target: "repair", from: "adversarial-review", workItemId: "#9", forceMessage: null }, { cwd: dir });
+    phaseRun({ target: "qa", from: "repair", workItemId: "#9", forceMessage: null }, { cwd: dir });
+    expect(() => phaseRun({ target: "impl", from: "qa", workItemId: "#9", forceMessage: null }, { cwd: dir })).toThrow(
+      RegressionError,
+    );
   });
 
   test("--force bypasses disallowed transition and records the message", () => {
