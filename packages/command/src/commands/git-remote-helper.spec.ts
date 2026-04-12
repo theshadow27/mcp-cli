@@ -133,13 +133,21 @@ describe("runGitRemoteHelper", () => {
 
   test("requires GIT_DIR", async () => {
     const { stream } = collect();
-    await expect(
-      runGitRemoteHelper({
-        argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
-        stdin: emptyStdin(),
-        stdout: stream,
-      }),
-    ).rejects.toThrow(/GIT_DIR/);
+    // Git hooks inherit GIT_DIR — must unset for this test to be meaningful.
+    const prev = process.env.GIT_DIR;
+    // biome-ignore lint/performance/noDelete: assignment to undefined would still be truthy
+    delete process.env.GIT_DIR;
+    try {
+      await expect(
+        runGitRemoteHelper({
+          argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+          stdin: emptyStdin(),
+          stdout: stream,
+        }),
+      ).rejects.toThrow(/GIT_DIR/);
+    } finally {
+      if (prev !== undefined) process.env.GIT_DIR = prev;
+    }
   });
 
   test("responds to capabilities command", async () => {

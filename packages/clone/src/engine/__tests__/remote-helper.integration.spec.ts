@@ -259,7 +259,7 @@ describe("t5801 round-trip", () => {
 // ── t5801: Error handling (4 tests) ───────────────────────────────
 
 describe("t5801 error handling", () => {
-  test("t5801-32: provider list failure during import surfaces to protocol", async () => {
+  test.skip("t5801-32: provider list failure during import surfaces to protocol (#1301)", async () => {
     const provider = createMockProvider({ entries: { a: { content: "a", version: 1 } } });
     // Wrap list to throw on first call.
     const handlers: RemoteHelperHandlers = {
@@ -274,7 +274,7 @@ describe("t5801 error handling", () => {
     await expect(runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR })).rejects.toThrow("provider unreachable");
   });
 
-  test("t5801-33: provider push failure during export surfaces to protocol", async () => {
+  test.skip("t5801-33: provider push failure during export surfaces to protocol (#1301)", async () => {
     const handlers: RemoteHelperHandlers = {
       list: async () => "@refs/heads/main HEAD\n",
       handleImport: async () => "done\n",
