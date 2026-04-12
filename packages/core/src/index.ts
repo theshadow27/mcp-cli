@@ -32,3 +32,4 @@ export * from "./sprint-state";
 export * from "./upgrade";
 export * from "./work-item";
 export * from "./telemetry";
+export * from "./phase-source";
