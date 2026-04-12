@@ -21,6 +21,7 @@ export * from "./logger";
 export * from "./branch-guard";
 export * from "./manifest";
 export * from "./manifest-lock";
+export * from "./phase-transition";
 export * from "./worktree-config";
 export * from "./worktree-shim";
 export * from "./plan";
