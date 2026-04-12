@@ -15,11 +15,13 @@ function mockSpawn(): {
   exitResolve: (code: number) => void;
   killed: boolean;
   lastCmd: string[];
+  lastOpts: { cwd?: string; env?: Record<string, string | undefined> };
 } {
   let exitResolve: (code: number) => void = () => {};
   const state = {
-    spawn: ((cmd: string[]) => {
+    spawn: ((cmd: string[], opts: { cwd?: string; env?: Record<string, string | undefined> }) => {
       state.lastCmd = cmd;
+      state.lastOpts = { cwd: opts?.cwd, env: opts?.env };
       return {
         pid: 12345,
         exited: new Promise<number>((r) => {
@@ -35,6 +37,7 @@ function mockSpawn(): {
     exitResolve: (code: number) => exitResolve(code),
     killed: false,
     lastCmd: [] as string[],
+    lastOpts: {} as { cwd?: string; env?: Record<string, string | undefined> },
   };
   return state;
 }
@@ -1378,6 +1381,29 @@ describe("ClaudeWsServer", () => {
 
     expect(ms.lastCmd).toContain("--worktree");
     expect(ms.lastCmd).toContain("my-tree");
+  });
+
+  test("spawnClaude passes TRACEPARENT env when traceparent is provided", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("trace-session", { prompt: "Hello" });
+    const tp = `00-${"a".repeat(32)}-${"b".repeat(16)}-01`;
+    server.spawnClaude("trace-session", tp);
+
+    expect(ms.lastOpts.env).toEqual({ TRACEPARENT: tp });
+  });
+
+  test("spawnClaude omits TRACEPARENT env when traceparent is not provided", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("no-trace-session", { prompt: "Hello" });
+    server.spawnClaude("no-trace-session");
+
+    expect(ms.lastOpts.env).toBeUndefined();
   });
 
   test("bye returns null worktree for non-worktree session", async () => {

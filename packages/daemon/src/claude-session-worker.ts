@@ -14,7 +14,14 @@
  *   { type: "db:end", sessionId }
  */
 
-import { CLAUDE_SERVER_NAME, type WorkItemEvent, generateSpanId, resolveModelName, silentLogger } from "@mcp-cli/core";
+import {
+  CLAUDE_SERVER_NAME,
+  type LiveSpan,
+  type WorkItemEvent,
+  resolveModelName,
+  silentLogger,
+  startSpan,
+} from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
@@ -40,6 +47,8 @@ interface InitMessage {
   wsPort?: number;
   /** Suppress worker-side console logging (used in tests). */
   quiet?: boolean;
+  /** Daemon's W3C traceparent — worker span becomes a child of this. */
+  traceparent?: string;
 }
 
 interface ToolsChangedMessage {
@@ -86,7 +95,7 @@ let transport: WorkerServerTransport | null = null;
 
 // Trace context — set on init, stable for worker lifetime
 let daemonId: string | undefined;
-let workerId: string | undefined;
+let workerSpan: LiveSpan | undefined;
 
 // ── Tool handlers ──
 
@@ -200,7 +209,7 @@ async function handlePrompt(
       },
     });
 
-    const pid = server.spawnClaude(sessionId);
+    const pid = server.spawnClaude(sessionId, workerSpan?.traceparent());
 
     // Capture pidStartTime here in the worker thread (off the main event loop)
     // so the parent doesn't need to do a blocking ps(1) call per session.
@@ -655,7 +664,9 @@ self.onmessage = async (event: MessageEvent) => {
   const data = event.data;
   if (isControlMessage(data) && data.type === "init") {
     daemonId = data.daemonId;
-    workerId = generateSpanId();
+    workerSpan = startSpan("claude-worker", {
+      parentTraceparent: data.traceparent,
+    });
     try {
       const port = await startServer(data.wsPort, data.quiet);
       self.postMessage({ type: "ready", port });
@@ -665,8 +676,14 @@ self.onmessage = async (event: MessageEvent) => {
       wsServer = null;
       mcpServer = null;
       transport = null;
+      workerSpan?.end();
       const message = err instanceof Error ? err.message : String(err);
       self.postMessage({ type: "error", message });
     }
   }
 };
+
+// End the worker span when the worker is terminated
+self.addEventListener("close", () => {
+  workerSpan?.end();
+});

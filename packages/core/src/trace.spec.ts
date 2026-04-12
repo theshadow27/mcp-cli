@@ -248,6 +248,36 @@ describe("LiveSpan", () => {
     expect(mid.parentSpanId).toBe(root.spanId);
   });
 
+  test("full causal chain: mcx → daemon → worker → claude", () => {
+    // Simulate the full propagation chain
+
+    // 1. mcx CLI creates a process-level span
+    const mcxSpan = startSpan("mcx");
+    const callSpan = mcxSpan.child("ipc.callTool");
+
+    // 2. Daemon receives callSpan's traceparent on the IPC request
+    const daemonRequestSpan = startSpan("ipc.callTool", {
+      parentTraceparent: callSpan.traceparent(),
+    });
+    expect(daemonRequestSpan.traceId).toBe(mcxSpan.traceId);
+    expect(daemonRequestSpan.parentSpanId).toBe(callSpan.spanId);
+
+    // 3. Daemon has its own startup span, passes its traceparent to the worker
+    const daemonSpan = startSpan("mcpd");
+    const workerSpan = startSpan("claude-worker", {
+      parentTraceparent: daemonSpan.traceparent(),
+    });
+    expect(workerSpan.traceId).toBe(daemonSpan.traceId);
+    expect(workerSpan.parentSpanId).toBe(daemonSpan.spanId);
+
+    // 4. Worker passes its traceparent to spawned Claude CLI process
+    const claudeSpan = startSpan("claude-cli", {
+      parentTraceparent: workerSpan.traceparent(),
+    });
+    expect(claudeSpan.traceId).toBe(daemonSpan.traceId);
+    expect(claudeSpan.parentSpanId).toBe(workerSpan.spanId);
+  });
+
   test("end() snapshots attributes (mutations don't leak)", () => {
     const live = startSpan("test.snapshot");
     live.setAttribute("before", true);

@@ -183,7 +183,13 @@ export interface SessionResult {
 /** Dependency-injectable process spawner for testing. */
 export type SpawnFn = (
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ) => {
   pid: number;
   exited: Promise<number>;
@@ -273,6 +279,8 @@ interface WsSession {
   connectTimer: Timer | null;
   /** Unix timestamp (ms) when this session was created. */
   createdAt: number;
+  /** W3C traceparent used for the last spawn — reused on respawn after clear. */
+  traceparent: string | null;
   /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
@@ -533,6 +541,7 @@ export class ClaudeWsServer {
         connectTimer: null,
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
+        traceparent: null,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -580,6 +589,7 @@ export class ClaudeWsServer {
       connectTimer: null,
       createdAt: Date.now(),
       pendingImmediate: false,
+      traceparent: null,
     });
     return name;
   }
@@ -587,9 +597,12 @@ export class ClaudeWsServer {
   /**
    * Spawn the Claude CLI process for a prepared session.
    * Returns the PID of the spawned process.
+   * @param traceparent Optional W3C traceparent to propagate via TRACEPARENT env var.
    */
-  spawnClaude(sessionId: string): number {
+  spawnClaude(sessionId: string, traceparent?: string): number {
     const session = this.getSession(sessionId);
+    // Store traceparent so respawn after clear can reuse it
+    if (traceparent) session.traceparent = traceparent;
     const port = this.port;
     if (!port) throw new Error("WS server not started");
 
@@ -634,6 +647,7 @@ export class ClaudeWsServer {
       stdout: "ignore",
       stderr: "pipe",
       stdin: "ignore",
+      env: traceparent ? { TRACEPARENT: traceparent } : undefined,
     });
 
     session.pid = proc.pid;
@@ -880,8 +894,8 @@ export class ClaudeWsServer {
     // Clear transcript for fresh start
     session.transcript.length = 0;
 
-    // Respawn
-    this.spawnClaude(sessionId);
+    // Respawn — reuse stored traceparent to maintain trace continuity across clears
+    this.spawnClaude(sessionId, session.traceparent ?? undefined);
     session.clearing = false;
   }
 
@@ -1940,7 +1954,13 @@ function isAddrInUse(err: unknown): boolean {
 
 function defaultSpawn(
   cmd: string[],
-  opts: { cwd?: string; stdout?: "ignore" | "pipe"; stderr?: "ignore" | "pipe"; stdin?: "ignore" | "pipe" },
+  opts: {
+    cwd?: string;
+    stdout?: "ignore" | "pipe";
+    stderr?: "ignore" | "pipe";
+    stdin?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  },
 ): {
   pid: number;
   exited: Promise<number>;
@@ -1949,7 +1969,7 @@ function defaultSpawn(
 } {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
-  const env = { ...process.env };
+  const env = { ...process.env, ...opts.env };
   env.CLAUDECODE = undefined;
   // Shells set PWD on cd; Bun.spawn only does chdir(). Without this,
   // the spawned process inherits the daemon's PWD and tools that read
