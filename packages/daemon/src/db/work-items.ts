@@ -89,14 +89,57 @@ export class WorkItemDb {
   }
 
   /**
-   * Versioned migration using PRAGMA user_version.
+   * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
    *
-   * NOTE: user_version is database-wide. This works because WorkItemDb is
-   * currently the only consumer. If StateDb (which shares this connection)
-   * ever needs versioned migrations, switch to a per-table schema_versions table.
+   * Why not PRAGMA user_version: it's database-wide. StateDb and WorkItemDb share
+   * the same SQLite connection, so a second consumer adding its own v2 migration
+   * would read user_version=2 already and silently skip. schema_versions keys by
+   * consumer name, so each migrates independently.
+   *
+   * Legacy handling: pre-existing deployments set PRAGMA user_version to 1 or 2.
+   * On first boot after this change, we read PRAGMA as a fallback seed for the
+   * work_items row in schema_versions, then never touch PRAGMA again (leaving it
+   * at whatever value it had — harmless since no future code reads it).
    */
   private migrate(): void {
-    const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_versions (
+        name    TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
+      )
+    `);
+
+    const CONSUMER = "work_items";
+    let version = this.db
+      .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+      .get(CONSUMER)?.version;
+
+    if (version === undefined) {
+      // No schema_versions row yet. Detect legacy state via table presence —
+      // NOT via PRAGMA user_version (another consumer on the same connection
+      // may have set it for their own purposes; that value means nothing to us).
+      const hasWorkItems =
+        this.db
+          .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='work_items'")
+          .get()?.n ?? 0;
+      const hasTransitions =
+        this.db
+          .query<{ n: number }, []>(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='work_item_transitions'",
+          )
+          .get()?.n ?? 0;
+
+      if (hasTransitions > 0) {
+        version = 2;
+      } else if (hasWorkItems > 0) {
+        version = 1;
+      } else {
+        version = 0;
+      }
+      this.db
+        .query<void, [string, number]>("INSERT INTO schema_versions (name, version) VALUES (?, ?)")
+        .run(CONSUMER, version);
+    }
 
     if (version < 1) {
       this.db.exec(`
@@ -119,8 +162,9 @@ export class WorkItemDb {
           ON work_items(issue_number) WHERE issue_number IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
           ON work_items(branch) WHERE branch IS NOT NULL;
-        PRAGMA user_version = 1;
       `);
+      this.setSchemaVersion(CONSUMER, 1);
+      version = 1;
     }
     if (version < 2) {
       this.db.exec(`
@@ -135,9 +179,14 @@ export class WorkItemDb {
         );
         CREATE INDEX IF NOT EXISTS idx_work_item_transitions_item
           ON work_item_transitions(work_item_id);
-        PRAGMA user_version = 2;
       `);
+      this.setSchemaVersion(CONSUMER, 2);
+      version = 2;
     }
+  }
+
+  private setSchemaVersion(name: string, version: number): void {
+    this.db.query<void, [number, string]>("UPDATE schema_versions SET version = ? WHERE name = ?").run(version, name);
   }
 
   createWorkItem(item: Partial<WorkItem>): WorkItem {

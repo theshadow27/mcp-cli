@@ -302,53 +302,50 @@ describe("WorkItemDb", () => {
       expect(() => new WorkItemDb(raw)).not.toThrow();
     });
 
-    test("sets user_version to 1 on fresh database", () => {
+    test("records version in schema_versions on fresh database", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      new WorkItemDb(raw);
+      const row = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items");
+      expect(row?.version).toBe(2);
+    });
+
+    test("does not touch PRAGMA user_version (leaves it free for other consumers)", () => {
       const p = tmpDb();
       paths.push(p);
       const raw = new Database(p, { create: true });
       raw.exec("PRAGMA journal_mode = WAL");
       new WorkItemDb(raw);
       const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
-      expect(version).toBe(2);
+      expect(version).toBe(0);
     });
 
-    test("skips migration when user_version is already current", () => {
+    test("skips migration when schema_versions already current", () => {
       const p = tmpDb();
       paths.push(p);
       const raw = new Database(p, { create: true });
       raw.exec("PRAGMA journal_mode = WAL");
-
-      // Manually create the table and set version to simulate existing DB
-      raw.exec(`
-        CREATE TABLE work_items (
-          id              TEXT PRIMARY KEY,
-          issue_number    INTEGER UNIQUE,
-          branch          TEXT UNIQUE,
-          pr_number       INTEGER UNIQUE,
-          pr_state        TEXT DEFAULT 'open',
-          pr_url          TEXT,
-          ci_status       TEXT DEFAULT 'none',
-          ci_run_id       INTEGER,
-          ci_summary      TEXT,
-          review_status   TEXT DEFAULT 'none',
-          phase           TEXT DEFAULT 'impl',
-          created_at      TEXT DEFAULT (datetime('now')),
-          updated_at      TEXT DEFAULT (datetime('now'))
-        );
-        PRAGMA user_version = 1;
-      `);
-
-      // Should not error — migration is a no-op
+      new WorkItemDb(raw);
+      // Second construction should be a no-op regardless of schema_versions state
       expect(() => new WorkItemDb(raw)).not.toThrow();
+      const row = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items");
+      expect(row?.version).toBe(2);
     });
 
-    test("upgrades pre-versioned database (user_version = 0) with existing table", () => {
+    test("legacy v1 DB (work_items table, no transitions table) seeds at 1 then upgrades to 2", () => {
       const p = tmpDb();
       paths.push(p);
       const raw = new Database(p, { create: true });
       raw.exec("PRAGMA journal_mode = WAL");
 
-      // Simulate pre-versioned DB: table exists but user_version is 0
+      // Simulate a legacy v1 deployment: work_items table exists, no transitions table,
+      // no schema_versions entry. (Matches what shipped before this migration fix.)
       raw.exec(`
         CREATE TABLE work_items (
           id              TEXT PRIMARY KEY,
@@ -366,19 +363,51 @@ describe("WorkItemDb", () => {
           updated_at      TEXT DEFAULT (datetime('now'))
         );
       `);
+      raw.exec("INSERT INTO work_items (id, issue_number) VALUES ('legacy-1', 99)");
 
-      // Insert data before migration
-      raw.exec("INSERT INTO work_items (id, issue_number) VALUES ('existing-1', 99)");
-
-      // Migration should succeed (CREATE TABLE IF NOT EXISTS is idempotent)
       const db = new WorkItemDb(raw);
-      const version = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
-      expect(version).toBe(2);
+      const seeded = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items");
+      expect(seeded?.version).toBe(2);
 
-      // Existing data should be preserved
+      // v2 transitions table now exists
+      const hasTransitions = raw
+        .query<{ n: number }, []>(
+          "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='work_item_transitions'",
+        )
+        .get()?.n;
+      expect(hasTransitions).toBe(1);
+
+      // Pre-existing data preserved
       const item = db.getWorkItemByIssue(99);
-      expect(item).not.toBeNull();
-      expect(item?.id).toBe("existing-1");
+      expect(item?.id).toBe("legacy-1");
+    });
+
+    test("does not collide with a second consumer using PRAGMA user_version", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+
+      // A hypothetical second consumer owns PRAGMA user_version and bumps it to 5
+      raw.exec("PRAGMA user_version = 5");
+
+      // WorkItemDb must NOT read PRAGMA to infer its own state and must NOT
+      // write to PRAGMA. On a fresh DB (no work_items table), it should detect
+      // legacy v0, run both migrations, and leave PRAGMA at 5.
+      const db = new WorkItemDb(raw);
+      const userVersion = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
+      expect(userVersion).toBe(5);
+
+      const row = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items");
+      expect(row?.version).toBe(2);
+
+      // And the tables actually got created (regression for the PRAGMA-fallback bug)
+      const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
+      expect(item.id).toBeDefined();
     });
   });
 

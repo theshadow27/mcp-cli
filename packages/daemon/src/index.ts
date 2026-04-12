@@ -739,6 +739,33 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
           });
 
+          // Wire the alias executor's work-item resolver — resolves the caller
+          // cwd's branch → tracked work item in-process, so alias subprocesses
+          // don't need to phone home via IPC to answer ctx.workItem.
+          aliasServer.setWorkItemResolver((cwd) => {
+            try {
+              const head = Bun.spawnSync(["git", "-C", cwd, "symbolic-ref", "--short", "HEAD"], {
+                stdout: "pipe",
+                stderr: "ignore",
+                timeout: 3000,
+              });
+              if (head.exitCode !== 0) return null;
+              const branch = head.stdout.toString().trim();
+              if (!branch) return null;
+              const item = workItemDb.getWorkItemByBranch(branch);
+              if (!item) return null;
+              return {
+                id: item.id,
+                issueNumber: item.issueNumber,
+                prNumber: item.prNumber,
+                branch: item.branch,
+                phase: item.phase,
+              };
+            } catch {
+              return null;
+            }
+          });
+
           workItemsServer = new WorkItemsServer(workItemDb, {
             onTrack: () => workItemPoller?.pollNow(),
             loadManifest: (repoRoot) => {

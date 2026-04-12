@@ -284,36 +284,39 @@ export class WorkItemsServer {
               }
               const newPhase = String(a.phase);
 
-              // Manifest-aware phase-name validation (no-op if no manifest or no loader)
-              const manifest = repoRoot && this.loadManifestFn ? this.loadManifestFn(repoRoot) : null;
-              if (manifest) {
-                const declared = Object.keys(manifest.phases);
-                if (!declared.includes(newPhase)) {
+              // force=true bypasses BOTH manifest-declared-phase validation and the
+              // hardcoded transition graph. The forced transition is still logged
+              // (see recordTransition call from updateWorkItem) so the audit trail
+              // captures the bypass. Callers that supply force without forceReason
+              // produce an un-auditable bypass — that's a caller bug, not ours.
+              if (!force) {
+                // Manifest-aware phase-name validation (no-op if no manifest or no loader)
+                const manifest = repoRoot && this.loadManifestFn ? this.loadManifestFn(repoRoot) : null;
+                if (manifest) {
+                  const declared = Object.keys(manifest.phases);
+                  if (!declared.includes(newPhase)) {
+                    return {
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: `unknown phase "${newPhase}". declared phases: ${declared.join(", ")}. pass force=true with forceReason to bypass.`,
+                        },
+                      ],
+                      isError: true,
+                    };
+                  }
+                  // Manifest-driven mode: skip the hardcoded transition graph.
+                } else if (existing.phase !== newPhase && !canTransition(existing.phase, newPhase as WorkItemPhase)) {
                   return {
                     content: [
                       {
                         type: "text" as const,
-                        text: `unknown phase "${newPhase}". declared phases: ${declared.join(", ")}`,
+                        text: `Invalid phase transition: ${existing.phase} → ${newPhase}. pass force=true with forceReason to bypass.`,
                       },
                     ],
                     isError: true,
                   };
                 }
-                // Manifest-driven mode: skip the hardcoded transition graph.
-              } else if (
-                !force &&
-                existing.phase !== newPhase &&
-                !canTransition(existing.phase, newPhase as WorkItemPhase)
-              ) {
-                return {
-                  content: [
-                    {
-                      type: "text" as const,
-                      text: `Invalid phase transition: ${existing.phase} → ${newPhase}`,
-                    },
-                  ],
-                  isError: true,
-                };
               }
             }
 

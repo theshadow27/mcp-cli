@@ -5,7 +5,7 @@
  * Alias execution happens in a subprocess via Bun.spawn for fault isolation.
  */
 
-import type { AliasValidationResult, JsonSchema, ToolInfo } from "@mcp-cli/core";
+import type { AliasValidationResult, AliasWorkItemInfo, JsonSchema, ToolInfo } from "@mcp-cli/core";
 import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -64,6 +64,7 @@ export class AliasServer {
   private db: StateDb;
   private executorPath: string;
   private semaphore = new Semaphore(MAX_CONCURRENT_SUBPROCESSES);
+  private workItemResolver: ((cwd: string) => AliasWorkItemInfo | null) | null = null;
 
   constructor(
     db: StateDb,
@@ -71,6 +72,16 @@ export class AliasServer {
   ) {
     this.db = db;
     this.executorPath = workerPath("alias-executor.ts");
+  }
+
+  /**
+   * Register a function that maps a caller cwd to its tracked work item.
+   * Called in-daemon before spawning the executor, so the subprocess never
+   * has to open an IPC connection back to ask the daemon about itself.
+   * Late-bound because WorkItemDb starts after AliasServer.
+   */
+  setWorkItemResolver(resolver: (cwd: string) => AliasWorkItemInfo | null): void {
+    this.workItemResolver = resolver;
   }
 
   /** Start the in-process MCP server and connect a client. */
@@ -230,6 +241,19 @@ export class AliasServer {
       }
     }
 
+    // Resolve the work item *here* (in the daemon) rather than inside the
+    // executor subprocess. Keeps the re-entrant IPC call off the hot path.
+    // Errors are swallowed — alias execution should proceed even when the
+    // lookup fails (detached HEAD, non-git cwd, DB hiccup).
+    let workItem: AliasWorkItemInfo | null = null;
+    if (cwd && this.workItemResolver) {
+      try {
+        workItem = this.workItemResolver(cwd);
+      } catch {
+        workItem = null;
+      }
+    }
+
     const payload = JSON.stringify({
       bundledJs,
       input: args,
@@ -237,6 +261,7 @@ export class AliasServer {
       aliasName: aliasDef.name,
       ...(callChain && callChain.length > 0 ? { callChain } : {}),
       ...(cwd ? { cwd } : {}),
+      ...(workItem ? { workItem } : {}),
     });
 
     return this.spawnExecutor(payload, timeoutMs ?? 30_000) as Promise<unknown>;

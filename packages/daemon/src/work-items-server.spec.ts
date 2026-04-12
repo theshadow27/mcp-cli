@@ -581,6 +581,41 @@ describe("WorkItemsServer", () => {
     expect(ok.isError).toBeFalsy();
   });
 
+  test("work_items_update force=true bypasses manifest phase-name validation", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const manifest = {
+      version: 1 as const,
+      initial: "plan",
+      phases: {
+        plan: { source: "./plan.ts", next: ["ship"] },
+        ship: { source: "./ship.ts", next: [] },
+      },
+    };
+    server = new WorkItemsServer(db, { loadManifest: () => manifest });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 80 } });
+
+    // "adhoc" is not declared in the manifest — rejected without force
+    const rejected = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:80", phase: "adhoc", repoRoot: "/tmp/any" },
+    });
+    expect(rejected.isError).toBe(true);
+
+    // With force=true, even an undeclared phase is accepted and the bypass is logged
+    const forced = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:80", phase: "adhoc", repoRoot: "/tmp/any", force: true, forceReason: "undeclared bypass" },
+    });
+    expect(forced.isError).toBeFalsy();
+    const log = db.listTransitions("pr:80");
+    const last = log[log.length - 1];
+    expect(last.toPhase).toBe("adhoc");
+    expect(last.forced).toBe(true);
+    expect(last.forceReason).toBe("undeclared bypass");
+  });
+
   test("work_items_update force=true bypasses legacy transition check and logs forced", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
