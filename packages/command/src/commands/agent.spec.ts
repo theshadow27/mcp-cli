@@ -1458,6 +1458,34 @@ describe("agent spawn with worktree passthrough", () => {
     await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "my-branch"], deps);
     expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-branch" }));
   });
+
+  test("records repoRoot on native worktree path (#1243)", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+      getGitRoot: mock(() => "/real/repo"),
+      getCwd: mock(() => "/real/repo/.claude/worktrees/something"),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "my-branch"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith(
+      "codex_prompt",
+      expect.objectContaining({ worktree: "my-branch", repoRoot: "/real/repo" }),
+    );
+  });
+
+  test("falls back to cwd when getGitRoot returns null", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+      getGitRoot: mock(() => null),
+      getCwd: mock(() => "/fallback/cwd"),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "my-branch"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith(
+      "codex_prompt",
+      expect.objectContaining({ worktree: "my-branch", repoRoot: "/fallback/cwd" }),
+    );
+  });
 });
 
 // ── agentSpawnHeaded ──
