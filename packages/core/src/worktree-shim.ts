@@ -8,7 +8,7 @@
  * @see https://github.com/theshadow27/mcp-cli/issues/909
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecFn } from "./git";
 import { fixCoreBare } from "./git";
@@ -65,12 +65,25 @@ export interface WorktreePruneOptions {
   /** Set of worktree names that have active sessions (skip these). */
   activeWorktrees: Set<string>;
   deps: WorktreeShimDeps;
+  /** If true, compute candidates but don't execute removals or branch deletes. */
+  dryRun?: boolean;
+  /**
+   * Optional async refresh of active-session set, called before each removal.
+   * Mitigates TOCTOU: orchestrator spawning a session into a candidate between
+   * list and remove. Callers without a way to refresh may omit.
+   */
+  refreshActive?: () => Promise<Set<string>>;
 }
 
 /** Result of a prune operation. */
 export interface WorktreePruneResult {
+  /** Count of worktrees actually removed (0 in dry-run). */
   pruned: number;
+  /** Names of worktrees that would be or were removed. */
+  removable: string[];
   skippedUnmerged: string[];
+  /** Branches that were deleted (empty in dry-run). */
+  deletedBranches: Set<string>;
 }
 
 // ── Create ──
@@ -223,12 +236,14 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
 }
 
 /** Delete a branch if it's been merged (git branch -d is safe — refuses unmerged). */
-function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps): void {
-  if (!branch) return;
+function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
+  if (!branch) return false;
   const { exitCode } = deps.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
   if (exitCode === 0) {
     deps.printError(`Deleted branch: ${branch} (merged)`);
+    return true;
   }
+  return false;
 }
 
 // ── List ──
@@ -291,8 +306,9 @@ export function getDefaultBranch(deps: WorktreeShimDeps, cwd: string): string {
  * Prune clean, merged, orphaned worktrees.
  * Skips worktrees with active sessions and unmerged branches.
  */
-export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult {
-  const { repoRoot, activeWorktrees, deps } = opts;
+export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<WorktreePruneResult> {
+  const { repoRoot, deps, dryRun = false, refreshActive } = opts;
+  let activeWorktrees = opts.activeWorktrees;
   const wtConfig = readWorktreeConfig(repoRoot);
   const { worktrees, worktreeBase } = listMcxWorktrees(repoRoot, deps);
 
@@ -324,10 +340,36 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
   }
 
   let pruned = 0;
+  const removable: string[] = [];
   const skippedUnmerged: string[] = [];
+  const deletedBranches = new Set<string>();
+  // Resolve symlinks on cwd — macOS does not resolve them in process.cwd(),
+  // so a shell that cd'd through a symlink into a candidate worktree would
+  // bypass the "don't remove my cwd" guard below.
+  const cwd = (() => {
+    try {
+      const raw = process.cwd();
+      try {
+        return realpathSync(raw);
+      } catch {
+        return raw;
+      }
+    } catch {
+      return "";
+    }
+  })();
 
   for (const wt of worktrees) {
     const wtName = wt.path.slice(`${worktreeBase}/`.length);
+    // Refresh active set between iterations to narrow the TOCTOU window
+    // (orchestrator spawning a session into a candidate worktree).
+    if (refreshActive && !dryRun) {
+      try {
+        activeWorktrees = await refreshActive();
+      } catch {
+        // Keep prior set on refresh failure.
+      }
+    }
     if (activeWorktrees.has(wtName)) continue;
     if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch)) {
       skippedUnmerged.push(wt.branch);
@@ -338,6 +380,15 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
     const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", wt.path, "status", "--porcelain"]);
     if (statusExit !== 0 || status.trim() !== "") continue;
 
+    // Guard: refuse to remove a worktree that contains the current CWD.
+    if (cwd && (cwd === wt.path || cwd.startsWith(`${wt.path}/`))) {
+      deps.printError(`Skipping worktree containing current directory: ${wt.path}`);
+      continue;
+    }
+
+    removable.push(wtName);
+    if (dryRun) continue;
+
     // Remove worktree
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd: repoRoot });
@@ -345,7 +396,9 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
       if (hookExit === 0) {
         deps.printError(`Removed worktree via hook: ${wt.path}`);
         pruned++;
-        deleteIfMerged(wt.branch ?? "", repoRoot, deps);
+        if (wt.branch && deleteIfMerged(wt.branch, repoRoot, deps)) {
+          deletedBranches.add(wt.branch);
+        }
       } else {
         deps.printError(`Worktree teardown hook failed for: ${wt.path}: ${hookStderr}`);
       }
@@ -357,7 +410,9 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
         }
         deps.printError(`Removed worktree: ${wt.path}`);
         pruned++;
-        deleteIfMerged(wt.branch ?? "", repoRoot, deps);
+        if (wt.branch && deleteIfMerged(wt.branch, repoRoot, deps)) {
+          deletedBranches.add(wt.branch);
+        }
       }
     }
   }
@@ -371,7 +426,7 @@ export function pruneWorktrees(opts: WorktreePruneOptions): WorktreePruneResult 
     }
   }
 
-  return { pruned, skippedUnmerged };
+  return { pruned, removable, skippedUnmerged, deletedBranches };
 }
 
 // ── Errors ──

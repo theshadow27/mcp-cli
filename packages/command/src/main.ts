@@ -33,6 +33,7 @@ import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
+import { cmdGc } from "./commands/gc";
 import { cmdGet } from "./commands/get";
 import { isGitRemoteHelperInvocation, runGitRemoteHelper } from "./commands/git-remote-helper";
 import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
@@ -153,7 +154,8 @@ async function main(): Promise<void> {
   }
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
-  if (dryRun && command && command !== "call") {
+  // and for commands that opt in (gc).
+  if (dryRun && command && command !== "call" && command !== "gc") {
     const isShorthand =
       !command.startsWith("-") &&
       (splitServerTool(command) !== null || (cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")));
@@ -284,6 +286,10 @@ async function main(): Promise<void> {
 
       case "get":
         await cmdGet(cleanArgs.slice(1));
+        break;
+
+      case "gc":
+        await cmdGc(cleanArgs.slice(1), { dryRun: _dryRun });
         break;
 
       case "auth":
@@ -898,6 +904,7 @@ Aliases:
 
 Utility:
   mcx search/install/update           Registry search and install
+  mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx logs <server> [-f]              View server stderr
   mcx mail <subcommand>               Inter-session messaging
   mcx note <subcommand>               Tool annotations

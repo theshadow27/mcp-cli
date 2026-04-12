@@ -537,22 +537,27 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    Use `mcx tracked --json` for the final status dashboard — items in `done` phase
    were merged, items in other phases need follow-up.
 4. Clean up tracking: `mcx untrack` any remaining items (they'll carry into next sprint otherwise)
-5. **Check for concurrent cross-repo sprints before rebuilding** (see #1250).
+5. **Run gc to prune accumulated branches and stale worktrees:**
+   ```bash
+   mcx gc --dry-run    # preview what would be cleaned
+   mcx gc              # prune merged branches + stale worktrees + remote refs
+   ```
+6. **Check for concurrent cross-repo sprints before rebuilding** (see #1250).
    The rebuild produces new `dist/mcx` and `dist/mcpd` binaries; a daemon
    restart kills *all* sessions including those from other repos sharing this
    daemon. Check:
    ```bash
    ps aux | grep mcpd | grep -v grep    # confirm single daemon
    # Ask the user if any other sprint is active in another repo.
-   # If yes: defer steps 6-7 until they complete.
+   # If yes: defer steps 7-8 until they complete.
    ```
-6. Pull main and rebuild: `git checkout main && git pull && bun run build`
-7. Restart the daemon so it picks up the new build: verify no sessions active
+7. Pull main and rebuild: `git checkout main && git pull && bun run build`
+8. Restart the daemon so it picks up the new build: verify no sessions active
    with `mcx claude ls`, then `mcx shutdown && mcx status`. This ensures the
    next sprint runs on the latest code (including any daemon fixes merged
    during this sprint). **Skip if another sprint is still active.**
-8. Run `/sprint review` to cut a release
-9. Run `/sprint retro` to capture learnings
+9. Run `/sprint review` to cut a release
+10. Run `/sprint retro` to capture learnings
 
 ## Sweeping main commits during a sprint
 

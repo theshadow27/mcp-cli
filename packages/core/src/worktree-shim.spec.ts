@@ -403,7 +403,7 @@ describe("listMcxWorktrees", () => {
 // ── pruneWorktrees ──
 
 describe("pruneWorktrees", () => {
-  test("prunes clean merged worktrees", () => {
+  test("prunes clean merged worktrees", async () => {
     const porcelainOutput = [
       "worktree /repo",
       "HEAD abc123",
@@ -429,7 +429,7 @@ describe("pruneWorktrees", () => {
     });
     const printError = mock(() => {});
 
-    const result = pruneWorktrees({
+    const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(),
       deps: { exec, printError },
@@ -439,7 +439,7 @@ describe("pruneWorktrees", () => {
     expect(result.skippedUnmerged).toEqual([]);
   });
 
-  test("skips worktrees with active sessions", () => {
+  test("skips worktrees with active sessions", async () => {
     const porcelainOutput = [
       "worktree /repo",
       "HEAD abc123",
@@ -460,7 +460,7 @@ describe("pruneWorktrees", () => {
     });
     const printError = mock(() => {});
 
-    const result = pruneWorktrees({
+    const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(["feat-active"]),
       deps: { exec, printError },
@@ -469,7 +469,7 @@ describe("pruneWorktrees", () => {
     expect(result.pruned).toBe(0);
   });
 
-  test("skips unmerged branches", () => {
+  test("skips unmerged branches", async () => {
     const porcelainOutput = [
       "worktree /repo",
       "HEAD abc123",
@@ -490,7 +490,7 @@ describe("pruneWorktrees", () => {
     });
     const printError = mock(() => {});
 
-    const result = pruneWorktrees({
+    const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(),
       deps: { exec, printError },
@@ -500,7 +500,7 @@ describe("pruneWorktrees", () => {
     expect(result.skippedUnmerged).toEqual(["claude/feat-wip"]);
   });
 
-  test("batch guard: calls fixCoreBare after pruning when core.bare=true on last removal", () => {
+  test("batch guard: calls fixCoreBare after pruning when core.bare=true on last removal", async () => {
     // Simulate the recurrence bug: individual per-removal fix runs but a subsequent
     // removal flips core.bare back to true. The final batch guard should catch it.
     // fixCoreBare guards against non-existent repos via existsSync(.git), so we need
@@ -547,7 +547,7 @@ describe("pruneWorktrees", () => {
       const printErrors: string[] = [];
       const printError = mock((msg: string) => printErrors.push(msg));
 
-      const result = pruneWorktrees({
+      const result = await pruneWorktrees({
         repoRoot,
         activeWorktrees: new Set(),
         deps: { exec, printError },
