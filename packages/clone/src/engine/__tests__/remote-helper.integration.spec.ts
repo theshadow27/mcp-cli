@@ -259,9 +259,28 @@ describe("t5801 round-trip", () => {
 // ── t5801: Error handling (4 tests) ───────────────────────────────
 
 describe("t5801 error handling", () => {
-  test.skip("t5801-32: provider list failure during import surfaces to protocol (#1301)", async () => {
-    const provider = createMockProvider({ entries: { a: { content: "a", version: 1 } } });
-    // Wrap list to throw on first call.
+  // t5801-32/33 document the current "swallow-and-write-terminator" contract
+  // used by `runProtocol` until real handlers land in #1211/#1212. When a
+  // handler throws, `runProtocol` logs the error to stderr, writes a
+  // terminator byte sequence to stdout, and resolves without propagating.
+  //
+  // The terminator bytes differ by command:
+  //   - list/export → "\n" (empty status list + blank-line terminator).
+  //     This is protocol-valid-but-uninformative: git sees zero ref updates.
+  //   - import → "done\n". This is a PROTOCOL LIE: `done` is a fast-import
+  //     directive meaning "commit all pending objects and exit 0". Writing it
+  //     on error claims success. Today this is tolerated only because the
+  //     stub `handleImport` never emits any fast-import directives before
+  //     (theoretically) throwing, so fast-import commits nothing and the lie
+  //     is a no-op. Once #1211 lands a real fast-import writer that can fail
+  //     mid-stream, `done\n` on error would cause silent data corruption
+  //     (partial commit) or a silent empty fetch — #1211 MUST replace this
+  //     with either zero-byte output (letting fast-import error on
+  //     truncation) or rejection propagation with a caller-side try/catch.
+  //
+  // See PR #1304 adversarial review for the full analysis. Do NOT treat the
+  // `done\n` assertion below as protocol-correct behavior to preserve.
+  test("t5801-32: provider list failure writes safe terminator and resolves", async () => {
     const handlers: RemoteHelperHandlers = {
       list: async () => {
         throw new Error("provider unreachable");
@@ -270,11 +289,17 @@ describe("t5801 error handling", () => {
       handleExport: async () => "ok refs/heads/main\n\n",
     };
     const stdin = streamFrom("list\n\n");
-    const { stream } = collectStream();
-    await expect(runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR })).rejects.toThrow("provider unreachable");
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    // Stub-oracle only: bare "\n" is a blank terminator with zero status
+    // lines. A real list handler should emit `@refs/... HEAD\n\n`; a real
+    // error path per git-remote-helpers(1) has no list-failure syntax and
+    // needs the caller-side exit decision from #1211/#1212. Stderr diagnostic
+    // is not asserted here but is load-bearing — do not drop it in refactors.
+    expect(result()).toBe("\n");
   });
 
-  test.skip("t5801-33: provider push failure during export surfaces to protocol (#1301)", async () => {
+  test("t5801-33: provider push failure writes safe terminator and resolves", async () => {
     const handlers: RemoteHelperHandlers = {
       list: async () => "@refs/heads/main HEAD\n",
       handleImport: async () => "done\n",
@@ -283,10 +308,14 @@ describe("t5801 error handling", () => {
       },
     };
     const stdin = streamFrom("export\nstream-payload\n");
-    const { stream } = collectStream();
-    await expect(runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR })).rejects.toThrow(
-      "push rejected: offline",
-    );
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    // Stub-oracle only: git-remote-helpers(1) requires per-ref
+    // `ok <refname>\n` or `error <refname> <reason>\n` followed by a blank
+    // line. Bare "\n" leaves git with no status for any ref. #1212 must
+    // replace this with real per-ref error status lines. Stderr diagnostic is
+    // not asserted here but is load-bearing — do not drop it in refactors.
+    expect(result()).toBe("\n");
   });
 
   test.todo(

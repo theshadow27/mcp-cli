@@ -132,12 +132,15 @@ describe("runGitRemoteHelper", () => {
   });
 
   test("requires GIT_DIR", async () => {
-    const { stream } = collect();
-    // Git hooks inherit GIT_DIR — must unset for this test to be meaningful.
-    const prev = process.env.GIT_DIR;
-    // biome-ignore lint/performance/noDelete: assignment to undefined would still be truthy
+    // Git sets GIT_DIR in hook environments (commit hooks, etc.), so the
+    // handler's fallback to process.env.GIT_DIR would hide the negative
+    // assertion. Isolate the test from the ambient environment.
+    const savedGitDir = process.env.GIT_DIR;
+    // Assigning `undefined` coerces to the string "undefined"; must delete.
+    // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined"
     delete process.env.GIT_DIR;
     try {
+      const { stream } = collect();
       await expect(
         runGitRemoteHelper({
           argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
@@ -146,7 +149,7 @@ describe("runGitRemoteHelper", () => {
         }),
       ).rejects.toThrow(/GIT_DIR/);
     } finally {
-      if (prev !== undefined) process.env.GIT_DIR = prev;
+      if (savedGitDir !== undefined) process.env.GIT_DIR = savedGitDir;
     }
   });
 
