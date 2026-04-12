@@ -481,6 +481,13 @@ describe("explainTransition", () => {
     expect(r.kind).toBe("unknown-phase");
     expect(r.message).toContain("impl");
   });
+
+  test("same phase is disallowed, not indirect", () => {
+    const r = explainTransition(m, "impl", "impl");
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("disallowed");
+    expect(r.message).toContain("already");
+  });
 });
 
 describe("buildPhaseList / formatPhaseTable", () => {

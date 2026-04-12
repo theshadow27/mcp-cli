@@ -662,6 +662,16 @@ export function explainTransition(manifest: Manifest, from: string, to: string):
     return { legal: false, kind: "unknown-phase", from, to, message: parts.join("; ") };
   }
 
+  if (from === to) {
+    return {
+      legal: false,
+      kind: "disallowed",
+      from,
+      to,
+      message: `"${from}" is already the current phase — no transition needed`,
+    };
+  }
+
   const direct = manifest.phases[from]?.next.includes(to) ?? false;
   if (direct) {
     return {
