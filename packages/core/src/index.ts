@@ -19,6 +19,7 @@ export * from "./trace";
 export * from "./git";
 export * from "./logger";
 export * from "./manifest";
+export * from "./manifest-lock";
 export * from "./worktree-config";
 export * from "./worktree-shim";
 export * from "./plan";
