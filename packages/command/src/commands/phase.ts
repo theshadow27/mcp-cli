@@ -18,6 +18,7 @@
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
+  type AliasContext,
   DisallowedTransitionError,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
@@ -31,9 +32,11 @@ import {
   appendTransitionLog,
   bundleAlias,
   canonicalJson,
+  executeAliasBundled,
   extractMetadata,
   hashFileSync,
   historyTargets,
+  isDefineAlias,
   loadManifest,
   parseLockfile,
   readTransitionHistory,
@@ -41,6 +44,7 @@ import {
   sha256Hex,
   suggestPhases,
   validateTransition,
+  wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
 import { printError } from "../output";
@@ -53,6 +57,8 @@ export interface PhaseInstallDeps {
   writeFileSync: (path: string, data: string) => void;
   readFileSync: (path: string) => string;
   existsSync: (path: string) => boolean;
+  readFile: (path: string) => Promise<string>;
+  executeAliasBundled: typeof executeAliasBundled;
   cwd: () => string;
   log: (msg: string) => void;
   logError: (msg: string) => void;
@@ -67,6 +73,8 @@ const defaultDeps: PhaseInstallDeps = {
   writeFileSync: (path, data) => writeFileSync(path, data, "utf-8"),
   readFileSync: (path) => readFileSync(path, "utf-8"),
   existsSync: (path) => existsSync(path),
+  readFile: (path) => Bun.file(path).text(),
+  executeAliasBundled,
   cwd: () => process.cwd(),
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
@@ -603,12 +611,17 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
     }
 
     if (sub === "run") {
-      const opts = parsePhaseRunArgs(args.slice(1));
-      const result = phaseRun(opts, { cwd: d.cwd() });
-      const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
-      const tag = result.forced ? " [FORCED]" : "";
-      const trail = result.from ?? "(initial)";
-      d.logError(`approved${tag}: ${trail} → ${opts.target} (${source})`);
+      const argv = args.slice(1);
+      if (argv.includes("--dry-run")) {
+        await runPhase(argv, d);
+      } else {
+        const opts = parsePhaseRunArgs(argv);
+        const result = phaseRun(opts, { cwd: d.cwd() });
+        const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
+        const tag = result.forced ? " [FORCED]" : "";
+        const trail = result.from ?? "(initial)";
+        d.logError(`approved${tag}: ${trail} → ${opts.target} (${source})`);
+      }
       return;
     }
 
@@ -636,6 +649,80 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
   }
 }
 
+async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
+  const positional: string[] = [];
+  const flags = new Set<string>();
+  for (const a of argv) {
+    if (a.startsWith("--")) flags.add(a);
+    else positional.push(a);
+  }
+  const name = positional[0];
+  if (!name) {
+    d.logError("Usage: mcx phase run <name> --dry-run");
+    d.exit(1);
+  }
+  if (!flags.has("--dry-run")) {
+    d.logError("mcx phase run currently supports --dry-run only");
+    d.exit(1);
+  }
+
+  const cwd = d.cwd();
+  const loaded = d.loadManifest(cwd);
+  if (!loaded) {
+    d.logError("no .mcx.yaml or .mcx.json in this repo");
+    d.exit(1);
+  }
+
+  const phase = loaded.manifest.phases[name];
+  if (!phase) {
+    d.logError(`unknown phase "${name}"`);
+    d.exit(1);
+  }
+
+  let resolved: string;
+  try {
+    resolved = resolvePhaseSource(phase.source, cwd);
+  } catch (err) {
+    d.logError(`phase "${name}": ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  let source: string;
+  try {
+    source = await d.readFile(resolved);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === "ENOENT") d.logError(`phase "${name}": source ${phase.source} not found`);
+    else d.logError(`phase "${name}": cannot read ${phase.source}: ${e?.message ?? String(err)}`);
+    d.exit(1);
+  }
+  const structured = isDefineAlias(source);
+
+  const { js } = await d.bundleAlias(resolved);
+
+  const stubState = {
+    get: async () => undefined,
+    all: async () => ({}),
+    set: async () => {},
+    delete: async () => {},
+  };
+  const baseCtx: AliasContext = {
+    mcp: {},
+    args: {},
+    file: (p) => Bun.file(p).text(),
+    json: async (p) => JSON.parse(await Bun.file(p).text()),
+    // Dry-run: use an in-memory no-op cache so producers still run but
+    // nothing is written to ~/.mcp-cli/cache — avoids caching `undefined`
+    // (the dry-run proxy return value) and corrupting real cache entries.
+    cache: async (_k, producer) => producer() as Promise<never>,
+    state: stubState,
+    globalState: stubState,
+  };
+  const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
+
+  await d.executeAliasBundled(js, structured ? {} : undefined, ctx, structured);
+}
+
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
 
@@ -650,6 +737,9 @@ Subcommands:
       Validate and record a phase transition against .mcx.{yaml,json}.
       --force <message> bypasses disallowed-transition and regression checks;
       unknown-phase errors are never bypassable.
+
+  mcx phase run <name> --dry-run
+      Execute a phase handler with side effects logged but not dispatched.
 
   mcx phase list [--json]
       List all phases declared in the manifest with install status.

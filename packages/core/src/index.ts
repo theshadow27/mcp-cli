@@ -1,4 +1,5 @@
 export * from "./alias";
+export * from "./alias-dry-run";
 export * from "./alias-state";
 export * from "./alias-bundle";
 export * from "./cache";

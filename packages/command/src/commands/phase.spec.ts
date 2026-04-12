@@ -165,6 +165,83 @@ describe("cmdPhase install — integration", () => {
     expect(errs.some((e) => e.includes("no .mcx.yaml or .mcx.json"))).toBe(true);
   });
 
+  test("run --dry-run logs mcp + state writes without dispatching", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(
+      join(dir, "impl.ts"),
+      `
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({}).optional(),
+  fn: async (_input, ctx) => {
+    await ctx.mcp._work_items.work_items_update({ id: "#1241", phase: "qa" });
+    await ctx.mcp._work_items.untrack({ issue: 1241 });
+    await ctx.state.set("prNumber", 123);
+  },
+}));
+`.trim(),
+    );
+
+    const logs: string[] = [];
+    const errs: string[] = [];
+    await cmdPhase(["run", "implement", "--dry-run"], {
+      cwd: () => dir,
+      log: (m) => logs.push(m),
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        throw new Error(`exit(${code})`);
+      }) as (code: number) => never,
+    });
+
+    expect(logs).toEqual([
+      `[dry-run] mcp._work_items.work_items_update({"id":"#1241","phase":"qa"})`,
+      `[dry-run] mcp._work_items.untrack({"issue":1241})`,
+      `[dry-run] ctx.state.set("prNumber", 123)`,
+    ]);
+  }, 15_000);
+
+  test("run errors on unknown phase", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const errs: string[] = [];
+    let code: number | undefined;
+    await cmdPhase(["run", "nope", "--dry-run"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((c: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as (c: number) => never,
+    }).catch(() => {});
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes('unknown phase "nope"'))).toBe(true);
+  });
+
+  test("run without --dry-run dispatches to transition enforcement", async () => {
+    // Since #1293 merged, `run <target>` without --dry-run validates and records
+    // the transition (transition-enforcement path), not the dry-run execution path.
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const errs: string[] = [];
+    let code: number | undefined;
+    await cmdPhase(["run", "implement"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((c: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as (c: number) => never,
+    }).catch(() => {});
+    // simpleManifest has initial: implement — transition is valid from initial state
+    expect(code).toBeUndefined();
+    expect(errs.some((e) => e.includes("approved") && e.includes("implement"))).toBe(true);
+  });
+
   test("errors when source not found", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
 
