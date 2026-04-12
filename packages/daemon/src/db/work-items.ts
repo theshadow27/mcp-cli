@@ -10,6 +10,39 @@ import { randomUUIDv7 } from "bun";
 
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 
+/** A phase transition record from the append-only transition log. */
+export interface WorkItemTransition {
+  id: number;
+  workItemId: string;
+  fromPhase: string | null;
+  toPhase: string;
+  forced: boolean;
+  forceReason: string | null;
+  at: number;
+}
+
+interface WorkItemTransitionRow {
+  id: number;
+  work_item_id: string;
+  from_phase: string | null;
+  to_phase: string;
+  forced: number;
+  force_reason: string | null;
+  at: number;
+}
+
+function rowToTransition(row: WorkItemTransitionRow): WorkItemTransition {
+  return {
+    id: row.id,
+    workItemId: row.work_item_id,
+    fromPhase: row.from_phase,
+    toPhase: row.to_phase,
+    forced: row.forced !== 0,
+    forceReason: row.force_reason,
+    at: row.at,
+  };
+}
+
 /** Snake-case row shape from SQLite. */
 interface WorkItemRow {
   id: string;
@@ -56,14 +89,57 @@ export class WorkItemDb {
   }
 
   /**
-   * Versioned migration using PRAGMA user_version.
+   * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
    *
-   * NOTE: user_version is database-wide. This works because WorkItemDb is
-   * currently the only consumer. If StateDb (which shares this connection)
-   * ever needs versioned migrations, switch to a per-table schema_versions table.
+   * Why not PRAGMA user_version: it's database-wide. StateDb and WorkItemDb share
+   * the same SQLite connection, so a second consumer adding its own v2 migration
+   * would read user_version=2 already and silently skip. schema_versions keys by
+   * consumer name, so each migrates independently.
+   *
+   * Legacy handling: pre-existing deployments set PRAGMA user_version to 1 or 2.
+   * On first boot after this change, we read PRAGMA as a fallback seed for the
+   * work_items row in schema_versions, then never touch PRAGMA again (leaving it
+   * at whatever value it had — harmless since no future code reads it).
    */
   private migrate(): void {
-    const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_versions (
+        name    TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
+      )
+    `);
+
+    const CONSUMER = "work_items";
+    let version = this.db
+      .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+      .get(CONSUMER)?.version;
+
+    if (version === undefined) {
+      // No schema_versions row yet. Detect legacy state via table presence —
+      // NOT via PRAGMA user_version (another consumer on the same connection
+      // may have set it for their own purposes; that value means nothing to us).
+      const hasWorkItems =
+        this.db
+          .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='work_items'")
+          .get()?.n ?? 0;
+      const hasTransitions =
+        this.db
+          .query<{ n: number }, []>(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='work_item_transitions'",
+          )
+          .get()?.n ?? 0;
+
+      if (hasTransitions > 0) {
+        version = 2;
+      } else if (hasWorkItems > 0) {
+        version = 1;
+      } else {
+        version = 0;
+      }
+      this.db
+        .query<void, [string, number]>("INSERT INTO schema_versions (name, version) VALUES (?, ?)")
+        .run(CONSUMER, version);
+    }
 
     if (version < 1) {
       this.db.exec(`
@@ -86,10 +162,31 @@ export class WorkItemDb {
           ON work_items(issue_number) WHERE issue_number IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
           ON work_items(branch) WHERE branch IS NOT NULL;
-        PRAGMA user_version = 1;
       `);
+      this.setSchemaVersion(CONSUMER, 1);
+      version = 1;
     }
-    // Future: if (version < 2) { ALTER TABLE work_items ADD COLUMN ...; PRAGMA user_version = 2; }
+    if (version < 2) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS work_item_transitions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          work_item_id TEXT NOT NULL,
+          from_phase TEXT,
+          to_phase TEXT NOT NULL,
+          forced INTEGER NOT NULL DEFAULT 0,
+          force_reason TEXT,
+          at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_item_transitions_item
+          ON work_item_transitions(work_item_id);
+      `);
+      this.setSchemaVersion(CONSUMER, 2);
+      version = 2;
+    }
+  }
+
+  private setSchemaVersion(name: string, version: number): void {
+    this.db.query<void, [number, string]>("UPDATE schema_versions SET version = ? WHERE name = ?").run(version, name);
   }
 
   createWorkItem(item: Partial<WorkItem>): WorkItem {
@@ -116,6 +213,7 @@ export class WorkItemDb {
     // We just inserted with this id, so the row must exist
     const created = this.getWorkItem(id);
     if (!created) throw new Error(`failed to read back work item: ${id}`);
+    this.recordTransition(id, null, created.phase, false);
     return created;
   }
 
@@ -124,7 +222,7 @@ export class WorkItemDb {
     return row ? rowToWorkItem(row) : null;
   }
 
-  updateWorkItem(id: string, patch: Partial<WorkItem>): WorkItem {
+  updateWorkItem(id: string, patch: Partial<WorkItem>, opts?: { forced?: boolean; forceReason?: string }): WorkItem {
     const existing = this.getWorkItem(id);
     if (!existing) {
       throw new Error(`work item not found: ${id}`);
@@ -164,9 +262,35 @@ export class WorkItemDb {
       .prepare(`UPDATE work_items SET ${fields.join(", ")} WHERE id = $id`)
       .run(values as Record<string, string | number | null>);
 
+    if (patch.phase !== undefined && patch.phase !== existing.phase) {
+      this.recordTransition(id, existing.phase, patch.phase, opts?.forced ?? false, opts?.forceReason);
+    }
+
     const updated = this.getWorkItem(id);
     if (!updated) throw new Error(`failed to read back work item: ${id}`);
     return updated;
+  }
+
+  recordTransition(
+    workItemId: string,
+    fromPhase: string | null,
+    toPhase: string,
+    forced: boolean,
+    forceReason?: string,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO work_item_transitions (work_item_id, from_phase, to_phase, forced, force_reason)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(workItemId, fromPhase, toPhase, forced ? 1 : 0, forceReason ?? null);
+  }
+
+  listTransitions(workItemId: string): WorkItemTransition[] {
+    return this.db
+      .query<WorkItemTransitionRow, [string]>("SELECT * FROM work_item_transitions WHERE work_item_id = ? ORDER BY id")
+      .all(workItemId)
+      .map(rowToTransition);
   }
 
   deleteWorkItem(id: string): boolean {
@@ -206,6 +330,7 @@ export class WorkItemDb {
    * Uses INSERT ... ON CONFLICT(id) DO UPDATE to avoid TOCTOU races.
    */
   upsertWorkItem(item: Partial<WorkItem> & { id: string }): WorkItem {
+    const before = this.getWorkItem(item.id);
     this.db
       .query(
         `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, phase)
@@ -239,6 +364,16 @@ export class WorkItemDb {
 
     const result = this.getWorkItem(item.id);
     if (!result) throw new Error(`failed to read back work item: ${item.id}`);
+    // Only log when we have a phase to log. Upsert can insert a row without a
+    // phase value (SQLite DEFAULT is bypassed by explicit NULL); in that case
+    // the transition log stays empty until a phase is assigned.
+    if (result.phase) {
+      if (!before) {
+        this.recordTransition(item.id, null, result.phase, false);
+      } else if (before.phase !== result.phase) {
+        this.recordTransition(item.id, before.phase, result.phase, false);
+      }
+    }
     return result;
   }
 }

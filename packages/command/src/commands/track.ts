@@ -9,9 +9,18 @@
  *          mcx tracked --json           Machine-readable output
  */
 
-import type { IpcMethod, IpcMethodResult, WorkItem, WorkItemPhase } from "@mcp-cli/core";
-import { WORK_ITEM_PHASES, ipcCall } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, Manifest, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import { WORK_ITEM_PHASES, ipcCall, loadManifest } from "@mcp-cli/core";
 import { c, printError } from "../output";
+
+/** Load a manifest from the given directory, swallowing parse errors so they don't break CLI commands. */
+function tryLoadManifest(dir: string): Manifest | null {
+  try {
+    return loadManifest(dir)?.manifest ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export interface TrackDeps {
   ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
@@ -31,6 +40,9 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     return;
   }
 
+  const manifest = tryLoadManifest(process.cwd());
+  const initialPhase = manifest?.initial;
+
   if (args[0] === "--branch") {
     const branch = args[1];
     if (!branch) {
@@ -38,7 +50,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       return deps.exit(1);
     }
     try {
-      const item = await deps.ipcCall("trackWorkItem", { branch });
+      const item = await deps.ipcCall("trackWorkItem", { branch, ...(initialPhase ? { initialPhase } : {}) });
       console.error(`Tracking branch ${branch} (${item.id})`);
     } catch (err) {
       printError(`Failed to track branch: ${err instanceof Error ? err.message : String(err)}`);
@@ -54,7 +66,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   }
 
   try {
-    const item = await deps.ipcCall("trackWorkItem", { number: num });
+    const item = await deps.ipcCall("trackWorkItem", { number: num, ...(initialPhase ? { initialPhase } : {}) });
     console.error(`Tracking #${num} (${item.id})`);
   } catch (err) {
     printError(`Failed to track #${num}: ${err instanceof Error ? err.message : String(err)}`);
@@ -119,26 +131,40 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
 
   const jsonFlag = args.includes("--json");
   const phaseIdx = args.indexOf("--phase");
-  let phase: WorkItemPhase | undefined;
+  let phase: string | undefined;
+  const manifest = tryLoadManifest(process.cwd());
+  const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   if (phaseIdx >= 0) {
     const raw = args[phaseIdx + 1];
     if (!raw || raw.startsWith("--")) {
-      printError(`--phase requires a value: ${WORK_ITEM_PHASES.join(", ")}`);
+      const valid = declaredPhases ?? WORK_ITEM_PHASES;
+      printError(`--phase requires a value: ${valid.join(", ")}`);
       return deps.exit(1);
     }
-    if (!WORK_ITEM_PHASES.includes(raw as WorkItemPhase)) {
-      printError(`Unknown phase "${raw}". Valid phases: ${WORK_ITEM_PHASES.join(", ")}`);
-      return deps.exit(1);
+    if (declaredPhases) {
+      if (!declaredPhases.includes(raw)) {
+        // Warn (don't fail) — this matches #1298's contract for manifest mode.
+        console.error(`warning: phase "${raw}" is not declared in manifest (declared: ${declaredPhases.join(", ")})`);
+      }
+      phase = raw;
+    } else {
+      if (!WORK_ITEM_PHASES.includes(raw as WorkItemPhase)) {
+        printError(`Unknown phase "${raw}". Valid phases: ${WORK_ITEM_PHASES.join(", ")}`);
+        return deps.exit(1);
+      }
+      phase = raw;
     }
-    phase = raw as WorkItemPhase;
   }
 
   try {
     const items = await deps.ipcCall("listWorkItems", phase ? { phase } : {});
 
     if (jsonFlag) {
-      console.log(JSON.stringify(items, null, 2));
+      const annotated = declaredPhases
+        ? items.map((it) => ({ ...it, phaseValid: declaredPhases.includes(it.phase) }))
+        : items.map((it) => ({ ...it, phaseValid: WORK_ITEM_PHASES.includes(it.phase) }));
+      console.log(JSON.stringify(annotated, null, 2));
       return;
     }
 

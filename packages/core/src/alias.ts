@@ -39,6 +39,19 @@ export interface AliasStateAccessor {
   all(): Promise<Record<string, unknown>>;
 }
 
+/**
+ * Read-only snapshot of the work item backing the current alias invocation.
+ * Populated by the alias runtime by resolving the caller's cwd to a tracked
+ * work item (by branch). `null` when there is no matching tracked item.
+ */
+export interface AliasWorkItemInfo {
+  id: string;
+  issueNumber: number | null;
+  prNumber: number | null;
+  branch: string | null;
+  phase: string;
+}
+
 /** The context available inside a defineAlias handler function */
 export interface AliasContext {
   /** Proxy for calling MCP tools: mcp.server.tool(args) */
@@ -61,6 +74,12 @@ export interface AliasContext {
    * in the current repository (namespace = `__global__`).
    */
   globalState: AliasStateAccessor;
+  /**
+   * Work item backing this invocation (built-in fields only: issueNumber,
+   * prNumber, branch, phase). Use `state` for user-declared fields.
+   * `null` when the current repo/branch does not map to a tracked work item.
+   */
+  workItem: AliasWorkItemInfo | null;
 }
 
 /**

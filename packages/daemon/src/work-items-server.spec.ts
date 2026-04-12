@@ -516,4 +516,131 @@ describe("WorkItemsServer", () => {
     await server.start();
     await expect(server.start()).rejects.toThrow("already started");
   });
+
+  test("work_items_update rejects unknown phase when manifest is present", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const manifest = {
+      version: 1 as const,
+      initial: "plan",
+      phases: {
+        plan: { source: "./plan.ts", next: ["build"] },
+        build: { source: "./build.ts", next: [] },
+      },
+    };
+    server = new WorkItemsServer(db, { loadManifest: () => manifest });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 42 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:42", phase: "buld", repoRoot: "/tmp/any" },
+    });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toMatch(/unknown phase "buld"/);
+    expect(content[0].text).toMatch(/declared phases: plan, build/);
+  });
+
+  test("work_items_update accepts manifest-declared phase outside legacy enum", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const manifest = {
+      version: 1 as const,
+      initial: "plan",
+      phases: {
+        plan: { source: "./plan.ts", next: ["ship"] },
+        ship: { source: "./ship.ts", next: [] },
+      },
+    };
+    server = new WorkItemsServer(db, { loadManifest: () => manifest });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 50 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:50", phase: "ship", repoRoot: "/tmp/any" },
+    });
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content[0].text).phase).toBe("ship");
+  });
+
+  test("work_items_update without manifest uses hardcoded canTransition", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db); // no loadManifest
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 60 } });
+
+    // impl → done is allowed in the hardcoded graph
+    const ok = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:60", phase: "done" },
+    });
+    expect(ok.isError).toBeFalsy();
+  });
+
+  test("work_items_update force=true bypasses manifest phase-name validation", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const manifest = {
+      version: 1 as const,
+      initial: "plan",
+      phases: {
+        plan: { source: "./plan.ts", next: ["ship"] },
+        ship: { source: "./ship.ts", next: [] },
+      },
+    };
+    server = new WorkItemsServer(db, { loadManifest: () => manifest });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 80 } });
+
+    // "adhoc" is not declared in the manifest — rejected without force
+    const rejected = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:80", phase: "adhoc", repoRoot: "/tmp/any" },
+    });
+    expect(rejected.isError).toBe(true);
+
+    // With force=true, even an undeclared phase is accepted and the bypass is logged
+    const forced = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:80", phase: "adhoc", repoRoot: "/tmp/any", force: true, forceReason: "undeclared bypass" },
+    });
+    expect(forced.isError).toBeFalsy();
+    const log = db.listTransitions("pr:80");
+    const last = log[log.length - 1];
+    expect(last.toPhase).toBe("adhoc");
+    expect(last.forced).toBe(true);
+    expect(last.forceReason).toBe("undeclared bypass");
+  });
+
+  test("work_items_update force=true bypasses legacy transition check and logs forced", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 70 } });
+    await client.callTool({ name: "work_items_update", arguments: { id: "pr:70", phase: "done" } });
+
+    // done → impl is not allowed normally
+    const rejected = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:70", phase: "impl" },
+    });
+    expect(rejected.isError).toBe(true);
+
+    const forced = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:70", phase: "impl", force: true, forceReason: "test reopen" },
+    });
+    expect(forced.isError).toBeFalsy();
+    const log = db.listTransitions("pr:70");
+    const last = log[log.length - 1];
+    expect(last.fromPhase).toBe("done");
+    expect(last.toPhase).toBe("impl");
+    expect(last.forced).toBe(true);
+    expect(last.forceReason).toBe("test reopen");
+  });
 });

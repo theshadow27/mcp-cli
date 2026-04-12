@@ -307,4 +307,84 @@ describe("formatWorkItemRow", () => {
     const row = formatWorkItemRow(item);
     expect(row).toContain("feat/issue-1135-cleanup");
   });
+
+  describe("manifest integration", () => {
+    const origCwd = process.cwd();
+    const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
+    const { tmpdir } = require("node:os");
+    const { join } = require("node:path");
+
+    function withManifestDir(manifestYaml: string, run: () => Promise<void>): Promise<void> {
+      const dir = mkdtempSync(join(tmpdir(), "mcx-track-manifest-"));
+      writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
+      process.chdir(dir);
+      return run().finally(() => {
+        process.chdir(origCwd);
+        rmSync(dir, { recursive: true, force: true });
+      });
+    }
+
+    test("cmdTrack passes initialPhase from manifest", async () => {
+      let captured: unknown;
+      const item = makeWorkItem();
+      const deps = makeDeps({
+        trackWorkItem: (params: unknown) => {
+          captured = params;
+          return item;
+        },
+      });
+
+      await withManifestDir(
+        "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
+        () => cmdTrack(["1135"], deps),
+      );
+      expect(captured).toEqual({ number: 1135, initialPhase: "plan" });
+    });
+
+    test("cmdTracked --json annotates phaseValid from manifest", async () => {
+      const items = [
+        makeWorkItem({ phase: "plan" as unknown as WorkItem["phase"] }),
+        makeWorkItem({ id: "#2", phase: "impl" }),
+      ];
+      const deps = makeDeps({ listWorkItems: items });
+
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (msg: string) => logs.push(msg);
+      try {
+        await withManifestDir(
+          "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
+          () => cmdTracked(["--json"], deps),
+        );
+      } finally {
+        console.log = origLog;
+      }
+      const parsed = JSON.parse(logs.join(""));
+      expect(parsed[0].phaseValid).toBe(true);
+      expect(parsed[1].phaseValid).toBe(false);
+    });
+
+    test("cmdTracked --phase warns when phase is not declared, but still queries", async () => {
+      let captured: unknown;
+      const deps = makeDeps({
+        listWorkItems: (params: unknown) => {
+          captured = params;
+          return [];
+        },
+      });
+      const errs: string[] = [];
+      const origErr = console.error;
+      console.error = (msg: string) => errs.push(msg);
+      try {
+        await withManifestDir(
+          "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
+          () => cmdTracked(["--phase", "impl"], deps),
+        );
+      } finally {
+        console.error = origErr;
+      }
+      expect(captured).toEqual({ phase: "impl" });
+      expect(errs.some((e) => e.includes('phase "impl" is not declared'))).toBe(true);
+    });
+  });
 });

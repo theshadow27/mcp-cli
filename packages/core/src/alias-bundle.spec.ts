@@ -233,6 +233,7 @@ describe("executeAliasBundled", () => {
         cache: async (_k, p) => p(),
         state: stubState,
         globalState: stubState,
+        workItem: null,
       },
       true,
     );
@@ -268,6 +269,7 @@ describe("executeAliasBundled", () => {
           cache: async (_k, p) => p(),
           state: stubState,
           globalState: stubState,
+          workItem: null,
         },
         true,
       ),
@@ -305,6 +307,7 @@ describe("executeAliasBundled", () => {
           cache: async (_k, p) => p(),
           state: stubState,
           globalState: stubState,
+          workItem: null,
         },
         true,
       );
@@ -343,6 +346,7 @@ describe("executeAliasBundled", () => {
         cache: async (_k, p) => p(),
         state: stubState,
         globalState: stubState,
+        workItem: null,
       },
       true,
     );
@@ -366,6 +370,7 @@ describe("executeAliasBundled", () => {
         cache: async (_k, p) => p(),
         state: stubState,
         globalState: stubState,
+        workItem: null,
       },
       false,
     );

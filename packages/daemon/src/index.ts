@@ -47,6 +47,7 @@ import {
   ensureStateDir,
   fixCoreBare,
   generateSpanId,
+  loadManifest,
   options,
   pruneExpiredCache,
   readCliConfig,
@@ -738,8 +739,58 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
           });
 
+          // Wire the alias executor's work-item resolver — resolves the caller
+          // cwd's branch → tracked work item in-process, so alias subprocesses
+          // don't need to phone home via IPC to answer ctx.workItem.
+          aliasServer.setWorkItemResolver(async (cwd) => {
+            try {
+              // Read .git/HEAD directly — `git symbolic-ref --short HEAD` just
+              // parses this file, and forking git blocks the event loop (up to
+              // 3s on slow FS or under .git/index.lock contention). For
+              // worktrees, `.git` is a file "gitdir: <path>" pointing at the
+              // real git dir; follow it to find the per-worktree HEAD.
+              let gitDir = `${cwd}/.git`;
+              const dotGit = Bun.file(gitDir);
+              if (!(await dotGit.exists())) return null;
+              const dotGitStat = await dotGit.stat();
+              if (dotGitStat.isFile()) {
+                const gitdirLine = (await dotGit.text()).trim();
+                const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
+                const target = match?.[1]?.trim();
+                if (!target) return null;
+                gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
+              }
+              const headFile = Bun.file(`${gitDir}/HEAD`);
+              if (!(await headFile.exists())) return null;
+              const headContent = (await headFile.text()).trim();
+              // "ref: refs/heads/<branch>" for attached HEAD; bare SHA for detached
+              const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
+              const branch = refMatch?.[1]?.trim();
+              if (!branch) return null;
+              const item = workItemDb.getWorkItemByBranch(branch);
+              if (!item) return null;
+              return {
+                id: item.id,
+                issueNumber: item.issueNumber,
+                prNumber: item.prNumber,
+                branch: item.branch,
+                phase: item.phase,
+              };
+            } catch {
+              return null;
+            }
+          });
+
           workItemsServer = new WorkItemsServer(workItemDb, {
             onTrack: () => workItemPoller?.pollNow(),
+            loadManifest: (repoRoot) => {
+              try {
+                return loadManifest(repoRoot)?.manifest ?? null;
+              } catch {
+                // Malformed manifest — behave as if absent so callers don't hard-fail.
+                return null;
+              }
+            },
           });
           const {
             client: workItemsClient,

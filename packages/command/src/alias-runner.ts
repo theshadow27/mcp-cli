@@ -56,6 +56,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
     cache: createAliasCache(aliasName),
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
+    workItem: null,
   };
 
   if (isStructured) {
