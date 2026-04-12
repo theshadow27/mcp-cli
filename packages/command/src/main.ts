@@ -41,6 +41,7 @@ import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
 import { cmdNote } from "./commands/note";
+import { cmdPhase } from "./commands/phase";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -290,6 +291,10 @@ async function main(): Promise<void> {
 
       case "gc":
         await cmdGc(cleanArgs.slice(1), { dryRun: _dryRun });
+        break;
+
+      case "phase":
+        await cmdPhase(cleanArgs.slice(1));
         break;
 
       case "auth":
