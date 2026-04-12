@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
-import { clone } from "./clone";
+import { clone, computeDepth } from "./clone";
 import { stripFrontmatter } from "./frontmatter";
 
 const TMP = join(tmpdir(), `clone-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -58,6 +58,48 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
+});
+
+describe("computeDepth", () => {
+  function entry(id: string, parentId?: string): RemoteEntry {
+    return { id, title: `Page ${id}`, parentId, version: 1, lastModified: "2026-01-01T00:00:00Z", metadata: {} };
+  }
+
+  test("root page (no parent) has depth 1", () => {
+    const entries = [entry("r1")];
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    expect(computeDepth(entries[0], byId)).toBe(1);
+  });
+
+  test("child of root has depth 2", () => {
+    const entries = [entry("r1"), entry("c1", "r1")];
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    expect(computeDepth(entries[1], byId)).toBe(2);
+  });
+
+  test("grandchild has depth 3", () => {
+    const entries = [entry("r1"), entry("c1", "r1"), entry("gc1", "c1")];
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    expect(computeDepth(entries[2], byId)).toBe(3);
+  });
+
+  test("parent not in entries set counts as root", () => {
+    const entries = [entry("orphan", "missing-parent")];
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    expect(computeDepth(entries[0], byId)).toBe(1);
+  });
+
+  test("cycle does not cause infinite loop", () => {
+    const e1 = entry("a", "b");
+    const e2 = entry("b", "a");
+    const byId = new Map([
+      [e1.id, e1],
+      [e2.id, e2],
+    ]);
+    const depth = computeDepth(e1, byId);
+    expect(depth).toBeGreaterThanOrEqual(1);
+    expect(depth).toBeLessThanOrEqual(3);
+  });
 });
 
 describe("clone", () => {
@@ -233,5 +275,144 @@ describe("clone", () => {
     expect(result.pageCount).toBe(0);
     // Git repo still gets initialized
     expect(existsSync(join(targetDir, ".git"))).toBe(true);
+  });
+});
+
+describe("clone with --depth", () => {
+  const DEPTH_TMP = join(tmpdir(), `clone-depth-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  function entry(id: string, title: string, parentId?: string, content?: string): RemoteEntry {
+    return {
+      id,
+      title,
+      parentId,
+      version: 1,
+      lastModified: "2026-01-01T00:00:00Z",
+      metadata: {},
+      ...(content != null ? { content } : {}),
+    };
+  }
+
+  function makeDepthProvider(entries: RemoteEntry[]): RemoteProvider {
+    return {
+      name: "test",
+      resolveScope: async (s: Scope) => ({
+        key: s.key,
+        cloudId: s.cloudId ?? "cloud-1",
+        resolved: { spaceId: "sp-1", spaceName: "Test Space" },
+      }),
+      list: async function* () {
+        for (const e of entries) yield e;
+      },
+      fetch: async (_s, id) => {
+        const e = entries.find((x) => x.id === id);
+        return { content: e?.content ?? "", entry: e ?? entry(id, id) };
+      },
+      toPath: (e, all) => {
+        // Simple path: parentTitle/childTitle.md
+        const parent = e.parentId ? all.find((x) => x.id === e.parentId) : undefined;
+        const hasChildren = all.some((x) => x.parentId === e.id);
+        const name = e.title.replace(/[^a-zA-Z0-9-_ ]/g, "");
+        if (hasChildren) {
+          return parent ? `${parent.title}/${name}/_index.md` : `${name}/_index.md`;
+        }
+        return parent ? `${parent.title}/${name}.md` : `${name}.md`;
+      },
+      frontmatter: (e, s) => ({ id: e.id, version: e.version, space: s.key }),
+    };
+  }
+
+  beforeEach(() => {
+    mkdirSync(DEPTH_TMP, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(DEPTH_TMP, { recursive: true, force: true });
+  });
+
+  test("depth 1 clones only root pages, stubs the rest", async () => {
+    const entries = [
+      entry("r1", "Root", undefined, "# Root content"),
+      entry("c1", "Child", "r1", "# Child content"),
+      entry("gc1", "Grandchild", "c1", "# Grandchild content"),
+    ];
+
+    const depthTargetDir = join(DEPTH_TMP, "depth1");
+    const result = await clone({
+      targetDir: depthTargetDir,
+      provider: makeDepthProvider(entries),
+      scope: { key: "TEST" },
+      depth: 1,
+      onProgress: () => {},
+    });
+
+    expect(result.pageCount).toBe(1);
+    expect(result.stubCount).toBe(2);
+
+    // Root should have full content
+    const rootFile = readFileSync(join(depthTargetDir, "Root/_index.md"), "utf-8");
+    const { content: rootContent } = stripFrontmatter(rootFile);
+    expect(rootContent).toBe("# Root content");
+
+    // Child should be a stub (has children, so it's _index.md)
+    const childFile = readFileSync(join(depthTargetDir, "Root/Child/_index.md"), "utf-8");
+    const { content: childContent, fields: childFields } = stripFrontmatter(childFile);
+    expect(childContent).toContain("Shallow clone stub");
+    expect(childFields?.stub).toBe(true);
+  });
+
+  test("depth 2 includes root + children, stubs grandchildren", async () => {
+    const entries = [
+      entry("r1", "Root", undefined, "# Root"),
+      entry("c1", "Child", "r1", "# Child"),
+      entry("gc1", "Grandchild", "c1", "# Grandchild"),
+    ];
+
+    const depthTargetDir = join(DEPTH_TMP, "depth2");
+    const result = await clone({
+      targetDir: depthTargetDir,
+      provider: makeDepthProvider(entries),
+      scope: { key: "TEST" },
+      depth: 2,
+      onProgress: () => {},
+    });
+
+    expect(result.pageCount).toBe(2);
+    expect(result.stubCount).toBe(1);
+  });
+
+  test("depth 0 (unlimited) clones everything", async () => {
+    const entries = [
+      entry("r1", "Root", undefined, "# Root"),
+      entry("c1", "Child", "r1", "# Child"),
+      entry("gc1", "Grandchild", "c1", "# Grandchild"),
+    ];
+
+    const depthTargetDir = join(DEPTH_TMP, "depth0");
+    const result = await clone({
+      targetDir: depthTargetDir,
+      provider: makeDepthProvider(entries),
+      scope: { key: "TEST" },
+      depth: 0,
+      onProgress: () => {},
+    });
+
+    expect(result.pageCount).toBe(3);
+    expect(result.stubCount).toBe(0);
+  });
+
+  test("stores depth in scope meta", async () => {
+    const entries = [entry("r1", "Root", undefined, "# Root")];
+    const depthTargetDir = join(DEPTH_TMP, "meta");
+
+    const result = await clone({
+      targetDir: depthTargetDir,
+      provider: makeDepthProvider(entries),
+      scope: { key: "TEST" },
+      depth: 2,
+      onProgress: () => {},
+    });
+
+    expect(result.scope.resolved.cloneDepth).toBe(2);
   });
 });

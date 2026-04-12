@@ -126,7 +126,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
 
 async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   if (args.length < 2) {
-    printError("Usage: mcx vfs clone <provider> <scope> [target-dir] [--limit N] [--cloud-id ID]");
+    printError("Usage: mcx vfs clone <provider> <scope> [target-dir] [--limit N] [--depth N] [--cloud-id ID]");
     deps.exit(1);
   }
 
@@ -135,6 +135,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   let targetDir: string | undefined;
   let cloudId: string | undefined;
   let limit = 0;
+  let depth = 0;
 
   for (let i = 2; i < args.length; i++) {
     const arg = args[i];
@@ -142,6 +143,8 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       cloudId = args[++i];
     } else if (arg === "--limit" && args[i + 1]) {
       limit = Number.parseInt(args[++i], 10);
+    } else if (arg === "--depth" && args[i + 1]) {
+      depth = Number.parseInt(args[++i], 10);
     } else if (!arg.startsWith("-") && !targetDir) {
       targetDir = arg;
     }
@@ -159,6 +162,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       provider,
       scope: { key: scopeKey, cloudId },
       limit,
+      depth,
       onProgress: log,
     });
   } catch (err) {
@@ -176,7 +180,9 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
         space: result.scope.key,
         path: result.path,
         pages: result.pageCount,
+        stubs: result.stubCount,
         cloudId: result.scope.cloudId,
+        ...(depth > 0 ? { depth } : {}),
       },
       null,
       2,
@@ -186,14 +192,23 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 
 async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const full = args.includes("--full");
-  const filteredArgs = args.filter((a) => a !== "--full");
+  let depth = 0;
+  const filteredArgs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--full") continue;
+    if (args[i] === "--depth" && args[i + 1]) {
+      depth = Number.parseInt(args[++i], 10);
+      continue;
+    }
+    filteredArgs.push(args[i]);
+  }
   const repoDir = resolve(filteredArgs[0] ?? ".");
   const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
 
   await deps.preflightCheck(providerName);
 
   try {
-    const result = await deps.pull({ repoDir, provider, full, onProgress: log });
+    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log });
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (err instanceof VfsError) {
@@ -291,12 +306,14 @@ Providers:
 
 Options:
   --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
+  --depth <n>         Max hierarchy depth to clone (1 = root only, 2 = root + children)
   --limit <n>         Max items to fetch (for testing)
   --full              Force full sync instead of incremental
   --create            Create new remote items from local files (push only)
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo
+  mcx vfs clone confluence FOO ~/atlassian/foo --depth 2
   mcx vfs clone asana 1234567890 ~/asana/my-project
   mcx vfs clone jira FOO ~/jira/foo
   mcx vfs clone github-issues octocat/hello-world ~/github-issues/hello-world

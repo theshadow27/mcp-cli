@@ -16,6 +16,7 @@ function makeDeps(overrides: Partial<VfsDeps> = {}): VfsDeps {
     clone: async (opts) => ({
       path: opts.targetDir,
       pageCount: 5,
+      stubCount: 0,
       scope: { key: opts.scope.key, cloudId: opts.scope.cloudId ?? "auto-123", resolved: {} },
     }),
     pull: async () => ({
@@ -24,6 +25,7 @@ function makeDeps(overrides: Partial<VfsDeps> = {}): VfsDeps {
       deleted: 0,
       committed: true,
       incremental: true,
+      deepened: 0,
     }),
     push: async () => ({
       files: [],
@@ -50,7 +52,7 @@ describe("cmdVfs", () => {
       const deps = makeDeps({
         clone: async () => {
           called = true;
-          return { path: "/tmp/test", pageCount: 1, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
+          return { path: "/tmp/test", pageCount: 1, stubCount: 0, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
         },
       });
 
@@ -63,7 +65,7 @@ describe("cmdVfs", () => {
       const deps = makeDeps({
         pull: async () => {
           called = true;
-          return { updated: 0, created: 0, deleted: 0, committed: false, incremental: true };
+          return { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: true };
         },
       });
 
@@ -101,7 +103,12 @@ describe("cmdVfs", () => {
       const deps = makeDeps({
         clone: async (opts) => {
           capturedLimit = opts.limit;
-          return { path: opts.targetDir, pageCount: 3, scope: { key: "SP", cloudId: "c1", resolved: {} } };
+          return {
+            path: opts.targetDir,
+            pageCount: 3,
+            stubCount: 0,
+            scope: { key: "SP", cloudId: "c1", resolved: {} },
+          };
         },
       });
 
@@ -117,6 +124,7 @@ describe("cmdVfs", () => {
           return {
             path: opts.targetDir,
             pageCount: 1,
+            stubCount: 0,
             scope: { key: "SP", cloudId: opts.scope.cloudId ?? "", resolved: {} },
           };
         },
@@ -131,7 +139,12 @@ describe("cmdVfs", () => {
       const deps = makeDeps({
         clone: async (opts) => {
           capturedDir = opts.targetDir;
-          return { path: opts.targetDir, pageCount: 1, scope: { key: "SP", cloudId: "c1", resolved: {} } };
+          return {
+            path: opts.targetDir,
+            pageCount: 1,
+            stubCount: 0,
+            scope: { key: "SP", cloudId: "c1", resolved: {} },
+          };
         },
       });
 
@@ -147,6 +160,24 @@ describe("cmdVfs", () => {
     test("clone with only provider (no scope) exits non-zero", async () => {
       const deps = makeDeps();
       await expect(cmdVfs(["clone", "confluence"], undefined, deps)).rejects.toThrow("exit(1)");
+    });
+
+    test("--depth is parsed and forwarded", async () => {
+      let capturedDepth: number | undefined;
+      const deps = makeDeps({
+        clone: async (opts) => {
+          capturedDepth = opts.depth;
+          return {
+            path: opts.targetDir,
+            pageCount: 3,
+            stubCount: 2,
+            scope: { key: "SP", cloudId: "c1", resolved: {} },
+          };
+        },
+      });
+
+      await cmdVfs(["clone", "confluence", "SP", "--depth", "2"], undefined, deps);
+      expect(capturedDepth).toBe(2);
     });
 
     test("resolveProvider is called with provider name", async () => {
@@ -170,12 +201,25 @@ describe("cmdVfs", () => {
       const deps = makeDeps({
         pull: async (opts) => {
           capturedFull = opts.full;
-          return { updated: 0, created: 0, deleted: 0, committed: false, incremental: false };
+          return { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: false };
         },
       });
 
       await cmdVfs(["pull", "--full", "/tmp/repo"], undefined, deps);
       expect(capturedFull).toBe(true);
+    });
+
+    test("--depth is parsed and forwarded", async () => {
+      let capturedDepth: number | undefined;
+      const deps = makeDeps({
+        pull: async (opts) => {
+          capturedDepth = opts.depth;
+          return { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: false };
+        },
+      });
+
+      await cmdVfs(["pull", "--depth", "3", "/tmp/repo"], undefined, deps);
+      expect(capturedDepth).toBe(3);
     });
 
     test("resolveProviderFromCache is called with repo dir", async () => {

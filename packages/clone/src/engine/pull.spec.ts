@@ -417,6 +417,109 @@ describe("pull", () => {
     });
   });
 
+  describe("depth-aware pull", () => {
+    function hierarchyProvider(entries: RemoteEntry[]): RemoteProvider {
+      return makeProvider({
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+        fetch: async (_s, id) => {
+          const e = entries.find((x) => x.id === id);
+          return { content: e?.content ?? `Content of ${id}`, entry: e ?? makeEntry({ id }) };
+        },
+        toPath: (e, all) => {
+          const parent = e.parentId ? all.find((x) => x.id === e.parentId) : undefined;
+          return parent ? `${parent.title}/${e.title}.md` : `${e.title}.md`;
+        },
+      });
+    }
+
+    test("pull deepens stubs into full content", async () => {
+      const entries = [
+        makeEntry({ id: "r1", title: "Root", version: 1, content: "# Root" }),
+        makeEntry({ id: "c1", title: "Child", parentId: "r1", version: 1, content: "# Child" }),
+      ];
+
+      const scopeWithDepth = { ...scope, resolved: { ...scope.resolved, cloneDepth: 1 } };
+      cache.saveScopeMeta("test", scopeWithDepth);
+      cache.upsert("test", scopeWithDepth, entries[0], "Root.md", "h1");
+      cache.upsert("test", scopeWithDepth, entries[1], "Root/Child.md", null, true);
+
+      writeFileSync(join(repoDir, "Root.md"), injectFrontmatter("# Root", { id: "r1" }));
+      mkdirSync(join(repoDir, "Root"), { recursive: true });
+      writeFileSync(
+        join(repoDir, "Root/Child.md"),
+        injectFrontmatter("> **Shallow clone stub**", { id: "c1", stub: true }),
+      );
+      execSync("git add -A && git commit -m 'shallow clone'", { cwd: repoDir, stdio: "pipe" });
+      cache.close();
+
+      const provider = hierarchyProvider(entries);
+      const result = await pull({ repoDir, provider, onProgress: () => {} });
+
+      expect(result.deepened).toBe(1);
+      expect(result.committed).toBe(true);
+
+      const childFile = readFileSync(join(repoDir, "Root/Child.md"), "utf-8");
+      const { content } = stripFrontmatter(childFile);
+      expect(content).toBe("# Child");
+    });
+
+    test("incremental pull writes stubs for new pages beyond depth limit", async () => {
+      const scopeWithDepth = { ...scope, resolved: { ...scope.resolved, cloneDepth: 1 } };
+      cache.saveScopeMeta("test", scopeWithDepth);
+      cache.upsert("test", scopeWithDepth, makeEntry({ id: "r1", title: "Root", version: 1 }), "Root.md", "h1");
+      writeFileSync(join(repoDir, "Root.md"), injectFrontmatter("# Root", { id: "r1" }));
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      cache.updateLastSynced("test", "TEST");
+      cache.close();
+
+      const changeEvents: ChangeEvent[] = [
+        {
+          entry: makeEntry({ id: "c1", title: "Child", parentId: "r1", version: 1, content: "# Child" }),
+          type: "created",
+        },
+      ];
+      const provider = makeProvider({
+        changes: async function* () {
+          for (const c of changeEvents) yield c;
+        },
+        toPath: (e, all) => {
+          const parent = e.parentId ? all.find((x) => x.id === e.parentId) : undefined;
+          return parent ? `${parent.title}/${e.title}.md` : `${e.title}.md`;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, depth: 1, onProgress: () => {} });
+
+      expect(result.incremental).toBe(true);
+      const childFile = readFileSync(join(repoDir, "Root/Child.md"), "utf-8");
+      const { content, fields } = stripFrontmatter(childFile);
+      expect(content).toContain("Shallow clone stub");
+      expect(fields?.stub).toBe(true);
+    });
+
+    test("full pull with depth creates stubs for excluded entries", async () => {
+      cache.close();
+
+      const entries = [
+        makeEntry({ id: "r1", title: "Root", version: 1, content: "# Root" }),
+        makeEntry({ id: "c1", title: "Child", parentId: "r1", version: 1, content: "# Child" }),
+      ];
+      const provider = hierarchyProvider(entries);
+
+      const result = await pull({ repoDir, provider, depth: 1, onProgress: () => {} });
+
+      expect(result.created).toBe(1);
+      expect(result.committed).toBe(true);
+      expect(existsSync(join(repoDir, "Root.md"))).toBe(true);
+
+      const childFile = readFileSync(join(repoDir, "Root/Child.md"), "utf-8");
+      const { content } = stripFrontmatter(childFile);
+      expect(content).toContain("Shallow clone stub");
+    });
+  });
+
   describe("commit behavior", () => {
     test("commit message includes change counts and mode", async () => {
       cache.close();
