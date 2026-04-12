@@ -30,6 +30,7 @@ export function formatAge(createdAt: number | null | undefined, now?: number): s
 /** Compact one-line format: SESSION STATE MODEL COST TOKENS TURNS [(date)] */
 export function formatSessionShort(s: {
   sessionId: string;
+  name?: string | null;
   state: string;
   model?: string | null;
   cost?: number | null;
@@ -39,6 +40,7 @@ export function formatSessionShort(s: {
   createdAt?: number | null;
 }): string {
   const id = s.sessionId.slice(0, 8);
+  const nameLabel = s.name ? `/${s.name}` : "";
   const state = s.rateLimited ? `${s.state} [RATE LIMITED]` : s.state;
   const model = s.model ?? "—";
   const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
@@ -46,8 +48,8 @@ export function formatSessionShort(s: {
   const turns = s.numTurns !== undefined ? String(s.numTurns) : "—";
   const age = formatAge(s.createdAt);
   return age
-    ? `${id} ${state} ${model} ${cost} ${tokens} ${turns} ${age}`
-    : `${id} ${state} ${model} ${cost} ${tokens} ${turns}`;
+    ? `${id}${nameLabel} ${state} ${model} ${cost} ${tokens} ${turns} ${age}`
+    : `${id}${nameLabel} ${state} ${model} ${cost} ${tokens} ${turns}`;
 }
 
 /** Extract a readable summary from a Claude API content field (string or content block array). */

@@ -40,6 +40,7 @@ interface DbUpsert {
   type: "db:upsert";
   session: {
     sessionId: string;
+    name?: string;
     pid?: number;
     /** Captured by the worker at spawn time (off main thread) to avoid blocking ps(1) call on main. */
     pidStartTime?: number | null;
@@ -356,6 +357,7 @@ export class ClaudeServer {
       type: "restore_sessions",
       sessions: restorable.map((row) => ({
         sessionId: row.sessionId,
+        name: row.name,
         pid: row.pid,
         pidStartTime: row.pidStartTime,
         state: "disconnected",

@@ -166,23 +166,33 @@ async function handlePrompt(
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
 
-    server.prepareSession(sessionId, {
-      prompt,
-      cwd: args.cwd as string | undefined,
-      permissionStrategy: permissionMode,
-      permissionRules: rules,
-      allowedTools,
-      worktree: args.worktree as string | undefined,
-      model: args.model ? resolveModelName(args.model as string) : undefined,
-      resumeSessionId: args.resumeSessionId as string | undefined,
-      repoRoot: args.repoRoot as string | undefined,
-    });
+    let sessionName: string;
+    try {
+      sessionName = server.prepareSession(sessionId, {
+        prompt,
+        name: args.name as string | undefined,
+        cwd: args.cwd as string | undefined,
+        permissionStrategy: permissionMode,
+        permissionRules: rules,
+        allowedTools,
+        worktree: args.worktree as string | undefined,
+        model: args.model ? resolveModelName(args.model as string) : undefined,
+        resumeSessionId: args.resumeSessionId as string | undefined,
+        repoRoot: args.repoRoot as string | undefined,
+      });
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
 
     // Post DB upsert
     self.postMessage({
       type: "db:upsert",
       session: {
         sessionId,
+        name: sessionName,
         state: "connecting",
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,

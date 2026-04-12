@@ -31,6 +31,8 @@ export interface AgentPermissionRequest {
 
 export interface AgentSessionInfo {
   sessionId: string;
+  /** Human-readable session name (e.g. "Alice", "Bob"). Null if not assigned. */
+  name: string | null;
   provider: AgentProviderName;
   state: AgentSessionState;
   model: string | null;

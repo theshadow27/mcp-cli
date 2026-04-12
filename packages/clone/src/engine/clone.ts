@@ -161,8 +161,18 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
 
   // ── Step 6: Initialize git repo ────────────────────────────
   log(opts, "Initializing git repository...");
-  const gitOpts = { cwd: absTarget, stdio: "pipe" as const };
+  // Strip GIT_* env vars so inherited env (e.g. from git hooks) doesn't
+  // redirect git init to the parent repo instead of creating a fresh one.
+  const cleanEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) cleanEnv[k] = v;
+  }
+  const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
   execSync("git init", gitOpts);
+  // Set user identity for this repo so commits work even in environments
+  // without a global git config (e.g. CI runners, fresh machines).
+  execSync("git config user.name mcx", gitOpts);
+  execSync("git config user.email mcx@localhost", gitOpts);
   execSync("git add -A", gitOpts);
 
   // Write .gitignore for the cache directory

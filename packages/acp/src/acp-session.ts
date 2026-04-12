@@ -308,6 +308,7 @@ export class AcpSession {
   getInfo(): AgentSessionInfo {
     return {
       sessionId: this.sessionId,
+      name: null,
       provider: "acp",
       state: this.state,
       model: this.model,
