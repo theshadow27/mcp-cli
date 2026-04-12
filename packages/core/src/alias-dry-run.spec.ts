@@ -64,6 +64,7 @@ describe("wrapDryRunContext", () => {
       cache: async (_k, p) => p() as Promise<never>,
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
+      workItem: null,
     };
     const ctx = wrapDryRunContext(base, (l) => lines.push(l));
 
@@ -90,6 +91,7 @@ describe("wrapDryRunContext", () => {
       cache: async (_k, p) => p() as Promise<never>,
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
+      workItem: null,
     };
     const ctx = wrapDryRunContext(base, (l) => lines.push(l));
 

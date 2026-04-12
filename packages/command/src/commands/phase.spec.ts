@@ -10,7 +10,14 @@ import {
   parseLockfile,
   readTransitionHistory,
 } from "@mcp-cli/core";
-import { bundleAlias, extractMetadata, hashFileSync, loadManifest, parseManifestText, validateManifest } from "@mcp-cli/core";
+import {
+  bundleAlias,
+  extractMetadata,
+  hashFileSync,
+  loadManifest,
+  parseManifestText,
+  validateManifest,
+} from "@mcp-cli/core";
 import {
   buildPhaseList,
   buildPhaseShow,

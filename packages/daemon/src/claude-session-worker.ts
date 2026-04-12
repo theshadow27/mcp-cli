@@ -17,6 +17,7 @@
 import {
   CLAUDE_SERVER_NAME,
   type LiveSpan,
+  type SessionInfo,
   type WorkItemEvent,
   resolveModelName,
   silentLogger,
@@ -238,6 +239,36 @@ async function handlePrompt(
   };
 }
 
+/**
+ * Check if a session's cwd is within the scope root.
+ * Returns true when scopeRoot is undefined (no filter).
+ */
+export function matchesScopeRoot(
+  session: Pick<SessionInfo, "cwd"> | undefined,
+  scopeRoot: string | undefined,
+): boolean {
+  if (!scopeRoot) return true;
+  if (!session) return false;
+  const cwd = session.cwd;
+  return cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
+}
+
+/**
+ * Check if a session belongs to the given repo root.
+ * Falls back to cwd prefix for sessions missing repoRoot (fixes #1242, #1308).
+ * Returns true when repoRoot is undefined (no filter).
+ */
+export function matchesRepoRoot(
+  session: Pick<SessionInfo, "cwd" | "repoRoot"> | undefined,
+  repoRoot: string | undefined,
+): boolean {
+  if (!repoRoot) return true;
+  if (!session) return false;
+  if (session.repoRoot) return session.repoRoot === repoRoot;
+  const cwd = session.cwd;
+  return cwd !== null && cwd !== undefined && (cwd === repoRoot || cwd.startsWith(`${repoRoot}/`));
+}
+
 function handleSessionList(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
@@ -246,15 +277,9 @@ function handleSessionList(
   const repoRoot = args.repoRoot as string | undefined;
   const scopeRoot = args.scopeRoot as string | undefined;
   if (scopeRoot) {
-    // Scope filter: include sessions whose cwd is under the scope root
-    sessions = sessions.filter((s) => s.cwd !== null && (s.cwd === scopeRoot || s.cwd.startsWith(`${scopeRoot}/`)));
+    sessions = sessions.filter((s) => matchesScopeRoot(s, scopeRoot));
   } else if (repoRoot) {
-    sessions = sessions.filter((s) => {
-      if (s.repoRoot) return s.repoRoot === repoRoot;
-      // Legacy sessions without repoRoot: fall back to cwd prefix match
-      // so they stay scoped to their originating repo (fixes #1242).
-      return s.cwd !== null && (s.cwd === repoRoot || s.cwd.startsWith(`${repoRoot}/`));
-    });
+    sessions = sessions.filter((s) => matchesRepoRoot(s, repoRoot));
   }
   return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
 }
@@ -358,9 +383,14 @@ async function handleWait(
   const prNumber = typeof args.pr === "number" ? args.pr : null;
   const checks = args.checks === true;
 
-  /** Check if a session's cwd is within the scope root. */
-  const matchesScope = (cwd: string | null | undefined): boolean =>
-    cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
+  const eventInScope = (e: { session?: SessionInfo }): boolean => {
+    if (!scopeRoot && !repoRoot) return true;
+    // Events without session info can't be filtered — drop them when a filter is active
+    // rather than leaking cross-repo wakeups (fixes #1308).
+    if (!e.session) return false;
+    if (scopeRoot) return matchesScopeRoot(e.session, scopeRoot);
+    return matchesRepoRoot(e.session, repoRoot);
+  };
 
   // Work-item-only paths: --pr or --checks without --any
   if ((prNumber !== null || checks) && !any) {
@@ -372,44 +402,54 @@ async function handleWait(
     return handleAnyWait(server, sessionId, prNumber, checks, timeoutMs, afterSeq, repoRoot, scopeRoot);
   }
 
-  // Cursor-based path: use waitForEventsSince (errors propagate — no session-list fallback)
+  const deadline = Date.now() + timeoutMs;
+  const timeoutResponse = () => handleSessionList(server, { scopeRoot, repoRoot });
+
+  // Cursor-based path: use waitForEventsSince. Re-subscribe with the advanced cursor
+  // when all events in a batch are filtered out, so the wait respects the requested
+  // timeout instead of returning a false wakeup (fixes #1308).
   if (afterSeq !== undefined) {
-    const result: WaitResult = await server.waitForEventsSince(sessionId, afterSeq, timeoutMs);
-    if (scopeRoot) {
-      result.events = result.events.filter((e) => matchesScope(e.session?.cwd));
-    } else if (repoRoot) {
-      result.events = result.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
+    let seq = afterSeq;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return { content: [{ type: "text", text: JSON.stringify({ seq, events: [] }, null, 2) }] };
+      }
+      const result: WaitResult = await server.waitForEventsSince(sessionId, seq, remaining);
+      seq = result.seq;
+      if (result.events.length === 0) {
+        // Real timeout from the subscriber — don't loop
+        return { content: [{ type: "text", text: JSON.stringify({ seq, events: [] }, null, 2) }] };
+      }
+      const filtered = result.events.filter(eventInScope);
+      if (filtered.length > 0) {
+        return { content: [{ type: "text", text: JSON.stringify({ seq, events: filtered }, null, 2) }] };
+      }
+      // All events filtered out — loop with advanced cursor
     }
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
   }
 
-  // Legacy path: unified { event?, sessions } shape
-  try {
-    const event = await server.waitForEvent(sessionId, timeoutMs);
-    // Filter single event by scope or repoRoot — if mismatched, return empty array (same as timeout)
-    if (scopeRoot && !matchesScope(event.session?.cwd)) {
-      return handleSessionList(server, { scopeRoot });
-    }
-    if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot) {
-      return handleSessionList(server, { repoRoot });
-    }
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ source: "session", event, sessions: server.listSessions() }, null, 2),
-        },
-      ],
-    };
-  } catch (err) {
-    if (err instanceof WaitTimeoutError) {
+  // Legacy path: unified { event?, sessions } shape. Re-subscribe for the remaining
+  // timeout when a wakeup is from an out-of-scope session (fixes #1308).
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return timeoutResponse();
+    try {
+      const event = await server.waitForEvent(sessionId, remaining);
+      if (!eventInScope(event)) continue;
+      const filteredSessions = JSON.parse(timeoutResponse().content[0].text) as SessionInfo[];
       return {
-        content: [{ type: "text", text: JSON.stringify({ sessions: server.listSessions() }, null, 2) }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ source: "session", event, sessions: filteredSessions }, null, 2),
+          },
+        ],
       };
+    } catch (err) {
+      if (err instanceof WaitTimeoutError) return timeoutResponse();
+      throw err;
     }
-    throw err;
   }
 }
 
@@ -455,8 +495,12 @@ async function handleAnyWait(
   repoRoot: string | undefined,
   scopeRoot: string | undefined,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const matchesScope = (cwd: string | null | undefined): boolean =>
-    cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
+  const eventInScope = (e: { session?: SessionInfo }): boolean => {
+    if (!scopeRoot && !repoRoot) return true;
+    if (!e.session) return false;
+    if (scopeRoot) return matchesScopeRoot(e.session, scopeRoot);
+    return matchesRepoRoot(e.session, repoRoot);
+  };
 
   // AbortController for cancelling the losing racer after Promise.race settles.
   // Without this, the loser's internal timeout timer fires and rejects an unobserved
@@ -479,11 +523,7 @@ async function handleAnyWait(
         const r = await server.waitForEventsSince(sessionId, currentSeq, timeoutMs, abort.signal);
         // Advance cursor even if events are filtered — prevents re-reading the same batch
         currentSeq = r.seq;
-        if (scopeRoot) {
-          r.events = r.events.filter((e) => matchesScope(e.session?.cwd));
-        } else if (repoRoot) {
-          r.events = r.events.filter((e) => !e.session?.repoRoot || e.session.repoRoot === repoRoot);
-        }
+        r.events = r.events.filter(eventInScope);
         if (r.events.length > 0) {
           return { kind: "session" as const, result: r };
         }
@@ -502,9 +542,7 @@ async function handleAnyWait(
     sessionPromise = server
       .waitForEvent(sessionId, timeoutMs, abort.signal)
       .then<SessionResult>((event) => {
-        if (scopeRoot && !matchesScope(event.session?.cwd)) return new Promise<never>(() => {});
-        if (repoRoot && event.session?.repoRoot && event.session.repoRoot !== repoRoot)
-          return new Promise<never>(() => {});
+        if (!eventInScope(event)) return new Promise<never>(() => {});
         return { kind: "session" as const, result: event };
       })
       .catch((err) => {

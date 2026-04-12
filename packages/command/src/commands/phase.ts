@@ -717,6 +717,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     cache: async (_k, producer) => producer() as Promise<never>,
     state: stubState,
     globalState: stubState,
+    workItem: null,
   };
   const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
 
