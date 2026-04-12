@@ -376,14 +376,16 @@ describe("push", () => {
     const scope = makeScope();
     const provider = createConfluenceProvider({
       callTool: async () => {
-        throw new Error("Network timeout");
+        throw new Error("Internal server error");
       },
+      disableToolDiscovery: true,
     });
 
     const pushFn3 = provider.push as NonNullable<typeof provider.push>;
     const result = await pushFn3(scope, "p1", "Content", 1);
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Network timeout");
+    // Error message now includes page URL context and friendly wrapping
+    expect(result.error).toContain("example.com/pages/p1");
   });
 });
 
@@ -430,6 +432,7 @@ describe("delete", () => {
     const scope = makeScope();
     const calls: string[] = [];
     const provider = createConfluenceProvider({
+      disableToolDiscovery: true,
       callTool: async (_server, tool, _args) => {
         calls.push(tool);
         if (tool === "deleteConfluencePage") {
@@ -455,6 +458,7 @@ describe("delete", () => {
   test("throws when deleteConfluencePage fails with non-tool-not-found error", async () => {
     const scope = makeScope();
     const provider = createConfluenceProvider({
+      disableToolDiscovery: true,
       callTool: async (_server, tool) => {
         if (tool === "deleteConfluencePage") {
           throw new Error("Permission denied");

@@ -37,7 +37,8 @@ function makeDeps(overrides: Partial<VfsDeps> = {}): VfsDeps {
       throw new ExitError(code);
     },
     resolveProvider: () => fakeProvider,
-    resolveProviderFromCache: () => fakeProvider,
+    resolveProviderFromCache: () => ({ provider: fakeProvider, providerName: "confluence" }),
+    preflightCheck: async () => {},
     ...overrides,
   };
 }
@@ -179,11 +180,11 @@ describe("cmdVfs", () => {
 
     test("resolveProviderFromCache is called with repo dir", async () => {
       let capturedDir: string | undefined;
-      const fakeProvider = {} as ReturnType<VfsDeps["resolveProviderFromCache"]>;
+      const fakeProvider = {} as ReturnType<VfsDeps["resolveProvider"]>;
       const deps = makeDeps({
         resolveProviderFromCache: (dir) => {
           capturedDir = dir;
-          return fakeProvider;
+          return { provider: fakeProvider, providerName: "confluence" };
         },
       });
 

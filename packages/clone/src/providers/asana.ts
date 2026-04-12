@@ -19,6 +19,7 @@ import type {
   ResolvedScope,
   Scope,
 } from "./provider";
+import { type RetryOptions, createResilientCaller } from "./resilient-caller";
 
 /** MCP tool call result shape. */
 interface McpToolResult {
@@ -81,6 +82,8 @@ interface AsanaProject {
 export interface AsanaProviderOptions {
   /** Function to call an MCP tool: (server, tool, args, timeoutMs?) → result */
   callTool: McpToolCaller;
+  /** Retry/backoff options for rate limiting. */
+  retry?: RetryOptions;
 }
 
 /** Sanitize a title for use as a filename. */
@@ -125,11 +128,17 @@ function toRemoteEntry(task: AsanaTask, sectionName?: string): RemoteEntry {
 }
 
 export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider {
-  const { callTool } = opts;
   const SERVER = "asana";
 
+  // Wrap with resilient caller for retry on 429s
+  const resilientCallTool = createResilientCaller({
+    callTool: opts.callTool,
+    toolDiscovery: false, // Asana tool names are stable
+    ...opts.retry,
+  });
+
   async function callAsana(tool: string, args: Record<string, unknown>): Promise<unknown> {
-    const raw = await callTool(SERVER, tool, args, 30_000);
+    const raw = await resilientCallTool(SERVER, tool, args, 30_000);
     return unwrapToolResult(raw);
   }
 

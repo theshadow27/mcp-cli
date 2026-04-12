@@ -10,6 +10,7 @@ import type {
   ResolvedScope,
   Scope,
 } from "./provider";
+import { type RetryOptions, createResilientCaller } from "./resilient-caller";
 
 /** Shape of an issue from the Jira REST/MCP API. */
 interface JiraIssue {
@@ -81,6 +82,8 @@ export interface JiraProviderOptions {
   callTool: McpToolCaller;
   /** Default issue type name for create (default: "Task"). */
   defaultIssueType?: string;
+  /** Retry/backoff options for rate limiting. */
+  retry?: RetryOptions;
 }
 
 /** Convert a Jira issue to a RemoteEntry. */
@@ -125,11 +128,18 @@ const SEARCH_FIELDS = [
 ];
 
 export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
-  const { callTool, defaultIssueType = "Task" } = opts;
+  const { defaultIssueType = "Task" } = opts;
   const SERVER = "atlassian";
 
+  // Wrap with resilient caller for retry on 429s + tool discovery
+  const resilientCallTool = createResilientCaller({
+    callTool: opts.callTool,
+    toolDiscovery: false, // Jira uses different tools than the Confluence alias table
+    ...opts.retry,
+  });
+
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
-    const raw = await callTool(SERVER, tool, args, 30_000);
+    const raw = await resilientCallTool(SERVER, tool, args, 30_000);
     return unwrapToolResult(raw);
   }
 
