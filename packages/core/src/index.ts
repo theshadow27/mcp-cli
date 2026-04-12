@@ -18,6 +18,7 @@ export * from "./session-types";
 export * from "./trace";
 export * from "./git";
 export * from "./logger";
+export * from "./branch-guard";
 export * from "./manifest";
 export * from "./worktree-config";
 export * from "./worktree-shim";
