@@ -1447,6 +1447,38 @@ describe("agent ls stale daemon warning", () => {
   });
 });
 
+// ── spawn refuses against stale daemon (#1218) ──
+
+describe("agent spawn with stale daemon", () => {
+  test("refuses to spawn and does not call tool", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "s1" }));
+    const deps = makeDeps({
+      callTool,
+      getStaleDaemonWarning: mock(() => "Daemon is running a different build..."),
+    });
+    await expect(cmdAgent(["codex", "spawn", "--task", "x"], deps)).rejects.toThrow(ExitError);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("different build"));
+  });
+
+  test("allows spawn when daemon is fresh", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+      getStaleDaemonWarning: mock(() => null),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x"], deps);
+    expect(deps.callTool).toHaveBeenCalled();
+  });
+
+  test("--headed spawn is not blocked by stale daemon (no daemon needed)", async () => {
+    const deps = makeDeps({
+      getStaleDaemonWarning: mock(() => "Daemon stale"),
+    });
+    await cmdAgent(["claude", "spawn", "--task", "x", "--headed"], deps);
+    expect(deps.ttyOpen).toHaveBeenCalled();
+  });
+});
+
 // ── Worktree spawn (passthrough path) ──
 
 describe("agent spawn with worktree passthrough", () => {
