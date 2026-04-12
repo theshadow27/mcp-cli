@@ -10,9 +10,20 @@ describe("parseSource — file kind", () => {
     expect(r).toEqual({ kind: "file", absPath: "/workspace/myproj/scripts/implement.ts" });
   });
 
-  test("resolves parent-relative path", () => {
+  test("resolves parent-relative path within manifestDir", () => {
+    const r = parseSource("./sub/../x.ts", MANIFEST_DIR);
+    expect(r).toEqual({ kind: "file", absPath: "/workspace/myproj/x.ts" });
+  });
+
+  test("rejects relative path escaping manifestDir", () => {
     const r = parseSource("../shared/x.ts", MANIFEST_DIR);
-    expect(r).toEqual({ kind: "file", absPath: "/workspace/shared/x.ts" });
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.reason).toMatch(/escapes manifest directory/);
+  });
+
+  test("rejects deep traversal", () => {
+    const r = parseSource("../../../etc/passwd", MANIFEST_DIR);
+    expect(r.kind).toBe("error");
   });
 
   test("passes absolute path through as-is", () => {
@@ -33,6 +44,28 @@ describe("parseSource — file kind", () => {
   test("rejects file:// with relative path", () => {
     const r = parseSource("file://relative.ts", MANIFEST_DIR);
     expect(r.kind).toBe("error");
+  });
+
+  test("rejects file:// with malformed percent-encoding", () => {
+    const r = parseSource("file:///tmp/%ZZ.ts", MANIFEST_DIR);
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.reason).toMatch(/malformed percent-encoding/);
+  });
+
+  test("rejects file:// with unencoded '#'", () => {
+    const r = parseSource("file:///notes#draft.ts", MANIFEST_DIR);
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.reason).toMatch(/unencoded/);
+  });
+
+  test("rejects file:// with unencoded '?'", () => {
+    const r = parseSource("file:///notes?x.ts", MANIFEST_DIR);
+    expect(r.kind).toBe("error");
+  });
+
+  test("accepts file:// with percent-encoded '#'", () => {
+    const r = parseSource("file:///notes%23draft.ts", MANIFEST_DIR);
+    expect(r).toEqual({ kind: "file", absPath: "/notes#draft.ts" });
   });
 
   test("rejects relative path when manifestDir is not absolute", () => {
@@ -77,6 +110,18 @@ describe("parseSource — github kind (parsed, not installable)", () => {
 
   test("rejects github missing path", () => {
     const r = parseSource(`github:o/r@v1#sha256=${HASH}`, MANIFEST_DIR);
+    expect(r.kind).toBe("error");
+  });
+
+  test("rejects github with '@' in path (ambiguous version split)", () => {
+    const r = parseSource(`github:o/r/path@v2/module.ts@v1#sha256=${HASH}`, MANIFEST_DIR);
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.reason).toMatch(/multiple '@'/);
+  });
+
+  test("rejects github version containing '/'", () => {
+    // Only reachable if `@` is only once but version has `/`
+    const r = parseSource(`github:o/r/p.ts@v1/extra#sha256=${HASH}`, MANIFEST_DIR);
     expect(r.kind).toBe("error");
   });
 });
