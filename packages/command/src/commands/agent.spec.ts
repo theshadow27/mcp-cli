@@ -1153,6 +1153,65 @@ describe("agent bye with worktree", () => {
     await expect(cmdAgent(["codex", "bye"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
+
+  test("--keep flag before session id is not treated as session prefix", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult({
+          ended: true,
+          worktree: "wt-name",
+          cwd: "/repo/.claude/worktrees/wt-name",
+          repoRoot: "/repo",
+        });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["claude", "bye", "--keep", "abc12345"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("claude_bye", { sessionId: SESSION_LIST[0].sessionId });
+    // With --keep, cleanupWorktree should not run (no exec of git worktree remove)
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+  });
+
+  test("--keep after session id preserves worktree", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult({
+          ended: true,
+          worktree: "wt-name",
+          cwd: "/repo/.claude/worktrees/wt-name",
+          repoRoot: "/repo",
+        });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["claude", "bye", "abc12345", "--keep"], deps);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+    // Ensure cleanupWorktree did not remove the worktree (no git worktree remove exec)
+    const execCalls = (deps.exec as ReturnType<typeof mock>).mock.calls;
+    const removedWorktree = execCalls.some(
+      (call) => Array.isArray(call[1]) && call[1].includes("worktree") && call[1].includes("remove"),
+    );
+    expect(removedWorktree).toBe(false);
+  });
+
+  test("--keep-worktree is a valid alias for --keep", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult({
+          ended: true,
+          worktree: "wt-name",
+          cwd: "/repo/.claude/worktrees/wt-name",
+          repoRoot: "/repo",
+        });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["claude", "bye", "--keep-worktree", "abc12345"], deps);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+  });
 });
 
 // ── Interrupt missing session ──

@@ -723,10 +723,12 @@ async function agentSend(args: string[], provider: AgentProvider, d: AgentDeps):
 
 async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
-  const sessionPrefix = args[0];
+  const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
+  const positional = args.filter((a) => !a.startsWith("-"));
+  const sessionPrefix = positional[0];
 
   if (!sessionPrefix) {
-    d.printError(`Usage: mcx agent ${provider.name} bye <session-id>`);
+    d.printError(`Usage: mcx agent ${provider.name} bye <session-id> [--keep|--keep-worktree]`);
     d.exit(1);
   }
 
@@ -737,7 +739,11 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
   d.log(formatToolResult(result));
 
   if (byeResult.worktree) {
-    if (byeResult.cwd) {
+    if (keepWorktree) {
+      const wtPath =
+        byeResult.cwd ?? resolveWorktreePath(d.getCwd(), byeResult.worktree, readWorktreeConfig(d.getCwd()));
+      d.printError(`Worktree preserved: ${wtPath}`);
+    } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else if (hasFeature(provider, "resume")) {
       // Claude: daemon-created worktrees have cwd=null — resolve from local repo root
@@ -1460,7 +1466,7 @@ Usage:
   mcx agent ${name} ls [--short] [--json]        List active sessions
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
-  mcx agent ${name} bye <session>                End session
+  mcx agent ${name} bye <session> [--keep]       End session (--keep preserves worktree)
   mcx agent ${name} interrupt <session>          Interrupt current turn
   mcx agent ${name} log <session> [--last N]     View transcript
   mcx agent ${name} resume <worktree>            ${resumeNote}
