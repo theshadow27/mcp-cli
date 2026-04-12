@@ -170,6 +170,15 @@ export class StateDb {
         PRIMARY KEY (server_name, tool_name)
       );
 
+      CREATE TABLE IF NOT EXISTS alias_state (
+        repo_root TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (repo_root, namespace, key)
+      );
+
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -1361,6 +1370,50 @@ export class StateDb {
   deleteNote(serverName: string, toolName: string): boolean {
     const result = this.db.run("DELETE FROM notes WHERE server_name = ? AND tool_name = ?", [serverName, toolName]);
     return result.changes > 0;
+  }
+
+  // -- Alias state --
+
+  getAliasState(repoRoot: string, namespace: string, key: string): unknown {
+    const row = this.db
+      .query<{ value_json: string }, [string, string, string]>(
+        "SELECT value_json FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?",
+      )
+      .get(repoRoot, namespace, key);
+    if (!row) return undefined;
+    return JSON.parse(row.value_json);
+  }
+
+  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
+    this.db.run(
+      `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
+       VALUES (?, ?, ?, ?, unixepoch())
+       ON CONFLICT(repo_root, namespace, key) DO UPDATE SET
+         value_json = excluded.value_json, updated_at = excluded.updated_at`,
+      [repoRoot, namespace, key, JSON.stringify(value ?? null)],
+    );
+  }
+
+  deleteAliasState(repoRoot: string, namespace: string, key: string): boolean {
+    const result = this.db.run("DELETE FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?", [
+      repoRoot,
+      namespace,
+      key,
+    ]);
+    return result.changes > 0;
+  }
+
+  listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
+    const rows = this.db
+      .query<{ key: string; value_json: string }, [string, string]>(
+        "SELECT key, value_json FROM alias_state WHERE repo_root = ? AND namespace = ?",
+      )
+      .all(repoRoot, namespace);
+    const out: Record<string, unknown> = {};
+    for (const row of rows) {
+      out[row.key] = JSON.parse(row.value_json);
+    }
+    return out;
   }
 
   close(): void {

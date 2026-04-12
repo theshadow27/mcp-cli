@@ -1,4 +1,5 @@
 export * from "./alias";
+export * from "./alias-state";
 export * from "./alias-bundle";
 export * from "./cache";
 export * from "./ipc";

@@ -20,6 +20,10 @@ import type {
 } from "@mcp-cli/core";
 import {
   ALIAS_SERVER_NAME,
+  AliasStateAllParamsSchema,
+  AliasStateDeleteParamsSchema,
+  AliasStateGetParamsSchema,
+  AliasStateSetParamsSchema,
   AuthStatusParamsSchema,
   BUILD_VERSION,
   CallToolParamsSchema,
@@ -1132,6 +1136,30 @@ export class IpcServer {
     this.handlers.set("listWorkItems", async (params, _ctx) => {
       const { phase } = ListWorkItemsParamsSchema.parse(params ?? {});
       return this.workItemDb.listWorkItems(phase ? { phase } : undefined);
+    });
+
+    // -- Alias state (per-work-item / per-alias scratchpad) --
+
+    this.handlers.set("aliasStateGet", async (params, _ctx) => {
+      const { repoRoot, namespace, key } = AliasStateGetParamsSchema.parse(params);
+      return { value: this.db.getAliasState(repoRoot, namespace, key) };
+    });
+
+    this.handlers.set("aliasStateSet", async (params, _ctx) => {
+      const { repoRoot, namespace, key, value } = AliasStateSetParamsSchema.parse(params);
+      this.db.setAliasState(repoRoot, namespace, key, value);
+      return { ok: true as const };
+    });
+
+    this.handlers.set("aliasStateDelete", async (params, _ctx) => {
+      const { repoRoot, namespace, key } = AliasStateDeleteParamsSchema.parse(params);
+      const deleted = this.db.deleteAliasState(repoRoot, namespace, key);
+      return { ok: true as const, deleted };
+    });
+
+    this.handlers.set("aliasStateAll", async (params, _ctx) => {
+      const { repoRoot, namespace } = AliasStateAllParamsSchema.parse(params);
+      return { entries: this.db.listAliasState(repoRoot, namespace) };
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {

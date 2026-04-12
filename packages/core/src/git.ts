@@ -3,7 +3,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export interface ExecResult {
   stdout: string;
@@ -36,4 +36,27 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
     return unset.exitCode === 0;
   }
   return false;
+}
+
+/**
+ * Resolve the git repository root from a working directory.
+ * Returns an absolute path, or null if `cwd` is not inside a git repository.
+ * Uses `git rev-parse --git-common-dir` so the same value is returned from
+ * the main checkout and any of its worktrees.
+ */
+export function findGitRoot(cwd: string = process.cwd()): string | null {
+  try {
+    const result = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    if (result.exitCode !== 0) return null;
+    const commonDir = result.stdout.toString().trim();
+    if (!commonDir) return null;
+    const absolute = resolve(cwd, commonDir);
+    return absolute.endsWith("/.git") || absolute.endsWith(".git") ? dirname(absolute) : absolute;
+  } catch {
+    return null;
+  }
 }

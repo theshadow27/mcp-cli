@@ -17,10 +17,14 @@
 import { readFile } from "node:fs/promises";
 import {
   type AliasContext,
+  GLOBAL_STATE_NAMESPACE,
   type McpProxy,
+  NO_REPO_ROOT,
   createAliasCache,
+  createAliasState,
   executeAliasBundled,
   extractContent,
+  findGitRoot,
   ipcCall,
   validateAliasBundled,
 } from "@mcp-cli/core";
@@ -97,6 +101,7 @@ async function main(): Promise<void> {
   // Build the updated chain including the current alias
   const updatedChain = [...chain, currentAlias];
 
+  const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
   const ctx: AliasContext = {
     mcp: createExecutorProxy(updatedChain),
     args:
@@ -106,6 +111,8 @@ async function main(): Promise<void> {
     file: (path: string) => readFile(path, "utf-8"),
     json: async (path: string) => JSON.parse(await readFile(path, "utf-8")),
     cache: createAliasCache(currentAlias),
+    state: createAliasState({ repoRoot, namespace: currentAlias }),
+    globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
   };
 
   const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);

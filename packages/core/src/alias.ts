@@ -24,6 +24,21 @@ export function isDefineAlias(source: string): boolean {
 /** Proxy type for calling MCP tools: mcp.server.tool(args) */
 export type McpProxy = Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
 
+/**
+ * Persistent, per-work-item / per-alias scratchpad for cross-invocation state.
+ *
+ * Values are stored as JSON in the daemon's SQLite database, keyed by
+ * (repo_root, namespace, key). The namespace is resolved by the alias
+ * runtime — typically the alias name when invoked standalone, or the
+ * work_item_id when invoked from a phase.
+ */
+export interface AliasStateAccessor {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  all(): Promise<Record<string, unknown>>;
+}
+
 /** The context available inside a defineAlias handler function */
 export interface AliasContext {
   /** Proxy for calling MCP tools: mcp.server.tool(args) */
@@ -36,6 +51,16 @@ export interface AliasContext {
   json: (path: string) => Promise<unknown>;
   /** Cache a value by key. Returns cached value if fresh, otherwise calls producer. */
   cache: <T>(key: string, producer: () => T | Promise<T>, opts?: CacheOptions) => Promise<T>;
+  /**
+   * Persistent scratchpad scoped to the current work-item (when invoked from
+   * a phase) or to the alias name (when invoked standalone).
+   */
+  state: AliasStateAccessor;
+  /**
+   * Escape hatch: persistent scratchpad shared across all aliases and phases
+   * in the current repository (namespace = `__global__`).
+   */
+  globalState: AliasStateAccessor;
 }
 
 /**
