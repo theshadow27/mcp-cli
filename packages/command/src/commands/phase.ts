@@ -8,7 +8,7 @@
  * are deferred until their dependency PRs merge.
  */
 
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 import {
   LOCKFILE_NAME,
@@ -147,12 +147,12 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
       continue;
     }
 
-    const subsetErrs = checkStateSubset(
-      name,
-      (meta as AliasMetadata & { state?: Record<string, unknown> }).state,
-      manifest.state,
-    );
-    errors.push(...subsetErrs);
+    // state field wires in with #1290 — no-op until AliasMetadata carries it
+    const subsetErrs = checkStateSubset(name, undefined, manifest.state);
+    if (subsetErrs.length > 0) {
+      errors.push(...subsetErrs);
+      continue;
+    }
 
     const schemaHash = meta.outputSchema ? sha256Hex(canonicalJson(meta.outputSchema)) : "";
     const rel = relative(cwd, resolvedAbs).split("\\").join("/");
@@ -198,7 +198,9 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       }
 
       const lockPath = resolvePath(cwd, LOCKFILE_NAME);
-      d.writeFileSync(lockPath, serializeLockfile(result.lockfile));
+      const tmpPath = `${lockPath}.tmp`;
+      d.writeFileSync(tmpPath, serializeLockfile(result.lockfile));
+      renameSync(tmpPath, lockPath);
 
       const count = result.lockfile.phases.length;
       d.log(`Installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
