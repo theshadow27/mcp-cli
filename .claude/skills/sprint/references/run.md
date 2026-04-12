@@ -26,16 +26,21 @@ Record the start timestamp in the sprint file header (append to the `>` line):
 
 ## Pre-flight
 
-Before spawning any sessions, ensure the daemon is running the latest build:
+Before spawning any sessions, ensure the daemon is running the latest build.
+**Don't skip the shutdown step** — `mcx status` alone does not restart the
+daemon, so a stale daemon will accept spawn calls and silently produce
+disconnected sessions (see #1218).
 
 ```bash
 bun run build                          # compile latest binaries
-mcx claude ls --short 2>/dev/null      # if no sessions active, safe to restart
-mcx status                             # verify daemon is up and running new code
+mcx claude ls --short 2>/dev/null      # verify no sessions active before restart
+mcx shutdown                           # stop the stale daemon
+mcx status                             # auto-starts the daemon with new binary
 ```
 
-If the daemon was started before the latest `bun run build`, restart it — otherwise
-sessions will run against stale code. Only restart when no sessions are active.
+Only restart when no sessions are active. If other sessions are running
+(including from a concurrent sprint in a different repo), defer the restart
+until they idle — restarting kills them.
 
 ### Quota check
 
@@ -63,12 +68,12 @@ poller + event system drive the pipeline.
 | `mcx tracked --json` | List all tracked items with PR/CI/review state |
 | `mcx tracked --phase impl` | Filter by phase (`impl`, `review`, `repair`, `qa`, `done`) |
 | `mcx untrack <number>` | Stop tracking |
-| `mcx wait --any --timeout 30000` | Block until a session event OR work item event fires |
-| `mcx wait --pr <number> --checks` | Block until CI passes or fails for a specific PR |
+| `mcx claude wait --timeout 30000` | Block until a session event fires (or timeout) |
+| `mcx claude wait <session-id> --timeout 30000` | Block until a specific session event fires |
 
 ### Event types
 
-The poller emits these events (used by `mcx wait --any` and `mcx wait --pr`):
+The poller emits these events (surfaced via `mcx claude wait`):
 
 | Event | Meaning |
 |-------|---------|
@@ -349,7 +354,7 @@ Only the final `bye` (after QA merge or failure) should clean up the worktree.
 This is the main loop. The goal is maximum throughput — keep 5 opus
 implementation slots full, with unlimited sonnet review/QA slots.
 
-The loop is **event-driven**: `mcx wait --any` blocks until either a session
+The loop is **event-driven**: `mcx claude wait` blocks until either a session
 event or a work item event fires, then you react. No manual `gh pr view` or
 `gh run list` polling needed — the work item poller handles GitHub state.
 
@@ -379,7 +384,7 @@ mcx tracked --phase qa      # items in QA
 ```
 while issues remain:
   # Block until session event OR work item event (30s timeout)
-  event = mcx wait --any --timeout 30000 --short
+  event = mcx claude wait --timeout 30000 --short
 
   # Check session states
   mcx claude ls --short
@@ -489,7 +494,7 @@ while issues remain:
 ```
 
 **Key rules:**
-- Use `mcx wait --any`, never `sleep` — event-driven, handles both session and work item events
+- Use `mcx claude wait`, never `sleep` — event-driven, handles both session and work item events
 - Check `session:result` in wait output — it means idle (waiting for input), NOT ended
 - Attach PRs to tracked items after `bye` — the poller can't watch items without a prNumber
 - Use `mcx tracked --json` for status — don't poll GitHub directly
@@ -525,12 +530,45 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    Use `mcx tracked --json` for the final status dashboard — items in `done` phase
    were merged, items in other phases need follow-up.
 4. Clean up tracking: `mcx untrack` any remaining items (they'll carry into next sprint otherwise)
-5. Pull main and rebuild: `git checkout main && git pull && bun run build`
-6. Restart the daemon so it picks up the new build: verify no sessions active
-   with `mcx claude ls`, then restart. This ensures the next sprint runs on
-   the latest code (including any daemon fixes merged during this sprint).
-7. Run `/sprint review` to cut a release
-8. Run `/sprint retro` to capture learnings
+5. **Check for concurrent cross-repo sprints before rebuilding** (see #1250).
+   The rebuild produces new `dist/mcx` and `dist/mcpd` binaries; a daemon
+   restart kills *all* sessions including those from other repos sharing this
+   daemon. Check:
+   ```bash
+   ps aux | grep mcpd | grep -v grep    # confirm single daemon
+   # Ask the user if any other sprint is active in another repo.
+   # If yes: defer steps 6-7 until they complete.
+   ```
+6. Pull main and rebuild: `git checkout main && git pull && bun run build`
+7. Restart the daemon so it picks up the new build: verify no sessions active
+   with `mcx claude ls`, then `mcx shutdown && mcx status`. This ensures the
+   next sprint runs on the latest code (including any daemon fixes merged
+   during this sprint). **Skip if another sprint is still active.**
+8. Run `/sprint review` to cut a release
+9. Run `/sprint retro` to capture learnings
+
+## Sweeping main commits during a sprint
+
+If a commit lands on main mid-sprint that affects *every* branch (e.g.
+`.gitignore` replacement, `.git-hooks/` changes, shared config files, lint
+rule updates), broadcast a rebase directive to all active implementation
+sessions **before** they push. Otherwise every branch will look like it
+regresses the sweeping change, every reviewer will flag it as a blocker, and
+every repairer will waste a cycle rediscovering that main had the same
+content all along.
+
+```bash
+# For each active impl session:
+mcx claude send <id> "Before pushing, rebase your branch onto origin/main to pick up the .gitignore update from commit <sha>. Run: git fetch origin main && git rebase origin/main"
+```
+
+Signals that a sweeping commit has landed:
+- A repo-root file changed in a recent merge (`git log --oneline --name-only origin/main ^<sprint-start-sha> -- .gitignore .git-hooks/ tsconfig.json`)
+- The first adversarial review flags it as a blocker on the first PR
+
+Catch it at the source, not per-branch during review. Cost per reviewer
+discovery: ~1 repair cycle (~$3 opus + ~$0.50 sonnet review = ~$3.50). Cost
+of proactive broadcast: 1 `send` per session.
 
 ## Quota gating
 

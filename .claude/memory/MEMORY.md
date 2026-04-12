@@ -39,10 +39,17 @@
 - Tag push triggers Release workflow (cross-platform binary builds + GitHub Release).
 - Deleted `version.yml` (was broken: re-created v0.2.0 on every push to main).
 
-## Sprint 31 candidates
-- **#1207**: Human-readable session names (fight bye-reflex via identity anchoring)
-- **#1208**: `mcx claude bye` requires a closing message (friction against premature disposal)
-- **#1206**: core.bare=true recurrence (may be fixed by .gitignore, monitor first)
+## Sprint 32 candidates
+- **#1233**: `bye --keep` broken — routes through agent.ts which lacks `--keep` support
+- **#1216**: Sprint docs reference nonexistent `mcx wait` (should be `mcx claude wait`)
+- **#1217**: Sprint pre-flight should explicitly restart daemon after build
+- **#1218**: `mcx claude spawn` silently creates dead sessions on stale daemon (P1)
+- **#1219**: `mcx gc` — garbage-collect merged branches and stale worktrees
+- **#1227**: work_items phase machine doesn't allow `impl→qa` skip
+- **#1240**: Document session scoping for multi-repo sprints (pure docs)
+- **#1242**: Bug — session filter leaks null-repoRoot sessions across repos (fallback-to-cwd fix) — good-neighbor critical
+- **#1243**: Bug — repoRoot not recorded when ambient repo has core.bare=true — good-neighbor critical
+- **core.bare recurrence**: #1206 "fixed" it but it's already back — the fix isn't sticky. May need investigation separate from #1243
 
 ## Skills
 - `/sprint` — survey board, pick issues, run full pipeline. Sprint files include timestamps.
