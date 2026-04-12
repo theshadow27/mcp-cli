@@ -821,6 +821,7 @@ describe("mcx claude spawn --headed", () => {
 
   test("headed --worktree skips prefix when branchPrefix: false", async () => {
     const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
+    const migratedYamlPath = join(process.cwd(), ".mcx.yaml");
     writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
     try {
       const ttyOpen = mock(async () => {});
@@ -841,6 +842,7 @@ describe("mcx claude spawn --headed", () => {
       }
     } finally {
       if (existsSync(configPath)) unlinkSync(configPath);
+      if (existsSync(migratedYamlPath)) unlinkSync(migratedYamlPath);
     }
   });
 });
@@ -848,6 +850,7 @@ describe("mcx claude spawn --headed", () => {
 describe("mcx claude spawn --worktree branchPrefix", () => {
   test("headless --worktree pre-creates worktree without prefix when branchPrefix: false", async () => {
     const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
+    const migratedYamlPath = join(process.cwd(), ".mcx.yaml");
     writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
     try {
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
@@ -872,6 +875,7 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
       }
     } finally {
       if (existsSync(configPath)) unlinkSync(configPath);
+      if (existsSync(migratedYamlPath)) unlinkSync(migratedYamlPath);
     }
   });
 

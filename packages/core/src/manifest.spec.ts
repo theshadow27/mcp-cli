@@ -122,17 +122,30 @@ describe("validateManifest", () => {
     );
   });
 
+  test("coerces legacy array-of-strings worktree.setup to first element (compat shim)", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        worktree: { setup: ["./setup.sh"] },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(m.worktree?.setup).toBe("./setup.sh");
+  });
+
   test("accepts optional worktree and state sections", () => {
     const m = validateManifest(
       {
         initial: "a",
-        worktree: { setup: ["echo hi"] },
+        worktree: { setup: "echo hi", branchPrefix: false },
         state: { gh_pr: "number", agent_name: "string?" },
         phases: { a: { source: "./a.ts" } },
       },
       "/tmp/x",
     );
-    expect(m.worktree?.setup).toEqual(["echo hi"]);
+    expect(m.worktree?.setup).toBe("echo hi");
+    expect(m.worktree?.branchPrefix).toBe(false);
     expect(m.state?.gh_pr).toBe("number");
   });
 });

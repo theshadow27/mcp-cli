@@ -44,10 +44,26 @@ export const PhaseDefSchema = z
 
 export type PhaseDef = z.infer<typeof PhaseDefSchema>;
 
-/** Worktree setup subsection. Future home of .mcx-worktree.json contents. */
+/**
+ * Worktree setup subsection. Mirrors `.mcx-worktree.json` `worktree:` contents.
+ * See #1288 for the migration that populates this from the legacy JSON file.
+ *
+ * `setup`/`teardown`/`base` accept the legacy array-of-strings form (coerced to
+ * the first element) for compatibility with any manifests written before #1288
+ * changed the placeholder schema from `z.array(z.string())` to `z.string()`.
+ */
+const coerceToString = (field: string) =>
+  z.preprocess(
+    (v) => (Array.isArray(v) ? (v[0] ?? "") : v),
+    z.string({ error: `${field} must be a string` }).optional(),
+  );
+
 export const ManifestWorktreeSchema = z
   .object({
-    setup: z.array(z.string()).optional(),
+    setup: coerceToString("setup"),
+    teardown: coerceToString("teardown"),
+    base: coerceToString("base"),
+    branchPrefix: z.boolean().optional(),
   })
   .strict();
 
