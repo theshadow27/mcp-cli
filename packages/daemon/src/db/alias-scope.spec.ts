@@ -63,4 +63,39 @@ describe("aliases.scope column", () => {
     db.saveAlias("x", "/tmp/x.ts", "d", "freeform", undefined, undefined, undefined, undefined, undefined, null);
     expect(db.getAlias("x")?.scope).toBeNull();
   });
+
+  test("scopeProvided=false preserves existing scope atomically (TOCTOU fix)", () => {
+    // Pre-seed with a path scope.
+    db.saveAlias(
+      "keep",
+      "/tmp/keep.ts",
+      "d",
+      "freeform",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/workspace/repo",
+    );
+    expect(db.getAlias("keep")?.scope).toBe("/workspace/repo");
+
+    // Upsert without providing a scope — the SQL CASE branch must keep the
+    // existing value instead of clobbering with the caller's placeholder null.
+    db.saveAlias(
+      "keep",
+      "/tmp/keep.ts",
+      "new description",
+      "freeform",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null, // placeholder — caller didn't actually supply a scope
+      false, // scopeProvided=false
+    );
+    expect(db.getAlias("keep")?.scope).toBe("/workspace/repo");
+    expect(db.getAlias("keep")?.description).toBe("new description");
+  });
 });

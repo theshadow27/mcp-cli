@@ -224,8 +224,12 @@ export class StateDb {
     }
     try {
       this.db.exec("ALTER TABLE aliases ADD COLUMN scope TEXT");
-    } catch {
-      /* column already exists */
+    } catch (err) {
+      // Only swallow the "column already exists" case; rethrow anything else
+      // (disk-full, permissions, corruption) so it surfaces instead of silently
+      // leaving the schema unmigrated.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name: scope/i.test(msg)) throw err;
     }
 
     // -- Trace context columns on usage_stats --
@@ -718,6 +722,7 @@ export class StateDb {
     sourceHash?: string,
     expiresAt?: number,
     scope?: string | null,
+    scopeProvided = true,
   ): void {
     // If the caller is saving an ephemeral alias (expiresAt set), refuse to
     // overwrite an existing permanent alias (expires_at IS NULL). This prevents
@@ -744,7 +749,7 @@ export class StateDb {
          bundled_js = excluded.bundled_js,
          source_hash = excluded.source_hash,
          expires_at = excluded.expires_at,
-         scope = excluded.scope,
+         scope = CASE WHEN ?11 = 1 THEN excluded.scope ELSE aliases.scope END,
          updated_at = unixepoch()`,
       [
         name,
@@ -757,6 +762,7 @@ export class StateDb {
         sourceHash ?? null,
         expiresAt ?? null,
         scope ?? null,
+        scopeProvided ? 1 : 0,
       ],
     );
   }

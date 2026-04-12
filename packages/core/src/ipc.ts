@@ -143,7 +143,16 @@ export const SaveAliasParamsSchema = z.object({
    * - `"global"`: callable via run/MCP, hidden from top-level dispatch
    * - absolute path: callable only when cwd is inside that path
    */
-  scope: z.union([z.literal("global"), z.string().startsWith("/"), z.null()]).optional(),
+  scope: z
+    .union([
+      z.literal("global"),
+      // Absolute path: must start with "/", be longer than just "/", and contain no NUL bytes.
+      z
+        .string()
+        .regex(/^\/[^\0]+$/, "scope must be an absolute path"),
+      z.null(),
+    ])
+    .optional(),
 });
 
 export const DeleteAliasParamsSchema = z.object({

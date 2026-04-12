@@ -6,6 +6,7 @@
  * --key value pairs are passed as CLI args (available in ctx.args).
  */
 
+import { relative, resolve } from "node:path";
 import { type IpcMethod, type IpcMethodResult, options as coreOptions, ipcCall, readCliConfig } from "@mcp-cli/core";
 import { runAlias } from "../alias-runner";
 import { printError } from "../output";
@@ -38,9 +39,16 @@ const defaultDeps: CmdRunDeps = {
  */
 export function isScopeAllowed(scope: string | null | undefined, cwd: string): boolean {
   if (scope == null || scope === "global") return true;
-  if (!scope.startsWith("/")) return true;
-  const prefix = scope.endsWith("/") ? scope : `${scope}/`;
-  return cwd === scope || cwd.startsWith(prefix);
+  // Anything that isn't `null`, `"global"`, or an absolute path is malformed —
+  // fail closed so a misconfigured scope can't accidentally grant global access.
+  if (!scope.startsWith("/")) return false;
+  const normalizedScope = resolve(scope);
+  const normalizedCwd = resolve(cwd);
+  if (normalizedCwd === normalizedScope) return true;
+  const rel = relative(normalizedScope, normalizedCwd);
+  // `relative` returns "" for same path, a non-".." path for inside,
+  // and a path starting with ".." (or an absolute path on Windows) for outside.
+  return rel !== "" && !rel.startsWith("..") && !rel.startsWith("/");
 }
 
 export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promise<{ _recordPromise: Promise<void> }> {

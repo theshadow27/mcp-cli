@@ -57,7 +57,10 @@ export function parseScopeFlag(
   const rest: string[] = [];
   let raw: string | undefined;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--scope" && i + 1 < args.length) {
+    if (args[i] === "--scope") {
+      if (i + 1 >= args.length) {
+        throw new Error("--scope requires a value (null, legacy, global, or a path)");
+      }
       raw = args[++i];
       continue;
     }
@@ -70,8 +73,15 @@ export function parseScopeFlag(
   if (raw === undefined) return { scope: "global", scopeDefaulted: true, rest };
   if (raw === "null" || raw === "legacy") return { scope: null, scopeDefaulted: false, rest };
   if (raw === "global") return { scope: "global", scopeDefaulted: false, rest };
-  // Treat anything else as a path — resolve to absolute
-  return { scope: resolve(cwd, raw), scopeDefaulted: false, rest };
+  if (raw === "") {
+    throw new Error("--scope value cannot be empty");
+  }
+  // Treat anything else as a path — resolve to absolute, reject null bytes
+  const resolved = resolve(cwd, raw);
+  if (resolved.includes("\0") || resolved === "/") {
+    throw new Error(`--scope path is invalid: ${JSON.stringify(raw)}`);
+  }
+  return { scope: resolved, scopeDefaulted: false, rest };
 }
 
 /** Wrap a defineAlias object literal body into a full script */
@@ -113,7 +123,14 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
 
     case "save": {
       // Strip --scope first so it doesn't interfere with -c/positional parsing.
-      const { scope, rest: saveArgs } = parseScopeFlag(args);
+      let scope: string | null;
+      let saveArgs: string[];
+      try {
+        ({ scope, rest: saveArgs } = parseScopeFlag(args));
+      } catch (err) {
+        d.printError(err instanceof Error ? err.message : String(err));
+        d.exit(1);
+      }
 
       // Parse -c / --code flag
       const codeIdx = saveArgs.indexOf("-c") !== -1 ? saveArgs.indexOf("-c") : saveArgs.indexOf("--code");

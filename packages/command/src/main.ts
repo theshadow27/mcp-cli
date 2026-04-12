@@ -444,7 +444,7 @@ async function main(): Promise<void> {
         // Only check if daemon is already running to avoid 5s startup delay on typos.
         if (!command.startsWith("-") && (await isDaemonRunning())) {
           const alias = await ipcCall("getAlias", { name: command });
-          if (alias && (alias.scope == null || alias.scope === undefined)) {
+          if (alias && alias.scope == null) {
             const { _recordPromise } = await cmdRun([command, ...cleanArgs.slice(1)]);
             await _recordPromise;
             break;

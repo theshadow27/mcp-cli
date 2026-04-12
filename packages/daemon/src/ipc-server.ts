@@ -720,7 +720,9 @@ export class IpcServer {
         }
       }
 
-      const scope: string | null = scopeProvided ? (parsed.scope ?? null) : (this.db.getAlias(name)?.scope ?? null);
+      // When caller didn't supply scope, pass scopeProvided=false so the SQL
+      // UPDATE branch preserves the existing row's scope atomically (no TOCTOU).
+      const scope: string | null = scopeProvided ? (parsed.scope ?? null) : null;
 
       const isStructured = isDefineAlias(script);
 
@@ -764,6 +766,7 @@ export class IpcServer {
             sourceHash,
             expiresAt,
             scope ?? null,
+            scopeProvided,
           );
         } else {
           this.db.saveAlias(
@@ -777,6 +780,7 @@ export class IpcServer {
             sourceHash,
             expiresAt,
             scope ?? null,
+            scopeProvided,
           );
         }
       } catch (err) {
@@ -793,6 +797,7 @@ export class IpcServer {
           undefined,
           expiresAt,
           scope ?? null,
+          scopeProvided,
         );
       }
 

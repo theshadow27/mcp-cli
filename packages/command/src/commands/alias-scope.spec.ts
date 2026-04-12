@@ -51,6 +51,19 @@ describe("parseScopeFlag", () => {
     const { rest } = parseScopeFlag(["save", "--scope", "global", "name", "src"]);
     expect(rest).toEqual(["save", "name", "src"]);
   });
+
+  test("--scope as the last argument throws (no silent swallow)", () => {
+    expect(() => parseScopeFlag(["save", "name", "--scope"])).toThrow(/--scope requires a value/);
+  });
+
+  test("--scope with empty string is rejected", () => {
+    expect(() => parseScopeFlag(["save", "--scope", "", "n"])).toThrow(/--scope value cannot be empty/);
+    expect(() => parseScopeFlag(["save", "--scope=", "n"])).toThrow(/--scope value cannot be empty/);
+  });
+
+  test("--scope containing a null byte is rejected", () => {
+    expect(() => parseScopeFlag(["save", "--scope", "/tmp/\0bad", "n"])).toThrow(/invalid/);
+  });
 });
 
 describe("isScopeAllowed", () => {
@@ -78,6 +91,20 @@ describe("isScopeAllowed", () => {
 
   test("path scope is rejected from an outside cwd", () => {
     expect(isScopeAllowed("/workspace/repo", "/elsewhere")).toBe(false);
+  });
+
+  test("non-absolute scope strings fail closed (never grant access)", () => {
+    // A malformed scope that isn't null/global/absolute must NOT silently grant
+    // access — see adversarial review #3 (fail-closed boundary).
+    expect(isScopeAllowed("dev", "/anywhere")).toBe(false);
+    expect(isScopeAllowed("./proj", "/anywhere")).toBe(false);
+    expect(isScopeAllowed("", "/anywhere")).toBe(false);
+  });
+
+  test("cwd with .. segments is normalized before comparison", () => {
+    // /workspace/repo/../sibling normalizes to /workspace/sibling, which is NOT
+    // inside /workspace/repo — must be rejected.
+    expect(isScopeAllowed("/workspace/repo", "/workspace/repo/../sibling")).toBe(false);
   });
 });
 
