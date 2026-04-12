@@ -75,7 +75,8 @@ describe("validateManifest", () => {
       },
       "/tmp/x",
     );
-    expect(m.runsOn).toBe("main");
+    expect(m.version).toBe(1);
+    expect(m.runsOn).toBeUndefined();
     expect(m.phases.a.next).toEqual([]);
   });
 
@@ -126,13 +127,84 @@ describe("validateManifest", () => {
       {
         initial: "a",
         worktree: { setup: ["echo hi"] },
-        state: { ghPr: "number", agentName: "string?" },
+        state: { gh_pr: "number", agent_name: "string?" },
         phases: { a: { source: "./a.ts" } },
       },
       "/tmp/x",
     );
     expect(m.worktree?.setup).toEqual(["echo hi"]);
-    expect(m.state?.ghPr).toBe("number");
+    expect(m.state?.gh_pr).toBe("number");
+  });
+});
+
+describe("validateManifest constraints", () => {
+  test("rejects phase names with spaces or slashes", () => {
+    expect(() => validateManifest({ initial: "a b", phases: { "a b": { source: "./a.ts" } } }, "/tmp/x")).toThrow(
+      ManifestError,
+    );
+  });
+
+  test("rejects __proto__ as a phase name", () => {
+    expect(() =>
+      validateManifest({ initial: "__proto__", phases: { __proto__: { source: "./a.ts" } } }, "/tmp/x"),
+    ).toThrow(ManifestError);
+  });
+
+  test("rejects state values outside the type DSL", () => {
+    expect(() =>
+      validateManifest({ initial: "a", state: { foo: "banana" }, phases: { a: { source: "./a.ts" } } }, "/tmp/x"),
+    ).toThrow(/state value/);
+  });
+
+  test("rejects unreachable phases from initial", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          phases: {
+            a: { source: "./a.ts" },
+            orphan: { source: "./o.ts" },
+          },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/unreachable/);
+  });
+
+  test("allows cycles in the phase graph", () => {
+    const m = validateManifest(
+      {
+        initial: "review",
+        phases: {
+          review: { source: "./r.ts", next: ["repair"] },
+          repair: { source: "./p.ts", next: ["review"] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(m.phases.review.next).toEqual(["repair"]);
+  });
+
+  test("rejects empty / non-object manifest with clear message", () => {
+    expect(() => validateManifest(null, "/tmp/x")).toThrow(/empty or not/);
+    expect(() => validateManifest([], "/tmp/x")).toThrow(/empty or not/);
+  });
+
+  test("reports all structural errors at once", () => {
+    try {
+      validateManifest({ phases: {} }, "/tmp/x");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ManifestError);
+      expect((err as Error).message).toContain("manifest validation failed");
+      expect((err as Error).message).toContain("initial");
+    }
+  });
+
+  test("rejects wrong version literal", () => {
+    expect(() => validateManifest({ version: 2, initial: "a", phases: { a: { source: "./a.ts" } } }, "/tmp/x")).toThrow(
+      ManifestError,
+    );
   });
 });
 
