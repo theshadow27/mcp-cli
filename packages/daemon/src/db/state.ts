@@ -222,6 +222,11 @@ export class StateDb {
     } catch {
       /* column already exists */
     }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN scope TEXT");
+    } catch {
+      /* column already exists */
+    }
 
     // -- Trace context columns on usage_stats --
     try {
@@ -616,6 +621,7 @@ export class StateDb {
     expiresAt?: number | null;
     runCount: number;
     lastRunAt: number | null;
+    scope: string | null;
   }> {
     this.maybeRunAliasPrune();
     return this.db
@@ -631,10 +637,11 @@ export class StateDb {
           expires_at: number | null;
           run_count: number;
           last_run_at: number | null;
+          scope: string | null;
         },
         [number]
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at, scope FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
       )
       .all(Date.now())
       .map((row) => ({
@@ -648,6 +655,7 @@ export class StateDb {
         expiresAt: row.expires_at,
         runCount: row.run_count,
         lastRunAt: row.last_run_at,
+        scope: row.scope,
       }));
   }
 
@@ -662,6 +670,7 @@ export class StateDb {
         expiresAt?: number | null;
         runCount: number;
         lastRunAt: number | null;
+        scope: string | null;
       }
     | undefined {
     const row = this.db
@@ -676,10 +685,11 @@ export class StateDb {
           expires_at: number | null;
           run_count: number;
           last_run_at: number | null;
+          scope: string | null;
         },
         [string]
       >(
-        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at FROM aliases WHERE name = ?",
+        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at, scope FROM aliases WHERE name = ?",
       )
       .get(name);
     if (!row) return undefined;
@@ -693,6 +703,7 @@ export class StateDb {
       expiresAt: row.expires_at,
       runCount: row.run_count,
       lastRunAt: row.last_run_at,
+      scope: row.scope,
     };
   }
 
@@ -706,6 +717,7 @@ export class StateDb {
     bundledJs?: string,
     sourceHash?: string,
     expiresAt?: number,
+    scope?: string | null,
   ): void {
     // If the caller is saving an ephemeral alias (expiresAt set), refuse to
     // overwrite an existing permanent alias (expires_at IS NULL). This prevents
@@ -721,8 +733,8 @@ export class StateDb {
     }
 
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, scope, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
        ON CONFLICT(name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
@@ -732,6 +744,7 @@ export class StateDb {
          bundled_js = excluded.bundled_js,
          source_hash = excluded.source_hash,
          expires_at = excluded.expires_at,
+         scope = excluded.scope,
          updated_at = unixepoch()`,
       [
         name,
@@ -743,6 +756,7 @@ export class StateDb {
         bundledJs ?? null,
         sourceHash ?? null,
         expiresAt ?? null,
+        scope ?? null,
       ],
     );
   }

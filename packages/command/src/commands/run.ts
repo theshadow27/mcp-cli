@@ -17,6 +17,7 @@ export interface CmdRunDeps {
   printError: typeof printError;
   logError: (msg: string) => void;
   exit: (code: number) => never;
+  cwd: () => string;
 }
 
 const defaultDeps: CmdRunDeps = {
@@ -26,7 +27,21 @@ const defaultDeps: CmdRunDeps = {
   printError,
   logError: (msg) => console.error(msg),
   exit: (code) => process.exit(code),
+  cwd: () => process.cwd(),
 };
+
+/**
+ * Check whether an alias with `scope` is callable from `cwd`.
+ * - `null`/`undefined`: always allowed (legacy)
+ * - `"global"`: always allowed
+ * - absolute path: allowed only when cwd starts with that path
+ */
+export function isScopeAllowed(scope: string | null | undefined, cwd: string): boolean {
+  if (scope == null || scope === "global") return true;
+  if (!scope.startsWith("/")) return true;
+  const prefix = scope.endsWith("/") ? scope : `${scope}/`;
+  return cwd === scope || cwd.startsWith(prefix);
+}
 
 export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promise<{ _recordPromise: Promise<void> }> {
   const d: CmdRunDeps = { ...defaultDeps, ...deps };
@@ -41,6 +56,11 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
   const aliasInfo = await d.ipcCall("getAlias", { name: aliasName });
   if (!aliasInfo) {
     d.printError(`Alias "${aliasName}" not found`);
+    d.exit(1);
+  }
+
+  if (!isScopeAllowed(aliasInfo.scope, d.cwd())) {
+    d.printError(`Alias "${aliasName}" is scoped to ${aliasInfo.scope} — cannot run from ${d.cwd()}`);
     d.exit(1);
   }
 

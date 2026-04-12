@@ -137,6 +137,13 @@ export const SaveAliasParamsSchema = z.object({
   outputSchema: z.record(z.string(), z.unknown()).optional(),
   /** Absolute ms timestamp when this alias expires (ephemeral aliases only) */
   expiresAt: z.number().optional(),
+  /**
+   * Dispatch scope:
+   * - `null`/omitted: top-level `mcx <name>` dispatch enabled, callable anywhere
+   * - `"global"`: callable via run/MCP, hidden from top-level dispatch
+   * - absolute path: callable only when cwd is inside that path
+   */
+  scope: z.union([z.literal("global"), z.string().startsWith("/"), z.null()]).optional(),
 });
 
 export const DeleteAliasParamsSchema = z.object({
@@ -177,6 +184,12 @@ export interface AliasInfo {
   runCount?: number;
   /** Epoch seconds of last run (null = never run) */
   lastRunAt?: number | null;
+  /**
+   * Dispatch scope (see SaveAliasParamsSchema).
+   * `null` = legacy top-level dispatch. `"global"` = hidden from top-level.
+   * Absolute path = cwd-restricted.
+   */
+  scope?: string | null;
 }
 
 export interface AliasDetail extends AliasInfo {

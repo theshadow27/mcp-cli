@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read";
@@ -42,6 +42,37 @@ const defaultDeps: AliasDeps = {
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
 };
+
+/**
+ * Parse `--scope <value>` from args (mutates nothing; returns cleaned args and resolved scope).
+ * Values:
+ *  - `null` or `legacy` → NULL scope (top-level `mcx <name>` dispatch enabled)
+ *  - `global` (default) → hidden from top-level, callable via run/mcp
+ *  - `.` or any path → resolved to absolute path; callable only when cwd is inside
+ */
+export function parseScopeFlag(
+  args: string[],
+  cwd: string = process.cwd(),
+): { scope: string | null; scopeDefaulted: boolean; rest: string[] } {
+  const rest: string[] = [];
+  let raw: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--scope" && i + 1 < args.length) {
+      raw = args[++i];
+      continue;
+    }
+    if (args[i].startsWith("--scope=")) {
+      raw = args[i].slice("--scope=".length);
+      continue;
+    }
+    rest.push(args[i]);
+  }
+  if (raw === undefined) return { scope: "global", scopeDefaulted: true, rest };
+  if (raw === "null" || raw === "legacy") return { scope: null, scopeDefaulted: false, rest };
+  if (raw === "global") return { scope: "global", scopeDefaulted: false, rest };
+  // Treat anything else as a path — resolve to absolute
+  return { scope: resolve(cwd, raw), scopeDefaulted: false, rest };
+}
 
 /** Wrap a defineAlias object literal body into a full script */
 export function wrapDefineAlias(code: string): string {
@@ -81,21 +112,24 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
     }
 
     case "save": {
+      // Strip --scope first so it doesn't interfere with -c/positional parsing.
+      const { scope, rest: saveArgs } = parseScopeFlag(args);
+
       // Parse -c / --code flag
-      const codeIdx = args.indexOf("-c") !== -1 ? args.indexOf("-c") : args.indexOf("--code");
+      const codeIdx = saveArgs.indexOf("-c") !== -1 ? saveArgs.indexOf("-c") : saveArgs.indexOf("--code");
       const hasCode = codeIdx !== -1;
 
       if (hasCode) {
         // mcx alias save [-c CODE] [name]
         // or: mcx alias save [name] -c CODE
-        const codeBody = args[codeIdx + 1];
+        const codeBody = saveArgs[codeIdx + 1];
         if (!codeBody) {
           d.printError("Missing code body after -c/--code flag");
           d.exit(1);
         }
 
         // Collect remaining args (not -c or its value) after "save"
-        const rest = args.slice(1).filter((_, i) => {
+        const rest = saveArgs.slice(1).filter((_, i) => {
           const absIdx = i + 1; // offset because we sliced at 1
           return absIdx !== codeIdx && absIdx !== codeIdx + 1;
         });
@@ -110,7 +144,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
 
         const script = wrapDefineAlias(codeBody);
         const description = extractDescription(script);
-        const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
+        const result = (await d.ipcCall("saveAlias", { name, script, description, scope })) as {
           ok: boolean;
           filePath: string;
           warnings?: string[];
@@ -122,15 +156,15 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       }
 
       // Standard save: mcx alias save <name> <@file | - | script>
-      const name = args[1];
+      const name = saveArgs[1];
       if (!name) {
         d.printError(
-          "Usage: mcx alias save <name> <@file | - | script>\n       mcx alias save -c '{...defineAlias body...}'",
+          "Usage: mcx alias save <name> <@file | - | script> [--scope global|null|<path>]\n       mcx alias save -c '{...defineAlias body...}'",
         );
         d.exit(1);
       }
 
-      const source = args[2];
+      const source = saveArgs[2];
       let script: string;
 
       if (!source || source === "-") {
@@ -141,7 +175,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
         script = d.readFileWithLimit(source.slice(1));
       } else {
         // Inline script (remaining args joined)
-        script = args.slice(2).join(" ");
+        script = saveArgs.slice(2).join(" ");
       }
 
       if (!script.trim()) {
@@ -150,7 +184,7 @@ export async function cmdAlias(args: string[], deps?: Partial<AliasDeps>): Promi
       }
 
       const description = extractDescription(script);
-      const result = (await d.ipcCall("saveAlias", { name, script, description })) as {
+      const result = (await d.ipcCall("saveAlias", { name, script, description, scope })) as {
         ok: boolean;
         filePath: string;
         warnings?: string[];

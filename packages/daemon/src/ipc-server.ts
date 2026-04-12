@@ -702,7 +702,12 @@ export class IpcServer {
     });
 
     this.handlers.set("saveAlias", async (params, _ctx) => {
-      const { name, script, description, expiresAt } = SaveAliasParamsSchema.parse(params);
+      const parsed = SaveAliasParamsSchema.parse(params);
+      const { name, script, description, expiresAt } = parsed;
+      // If the caller did not supply `scope`, preserve the existing row's scope.
+      // An explicit `null` clears scope; an explicit string sets it.
+      const scopeProvided =
+        typeof params === "object" && params !== null && Object.prototype.hasOwnProperty.call(params, "scope");
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
 
@@ -714,6 +719,8 @@ export class IpcServer {
           return { ok: false, reason: "permanent_alias_exists" };
         }
       }
+
+      const scope: string | null = scopeProvided ? (parsed.scope ?? null) : (this.db.getAlias(name)?.scope ?? null);
 
       const isStructured = isDefineAlias(script);
 
@@ -756,9 +763,21 @@ export class IpcServer {
             js,
             sourceHash,
             expiresAt,
+            scope ?? null,
           );
         } else {
-          this.db.saveAlias(name, filePath, description, aliasType, undefined, undefined, js, sourceHash, expiresAt);
+          this.db.saveAlias(
+            name,
+            filePath,
+            description,
+            aliasType,
+            undefined,
+            undefined,
+            js,
+            sourceHash,
+            expiresAt,
+            scope ?? null,
+          );
         }
       } catch (err) {
         // Bundle/extraction failed — save without bundle
@@ -773,6 +792,7 @@ export class IpcServer {
           undefined,
           undefined,
           expiresAt,
+          scope ?? null,
         );
       }
 

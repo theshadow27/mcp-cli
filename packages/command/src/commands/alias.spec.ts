@@ -180,6 +180,7 @@ describe("cmdAlias save (standard)", () => {
       name: "my-alias",
       script: "console.log('hi')",
       description: undefined,
+      scope: "global",
     });
     expect(deps.logError).toHaveBeenCalled();
   });
@@ -195,6 +196,7 @@ describe("cmdAlias save (standard)", () => {
       name: "my-alias",
       script: "const x = 1",
       description: undefined,
+      scope: "global",
     });
   });
 
@@ -211,6 +213,7 @@ describe("cmdAlias save (standard)", () => {
       name: "my-alias",
       script: "// description: from file\nfile content",
       description: "from file",
+      scope: "global",
     });
   });
 
@@ -227,6 +230,7 @@ describe("cmdAlias save (standard)", () => {
       name: "my-alias",
       script: "stdin script",
       description: undefined,
+      scope: "global",
     });
   });
 
