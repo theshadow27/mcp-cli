@@ -6,6 +6,7 @@
  *     extracts phase metadata, writes `.mcx.lock`.
  *   - `run <target>` (#1293): validates the transition against the manifest
  *     graph, appends it to `.mcx/transitions.jsonl`, prints "approved".
+ *   - `check` (#1292): detects drift between `.mcx.lock` and on-disk sources.
  *   - `list`: prints all declared phases from the manifest.
  *
  * Three typed errors for `run` (see `phase-transition.ts`):
@@ -14,7 +15,7 @@
  *   - RegressionError
  */
 
-import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   DisallowedTransitionError,
@@ -49,7 +50,9 @@ export interface PhaseInstallDeps {
   bundleAlias: typeof bundleAlias;
   extractMetadata: typeof extractMetadata;
   hashFileSync: typeof hashFileSync;
-  writeFileSync: typeof writeFileSync;
+  writeFileSync: (path: string, data: string) => void;
+  readFileSync: (path: string) => string;
+  existsSync: (path: string) => boolean;
   cwd: () => string;
   log: (msg: string) => void;
   logError: (msg: string) => void;
@@ -62,6 +65,8 @@ const defaultDeps: PhaseInstallDeps = {
   extractMetadata,
   hashFileSync,
   writeFileSync: (path, data) => writeFileSync(path, data, "utf-8"),
+  readFileSync: (path) => readFileSync(path, "utf-8"),
+  existsSync: (path) => existsSync(path),
   cwd: () => process.cwd(),
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
@@ -292,6 +297,163 @@ export function phaseRun(
   return { manifest, forced: decision.forced, from: decision.from };
 }
 
+export type DriftKind = "manifest" | "phase-source" | "phase-missing" | "phase-extra";
+
+export interface DriftEntry {
+  kind: DriftKind;
+  path: string;
+  expected: string;
+  actual: string;
+}
+
+export type DriftResult =
+  | { status: "ok" }
+  | { status: "no-lockfile" }
+  | { status: "no-manifest" }
+  | { status: "drift"; entries: DriftEntry[] };
+
+/**
+ * Detect drift between `.mcx.lock` and the on-disk manifest + phase sources.
+ *
+ * Called before phase dispatch. Any mismatch aborts execution — the operator
+ * must review the diff and re-run `mcx phase install` explicitly.
+ */
+export function detectDrift(cwd: string, deps: PhaseInstallDeps): DriftResult {
+  const lockPath = resolvePath(cwd, LOCKFILE_NAME);
+  if (!deps.existsSync(lockPath)) return { status: "no-lockfile" };
+
+  const loaded = deps.loadManifest(cwd);
+  if (!loaded) return { status: "no-manifest" };
+
+  let lock: Lockfile;
+  try {
+    lock = parseLockfile(deps.readFileSync(lockPath));
+  } catch (err) {
+    return {
+      status: "drift",
+      entries: [
+        {
+          kind: "manifest",
+          path: LOCKFILE_NAME,
+          expected: "valid lockfile",
+          actual: err instanceof Error ? err.message : String(err),
+        },
+      ],
+    };
+  }
+
+  const entries: DriftEntry[] = [];
+
+  const { path: manifestPath, manifest } = loaded;
+  const manifestHash = deps.hashFileSync(manifestPath);
+  if (manifestHash !== lock.manifestHash) {
+    entries.push({
+      kind: "manifest",
+      path: relative(cwd, manifestPath).split("\\").join("/") || manifestPath,
+      expected: lock.manifestHash,
+      actual: manifestHash,
+    });
+  }
+
+  const manifestPhases = new Set(Object.keys(manifest.phases));
+  const lockedByName = new Map<string, LockedPhase>();
+  for (const p of lock.phases) lockedByName.set(p.name, p);
+
+  for (const locked of lock.phases) {
+    if (!manifestPhases.has(locked.name)) {
+      entries.push({
+        kind: "phase-extra",
+        path: locked.resolvedPath,
+        expected: "(not in manifest)",
+        actual: `phase "${locked.name}" in lockfile`,
+      });
+      continue;
+    }
+    const abs = resolvePath(cwd, locked.resolvedPath);
+    let actualHash: string;
+    try {
+      actualHash = deps.hashFileSync(abs);
+    } catch {
+      entries.push({
+        kind: "phase-source",
+        path: locked.resolvedPath,
+        expected: locked.contentHash,
+        actual: "(file missing)",
+      });
+      continue;
+    }
+    if (actualHash !== locked.contentHash) {
+      entries.push({
+        kind: "phase-source",
+        path: locked.resolvedPath,
+        expected: locked.contentHash,
+        actual: actualHash,
+      });
+    }
+  }
+
+  for (const name of manifestPhases) {
+    if (!lockedByName.has(name)) {
+      entries.push({
+        kind: "phase-missing",
+        path: manifest.phases[name].source,
+        expected: `phase "${name}" in lockfile`,
+        actual: "(not installed)",
+      });
+    }
+  }
+
+  if (entries.length === 0) return { status: "ok" };
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  return { status: "drift", entries };
+}
+
+/**
+ * Render the stern drift warning. No "just run install" prompt — the user
+ * must review the diff first, then regenerate the lockfile explicitly.
+ */
+export function formatDriftWarning(entries: DriftEntry[]): string {
+  const header =
+    "PHASE LOCKFILE DRIFT DETECTED\n\nThe manifest or a phase source has changed since the last install:\n";
+  const width = Math.max(20, ...entries.map((e) => e.path.length));
+  const rows = entries
+    .map((e) => {
+      const label = labelFor(e.kind);
+      const exp = shortHash(e.expected);
+      const act = shortHash(e.actual);
+      return `  ${e.path.padEnd(width)}  [${label}]  expected ${exp}, got ${act}`;
+    })
+    .join("\n");
+  const footer = `
+
+Phases will not execute until the lockfile is regenerated.
+
+Before regenerating:
+  - Review the diff. A malicious PR can inject phase source that runs at
+    orchestrator time with full shell/mcp access.
+  - Confirm the changes are intentional and reviewed.
+  - Understand that re-running install makes them executable.
+
+To regenerate after review:  mcx phase install`;
+  return `${header}\n${rows}${footer}`;
+}
+
+function labelFor(kind: DriftKind): string {
+  switch (kind) {
+    case "manifest":
+    case "phase-source":
+      return "HASH MISMATCH";
+    case "phase-missing":
+      return "NOT INSTALLED";
+    case "phase-extra":
+      return "STALE LOCK ENTRY";
+  }
+}
+
+function shortHash(s: string): string {
+  return /^[a-f0-9]{64}$/.test(s) ? s.slice(0, 6) : s;
+}
+
 export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
   const sub = args[0];
@@ -332,6 +494,29 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       d.logError(
         "note: scope registration (#1289) and state-schema subset (#1290) are deferred — lockfile written, aliases not yet scoped.",
       );
+      return;
+    }
+
+    if (sub === "check") {
+      const cwd = d.cwd();
+      const result = detectDrift(cwd, d);
+      switch (result.status) {
+        case "no-lockfile":
+          d.logError(`no ${LOCKFILE_NAME} — run \`mcx phase install\` to create one`);
+          d.exit(1);
+          break;
+        case "no-manifest":
+          d.logError("no .mcx.yaml or .mcx.json in this repo");
+          d.exit(1);
+          break;
+        case "drift":
+          d.logError(formatDriftWarning(result.entries));
+          d.exit(1);
+          break;
+        case "ok":
+          d.log("lockfile ok");
+          break;
+      }
       return;
     }
 
@@ -446,6 +631,9 @@ function printPhaseHelp(d: PhaseInstallDeps): void {
 Subcommands:
   mcx phase install
       Resolve sources from .mcx.{yaml,json}, hash, write .mcx.lock.
+
+  mcx phase check
+      Verify .mcx.lock matches the manifest and phase sources. Exits non-zero on drift.
 
   mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]
       Validate and record a phase transition against .mcx.{yaml,json}.
