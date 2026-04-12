@@ -124,6 +124,10 @@ export function defaultGcDeps(): GcDeps {
       };
     },
     getMtime: (path) => {
+      // node:fs statSync is Bun's native implementation — not a compat shim.
+      // Bun.file().lastModified returns a max-int sentinel for missing paths
+      // and Bun.file().exists() returns false for directories, so neither
+      // works here (worktree paths are directories).
       try {
         return statSync(path).mtimeMs;
       } catch {
@@ -143,20 +147,36 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
   const { cwd } = deps;
   const prefix = opts.dryRun ? `${c.dim}[dry-run]${c.reset} ` : "";
 
+  // Branches deleted during the worktree phase — skipped by the branch phase
+  // to avoid "not found" false failures on the second `git branch -d`.
+  let worktreeDeletedBranches = new Set<string>();
+
+  // Branches currently checked out by any worktree — must not be deleted.
+  // Captured from listMcxWorktrees during the worktree phase (if run) to
+  // avoid a second independent `git worktree list` syscall and a TOCTOU
+  // window between the two snapshots.
+  let checkedOutFromList: Set<string> | null = null;
+
   // --- Worktrees ---
   if (!opts.branchesOnly) {
+    // Fail-closed for live mode (don't destroy worktrees if daemon is
+    // unreachable). For --dry-run, fail-open and warn — inspection must
+    // degrade gracefully; nothing destructive happens.
     let activeWorktrees: Set<string>;
+    const shimDeps = {
+      ...deps,
+      exit: ((code: number) => process.exit(code)) as (code: number) => never,
+    };
     try {
-      activeWorktrees = await getAllActiveSessionWorktrees(
-        {
-          ...deps,
-          exit: ((code: number) => process.exit(code)) as (code: number) => never,
-        },
-        true, // fail closed — don't destroy worktrees if daemon is unreachable
-      );
+      activeWorktrees = await getAllActiveSessionWorktrees(shimDeps, true);
     } catch (e) {
-      deps.logError(`gc: ${e instanceof Error ? e.message : String(e)}`);
-      return;
+      if (!opts.dryRun) {
+        deps.logError(`gc: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      // dry-run: degrade gracefully — warn and continue with empty set.
+      deps.logError("gc: active-session filter skipped — daemon unreachable (dry-run)");
+      activeWorktrees = new Set();
     }
 
     // Add too-recent worktrees to the "active" set so pruneWorktrees skips them.
@@ -179,20 +199,44 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       }
     }
 
+    // Thread checked-out branches to the branch phase — avoid a second
+    // independent `git worktree list --porcelain` call (and its TOCTOU).
+    checkedOutFromList = new Set<string>();
+    for (const wt of listed.allWorktrees) {
+      if (wt.branch) checkedOutFromList.add(wt.branch);
+    }
+
+    // refreshActive re-queries sessions between removals (TOCTOU mitigation).
+    // Only meaningful in live mode; in dry-run we don't execute.
+    const refreshActive = opts.dryRun
+      ? undefined
+      : async (): Promise<Set<string>> => {
+          try {
+            return await getAllActiveSessionWorktrees(shimDeps, false);
+          } catch {
+            return activeWorktrees;
+          }
+        };
+    const result = await pruneWorktrees({
+      repoRoot: cwd,
+      activeWorktrees,
+      deps,
+      dryRun: opts.dryRun,
+      refreshActive,
+    });
+
+    worktreeDeletedBranches = result.deletedBranches;
+
     if (opts.dryRun) {
-      // Collect candidates without removing (reuse pruneWorktrees safety logic
-      // is tricky without executing — list clean merged worktrees directly).
-      const candidates = dryRunWorktreeCandidates(listed, activeWorktrees, deps, cwd);
-      deps.log(`${prefix}worktrees: would remove ${candidates.removable.length}`);
-      for (const name of candidates.removable) deps.log(`  ${c.red}-${c.reset} ${name}`);
-      if (candidates.skippedUnmerged.length > 0) {
-        deps.log(`${prefix}worktrees: ${candidates.skippedUnmerged.length} skipped (unmerged)`);
+      deps.log(`${prefix}worktrees: would remove ${result.removable.length}`);
+      for (const name of result.removable) deps.log(`  ${c.red}-${c.reset} ${name}`);
+      if (result.skippedUnmerged.length > 0) {
+        deps.log(`${prefix}worktrees: ${result.skippedUnmerged.length} skipped (unmerged)`);
       }
       if (recentSkipped.length > 0) {
         deps.log(`${prefix}worktrees: ${recentSkipped.length} skipped (too recent)`);
       }
     } else {
-      const result = pruneWorktrees({ repoRoot: cwd, activeWorktrees, deps });
       const unmerged = result.skippedUnmerged.length > 0 ? `, skipped ${result.skippedUnmerged.length} unmerged` : "";
       const tooRecent = recentSkipped.length > 0 ? `, skipped ${recentSkipped.length} too recent` : "";
       deps.logError(`worktrees: removed ${result.pruned}${unmerged}${tooRecent}`);
@@ -212,11 +256,15 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
     }
 
     const defaultBranch = getDefaultBranch(deps, cwd);
-    const checkedOut = getCheckedOutBranches(deps, cwd);
+    // Reuse checked-out set from the worktree phase if available; else fall
+    // back to an independent query (branches-only mode).
+    const checkedOut = checkedOutFromList ?? getCheckedOutBranches(deps, cwd);
     const mergedBranches = getMergedBranches(deps, cwd, defaultBranch);
     const current = getCurrentBranch(deps, cwd);
 
-    const candidates = mergedBranches.filter((b) => b !== defaultBranch && b !== current && !checkedOut.has(b));
+    const candidates = mergedBranches.filter(
+      (b) => b !== defaultBranch && b !== current && !checkedOut.has(b) && !worktreeDeletedBranches.has(b),
+    );
 
     if (opts.dryRun) {
       deps.log(`${prefix}branches: would delete ${candidates.length} merged`);
@@ -236,47 +284,6 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       for (const f of failed) deps.logError(`  ${f}`);
     }
   }
-}
-
-function dryRunWorktreeCandidates(
-  listed: ReturnType<typeof listMcxWorktrees>,
-  activeWorktrees: Set<string>,
-  deps: GcDeps,
-  cwd: string,
-): { removable: string[]; skippedUnmerged: string[] } {
-  const defaultBranch = getDefaultBranch(deps, cwd);
-  const { stdout: mergedOutput, exitCode: mergedExit } = deps.exec([
-    "git",
-    "-C",
-    cwd,
-    "branch",
-    "--merged",
-    defaultBranch,
-  ]);
-  const mergedBranches =
-    mergedExit === 0
-      ? new Set(
-          mergedOutput
-            .split("\n")
-            .map((l) => l.replace(/^\*?\s+/, "").trim())
-            .filter(Boolean),
-        )
-      : null;
-
-  const removable: string[] = [];
-  const skippedUnmerged: string[] = [];
-  for (const wt of listed.worktrees) {
-    const name = wt.path.slice(`${listed.worktreeBase}/`.length);
-    if (activeWorktrees.has(name)) continue;
-    if (mergedBranches && wt.branch && !mergedBranches.has(wt.branch)) {
-      skippedUnmerged.push(wt.branch);
-      continue;
-    }
-    const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", wt.path, "status", "--porcelain"]);
-    if (statusExit !== 0 || status.trim() !== "") continue;
-    removable.push(name);
-  }
-  return { removable, skippedUnmerged };
 }
 
 function getMergedBranches(deps: WorktreeShimDeps, cwd: string, defaultBranch: string): string[] {

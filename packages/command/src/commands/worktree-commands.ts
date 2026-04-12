@@ -86,7 +86,7 @@ export async function worktreesCommand(args: string[], deps: WorktreeCommandDeps
   }
 
   if (prune) {
-    const result = pruneWorktrees({ repoRoot: cwd, activeWorktrees, deps });
+    const result = await pruneWorktrees({ repoRoot: cwd, activeWorktrees, deps });
     if (result.pruned === 0) {
       deps.printError("Nothing to prune.");
     } else {

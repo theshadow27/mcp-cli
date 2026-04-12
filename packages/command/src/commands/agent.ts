@@ -1351,7 +1351,7 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
   }
 
   if (prune) {
-    const { pruned, skippedUnmerged } = pruneWorktrees({
+    const { pruned, skippedUnmerged } = await pruneWorktrees({
       repoRoot: cwd,
       activeWorktrees: sessionWorktrees,
       deps: d,

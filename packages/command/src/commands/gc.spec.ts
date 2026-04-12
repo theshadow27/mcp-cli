@@ -246,7 +246,23 @@ describe("runGc worktrees", () => {
     expect(d.logs.some((l) => l.includes("wt-a") && l.includes("- "))).toBe(false);
   });
 
-  test("fails closed when session list throws", async () => {
+  test("live mode fails closed when session list throws", async () => {
+    const responses = makeWorktreeResponses();
+    const d = makeDeps({
+      execResponses: responses,
+      callTool: async () => {
+        throw new Error("daemon unreachable");
+      },
+    });
+
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    expect(d.errors.some((e) => e.includes("gc:") && e.includes("daemon"))).toBe(true);
+    // Should not have pruned anything — aborted before reaching the list phase
+    expect(d.errors.some((e) => e.includes("worktrees: removed"))).toBe(false);
+  });
+
+  test("dry-run fails open when session list throws (daemon unreachable)", async () => {
     const responses = makeWorktreeResponses();
     const d = makeDeps({
       execResponses: responses,
@@ -257,9 +273,42 @@ describe("runGc worktrees", () => {
 
     await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
 
-    expect(d.errors.some((e) => e.includes("gc:") && e.includes("daemon"))).toBe(true);
-    // Should not have proceeded to list worktrees
-    expect(d.logs.some((l) => l.includes("would remove"))).toBe(false);
+    // Warning emitted about skipped filter
+    expect(d.errors.some((e) => e.includes("active-session filter skipped"))).toBe(true);
+    // But inspection still proceeds
+    expect(d.logs.some((l) => l.includes("would remove"))).toBe(true);
+  });
+
+  test("default mode: worktree-phase branch deletions don't cause false branch-phase failures", async () => {
+    // Regression: when the worktree phase's deleteIfMerged removes a branch,
+    // the branch phase must skip it rather than trying `git branch -d` again
+    // and reporting a false failure.
+    const responses = makeWorktreeResponses();
+    responses.set("git -C /repo fetch --prune", { stdout: "" });
+    responses.set("git -C /repo branch --show-current", { stdout: "main" });
+    responses.set("git -C /repo worktree remove /repo/.claude/worktrees/wt-a", { stdout: "" });
+    responses.set("git -C /repo worktree remove /repo/.claude/worktrees/wt-b", { stdout: "" });
+    responses.set("git -C /repo branch -d feat-a", { stdout: "" });
+    responses.set("git -C /repo branch -d feat-b", { stdout: "" });
+    responses.set("git -C /repo config --get core.bare", { stdout: "false" });
+
+    const d = makeDeps({
+      execResponses: responses,
+      execFallback: () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    });
+
+    // Default mode: both worktrees and branches.
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: false }, d);
+
+    // The branch phase must not report any failures — it must skip branches
+    // the worktree phase already deleted.
+    expect(d.errors.some((e) => e.includes("branches: deleted") && e.includes("failed"))).toBe(false);
+    // Exactly one `git branch -d feat-a` and one `git branch -d feat-b` — the
+    // branch phase must not issue a second attempt.
+    const featADeletes = d.execCalls.filter((c) => c.join(" ") === "git -C /repo branch -d feat-a").length;
+    const featBDeletes = d.execCalls.filter((c) => c.join(" ") === "git -C /repo branch -d feat-b").length;
+    expect(featADeletes).toBe(1);
+    expect(featBDeletes).toBe(1);
   });
 
   test("live mode runs fetch --prune and reports result", async () => {

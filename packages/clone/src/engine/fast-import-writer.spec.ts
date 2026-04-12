@@ -5,6 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatMarksFile, generateFastImport, parseMarksFile } from "./fast-import-writer";
 
+/**
+ * Filter out git-inherited env vars (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE)
+ * that would redirect child `git fast-import` processes to the parent repo
+ * instead of the throwaway test directory — see #1282.
+ */
+function cleanGitEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === "GIT_DIR" || k === "GIT_INDEX_FILE" || k === "GIT_WORK_TREE") continue;
+    if (v !== undefined) env[k] = v;
+  }
+  return env;
+}
+
 describe("generateFastImport", () => {
   test("single file produces a well-formed blob + commit", () => {
     const { stream, marks, commitMark } = generateFastImport({
@@ -196,16 +210,16 @@ describe("generateFastImport", () => {
 
     const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-sp-"));
     try {
-      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
         entries: [{ path: "my file.md", content: "hi\n" }],
         ref: "refs/heads/main",
         message: "m",
         timestamp: 1700000000,
       });
-      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream, env: cleanGitEnv() });
       expect(r.status).toBe(0);
-      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:my file.md"]);
+      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:my file.md"], { env: cleanGitEnv() });
       expect(show.status).toBe(0);
       expect(show.stdout.toString()).toBe("hi\n");
     } finally {
@@ -219,16 +233,16 @@ describe("generateFastImport", () => {
 
     const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-q-"));
     try {
-      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
         entries: [{ path: 'weird"name.md', content: "ok\n" }],
         ref: "refs/heads/main",
         message: "m",
         timestamp: 1700000000,
       });
-      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream, env: cleanGitEnv() });
       expect(r.status).toBe(0);
-      const show = spawnSync("git", ["-C", dir, "show", 'refs/heads/main:weird"name.md']);
+      const show = spawnSync("git", ["-C", dir, "show", 'refs/heads/main:weird"name.md'], { env: cleanGitEnv() });
       expect(show.status).toBe(0);
       expect(show.stdout.toString()).toBe("ok\n");
     } finally {
@@ -242,7 +256,7 @@ describe("generateFastImport", () => {
 
     const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-"));
     try {
-      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
 
       const { stream } = generateFastImport({
         entries: [
@@ -257,14 +271,14 @@ describe("generateFastImport", () => {
       const streamPath = join(dir, "stream");
       writeFileSync(streamPath, stream);
 
-      const importRes = spawnSync("git", ["-C", dir, "fast-import"], { input: stream });
+      const importRes = spawnSync("git", ["-C", dir, "fast-import"], { input: stream, env: cleanGitEnv() });
       expect(importRes.status).toBe(0);
 
-      const log = spawnSync("git", ["-C", dir, "log", "--format=%s", "refs/heads/main"]);
+      const log = spawnSync("git", ["-C", dir, "log", "--format=%s", "refs/heads/main"], { env: cleanGitEnv() });
       expect(log.status).toBe(0);
       expect(log.stdout.toString().trim()).toBe("import");
 
-      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:docs/guide.md"]);
+      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:docs/guide.md"], { env: cleanGitEnv() });
       expect(show.status).toBe(0);
       expect(show.stdout.toString()).toBe("body with é and 🙂\n");
     } finally {
@@ -279,7 +293,7 @@ describe("generateFastImport", () => {
     const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-p-"));
     const marksOut = join(dir, "marks");
     try {
-      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore" });
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
 
       const first = generateFastImport({
         entries: [{ path: "a.md", content: "one\n" }],
@@ -289,6 +303,7 @@ describe("generateFastImport", () => {
       });
       const r1 = spawnSync("git", ["-C", dir, "fast-import", `--export-marks=${marksOut}`], {
         input: first.stream,
+        env: cleanGitEnv(),
       });
       expect(r1.status).toBe(0);
 
@@ -305,13 +320,14 @@ describe("generateFastImport", () => {
       });
       const r2 = spawnSync("git", ["-C", dir, "fast-import", `--import-marks=${marksOut}`], {
         input: second.stream,
+        env: cleanGitEnv(),
       });
       expect(r2.status).toBe(0);
 
-      const log = spawnSync("git", ["-C", dir, "log", "--format=%s", "refs/heads/main"]);
+      const log = spawnSync("git", ["-C", dir, "log", "--format=%s", "refs/heads/main"], { env: cleanGitEnv() });
       expect(log.stdout.toString().trim().split("\n")).toEqual(["second", "first"]);
 
-      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:a.md"]);
+      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:a.md"], { env: cleanGitEnv() });
       expect(show.stdout.toString()).toBe("two\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });

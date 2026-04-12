@@ -139,8 +139,8 @@ async function main(): Promise<void> {
   }
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
-  // and for commands that opt in (gc, vfs).
-  if (dryRun && command && command !== "call" && command !== "gc" && command !== "vfs") {
+  // and for commands that opt in (gc).
+  if (dryRun && command && command !== "call" && command !== "gc") {
     const isShorthand =
       !command.startsWith("-") &&
       (splitServerTool(command) !== null || (cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")));
