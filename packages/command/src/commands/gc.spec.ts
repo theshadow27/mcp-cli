@@ -262,6 +262,47 @@ describe("runGc worktrees", () => {
     expect(d.errors.some((e) => e.includes("worktrees: removed"))).toBe(false);
   });
 
+  test("live mode: refreshActive preserves stale active set on mid-loop daemon loss", async () => {
+    // Regression for PR #1278 round-2 🔴: if refreshActive uses failClosed=false,
+    // a daemon death mid-loop returns Set{} (not a throw), which would be
+    // assigned over the initial active set and cause every remaining
+    // candidate to be pruned — including the active session's worktree.
+    //
+    // Fix: refreshActive uses failClosed=true, so daemon loss throws; the
+    // callback catches and returns the last-known active set, protecting
+    // in-flight sessions.
+    const responses = makeWorktreeResponses();
+    responses.set("git -C /repo worktree remove /repo/.claude/worktrees/wt-a", { stdout: "" });
+    responses.set("git -C /repo worktree remove /repo/.claude/worktrees/wt-b", { stdout: "" });
+    responses.set("git -C /repo branch -d feat-a", { stdout: "" });
+    responses.set("git -C /repo branch -d feat-b", { stdout: "" });
+    responses.set("git -C /repo config --get core.bare", { stdout: "false" });
+
+    let callCount = 0;
+    const d = makeDeps({
+      execResponses: responses,
+      execFallback: () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      callTool: async (tool) => {
+        if (tool !== "claude_session_list") return [];
+        callCount++;
+        // First call (initial fetch): wt-a is active.
+        if (callCount === 1) return [{ worktree: "wt-a" }];
+        // Subsequent calls (refreshActive between removals): daemon died.
+        throw new Error("daemon unreachable mid-loop");
+      },
+    });
+
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    // wt-a must NOT be removed — stale active set preserves the skip.
+    const removedA = d.execCalls.some(
+      (c) => c.join(" ") === "git -C /repo worktree remove /repo/.claude/worktrees/wt-a",
+    );
+    expect(removedA).toBe(false);
+    // A diagnostic must be emitted so post-mortem is possible.
+    expect(d.errors.some((e) => e.includes("daemon unreachable during prune"))).toBe(true);
+  });
+
   test("dry-run fails open when session list throws (daemon unreachable)", async () => {
     const responses = makeWorktreeResponses();
     const d = makeDeps({

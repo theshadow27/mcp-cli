@@ -11,8 +11,10 @@ import {
   WorktreeError,
   type WorktreeShimDeps,
   getDefaultBranch,
+  hasWorktreeHooks,
   listMcxWorktrees,
   pruneWorktrees,
+  readWorktreeConfig,
 } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { c, printError } from "../output";
@@ -208,12 +210,22 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
 
     // refreshActive re-queries sessions between removals (TOCTOU mitigation).
     // Only meaningful in live mode; in dry-run we don't execute.
+    //
+    // IMPORTANT: fail-closed here. `failClosed=false` silently returns an
+    // empty Set when the daemon is unreachable — which would then be
+    // treated as "no sessions are active" and prune every remaining
+    // candidate mid-loop. `failClosed=true` throws on daemon loss, and we
+    // preserve the last-known-good active set so in-flight sessions are
+    // still protected. See PR #1278 round-2 review.
     const refreshActive = opts.dryRun
       ? undefined
       : async (): Promise<Set<string>> => {
           try {
-            return await getAllActiveSessionWorktrees(shimDeps, false);
-          } catch {
+            return await getAllActiveSessionWorktrees(shimDeps, true);
+          } catch (e) {
+            deps.logError(
+              `gc: daemon unreachable during prune — preserving last-known active set (${activeWorktrees.size} entries): ${e instanceof Error ? e.message : String(e)}`,
+            );
             return activeWorktrees;
           }
         };
@@ -235,6 +247,13 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       }
       if (recentSkipped.length > 0) {
         deps.log(`${prefix}worktrees: ${recentSkipped.length} skipped (too recent)`);
+      }
+      // Teardown hooks run in live mode only; a failing hook keeps the
+      // worktree but still shows in this list. Warn so users aren't
+      // surprised by a delta between dry-run and live counts. See #1278.
+      const wtConfig = readWorktreeConfig(cwd);
+      if (result.removable.length > 0 && hasWorktreeHooks(wtConfig) && wtConfig?.teardown) {
+        deps.log(`${prefix}note: teardown hook success is not simulated — live count may be lower`);
       }
     } else {
       const unmerged = result.skippedUnmerged.length > 0 ? `, skipped ${result.skippedUnmerged.length} unmerged` : "";

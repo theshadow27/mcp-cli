@@ -8,7 +8,7 @@
  * @see https://github.com/theshadow27/mcp-cli/issues/909
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecFn } from "./git";
 import { fixCoreBare } from "./git";
@@ -343,9 +343,17 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   const removable: string[] = [];
   const skippedUnmerged: string[] = [];
   const deletedBranches = new Set<string>();
+  // Resolve symlinks on cwd — macOS does not resolve them in process.cwd(),
+  // so a shell that cd'd through a symlink into a candidate worktree would
+  // bypass the "don't remove my cwd" guard below.
   const cwd = (() => {
     try {
-      return process.cwd();
+      const raw = process.cwd();
+      try {
+        return realpathSync(raw);
+      } catch {
+        return raw;
+      }
     } catch {
       return "";
     }
