@@ -221,7 +221,9 @@ defineAlias(({ z }) => ({
     expect(errs.some((e) => e.includes('unknown phase "nope"'))).toBe(true);
   });
 
-  test("run without --dry-run is rejected", async () => {
+  test("run without --dry-run dispatches to transition enforcement", async () => {
+    // Since #1293 merged, `run <target>` without --dry-run validates and records
+    // the transition (transition-enforcement path), not the dry-run execution path.
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
     const errs: string[] = [];
@@ -235,8 +237,9 @@ defineAlias(({ z }) => ({
         throw new Error("exit");
       }) as (c: number) => never,
     }).catch(() => {});
-    expect(code).toBe(1);
-    expect(errs.some((e) => e.includes("--dry-run"))).toBe(true);
+    // simpleManifest has initial: implement — transition is valid from initial state
+    expect(code).toBeUndefined();
+    expect(errs.some((e) => e.includes("approved") && e.includes("implement"))).toBe(true);
   });
 
   test("errors when source not found", async () => {
