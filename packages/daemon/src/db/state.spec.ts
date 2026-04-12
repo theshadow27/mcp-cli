@@ -1717,6 +1717,92 @@ describe("StateDb", () => {
     });
   });
 
+  describe("alias state", () => {
+    test("set/get round-trips structured values", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "implement", "ghPr", 42);
+      db.setAliasState("/repo", "implement", "meta", { author: "claude", retries: 2 });
+
+      expect(db.getAliasState("/repo", "implement", "ghPr")).toBe(42);
+      expect(db.getAliasState("/repo", "implement", "meta")).toEqual({ author: "claude", retries: 2 });
+      db.close();
+    });
+
+    test("set overwrites an existing key", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "ns", "k", "first");
+      db.setAliasState("/repo", "ns", "k", "second");
+      expect(db.getAliasState("/repo", "ns", "k")).toBe("second");
+      db.close();
+    });
+
+    test("namespaces are isolated per (repo_root, namespace)", () => {
+      const db = createDb();
+      db.setAliasState("/repo-a", "impl", "key", "A");
+      db.setAliasState("/repo-b", "impl", "key", "B");
+      db.setAliasState("/repo-a", "review", "key", "C");
+      db.setAliasState("/repo-a", "__global__", "key", "G");
+
+      expect(db.getAliasState("/repo-a", "impl", "key")).toBe("A");
+      expect(db.getAliasState("/repo-b", "impl", "key")).toBe("B");
+      expect(db.getAliasState("/repo-a", "review", "key")).toBe("C");
+      expect(db.getAliasState("/repo-a", "__global__", "key")).toBe("G");
+      db.close();
+    });
+
+    test("delete removes a key and returns whether a row was deleted", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "ns", "k", 1);
+      expect(db.deleteAliasState("/repo", "ns", "k")).toBe(true);
+      expect(db.getAliasState("/repo", "ns", "k")).toBeUndefined();
+      expect(db.deleteAliasState("/repo", "ns", "k")).toBe(false);
+      db.close();
+    });
+
+    test("listAliasState returns all keys in a namespace", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "ns", "a", 1);
+      db.setAliasState("/repo", "ns", "b", "two");
+      db.setAliasState("/repo", "other", "c", "ignored");
+
+      expect(db.listAliasState("/repo", "ns")).toEqual({ a: 1, b: "two" });
+      expect(db.listAliasState("/repo", "empty")).toEqual({});
+      db.close();
+    });
+
+    test("missing key returns undefined", () => {
+      const db = createDb();
+      expect(db.getAliasState("/repo", "ns", "nope")).toBeUndefined();
+      db.close();
+    });
+
+    test("setting undefined throws (use delete instead)", () => {
+      const db = createDb();
+      expect(() => db.setAliasState("/repo", "ns", "k", undefined)).toThrow(/undefined/);
+      db.close();
+    });
+
+    test("oversize values are rejected", () => {
+      const db = createDb();
+      const big = "x".repeat(256 * 1024 + 1);
+      expect(() => db.setAliasState("/repo", "ns", "k", big)).toThrow(/max size/);
+      db.close();
+    });
+
+    test("corrupt value_json does not poison get/list", () => {
+      const db = createDb();
+      db.setAliasState("/repo", "ns", "good", 1);
+      // Simulate a corrupt row (e.g. manual sqlite3 edit).
+      db.getDatabase().run(
+        "INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at) VALUES ('/repo', 'ns', 'bad', ?, unixepoch())",
+        ["{not-json"],
+      );
+      expect(db.getAliasState("/repo", "ns", "bad")).toBeUndefined();
+      expect(db.listAliasState("/repo", "ns")).toEqual({ good: 1 });
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);

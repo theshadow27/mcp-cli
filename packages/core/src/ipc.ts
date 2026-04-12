@@ -56,7 +56,11 @@ export type IpcMethod =
   | "deleteNote"
   | "trackWorkItem"
   | "untrackWorkItem"
-  | "listWorkItems";
+  | "listWorkItems"
+  | "aliasStateGet"
+  | "aliasStateSet"
+  | "aliasStateDelete"
+  | "aliasStateAll";
 
 // -- Request/Response --
 
@@ -90,6 +94,12 @@ export const CallToolParamsSchema = z.object({
   timeoutMs: z.number().optional(),
   /** Alias call chain for cycle detection in cross-alias composition. */
   callChain: z.array(z.string()).optional(),
+  /**
+   * Caller's working directory. Used to resolve the repo root scope for
+   * `ctx.state` when invoking aliases — without this, alias subprocesses
+   * inherit the daemon's cwd and all aliases share one "__none__" bucket.
+   */
+  cwd: z.string().optional(),
 });
 
 export const ListToolsParamsSchema = z.object({
@@ -424,6 +434,37 @@ export const ListWorkItemsParamsSchema = z.object({
   phase: z.string().optional(),
 });
 
+// -- Alias state schemas --
+
+const AliasStateScope = z.object({
+  repoRoot: z.string().min(1),
+  namespace: z.string().min(1),
+});
+
+export const AliasStateGetParamsSchema = AliasStateScope.extend({ key: z.string().min(1) });
+export const AliasStateSetParamsSchema = AliasStateScope.extend({
+  key: z.string().min(1),
+  value: z.unknown().refine((v) => v !== undefined, {
+    message: "value cannot be undefined; use delete(key) to remove a key",
+  }),
+});
+export const AliasStateDeleteParamsSchema = AliasStateScope.extend({ key: z.string().min(1) });
+export const AliasStateAllParamsSchema = AliasStateScope;
+
+export interface AliasStateGetResult {
+  value: unknown | undefined;
+}
+export interface AliasStateSetResult {
+  ok: true;
+}
+export interface AliasStateDeleteResult {
+  ok: true;
+  deleted: boolean;
+}
+export interface AliasStateAllResult {
+  entries: Record<string, unknown>;
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -614,6 +655,10 @@ export interface IpcMethodResult {
   trackWorkItem: WorkItem;
   untrackWorkItem: { ok: true; deleted: boolean };
   listWorkItems: WorkItem[];
+  aliasStateGet: AliasStateGetResult;
+  aliasStateSet: AliasStateSetResult;
+  aliasStateDelete: AliasStateDeleteResult;
+  aliasStateAll: AliasStateAllResult;
 }
 
 // -- Error codes --

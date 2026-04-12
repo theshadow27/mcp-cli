@@ -170,6 +170,15 @@ export class StateDb {
         PRIMARY KEY (server_name, tool_name)
       );
 
+      CREATE TABLE IF NOT EXISTS alias_state (
+        repo_root TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (repo_root, namespace, key)
+      );
+
     `);
 
     // -- Additive migrations (new columns on existing tables) --
@@ -1363,6 +1372,65 @@ export class StateDb {
     return result.changes > 0;
   }
 
+  // -- Alias state --
+
+  getAliasState(repoRoot: string, namespace: string, key: string): unknown {
+    const row = this.db
+      .query<{ value_json: string }, [string, string, string]>(
+        "SELECT value_json FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?",
+      )
+      .get(repoRoot, namespace, key);
+    if (!row) return undefined;
+    return safeParseStateValue(row.value_json, `${repoRoot}/${namespace}/${key}`);
+  }
+
+  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
+    // `undefined` would serialise to the string `"null"` and then readers
+    // could not tell "set to null" from "never set" — reject it up front.
+    if (value === undefined) {
+      throw new Error("alias state value cannot be undefined; use delete(key) to remove a key");
+    }
+    const json = JSON.stringify(value);
+    if (json === undefined) {
+      throw new Error("alias state value is not JSON-serialisable");
+    }
+    // Guard against an alias persisting an arbitrarily large blob — both the
+    // daemon heap and every subsequent listAliasState() response would swell.
+    if (Buffer.byteLength(json, "utf-8") > ALIAS_STATE_MAX_VALUE_BYTES) {
+      throw new Error(`alias state value exceeds max size of ${ALIAS_STATE_MAX_VALUE_BYTES} bytes`);
+    }
+    this.db.run(
+      `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
+       VALUES (?, ?, ?, ?, unixepoch())
+       ON CONFLICT(repo_root, namespace, key) DO UPDATE SET
+         value_json = excluded.value_json, updated_at = excluded.updated_at`,
+      [repoRoot, namespace, key, json],
+    );
+  }
+
+  deleteAliasState(repoRoot: string, namespace: string, key: string): boolean {
+    const result = this.db.run("DELETE FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?", [
+      repoRoot,
+      namespace,
+      key,
+    ]);
+    return result.changes > 0;
+  }
+
+  listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
+    const rows = this.db
+      .query<{ key: string; value_json: string }, [string, string]>(
+        "SELECT key, value_json FROM alias_state WHERE repo_root = ? AND namespace = ?",
+      )
+      .all(repoRoot, namespace);
+    const out: Record<string, unknown> = {};
+    for (const row of rows) {
+      const parsed = safeParseStateValue(row.value_json, `${repoRoot}/${namespace}/${row.key}`);
+      if (parsed !== undefined) out[row.key] = parsed;
+    }
+    return out;
+  }
+
   close(): void {
     this.db.close();
   }
@@ -1373,6 +1441,23 @@ export class StateDb {
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
 function formatSqliteDatetime(ms: number): string {
   return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+}
+
+/** Max bytes allowed for a single alias_state value (256 KB). */
+const ALIAS_STATE_MAX_VALUE_BYTES = 256 * 1024;
+
+/**
+ * Parse a value_json column without poisoning the handler on corrupt rows —
+ * return undefined and log the offending scope so the caller can clean up
+ * manually without every future get/all call for that scope erroring out.
+ */
+function safeParseStateValue(json: string, scopeForLog: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch (err) {
+    console.warn(`[alias-state] corrupt value_json at ${scopeForLog}: ${err instanceof Error ? err.message : err}`);
+    return undefined;
+  }
 }
 
 /** Escape SQL LIKE wildcards (% and _) with backslash. Use with ESCAPE '\\'. */

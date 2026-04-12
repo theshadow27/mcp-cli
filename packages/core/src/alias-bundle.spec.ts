@@ -18,6 +18,13 @@ function makeTmpDir(): string {
   return dir;
 }
 
+const stubState = {
+  get: async () => undefined,
+  set: async () => {},
+  delete: async () => {},
+  all: async () => ({}),
+};
+
 describe("stubProxy", () => {
   test("returns undefined for any server.tool() call", async () => {
     const result = await stubProxy.anyServer.anyTool({ key: "value" });
@@ -218,7 +225,15 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       { name: "World" },
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+      {
+        mcp: stubProxy,
+        args: {},
+        file: async () => "",
+        json: async () => null,
+        cache: async (_k, p) => p(),
+        state: stubState,
+        globalState: stubState,
+      },
       true,
     );
 
@@ -245,7 +260,15 @@ describe("executeAliasBundled", () => {
       executeAliasBundled(
         js,
         { count: "not-a-number" },
-        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+        {
+          mcp: stubProxy,
+          args: {},
+          file: async () => "",
+          json: async () => null,
+          cache: async (_k, p) => p(),
+          state: stubState,
+          globalState: stubState,
+        },
         true,
       ),
     ).rejects.toThrow("Invalid input");
@@ -274,7 +297,15 @@ describe("executeAliasBundled", () => {
       const result = await executeAliasBundled(
         js,
         undefined,
-        { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+        {
+          mcp: stubProxy,
+          args: {},
+          file: async () => "",
+          json: async () => null,
+          cache: async (_k, p) => p(),
+          state: stubState,
+          globalState: stubState,
+        },
         true,
       );
       // Output is returned despite schema mismatch (warn, don't block)
@@ -304,7 +335,15 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       undefined,
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+      {
+        mcp: stubProxy,
+        args: {},
+        file: async () => "",
+        json: async () => null,
+        cache: async (_k, p) => p(),
+        state: stubState,
+        globalState: stubState,
+      },
       true,
     );
     expect(result).toEqual({ message: "hello" });
@@ -319,7 +358,15 @@ describe("executeAliasBundled", () => {
     const result = await executeAliasBundled(
       js,
       undefined,
-      { mcp: stubProxy, args: {}, file: async () => "", json: async () => null, cache: async (_k, p) => p() },
+      {
+        mcp: stubProxy,
+        args: {},
+        file: async () => "",
+        json: async () => null,
+        cache: async (_k, p) => p(),
+        state: stubState,
+        globalState: stubState,
+      },
       false,
     );
 

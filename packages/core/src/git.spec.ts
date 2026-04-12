@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExecFn, fixCoreBare } from "./git";
+import { type ExecFn, findGitRoot, fixCoreBare } from "./git";
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
@@ -108,6 +108,31 @@ describe("fixCoreBare", () => {
       expect(exec).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(cwd, { recursive: true });
+    }
+  });
+});
+
+describe("findGitRoot", () => {
+  test("returns the repo root from a subdirectory inside a real repo", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-root-"));
+    try {
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"]);
+      const sub = join(repo, "nested", "deeper");
+      mkdirSync(sub, { recursive: true });
+      const got = findGitRoot(sub);
+      // macOS tmpdir() can resolve via /private — accept either via endsWith.
+      expect(got && (got === repo || got.endsWith(repo))).toBeTruthy();
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("returns null outside any git repository", () => {
+    const dir = mkdtempSync(join(tmpdir(), "git-no-root-"));
+    try {
+      expect(findGitRoot(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true });
     }
   });
 });

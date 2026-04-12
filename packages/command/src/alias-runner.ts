@@ -12,11 +12,16 @@
 import { basename, resolve } from "node:path";
 import {
   type AliasContext,
+  GLOBAL_STATE_NAMESPACE,
   type McpProxy,
+  NO_REPO_ROOT,
+  aliasUserNamespace,
   bundleAlias,
   createAliasCache,
+  createAliasState,
   executeAliasBundled,
   extractContent,
+  findGitRoot,
   ipcCall,
   isDefineAlias,
   options,
@@ -42,12 +47,15 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
   // Derive alias name from filename (e.g. "my-alias.ts" → "my-alias")
   const aliasName = basename(aliasPath, ".ts");
 
+  const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
   const ctx: AliasContext = {
     mcp: mcpProxy,
     args: cliArgs,
     file: (path: string) => Bun.file(path).text(),
     json: async (path: string) => JSON.parse(await Bun.file(path).text()),
     cache: createAliasCache(aliasName),
+    state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
+    globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
   };
 
   if (isStructured) {
@@ -123,6 +131,7 @@ function createMcpProxy(): McpProxy {
               server: serverName,
               tool: toolName,
               arguments: toolArgs ?? {},
+              cwd: process.cwd(),
             });
             return extractContent(result);
           };

@@ -536,7 +536,7 @@ async function cmdCall(args: string[]): Promise<void> {
 
   const result = await ipcCall(
     "callTool",
-    { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs },
+    { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs, cwd: process.cwd() },
     { timeoutMs: toolTimeoutMs + 5_000 },
   );
 

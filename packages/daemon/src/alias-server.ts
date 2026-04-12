@@ -104,7 +104,7 @@ export class AliasServer {
       }
 
       try {
-        const result = await this.executeInSubprocess(aliasDef, args ?? {});
+        const result = await this.executeInSubprocess(aliasDef, args ?? {}, undefined, undefined);
         const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {
@@ -158,6 +158,8 @@ export class AliasServer {
     name: string,
     args: Record<string, unknown>,
     callChain: string[],
+    cwd?: string,
+    timeoutMs?: number,
   ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
     const aliasDef = this.currentAliases.find((a) => a.name === name);
     if (!aliasDef) {
@@ -168,7 +170,7 @@ export class AliasServer {
     }
 
     try {
-      const result = await this.executeInSubprocess(aliasDef, args, callChain);
+      const result = await this.executeInSubprocess(aliasDef, args, callChain, cwd, timeoutMs);
       const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {
@@ -185,6 +187,8 @@ export class AliasServer {
     aliasDef: AliasToolDef,
     args: Record<string, unknown>,
     callChain?: string[],
+    cwd?: string,
+    timeoutMs?: number,
   ): Promise<unknown> {
     // Load bundled JS lazily from DB (not held in memory on tool list)
     const dbAlias = this.db.getAlias(aliasDef.name);
@@ -232,9 +236,10 @@ export class AliasServer {
       isDefineAlias: aliasDef.isDefineAlias,
       aliasName: aliasDef.name,
       ...(callChain && callChain.length > 0 ? { callChain } : {}),
+      ...(cwd ? { cwd } : {}),
     });
 
-    return this.spawnExecutor(payload, 30_000) as Promise<unknown>;
+    return this.spawnExecutor(payload, timeoutMs ?? 30_000) as Promise<unknown>;
   }
 
   /** Validate bundled JS in a subprocess, returning structured results. */
