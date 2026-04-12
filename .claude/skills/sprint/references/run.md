@@ -42,6 +42,13 @@ Only restart when no sessions are active. If other sessions are running
 (including from a concurrent sprint in a different repo), defer the restart
 until they idle — restarting kills them.
 
+**Run all sprint commands from within the project root.** `mcx claude ls` and
+`mcx claude wait` filter sessions by the current repo's git root (or registered
+scope). If you run from the wrong directory, your sessions will appear missing.
+When running concurrent sprints in multiple repos, each orchestrator only sees
+its own sessions — this is intentional isolation, not a bug. Use `--all` to
+see sessions from all repos.
+
 ### Quota check
 
 Check quota headroom before spawning the first batch:

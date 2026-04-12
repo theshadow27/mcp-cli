@@ -79,6 +79,71 @@ mcx acp spawn --agent my-agent --worktree -t "task" --allow Read Glob Grep Write
 Session management commands (ls, send, bye, wait, log, interrupt) use the same
 provider prefix. E.g., `mcx copilot bye <id>`, `mcx gemini wait --timeout 30000`.
 
+## Session Scoping
+
+Sessions are scoped to a repository. `mcx claude ls` (and `mcx claude wait`) filter
+to the current repo by default — you only see sessions that were spawned from within
+the same project. Use `--all` to bypass the filter and see every session across all repos.
+
+### How scoping works
+
+When a session is spawned, the daemon records its `repoRoot` (the git root of the
+spawn directory). When listing or waiting, the CLI sends the current repo's root as a
+filter — the daemon returns only sessions whose `repoRoot` matches.
+
+**Precedence: registered scope > git repo detection**
+
+If you've run `mcx scope init` in a project directory, the registered scope root takes
+precedence over git root detection. This matters when the git root is higher than your
+project root (e.g., a monorepo where you scope to a subdirectory).
+
+```bash
+# Register the current directory as a named scope
+mcx scope init                    # uses directory name as scope name
+mcx scope init my-project         # explicit name
+
+# List registered scopes
+mcx scope ls
+
+# Remove a scope
+mcx scope rm my-project
+```
+
+Scopes are stored as JSON files in `~/.mcp-cli/scopes/`. The most specific match
+(longest root prefix) wins when multiple scopes could match.
+
+### Multi-repo sprint isolation
+
+When running concurrent sprints in different repos, each sprint's orchestrator only
+sees its own sessions by default:
+
+```bash
+# In repo A — sees only repo A sessions
+cd /path/to/repo-a
+mcx claude ls
+
+# In repo B — sees only repo B sessions
+cd /path/to/repo-b
+mcx claude ls
+
+# See all sessions across all repos
+mcx claude ls --all
+```
+
+**Critical:** Sprint orchestrator commands (`mcx claude ls`, `mcx claude wait`, etc.)
+must be run from within the project root. If run from the wrong directory, the filter
+will not match your sessions — they'll appear to be missing when they're actually running.
+
+### Diagnosing "missing" sessions
+
+If `mcx claude ls` shows no sessions but you know sessions should be running:
+
+1. Check `mcx claude ls --all` — if sessions appear, you're in the wrong directory
+2. Verify your current directory is at or inside the project root
+3. Check if a registered scope is expected: `mcx scope ls`
+4. If the git root is wrong (e.g., bare repo or unusual config), register a scope
+   explicitly with `mcx scope init`
+
 ## Concurrency
 
 - **Maximum recommended**: 5 concurrent sessions

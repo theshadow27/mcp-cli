@@ -148,6 +148,21 @@ don't apply (provider routing, ACP), add any project-specific flags or worktree
 hooks. The orchestrator should never have to guess at command syntax — every spawn,
 wait, bye, and ls command should be spelled out with exact flags.
 
+**Always include the "Session Scoping" section** when generating an mcx-claude.md for a
+new project. Session scoping is a non-obvious feature that trips up orchestrators running
+concurrent sprints:
+
+- `mcx claude ls` and `mcx claude wait` filter to the **current repo's git root** by default
+- `--all` bypasses the filter and shows sessions from every repo
+- Registered scopes (`mcx scope init`) take precedence over git root detection
+- All sprint orchestrator commands must be run from within the project root — otherwise
+  sessions appear missing even though they're actively running
+- When two sprints run in parallel across different repos, each orchestrator only sees its
+  own sessions; this is intentional isolation, not a bug
+
+The generated mcx-claude.md should include the "Diagnosing 'missing' sessions" checklist
+so orchestrators can self-diagnose when `mcx claude ls` shows nothing unexpected.
+
 ### The review reference (review.md)
 
 How to wrap up: gather what shipped, record results in the sprint file, extract

@@ -6,6 +6,11 @@ Plan the next sprint: survey the board, set a goal, pick issues, write the plan 
 starting fresh. If running at sprint end, you already have context — skip reading
 issue bodies you just worked on.
 
+**Run planning commands from within the project root.** `mcx claude ls` and related
+session commands filter to the current repo. If you're in the wrong directory, you
+won't see your sessions. When running concurrent sprints across repos, each orchestrator
+is isolated to its own repo — use `--all` only when you explicitly need a cross-repo view.
+
 ## Step 1: Survey the board
 
 Fetch all open issues and recently closed issues:
