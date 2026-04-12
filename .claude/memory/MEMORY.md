@@ -15,9 +15,10 @@
 - [Review context in PRs](feedback_review_pr_comments.md) — reviewers post to PR, repairers read PR comments first
 - [Open bun.report links](feedback_bun_report.md) — always `open` bun.report URLs to submit crash telemetry
 - [Workers are conversations](feedback_worker_interaction.md) — interact via `send`, don't just bye and respawn
+- [ScheduleWakeup is blind polling](feedback_schedulewakeup_orchestration.md) — during sprint orchestration use `mcx claude wait`, not ScheduleWakeup
 
 ## Orchestration Patterns
-- Use `mcx claude wait --timeout 30000` instead of sleep polling — sleep is uninterruptible.
+- Use `mcx claude wait --timeout 300000` (5 min) instead of sleep polling — sleep is uninterruptible. `wait` releases the moment a session event fires, so a long timeout has no throughput cost; only drop to 30000 when actively supervising a specific session.
 - `session:result` from `wait` means **idle** (waiting for input), NOT ended. Check state before deciding to `bye` or `send`.
 - Pipeline: implement → triage → [low: QA] or [high: adversarial-review → repair → QA].
 - **Two adversarial reviews for rewrites** — second round catches issues introduced by first-round fixes.
@@ -26,6 +27,9 @@
 - `mcx claude ls --short` and `wait --short` for compact monitoring output.
 - Triage: `bun .claude/skills/estimate/triage.ts --pr N --json` for PR-based triage.
 - Don't `bye` a session before verifying the PR was pushed.
+- Don't `bye` a QA session until the PR has `qa:pass` or `qa:fail`. Same handoff-artifact rule — no outcome = no bye.
+- **Only the orchestrator merges PRs and moves branches.** Orchestrator stays on `main`; QA reads PR labels. QA running `git checkout` or `gh pr merge` caused the "main is already used by worktree" errors across sprints 30–32.
+- **Meta files (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`, `.gitignore`) are orchestrator + retro only.** Never spawn a worker to modify them during a sprint. Reason: the orchestrator reads skills live while running — divergent branch copies mid-sprint mean the orchestrator is reading a mix of old/new versions. Sprint 32 had two PRs touching `run.md` in parallel and the orchestrator was inconsistent for ~20 minutes. If a skill *must* change mid-sprint, spike the sprint early and replan next sprint after the change lands. The retro is the right venue — that's when user + orchestrator have full attention for meta changes.
 - Spawn fresh sessions per phase — don't reuse across implement/review/QA.
 - Use compiled binaries. Run `bun run build` after merging CLI changes.
 - **Don't bulk-clean worktrees during a sprint** — check `mcx claude ls` first.

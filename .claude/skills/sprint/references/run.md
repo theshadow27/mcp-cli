@@ -320,18 +320,71 @@ mcx claude spawn --worktree --model sonnet -t "/qa N (PR <pr-number>, branch <br
 mcx copilot spawn --cwd <worktree-path> --model sonnet -t "/qa N (PR <pr-number>, branch <branch>)" --allow Read Glob Grep Write Edit Bash
 ```
 
-QA verifies and merges if passing.
+**QA applies a label — it does not merge.** When QA finishes, the PR will
+have either `qa:pass` or `qa:fail`. The orchestrator (who sits on `main`)
+handles merging:
+
+```bash
+# After QA idle, check the label:
+LABEL=$(gh pr view <pr-number> --json labels -q '.labels[].name' | grep -E '^qa:(pass|fail)$')
+
+case "$LABEL" in
+  qa:pass)
+    # Merge from the orchestrator's main checkout — no branch switching needed
+    gh pr merge <pr-number> --squash --delete-branch
+    # PR merge auto-closes the linked issue via "fixes #N"
+    mcx call _work_items work_items_update '{"id":"#<issue>","phase":"done"}'
+    mcx untrack <issue>
+    git pull  # keep local main current
+    ;;
+  qa:fail)
+    # Read the QA comment for specifics, spawn a repair session
+    # Repair worker should address the blockers listed in the QA verdict.
+    mcx call _work_items work_items_update '{"id":"#<issue>","phase":"repair"}'
+    mcx claude spawn --worktree -t "Repair PR #<pr-number>. Read the qa:fail comment on the PR: gh pr view <pr-number> --comments. Address every blocker listed. Push to existing branch." --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+    ;;
+esac
+```
+
+**The orchestrator is the only role that runs `gh pr merge`, `git checkout`,
+or `git pull` on main.** Having QA move branches caused the "main is already
+used by worktree" class of errors that plagued sprints 30–32. Keeping the
+orchestrator on `main` means its local main is always current, which
+eliminates the "rebase after big changes" pattern for subsequent spawns —
+new sessions branch from an up-to-date main.
 
 **CRITICAL: Never spawn QA (or review) without `--cwd` or `--worktree`.**
 Without either flag, the session runs in the main repo folder, polluting the
 user's working tree with branch checkouts and file modifications.
 
-### Failure handling
+**CRITICAL: Never `bye` a QA session until `qa:pass` or `qa:fail` is on the PR.**
+Same rule family as "don't bye before PR is pushed." The label is the
+handoff artifact; without it, the orchestrator has no outcome to act on and
+the session's context is thrown away for nothing. Check:
 
-When QA does not merge:
-1. Label the issue `needs-clarification`
-2. Comment on the PR with what went wrong
-3. Report to user — do not retry automatically
+```bash
+gh pr view <pr-number> --json labels -q '.labels[].name' | grep -E '^qa:(pass|fail)$'
+```
+
+If the QA session is idle but no label is set, `mcx claude log <id>` to see
+what's happening, then either `send` to unblock or wait. Only `bye` once
+the label is visible on the PR.
+
+### Handling qa:fail
+
+`qa:fail` is a routine outcome — not a session error, not a blocker to the
+sprint. Treat it like `review:changes_requested`:
+
+1. Read the qa:fail comment for the specific blockers
+2. Transition the work item to `repair` phase
+3. Spawn a repair session (opus, --worktree) pointed at the PR with clear
+   instructions to address the listed blockers
+4. When the repair pushes, re-run QA (same label-driven handoff)
+
+If a PR cycles `qa:fail` → repair → `qa:fail` more than twice, stop the
+loop, remove both labels, and report to the user. Something is wrong with
+either the issue spec or the implementation approach — throwing more repair
+sessions at it wastes tokens.
 
 ## Worktree lifecycle
 
@@ -558,6 +611,34 @@ When the sprint is winding down (2 or fewer active sessions remaining):
    during this sprint). **Skip if another sprint is still active.**
 9. Run `/sprint review` to cut a release
 10. Run `/sprint retro` to capture learnings
+
+## Meta-file changes require a follow-up `meta` issue
+
+The orchestrator reads skill files (`.claude/skills/**`), memories, `CLAUDE.md`,
+and `.gitignore` **live** while running. These are configuration, not code.
+Workers must not modify them during a sprint. The retro (and the next
+planning phase) is the only safe window — both user and orchestrator have
+full attention, no concurrent sessions are reading the skill.
+
+When a worker's PR needs a meta change (e.g. tooling flags changed and the
+skill needs to reflect the new invocation), the meta change does not belong
+in *that* PR. Handle it like this:
+
+1. `send` the worker to revert the meta hunks before pushing (keep the
+   non-meta work intact — that's still shippable)
+2. File a new issue with the **`meta`** label, describing what needs to
+   change and why. Reference the PR that discovered the need.
+3. The `meta`-labeled issue will surface in the next `/sprint plan` phase
+   (see plan.md Step 1) — the user reviews it with full attention and
+   either approves it for retro-time application or defers it.
+
+If you discover the orchestrator's skill definition is genuinely broken
+mid-sprint (e.g. a command in the skill produces a wrong answer and this
+is blocking progress), **spike the sprint early.** Complete in-flight
+work, write what you have in the sprint file, file the `meta` issue, and
+replan the next sprint after the meta-change lands. Do not limp along with
+a broken skill definition — the orchestrator's downstream decisions will
+be unreliable.
 
 ## Sweeping main commits during a sprint
 

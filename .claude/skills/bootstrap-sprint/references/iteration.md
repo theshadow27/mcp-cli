@@ -147,6 +147,25 @@ item should be confirmed before proceeding to the next.
     - Add a note to CLAUDE.md: "Memory files in .claude/memory/ must be
       committed and pushed when changed."
 
+[ ] GitHub labels created
+    - The sprint skill uses a few repo labels as control-plane signals.
+      Create them once at bootstrap so the skill files can reference them
+      without inline setup (skills assume labels exist):
+
+      gh label create qa:pass --color 0e8a16 \
+        --description "QA verified — orchestrator may merge" 2>/dev/null || true
+      gh label create qa:fail --color d93f0b \
+        --description "QA found gaps — implementation needs rework" 2>/dev/null || true
+      gh label create meta --color 5319e7 \
+        --description "Orchestrator meta-files (skills, memory, CLAUDE.md, .gitignore) — applied at retro/plan, not during sprint" 2>/dev/null || true
+      gh label create needs-clarification --color fbca04 \
+        --description "Sprint orchestrator rejected — spec is ambiguous" 2>/dev/null || true
+      gh label create flaky --color e99695 \
+        --description "Flaky test — root-cause fix required (no timeout bumps)" 2>/dev/null || true
+
+    - If any of these don't apply to your project's workflow, omit them
+      and remove the corresponding references from the sprint skill files.
+
 [ ] Infrastructure verified
     - mcx daemon is running
     - Worktrees can be created and tests run in them

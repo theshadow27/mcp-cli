@@ -1,6 +1,6 @@
 # Sprint 32
 
-> Planned 2026-04-12 02:15. Target: 15 PRs.
+> Planned 2026-04-12 02:15. Started 2026-04-12 11:00 local. Completed 2026-04-12 12:19 local. Result: 15/15 merged.
 
 ## Goal
 
@@ -53,6 +53,34 @@ Sprint 31 shipped 15/15 PRs (v1.4.0). It also filed 10 issues as follow-ups, 3 o
 - When a sweeping commit lands on main mid-sprint, broadcast rebase directive to all active sessions before they push (patterns section of run.md)
 - When two or more PRs touch the same file, re-check per-file coverage on main after the second merge
 - Wind-down: check for active cross-repo sessions before rebuild + daemon restart (#1250 partial fix landed; enumeration remains)
+
+## Results
+
+15/15 merged in ~1h19m (11:00 → 12:19 local). PR → issue map:
+
+| # | PR | Notes |
+|---|----|-------|
+| 1218 | 1254 | P1 — stale-daemon spawn guard (low, 1 round) |
+| 1241 | 1253 | root cause — `cleanEnv()` in pull.spec.ts (low, 1 round). Unblocked later batches. |
+| 1242 | 1259 | good-neighbor — null-repoRoot cwd-prefix fallback (low, 1 round) |
+| 1243 | 1258 | good-neighbor — repoRoot set on native worktree spawn (low, 1 round) |
+| 1211 | 1257 | epic — fast-import writer (high, 2 review rounds, 1 repair) |
+| 1212 | 1273 | epic — fast-import parser (high, 2 review rounds, 1 repair) |
+| 1213 | 1271 | epic — argv[0] dispatch + install symlink (high, 2 review rounds, 1 repair) |
+| 1214 | 1276 | epic — t5801 integration tests (low after port scope, 1 round) |
+| 1215 | 1270 | epic — vfs clone sets mcx:// remote (low, 1 round) |
+| 1221 | 1261 | already-fixed-upstream — removed stale coverage exclusions (low, 1 round) |
+| 1252 | 1260 | CI per-file coverage enforcement (low, 1 round) |
+| 1227 | 1274 | phase machine allows impl→qa (low, 1 round, workaround still needed this sprint) |
+| 1233 | 1268 | bye --keep honored (low, 1 round; rebase-on-main unblock) |
+| 1240 | 1275 | docs — session scoping for multi-repo sprints (low, 1 round) |
+| 1219 | 1278 | `mcx gc` — garbage collector (high, **3 review rounds, 2 repairs**) |
+
+Sprint filed 7 new issues during execution:
+- #1255 — `bye` misleading "merged" label while PR is OPEN
+- #1256, #1264, #1272 — additional pull.spec/test-pollution variants found during impl/QA (class-of-bug rooted in #1241)
+- #1262, #1263, #1277 — review findings from epic PRs (tracked for follow-up, not blocking)
+- #1269 — DX: unify spawn + track + name into `--track <issue>[:<phase>]` and `--name` flags
 
 ## Excluded
 

@@ -25,6 +25,36 @@ While surveying:
 - Note which arcs just completed vs still active
 - Identify issues that got filed during the current sprint (follow-ups from reviews)
 
+### Step 1a: Review pending `meta` issues with the user
+
+Meta issues (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`,
+`.gitignore`) do not go into the sprint backlog — they are applied by the
+orchestrator directly on main, outside any sprint. But they must be
+reviewed **before** the sprint starts, while the user has full attention.
+Don't rely on the user to remember to run improvements independently —
+the plan phase pulls them up.
+
+```bash
+gh issue list --state open --label meta --json number,title,body,updatedAt --limit 50
+```
+
+Present each one to the user in order of recency, with a short summary and
+a recommendation: **apply now, defer to later retro, or close.** For each
+one the user approves for *now*:
+
+1. Apply the change directly on `main` (orchestrator edits the files —
+   these are small, well-scoped edits, not worker tasks)
+2. Commit with a conventional message (`chore(skill): …`, `chore(memory): …`)
+3. Push
+4. Close the issue: `gh issue close <n> --comment "Applied in <sha>."`
+
+Only proceed to Step 2 once the user has reviewed every pending `meta`
+issue. They might all get deferred — that's fine, the goal is just that
+the user sees them and makes a conscious call. Meta issues left unattended
+across multiple sprints are a signal that either the label filter is wrong
+(should be a normal bug, not meta) or the project needs a dedicated
+"improvement sprint" pass.
+
 ## Step 2: Set a sprint goal
 
 Every sprint needs a thesis — one sentence that drives issue selection:
@@ -59,6 +89,14 @@ Rules:
 2. Prefer issues that unblock other issues (dependency roots first)
 3. Read each issue body before selecting — skip if unclear or underspecified
 4. Group related issues so they land in the same sprint (shared context)
+5. **Never pick issues that modify orchestration meta-files**: `.claude/skills/**`,
+   `.claude/memory/**`, `CLAUDE.md`, `.gitignore`, or similar files the
+   orchestrator reads live while running. Those changes belong in retro, done
+   by the orchestrator directly on main. Workers modifying these mid-sprint
+   means the orchestrator is reading a mix of old/new definitions across
+   concurrent sessions (observed in sprint 32 when `/qa` and a docs PR both
+   edited `run.md`). If an issue is pure meta, defer it to retro or a
+   user-led cleanup pass.
 
 Split picks into:
 - **Goal issues** (10-12): aligned with the sprint thesis

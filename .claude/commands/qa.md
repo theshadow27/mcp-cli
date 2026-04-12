@@ -1,6 +1,13 @@
-# QA Controller: Verify and Close GitHub Issue
+# QA Controller: Verify and Label
 
-You are the QA controller for the mcp-cli project. Your job is to verify that a GitHub issue's described functionality is implemented, tested, and working — then close the issue with evidence.
+You are the QA controller for the mcp-cli project. Your job is to verify
+that a GitHub issue's described functionality is implemented, tested, and
+working — then apply **`qa:pass`** or **`qa:fail`** to the PR with evidence.
+Both labels are equally valid outcomes and both are valuable; your job is
+to be accurate about which one applies, not to try to reach `qa:pass`.
+
+You do **not** merge the PR, close the issue, or move git branches. The
+orchestrator owns those actions.
 
 ## Input
 
@@ -10,7 +17,7 @@ The user will provide a GitHub issue number or PR number (e.g., `/qa 5`, `/qa #5
 
 Execute these steps in order. Be thorough but concise in your reporting.
 
-### Step 0: Determine Context and Checkout
+### Step 0: Determine Context
 
 First, determine whether the input refers to a PR or an issue:
 
@@ -18,12 +25,20 @@ First, determine whether the input refers to a PR or an issue:
 gh pr view <number> --json number,headRefName,state 2>/dev/null
 ```
 
-- **If a PR exists**: check out the PR branch so QA runs against the actual changes:
-  ```bash
-  git checkout main && git pull origin main
-  gh pr checkout <number>
-  ```
-- **If no PR exists**: stay on the current branch and proceed with issue-based QA.
+**Do NOT check out branches.** QA sessions are spawned in an isolated worktree
+(via `--worktree` or `--cwd`) that is already on the correct branch. Running
+`git checkout` here either fails (main is held by the orchestrator) or
+silently pollutes a shared worktree — both were observed regularly in
+sprint 32 and account for most of the QA-phase branch errors.
+
+Verify you're already on the PR branch:
+
+```bash
+git rev-parse --abbrev-ref HEAD   # should match headRefName from above
+```
+
+If the branch is wrong, stop and report to the orchestrator — don't try to
+switch. The orchestrator owns branch movement.
 
 ### Step 1: Pull the Issue
 
@@ -88,18 +103,33 @@ gh pr checks <pr-number>
 ```
 
 - If CI is **failing**, investigate the failure logs with `gh run view <run-id> --log-failed`.
-- **NEVER merge with failing CI. No exceptions.** Not for "Bun bugs", not for "pre-existing failures", not for "flaky infrastructure". If you can't make CI green, flag it to the user and stop. Do not merge.
-- If the failure is pre-existing (not caused by this PR), fix it in the PR or report it and wait for instructions.
+- Red CI means `qa:fail` — that outcome is fine and valued (see Step 6). Don't contort reality to reach `qa:pass`; an accurate `qa:fail` with specifics is more useful than a false pass.
+- If the failure looks pre-existing (not caused by this PR), you can fix it in the PR if it's quick. Otherwise, capture the evidence and apply `qa:fail`.
 
-### Step 6: Comment, Close, and Merge
+### Step 6: Post Verification Comment and Apply Label
 
-Post a structured QA comment to the issue, then close it:
+QA has two equally valid outcomes. Both are accurate reports; neither is a
+failure of the QA role. An accurate `qa:fail` is as valuable as an accurate
+`qa:pass` — a PR that doesn't meet its spec shouldn't merge, and catching
+that is the whole point of QA. Bias toward the truth, not toward either
+label.
+
+**`qa:pass`** — PR implements the issue, tests cover it, suite is green,
+CI is green.
+
+**`qa:fail`** — PR is missing functionality, tests, or coverage the issue
+requires; OR CI is red; OR something else blocks merge. This is about the
+*PR's* readiness, not about the QA role. Treat it as routine feedback to
+the implementation phase, not a negative verdict.
+
+Post a comment to the PR, then apply the appropriate label:
 
 ```bash
-gh issue comment <issue-number> --body "$(cat <<'EOF'
-## QA Verification ✅
+gh pr comment <pr-number> --body "$(cat <<'EOF'
+## QA Verification
 
-**Issue:** #<issue-number> — <title>
+**PR:** #<pr-number> — <title>
+**Linked issue:** #<issue-number>
 
 ### Implementation Evidence
 <bullet list of files and what they implement, with line references>
@@ -111,29 +141,40 @@ gh issue comment <issue-number> --body "$(cat <<'EOF'
 <pass/fail summary from bun test>
 
 ### CI Status
-<pass/fail — link to the CI run if from a PR>
+<pass/fail — link to the CI run>
 
 ### Remaining Work (non-blocking)
 <any "remaining work" items from the issue — these are known TODOs, not blockers>
 
-### Verdict
-All described functionality is implemented and verified. Tests pass. Closing.
+### Outcome
+<one of:>
+- **qa:pass** — All described functionality implemented and verified. Tests and CI green.
+- **qa:fail** — <specific gap, missing behavior, red CI check, or uncovered path>. Action for implementation: <concrete next step>.
 EOF
 )"
 
-gh issue close <issue-number>
+# Then apply the label (one or the other — never both):
+gh pr edit <pr-number> --add-label qa:pass      # or qa:fail
 ```
 
-**If a PR was checked out in Step 0**, merge it after closing the issue:
+**Do NOT merge the PR. Do NOT close the issue. Do NOT check out main.**
+Those actions are the orchestrator's responsibility. The orchestrator sits
+on `main` and owns branch movement; having QA move branches caused the
+"main is already used by worktree" class of errors that plagued sprints 30–32.
 
-```bash
-gh pr merge <pr-number> --squash --delete-branch
+End your session with the label you applied on its own line, plus the PR URL, so the orchestrator can grep and act:
+
+```
+qa:pass
+PR: https://github.com/theshadow27/mcp-cli/pull/<pr-number>
 ```
 
-Then return to main:
+or
 
-```bash
-git checkout main && git pull origin main
+```
+qa:fail
+PR: https://github.com/theshadow27/mcp-cli/pull/<pr-number>
+Blockers: <one-line summary>
 ```
 
 ### Step 7: File Follow-Up Issues
@@ -165,9 +206,10 @@ File issues for:
 
 - Be factual. Every claim needs a file path or test result as evidence.
 - Don't skip steps. Even if the issue says "can be closed immediately", verify it.
-- If something is genuinely broken or missing (not just "remaining work"), do NOT close. Instead, comment with findings and ask the user what to do.
+- If something is genuinely broken or missing (not just "remaining work"), report **NOT READY** with findings. Do not attempt to close or merge.
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
-- **NEVER merge with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, stop and report. Do not rationalize bypassing CI.
+- **NEVER report READY FOR MERGE with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, report NOT READY.
+- **NEVER move git branches.** No `git checkout main`, no `gh pr checkout`, no `gh pr merge`, no `git checkout <branch>`. Your worktree is already on the correct branch. Branch movement is the orchestrator's job.
 - Process ONE issue per invocation.
 - File issues for every problem you encounter, even if unrelated to the current task.
