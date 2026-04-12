@@ -41,6 +41,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     ttyOpen: mock(async () => {}),
     getGitRoot: mock(() => null),
+    getStaleDaemonWarning: mock(() => null),
     ...overrides,
   };
 }
@@ -668,6 +669,17 @@ describe("mcx claude spawn", () => {
     const deps = makeDeps();
     await expect(cmdClaude(["spawn"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+
+  test("refuses to spawn when daemon is stale (#1218)", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc" }));
+    const deps = makeDeps({
+      callTool,
+      getStaleDaemonWarning: mock(() => "Daemon is running a different build..."),
+    });
+    await expect(cmdClaude(["spawn", "--task", "fix"], deps)).rejects.toThrow(ExitError);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("different build"));
   });
 });
 

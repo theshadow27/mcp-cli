@@ -427,6 +427,13 @@ async function agentSpawn(
     return;
   }
 
+  // Refuse to spawn against a stale daemon — sessions would land in `disconnected` (#1218).
+  const staleWarning = d.getStaleDaemonWarning();
+  if (staleWarning) {
+    d.printError(staleWarning);
+    d.exit(1);
+  }
+
   const P = provider.toolPrefix;
   const toolArgs: Record<string, unknown> = {
     prompt: parsed.task ?? "Continue from where you left off.",

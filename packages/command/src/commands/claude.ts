@@ -63,6 +63,8 @@ export interface ClaudeDeps extends SharedSessionDeps {
   ttyOpen: (args: string[]) => Promise<void>;
   /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
   getGitRoot: () => string | null;
+  /** Return a warning string if the running daemon is a stale build, null otherwise. */
+  getStaleDaemonWarning: () => string | null;
 }
 
 /**
@@ -177,6 +179,7 @@ export const defaultDeps: ClaudeDeps = {
   },
   ttyOpen: (args) => ttyOpen(args),
   getGitRoot,
+  getStaleDaemonWarning,
 };
 
 // ── Entry point ──
@@ -361,6 +364,13 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.headed) {
     await claudeSpawnHeaded(parsed, d);
     return;
+  }
+
+  // Refuse to spawn against a stale daemon — sessions would land in `disconnected` (#1218).
+  const staleWarning = d.getStaleDaemonWarning();
+  if (staleWarning) {
+    d.printError(staleWarning);
+    d.exit(1);
   }
 
   const toolArgs: Record<string, unknown> = {
@@ -870,7 +880,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
 
-  const staleWarning = getStaleDaemonWarning();
+  const staleWarning = d.getStaleDaemonWarning();
   if (staleWarning) {
     console.error(`\n⚠ ${staleWarning}`);
   }
