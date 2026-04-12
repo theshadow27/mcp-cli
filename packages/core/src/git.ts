@@ -39,6 +39,26 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
 }
 
 /**
+ * Environment for git repo-discovery commands: strip inherited GIT_DIR,
+ * GIT_WORK_TREE, and GIT_COMMON_DIR so that the caller's git-hook environment
+ * does not override filesystem-based discovery. findGitRoot is meant to
+ * discover repos by path, not by inherited git configuration.
+ */
+function gitDiscoverEnv(): Record<string, string | undefined> {
+  // Strip inherited git-hook env vars so filesystem-based repo discovery works correctly
+  // when findGitRoot is called from within a git hook (e.g. pre-commit).
+  const {
+    GIT_DIR: _d,
+    GIT_WORK_TREE: _w,
+    GIT_COMMON_DIR: _c,
+    GIT_INDEX_FILE: _i,
+    GIT_OBJECT_DIRECTORY: _o,
+    ...rest
+  } = process.env;
+  return rest;
+}
+
+/**
  * Resolve the git repository root from a working directory.
  * Returns an absolute path, or null if `cwd` is not inside a git repository.
  *
@@ -49,11 +69,13 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
  * which would have collapsed two bare repos in one directory).
  */
 export function findGitRoot(cwd: string = process.cwd()): string | null {
+  const env = gitDiscoverEnv();
   try {
     const top = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--show-toplevel"], {
       stdout: "pipe",
       stderr: "ignore",
       timeout: 5000,
+      env,
     });
     if (top.exitCode === 0) {
       const toplevel = top.stdout.toString().trim();
@@ -62,11 +84,13 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
         stdout: "pipe",
         stderr: "ignore",
         timeout: 5000,
+        env,
       });
       const commonDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
         stdout: "pipe",
         stderr: "ignore",
         timeout: 5000,
+        env,
       });
       if (gitDir.exitCode === 0 && commonDir.exitCode === 0) {
         const gitDirAbs = resolve(cwd, gitDir.stdout.toString().trim());
@@ -82,6 +106,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
       stdout: "pipe",
       stderr: "ignore",
       timeout: 5000,
+      env,
     });
     if (common.exitCode !== 0) return null;
     const commonDir = common.stdout.toString().trim();

@@ -325,9 +325,27 @@ describe("parseLogArgs", () => {
     expect(result.full).toBe(false);
   });
 
+  test("parses --tail flag (alias for --last)", () => {
+    const result = parseLogArgs(["abc123", "--tail", "50"]);
+    expect(result.last).toBe(50);
+    expect(result.sessionPrefix).toBe("abc123");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("--tail does not consume session id as its value", () => {
+    const result = parseLogArgs(["--tail", "30", "abc123"]);
+    expect(result.last).toBe(30);
+    expect(result.sessionPrefix).toBe("abc123");
+  });
+
   test("errors on non-numeric --last", () => {
     const result = parseLogArgs(["abc123", "--last", "abc"]);
     expect(result.error).toBe("--last must be a number");
+  });
+
+  test("errors on non-numeric --tail", () => {
+    const result = parseLogArgs(["abc123", "--tail", "abc"]);
+    expect(result.error).toBe("--tail must be a number");
   });
 
   test("parses --jq flag", () => {
