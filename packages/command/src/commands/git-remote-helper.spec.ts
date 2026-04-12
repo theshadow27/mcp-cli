@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isGitRemoteHelperInvocation, parseRemoteUrl, runGitRemoteHelper } from "./git-remote-helper";
 
 describe("isGitRemoteHelperInvocation", () => {
@@ -10,8 +13,12 @@ describe("isGitRemoteHelperInvocation", () => {
     expect(isGitRemoteHelperInvocation("/usr/local/bin/git-remote-mcx")).toBe(true);
   });
 
-  test("matches .exe on Windows-like paths", () => {
+  test("matches .exe on Windows-like paths (forward slashes)", () => {
     expect(isGitRemoteHelperInvocation("C:/tools/git-remote-mcx.exe")).toBe(true);
+  });
+
+  test("matches .exe on Windows-native paths (backslashes)", () => {
+    expect(isGitRemoteHelperInvocation("C:\\Program Files\\Git\\git-remote-mcx.exe")).toBe(true);
   });
 
   test("does not match normal mcx invocation", () => {
@@ -63,9 +70,28 @@ describe("parseRemoteUrl", () => {
 });
 
 describe("runGitRemoteHelper", () => {
+  let gitDir: string;
+
+  beforeEach(() => {
+    gitDir = mkdtempSync(join(tmpdir(), "mcx-grh-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(gitDir, { recursive: true, force: true });
+  });
+
   function emptyStdin(): ReadableStream<Uint8Array> {
     return new ReadableStream({
       start(controller) {
+        controller.close();
+      },
+    });
+  }
+
+  function streamFrom(input: string): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(input));
         controller.close();
       },
     });
@@ -86,7 +112,7 @@ describe("runGitRemoteHelper", () => {
     await expect(
       runGitRemoteHelper({
         argv: ["bun", "git-remote-mcx", "origin"],
-        gitDir: "/tmp/test-git",
+        gitDir,
         stdin: emptyStdin(),
         stdout: stream,
       }),
@@ -98,7 +124,7 @@ describe("runGitRemoteHelper", () => {
     await expect(
       runGitRemoteHelper({
         argv: ["bun", "git-remote-mcx", "origin", "https://example.com"],
-        gitDir: "/tmp/test-git",
+        gitDir,
         stdin: emptyStdin(),
         stdout: stream,
       }),
@@ -118,31 +144,69 @@ describe("runGitRemoteHelper", () => {
 
   test("responds to capabilities command", async () => {
     const { stream, output } = collect();
-    const stdin = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("capabilities\n\n"));
-        controller.close();
-      },
-    });
     await runGitRemoteHelper({
       argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
-      gitDir: "/tmp/test-git-dir",
-      stdin,
+      gitDir,
+      stdin: streamFrom("capabilities\n\n"),
       stdout: stream,
     });
     const out = output();
     expect(out).toContain("import\n");
     expect(out).toContain("export\n");
-    expect(out).toContain("/tmp/test-git-dir/mcx/marks");
+    expect(out).toContain(`${gitDir}/mcx/marks`);
   });
 
   test("EOF on stdin exits cleanly without invoking handlers", async () => {
     const { stream } = collect();
-    // No input → protocol loop returns immediately. Handlers would throw if called.
     await runGitRemoteHelper({
       argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
-      gitDir: "/tmp/test-git-dir",
+      gitDir,
       stdin: emptyStdin(),
+      stdout: stream,
+    });
+  });
+
+  test("creates marksDir under GIT_DIR", async () => {
+    const { stream } = collect();
+    await runGitRemoteHelper({
+      argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+      gitDir,
+      stdin: emptyStdin(),
+      stdout: stream,
+    });
+    expect(existsSync(join(gitDir, "mcx"))).toBe(true);
+  });
+
+  test("list stub returns empty refs without throwing", async () => {
+    const { stream, output } = collect();
+    await runGitRemoteHelper({
+      argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+      gitDir,
+      stdin: streamFrom("list\n\n"),
+      stdout: stream,
+    });
+    // list handler returns "" → protocol writes "\n" (empty ref list terminator).
+    // No stack trace, no thrown exception.
+    expect(output()).toBe("\n");
+  });
+
+  test("import stub returns done without throwing", async () => {
+    const { stream, output } = collect();
+    await runGitRemoteHelper({
+      argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+      gitDir,
+      stdin: streamFrom("import refs/heads/main\n\n"),
+      stdout: stream,
+    });
+    expect(output()).toContain("done\n");
+  });
+
+  test("export stub consumes stdin and returns without throwing", async () => {
+    const { stream } = collect();
+    await runGitRemoteHelper({
+      argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+      gitDir,
+      stdin: streamFrom("export\ndone\n"),
       stdout: stream,
     });
   });

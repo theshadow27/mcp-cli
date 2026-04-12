@@ -52,6 +52,10 @@ async function writeLine(writer: WritableStreamDefaultWriter<Uint8Array>, data: 
 /** Known options that the helper supports. */
 const SUPPORTED_OPTIONS = new Set(["verbosity"]);
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Run the git remote helper protocol loop.
  *
@@ -89,8 +93,14 @@ export async function runProtocol(
         await writeLine(writer, `${caps.join("\n")}\n\n`);
       } else if (line === "list" || line === "list for-push") {
         const forPush = line === "list for-push";
-        const response = await handlers.list(forPush);
-        await writeLine(writer, `${response}\n`);
+        try {
+          const response = await handlers.list(forPush);
+          await writeLine(writer, `${response}\n`);
+        } catch (err) {
+          process.stderr.write(`git-remote-mcx: list failed: ${errorMessage(err)}\n`);
+          await writeLine(writer, "\n");
+          return;
+        }
       } else if (line.startsWith("import ")) {
         // Batch import: collect all consecutive import lines
         const refs: string[] = [line.slice("import ".length)];
@@ -107,8 +117,14 @@ export async function runProtocol(
           refs.push(nextLine.slice("import ".length));
         }
 
-        const response = await handlers.handleImport(refs);
-        await writeLine(writer, response);
+        try {
+          const response = await handlers.handleImport(refs);
+          await writeLine(writer, response);
+        } catch (err) {
+          process.stderr.write(`git-remote-mcx: import failed: ${errorMessage(err)}\n`);
+          await writeLine(writer, "done\n");
+          return;
+        }
       } else if (line === "export") {
         // For export, we pass the remaining stdin as a stream to the handler.
         // Create a new ReadableStream that feeds from our buffered reader.
@@ -128,8 +144,14 @@ export async function runProtocol(
           },
         });
 
-        const response = await handlers.handleExport(exportStream);
-        await writeLine(writer, response);
+        try {
+          const response = await handlers.handleExport(exportStream);
+          await writeLine(writer, response);
+        } catch (err) {
+          process.stderr.write(`git-remote-mcx: export failed: ${errorMessage(err)}\n`);
+          await writeLine(writer, "\n");
+          return;
+        }
       } else if (line.startsWith("option ")) {
         const rest = line.slice("option ".length);
         const spaceIdx = rest.indexOf(" ");

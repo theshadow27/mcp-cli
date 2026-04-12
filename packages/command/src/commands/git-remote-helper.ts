@@ -16,6 +16,7 @@
  * those operations until they land.
  */
 
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runProtocol } from "@mcp-cli/clone";
 
@@ -54,18 +55,25 @@ export interface GitRemoteHelperOptions {
 export async function runGitRemoteHelper(opts: GitRemoteHelperOptions = {}): Promise<void> {
   const argv = opts.argv ?? process.argv;
   // argv = [runtime, "git-remote-mcx", <remote-name>, <url>]
+  const remoteName = argv[2];
   const remoteUrl = argv[3];
   if (!remoteUrl) {
     throw new Error("git-remote-mcx: missing remote URL argument");
   }
-  // Provider + scope are parsed here so invocation fails fast on a bad URL,
-  // even though the handler stubs don't yet use them.
-  parseRemoteUrl(remoteUrl);
+  // Parse now so invocation fails fast on a bad URL. Results will be passed
+  // to real handlers when #1211/#1212 land.
+  const { provider, scope } = parseRemoteUrl(remoteUrl);
+  void remoteName;
+  void provider;
+  void scope;
 
   const gitDir = opts.gitDir ?? process.env.GIT_DIR;
   if (!gitDir) {
     throw new Error("git-remote-mcx: GIT_DIR environment variable is not set");
   }
+
+  const marksDir = join(gitDir, "mcx");
+  mkdirSync(marksDir, { recursive: true });
 
   const stdin = opts.stdin ?? (Bun.stdin.stream() as ReadableStream<Uint8Array>);
   const stdout =
@@ -76,26 +84,32 @@ export async function runGitRemoteHelper(opts: GitRemoteHelperOptions = {}): Pro
       },
     });
 
+  // Until #1211/#1212 land, handlers return safe empty responses rather than
+  // throwing — a thrown exception becomes a Bun stack trace on stderr and
+  // `fatal: remote helper aborted` from git, which is worse than an empty
+  // fetch/push result.
   await runProtocol(
     stdin,
     stdout,
     {
-      list: async () => {
-        throw new Error("git-remote-mcx: list handler not yet implemented (see #1211)");
-      },
-      handleImport: async () => {
-        throw new Error("git-remote-mcx: import handler not yet implemented (see #1211)");
-      },
-      handleExport: async () => {
-        throw new Error("git-remote-mcx: export handler not yet implemented (see #1212)");
+      list: async () => "",
+      handleImport: async () => "done\n",
+      handleExport: async (exportStdin) => {
+        const reader = exportStdin.getReader();
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+        reader.releaseLock();
+        return "\n";
       },
     },
-    { marksDir: join(gitDir, "mcx") },
+    { marksDir },
   );
 }
 
 /** Returns true if argv[1]'s basename is "git-remote-mcx" (with optional .exe). */
 export function isGitRemoteHelperInvocation(argv1: string): boolean {
-  const base = argv1.split("/").pop() ?? "";
+  const base = argv1.split(/[\\/]/).pop() ?? "";
   return base === "git-remote-mcx" || base === "git-remote-mcx.exe";
 }

@@ -100,7 +100,13 @@ async function main(): Promise<void> {
   // name + URL on argv and drives the helper protocol on stdin/stdout.
   // This check must run before any normal CLI dispatch.
   if (isGitRemoteHelperInvocation(process.argv[1] ?? "")) {
-    await runGitRemoteHelper();
+    try {
+      await runGitRemoteHelper();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`${msg}\n`);
+      process.exit(1);
+    }
     return;
   }
 
