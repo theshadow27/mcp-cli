@@ -10,13 +10,15 @@ import {
   parseLockfile,
   readTransitionHistory,
 } from "@mcp-cli/core";
-import { parseManifestText, validateManifest } from "@mcp-cli/core";
+import { bundleAlias, extractMetadata, hashFileSync, loadManifest, parseManifestText, validateManifest } from "@mcp-cli/core";
 import {
   buildPhaseList,
   buildPhaseShow,
   checkStateSubset,
   cmdPhase,
+  detectDrift,
   explainTransition,
+  formatDriftWarning,
   formatPhaseTable,
   parsePhaseRunArgs,
   phaseRun,
@@ -256,9 +258,6 @@ describe("phaseRun", () => {
   });
 
   test("regression throws RegressionError for undeclared revisit", () => {
-    // impl → adversarial-review → repair → qa, then try qa → impl.
-    // impl is in history but NOT in qa.next → RegressionError.
-    // (needs-attention → impl is a declared back-edge and would be allowed.)
     phaseRun({ target: "impl", from: null, workItemId: "#9", forceMessage: null }, { cwd: dir });
     phaseRun({ target: "adversarial-review", from: "impl", workItemId: "#9", forceMessage: null }, { cwd: dir });
     phaseRun({ target: "repair", from: "adversarial-review", workItemId: "#9", forceMessage: null }, { cwd: dir });
@@ -668,5 +667,246 @@ describe("cmdPhase show / why / list-json — integration", () => {
     const { code, err } = await withCwd(dir, () => runCapture(["why", "impl"]));
     expect(code).toBe(1);
     expect(err).toContain("Usage:");
+  });
+});
+
+function makeDriftDeps(cwd: string) {
+  const logs: string[] = [];
+  const errs: string[] = [];
+  let exitCode: number | undefined;
+  const deps = {
+    loadManifest,
+    bundleAlias,
+    extractMetadata,
+    hashFileSync,
+    writeFileSync: (p: string, d: string) => writeFileSync(p, d, "utf-8"),
+    readFileSync: (p: string) => readFileSync(p, "utf-8"),
+    existsSync: (p: string) => existsSync(p),
+    cwd: () => cwd,
+    log: (m: string) => logs.push(m),
+    logError: (m: string) => errs.push(m),
+    exit: ((code: number) => {
+      exitCode = code;
+      throw new Error(`exit(${code})`);
+    }) as (code: number) => never,
+  };
+  return { deps, logs, errs, getExitCode: () => exitCode };
+}
+
+describe("detectDrift", () => {
+  async function installFixture(extraPhase?: { name: string; src: string }) {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    if (extraPhase) writeFileSync(join(dir, extraPhase.src), simpleAlias);
+    const { deps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], deps);
+  }
+
+  test("reports no-lockfile when .mcx.lock is missing", () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("no-lockfile");
+  });
+
+  test("reports no-manifest when manifest is absent", async () => {
+    await installFixture();
+    rmSync(join(dir, ".mcx.yaml"));
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("no-manifest");
+  });
+
+  test("reports ok when nothing changed", async () => {
+    await installFixture();
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("ok");
+  }, 15_000);
+
+  test("detects manifest drift", async () => {
+    await installFixture();
+    writeFileSync(join(dir, ".mcx.yaml"), `${simpleManifest}\n# change\n`);
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      expect(result.entries.some((e) => e.kind === "manifest")).toBe(true);
+    }
+  }, 15_000);
+
+  test("detects phase source drift", async () => {
+    await installFixture();
+    writeFileSync(join(dir, "impl.ts"), `${simpleAlias}\n// mutated\n`);
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      const phase = result.entries.find((e) => e.kind === "phase-source");
+      expect(phase).toBeDefined();
+      expect(phase?.path).toBe("impl.ts");
+    }
+  }, 15_000);
+
+  test("detects lockfile corruption as corrupt-lockfile", async () => {
+    await installFixture();
+    writeFileSync(join(dir, ".mcx.lock"), "{ not json");
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      expect(result.entries[0].kind).toBe("corrupt-lockfile");
+    }
+  }, 15_000);
+
+  test("detects missing phase source file", async () => {
+    await installFixture();
+    rmSync(join(dir, "impl.ts"));
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      expect(result.entries.some((e) => e.kind === "phase-source" && e.actual.includes("missing"))).toBe(true);
+    }
+  }, 15_000);
+
+  test("detects phase added to manifest after install", async () => {
+    await installFixture();
+    writeFileSync(join(dir, "qa.ts"), simpleAlias);
+    const twoPhaseManifest = `initial: implement
+phases:
+  implement:
+    source: ./impl.ts
+    next: [qa]
+  qa:
+    source: ./qa.ts
+    next: []
+`;
+    writeFileSync(join(dir, ".mcx.yaml"), twoPhaseManifest);
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      expect(result.entries.some((e) => e.kind === "phase-missing")).toBe(true);
+    }
+  }, 15_000);
+
+  test("detects phase removed from manifest but still in lockfile", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+    const minimalManifest = "initial: other\nphases:\n  other:\n    source: ./impl.ts\n    next: []\n";
+    writeFileSync(join(dir, ".mcx.yaml"), minimalManifest);
+    const { deps } = makeDriftDeps(dir);
+    const result = detectDrift(deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      expect(result.entries.some((e) => e.kind === "phase-extra")).toBe(true);
+    }
+  }, 15_000);
+
+  test("re-install clears drift", async () => {
+    await installFixture();
+    writeFileSync(join(dir, "impl.ts"), `${simpleAlias}\n// mutated\n`);
+    const { deps: reDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], reDeps);
+    const { deps: checkDeps } = makeDriftDeps(dir);
+    expect(detectDrift(checkDeps).status).toBe("ok");
+  }, 20_000);
+});
+
+describe("formatDriftWarning", () => {
+  test("contains stern security-review language and the hashes", () => {
+    const msg = formatDriftWarning([
+      {
+        kind: "manifest",
+        path: ".mcx.yaml",
+        expected: "a".repeat(64),
+        actual: "b".repeat(64),
+      },
+      {
+        kind: "phase-source",
+        path: "phases/qa.ts",
+        expected: "c".repeat(64),
+        actual: "d".repeat(64),
+      },
+    ]);
+    expect(msg).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(msg).toContain("HASH MISMATCH");
+    expect(msg).toContain("aaaaaa");
+    expect(msg).toContain("bbbbbb");
+    expect(msg).toContain("malicious PR");
+    expect(msg).toContain("mcx phase install");
+    expect(msg).not.toMatch(/run `mcx phase install` to fix/);
+  });
+
+  test("labels phase-missing as NOT INSTALLED", () => {
+    const msg = formatDriftWarning([
+      { kind: "phase-missing", path: "phases/qa.ts", expected: 'phase "qa" in lockfile', actual: "(not installed)" },
+    ]);
+    expect(msg).toContain("NOT INSTALLED");
+  });
+
+  test("labels phase-extra as STALE LOCK ENTRY", () => {
+    const msg = formatDriftWarning([
+      { kind: "phase-extra", path: "phases/old.ts", expected: "(not in manifest)", actual: 'phase "old" in lockfile' },
+    ]);
+    expect(msg).toContain("STALE LOCK ENTRY");
+  });
+
+  test("labels corrupt-lockfile as CORRUPT LOCKFILE", () => {
+    const msg = formatDriftWarning([
+      { kind: "corrupt-lockfile", path: ".mcx.lock", expected: "valid lockfile", actual: "Unexpected token" },
+    ]);
+    expect(msg).toContain("CORRUPT LOCKFILE");
+  });
+
+  test("truncates long non-hex actual values", () => {
+    const longErr = "x".repeat(80);
+    const msg = formatDriftWarning([
+      { kind: "corrupt-lockfile", path: ".mcx.lock", expected: "valid lockfile", actual: longErr },
+    ]);
+    expect(msg).not.toContain(longErr);
+    expect(msg).toContain("...");
+  });
+});
+
+describe("cmdPhase check", () => {
+  test("exits non-zero on drift with the stern warning", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+    writeFileSync(join(dir, "impl.ts"), `${simpleAlias}\n// drift\n`);
+
+    const { deps, errs, getExitCode } = makeDriftDeps(dir);
+    await cmdPhase(["check"], deps).catch(() => {});
+    expect(getExitCode()).toBe(1);
+    const joined = errs.join("\n");
+    expect(joined).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(joined).toContain("impl.ts");
+  }, 20_000);
+
+  test("exits zero with `lockfile ok` when clean", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    const { deps, logs, getExitCode } = makeDriftDeps(dir);
+    await cmdPhase(["check"], deps);
+    expect(getExitCode()).toBeUndefined();
+    expect(logs.some((l) => l.includes("lockfile ok"))).toBe(true);
+  }, 20_000);
+
+  test("exits non-zero when lockfile is missing", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps, errs, getExitCode } = makeDriftDeps(dir);
+    await cmdPhase(["check"], deps).catch(() => {});
+    expect(getExitCode()).toBe(1);
+    expect(errs.some((e) => e.includes("no .mcx.lock"))).toBe(true);
   });
 });
