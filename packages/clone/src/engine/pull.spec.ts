@@ -20,6 +20,10 @@ function cleanEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
   }
+  // Prevent git from walking up past the test tmpdir if the repo's .git is
+  // missing/racing. Without this, git finds the ambient worktree and would
+  // commit into the developer's branch. See #1272.
+  env.GIT_CEILING_DIRECTORIES = TMP;
   return env;
 }
 
