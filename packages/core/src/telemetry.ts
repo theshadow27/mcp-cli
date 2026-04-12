@@ -138,8 +138,10 @@ export function maybeShowTelemetryNotice(): void {
     if (config.telemetryNoticeShown) return;
 
     console.error(
-      "Notice: mcx collects anonymous usage telemetry to improve the tool.\n" +
-        "No arguments, server names, or personal data are collected.\n" +
+      "Notice: a future release of mcx will collect anonymous usage telemetry\n" +
+        "to improve the tool. Nothing is sent today — this is advance notice so\n" +
+        "you can opt out before collection begins. No arguments, server names,\n" +
+        "or personal data will ever be collected.\n" +
         "Opt out anytime: mcx telemetry off  |  export MCX_NO_TELEMETRY=1\n" +
         "Details: PRIVACY.md\n",
     );

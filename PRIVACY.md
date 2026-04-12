@@ -1,8 +1,10 @@
 # Privacy & Telemetry
 
-mcp-cli collects **anonymous usage telemetry** to identify which commands are actively used and which can be safely removed. No arguments, file contents, server names, or personally identifiable information (PII) are ever collected.
+A future release of mcp-cli will collect **anonymous usage telemetry** to identify which commands are actively used and which can be safely removed. No arguments, file contents, server names, or personally identifiable information (PII) are ever collected.
 
-**On first run**, mcx displays a one-time notice about telemetry before any data is sent. Telemetry is automatically disabled in CI environments.
+**Current status**: the telemetry framework is in place but collection is not active. As of v1.4.0, every invocation short-circuits before sending — zero events are transmitted. The PostHog project key ships as a placeholder, and the code guards against it at runtime. Actual collection begins in a future release once the backend project is configured.
+
+**On first run**, mcx displays a one-time notice about the upcoming telemetry so you can opt out in advance, before any data is sent. Telemetry will be automatically disabled in CI environments when collection is enabled.
 
 ## What is collected
 
