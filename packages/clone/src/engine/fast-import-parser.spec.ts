@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFastImport } from "./fast-import-parser";
 
+const dec = new TextDecoder();
+const asText = (b: Uint8Array | undefined): string | undefined => (b ? dec.decode(b) : undefined);
+
 describe("parseFastImport", () => {
   test("single blob + commit with modify", () => {
     const stream =
@@ -15,9 +18,15 @@ describe("parseFastImport", () => {
     expect(commits).toHaveLength(1);
     expect(commits[0]?.ref).toBe("refs/heads/main");
     expect(commits[0]?.message).toBe("msg");
-    expect(commits[0]?.changes).toEqual([
-      { type: "modify", path: "a.md", mode: "100644", dataref: ":1", content: "hello" },
-    ]);
+    expect(commits[0]?.changes).toHaveLength(1);
+    const change = commits[0]?.changes[0];
+    expect(change?.type).toBe("modify");
+    if (change?.type === "modify") {
+      expect(change.path).toBe("a.md");
+      expect(change.mode).toBe("100644");
+      expect(change.dataref).toBe(":1");
+      expect(asText(change.content)).toBe("hello");
+    }
   });
 
   test("multiple modifications in one commit", () => {
@@ -30,8 +39,8 @@ describe("parseFastImport", () => {
 
     const [commit] = parseFastImport(stream);
     expect(commit?.changes).toHaveLength(3);
-    expect(commit?.changes.map((c) => c.path)).toEqual(["a.md", "b.md", "c.md"]);
-    expect(commit?.changes.map((c) => c.content)).toEqual(["A", "B", "C"]);
+    expect(commit?.changes.map((c) => (c.type === "modify" ? c.path : null))).toEqual(["a.md", "b.md", "c.md"]);
+    expect(commit?.changes.map((c) => (c.type === "modify" ? asText(c.content) : null))).toEqual(["A", "B", "C"]);
   });
 
   test("delete operations", () => {
@@ -70,34 +79,59 @@ describe("parseFastImport", () => {
     const payload = "line1\nline2\nline3";
     const stream = `blob\nmark :1\ndata ${payload.length}\n${payload}\ncommit refs/heads/main\ndata 1\nm\nM 100644 :1 a.md\n\n`;
     const [commit] = parseFastImport(stream);
-    expect(commit?.changes[0]?.content).toBe(payload);
+    const c = commit?.changes[0];
+    expect(c?.type).toBe("modify");
+    if (c?.type === "modify") expect(asText(c.content)).toBe(payload);
   });
 
   test("large content: length-prefix parsing respects exact byte count", () => {
     const payload = "x".repeat(50_000);
     const stream = `blob\nmark :1\ndata ${payload.length}\n${payload}\ncommit refs/heads/main\ndata 1\nm\nM 100644 :1 big.md\n\n`;
     const [commit] = parseFastImport(stream);
-    expect(commit?.changes[0]?.content).toBe(payload);
-    expect(commit?.changes[0]?.content?.length).toBe(50_000);
+    const c = commit?.changes[0];
+    expect(c?.type).toBe("modify");
+    if (c?.type === "modify") {
+      expect(c.content?.length).toBe(50_000);
+      expect(asText(c.content)).toBe(payload);
+    }
+  });
+
+  test("binary blob bytes are preserved exactly", () => {
+    // A synthetic "PNG": bytes outside valid UTF-8 (0xFF 0xFE 0x00) plus a literal LF.
+    const payload = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x0a, 0x42]);
+    const header = new TextEncoder().encode(`blob\nmark :1\ndata ${payload.length}\n`);
+    const trailer = new TextEncoder().encode("\ncommit refs/heads/main\ndata 1\nm\nM 100644 :1 logo.png\n\n");
+    const stream = new Uint8Array(header.length + payload.length + trailer.length);
+    stream.set(header, 0);
+    stream.set(payload, header.length);
+    stream.set(trailer, header.length + payload.length);
+
+    const [commit] = parseFastImport(stream);
+    const c = commit?.changes[0];
+    expect(c?.type).toBe("modify");
+    if (c?.type === "modify") {
+      expect(c.content).toEqual(payload);
+    }
   });
 
   test("inline modify carries its own data block", () => {
     const stream = "commit refs/heads/main\ndata 1\nm\n" + "M 100644 inline inl.md\ndata 5\nhello\n\n";
     const [commit] = parseFastImport(stream);
-    expect(commit?.changes[0]).toEqual({
-      type: "modify",
-      path: "inl.md",
-      mode: "100644",
-      dataref: "inline",
-      content: "hello",
-    });
+    const c = commit?.changes[0];
+    expect(c?.type).toBe("modify");
+    if (c?.type === "modify") {
+      expect(c.path).toBe("inl.md");
+      expect(c.mode).toBe("100644");
+      expect(c.dataref).toBe("inline");
+      expect(asText(c.content)).toBe("hello");
+    }
   });
 
   test("quoted path with escapes", () => {
     const stream = 'commit refs/heads/main\ndata 1\nm\nD "with\\nnewline.md"\nD "spa ce.md"\n\n';
     const [commit] = parseFastImport(stream);
-    expect(commit?.changes[0]?.path).toBe("with\nnewline.md");
-    expect(commit?.changes[1]?.path).toBe("spa ce.md");
+    expect(commit?.changes[0]).toEqual({ type: "delete", path: "with\nnewline.md" });
+    expect(commit?.changes[1]).toEqual({ type: "delete", path: "spa ce.md" });
   });
 
   test("rename and copy ops are swallowed, not fatal", () => {
@@ -105,6 +139,21 @@ describe("parseFastImport", () => {
     const commits = parseFastImport(stream);
     expect(commits).toHaveLength(1);
     expect(commits[0]?.changes).toEqual([]);
+  });
+
+  test("deleteall is a first-class change, preceding subsequent modifies", () => {
+    const stream =
+      "blob\nmark :1\ndata 1\nA\n" + "commit refs/heads/main\ndata 1\nm\ndeleteall\nM 100644 :1 fresh.md\n\n";
+    const [commit] = parseFastImport(stream);
+    expect(commit?.changes).toHaveLength(2);
+    expect(commit?.changes[0]).toEqual({ type: "deleteall" });
+    expect(commit?.changes[1]?.type).toBe("modify");
+  });
+
+  test("filedeleteall alias is recognized", () => {
+    const stream = "commit refs/heads/main\ndata 1\nm\nfiledeleteall\n\n";
+    const [commit] = parseFastImport(stream);
+    expect(commit?.changes).toEqual([{ type: "deleteall" }]);
   });
 
   test("reset directive between commits is tolerated", () => {
@@ -119,7 +168,8 @@ describe("parseFastImport", () => {
     const byteLen = new TextEncoder().encode(payload).length;
     const stream = `blob\nmark :1\ndata ${byteLen}\n${payload}\ncommit refs/heads/main\ndata 1\nm\nM 100644 :1 a.md\n\n`;
     const [commit] = parseFastImport(stream);
-    expect(commit?.changes[0]?.content).toBe(payload);
+    const c = commit?.changes[0];
+    if (c?.type === "modify") expect(asText(c.content)).toBe(payload);
   });
 
   test("original-oid lines are ignored in blob and commit headers", () => {
@@ -128,7 +178,8 @@ describe("parseFastImport", () => {
       "commit refs/heads/main\nmark :2\noriginal-oid def456\nauthor A <a@a> 0 +0000\ndata 1\nm\nM 100644 :1 a.md\n\n";
     const [commit] = parseFastImport(stream);
     expect(commit?.author).toBe("A <a@a> 0 +0000");
-    expect(commit?.changes[0]?.content).toBe("A");
+    const c = commit?.changes[0];
+    if (c?.type === "modify") expect(asText(c.content)).toBe("A");
   });
 
   test("tag directives are swallowed, not treated as commits", () => {
@@ -140,11 +191,29 @@ describe("parseFastImport", () => {
     expect(commits[0]?.changes).toEqual([{ type: "delete", path: "a.md" }]);
   });
 
-  test("data <<DELIM here-doc form", () => {
+  test("signed tag with PGP signature block is fully consumed", () => {
+    const stream =
+      "tag v1\n" +
+      "from :2\n" +
+      "tagger T <t@t> 0 +0000\n" +
+      "-----BEGIN PGP SIGNATURE-----\n" +
+      "iQFzBAABCgAdFiEEabc\n" +
+      "-----END PGP SIGNATURE-----\n" +
+      "data 8\nreleased\n" +
+      "commit refs/heads/main\ndata 1\nm\nD a.md\n\n";
+    const commits = parseFastImport(stream);
+    expect(commits).toHaveLength(1);
+    expect(commits[0]?.changes).toEqual([{ type: "delete", path: "a.md" }]);
+  });
+
+  test("data <<DELIM here-doc preserves trailing newline", () => {
     const stream = "commit refs/heads/main\ndata <<END\nhello\nworld\nEND\nM 100644 inline x.md\ndata 1\nq\n\n";
     const [commit] = parseFastImport(stream);
-    expect(commit?.message).toBe("hello\nworld");
-    expect(commit?.changes[0]?.content).toBe("q");
+    // Every git commit message terminates with \n — the here-doc form must
+    // preserve it so re-serializing yields identical SHAs.
+    expect(commit?.message).toBe("hello\nworld\n");
+    const c = commit?.changes[0];
+    if (c?.type === "modify") expect(asText(c.content)).toBe("q");
   });
 
   test("merge lines are captured", () => {
@@ -163,7 +232,7 @@ describe("parseFastImport", () => {
     const stream = 'commit refs/heads/main\ndata 1\nm\nD "a\\101\\x42c.md"\n\n';
     const [commit] = parseFastImport(stream);
     // \101 = octal 65 = 'A', \x42 = hex 66 = 'B'
-    expect(commit?.changes[0]?.path).toBe("aABc.md");
+    expect(commit?.changes[0]).toEqual({ type: "delete", path: "aABc.md" });
   });
 
   test("invalid data length throws", () => {
@@ -220,15 +289,28 @@ describe("parseFastImport", () => {
       expect(commits).toHaveLength(2);
 
       const [first, second] = commits;
-      expect(first?.message.trim()).toBe("first");
-      expect(first?.changes.map((c) => c.path).sort()).toEqual(["a.md", "b.md"]);
-      expect(first?.changes.find((c) => c.path === "a.md")?.content).toBe("alpha\n");
+      // Git terminates every commit message with \n — don't .trim() it away;
+      // re-serializing a trimmed message would yield a different SHA.
+      expect(first?.message).toBe("first\n");
+      expect(
+        first?.changes
+          .filter((c) => c.type === "modify")
+          .map((c) => (c as { path: string }).path)
+          .sort(),
+      ).toEqual(["a.md", "b.md"]);
+      const firstA = first?.changes.find((c) => c.type === "modify" && c.path === "a.md");
+      expect(firstA?.type).toBe("modify");
+      if (firstA?.type === "modify") expect(asText(firstA.content)).toBe("alpha\n");
 
-      expect(second?.message.trim()).toBe("second");
-      const byPath = new Map(second?.changes.map((c) => [c.path, c]));
-      expect(byPath.get("a.md")).toMatchObject({ type: "modify", content: "alpha-v2\n" });
-      expect(byPath.get("b.md")).toMatchObject({ type: "delete" });
-      expect(byPath.get("c.md")).toMatchObject({ type: "modify", content: "gamma\n" });
+      expect(second?.message).toBe("second\n");
+      const byPath = new Map(second?.changes.map((c) => [c.type === "modify" || c.type === "delete" ? c.path : "", c]));
+      const secA = byPath.get("a.md");
+      expect(secA?.type).toBe("modify");
+      if (secA?.type === "modify") expect(asText(secA.content)).toBe("alpha-v2\n");
+      expect(byPath.get("b.md")).toEqual({ type: "delete", path: "b.md" });
+      const secC = byPath.get("c.md");
+      expect(secC?.type).toBe("modify");
+      if (secC?.type === "modify") expect(asText(secC.content)).toBe("gamma\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -6,18 +6,17 @@
  * export handler can route to provider.push()/create()/delete().
  *
  * See: https://git-scm.com/docs/git-fast-import
+ *
+ * The parser operates on bytes, not strings: git fast-import is a binary
+ * protocol (`data <n>` counts bytes, blobs may be arbitrary). Callers should
+ * pass a Uint8Array; a string input is accepted for convenience and encoded as
+ * UTF-8, which is safe for text-only streams.
  */
 
-export interface ParsedChange {
-  type: "modify" | "delete";
-  path: string;
-  /** File mode for modify ops (e.g. "100644"). */
-  mode?: string;
-  /** Raw dataref from the M line — a mark (":1") or SHA-1. */
-  dataref?: string;
-  /** Resolved blob content for modify ops when the dataref is a mark or inline. */
-  content?: string;
-}
+export type ParsedChange =
+  | { type: "modify"; path: string; mode?: string; dataref?: string; content?: Uint8Array }
+  | { type: "delete"; path: string }
+  | { type: "deleteall" };
 
 export interface ParsedCommit {
   ref: string;
@@ -31,9 +30,9 @@ export interface ParsedCommit {
 }
 
 /** Parse a fast-import stream into commits. Blobs referenced by mark are inlined into changes. */
-export function parseFastImport(stream: string): ParsedCommit[] {
-  const bytes = new TextEncoder().encode(stream);
-  const blobs = new Map<string, string>();
+export function parseFastImport(stream: string | Uint8Array): ParsedCommit[] {
+  const bytes = typeof stream === "string" ? new TextEncoder().encode(stream) : stream;
+  const blobs = new Map<string, Uint8Array>();
   const commits: ParsedCommit[] = [];
   const state = { pos: 0 };
 
@@ -60,7 +59,7 @@ export function parseFastImport(stream: string): ParsedCommit[] {
   return commits;
 }
 
-function parseBlob(bytes: Uint8Array, state: { pos: number }, blobs: Map<string, string>): void {
+function parseBlob(bytes: Uint8Array, state: { pos: number }, blobs: Map<string, Uint8Array>): void {
   let mark: string | undefined;
   while (true) {
     const p = peekLine(bytes, state);
@@ -75,11 +74,16 @@ function parseBlob(bytes: Uint8Array, state: { pos: number }, blobs: Map<string,
       break;
     }
   }
-  const content = readData(bytes, state);
+  const content = readDataBytes(bytes, state);
   if (mark) blobs.set(mark, content);
 }
 
-function parseCommit(ref: string, bytes: Uint8Array, state: { pos: number }, blobs: Map<string, string>): ParsedCommit {
+function parseCommit(
+  ref: string,
+  bytes: Uint8Array,
+  state: { pos: number },
+  blobs: Map<string, Uint8Array>,
+): ParsedCommit {
   const commit: ParsedCommit = { ref, message: "", changes: [] };
 
   // Header: mark, original-oid, author, committer, data (message), from, merge
@@ -98,7 +102,7 @@ function parseCommit(ref: string, bytes: Uint8Array, state: { pos: number }, blo
       readLine(bytes, state);
       commit.committer = p.slice("committer ".length);
     } else if (p === "data" || p.startsWith("data ")) {
-      commit.message = readData(bytes, state);
+      commit.message = readDataString(bytes, state);
     } else if (p.startsWith("from ")) {
       readLine(bytes, state);
       commit.from = p.slice("from ".length);
@@ -127,9 +131,15 @@ function parseCommit(ref: string, bytes: Uint8Array, state: { pos: number }, blo
     } else if (p.startsWith("D ")) {
       readLine(bytes, state);
       commit.changes.push({ type: "delete", path: unquotePath(p.slice("D ".length)) });
-    } else if (p.startsWith("R ") || p.startsWith("C ") || p === "deleteall") {
-      // Rename/copy/deleteall: we don't request rename detection, so these are
-      // rare. Swallow gracefully rather than crashing.
+    } else if (p === "deleteall" || p === "filedeleteall") {
+      // Tree reset — emitted by git filter-repo / filter-branch secret-removal
+      // and by --reencode runs. Downstream must clear the tree before applying
+      // the following M entries.
+      readLine(bytes, state);
+      commit.changes.push({ type: "deleteall" });
+    } else if (p.startsWith("R ") || p.startsWith("C ")) {
+      // Rename/copy: we don't request rename detection, so these are rare.
+      // Swallow gracefully rather than crashing.
       readLine(bytes, state);
     } else {
       break;
@@ -143,7 +153,7 @@ function parseModify(
   rest: string,
   bytes: Uint8Array,
   state: { pos: number },
-  blobs: Map<string, string>,
+  blobs: Map<string, Uint8Array>,
 ): ParsedChange | null {
   // M <mode> <dataref> <path>   —   path may be C-quoted if it contains special chars
   const sp1 = rest.indexOf(" ");
@@ -153,9 +163,9 @@ function parseModify(
   const dataref = rest.slice(sp1 + 1, sp2);
   const path = unquotePath(rest.slice(sp2 + 1));
 
-  let content: string | undefined;
+  let content: Uint8Array | undefined;
   if (dataref === "inline") {
-    content = readData(bytes, state);
+    content = readDataBytes(bytes, state);
   } else if (dataref.startsWith(":")) {
     content = blobs.get(dataref.slice(1));
   }
@@ -170,14 +180,14 @@ function skipTag(bytes: Uint8Array, state: { pos: number }): void {
   while (true) {
     const p = peekLine(bytes, state);
     if (p === null) return;
-    if (p.startsWith("from ") || p.startsWith("original-oid ") || p.startsWith("tagger ") || p.startsWith("mark ")) {
-      readLine(bytes, state);
-    } else if (p === "data" || p.startsWith("data ")) {
-      readData(bytes, state);
-      return;
-    } else {
+    if (p === "data" || p.startsWith("data ")) {
+      readDataBytes(bytes, state);
       return;
     }
+    // Consume every other line — tag bodies include `from`, `mark`,
+    // `original-oid`, `tagger`, and for signed tags a PGP signature block
+    // before the `data` payload. We don't care about the content.
+    readLine(bytes, state);
   }
 }
 
@@ -198,8 +208,12 @@ function peekLine(bytes: Uint8Array, state: { pos: number }): string | null {
   return line;
 }
 
-/** Read a `data <n>\n<n bytes>` or `data <<DELIM\n...lines...\nDELIM\n` payload. */
-function readData(bytes: Uint8Array, state: { pos: number }): string {
+/**
+ * Read a `data <n>\n<n bytes>` or `data <<DELIM\n...lines...\nDELIM\n` payload
+ * and return the raw bytes. Used for blobs (which may be binary) and for
+ * tag payloads we skip.
+ */
+function readDataBytes(bytes: Uint8Array, state: { pos: number }): Uint8Array {
   const header = readLine(bytes, state);
   if (header === null || (header !== "data" && !header.startsWith("data "))) {
     throw new Error(`fast-import: expected "data", got: ${header ?? "<eof>"}`);
@@ -207,23 +221,42 @@ function readData(bytes: Uint8Array, state: { pos: number }): string {
   const spec = header.slice("data ".length);
   if (spec.startsWith("<<")) {
     const delim = spec.slice(2);
-    const lines: string[] = [];
+    const parts: Uint8Array[] = [];
     while (true) {
+      const lineStart = state.pos;
       const line = readLine(bytes, state);
       if (line === null || line === delim) break;
-      lines.push(line);
+      const lineEnd = state.pos; // includes the LF if present
+      parts.push(bytes.subarray(lineStart, lineEnd));
     }
-    return lines.join("\n");
+    return concatBytes(parts);
   }
   const n = Number.parseInt(spec, 10);
   if (!Number.isFinite(n) || n < 0) throw new Error(`fast-import: invalid data length: ${spec}`);
   const end = state.pos + n;
   if (end > bytes.length) throw new Error(`fast-import: data length ${n} exceeds stream`);
-  const content = new TextDecoder().decode(bytes.subarray(state.pos, end));
+  const content = bytes.subarray(state.pos, end);
   state.pos = end;
   // fast-import allows an optional trailing LF after the data block
   if (state.pos < bytes.length && bytes[state.pos] === 0x0a) state.pos++;
   return content;
+}
+
+/** Like readDataBytes, but decodes to UTF-8 string. Used for commit messages. */
+function readDataString(bytes: Uint8Array, state: { pos: number }): string {
+  return new TextDecoder().decode(readDataBytes(bytes, state));
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
 }
 
 /**
