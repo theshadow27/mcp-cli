@@ -3,6 +3,28 @@ import type { AliasContext } from "./alias";
 import { createDryRunMcp, createDryRunState, wrapDryRunContext } from "./alias-dry-run";
 
 describe("createDryRunMcp", () => {
+  test("server proxy is not thenable — Promise.resolve does not hang", async () => {
+    const lines: string[] = [];
+    const mcp = createDryRunMcp((l) => lines.push(l));
+    // If the server-level proxy were a thenable, Promise.resolve would call
+    // .then(resolve, reject), resolve would never fire, and this would hang.
+    const server = await Promise.resolve(mcp.server);
+    // It resolved (didn't hang) and emitted no bogus [dry-run] lines
+    expect(typeof server).toBe("object");
+    expect(lines).toEqual([]);
+  });
+
+  test("symbol probes on server and tool proxies return undefined without logging", () => {
+    const lines: string[] = [];
+    const mcp = createDryRunMcp((l) => lines.push(l));
+    // Bun inspect / V8 probe these — must not emit log lines or crash
+    expect((mcp as unknown as Record<symbol, unknown>)[Symbol.iterator]).toBeUndefined();
+    expect((mcp as unknown as Record<symbol, unknown>)[Symbol.toPrimitive]).toBeUndefined();
+    expect((mcp.server as unknown as Record<symbol, unknown>)[Symbol.iterator]).toBeUndefined();
+    expect((mcp.server as unknown as { then: unknown }).then).toBeUndefined();
+    expect(lines).toEqual([]);
+  });
+
   test("logs tool calls and returns undefined", async () => {
     const lines: string[] = [];
     const mcp = createDryRunMcp((l) => lines.push(l));

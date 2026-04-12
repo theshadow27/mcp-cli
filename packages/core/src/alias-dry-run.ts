@@ -23,11 +23,31 @@ function formatArgs(args: unknown): string {
 
 export function createDryRunMcp(log: DryRunLogger): McpProxy {
   return new Proxy({} as McpProxy, {
-    get(_t, server: string) {
+    get(_t, server) {
+      // Guard symbol probes and Promise machinery (.then/.catch/.finally) so
+      // this Proxy is never treated as a thenable by await / Promise.resolve().
+      if (
+        typeof server === "symbol" ||
+        server === "then" ||
+        server === "catch" ||
+        server === "finally" ||
+        server === "toJSON"
+      ) {
+        return undefined;
+      }
       return new Proxy({} as Record<string, (args?: Record<string, unknown>) => Promise<unknown>>, {
-        get(_i, tool: string) {
+        get(_i, tool) {
+          if (
+            typeof tool === "symbol" ||
+            tool === "then" ||
+            tool === "catch" ||
+            tool === "finally" ||
+            tool === "toJSON"
+          ) {
+            return undefined;
+          }
           return async (args?: Record<string, unknown>) => {
-            log(`[dry-run] mcp.${server}.${tool}(${formatArgs(args)})`);
+            log(`[dry-run] mcp.${String(server)}.${String(tool)}(${formatArgs(args)})`);
             return undefined;
           };
         },

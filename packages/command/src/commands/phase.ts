@@ -32,7 +32,6 @@ import {
   appendTransitionLog,
   bundleAlias,
   canonicalJson,
-  createAliasCache,
   executeAliasBundled,
   extractMetadata,
   hashFileSync,
@@ -712,7 +711,10 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     args: {},
     file: (p) => Bun.file(p).text(),
     json: async (p) => JSON.parse(await Bun.file(p).text()),
-    cache: createAliasCache(name),
+    // Dry-run: use an in-memory no-op cache so producers still run but
+    // nothing is written to ~/.mcp-cli/cache — avoids caching `undefined`
+    // (the dry-run proxy return value) and corrupting real cache entries.
+    cache: async (_k, producer) => producer() as Promise<never>,
     state: stubState,
     globalState: stubState,
   };
