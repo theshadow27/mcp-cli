@@ -62,6 +62,10 @@ done
 # Transitional symlink: mcp -> mcx (deprecated name)
 ln -sf "$INSTALL_DIR/mcx" "$INSTALL_DIR/mcp"
 
+# git-remote-mcx: enables `git push`/`git pull` against mcx:// URLs.
+# Invoking mcx through this symlink triggers remote-helper mode (see #1213).
+ln -sf "$INSTALL_DIR/mcx" "$INSTALL_DIR/git-remote-mcx"
+
 # Ad-hoc codesign on macOS (required for unsigned binaries)
 if [ "$OS" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
   for bin in mcx mcpd mcpctl; do
