@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
@@ -8,7 +9,10 @@ import { CloneCache } from "./cache";
 import { injectFrontmatter, stripFrontmatter } from "./frontmatter";
 import { pull } from "./pull";
 
-const TMP = join(import.meta.dir, "__test_pull_tmp__");
+// Use os.tmpdir() so git's upward .git search can never reach the project
+// repo — a defense in depth against git commands accidentally running against
+// the project root if a test skips init or inherits GIT_* env vars.
+let TMP: string;
 
 /** Build env without GIT_* vars so git commands target the test repo, not the parent. */
 function cleanEnv(): Record<string, string> {
@@ -64,6 +68,7 @@ function initGitRepo(): void {
 }
 
 beforeEach(() => {
+  TMP = mkdtempSync(join(tmpdir(), "mcx-pull-spec-"));
   repoDir = join(TMP, `repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(repoDir, { recursive: true });
   mkdirSync(join(repoDir, ".clone"), { recursive: true });
@@ -451,7 +456,7 @@ describe("pull", () => {
         join(repoDir, "Root/Child.md"),
         injectFrontmatter("> **Shallow clone stub**", { id: "c1", stub: true }),
       );
-      execSync("git add -A && git commit -m 'shallow clone'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'shallow clone'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.close();
 
       const provider = hierarchyProvider(entries);
@@ -470,7 +475,7 @@ describe("pull", () => {
       cache.saveScopeMeta("test", scopeWithDepth);
       cache.upsert("test", scopeWithDepth, makeEntry({ id: "r1", title: "Root", version: 1 }), "Root.md", "h1");
       writeFileSync(join(repoDir, "Root.md"), injectFrontmatter("# Root", { id: "r1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.updateLastSynced("test", "TEST");
       cache.close();
 
