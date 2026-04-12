@@ -10,12 +10,18 @@ import {
   parseLockfile,
   readTransitionHistory,
 } from "@mcp-cli/core";
+import { parseManifestText, validateManifest } from "@mcp-cli/core";
 import {
+  buildPhaseList,
+  buildPhaseShow,
   checkStateSubset,
   cmdPhase,
+  explainTransition,
+  formatPhaseTable,
   parsePhaseRunArgs,
   phaseRun,
   resolvePhaseSource,
+  shortestPhasePath,
   transitionLogPath,
 } from "./phase";
 
@@ -350,8 +356,10 @@ describe("cmdPhase dispatch", () => {
   test("list prints phases alphabetically", async () => {
     const { out } = await withCwd(dir, () => catchExit(() => cmdPhase(["list"])));
     const lines = out.trim().split("\n");
-    expect(lines).toEqual([...lines].sort());
-    expect(lines).toContain("qa");
+    // skip header; remaining rows should be alphabetical by name
+    const names = lines.slice(1).map((l) => l.split(/\s+/)[0]);
+    expect(names).toEqual([...names].sort());
+    expect(names).toContain("qa");
   });
 
   test("list exits 1 when no manifest", async () => {
@@ -413,5 +421,252 @@ describe("cmdPhase dispatch", () => {
     const { code, err } = await catchExit(() => cmdPhase(["bogus"]));
     expect(code).toBe(1);
     expect(err).toContain("Unknown subcommand");
+  });
+});
+
+function loadTestManifest(yaml: string): ReturnType<typeof validateManifest> {
+  return validateManifest(parseManifestText(yaml, "test.yaml"), "test.yaml");
+}
+
+describe("shortestPhasePath", () => {
+  const m = loadTestManifest(manifestYaml);
+
+  test("direct edge returns two-node path", () => {
+    expect(shortestPhasePath(m, "impl", "qa")).toEqual(["impl", "qa"]);
+  });
+
+  test("multi-hop returns shortest path", () => {
+    expect(shortestPhasePath(m, "impl", "done")).toEqual(["impl", "qa", "done"]);
+  });
+
+  test("unreachable returns null", () => {
+    expect(shortestPhasePath(m, "done", "impl")).toBeNull();
+  });
+
+  test("unknown phase returns null", () => {
+    expect(shortestPhasePath(m, "bogus", "qa")).toBeNull();
+    expect(shortestPhasePath(m, "impl", "bogus")).toBeNull();
+  });
+});
+
+describe("explainTransition", () => {
+  const m = loadTestManifest(manifestYaml);
+
+  test("direct transition is legal", () => {
+    const r = explainTransition(m, "impl", "qa");
+    expect(r.legal).toBe(true);
+    expect(r.kind).toBe("direct");
+    expect(r.message).toContain("approved direct transition");
+  });
+
+  test("indirect transition shows shortest path", () => {
+    const r = explainTransition(m, "impl", "done");
+    expect(r.legal).toBe(true);
+    expect(r.kind).toBe("indirect");
+    expect(r.path).toEqual(["impl", "qa", "done"]);
+    expect(r.message).toContain("shortest legal path");
+  });
+
+  test("regression: reverse path exists", () => {
+    const r = explainTransition(m, "done", "impl");
+    // done is terminal (no next), but impl can reach done; this is a regression.
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("regression");
+    expect(r.message).toContain("regress");
+  });
+
+  test("unknown phase reports suggestions", () => {
+    const r = explainTransition(m, "impll", "qa");
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("unknown-phase");
+    expect(r.message).toContain("impl");
+  });
+
+  test("same phase is disallowed, not indirect", () => {
+    const r = explainTransition(m, "impl", "impl");
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("disallowed");
+    expect(r.message).toContain("already");
+  });
+});
+
+describe("buildPhaseList / formatPhaseTable", () => {
+  test("status is 'missing' without lockfile", () => {
+    const m = loadTestManifest(manifestYaml);
+    const rows = buildPhaseList(m, null, "/nonexistent");
+    expect(rows.every((r) => r.status === "missing")).toBe(true);
+    expect(rows.map((r) => r.name)).toEqual([...rows.map((r) => r.name)].sort());
+  });
+
+  test("formatPhaseTable renders header and rows", () => {
+    const rows = [
+      { name: "impl", source: "./impl.ts", status: "ok" as const, next: ["qa"] },
+      { name: "done", source: "./done.ts", status: "drift" as const, next: [] },
+    ];
+    const lines = formatPhaseTable(rows);
+    expect(lines[0]).toContain("NAME");
+    expect(lines[0]).toContain("NEXT");
+    expect(lines.some((l) => l.includes("impl") && l.includes("ok"))).toBe(true);
+    expect(lines.some((l) => l.includes("—"))).toBe(true);
+  });
+});
+
+describe("buildPhaseShow", () => {
+  test("returns preview and resolved path", () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const m = loadTestManifest(simpleManifest);
+    const info = buildPhaseShow("implement", m.phases.implement, m, null, dir, false);
+    expect(info.resolvedPath).toBe("impl.ts");
+    expect(info.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(info.preview.length).toBeGreaterThan(0);
+    expect(info.lastInstalled).toBeNull();
+  });
+
+  test("truncates preview unless --full", () => {
+    const longSrc = Array.from({ length: 30 }, (_, i) => `// line ${i}`).join("\n");
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), longSrc);
+    const m = loadTestManifest(simpleManifest);
+    const short = buildPhaseShow("implement", m.phases.implement, m, null, dir, false);
+    expect(short.preview).toHaveLength(20);
+    expect(short.previewTruncated).toBe(true);
+    const full = buildPhaseShow("implement", m.phases.implement, m, null, dir, true);
+    expect(full.preview.length).toBeGreaterThan(20);
+    expect(full.previewTruncated).toBe(false);
+  });
+});
+
+describe("cmdPhase show / why / list-json — integration", () => {
+  beforeEach(() => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "na.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), "// stub\n");
+    }
+  });
+
+  async function withCwd<T>(newCwd: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.cwd();
+    process.chdir(newCwd);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(prev);
+    }
+  }
+
+  async function runCapture(args: string[]): Promise<{ code: number | undefined; out: string; err: string }> {
+    const origExit = process.exit;
+    const origLog = console.log;
+    const origErr = console.error;
+    let exitCode: number | undefined;
+    let out = "";
+    let err = "";
+    process.exit = ((c?: number) => {
+      exitCode = c;
+      throw new Error("__exit__");
+    }) as typeof process.exit;
+    console.log = (...a: unknown[]) => {
+      out += `${a.join(" ")}\n`;
+    };
+    console.error = (...a: unknown[]) => {
+      err += `${a.join(" ")}\n`;
+    };
+    try {
+      await cmdPhase(args).catch((e) => {
+        if ((e as Error).message !== "__exit__") throw e;
+      });
+    } finally {
+      process.exit = origExit;
+      console.log = origLog;
+      console.error = origErr;
+    }
+    return { code: exitCode, out, err };
+  }
+
+  test("list renders table with NAME/SOURCE/STATUS/NEXT", async () => {
+    const { out } = await withCwd(dir, () => runCapture(["list"]));
+    expect(out).toContain("NAME");
+    expect(out).toContain("SOURCE");
+    expect(out).toContain("STATUS");
+    expect(out).toContain("NEXT");
+    expect(out).toContain("impl");
+    expect(out).toContain("missing");
+  });
+
+  test("list --json emits structured output", async () => {
+    const { out } = await withCwd(dir, () => runCapture(["list", "--json"]));
+    const rows = JSON.parse(out);
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows[0]).toHaveProperty("name");
+    expect(rows[0]).toHaveProperty("status");
+    expect(rows[0]).toHaveProperty("next");
+  });
+
+  test("show prints phase details", async () => {
+    const { out, code } = await withCwd(dir, () => runCapture(["show", "impl"]));
+    expect(code).toBeUndefined();
+    expect(out).toContain("phase: impl");
+    expect(out).toContain("source: ./impl.ts");
+    expect(out).toContain("next:");
+    expect(out).toContain("adversarial-review");
+  });
+
+  test("show on unknown phase exits 1 with suggestions", async () => {
+    const { code, err } = await withCwd(dir, () => runCapture(["show", "impll"]));
+    expect(code).toBe(1);
+    expect(err).toContain("unknown phase");
+    expect(err).toContain("impl");
+  });
+
+  test("show --json returns JSON", async () => {
+    const { out } = await withCwd(dir, () => runCapture(["show", "impl", "--json"]));
+    const info = JSON.parse(out);
+    expect(info.name).toBe("impl");
+    expect(info.next).toContain("qa");
+  });
+
+  test("show without name exits 1", async () => {
+    const { code, err } = await withCwd(dir, () => runCapture(["show"]));
+    expect(code).toBe(1);
+    expect(err).toContain("Usage:");
+  });
+
+  test("why reports direct transitions", async () => {
+    const { out, code } = await withCwd(dir, () => runCapture(["why", "impl", "qa"]));
+    expect(code).toBeUndefined();
+    expect(out).toContain("approved direct transition");
+  });
+
+  test("why reports indirect transitions", async () => {
+    const { out, code } = await withCwd(dir, () => runCapture(["why", "impl", "done"]));
+    expect(code).toBeUndefined();
+    expect(out).toContain("shortest legal path");
+    expect(out).toContain("qa");
+  });
+
+  test("why reports regression with exit 1", async () => {
+    const { out, code } = await withCwd(dir, () => runCapture(["why", "done", "impl"]));
+    expect(code).toBe(1);
+    expect(out).toContain("regress");
+  });
+
+  test("why reports unknown phase with exit 1", async () => {
+    const { out, code } = await withCwd(dir, () => runCapture(["why", "impll", "qa"]));
+    expect(code).toBe(1);
+    expect(out).toContain("unknown phase");
+  });
+
+  test("why --json returns JSON", async () => {
+    const { out } = await withCwd(dir, () => runCapture(["why", "impl", "qa", "--json"]));
+    const res = JSON.parse(out);
+    expect(res.legal).toBe(true);
+    expect(res.kind).toBe("direct");
+  });
+
+  test("why with wrong arity exits 1", async () => {
+    const { code, err } = await withCwd(dir, () => runCapture(["why", "impl"]));
+    expect(code).toBe(1);
+    expect(err).toContain("Usage:");
   });
 });
