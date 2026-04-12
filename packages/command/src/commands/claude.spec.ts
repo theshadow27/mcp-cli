@@ -1256,7 +1256,8 @@ describe("mcx claude ls", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["ls"], deps);
-      // Header + 2 sessions (null repoRoot passes through)
+      // Header + 2 sessions — ls relies on daemon-side filtering and
+      // renders whatever the daemon returns.
       expect(logSpy.mock.calls.length).toBe(3);
     } finally {
       console.log = origLog;

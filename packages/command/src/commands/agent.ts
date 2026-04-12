@@ -932,7 +932,12 @@ async function agentWait(
       sessions: Array<Record<string, unknown>>;
     };
     if (repoFilter) {
-      unified.sessions = unified.sessions.filter((s) => !s.repoRoot || s.repoRoot === repoFilter);
+      unified.sessions = unified.sessions.filter((s) => {
+        if (s.repoRoot) return s.repoRoot === repoFilter;
+        // Legacy sessions without repoRoot: fall back to cwd prefix match (fixes #1242)
+        const cwd = typeof s.cwd === "string" ? s.cwd : null;
+        return cwd !== null && (cwd === repoFilter || cwd.startsWith(`${repoFilter}/`));
+      });
       if (unified.event?.session) {
         const eventRepo = (unified.event.session as Record<string, unknown>).repoRoot;
         if (eventRepo && eventRepo !== repoFilter) {

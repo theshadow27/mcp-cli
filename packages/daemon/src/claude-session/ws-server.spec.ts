@@ -2305,18 +2305,49 @@ describe("ClaudeWsServer", () => {
 
     server.prepareSession("s1", { prompt: "A", repoRoot: "/repo/a" });
     server.prepareSession("s2", { prompt: "B", repoRoot: "/repo/b" });
-    server.prepareSession("s3", { prompt: "C" }); // no repoRoot
 
     const allSessions = server.listSessions();
-    expect(allSessions).toHaveLength(3);
+    expect(allSessions).toHaveLength(2);
 
     // Apply the same filter predicate used in handleSessionList
     const repoRoot = "/repo/a";
-    const filtered = allSessions.filter((s) => !s.repoRoot || s.repoRoot === repoRoot);
+    const filtered = allSessions.filter((s) => {
+      if (s.repoRoot) return s.repoRoot === repoRoot;
+      return s.cwd !== null && (s.cwd === repoRoot || s.cwd.startsWith(`${repoRoot}/`));
+    });
 
-    // Should include s1 (matching repoRoot) and s3 (no repoRoot), but NOT s2
-    expect(filtered).toHaveLength(2);
-    expect(filtered.map((s) => s.sessionId).sort()).toEqual(["s1", "s3"]);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.sessionId).toBe("s1");
+  });
+
+  test("handleSessionList predicate: null repoRoot falls back to cwd prefix (#1242)", () => {
+    // Mirror the predicate used in handleSessionList. Prior buggy version
+    // (`!s.repoRoot || s.repoRoot === repoRoot`) let null-repoRoot sessions
+    // leak across every repo; the fix scopes them by cwd prefix instead.
+    type S = { sessionId: string; repoRoot: string | null; cwd: string | null };
+    const predicate = (s: S, repoRoot: string) => {
+      if (s.repoRoot) return s.repoRoot === repoRoot;
+      return s.cwd !== null && (s.cwd === repoRoot || s.cwd.startsWith(`${repoRoot}/`));
+    };
+
+    const sessions: S[] = [
+      { sessionId: "leaky-a", repoRoot: null, cwd: "/repo/a/sub" },
+      { sessionId: "healthy-b", repoRoot: "/repo/b", cwd: "/repo/b/sub" },
+      { sessionId: "healthy-a", repoRoot: "/repo/a", cwd: "/repo/a/wt" },
+      { sessionId: "no-cwd", repoRoot: null, cwd: null },
+    ];
+
+    // From /repo/b: null-repoRoot session under /repo/a must NOT leak in.
+    expect(sessions.filter((s) => predicate(s, "/repo/b")).map((s) => s.sessionId)).toEqual(["healthy-b"]);
+
+    // From /repo/a: null-repoRoot session under /repo/a IS included (via cwd).
+    expect(sessions.filter((s) => predicate(s, "/repo/a")).map((s) => s.sessionId)).toEqual([
+      "leaky-a",
+      "healthy-a",
+    ]);
+
+    // Session with null repoRoot AND null cwd is filtered out from every repo.
+    expect(sessions.filter((s) => predicate(s, "/repo/c")).map((s) => s.sessionId)).toEqual([]);
   });
 
   test("listSessions repoRoot filter: no filter returns all sessions", () => {

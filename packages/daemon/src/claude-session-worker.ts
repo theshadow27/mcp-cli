@@ -249,7 +249,12 @@ function handleSessionList(
     // Scope filter: include sessions whose cwd is under the scope root
     sessions = sessions.filter((s) => s.cwd !== null && (s.cwd === scopeRoot || s.cwd.startsWith(`${scopeRoot}/`)));
   } else if (repoRoot) {
-    sessions = sessions.filter((s) => !s.repoRoot || s.repoRoot === repoRoot);
+    sessions = sessions.filter((s) => {
+      if (s.repoRoot) return s.repoRoot === repoRoot;
+      // Legacy sessions without repoRoot: fall back to cwd prefix match
+      // so they stay scoped to their originating repo (fixes #1242).
+      return s.cwd !== null && (s.cwd === repoRoot || s.cwd.startsWith(`${repoRoot}/`));
+    });
   }
   return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
 }
