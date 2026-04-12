@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
+import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
 
 export interface CloneOptions {
@@ -66,11 +67,6 @@ export function computeDepth(entry: RemoteEntry, entryById: Map<string, RemoteEn
   }
   return depth;
 }
-
-const STUB_BODY = `> **Shallow clone stub** — this page was not fetched (depth limit).
->
-> Run \`mcx vfs pull\` to fetch all pages, or \`mcx vfs pull --depth N\` with a larger depth.
-`;
 
 export async function clone(opts: CloneOptions): Promise<CloneResult> {
   const { targetDir, provider, scope, limit = 0, depth = 0 } = opts;

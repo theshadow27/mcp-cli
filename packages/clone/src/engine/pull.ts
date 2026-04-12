@@ -19,12 +19,8 @@ import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { computeDepth } from "./clone";
+import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
-
-const STUB_BODY = `> **Shallow clone stub** — this page was not fetched (depth limit).
->
-> Run \`mcx vfs pull\` to fetch all pages, or \`mcx vfs pull --depth N\` with a larger depth.
-`;
 
 export interface PullOptions {
   /** Root directory of the cloned repo. */
@@ -93,8 +89,18 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
     const effectiveDepth = userDepth > 0 ? userDepth : hasStubs ? 0 : storedDepth;
     const isDeepening = hasStubs && effectiveDepth === 0;
 
+    // Re-shallowing (e.g. pull --depth 1 on a depth-2 clone) updates stored depth
+    // but does NOT remove content already on disk for deeper pages. Those pages become
+    // invisible to the depth system but remain as full files.
+    if (userDepth > 0 && storedDepth > 0 && userDepth < storedDepth) {
+      log(
+        opts,
+        `Warning: re-shallowing from depth ${storedDepth} to ${userDepth}. Pages already fetched beyond depth ${userDepth} will remain on disk.`,
+      );
+    }
+
     if (isDeepening) {
-      log(opts, "Deepening shallow clone — fetching all pages...");
+      log(opts, "Deepening shallow clone — fetching all pages (this may take a while)...");
     }
 
     // ── Decide: incremental or full ──────────────────────────
@@ -105,7 +111,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     if (canIncremental) {
       try {
-        await incrementalPull(opts, cache, scope, lastSynced, result);
+        await incrementalPull(opts, cache, scope, lastSynced, result, effectiveDepth);
       } catch (err) {
         if (err instanceof TruncatedChangesError) {
           log(opts, `  ${err.message}`);
@@ -124,6 +130,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     // ── Update stored depth if it changed ─────────────────────
     if (effectiveDepth !== storedDepth) {
+      // 0 = unlimited depth — strip the key rather than storing 0
       const updatedResolved = { ...scope, resolved: { ...scope.resolved, cloneDepth: effectiveDepth || undefined } };
       cache.saveScopeMeta(provider.name, updatedResolved);
     }
@@ -187,6 +194,7 @@ async function incrementalPull(
   scope: ResolvedScope,
   since: string,
   result: PullResult,
+  effectiveDepth = 0,
 ): Promise<void> {
   const { repoDir, provider } = opts;
   result.incremental = true;
@@ -223,6 +231,15 @@ async function incrementalPull(
     metadata: {},
   }));
 
+  // Build depth map for depth-filtered incremental sync. Include changed entries
+  // so new pages get correct parent context for depth computation.
+  const allEntriesForDepth = new Map<string, RemoteEntry>(allCachedAsEntries.map((e) => [e.id, e]));
+  for (const change of changes) {
+    if (change.type !== "deleted") {
+      allEntriesForDepth.set(change.entry.id, change.entry);
+    }
+  }
+
   for (const change of changes) {
     const { entry } = change;
 
@@ -238,17 +255,35 @@ async function incrementalPull(
       continue;
     }
 
-    // Created or updated — fetch content if not inline
-    let content = entry.content;
-    if (content == null) {
-      const fetched = await provider.fetch(scope, entry.id);
-      content = fetched.content;
-    }
+    // Enforce depth limit: new pages beyond depth get written as stubs so the
+    // depth invariant doesn't erode silently when incremental sync is the hot path.
+    const entryDepth = effectiveDepth > 0 ? computeDepth(entry, allEntriesForDepth) : 1;
+    const excluded = effectiveDepth > 0 && entryDepth > effectiveDepth;
 
     // Compute path — use cached entries + this entry for context
     const entriesForPath = [...allCachedAsEntries.filter((e) => e.id !== entry.id), entry];
     const relPath = provider.toPath(entry, entriesForPath);
     const absPath = join(repoDir, relPath);
+
+    if (excluded) {
+      const fm = { ...provider.frontmatter(entry, scope), stub: true };
+      const withFrontmatter = injectFrontmatter(STUB_BODY, fm);
+      mkdirSync(dirname(absPath), { recursive: true });
+      writeFileSync(absPath, withFrontmatter, "utf-8");
+      cache.upsert(provider.name, scope, entry, relPath, null, true);
+
+      if (!cachedById.has(entry.id)) {
+        log(opts, `  + ${relPath} (stub — depth limit)`);
+      }
+      continue;
+    }
+
+    // Included — fetch content if not inline
+    let content = entry.content;
+    if (content == null) {
+      const fetched = await provider.fetch(scope, entry.id);
+      content = fetched.content;
+    }
 
     const fm = provider.frontmatter(entry, scope);
     const withFrontmatter = injectFrontmatter(content, fm);
@@ -307,6 +342,12 @@ async function fullPull(
   }
 
   log(opts, `  → ${remoteEntries.length} remote pages`);
+
+  // Warn when deepening will fetch many pages
+  const stubCount = cachedEntries.filter((e) => e.isStub).length;
+  if (stubCount > 0 && effectiveDepth === 0) {
+    log(opts, `  Deepening: will fetch content for ${remoteEntries.length} pages (replacing ${stubCount} stubs)...`);
+  }
 
   // Compute depth map if depth filtering is active
   const entryById = new Map(remoteEntries.map((e) => [e.id, e]));
