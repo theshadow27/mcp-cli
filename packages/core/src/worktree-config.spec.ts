@@ -138,9 +138,12 @@ describe("readWorktreeConfig migration (#1288)", () => {
     try {
       const result = readWorktreeConfig(dir);
       expect(result).toEqual({ setup: "./from-yaml.sh" });
-      expect(errSpy).toHaveBeenCalledTimes(1);
-      const msg = String(errSpy.mock.calls[0]?.[0]);
-      expect(msg).toContain(WORKTREE_CONFIG_FILENAME);
+      // Filter specifically for nag messages (which start with the legacy filename).
+      // Unrelated console.error calls (e.g. environment-specific I/O warnings on Linux)
+      // are excluded so the test stays green across platforms.
+      const nagCalls = errSpy.mock.calls.filter(([msg]) => String(msg).startsWith(WORKTREE_CONFIG_FILENAME));
+      expect(nagCalls).toHaveLength(1);
+      const msg = String(nagCalls[0]?.[0]);
       expect(msg).toContain("ignored");
       expect(msg).toContain(".mcx.yaml");
     } finally {
