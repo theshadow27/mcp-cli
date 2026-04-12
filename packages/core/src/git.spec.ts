@@ -112,11 +112,24 @@ describe("fixCoreBare", () => {
   });
 });
 
+/** Strip GIT_* env vars that git hooks inject — prevents them from redirecting git init/rev-parse. */
+function cleanGitEnv(): Record<string, string | undefined> {
+  const {
+    GIT_DIR: _d,
+    GIT_WORK_TREE: _w,
+    GIT_COMMON_DIR: _c,
+    GIT_INDEX_FILE: _i,
+    GIT_OBJECT_DIRECTORY: _o,
+    ...rest
+  } = process.env;
+  return rest;
+}
+
 describe("findGitRoot", () => {
   test("returns the repo root from a subdirectory inside a real repo", () => {
     const repo = mkdtempSync(join(tmpdir(), "git-root-"));
     try {
-      Bun.spawnSync(["git", "-C", repo, "init", "-q"]);
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
       const sub = join(repo, "nested", "deeper");
       mkdirSync(sub, { recursive: true });
       const got = findGitRoot(sub);

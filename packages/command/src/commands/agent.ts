@@ -786,13 +786,13 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
 
   for (let i = 0; i < r3.length; i++) {
     const arg = r3[i];
-    if (arg === "--last" || arg === "-n") {
+    if (arg === "--last" || arg === "-n" || arg === "--tail") {
       const val = r3[++i];
       if (!val) {
-        error = "--last requires a number";
+        error = `${arg} requires a number`;
       } else {
         last = Number(val);
-        if (Number.isNaN(last)) error = "--last must be a number";
+        if (Number.isNaN(last)) error = `${arg} must be a number`;
       }
     } else if (arg === "--compact") {
       compact = true;
