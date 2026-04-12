@@ -36,11 +36,20 @@ bun run build                          # compile latest binaries
 mcx claude ls --short 2>/dev/null      # verify no sessions active before restart
 mcx shutdown                           # stop the stale daemon
 mcx status                             # auto-starts the daemon with new binary
+git config --get core.bare             # must be "false" — see note below
 ```
 
 Only restart when no sessions are active. If other sessions are running
 (including from a concurrent sprint in a different repo), defer the restart
 until they idle — restarting kills them.
+
+**`core.bare=true` recurrence** (issue #1206/#1243/#1330): some worktree
+operation flips `core.bare` to `true` on the main checkout, after which
+`git status`, `git pull`, and `git worktree` ops die with "fatal: this
+operation must be run in a work tree." Hot-patch with `git config core.bare
+false` before every batch of git operations (pull, merge, worktree list).
+Until a sticky fix lands, treat this as a routine pre-flight step and a
+post-`bye` check.
 
 **Run all sprint commands from within the project root.** `mcx claude ls` and
 `mcx claude wait` filter sessions by the current repo's git root (or registered
@@ -286,8 +295,29 @@ mcx copilot spawn --worktree --model sonnet -t "/adversarial-review (PR <pr-numb
 not just print them to the session. PR comments are the durable shared context —
 repair sessions, second reviewers, and QA all read them.
 
-If review finds issues, spawn an opus repair session in a fresh worktree.
-**Always instruct the repairer to read the sticky review comment first:**
+If review finds issues, decide between **micro-repair** (reviewer-in-place) and
+**fresh opus repair** based on the fix complexity:
+
+- **Micro-repair** — if the reviewer's findings are 1–3 contained edits with
+  exact line/file diagnosis already in the review comment, `send` the reviewer
+  back to fix its own flagged items. The reviewer has `Read/Edit/Write/Bash`
+  in its allow list and already has full PR context. Cost: one `send` turn
+  (~$0.20–$2) vs a fresh opus repair ($2–$6) + new worktree + re-review. Saved
+  ~$10–15 across sprint 33. Use this for typo fixes, missing try/catch,
+  one-line contract changes, comment rewrites.
+
+  ```bash
+  mcx claude send <reviewer-id> "You flagged <N> issues on PR <pr>. If they're
+  contained fixes with the diagnosis you already wrote, fix them yourself and
+  push to <branch>, then update the sticky review with a delta table. If any
+  need a redesign or multi-file judgment, reply 'needs opus repair'."
+  ```
+
+  Let the reviewer self-select: simple ones they fix, complex ones they escalate.
+
+- **Fresh opus repair** — when fixes require redesign, multi-file refactor,
+  or a perspective the reviewer didn't have. Spawn opus in a fresh worktree.
+  **Always instruct the repairer to read the sticky review comment first:**
 
 ```bash
 # Default (claude)
@@ -330,12 +360,24 @@ LABEL=$(gh pr view <pr-number> --json labels -q '.labels[].name' | grep -E '^qa:
 
 case "$LABEL" in
   qa:pass)
-    # Merge from the orchestrator's main checkout — no branch switching needed
-    gh pr merge <pr-number> --squash --delete-branch
-    # PR merge auto-closes the linked issue via "fixes #N"
-    mcx call _work_items work_items_update '{"id":"#<issue>","phase":"done"}'
-    mcx untrack <issue>
-    git pull  # keep local main current
+    # Belt-and-suspenders: verify CI is green before merging, even though
+    # branch protection enforces this on main (sprint 33 #1357 slipped
+    # through because QA passed on locally-green tests while CI was red).
+    UNGREEN=$(gh pr view <pr-number> --json statusCheckRollup -q '[.statusCheckRollup[] | select(.conclusion != "SUCCESS")] | length')
+    if [ "$UNGREEN" != "0" ]; then
+      echo "CI not green; investigating before merge"
+      # Check whether CI is red due to flakes or real issues; rerun if flaky
+      # Do NOT merge until CI is green.
+    else
+      # Ensure core.bare is false before git ops (#1330 recurrence)
+      git config core.bare false
+      # Merge from the orchestrator's main checkout — no branch switching needed
+      gh pr merge <pr-number> --squash --delete-branch
+      # PR merge auto-closes the linked issue via "fixes #N"
+      mcx call _work_items work_items_update '{"id":"#<issue>","phase":"done"}'
+      mcx untrack <issue>
+      git config core.bare false && git pull
+    fi
     ;;
   qa:fail)
     # Read the QA comment for specifics, spawn a repair session
@@ -345,6 +387,35 @@ case "$LABEL" in
     ;;
 esac
 ```
+
+**Merge-conflict recovery (rebase worker pattern)**: if `gh pr merge`
+fails with "not mergeable" due to diverged main, do NOT rebase from the
+orchestrator's checkout (orchestrator stays on main). Spawn a one-shot
+rebase worker:
+
+```bash
+mcx claude spawn --worktree -t "PR #<N> (branch <branch>) has merge conflicts.
+Rebase onto origin/main, resolve, force-push. Reply 'rebased' when done.
+Don't do anything else." --allow Read Glob Grep Write Edit Bash
+```
+
+Cheap (~$0.50–$1.50), fast, doesn't lose QA context because QA already
+labeled `qa:pass` before the rebase. Re-merge after the rebase worker pushes.
+
+**Leave QA idle on upstream-blocked CI — don't `bye` and respawn.** When
+QA's CI is red because of a known upstream PR that hasn't merged yet (e.g.,
+the sprint's CI-unblock PR, or a sibling PR adding a missing export), the
+QA session should stay idle. When the upstream blocker lands, `send`:
+
+```bash
+mcx claude send <qa-id> "Rebase onto origin/main to pick up <upstream-PR>,
+push the rebase, then re-run your QA evaluation."
+```
+
+This preserves the QA session's accumulated PR context (diff, coverage
+analysis, edge cases checked). Bye-ing and respawning forces a fresh
+session to re-learn the PR from scratch. Sprint 33 #1297 demonstrated the
+cost (~$3 of re-QA vs 1 send turn).
 
 **The orchestrator is the only role that runs `gh pr merge`, `git checkout`,
 or `git pull` on main.** Having QA move branches caused the "main is already
@@ -417,6 +488,14 @@ implementation slots full, with unlimited sonnet review/QA slots.
 The loop is **event-driven**: `mcx claude wait` blocks until either a session
 event or a work item event fires, then you react. No manual `gh pr view` or
 `gh run list` polling needed — the work item poller handles GitHub state.
+
+**Cache-TTL cap on `--timeout`**: never exceed `270000` (4:30) on blocking
+waits. Claude Code's prompt cache has a 5-minute TTL. A wait ≥ 300000ms
+causes the next turn to re-process the entire context (often 100k+ tokens)
+at full input-token price, not cached-read price. Use 30000 for active
+supervision, 60000–270000 for idle monitor loops. When a long wait seems
+necessary, break into multiple ≤270s waits with a cheap no-op in between
+to keep the cache warm.
 
 Track the **provider** for each issue from the sprint plan. When spawning any
 session (implement, review, repair, QA), use `mcx <provider>` instead of

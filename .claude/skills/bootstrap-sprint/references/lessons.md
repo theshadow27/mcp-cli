@@ -203,3 +203,50 @@ sessions on another. The fix: symlink `.claude/memory/` in the repo to the Claud
 memory path. Memories stay auto-writable (Claude writes to the symlinked path without
 prompts) but become git-tracked and shared via `git pull`. Without this, performance
 varies unpredictably between machines as some have accumulated context and others don't.
+
+**26. Enforce CI-green-before-merge mechanically, not just by convention.**
+A "no merge without green CI" rule written into the QA skill is not enough.
+QA sessions rationalize local-tests-pass as "qa:pass" even when CI is red —
+especially when CI is red due to a sibling PR's unmerged change. The only
+reliable enforcement is repo-level branch protection: require the CI
+status checks (`check`, `coverage`, `build`, whatever your repo uses) to
+be SUCCESS before `gh pr merge` can succeed. Combine with an explicit
+pre-merge check in the orchestrator loop (`gh pr view <N> --json
+statusCheckRollup`) for defense in depth. Sprint 33 merged a dozen PRs
+through red main CI before adding protection; the resulting recovery
+work swamped the protection cost.
+
+**27. Cap blocking waits below the prompt-cache TTL.**
+Claude Code's prompt cache has a 5-minute TTL. Any `wait` / `sleep` /
+`poll` that blocks ≥ 300 seconds causes the next turn to re-process the
+entire session context at full input-token price instead of cache-read
+price. On a session with accumulated context (100k+ tokens, normal for
+orchestrators), a single cache miss costs dollars that would have been
+fractions of a cent. Hard cap all blocking waits at ~270s (4:30). If you
+genuinely need longer, break into multiple short waits with a cheap
+no-op between to keep the cache warm, or accept the miss and commit to
+15+ minutes (so the cost amortizes across the idle period).
+
+**28. Match repair cost to fix complexity — reviewers can fix their own
+findings.**
+The default "review flags issues → spawn fresh opus to repair → re-review"
+cycle is right for complex fixes but wasteful for trivial ones. If the
+reviewer's findings are 1–3 contained edits with exact line-level
+diagnosis already in the comment, `send` the reviewer back to fix them
+in-place. The reviewer has Read/Edit/Write/Bash and full PR context;
+fixing its own flagged typo or missing try/catch costs ~$0.20 vs ~$3–5
+for a fresh opus session + worktree + re-review. Let reviewers
+self-select: "if contained, fix and push; if architectural, reply
+'needs opus repair'." Reserves opus judgment for cases that actually
+need it.
+
+**29. Leave QA sessions idle, don't bye-and-respawn, on upstream blockers.**
+When QA's CI is red because of a known upstream PR that hasn't merged
+yet (e.g., the sprint's CI-unblock PR), leaving the QA session idle
+preserves its accumulated PR context. When the upstream lands, `send`
+"rebase onto origin/main and re-run your QA." Respawning forces a fresh
+session to re-learn the PR from scratch, discarding typed analysis
+(diff review, edge cases checked, coverage notes). Rule of thumb: a
+session's verdict that depends on a resolvable external state should
+stay idle until the state resolves. Sessions are colleagues, not
+function calls.

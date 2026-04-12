@@ -111,6 +111,28 @@ batches 2-3 backfill as slots free. Within each batch:
 - Mix quick and medium — don't put all heavies in one batch
 - Put dependency roots in batch 1
 
+**Watch for logical merge conflicts on shared dispatch files.** If two
+picks both add entries to the same dispatch table (e.g., a `case "..."`:
+in `packages/command/src/main.ts`, a new route in a router, a new flag
+in a feature-flag map, a new entry in a registry), git will happily
+merge both without conflict (different line ranges) but the combined
+main will have duplicate handlers. Sprint 33 hit this with #1291 and
+#1293 both adding `case "phase":` — lint caught it post-merge, but main
+was red in between. Defuse at planning time:
+
+- Identify picks that touch known "hot-shared" files: `main.ts`,
+  router files, any `registry.ts`/`dispatch.ts`, feature flag configs
+- Either serialize them across batches (second PR starts after first
+  merges — natural rebase enforces the conflict) or explicitly flag
+  them in the plan so the orchestrator broadcasts a targeted rebase
+  directive when the first merges ("rebase AND check for duplicate
+  dispatch entries you may have added in parallel")
+
+This is planning-time guidance, not a review-time grep — the cost of
+reviewers grepping every PR for potential duplicates across all open
+sibling branches is far higher than the (rare) cost of a single lint
+failure + rebase.
+
 ## Step 5: Write the sprint plan
 
 Determine the sprint number:
