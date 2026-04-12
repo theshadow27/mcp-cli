@@ -85,6 +85,7 @@ describe("cmdRun promotion hint", () => {
       exit: mock(() => {
         throw new Error("exit called");
       }) as unknown as CmdRunDeps["exit"],
+      cwd: mock(() => "/tmp"),
       ...overrides,
     };
   }

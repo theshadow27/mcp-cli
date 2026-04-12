@@ -6,6 +6,7 @@
  * --key value pairs are passed as CLI args (available in ctx.args).
  */
 
+import { relative, resolve } from "node:path";
 import { type IpcMethod, type IpcMethodResult, options as coreOptions, ipcCall, readCliConfig } from "@mcp-cli/core";
 import { runAlias } from "../alias-runner";
 import { printError } from "../output";
@@ -17,6 +18,7 @@ export interface CmdRunDeps {
   printError: typeof printError;
   logError: (msg: string) => void;
   exit: (code: number) => never;
+  cwd: () => string;
 }
 
 const defaultDeps: CmdRunDeps = {
@@ -26,7 +28,28 @@ const defaultDeps: CmdRunDeps = {
   printError,
   logError: (msg) => console.error(msg),
   exit: (code) => process.exit(code),
+  cwd: () => process.cwd(),
 };
+
+/**
+ * Check whether an alias with `scope` is callable from `cwd`.
+ * - `null`/`undefined`: always allowed (legacy)
+ * - `"global"`: always allowed
+ * - absolute path: allowed only when cwd starts with that path
+ */
+export function isScopeAllowed(scope: string | null | undefined, cwd: string): boolean {
+  if (scope == null || scope === "global") return true;
+  // Anything that isn't `null`, `"global"`, or an absolute path is malformed —
+  // fail closed so a misconfigured scope can't accidentally grant global access.
+  if (!scope.startsWith("/")) return false;
+  const normalizedScope = resolve(scope);
+  const normalizedCwd = resolve(cwd);
+  if (normalizedCwd === normalizedScope) return true;
+  const rel = relative(normalizedScope, normalizedCwd);
+  // `relative` returns "" for same path, a non-".." path for inside,
+  // and a path starting with ".." (or an absolute path on Windows) for outside.
+  return rel !== "" && !rel.startsWith("..") && !rel.startsWith("/");
+}
 
 export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promise<{ _recordPromise: Promise<void> }> {
   const d: CmdRunDeps = { ...defaultDeps, ...deps };
@@ -41,6 +64,11 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
   const aliasInfo = await d.ipcCall("getAlias", { name: aliasName });
   if (!aliasInfo) {
     d.printError(`Alias "${aliasName}" not found`);
+    d.exit(1);
+  }
+
+  if (!isScopeAllowed(aliasInfo.scope, d.cwd())) {
+    d.printError(`Alias "${aliasName}" is scoped to ${aliasInfo.scope} — cannot run from ${d.cwd()}`);
     d.exit(1);
   }
 

@@ -438,11 +438,13 @@ async function main(): Promise<void> {
           break;
         }
 
-        // Check if command matches an alias name → run it
-        // Only check if daemon is already running to avoid 5s startup delay on typos
+        // Check if command matches an alias name → run it.
+        // Only aliases with scope IS NULL are dispatched at the top level.
+        // `global` and path-scoped aliases are invisible here; use `mcx alias run` or `mcx call _aliases`.
+        // Only check if daemon is already running to avoid 5s startup delay on typos.
         if (!command.startsWith("-") && (await isDaemonRunning())) {
           const alias = await ipcCall("getAlias", { name: command });
-          if (alias) {
+          if (alias && alias.scope == null) {
             const { _recordPromise } = await cmdRun([command, ...cleanArgs.slice(1)]);
             await _recordPromise;
             break;
