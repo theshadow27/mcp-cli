@@ -1,16 +1,23 @@
 /**
- * `mcx phase` — declarative phase orchestration (#1286).
+ * `mcx phase` — declarative phase orchestration.
  *
- * Currently implements `install`: resolves sources in the manifest,
- * hashes them, extracts phase metadata, writes `.mcx.lock`.
+ * Subcommands:
+ *   - `install` (#1291): resolves sources in the manifest, hashes them,
+ *     extracts phase metadata, writes `.mcx.lock`.
+ *   - `run <target>` (#1293): validates the transition against the manifest
+ *     graph, appends it to `.mcx/transitions.jsonl`, prints "approved".
+ *   - `list`: prints all declared phases from the manifest.
  *
- * Scope registration (#1289) and state-schema subset validation (#1290)
- * are deferred until their dependency PRs merge.
+ * Three typed errors for `run` (see `phase-transition.ts`):
+ *   - UnknownPhaseError       (always fatal; --force cannot bypass)
+ *   - DisallowedTransitionError
+ *   - RegressionError
  */
 
 import { renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
+  DisallowedTransitionError,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
   type LockedPhase,
@@ -18,15 +25,22 @@ import {
   type Manifest,
   ManifestError,
   type ManifestState,
+  RegressionError,
+  UnknownPhaseError,
+  appendTransitionLog,
   bundleAlias,
   canonicalJson,
   extractMetadata,
   hashFileSync,
+  historyTargets,
   loadManifest,
+  readTransitionHistory,
   serializeLockfile,
   sha256Hex,
+  validateTransition,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
+import { printError } from "../output";
 
 export interface PhaseInstallDeps {
   loadManifest: typeof loadManifest;
@@ -73,10 +87,6 @@ export function resolvePhaseSource(source: string, repoRoot: string): string {
  * Compare a phase's declared state schema (as extracted from defineAlias)
  * against the manifest's state declaration. The phase may narrow, never
  * widen: every key it declares must exist in the manifest's `state:`.
- *
- * v1 uses the manifest state DSL (`string`/`number`/`boolean`[?]) as the
- * authoritative key-set. When defineAlias gains a `state` field (#1290),
- * the extractor will surface it here.
  */
 export function checkStateSubset(
   phaseName: string,
@@ -147,7 +157,6 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
       continue;
     }
 
-    // state field wires in with #1290 — no-op until AliasMetadata carries it
     const subsetErrs = checkStateSubset(name, undefined, manifest.state);
     if (subsetErrs.length > 0) {
       errors.push(...subsetErrs);
@@ -178,12 +187,120 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
   return { manifest, manifestPath, lockfile, warnings };
 }
 
+export interface PhaseRunOptions {
+  target: string;
+  from: string | null;
+  workItemId: string | null;
+  forceMessage: string | null;
+}
+
+export interface PhaseRunDeps {
+  cwd: string;
+  now?: () => Date;
+}
+
+export function parsePhaseRunArgs(args: string[]): PhaseRunOptions {
+  let target: string | null = null;
+  let from: string | null = null;
+  let workItemId: string | null = null;
+  let forceSeen = false;
+  let forceMessage: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--from") {
+      from = args[++i] ?? null;
+      if (from === null) throw new Error("--from requires a phase name");
+    } else if (a.startsWith("--from=")) {
+      from = a.slice("--from=".length);
+    } else if (a === "--work-item") {
+      workItemId = args[++i] ?? null;
+      if (workItemId === null) throw new Error("--work-item requires an id");
+    } else if (a.startsWith("--work-item=")) {
+      workItemId = a.slice("--work-item=".length);
+    } else if (a === "--force") {
+      forceSeen = true;
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        forceMessage = next;
+        i++;
+      }
+    } else if (a.startsWith("--force=")) {
+      forceSeen = true;
+      forceMessage = a.slice("--force=".length);
+    } else if (a.startsWith("-")) {
+      throw new Error(`unknown flag: ${a}`);
+    } else if (target === null) {
+      target = a;
+    } else {
+      throw new Error(`unexpected positional argument: ${a}`);
+    }
+  }
+
+  if (target === null) {
+    throw new Error("Usage: mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]");
+  }
+  if (forceSeen && (forceMessage === null || forceMessage.trim() === "")) {
+    throw new Error("--force requires a non-empty justification message");
+  }
+  return { target, from, workItemId, forceMessage: forceSeen ? (forceMessage as string) : null };
+}
+
+export function transitionLogPath(repoDir: string): string {
+  return join(repoDir, ".mcx", "transitions.jsonl");
+}
+
+export function phaseRun(
+  options: PhaseRunOptions,
+  deps: PhaseRunDeps,
+): { manifest: Manifest; forced: boolean; from: string | null } {
+  const loaded = loadManifest(deps.cwd);
+  if (!loaded) {
+    throw new ManifestError("no .mcx.yaml or .mcx.json in this repo", deps.cwd);
+  }
+  const { path: manifestPath, manifest } = loaded;
+
+  const logPath = transitionLogPath(deps.cwd);
+  const history = historyTargets(readTransitionHistory(logPath, options.workItemId));
+
+  let from = options.from;
+  if (from === null && history.length > 0) {
+    from = history[history.length - 1];
+  }
+
+  const decision = validateTransition({
+    manifest,
+    from,
+    target: options.target,
+    history,
+    workItemId: options.workItemId,
+    force: options.forceMessage !== null ? { message: options.forceMessage } : null,
+    manifestPath,
+  });
+
+  const now = deps.now?.() ?? new Date();
+  appendTransitionLog(logPath, {
+    ts: now.toISOString(),
+    workItemId: options.workItemId,
+    from: decision.from,
+    to: decision.target,
+    ...(options.forceMessage !== null ? { forceMessage: options.forceMessage } : {}),
+  });
+
+  return { manifest, forced: decision.forced, from: decision.from };
+}
+
 export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
   const sub = args[0];
 
-  switch (sub) {
-    case "install": {
+  if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+    printPhaseHelp(d);
+    return;
+  }
+
+  try {
+    if (sub === "install") {
       const cwd = d.cwd();
       let result: InstallResult;
       try {
@@ -213,22 +330,67 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       d.logError(
         "note: scope registration (#1289) and state-schema subset (#1290) are deferred — lockfile written, aliases not yet scoped.",
       );
-      break;
+      return;
     }
 
-    default: {
-      printPhaseHelp(d);
-      const isHelp = !sub || sub === "help" || sub === "--help" || sub === "-h";
-      if (!isHelp) d.exit(1);
-      break;
+    if (sub === "list") {
+      const loaded = loadManifest(d.cwd());
+      if (!loaded) {
+        printError("no .mcx.yaml or .mcx.json in this repo");
+        d.exit(1);
+      }
+      for (const name of Object.keys(loaded.manifest.phases).sort()) {
+        d.log(name);
+      }
+      return;
     }
+
+    if (sub === "run") {
+      const opts = parsePhaseRunArgs(args.slice(1));
+      const result = phaseRun(opts, { cwd: d.cwd() });
+      const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
+      const tag = result.forced ? " [FORCED]" : "";
+      const trail = result.from ?? "(initial)";
+      d.logError(`approved${tag}: ${trail} → ${opts.target} (${source})`);
+      return;
+    }
+
+    printError(`Unknown subcommand: ${sub}`);
+    printPhaseHelp(d);
+    d.exit(1);
+  } catch (err) {
+    if (
+      err instanceof UnknownPhaseError ||
+      err instanceof DisallowedTransitionError ||
+      err instanceof RegressionError
+    ) {
+      printError(err.message);
+      d.exit(1);
+    }
+    if (err instanceof ManifestError) {
+      printError(`${err.path}: ${err.message}`);
+      d.exit(1);
+    }
+    if (err instanceof Error) {
+      printError(err.message);
+      d.exit(1);
+    }
+    throw err;
   }
 }
 
 function printPhaseHelp(d: PhaseInstallDeps): void {
-  d.logError(`Usage: mcx phase <command>
+  d.log(`mcx phase — orchestration phase graph
 
-Commands:
-  install    Resolve sources from .mcx.{yaml,json}, hash, write .mcx.lock
-`);
+Subcommands:
+  mcx phase install
+      Resolve sources from .mcx.{yaml,json}, hash, write .mcx.lock.
+
+  mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]
+      Validate and record a phase transition against .mcx.{yaml,json}.
+      --force <message> bypasses disallowed-transition and regression checks;
+      unknown-phase errors are never bypassable.
+
+  mcx phase list
+      List all phases declared in the manifest.`);
 }

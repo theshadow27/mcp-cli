@@ -335,6 +335,10 @@ async function main(): Promise<void> {
         await cmdNote(cleanArgs.slice(1));
         break;
 
+      case "phase":
+        await cmdPhase(cleanArgs.slice(1));
+        break;
+
       case "track":
         await cmdTrack(cleanArgs.slice(1));
         break;
