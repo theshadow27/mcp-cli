@@ -16,6 +16,10 @@ function cleanEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
   }
+  // Prevent git from walking up past the test tmpdir if the repo's .git is
+  // missing/racing. Without this, git finds the ambient worktree and would
+  // commit into the developer's branch. See #1272.
+  env.GIT_CEILING_DIRECTORIES = TMP;
   return env;
 }
 
@@ -451,7 +455,7 @@ describe("pull", () => {
         join(repoDir, "Root/Child.md"),
         injectFrontmatter("> **Shallow clone stub**", { id: "c1", stub: true }),
       );
-      execSync("git add -A && git commit -m 'shallow clone'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'shallow clone'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.close();
 
       const provider = hierarchyProvider(entries);
@@ -470,7 +474,7 @@ describe("pull", () => {
       cache.saveScopeMeta("test", scopeWithDepth);
       cache.upsert("test", scopeWithDepth, makeEntry({ id: "r1", title: "Root", version: 1 }), "Root.md", "h1");
       writeFileSync(join(repoDir, "Root.md"), injectFrontmatter("# Root", { id: "r1" }));
-      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe" });
+      execSync("git add -A && git commit -m 'seed'", { cwd: repoDir, stdio: "pipe", env: cleanEnv() });
       cache.updateLastSynced("test", "TEST");
       cache.close();
 
