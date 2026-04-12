@@ -2341,10 +2341,7 @@ describe("ClaudeWsServer", () => {
     expect(sessions.filter((s) => predicate(s, "/repo/b")).map((s) => s.sessionId)).toEqual(["healthy-b"]);
 
     // From /repo/a: null-repoRoot session under /repo/a IS included (via cwd).
-    expect(sessions.filter((s) => predicate(s, "/repo/a")).map((s) => s.sessionId)).toEqual([
-      "leaky-a",
-      "healthy-a",
-    ]);
+    expect(sessions.filter((s) => predicate(s, "/repo/a")).map((s) => s.sessionId)).toEqual(["leaky-a", "healthy-a"]);
 
     // Session with null repoRoot AND null cwd is filtered out from every repo.
     expect(sessions.filter((s) => predicate(s, "/repo/c")).map((s) => s.sessionId)).toEqual([]);
