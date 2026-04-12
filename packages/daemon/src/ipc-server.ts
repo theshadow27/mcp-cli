@@ -469,7 +469,7 @@ export class IpcServer {
         // the executor subprocess. The pool route has no cwd channel.
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
-            ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd)
+            ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
             : await this.pool.callTool(server, tool, args, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
