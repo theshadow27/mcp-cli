@@ -1,12 +1,16 @@
 /**
  * Per-repo worktree lifecycle hook configuration.
  *
- * Read from `.mcx-worktree.json` in the repository root.
- * Allows projects to customize how worktrees are created and destroyed.
+ * Primary source: the `worktree:` key of the project manifest (`.mcx.{yaml,yml,json}`).
+ * Legacy source: `.mcx-worktree.json`. Contents are migrated into the manifest
+ * on first read (see #1288); the legacy file is never deleted automatically,
+ * and a nag is emitted on every subsequent run until the user removes it.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+
+import { MANIFEST_FILENAMES, findManifest, parseManifestText } from "./manifest";
 
 /** Worktree lifecycle hook configuration */
 export interface WorktreeHooksConfig {
@@ -24,22 +28,31 @@ export interface WorktreeHooksConfig {
   branchPrefix?: boolean;
 }
 
-/** Config file shape */
+/** Legacy config file shape */
 interface WorktreeConfigFile {
   worktree?: WorktreeHooksConfig;
 }
 
-/** Config filename */
+/** Legacy config filename — migrated into the manifest; retained for back-compat reads. */
 export const WORKTREE_CONFIG_FILENAME = ".mcx-worktree.json";
 
-/**
- * Read worktree hook config from the repo root.
- * Returns null if no config file exists or if it has no `worktree` section.
- */
-export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null {
+/** Process-scoped dedup for the migration nag so we don't spam per call site. */
+const naggedPaths = new Set<string>();
+
+/** Manually serialize a worktree config as a YAML block (flat primitives only). */
+function serializeWorktreeBlock(config: WorktreeHooksConfig): string {
+  const lines: string[] = ["worktree:"];
+  if (config.setup !== undefined) lines.push(`  setup: ${JSON.stringify(config.setup)}`);
+  if (config.teardown !== undefined) lines.push(`  teardown: ${JSON.stringify(config.teardown)}`);
+  if (config.base !== undefined) lines.push(`  base: ${JSON.stringify(config.base)}`);
+  if (config.branchPrefix !== undefined) lines.push(`  branchPrefix: ${config.branchPrefix}`);
+  return lines.join("\n");
+}
+
+/** Read the legacy `.mcx-worktree.json` file. */
+function readLegacyFile(repoRoot: string): WorktreeHooksConfig | null {
   const configPath = join(repoRoot, WORKTREE_CONFIG_FILENAME);
   if (!existsSync(configPath)) return null;
-
   try {
     const text = readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(text) as WorktreeConfigFile;
@@ -48,6 +61,106 @@ export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null
     console.error(`Warning: failed to parse ${configPath}: ${err instanceof Error ? err.message : err}`);
     return null;
   }
+}
+
+/** Read the manifest's `worktree:` key without full validation. */
+function readManifestWorktree(manifestPath: string): {
+  worktree: WorktreeHooksConfig | null;
+  raw: Record<string, unknown> | null;
+} {
+  try {
+    const text = readFileSync(manifestPath, "utf-8");
+    const parsed = parseManifestText(text, manifestPath);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { worktree: null, raw: null };
+    }
+    const raw = parsed as Record<string, unknown>;
+    const w = raw.worktree;
+    if (w && typeof w === "object" && !Array.isArray(w)) {
+      return { worktree: w as WorktreeHooksConfig, raw };
+    }
+    return { worktree: null, raw };
+  } catch {
+    return { worktree: null, raw: null };
+  }
+}
+
+/** Append a `worktree:` block to an existing yaml manifest. */
+function appendWorktreeToYaml(manifestPath: string, config: WorktreeHooksConfig): void {
+  const existing = readFileSync(manifestPath, "utf-8");
+  const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+  const block = serializeWorktreeBlock(config);
+  writeFileSync(manifestPath, `${existing}${sep}${block}\n`);
+}
+
+/** Merge a worktree section into an existing JSON manifest. */
+function mergeWorktreeIntoJson(manifestPath: string, raw: Record<string, unknown>, config: WorktreeHooksConfig): void {
+  raw.worktree = config;
+  writeFileSync(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
+}
+
+/** Create a new `.mcx.yaml` in repoRoot holding just the worktree section. */
+function createYamlWithWorktree(repoRoot: string, config: WorktreeHooksConfig): string {
+  const newPath = join(repoRoot, MANIFEST_FILENAMES[0]);
+  writeFileSync(newPath, `${serializeWorktreeBlock(config)}\n`);
+  return newPath;
+}
+
+/** Emit the post-migration nag once per process per legacy path. */
+function emitNag(legacyPath: string, manifestPath: string): void {
+  if (naggedPaths.has(legacyPath)) return;
+  naggedPaths.add(legacyPath);
+  console.error(
+    `${WORKTREE_CONFIG_FILENAME} is ignored — its contents were migrated to ${basename(manifestPath)} under \`worktree:\`. Delete ${WORKTREE_CONFIG_FILENAME} to silence this warning.`,
+  );
+}
+
+/** @internal test helper — reset the process-scoped nag dedup set. */
+export function __resetNagStateForTests(): void {
+  naggedPaths.clear();
+}
+
+/**
+ * Read worktree hook config for `repoRoot`.
+ *
+ * Resolution order:
+ *   1. Manifest (`.mcx.{yaml,yml,json}`) `worktree:` key — if set, this wins.
+ *   2. Legacy `.mcx-worktree.json` — if found without a manifest counterpart,
+ *      its contents are migrated into the manifest on this call. The legacy
+ *      file is left in place; subsequent reads will emit a nag until it's
+ *      manually deleted.
+ *
+ * Returns null if no worktree config exists in either location.
+ */
+export function readWorktreeConfig(repoRoot: string): WorktreeHooksConfig | null {
+  const legacyPath = join(repoRoot, WORKTREE_CONFIG_FILENAME);
+  const legacyExists = existsSync(legacyPath);
+  const legacyConfig = legacyExists ? readLegacyFile(repoRoot) : null;
+
+  const manifestPath = findManifest(repoRoot);
+  const { worktree: manifestWorktree, raw: manifestRaw } = manifestPath
+    ? readManifestWorktree(manifestPath)
+    : { worktree: null, raw: null };
+
+  if (manifestWorktree) {
+    if (legacyExists) emitNag(legacyPath, manifestPath as string);
+    return manifestWorktree;
+  }
+
+  if (legacyConfig) {
+    if (manifestPath && manifestRaw) {
+      if (manifestPath.toLowerCase().endsWith(".json")) {
+        mergeWorktreeIntoJson(manifestPath, manifestRaw, legacyConfig);
+      } else {
+        appendWorktreeToYaml(manifestPath, legacyConfig);
+      }
+    } else {
+      createYamlWithWorktree(repoRoot, legacyConfig);
+    }
+    return legacyConfig;
+  }
+
+  return null;
 }
 
 /**

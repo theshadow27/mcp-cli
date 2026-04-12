@@ -44,10 +44,16 @@ export const PhaseDefSchema = z
 
 export type PhaseDef = z.infer<typeof PhaseDefSchema>;
 
-/** Worktree setup subsection. Future home of .mcx-worktree.json contents. */
+/**
+ * Worktree setup subsection. Mirrors `.mcx-worktree.json` `worktree:` contents.
+ * See #1288 for the migration that populates this from the legacy JSON file.
+ */
 export const ManifestWorktreeSchema = z
   .object({
-    setup: z.array(z.string()).optional(),
+    setup: z.string().optional(),
+    teardown: z.string().optional(),
+    base: z.string().optional(),
+    branchPrefix: z.boolean().optional(),
   })
   .strict();
 
