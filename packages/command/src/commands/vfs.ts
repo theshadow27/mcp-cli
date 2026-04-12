@@ -37,7 +37,7 @@ export interface VfsDeps {
   preflightCheck: (providerName: string) => Promise<void>;
 }
 
-function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
+export function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
   return async (server, tool, args, timeoutMs) => {
     return ipc("callTool", { server, tool, arguments: args }, timeoutMs ? { timeoutMs } : undefined);
   };
@@ -47,38 +47,46 @@ const callTool = makeToolCaller(ipcCall);
 const log = (msg: string) => process.stderr.write(`${msg}\n`);
 
 /** Map provider name → the MCP server name it requires. */
-const PROVIDER_SERVER: Record<string, string> = {
+export const PROVIDER_SERVER: Record<string, string> = {
   confluence: "atlassian",
   jira: "atlassian",
   asana: "asana",
 };
 
+export interface PreflightDeps {
+  ipc?: typeof ipcCall;
+  exit?: (code: number) => never;
+}
+
 /**
  * Preflight check: verify the required MCP server is configured and reachable.
  * Returns normally if OK; throws with an actionable error message if not.
  */
-async function preflightCheck(providerName: string): Promise<void> {
+export async function preflightCheck(providerName: string, deps: PreflightDeps = {}): Promise<void> {
+  const ipc = deps.ipc ?? ipcCall;
+  const exit = deps.exit ?? ((code: number): never => process.exit(code));
   const serverName = PROVIDER_SERVER[providerName];
   if (!serverName) return; // Unknown provider — skip preflight, let it fail normally
 
   try {
-    const servers = (await ipcCall("listServers", {})) as Array<{ name: string; status?: string }>;
+    const servers = (await ipc("listServers", {})) as Array<{ name: string; status?: string }>;
     const server = servers.find((s) => s.name === serverName);
 
     if (!server) {
       printError(
         `MCP server "${serverName}" is not configured.\n\nThe "${providerName}" provider requires the "${serverName}" MCP server.\nAdd it with:\n\n  mcx add ${serverName}\n\nOr configure it manually in ~/.claude.json or .mcp.json`,
       );
-      process.exit(1);
+      exit(1);
+      return;
     }
 
     // Verify the server has tools available (i.e., it's connected and responding)
-    const tools = (await ipcCall("listTools", { server: serverName }, { timeoutMs: 10_000 })) as unknown[];
+    const tools = (await ipc("listTools", { server: serverName }, { timeoutMs: 10_000 })) as unknown[];
     if (!tools || (Array.isArray(tools) && tools.length === 0)) {
       printError(
         `MCP server "${serverName}" is configured but returned no tools.\n\nThis usually means:\n  - The server failed to start (check: mcx status)\n  - Authentication is needed (check: mcx auth ${serverName})\n  - The server binary is missing or misconfigured\n\nTry restarting: mcx ctl restart ${serverName}`,
       );
-      process.exit(1);
+      exit(1);
     }
   } catch (err) {
     // If the daemon itself isn't running, listServers will fail — that's a different error
@@ -87,11 +95,12 @@ async function preflightCheck(providerName: string): Promise<void> {
       printError(
         "The mcpd daemon is not running.\n\nStart it with:\n\n  mcpd\n\nOr run your command again — mcx auto-starts the daemon.",
       );
-      process.exit(1);
+      exit(1);
+      return;
     }
     // Unexpected error — fail closed rather than proceeding to a confusing double-error
     printError(`Preflight check failed: ${message}`);
-    process.exit(1);
+    exit(1);
   }
 }
 
@@ -244,9 +253,9 @@ async function vfsPush(args: string[], dryRun: boolean | undefined, deps: VfsDep
   }
 }
 
-function onRetry(attempt: number, delayMs: number, error: string): void {
+export function onRetry(attempt: number, delayMs: number, error: string, write: (msg: string) => void = log): void {
   const delaySec = (delayMs / 1000).toFixed(1);
-  log(`Rate limited (attempt ${attempt}), retrying in ${delaySec}s... (${error})`);
+  write(`Rate limited (attempt ${attempt}), retrying in ${delaySec}s... (${error})`);
 }
 
 export function resolveProvider(name: string) {
@@ -266,14 +275,17 @@ export function resolveProvider(name: string) {
   }
 }
 
-function resolveProviderFromCache(repoDir: string): {
+export function resolveProviderFromCache(
+  repoDir: string,
+  exit: (code: number) => never = (code: number): never => process.exit(code),
+): {
   provider: ReturnType<typeof resolveProvider>;
   providerName: string;
 } {
   const cachePath = join(repoDir, ".clone", "cache.sqlite");
   if (!existsSync(cachePath)) {
     printError(`Not a cloned repo: ${repoDir}\nUse "mcx vfs clone" first.`);
-    process.exit(1);
+    exit(1);
   }
 
   const cache = new CloneCache(cachePath);
@@ -282,10 +294,10 @@ function resolveProviderFromCache(repoDir: string): {
 
   if (!providerName) {
     printError("No provider scope found in cache.");
-    process.exit(1);
+    exit(1);
   }
 
-  return { provider: resolveProvider(providerName), providerName };
+  return { provider: resolveProvider(providerName as string), providerName: providerName as string };
 }
 
 function printUsage(): void {
