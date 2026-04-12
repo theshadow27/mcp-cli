@@ -259,9 +259,19 @@ describe("t5801 round-trip", () => {
 // ── t5801: Error handling (4 tests) ───────────────────────────────
 
 describe("t5801 error handling", () => {
-  test.skip("t5801-32: provider list failure during import surfaces to protocol (#1301)", async () => {
-    const provider = createMockProvider({ entries: { a: { content: "a", version: 1 } } });
-    // Wrap list to throw on first call.
+  // t5801-32/33 document the current "safe empty response" contract used by
+  // `runGitRemoteHelper` until real handlers land in #1211/#1212. When a
+  // handler throws, `runProtocol` logs to stderr, writes the safe terminator
+  // the protocol spec requires (empty line for list/export, `done\n` for
+  // import), and resolves — it does NOT propagate the rejection, because the
+  // production caller has no try/catch and a thrown exception would turn into
+  // `fatal: remote helper aborted session` in git.
+  //
+  // Once real handlers land, revisit the contract (see #1283 / follow-up):
+  // either the caller gains a try/catch + process.exit and these tests become
+  // `rejects.toThrow`, or each handler keeps its own error → safe-response
+  // mapping internally.
+  test("t5801-32: provider list failure writes safe terminator and resolves", async () => {
     const handlers: RemoteHelperHandlers = {
       list: async () => {
         throw new Error("provider unreachable");
@@ -270,11 +280,12 @@ describe("t5801 error handling", () => {
       handleExport: async () => "ok refs/heads/main\n\n",
     };
     const stdin = streamFrom("list\n\n");
-    const { stream } = collectStream();
-    await expect(runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR })).rejects.toThrow("provider unreachable");
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    expect(result()).toBe("\n");
   });
 
-  test.skip("t5801-33: provider push failure during export surfaces to protocol (#1301)", async () => {
+  test("t5801-33: provider push failure writes safe terminator and resolves", async () => {
     const handlers: RemoteHelperHandlers = {
       list: async () => "@refs/heads/main HEAD\n",
       handleImport: async () => "done\n",
@@ -283,10 +294,9 @@ describe("t5801 error handling", () => {
       },
     };
     const stdin = streamFrom("export\nstream-payload\n");
-    const { stream } = collectStream();
-    await expect(runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR })).rejects.toThrow(
-      "push rejected: offline",
-    );
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    expect(result()).toBe("\n");
   });
 
   test.todo(
