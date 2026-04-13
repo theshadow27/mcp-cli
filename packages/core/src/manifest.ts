@@ -90,6 +90,13 @@ export type ManifestState = z.infer<typeof ManifestStateSchema>;
  * are intentional and part of the design. Only unreachable phases are
  * rejected.
  */
+/**
+ * Default branch for `runsOn` when a manifest omits it. Canonical constant
+ * for all consumers — do not write `manifest.runsOn ?? "main"` inline.
+ * See #1318.
+ */
+export const DEFAULT_RUNS_ON = "main";
+
 export const ManifestSchema = z
   .object({
     version: z.literal(1).default(1),
@@ -102,6 +109,11 @@ export const ManifestSchema = z
   .strict();
 
 export type Manifest = z.infer<typeof ManifestSchema>;
+
+/** Resolve a manifest's `runsOn` to a concrete branch name, applying the default. */
+export function resolveRunsOn(manifest: Pick<Manifest, "runsOn">): string {
+  return manifest.runsOn ?? DEFAULT_RUNS_ON;
+}
 
 /** Error thrown when a manifest fails structural or semantic validation. */
 export class ManifestError extends Error {

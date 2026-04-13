@@ -8,10 +8,9 @@
  */
 
 import type { ExecFn } from "./git";
-import type { Manifest } from "./manifest";
+import { DEFAULT_RUNS_ON, type Manifest, resolveRunsOn } from "./manifest";
 
-/** Default branch when manifest omits `runsOn`. */
-export const DEFAULT_RUNS_ON = "main";
+export { DEFAULT_RUNS_ON };
 
 /** Thrown when the current branch does not match the manifest's runsOn. */
 export class BranchGuardError extends Error {
@@ -73,7 +72,7 @@ function describe(cb: CurrentBranch): string {
  * Throws `BranchGuardError` with a user-facing refusal message on mismatch.
  */
 export function checkRunsOn(opts: { cwd: string; manifest: Pick<Manifest, "runsOn">; exec: ExecFn }): void {
-  const expected = opts.manifest.runsOn ?? DEFAULT_RUNS_ON;
+  const expected = resolveRunsOn(opts.manifest);
   const cb = currentBranch(opts.cwd, opts.exec);
 
   if (cb.kind === "branch" && cb.name === expected) {
