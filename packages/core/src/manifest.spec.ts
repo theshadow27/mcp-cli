@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -49,6 +49,27 @@ describe("findManifest", () => {
 
   test("exposes filename preference order", () => {
     expect(MANIFEST_FILENAMES).toEqual([".mcx.yaml", ".mcx.yml", ".mcx.json"]);
+  });
+
+  test("returns null when parent component is a file (ENOTDIR)", () => {
+    // dir/file/.mcx.yaml — lstatSync throws ENOTDIR, treated as "not present"
+    const filePath = join(dir, "file");
+    writeFileSync(filePath, "x");
+    expect(findManifest(filePath)).toBeNull();
+  });
+
+  test("throws on permission errors (EACCES)", () => {
+    // Skip when running as root (chmod is a no-op for root)
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, ".mcx.yaml"), "x: 1");
+    chmodSync(locked, 0o000);
+    try {
+      expect(() => findManifest(locked)).toThrow();
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 });
 
