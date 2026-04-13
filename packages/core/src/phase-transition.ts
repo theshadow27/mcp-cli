@@ -235,6 +235,30 @@ export function readTransitionHistory(
   return out;
 }
 
+/**
+ * Read every transition log entry from a JSONL file, oldest first.
+ * Missing file → empty array. Malformed lines skipped silently.
+ */
+export function readAllTransitions(logPath: string): TransitionLogEntry[] {
+  let text: string;
+  try {
+    text = readFileSync(logPath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+    throw err;
+  }
+  const out: TransitionLogEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      out.push(JSON.parse(line) as TransitionLogEntry);
+    } catch {
+      // skip corrupt line
+    }
+  }
+  return out;
+}
+
 /** Return the `to` field of every history entry, oldest first. */
 export function historyTargets(entries: readonly TransitionLogEntry[]): string[] {
   return entries.map((e) => e.to);

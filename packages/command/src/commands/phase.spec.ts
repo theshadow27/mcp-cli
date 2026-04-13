@@ -6,6 +6,7 @@ import {
   DisallowedTransitionError,
   RegressionError,
   UnknownPhaseError,
+  appendTransitionLog,
   historyTargets,
   parseLockfile,
   readTransitionHistory,
@@ -25,8 +26,11 @@ import {
   cmdPhase,
   detectDrift,
   explainTransition,
+  filterTransitionLog,
   formatDriftWarning,
   formatPhaseTable,
+  formatTransitionLog,
+  parsePhaseLogArgs,
   parsePhaseRunArgs,
   phaseRun,
   resolvePhaseSource,
@@ -994,6 +998,115 @@ describe("formatDriftWarning", () => {
     ]);
     expect(msg).not.toContain(longErr);
     expect(msg).toContain("...");
+  });
+});
+
+describe("parsePhaseLogArgs", () => {
+  test("defaults to no filters", () => {
+    expect(parsePhaseLogArgs([])).toEqual({ workItemId: null, forcedOnly: false, json: false });
+  });
+
+  test("parses flags", () => {
+    expect(parsePhaseLogArgs(["--work-item", "#42", "--forced-only", "--json"])).toEqual({
+      workItemId: "#42",
+      forcedOnly: true,
+      json: true,
+    });
+    expect(parsePhaseLogArgs(["--work-item=#99"])).toEqual({
+      workItemId: "#99",
+      forcedOnly: false,
+      json: false,
+    });
+  });
+
+  test("rejects unknown flag", () => {
+    expect(() => parsePhaseLogArgs(["--nope"])).toThrow(/unknown argument/);
+  });
+
+  test("rejects bare --work-item", () => {
+    expect(() => parsePhaseLogArgs(["--work-item"])).toThrow(/--work-item requires/);
+  });
+});
+
+describe("filterTransitionLog", () => {
+  const sample = [
+    { ts: "t1", workItemId: "#1", from: null, to: "impl" },
+    { ts: "t2", workItemId: "#2", from: null, to: "impl", forceMessage: "retry" },
+    { ts: "t3", workItemId: "#1", from: "impl", to: "qa" },
+  ];
+
+  test("newest first by default", () => {
+    expect(filterTransitionLog(sample, {}).map((e) => e.ts)).toEqual(["t3", "t2", "t1"]);
+  });
+
+  test("filters by workItemId", () => {
+    expect(filterTransitionLog(sample, { workItemId: "#1" }).map((e) => e.ts)).toEqual(["t3", "t1"]);
+  });
+
+  test("forcedOnly keeps entries with forceMessage", () => {
+    const r = filterTransitionLog(sample, { forcedOnly: true });
+    expect(r.length).toBe(1);
+    expect(r[0].forceMessage).toBe("retry");
+  });
+});
+
+describe("formatTransitionLog", () => {
+  test("renders header + rows with FORCED marker", () => {
+    const out = formatTransitionLog([
+      { ts: "2026-01-01T00:00:00Z", workItemId: "#1", from: "impl", to: "qa", forceMessage: "urgent" },
+    ]);
+    expect(out[0]).toContain("TIMESTAMP");
+    expect(out[1]).toContain("impl → qa");
+    expect(out[1]).toContain("FORCED: urgent");
+  });
+});
+
+describe("cmdPhase log", () => {
+  test("prints nothing-recorded message when log is empty", async () => {
+    const { deps, errs } = makeDriftDeps(dir);
+    await cmdPhase(["log"], deps);
+    expect(errs.some((e) => e.includes("no transitions recorded"))).toBe(true);
+  });
+
+  test("prints entries newest-first and honors --forced-only and --work-item", async () => {
+    const log = transitionLogPath(dir);
+    appendTransitionLog(log, { ts: "2026-01-01T00:00:00Z", workItemId: "#1", from: null, to: "impl" });
+    appendTransitionLog(log, {
+      ts: "2026-01-01T00:01:00Z",
+      workItemId: "#2",
+      from: null,
+      to: "impl",
+      forceMessage: "retry",
+    });
+    appendTransitionLog(log, { ts: "2026-01-01T00:02:00Z", workItemId: "#1", from: "impl", to: "qa" });
+
+    const a = makeDriftDeps(dir);
+    await cmdPhase(["log"], a.deps);
+    expect(a.logs.length).toBe(4);
+    expect(a.logs[1]).toContain("2026-01-01T00:02:00Z");
+
+    const b = makeDriftDeps(dir);
+    await cmdPhase(["log", "--forced-only"], b.deps);
+    expect(b.logs.length).toBe(2);
+    expect(b.logs[1]).toContain("FORCED: retry");
+
+    const c = makeDriftDeps(dir);
+    await cmdPhase(["log", "--work-item", "#1"], c.deps);
+    expect(c.logs.length).toBe(3);
+    expect(c.logs[1]).toContain("impl → qa");
+    expect(c.logs[2]).toContain("(initial) → impl");
+  });
+
+  test("--json emits raw JSONL newest first", async () => {
+    const log = transitionLogPath(dir);
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+    appendTransitionLog(log, { ts: "t2", workItemId: "#1", from: "impl", to: "qa", forceMessage: "x" });
+    const { deps, logs } = makeDriftDeps(dir);
+    await cmdPhase(["log", "--json"], deps);
+    expect(logs.length).toBe(2);
+    const first = JSON.parse(logs[0]);
+    expect(first.ts).toBe("t2");
+    expect(first.forceMessage).toBe("x");
   });
 });
 

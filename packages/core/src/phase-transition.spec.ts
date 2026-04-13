@@ -11,6 +11,7 @@ import {
   commitTransition,
   historyTargets,
   levenshtein,
+  readAllTransitions,
   readTransitionHistory,
   suggestPhases,
   validateTransition,
@@ -257,6 +258,20 @@ describe("transition log I/O", () => {
     });
     expect(historyTargets(entries)).toEqual(["impl", "qa"]);
     expect(corrupt).toEqual([{ line: 2, text: "not-json" }]);
+  });
+
+  test("readAllTransitions returns every entry regardless of workItemId", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+    appendTransitionLog(log, { ts: "t2", workItemId: "#2", from: null, to: "impl" });
+    appendTransitionLog(log, { ts: "t3", workItemId: null, from: "impl", to: "qa" });
+    const all = readAllTransitions(log);
+    expect(all.length).toBe(3);
+    expect(all.map((e) => e.ts)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  test("readAllTransitions on missing file returns empty", () => {
+    expect(readAllTransitions(join(dir, "nope.jsonl"))).toEqual([]);
   });
 
   test("records force message", () => {
