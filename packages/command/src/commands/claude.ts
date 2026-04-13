@@ -378,7 +378,9 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   };
   if (parsed.resume) toolArgs.sessionId = parsed.resume;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
+  else if (!parsed.worktree) toolArgs.cwd = process.cwd();
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;
