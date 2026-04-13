@@ -735,7 +735,12 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
         d.logError(`--arg value must be in key=val form, got: ${pair}`);
         d.exit(1);
       }
-      extraArgs[pair.slice(0, eq)] = pair.slice(eq + 1);
+      const key = pair.slice(0, eq);
+      if (!key) {
+        d.logError(`--arg key must be non-empty in key=val form, got: ${pair}`);
+        d.exit(1);
+      }
+      extraArgs[key] = pair.slice(eq + 1);
     } else if (a.startsWith("--")) {
       flags.add(a);
     } else {

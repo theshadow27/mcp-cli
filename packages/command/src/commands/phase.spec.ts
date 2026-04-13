@@ -236,6 +236,9 @@ defineAlias(({ z }) => ({
 `.trim(),
     );
 
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
     const logs: string[] = [];
     const errs: string[] = [];
     await cmdPhase(["run", "implement", "--dry-run", "--arg", "issue=1296", "--arg", "branch=feat/x"], {
@@ -254,6 +257,8 @@ defineAlias(({ z }) => ({
   test("run --dry-run --arg errors on missing value", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
     const errs: string[] = [];
     let code: number | undefined;
     await cmdPhase(["run", "implement", "--dry-run", "--arg"], {
@@ -272,6 +277,8 @@ defineAlias(({ z }) => ({
   test("run --dry-run --arg errors on missing = separator", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
     const errs: string[] = [];
     let code: number | undefined;
     await cmdPhase(["run", "implement", "--dry-run", "--arg", "noequals"], {
