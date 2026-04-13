@@ -307,26 +307,22 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
 
   test("withTransitionLock serializes concurrent writers; no history is lost", async () => {
     const log = join(dir, "transitions.jsonl");
-    // 20 parallel writers appending under the lock — each reads-then-appends.
-    // Without locking, concurrent reads would produce duplicate "from" values
-    // and interleaved lines. With locking each entry must see a unique tail.
-    const writers = Array.from({ length: 20 }, (_, i) =>
-      Promise.resolve().then(() =>
-        withTransitionLock(log, () => {
-          const hist = readTransitionHistory(log, "#race");
-          appendTransitionLog(log, {
-            ts: `t${i}`,
-            workItemId: "#race",
-            from: hist.length === 0 ? null : hist[hist.length - 1].to,
-            to: `step-${i}`,
-          });
-        }),
-      ),
-    );
-    await Promise.all(writers);
+    const workerPath = join(import.meta.dir, "phase-lock-test-worker.ts");
+
+    // Spawn 10 concurrent child processes. Each process independently
+    // reads the tail and appends under withTransitionLock. This is actual
+    // OS-level concurrency — Promise.all of synchronous fn() cannot stress
+    // O_EXCL contention since JS is single-threaded.
+    //
+    // Without the lock, concurrent reads produce stale history snapshots:
+    // multiple writers see the same tail and append conflicting `from` values.
+    // With the lock, each writer commits before the next reads.
+    const procs = Array.from({ length: 10 }, (_, i) => Bun.spawn(["bun", "run", workerPath, log, String(i)]));
+    const exitCodes = await Promise.all(procs.map((p) => p.exited));
+    expect(exitCodes.every((c) => c === 0)).toBe(true);
 
     const entries = readTransitionHistory(log, "#race");
-    expect(entries.length).toBe(20);
+    expect(entries.length).toBe(10);
     // Every entry's `from` must equal the previous entry's `to` — the
     // invariant broken by an unlocked read/append race.
     for (let i = 0; i < entries.length; i++) {
@@ -339,6 +335,13 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
     // Every `to` is unique — no double-write.
     const tos = entries.map((e) => e.to);
     expect(new Set(tos).size).toBe(tos.length);
+  }, 20_000); // serialized under lock; 10 subprocess spawns worst-case ~10s
+
+  test("withTransitionLock rejects async fn to prevent early lock release", () => {
+    const log = join(dir, "transitions.jsonl");
+    expect(() => withTransitionLock(log, () => Promise.resolve() as unknown as undefined)).toThrow(
+      /withTransitionLock: fn must be synchronous/,
+    );
   });
 
   test("withTransitionLock times out when lock is held", () => {

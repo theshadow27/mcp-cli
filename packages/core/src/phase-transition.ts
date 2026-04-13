@@ -15,7 +15,7 @@
  * reasoning is preserved alongside the transition itself.
  */
 
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Manifest } from "./manifest";
 
@@ -267,6 +267,11 @@ export function withTransitionLock<T>(
   const lockPath = `${logPath}.lock`;
   mkdirSync(dirname(logPath), { recursive: true });
 
+  // Nonce written into the lock body so we can verify ownership before unlinking.
+  // Prevents our finally from deleting a lock acquired by another process if fn()
+  // runs longer than staleMs and our lock was reaped while we were inside fn().
+  const nonce = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
   const deadline = Date.now() + timeoutMs;
   let fd: number | null = null;
   while (fd === null) {
@@ -284,7 +289,8 @@ export function withTransitionLock<T>(
           }
           continue;
         }
-      } catch {
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException)?.code !== "ENOENT") throw statErr;
         // lock disappeared between EEXIST and stat; retry
         continue;
       }
@@ -298,18 +304,34 @@ export function withTransitionLock<T>(
     }
   }
 
+  // Write nonce so we can verify ownership in finally.
   try {
-    return fn();
+    writeSync(fd, nonce);
+  } catch {
+    // write failed; proceed — lock is held but we can't verify in finally
+  }
+
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      // Lock would be released before the async work completes. Reject loudly.
+      throw new Error("withTransitionLock: fn must be synchronous (returned a Promise)");
+    }
+    return result;
   } finally {
     try {
       closeSync(fd);
     } catch {
       // best effort
     }
+    // Only unlink if the lock still belongs to us. If fn() took longer than
+    // staleMs another process may have reaped our lock and written their nonce.
     try {
-      unlinkSync(lockPath);
+      if (readFileSync(lockPath, "utf-8") === nonce) {
+        unlinkSync(lockPath);
+      }
     } catch {
-      // best effort
+      // best effort — stale lock will be reaped by the next waiter
     }
   }
 }
