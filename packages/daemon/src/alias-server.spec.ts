@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ALIAS_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { ALIAS_MCP_CWD_ARG, AliasServer, buildAliasToolCache, extractMagicCwd } from "./alias-server";
 import { StateDb } from "./db/state";
 import { ServerPool } from "./server-pool";
 import { makeConfig, makeMockTransport } from "./test-helpers";
@@ -164,6 +164,37 @@ describe("buildAliasToolCache", () => {
     const db = { listAliases: () => [] };
     const tools = buildAliasToolCache(db as never);
     expect(tools.size).toBe(0);
+  });
+});
+
+// -- extractMagicCwd --
+
+describe("extractMagicCwd", () => {
+  test("returns undefined cwd and empty args for undefined input", () => {
+    expect(extractMagicCwd(undefined)).toEqual({ cwd: undefined, sanitizedArgs: {} });
+  });
+
+  test("returns undefined cwd when magic arg missing", () => {
+    expect(extractMagicCwd({ foo: "bar" })).toEqual({ cwd: undefined, sanitizedArgs: { foo: "bar" } });
+  });
+
+  test("extracts string cwd and strips magic arg", () => {
+    const result = extractMagicCwd({ [ALIAS_MCP_CWD_ARG]: "/repo", foo: "bar" });
+    expect(result.cwd).toBe("/repo");
+    expect(result.sanitizedArgs).toEqual({ foo: "bar" });
+    expect(ALIAS_MCP_CWD_ARG in result.sanitizedArgs).toBe(false);
+  });
+
+  test("ignores non-string cwd values but still strips the key", () => {
+    const result = extractMagicCwd({ [ALIAS_MCP_CWD_ARG]: 123, foo: "bar" });
+    expect(result.cwd).toBeUndefined();
+    expect(result.sanitizedArgs).toEqual({ foo: "bar" });
+  });
+
+  test("ignores empty-string cwd", () => {
+    const result = extractMagicCwd({ [ALIAS_MCP_CWD_ARG]: "" });
+    expect(result.cwd).toBeUndefined();
+    expect(result.sanitizedArgs).toEqual({});
   });
 });
 
