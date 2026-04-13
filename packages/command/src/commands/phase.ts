@@ -28,6 +28,7 @@ import {
   ManifestError,
   type ManifestState,
   RegressionError,
+  type TransitionLogEntry,
   UnknownPhaseError,
   bundleAlias,
   canonicalJson,
@@ -38,6 +39,7 @@ import {
   isDefineAlias,
   loadManifest,
   parseLockfile,
+  readAllTransitions,
   serializeLockfile,
   sha256Hex,
   suggestPhases,
@@ -256,6 +258,70 @@ export function parsePhaseRunArgs(args: string[]): PhaseRunOptions {
     throw new Error("--force requires a non-empty justification message");
   }
   return { target, from, workItemId, forceMessage: forceSeen ? (forceMessage as string) : null };
+}
+
+export interface PhaseLogOptions {
+  workItemId: string | null;
+  forcedOnly: boolean;
+  json: boolean;
+}
+
+export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
+  let workItemId: string | null = null;
+  let forcedOnly = false;
+  let json = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--work-item") {
+      workItemId = args[++i] ?? null;
+      if (!workItemId) throw new Error("--work-item requires a non-empty id");
+    } else if (a.startsWith("--work-item=")) {
+      workItemId = a.slice("--work-item=".length);
+      if (!workItemId) throw new Error("--work-item requires a non-empty id");
+    } else if (a === "--forced-only") {
+      forcedOnly = true;
+    } else if (a === "--json") {
+      json = true;
+    } else {
+      throw new Error(`unknown argument: ${a}`);
+    }
+  }
+  return { workItemId, forcedOnly, json };
+}
+
+/** Apply filters from options; return newest-first. */
+export function filterTransitionLog(
+  entries: readonly TransitionLogEntry[],
+  opts: { workItemId?: string | null; forcedOnly?: boolean },
+): TransitionLogEntry[] {
+  const out: TransitionLogEntry[] = [];
+  for (const e of entries) {
+    if (opts.workItemId !== undefined && opts.workItemId !== null && e.workItemId !== opts.workItemId) continue;
+    if (opts.forcedOnly && !e.forceMessage) continue;
+    out.push(e);
+  }
+  return out.reverse();
+}
+
+/** Render transition entries as a human-readable table, newest first. */
+export function formatTransitionLog(entries: readonly TransitionLogEntry[]): string[] {
+  const rows = entries.map((e) => [
+    e.ts,
+    e.workItemId ?? "—",
+    `${e.from ?? "(initial)"} → ${e.to}`,
+    e.forceMessage ? `FORCED: ${e.forceMessage}` : "",
+  ]);
+  const headers = ["TIMESTAMP", "WORK-ITEM", "TRANSITION", "NOTE"];
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+  const out: string[] = [];
+  const pad = (row: string[]) =>
+    row
+      .map((c, i) => c.padEnd(widths[i]))
+      .join("  ")
+      .trimEnd();
+  out.push(pad(headers));
+  for (const r of rows) out.push(pad(r));
+  return out;
 }
 
 export function transitionLogPath(repoDir: string): string {
@@ -599,6 +665,19 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       return;
     }
 
+    if (sub === "log") {
+      const opts = parsePhaseLogArgs(args.slice(1));
+      const entries = filterTransitionLog(readAllTransitions(transitionLogPath(d.cwd())), opts);
+      if (opts.json) {
+        for (const e of entries) d.log(JSON.stringify(e));
+      } else if (entries.length === 0) {
+        d.log("no transitions recorded");
+      } else {
+        for (const line of formatTransitionLog(entries)) d.log(line);
+      }
+      return;
+    }
+
     if (sub === "run") {
       const argv = args.slice(1);
       assertNoDrift(d);
@@ -740,7 +819,12 @@ Subcommands:
       legal transitions, source preview, last install time.
 
   mcx phase why <from> <to> [--json]
-      Explain whether a transition is legal, via direct edge or shortest path.`);
+      Explain whether a transition is legal, via direct edge or shortest path.
+
+  mcx phase log [--work-item <id>] [--forced-only] [--json]
+      Print transitions from .mcx/transitions.jsonl, newest first.
+      --forced-only shows only entries with a --force justification.
+      --json emits one JSON object per line for piping.`);
 }
 
 export interface PhaseListRow {
