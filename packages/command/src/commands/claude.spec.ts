@@ -42,6 +42,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     ttyOpen: mock(async () => {}),
     getGitRoot: mock(() => null),
     getStaleDaemonWarning: mock(() => null),
+    pollMail: mock(async () => null),
     ...overrides,
   };
 }
@@ -2158,6 +2159,22 @@ describe("parseWaitArgs", () => {
     expect(result.any).toBe(false);
     expect(result.pr).toBeUndefined();
     expect(result.checks).toBe(false);
+  });
+
+  test("parses --mail-to <name>", () => {
+    const result = parseWaitArgs(["--mail-to", "orchestrator"]);
+    expect(result.mailTo).toBe("orchestrator");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --mail-to=<name>", () => {
+    const result = parseWaitArgs(["--mail-to=orchestrator"]);
+    expect(result.mailTo).toBe("orchestrator");
+  });
+
+  test("errors on missing --mail-to value", () => {
+    const result = parseWaitArgs(["--mail-to"]);
+    expect(result.error).toBe("--mail-to requires a recipient name");
   });
 });
 

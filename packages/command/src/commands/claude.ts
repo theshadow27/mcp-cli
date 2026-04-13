@@ -35,7 +35,7 @@ import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
-import type { QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
+import type { MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
 
 // ── Dependency injection ──
 
@@ -65,6 +65,12 @@ export interface ClaudeDeps extends SharedSessionDeps {
   getGitRoot: () => string | null;
   /** Return a warning string if the running daemon is a stale build, null otherwise. */
   getStaleDaemonWarning: () => string | null;
+  /**
+   * Return the oldest unread mail for `recipient`, or null. Non-consuming
+   * (does not markRead). Used by `mcx claude wait --mail-to` to surface
+   * mail arrival alongside session events.
+   */
+  pollMail: (recipient: string) => Promise<MailMessage | null>;
 }
 
 /**
@@ -180,6 +186,12 @@ export const defaultDeps: ClaudeDeps = {
   ttyOpen: (args) => ttyOpen(args),
   getGitRoot,
   getStaleDaemonWarning,
+  pollMail: async (recipient) => {
+    const result = (await ipcCall("readMail", { recipient, unreadOnly: true, limit: 1 })) as {
+      messages: MailMessage[];
+    };
+    return result.messages[0] ?? null;
+  },
 };
 
 // ── Entry point ──
@@ -1375,6 +1387,8 @@ export interface WaitArgs {
   pr: number | undefined;
   /** Block until any tracked PR's CI completes. */
   checks: boolean;
+  /** Also wake on mail addressed to this recipient (non-consuming peek). */
+  mailTo: string | undefined;
   error: string | undefined;
 }
 
@@ -1387,6 +1401,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   let any = false;
   let pr: number | undefined;
   let checks = false;
+  let mailTo: string | undefined;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -1423,12 +1438,58 @@ export function parseWaitArgs(args: string[]): WaitArgs {
       }
     } else if (arg === "--checks") {
       checks = true;
+    } else if (arg === "--mail-to") {
+      const val = args[++i];
+      if (!val) {
+        error = "--mail-to requires a recipient name";
+      } else {
+        mailTo = val;
+      }
+    } else if (arg.startsWith("--mail-to=")) {
+      const val = arg.slice("--mail-to=".length);
+      if (!val) {
+        error = "--mail-to requires a recipient name";
+      } else {
+        mailTo = val;
+      }
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
   }
 
-  return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, error };
+  return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, error };
+}
+
+/**
+ * Poll for unread mail addressed to `recipient` until one arrives or the
+ * deadline expires. Non-consuming — does not markRead, so the caller can
+ * still read the message via `mcx mail -u <recipient>` afterward.
+ * Returns the message, or null on timeout.
+ */
+async function pollMailUntil(
+  d: Pick<ClaudeDeps, "pollMail">,
+  recipient: string,
+  timeoutMs: number,
+  pollIntervalMs = 2000,
+): Promise<MailMessage | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const msg = await d.pollMail(recipient);
+    if (msg) return msg;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await Bun.sleep(Math.min(pollIntervalMs, remaining));
+  }
+  return null;
+}
+
+function emitMailEvent(msg: MailMessage, short: boolean): void {
+  if (short) {
+    const subj = msg.subject ?? "(no subject)";
+    console.log(`mail ${msg.id} ${msg.sender} ${subj}`);
+    return;
+  }
+  console.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1478,7 +1539,29 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
 
-  const result = await d.callTool("claude_wait", toolArgs);
+  const waitPromise = d.callTool("claude_wait", toolArgs);
+
+  // If --mail-to is set, race the session wait against a non-consuming mail poll
+  // so the caller wakes on incoming mail too (fixes #1359). Mail polling runs
+  // in parallel until either fires; on mail win, we surface the event and return
+  // without waiting for the orphaned claude_wait (daemon has its own timeout).
+  let result: unknown;
+  if (parsed.mailTo) {
+    const totalMs = parsed.timeout ?? 300_000;
+    const mailPoll = pollMailUntil(d, parsed.mailTo, totalMs);
+    const winner = await Promise.race([
+      waitPromise.then((r) => ({ kind: "session" as const, result: r })),
+      mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
+    ]);
+    if (winner.kind === "mail" && winner.message) {
+      emitMailEvent(winner.message, parsed.short);
+      return;
+    }
+    // Mail poll returned null (timed out) or session already won the race.
+    result = winner.kind === "session" ? winner.result : await waitPromise;
+  } else {
+    result = await waitPromise;
+  }
   const text = formatToolResult(result);
 
   // Parse daemon response

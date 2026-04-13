@@ -30,6 +30,7 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
     log: mock(() => {}),
     logError: mock(() => {}),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    pollMail: mock(async () => null),
     ...overrides,
   };
 }
@@ -1658,6 +1659,70 @@ describe("agent wait flags", () => {
       "codex_wait",
       expect.objectContaining({ sessionId: SESSION_LIST[0].sessionId }),
     );
+  });
+
+  // --mail-to: surfaces mail:received events alongside session events (#1359)
+  test("--mail-to wakes on incoming mail before session event", async () => {
+    // Session wait blocks forever; mail poll returns a message.
+    const mailMsg = {
+      id: 42,
+      sender: "jacob",
+      recipient: "orchestrator",
+      subject: "main is red",
+      body: "CI broken",
+      replyTo: null,
+      read: false,
+      createdAt: "2026-04-12T22:47:00Z",
+    };
+    const callTool = mock(() => new Promise(() => {})) as unknown as AgentDeps["callTool"];
+    const deps = makeDeps({
+      callTool,
+      pollMail: mock(async (recipient: string) => (recipient === "orchestrator" ? mailMsg : null)),
+    });
+    await cmdAgent(["claude", "wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    const output = logCalls(deps).join("\n");
+    const parsed = JSON.parse(output);
+    expect(parsed.source).toBe("mail");
+    expect(parsed.mail.id).toBe(42);
+    expect(parsed.mail.subject).toBe("main is red");
+    expect(deps.pollMail).toHaveBeenCalledWith("orchestrator");
+  });
+
+  test("--mail-to --short emits compact mail line", async () => {
+    const mailMsg = {
+      id: 7,
+      sender: "qa",
+      recipient: "orchestrator",
+      subject: "PR #123 failing",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: "2026-04-12T22:47:00Z",
+    };
+    const deps = makeDeps({
+      callTool: mock(() => new Promise(() => {})) as unknown as AgentDeps["callTool"],
+      pollMail: mock(async () => mailMsg),
+    });
+    await cmdAgent(["claude", "wait", "--mail-to=orchestrator", "--short", "--timeout", "5000"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toBe("mail 7 qa PR #123 failing");
+  });
+
+  test("--mail-to falls through to session wait when no mail arrives", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ event: { event: "session:result" }, sessions: [] })),
+      pollMail: mock(async () => null),
+    });
+    await cmdAgent(["claude", "wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("claude_wait", expect.objectContaining({ timeout: 100 }));
+    // Should have produced session-shape output, not a mail event
+    const output = logCalls(deps).join("\n");
+    expect(output).not.toContain('"source": "mail"');
+  });
+
+  test("--mail-to without value errors", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["claude", "wait", "--mail-to"], deps)).rejects.toThrow(ExitError);
   });
 });
 

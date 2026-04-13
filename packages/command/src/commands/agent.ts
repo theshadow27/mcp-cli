@@ -10,7 +10,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AgentFeatures, AgentProvider } from "@mcp-cli/core";
+import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
 import {
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
@@ -62,6 +62,12 @@ export interface AgentDeps extends SharedSessionDeps {
   log: (...args: unknown[]) => void;
   /** Write to stderr (default: console.error). Injected for testability. */
   logError: (...args: unknown[]) => void;
+  /**
+   * Return the oldest unread mail for `recipient`, or null. Non-consuming
+   * (does not markRead). Used by `mcx claude wait --mail-to` to surface
+   * mail arrival alongside session events (fixes #1359).
+   */
+  pollMail: (recipient: string) => Promise<MailMessage | null>;
 }
 
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
@@ -152,6 +158,12 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
     ttyOpen: (args) => ttyOpen(args),
     log: console.log,
     logError: console.error,
+    pollMail: async (recipient) => {
+      const result = (await ipcCall("readMail", { recipient, unreadOnly: true, limit: 1 })) as {
+        messages: MailMessage[];
+      };
+      return result.messages[0] ?? null;
+    },
     exec: (cmd, opts) => {
       const result = Bun.spawnSync(cmd, {
         stdout: "pipe",
@@ -168,6 +180,37 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
 }
 
 // ── Helpers ──
+
+/**
+ * Poll for unread mail addressed to `recipient` until one arrives or the
+ * deadline expires. Non-consuming — does not markRead, so the caller can
+ * still read the message via `mcx mail -u <recipient>` afterward.
+ */
+async function pollMailUntil(
+  d: Pick<AgentDeps, "pollMail">,
+  recipient: string,
+  timeoutMs: number,
+  pollIntervalMs = 2000,
+): Promise<MailMessage | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const msg = await d.pollMail(recipient);
+    if (msg) return msg;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await Bun.sleep(Math.min(pollIntervalMs, remaining));
+  }
+  return null;
+}
+
+function emitMailEvent(msg: MailMessage, short: boolean, d: Pick<AgentDeps, "log">): void {
+  if (short) {
+    const subj = msg.subject ?? "(no subject)";
+    d.log(`mail ${msg.id} ${msg.sender} ${subj}`);
+    return;
+  }
+  d.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
+}
 
 /** Check if an error indicates the daemon is not running (ECONNREFUSED/ENOENT). */
 function isDaemonUnavailable(err: unknown): boolean {
@@ -881,6 +924,7 @@ async function agentWait(
   let afterSeq: number | undefined;
   let short = false;
   let all = false;
+  let mailTo: string | undefined;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -905,6 +949,14 @@ async function agentWait(
       short = true;
     } else if (arg === "--all" || (arg === "-a" && !hasFeature(provider, "agentSelect"))) {
       all = true;
+    } else if (arg === "--mail-to") {
+      const val = args[++i];
+      if (!val) error = "--mail-to requires a recipient name";
+      else mailTo = val;
+    } else if (arg.startsWith("--mail-to=")) {
+      const val = arg.slice("--mail-to=".length);
+      if (!val) error = "--mail-to requires a recipient name";
+      else mailTo = val;
     } else if (!arg.startsWith("-")) {
       sessionPrefix = arg;
     }
@@ -934,7 +986,28 @@ async function agentWait(
     }
   }
 
-  const result = await d.callTool(`${P}_wait`, toolArgs);
+  const waitPromise = d.callTool(`${P}_wait`, toolArgs);
+
+  // If --mail-to is set, race the session wait against a non-consuming mail poll
+  // so the caller wakes on incoming mail too (fixes #1359). Mail polling runs
+  // in parallel until either fires; on mail win we surface the event and return
+  // without waiting for the orphaned wait — daemon has its own timeout.
+  let result: unknown;
+  if (mailTo) {
+    const totalMs = timeout ?? 300_000;
+    const mailPoll = pollMailUntil(d, mailTo, totalMs);
+    const winner = await Promise.race([
+      waitPromise.then((r) => ({ kind: "session" as const, result: r })),
+      mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
+    ]);
+    if (winner.kind === "mail" && winner.message) {
+      emitMailEvent(winner.message, short, d);
+      return;
+    }
+    result = winner.kind === "session" ? winner.result : await waitPromise;
+  } else {
+    result = await waitPromise;
+  }
   const text = formatToolResult(result);
 
   let data: unknown;
