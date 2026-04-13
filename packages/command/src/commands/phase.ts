@@ -455,6 +455,30 @@ To regenerate after review:  mcx phase install`;
   return `${header}\n${rows}${footer}`;
 }
 
+/**
+ * Shared drift-abort used by `check` and `run`. Any non-ok status exits 1
+ * with a message; callers resume normal flow only when drift status is ok.
+ *
+ * Wired into `run` so malicious phase-source mutations cannot execute: the
+ * lockfile must match the on-disk manifest + sources before dispatch.
+ */
+function assertNoDrift(d: PhaseInstallDeps): void {
+  const result = detectDrift(d);
+  if (result.status === "ok") return;
+  switch (result.status) {
+    case "no-lockfile":
+      d.logError(`no ${LOCKFILE_NAME} — run \`mcx phase install\` to create one`);
+      break;
+    case "no-manifest":
+      d.logError("no .mcx.yaml or .mcx.json in this repo");
+      break;
+    case "drift":
+      d.logError(formatDriftWarning(result.entries));
+      break;
+  }
+  d.exit(1);
+}
+
 function labelFor(kind: DriftKind): string {
   switch (kind) {
     case "manifest":
@@ -518,24 +542,8 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
     }
 
     if (sub === "check") {
-      const result = detectDrift(d);
-      switch (result.status) {
-        case "no-lockfile":
-          d.logError(`no ${LOCKFILE_NAME} — run \`mcx phase install\` to create one`);
-          d.exit(1);
-          break;
-        case "no-manifest":
-          d.logError("no .mcx.yaml or .mcx.json in this repo");
-          d.exit(1);
-          break;
-        case "drift":
-          d.logError(formatDriftWarning(result.entries));
-          d.exit(1);
-          break;
-        case "ok":
-          d.log("lockfile ok");
-          break;
-      }
+      assertNoDrift(d);
+      d.log("lockfile ok");
       return;
     }
 
@@ -612,6 +620,7 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
 
     if (sub === "run") {
       const argv = args.slice(1);
+      assertNoDrift(d);
       if (argv.includes("--dry-run")) {
         await runPhase(argv, d);
       } else {

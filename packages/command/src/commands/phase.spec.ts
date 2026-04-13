@@ -192,6 +192,9 @@ defineAlias(({ z }) => ({
 `.trim(),
     );
 
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
     const logs: string[] = [];
     const errs: string[] = [];
     await cmdPhase(["run", "implement", "--dry-run"], {
@@ -213,6 +216,8 @@ defineAlias(({ z }) => ({
   test("run errors on unknown phase", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
     const errs: string[] = [];
     let code: number | undefined;
     await cmdPhase(["run", "nope", "--dry-run"], {
@@ -233,6 +238,8 @@ defineAlias(({ z }) => ({
     // the transition (transition-enforcement path), not the dry-run execution path.
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
     const errs: string[] = [];
     let code: number | undefined;
     await cmdPhase(["run", "implement"], {
@@ -380,8 +387,24 @@ describe("phaseRun", () => {
 });
 
 describe("cmdPhase dispatch", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
+    const srcs: [string, string][] = [
+      ["impl.ts", "impl"],
+      ["review.ts", "adversarial-review"],
+      ["repair.ts", "repair"],
+      ["qa.ts", "qa"],
+      ["na.ts", "needs-attention"],
+      ["done.ts", "done"],
+    ];
+    for (const [file, name] of srcs) {
+      writeFileSync(
+        join(dir, file),
+        `import { defineAlias, z } from "mcp-cli";\ndefineAlias(({ z }) => ({ name: ${JSON.stringify(name)}, description: "d", input: z.object({}).optional(), fn: async () => {} }));\n`,
+      );
+    }
+    const { deps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], deps);
   });
 
   async function catchExit(
@@ -494,10 +517,27 @@ describe("cmdPhase dispatch", () => {
     try {
       const { code, err } = await withCwd(empty, () => catchExit(() => cmdPhase(["run", "qa"])));
       expect(code).toBe(1);
-      expect(err).toContain("no .mcx.yaml");
+      // drift-check fires first; no-lockfile precedes no-manifest when both are absent
+      expect(err).toContain("no .mcx.lock");
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
+  });
+
+  test("run aborts with drift warning when phase source is tampered", async () => {
+    // Mutate a phase source after install — drift check must block dispatch
+    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
+    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--from", "impl"])));
+    expect(code).toBe(1);
+    expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(err).toContain("qa.ts");
+  });
+
+  test("run --dry-run aborts on drift before dispatch", async () => {
+    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
+    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--dry-run"])));
+    expect(code).toBe(1);
+    expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
   });
 
   test("unknown subcommand exits 1", async () => {
