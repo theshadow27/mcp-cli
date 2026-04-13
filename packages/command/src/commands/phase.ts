@@ -29,21 +29,18 @@ import {
   type ManifestState,
   RegressionError,
   UnknownPhaseError,
-  appendTransitionLog,
   bundleAlias,
   canonicalJson,
+  commitTransition,
   executeAliasBundled,
   extractMetadata,
   hashFileSync,
-  historyTargets,
   isDefineAlias,
   loadManifest,
   parseLockfile,
-  readTransitionHistory,
   serializeLockfile,
   sha256Hex,
   suggestPhases,
-  validateTransition,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
@@ -276,30 +273,14 @@ export function phaseRun(
   const { path: manifestPath, manifest } = loaded;
 
   const logPath = transitionLogPath(deps.cwd);
-  const history = historyTargets(readTransitionHistory(logPath, options.workItemId));
-
-  let from = options.from;
-  if (from === null && history.length > 0) {
-    from = history[history.length - 1];
-  }
-
-  const decision = validateTransition({
+  const decision = commitTransition(logPath, {
     manifest,
-    from,
+    from: options.from,
     target: options.target,
-    history,
     workItemId: options.workItemId,
     force: options.forceMessage !== null ? { message: options.forceMessage } : null,
     manifestPath,
-  });
-
-  const now = deps.now?.() ?? new Date();
-  appendTransitionLog(logPath, {
-    ts: now.toISOString(),
-    workItemId: options.workItemId,
-    from: decision.from,
-    to: decision.target,
-    ...(options.forceMessage !== null ? { forceMessage: options.forceMessage } : {}),
+    now: deps.now,
   });
 
   return { manifest, forced: decision.forced, from: decision.from };

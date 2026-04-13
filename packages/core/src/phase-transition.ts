@@ -15,7 +15,7 @@
  * reasoning is preserved alongside the transition itself.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Manifest } from "./manifest";
 
@@ -189,11 +189,30 @@ export function validateTransition(input: ValidateTransitionInput): {
 }
 
 /**
- * Read all transition log entries for a work item from a JSONL file.
- * Missing file → empty array. Malformed lines are skipped silently to
- * avoid crashing on a corrupted log.
+ * Called once per corrupt JSONL line encountered. `lineNumber` is 1-based.
+ * Default: warn to stderr so silent log rot is visible (issue #1328).
  */
-export function readTransitionHistory(logPath: string, workItemId: string | null): TransitionLogEntry[] {
+export type OnCorruptLine = (lineNumber: number, line: string, err: unknown) => void;
+
+function defaultOnCorruptLine(logPath: string): OnCorruptLine {
+  return (lineNumber, line, err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    const preview = line.length > 80 ? `${line.slice(0, 77)}...` : line;
+    process.stderr.write(`warn: corrupt transition log line ${logPath}:${lineNumber} (${msg}): ${preview}\n`);
+  };
+}
+
+/**
+ * Read all transition log entries for a work item from a JSONL file.
+ * Missing file → empty array. Malformed lines are passed to `onCorrupt`
+ * (default: warn to stderr with line number) so corruption is visible
+ * rather than silently swallowed.
+ */
+export function readTransitionHistory(
+  logPath: string,
+  workItemId: string | null,
+  onCorrupt: OnCorruptLine = defaultOnCorruptLine(logPath),
+): TransitionLogEntry[] {
   let text: string;
   try {
     text = readFileSync(logPath, "utf-8");
@@ -202,13 +221,15 @@ export function readTransitionHistory(logPath: string, workItemId: string | null
     throw err;
   }
   const out: TransitionLogEntry[] = [];
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line) continue;
     try {
       const entry = JSON.parse(line) as TransitionLogEntry;
       if (entry && entry.workItemId === workItemId) out.push(entry);
-    } catch {
-      // skip corrupt line
+    } catch (err) {
+      onCorrupt(i + 1, line, err);
     }
   }
   return out;
@@ -223,4 +244,167 @@ export function historyTargets(entries: readonly TransitionLogEntry[]): string[]
 export function appendTransitionLog(logPath: string, entry: TransitionLogEntry): void {
   mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, `${JSON.stringify(entry)}\n`, "utf-8");
+}
+
+/**
+ * Acquire an exclusive lockfile sidecar for `logPath`, run `fn`, then release.
+ *
+ * Uses O_EXCL to atomically create `<logPath>.lock`. If contended, polls
+ * with jittered backoff up to `timeoutMs`. Stale locks (older than
+ * `staleMs`) are reaped to survive crashed holders.
+ *
+ * Scope: wraps the full read-validate-append cycle so concurrent
+ * `mcx phase run` invocations for the same work item can't interleave
+ * (issue #1328).
+ */
+export function withTransitionLock<T>(
+  logPath: string,
+  fn: () => T,
+  opts: { timeoutMs?: number; staleMs?: number } = {},
+): T {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const staleMs = opts.staleMs ?? 30_000;
+  const lockPath = `${logPath}.lock`;
+  mkdirSync(dirname(logPath), { recursive: true });
+
+  // Nonce written into the lock body so we can verify ownership before unlinking.
+  // Prevents our finally from deleting a lock acquired by another process if fn()
+  // runs longer than staleMs and our lock was reaped while we were inside fn().
+  const nonce = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
+  const deadline = Date.now() + timeoutMs;
+  let fd: number | null = null;
+  while (fd === null) {
+    try {
+      fd = openSync(lockPath, "wx");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs;
+        if (age > staleMs) {
+          try {
+            unlinkSync(lockPath);
+          } catch {
+            // lost the race; fall through and retry
+          }
+          continue;
+        }
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException)?.code !== "ENOENT") throw statErr;
+        // lock disappeared between EEXIST and stat; retry
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `could not acquire transition lock ${lockPath} within ${timeoutMs}ms — another phase run is in progress`,
+        );
+      }
+      const sleep = 10 + Math.floor(Math.random() * 40);
+      Bun.sleepSync(sleep);
+    }
+  }
+
+  // Write nonce so we can verify ownership in finally.
+  try {
+    writeSync(fd, nonce);
+  } catch {
+    // write failed; proceed — lock is held but we can't verify in finally
+  }
+
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      // Lock would be released before the async work completes. Reject loudly.
+      throw new Error("withTransitionLock: fn must be synchronous (returned a Promise)");
+    }
+    return result;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // best effort
+    }
+    // Only unlink if the lock still belongs to us. If fn() took longer than
+    // staleMs another process may have reaped our lock and written their nonce.
+    try {
+      if (readFileSync(lockPath, "utf-8") === nonce) {
+        unlinkSync(lockPath);
+      }
+    } catch {
+      // best effort — stale lock will be reaped by the next waiter
+    }
+  }
+}
+
+export interface CommitTransitionInput {
+  manifest: Manifest;
+  /** Explicit `from`; if null, inferred from the tail of the history. */
+  from: string | null;
+  target: string;
+  workItemId: string | null;
+  force?: { message: string } | null;
+  manifestPath?: string;
+  /** Timestamp supplier; defaults to `new Date()`. */
+  now?: () => Date;
+  /** Lock timeout passthrough. */
+  timeoutMs?: number;
+  /** Stale-lock reaping threshold passthrough. */
+  staleMs?: number;
+  /** Corrupt-line sink, passed through to `readTransitionHistory`. */
+  onCorrupt?: OnCorruptLine;
+}
+
+export interface CommitTransitionResult {
+  from: string | null;
+  target: string;
+  forced: boolean;
+  entry: TransitionLogEntry;
+}
+
+/**
+ * Atomic read-validate-append. Holds an exclusive lock around the full
+ * cycle so concurrent invocations can't observe the same history snapshot
+ * and double-append (issue #1328).
+ *
+ * Callers that only need validation with no side effects should use
+ * `validateTransition` directly.
+ */
+export function commitTransition(logPath: string, input: CommitTransitionInput): CommitTransitionResult {
+  const { manifest, target, workItemId, force = null, manifestPath, now, timeoutMs, staleMs, onCorrupt } = input;
+
+  return withTransitionLock(
+    logPath,
+    () => {
+      const history = readTransitionHistory(logPath, workItemId, onCorrupt);
+      const targets = historyTargets(history);
+
+      let from = input.from;
+      if (from === null && targets.length > 0) {
+        from = targets[targets.length - 1];
+      }
+
+      const decision = validateTransition({
+        manifest,
+        from,
+        target,
+        history: targets,
+        workItemId,
+        force,
+        manifestPath,
+      });
+
+      const ts = (now?.() ?? new Date()).toISOString();
+      const entry: TransitionLogEntry = {
+        ts,
+        workItemId,
+        from: decision.from,
+        to: decision.target,
+        ...(force ? { forceMessage: force.message } : {}),
+      };
+      appendTransitionLog(logPath, entry);
+
+      return { from: decision.from, target: decision.target, forced: decision.forced, entry };
+    },
+    { timeoutMs, staleMs },
+  );
 }

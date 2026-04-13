@@ -8,11 +8,13 @@ import {
   RegressionError,
   UnknownPhaseError,
   appendTransitionLog,
+  commitTransition,
   historyTargets,
   levenshtein,
   readTransitionHistory,
   suggestPhases,
   validateTransition,
+  withTransitionLock,
 } from "./phase-transition";
 
 const manifest: Manifest = {
@@ -243,13 +245,18 @@ describe("transition log I/O", () => {
     expect(readTransitionHistory(log, "#99").length).toBe(1);
   });
 
-  test("skips malformed lines", () => {
+  test("skips malformed lines and reports them via onCorrupt", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
     // Corrupt the file with a bad line
     require("node:fs").appendFileSync(log, "not-json\n", "utf-8");
     appendTransitionLog(log, { ts: "t2", workItemId: "#1", from: "impl", to: "qa" });
-    expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl", "qa"]);
+    const corrupt: Array<{ line: number; text: string }> = [];
+    const entries = readTransitionHistory(log, "#1", (lineNumber, line) => {
+      corrupt.push({ line: lineNumber, text: line });
+    });
+    expect(historyTargets(entries)).toEqual(["impl", "qa"]);
+    expect(corrupt).toEqual([{ line: 2, text: "not-json" }]);
   });
 
   test("records force message", () => {
@@ -263,5 +270,111 @@ describe("transition log I/O", () => {
     });
     const entries = readTransitionHistory(log, "#1");
     expect(entries[0].forceMessage).toBe("rewriting from scratch");
+  });
+});
+
+describe("commitTransition / withTransitionLock (issue #1328)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-commit-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("commitTransition appends and infers from from history tail", () => {
+    const log = join(dir, "transitions.jsonl");
+    const r1 = commitTransition(log, { manifest, from: null, target: "impl", workItemId: "#1" });
+    expect(r1.from).toBeNull();
+    expect(r1.target).toBe("impl");
+
+    const r2 = commitTransition(log, { manifest, from: null, target: "qa", workItemId: "#1" });
+    expect(r2.from).toBe("impl");
+    expect(r2.target).toBe("qa");
+
+    expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl", "qa"]);
+  });
+
+  test("commitTransition surfaces validation errors without appending", () => {
+    const log = join(dir, "transitions.jsonl");
+    commitTransition(log, { manifest, from: null, target: "impl", workItemId: "#1" });
+    expect(() => commitTransition(log, { manifest, from: null, target: "done", workItemId: "#1" })).toThrow(
+      DisallowedTransitionError,
+    );
+    // log must not have the bad append
+    expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl"]);
+  });
+
+  test("withTransitionLock serializes concurrent writers; no history is lost", async () => {
+    const log = join(dir, "transitions.jsonl");
+    const workerPath = join(import.meta.dir, "phase-lock-test-worker.ts");
+
+    // Spawn 10 concurrent child processes. Each process independently
+    // reads the tail and appends under withTransitionLock. This is actual
+    // OS-level concurrency — Promise.all of synchronous fn() cannot stress
+    // O_EXCL contention since JS is single-threaded.
+    //
+    // Without the lock, concurrent reads produce stale history snapshots:
+    // multiple writers see the same tail and append conflicting `from` values.
+    // With the lock, each writer commits before the next reads.
+    const procs = Array.from({ length: 10 }, (_, i) => Bun.spawn(["bun", "run", workerPath, log, String(i)]));
+    const exitCodes = await Promise.all(procs.map((p) => p.exited));
+    expect(exitCodes.every((c) => c === 0)).toBe(true);
+
+    const entries = readTransitionHistory(log, "#race");
+    expect(entries.length).toBe(10);
+    // Every entry's `from` must equal the previous entry's `to` — the
+    // invariant broken by an unlocked read/append race.
+    for (let i = 0; i < entries.length; i++) {
+      if (i === 0) {
+        expect(entries[i].from).toBeNull();
+      } else {
+        expect(entries[i].from).toBe(entries[i - 1].to);
+      }
+    }
+    // Every `to` is unique — no double-write.
+    const tos = entries.map((e) => e.to);
+    expect(new Set(tos).size).toBe(tos.length);
+  }, 20_000); // serialized under lock; 10 subprocess spawns worst-case ~10s
+
+  test("withTransitionLock rejects async fn to prevent early lock release", () => {
+    const log = join(dir, "transitions.jsonl");
+    expect(() => withTransitionLock(log, () => Promise.resolve() as unknown as undefined)).toThrow(
+      /withTransitionLock: fn must be synchronous/,
+    );
+  });
+
+  test("withTransitionLock times out when lock is held", () => {
+    const log = join(dir, "transitions.jsonl");
+    expect(() =>
+      withTransitionLock(
+        log,
+        () => {
+          // Inner attempt with short timeout should fail — lock is held.
+          withTransitionLock(log, () => undefined, { timeoutMs: 50 });
+        },
+        { timeoutMs: 1000 },
+      ),
+    ).toThrow(/could not acquire transition lock/);
+  });
+
+  test("withTransitionLock reaps stale lockfile", () => {
+    const log = join(dir, "transitions.jsonl");
+    const lockPath = `${log}.lock`;
+    require("node:fs").mkdirSync(dir, { recursive: true });
+    require("node:fs").writeFileSync(lockPath, "", "utf-8");
+    // Backdate lock mtime to be "stale"
+    const past = new Date(Date.now() - 60_000);
+    require("node:fs").utimesSync(lockPath, past, past);
+
+    let ran = false;
+    withTransitionLock(
+      log,
+      () => {
+        ran = true;
+      },
+      { staleMs: 1000, timeoutMs: 500 },
+    );
+    expect(ran).toBe(true);
   });
 });
