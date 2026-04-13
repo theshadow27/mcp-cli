@@ -576,7 +576,37 @@ describe("mcx claude spawn", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["spawn", "--task", "fix the bug"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "fix the bug" });
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "fix the bug", cwd: process.cwd() });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("defaults cwd to caller's process.cwd() when not provided (#1331)", async () => {
+    const callTool = mock(async () => toolResult({ success: true }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x"], deps);
+      const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+      expect(toolCalls[0][1].cwd).toBe(process.cwd());
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("explicit --cwd overrides default", async () => {
+    const callTool = mock(async () => toolResult({ success: true }));
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--cwd", "/tmp/elsewhere"], deps);
+      const toolCalls = callTool.mock.calls as unknown as Array<[string, Record<string, unknown>]>;
+      expect(toolCalls[0][1].cwd).toBe("/tmp/elsewhere");
     } finally {
       console.log = origLog;
     }
@@ -614,6 +644,7 @@ describe("mcx claude spawn", () => {
       expect(callTool).toHaveBeenCalledWith("claude_prompt", {
         prompt: "continue",
         sessionId: "abc123",
+        cwd: process.cwd(),
       });
     } finally {
       console.log = origLog;
@@ -631,6 +662,7 @@ describe("mcx claude spawn", () => {
       expect(callTool).toHaveBeenCalledWith("claude_prompt", {
         prompt: "Continue from where you left off.",
         sessionId: "abc123",
+        cwd: process.cwd(),
       });
     } finally {
       console.log = origLog;
@@ -645,7 +677,7 @@ describe("mcx claude spawn", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["spawn", "--task", "fix", "--wait"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "fix", wait: true });
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "fix", wait: true, cwd: process.cwd() });
     } finally {
       console.log = origLog;
     }
@@ -677,6 +709,7 @@ describe("mcx claude spawn", () => {
       expect(callTool).toHaveBeenCalledWith("claude_prompt", {
         prompt: "fix",
         model: "claude-sonnet-4-6",
+        cwd: process.cwd(),
       });
     } finally {
       console.log = origLog;
@@ -2742,7 +2775,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
     try {
       // 1. Spawn
       await cmdClaude(["spawn", "--task", "lifecycle test"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "lifecycle test" });
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", { prompt: "lifecycle test", cwd: process.cwd() });
       expect(sessions).toHaveLength(1);
       expect(sessions[0].state).toBe("active");
 
