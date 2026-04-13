@@ -3,11 +3,13 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_RUNS_ON,
   MANIFEST_FILENAMES,
   ManifestError,
   findManifest,
   loadManifest,
   parseManifestText,
+  resolveRunsOn,
   validateManifest,
 } from "./manifest";
 
@@ -273,5 +275,19 @@ describe("loadManifest", () => {
   test("wraps validation errors in ManifestError", () => {
     writeFileSync(join(dir, ".mcx.yaml"), "initial: a\nphases:\n  b:\n    source: ./b.ts\n");
     expect(() => loadManifest(dir)).toThrow(/not a declared phase/);
+  });
+});
+
+describe("resolveRunsOn", () => {
+  test("DEFAULT_RUNS_ON is 'main'", () => {
+    expect(DEFAULT_RUNS_ON).toBe("main");
+  });
+
+  test("returns DEFAULT_RUNS_ON when runsOn is undefined", () => {
+    expect(resolveRunsOn({ runsOn: undefined })).toBe(DEFAULT_RUNS_ON);
+  });
+
+  test("returns explicit runsOn when set", () => {
+    expect(resolveRunsOn({ runsOn: "develop" })).toBe("develop");
   });
 });
