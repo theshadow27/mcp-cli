@@ -38,9 +38,14 @@ The sprint number threads through all phases:
 
 - `references/mcx-claude.md` — session management commands
 - `references/plan.md` — sprint planning phase
-- `references/run.md` — sprint execution phase
+- `references/run.md` — sprint execution phase (orchestrator prose)
 - `references/review.md` — release + changelog phase
 - `references/retro.md` — retrospective / diary phase
+
+**Per-phase logic is defined in `.mcx.yaml` + `.claude/phases/*.ts`**, not
+in `run.md`. Inspect a phase with `mcx phase show <name>` or preview its
+next action with `mcx phase run <name> --dry-run`. See `docs/phases.md` for
+the manifest schema.
 
 ## Rules (apply to all phases)
 

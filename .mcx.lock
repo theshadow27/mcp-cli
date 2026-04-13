@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "manifestHash": "54c18f54a04e93dc4e8a4326450571a9f2b8a32d01c89049edf0d0430cc67c3f",
+  "phases": [
+    {
+      "name": "done",
+      "resolvedPath": ".claude/phases/done.ts",
+      "contentHash": "e5a4dffb888d071891314968f08522ddfbda5726f1705a220ab729c27f081a80",
+      "schemaHash": "9372884f31b3b15e6e376bde8800b6a47f97230a4e3faf96f0948d1255b64262"
+    },
+    {
+      "name": "impl",
+      "resolvedPath": ".claude/phases/impl.ts",
+      "contentHash": "3780cac427903e9b2363b0dbe400fc6e9bd147452d4a26d59dc51fc634fab84f",
+      "schemaHash": "ed4e8c293093075a364653d8c077f44d68157174b7b276fbdfafb9f31fc1207d"
+    },
+    {
+      "name": "needs-attention",
+      "resolvedPath": ".claude/phases/needs-attention.ts",
+      "contentHash": "a75d70a8fcaa6812ba4bc3ede150f95ef048d0bf0b4f5cf468d4d1afb8f46c10",
+      "schemaHash": "acee09becf66bc4ce4a92a0a0533840eb0c988f0f2eb0f6eac3a77227ed5267a"
+    },
+    {
+      "name": "qa",
+      "resolvedPath": ".claude/phases/qa.ts",
+      "contentHash": "a70ed38508291bbfb779494fbdb440363428fa7bf1d6134a76401a705615c057",
+      "schemaHash": "66b1bd5b7c26aa20da4c2ff6e00833f356f498cfd11db3c91a465677355b4682"
+    },
+    {
+      "name": "repair",
+      "resolvedPath": ".claude/phases/repair.ts",
+      "contentHash": "aa0ccf5483557b72ed1a4327335490cb8f084aefd86cec0171586221730dd394",
+      "schemaHash": "d8d346163be0269fad849c0fb6e54419cfa4cd23040d0d551a93b686346174a6"
+    },
+    {
+      "name": "review",
+      "resolvedPath": ".claude/phases/review.ts",
+      "contentHash": "7a47f3ac168581f03c2c3296c9b520eefd8b2112a7cdf394ac4e54bd8ff6cae6",
+      "schemaHash": "cdfdf6e6f31057a2d3dd8add0c4ed9680db448709e1c099e401edfe9debb274b"
+    },
+    {
+      "name": "triage",
+      "resolvedPath": ".claude/phases/triage.ts",
+      "contentHash": "4664c05d1a526bb591128f30535b8fc803974b7081d36132109bf643a63da630",
+      "schemaHash": "413c819e04458a7974767cb5940778bf30622d01836e4d80722689870103a728"
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+/**
+ * Phase: impl — spawn an implementation session for a tracked work item.
+ *
+ * onEnter semantics (see docs/phases.md): compute the model, build the
+ * spawn command for the issue's provider, and either execute it (when the
+ * runtime supports in-handler spawning, tracked in #1286) or emit the
+ * resolved plan as JSON so the orchestrator can run it.
+ *
+ * The handler is idempotent on re-entry: if `session_id` is already set in
+ * state, it returns the existing session plus `action: "in-flight"`.
+ *
+ * State writes: session_id, worktree_path, model, provider, labels.
+ */
+import { defineAlias, z } from "mcp-cli";
+
+type Provider = "claude" | "copilot" | "gemini" | `acp:${string}`;
+
+const ProviderSchema = z
+  .string()
+  .refine((v): v is Provider => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"), {
+    message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"',
+  });
+
+function commandForProvider(provider: Provider): string[] {
+  if (provider.startsWith("acp:")) {
+    const agent = provider.slice("acp:".length);
+    return ["mcx", "acp", "spawn", "--agent", agent];
+  }
+  return ["mcx", provider, "spawn"];
+}
+
+function pickModel(labels: string[]): "opus" | "sonnet" {
+  // Flaky work always needs deep analysis (see run.md history).
+  if (labels.includes("flaky")) return "opus";
+  // Docs-only is cheap; everything else defaults to opus.
+  if (labels.includes("docs-only") || labels.includes("documentation")) return "sonnet";
+  return "opus";
+}
+
+defineAlias({
+  name: "phase-impl",
+  description: "Sprint phase: spawn implementation session for a tracked issue.",
+  input: z.object({
+    provider: ProviderSchema.default("claude"),
+    labels: z.array(z.string()).default([]),
+  }),
+  output: z.object({
+    action: z.enum(["spawn", "in-flight"]),
+    command: z.array(z.string()),
+    allowTools: z.array(z.string()),
+    prompt: z.string(),
+    model: z.enum(["opus", "sonnet"]),
+    provider: ProviderSchema,
+    sessionId: z.string().optional(),
+    worktreePath: z.string().optional(),
+  }),
+  fn: async (input, ctx) => {
+    const work = ctx.workItem;
+    if (!work || work.issueNumber == null) {
+      throw new Error("phase-impl requires a tracked work item with an issueNumber");
+    }
+
+    const existing = await ctx.state.get<string>("session_id");
+    if (existing) {
+      return {
+        action: "in-flight" as const,
+        command: [],
+        allowTools: [],
+        prompt: "",
+        model: ((await ctx.state.get<string>("model")) as "opus" | "sonnet") ?? "opus",
+        provider: ((await ctx.state.get<string>("provider")) as Provider) ?? input.provider,
+        sessionId: existing,
+        worktreePath: (await ctx.state.get<string>("worktree_path")) ?? undefined,
+      };
+    }
+
+    const model = pickModel(input.labels);
+    const provider = input.provider;
+    const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
+    const prompt = `/implement ${work.issueNumber}`;
+    const command = [
+      ...commandForProvider(provider),
+      "--worktree",
+      "--model",
+      model,
+      "-t",
+      prompt,
+      "--allow",
+      ...allowTools,
+    ];
+
+    await ctx.state.set("provider", provider);
+    await ctx.state.set("model", model);
+    await ctx.state.set("labels", input.labels.join(","));
+
+    return {
+      action: "spawn" as const,
+      command,
+      allowTools,
+      prompt,
+      model,
+      provider,
+    };
+  },
+});
