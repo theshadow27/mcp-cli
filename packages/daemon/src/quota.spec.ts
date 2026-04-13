@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { silentLogger } from "@mcp-cli/core";
 import type { ClaudeOAuthToken } from "./auth/keychain";
 import { QuotaPoller, type QuotaStatus, parseUsageResponse } from "./quota";
 
@@ -253,6 +254,7 @@ describe("QuotaPoller", () => {
     let callCount = 0;
     const poller = new QuotaPoller({
       intervalMs: 20,
+      logger: silentLogger,
       readToken: async () => fakeToken,
       fetchUsage: async () => {
         callCount++;
@@ -274,6 +276,7 @@ describe("QuotaPoller", () => {
     let callCount = 0;
     const poller = new QuotaPoller({
       intervalMs: 20,
+      logger: silentLogger,
       readToken: async () => fakeToken,
       fetchUsage: async () => {
         callCount++;
