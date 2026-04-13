@@ -47,6 +47,7 @@ import {
   ensureStateDir,
   fixCoreBare,
   generateSpanId,
+  isCoreBareSet,
   loadManifest,
   options,
   pruneExpiredCache,
@@ -145,6 +146,40 @@ function defaultGitOps(): PruneGitOps {
   };
 }
 
+/**
+ * Preflight: scan repo roots known to the daemon and unset `core.bare=true`
+ * wherever it's stuck. Catches drift from external tools (e.g. `gh pr merge
+ * --delete-branch`) that flip the bit outside our worktree shim. See #1330.
+ *
+ * Returns the number of repos that were healed.
+ */
+export function sweepCoreBare(
+  db: StateDb,
+  logger: Logger = consoleLogger,
+  gitOps: PruneGitOps = defaultGitOps(),
+): number {
+  let healed = 0;
+  try {
+    const roots = new Set<string>();
+    for (const s of db.listSessions(true)) {
+      if (s.repoRoot) roots.add(s.repoRoot);
+      else if (s.cwd) roots.add(s.cwd);
+    }
+    for (const s of db.listSessions(false)) {
+      if (s.repoRoot) roots.add(s.repoRoot);
+    }
+    for (const root of roots) {
+      if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
+        logger.warn(`[mcpd] Healed core.bare=true on ${root} (sweep) — see #1330`);
+        healed++;
+      }
+    }
+  } catch (err) {
+    logger.error(`[mcpd] core.bare sweep failed: ${err}`);
+  }
+  return healed;
+}
+
 /** Remove worktrees from ended sessions that are clean and have no active session. */
 export function pruneOrphanedWorktrees(
   db: StateDb,
@@ -181,19 +216,34 @@ export function pruneOrphanedWorktrees(
       const branchResult = gitOps.showBranch(worktreePath);
       const branch = branchResult.exitCode === 0 ? branchResult.stdout.trim() : null;
 
-      // Remove worktree
+      // Remove worktree — instrument to detect which op flips core.bare (#1330).
+      const bareBeforeRemove = isCoreBareSet(repoRoot, (cmd) => gitOps.exec(cmd));
       const removeResult = gitOps.removeWorktree(repoRoot, worktreePath);
       if (removeResult.exitCode === 0) {
+        const bareAfterRemove = isCoreBareSet(repoRoot, (cmd) => gitOps.exec(cmd));
+        if (!bareBeforeRemove && bareAfterRemove) {
+          logger.warn(
+            `[mcpd] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
+          );
+        }
         if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
           logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
         }
         affectedRepoRoots.add(repoRoot);
         pruned++;
         logger.info(`[mcpd] Pruned orphaned worktree: ${worktreePath}`);
-        // Delete merged branch
+        // Delete merged branch — also instrumented.
         if (branch) {
+          const bareBeforeBranch = isCoreBareSet(repoRoot, (cmd) => gitOps.exec(cmd));
           const deleteResult = gitOps.deleteBranch(repoRoot, branch);
           if (deleteResult.exitCode === 0) {
+            const bareAfterBranch = isCoreBareSet(repoRoot, (cmd) => gitOps.exec(cmd));
+            if (!bareBeforeBranch && bareAfterBranch) {
+              logger.warn(
+                `[mcpd] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`,
+              );
+              fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd));
+            }
             logger.info(`[mcpd] Deleted branch: ${branch} (merged)`);
           }
         }
@@ -343,6 +393,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Warn if runtime state permissions have been loosened
   auditRuntimePermissions(logger);
 
+  // Preflight: heal any core.bare=true drift on known repos before any
+  // subsequent git op touches them. External tools like `gh pr merge
+  // --delete-branch` can flip the bit outside our shim. See #1330.
+  sweepCoreBare(db, logger);
+
   // Create server pool
   const pool = new ServerPool(config, db, undefined, logger);
 
@@ -390,12 +445,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Periodically prune sessions whose processes have exited (every 30s).
   // This ensures dead sessions are cleaned up promptly, not just at idle-timeout boundary.
+  // Also sweep core.bare so external flips (e.g. from `gh pr merge`) self-heal
+  // within 30s regardless of origin. See #1330.
   const pruneInterval = setInterval(() => {
     claudeServer.pruneDeadSessions();
     codexServer?.pruneDeadSessions();
     acpServer?.pruneDeadSessions();
     opencodeServer?.pruneDeadSessions();
     mockServer.pruneDeadSessions();
+    sweepCoreBare(db, logger);
   }, 30_000);
 
   // Update uptime and server gauges periodically
