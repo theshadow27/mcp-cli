@@ -96,3 +96,14 @@ Critical path: #1330 → #1299. If #1299 can't land cleanly by sprint end, v1.5.
 - **#1330 sticky fix is the third attempt**. Prior fixes (#1206, #1243) didn't stick. Implementer needs to actually root-cause which git operation flips `core.bare` and either patch that operation or add a startup-check guard. Adversarial review mandatory regardless of diff size.
 - **#1329 may touch auth/keychain code** — if the fix requires changing how the daemon polls `/api/oauth/usage`, expect scrutiny overlap with auth. Budget an extra review round.
 - **#1328 SQLite migration** adds schema; if done wrong, existing transition logs become unreadable. Adversarial review must check migration path from file-based log → SQLite.
+
+## Results
+
+- **Released**: v1.5.0 (stable; drops -rc.1 prerelease suffix from sprint 33's tag)
+- **PRs merged**: 15 / 15 planned (100%)
+- **Issues closed**: 15 (the planned set: #1299, #1316, #1317, #1318, #1324, #1327, #1328, #1329, #1330, #1331, #1341, #1345, #1346, #1348, #1359)
+- **Issues dropped**: 0
+- **New issues filed during sprint**: 13 (#1361, #1365, #1366, #1367, #1370, #1372, #1374, #1377, #1378, #1381, #1383, #1384, #1385, #1386, #1391, #1392, #1393, #1394, #1395, #1397 (merge-queue service), #1398 (mcx gc bug))
+- **Sprint duration**: ~7.5 hours end-to-end (first spawn 20:00 → last merge 03:41 next day)
+- **Patterns established**: mergemaster (release-train sonnet session), 4-surface PR comment enumeration, transactional qa label-swap, auto-merge re-arm after force-push, micro-repair self-select for reviewers
+- **Wind-down cleanup**: pruned 782 merged local branches (1181→399), 22 stale sprint worktrees, 107 dead remote refs
