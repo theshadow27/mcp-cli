@@ -124,8 +124,9 @@ export function findManifest(dir: string): string | null {
     try {
       const st = lstatSync(p);
       if (st.isFile()) return p;
-    } catch {
-      // not present; try next
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw e;
     }
   }
   return null;
