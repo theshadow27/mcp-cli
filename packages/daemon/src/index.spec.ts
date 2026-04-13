@@ -968,6 +968,44 @@ describe("sweepCoreBare (#1330)", () => {
     }
   });
 
+  test("uses cwd fallback when repoRoot is not set (legacy sessions)", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "sweep-cwd-fallback");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "legacy",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+      });
+
+      const execCalls: string[][] = [];
+      const healed = sweepCoreBare(
+        db,
+        silentLogger,
+        mockGitOps({
+          exec: (cmd: string[]) => {
+            execCalls.push(cmd);
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(healed).toBe(1);
+      expect(execCalls.some((c) => c.includes(repoDir))).toBe(true);
+      expect(execCalls.some((c) => c.includes("--unset") && c.includes("core.bare"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   test("survives when db has no sessions", () => {
     opts = testOptions();
     const db = new StateDb(opts.DB_PATH);
