@@ -106,7 +106,10 @@ describe("CODEX_SERVER_NAME", () => {
   });
 });
 
-// ── CodexServer integration (real Worker + MCP handshake) ──
+// ── CodexServer tests (mix of real-Worker integration and mock-based unit tests) ──
+// Read-only and DB-event tests use real Workers. Crash-recovery tests use
+// mockWorkerFactory to avoid spawning multiple Workers in rapid succession
+// (see the "Crash recovery" section comment for details).
 
 describe("CodexServer", () => {
   let server: CodexServer | undefined;
@@ -351,17 +354,35 @@ describe("CodexServer", () => {
   });
 
   // ── Crash recovery ──
+  //
+  // These tests use mockWorkerFactory + instant-connect client to avoid
+  // spawning real Bun Workers. Rapid worker respawn on CI occasionally hits
+  // a module resolution race (`Cannot find module '@mcp-cli/permissions'`)
+  // that only affects the codex worker chain (see #1345). The crash-recovery
+  // logic is independent of real Worker/MCP IO, so mocks exercise the same
+  // code paths deterministically.
+
+  const instantClient = () =>
+    ({
+      connect: async () => {},
+      close: async () => {},
+    }) as unknown as Client;
+
+  const makeMockServer = (stateDb: StateDb) =>
+    new CodexServer(stateDb, undefined, instantClient, silentLogger, undefined, undefined, mockWorkerFactory());
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
-    let restartedCalled = false;
-    server.onRestarted = () => {
-      restartedCalled = true;
+    let restartedClient: unknown;
+    let restartedTransport: unknown;
+    server.onRestarted = (c, t) => {
+      restartedClient = c;
+      restartedTransport = t;
     };
 
     const crash = (
@@ -369,13 +390,14 @@ describe("CodexServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    expect(restartedCalled).toBe(true);
+    expect(restartedClient).not.toBeNull();
+    expect(restartedTransport).not.toBeNull();
   });
 
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -401,7 +423,7 @@ describe("CodexServer", () => {
   test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -423,7 +445,7 @@ describe("CodexServer", () => {
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -455,7 +477,7 @@ describe("CodexServer", () => {
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
     await server.stop();
