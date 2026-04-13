@@ -11,7 +11,11 @@
  * Round cap: review_round >= 2 and issues remain → prefer qa (matches
  * run.md's "two reviews max" rule).
  *
- * State writes: review_session_id, review_round, previous_phase.
+ * State writes (this handler): review_session_id sentinel, review_round, previous_phase.
+ * Orchestrator responsibility: replace review_session_id "pending:*" with real
+ * session ID after spawn; delete review_session_id before re-entering review
+ * for a new round (so the handler spawns a fresh reviewer rather than reading
+ * the previous reviewer's comment).
  */
 import { defineAlias, z } from "mcp-cli";
 
@@ -64,6 +68,10 @@ defineAlias({
         ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
         : ["mcx", input.provider, "spawn"];
       const command = [...cmdBase, "--worktree", "--model", "sonnet", "-t", prompt, "--allow", ...allowTools];
+      // Persist round counter and sentinel before returning — re-entry returns
+      // "wait" (not a new spawn) until the orchestrator clears review_session_id.
+      await ctx.state.set("review_round", round);
+      await ctx.state.set("review_session_id", `pending:${Date.now()}`);
       return {
         action: "spawn" as const,
         reason: `review round ${round} starting`,

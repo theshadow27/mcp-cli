@@ -9,7 +9,10 @@
  * The handler is idempotent on re-entry: if `session_id` is already set in
  * state, it returns the existing session plus `action: "in-flight"`.
  *
- * State writes: session_id, worktree_path, model, provider, labels.
+ * State writes (this handler): model, provider, labels, session_id sentinel.
+ * Orchestrator responsibility: replace session_id "pending:*" with the real
+ * session ID after spawn; write worktree_path once the worktree is known;
+ * delete session_id on spawn failure so next entry re-spawns cleanly.
  */
 import { defineAlias, z } from "mcp-cli";
 
@@ -92,6 +95,10 @@ defineAlias({
     await ctx.state.set("provider", provider);
     await ctx.state.set("model", model);
     await ctx.state.set("labels", input.labels.join(","));
+    // Write a pending sentinel so re-entry returns "in-flight" instead of
+    // re-spawning. Orchestrator replaces this with the real session ID after
+    // spawn; deletes it on spawn failure.
+    await ctx.state.set("session_id", `pending:${Date.now()}`);
 
     return {
       action: "spawn" as const,

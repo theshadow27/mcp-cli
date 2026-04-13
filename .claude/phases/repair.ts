@@ -10,7 +10,9 @@
  *
  * Cap: repair_round >= 3 → goto needs-attention (matches "stop the loop").
  *
- * State writes: repair_session_id, repair_round.
+ * State writes (this handler): repair_session_id sentinel, repair_round.
+ * Orchestrator responsibility: replace repair_session_id "pending:*" with real
+ * session ID after spawn; delete it on spawn failure so next entry re-spawns.
  */
 import { defineAlias, z } from "mcp-cli";
 
@@ -23,7 +25,7 @@ defineAlias({
     provider: z.string().default("claude"),
   }),
   output: z.object({
-    action: z.enum(["spawn", "goto"]),
+    action: z.enum(["spawn", "goto", "in-flight"]),
     target: z.enum(["needs-attention"]).optional(),
     reason: z.string(),
     round: z.number(),
@@ -37,13 +39,25 @@ defineAlias({
       throw new Error("phase-repair requires a work item with prNumber");
     }
 
-    const round = ((await ctx.state.get<number>("repair_round")) ?? 0) + 1;
+    // In-flight guard — repair session already running; don't spawn a second.
+    const existingSession = await ctx.state.get<string>("repair_session_id");
+    if (existingSession) {
+      const round = (await ctx.state.get<number>("repair_round")) ?? 1;
+      return {
+        action: "in-flight" as const,
+        reason: `repair session in flight (round ${round})`,
+        round,
+      };
+    }
+
+    const prevRound = (await ctx.state.get<number>("repair_round")) ?? 0;
+    const round = prevRound + 1;
     if (round > REPAIR_ROUND_CAP) {
       return {
         action: "goto" as const,
         target: "needs-attention" as const,
         reason: `repair cap (${REPAIR_ROUND_CAP}) exceeded — escalating`,
-        round: round - 1,
+        round: prevRound,
       };
     }
 
@@ -62,7 +76,10 @@ defineAlias({
     const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
     const command = [...cmdBase, ...worktreeFlags, "--model", "opus", "-t", prompt, "--allow", ...allowTools];
 
+    // Persist round and sentinel before returning. Orchestrator replaces
+    // repair_session_id with real session ID; deletes on spawn failure.
     await ctx.state.set("repair_round", round);
+    await ctx.state.set("repair_session_id", `pending:${Date.now()}`);
 
     return {
       action: "spawn" as const,

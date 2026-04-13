@@ -10,7 +10,9 @@
  *
  * Cap: qa_fail_round >= 2 → needs-attention (matches "stop the loop").
  *
- * State writes: qa_session_id, qa_fail_round, previous_phase.
+ * State writes (this handler): qa_session_id sentinel, qa_fail_round, previous_phase.
+ * Orchestrator responsibility: replace qa_session_id "pending:*" with real
+ * session ID after spawn; delete it on spawn failure.
  */
 import { defineAlias, z } from "mcp-cli";
 
@@ -63,6 +65,9 @@ defineAlias({
         : ["mcx", input.provider, "spawn"];
       const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
       const command = [...cmdBase, ...worktreeFlags, "--model", "sonnet", "-t", prompt, "--allow", ...allowTools];
+      // Write sentinel before returning — prevents re-spawn on retry.
+      // Orchestrator replaces with real session ID after spawn.
+      await ctx.state.set("qa_session_id", `pending:${Date.now()}`);
       return {
         action: "spawn" as const,
         reason: "qa session starting",

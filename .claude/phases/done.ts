@@ -57,7 +57,9 @@ function mergePr(prNumber: number): MergeResult {
     stderr: "pipe",
   });
   const ungreen = Number.parseInt(new TextDecoder().decode(ciProc.stdout).trim(), 10);
-  if (Number.isFinite(ungreen) && ungreen > 0) {
+  // Default-deny: treat unparseable output (NaN) as "not green" — empty
+  // stdout means checks are pending or gh hiccuped; either way, block merge.
+  if (!Number.isFinite(ungreen) || ungreen > 0) {
     return {
       ok: false,
       reason: "ci_not_green",
