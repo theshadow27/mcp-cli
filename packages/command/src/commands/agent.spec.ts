@@ -1663,7 +1663,8 @@ describe("agent wait flags", () => {
 
   // --mail-to: surfaces mail:received events alongside session events (#1359)
   test("--mail-to wakes on incoming mail before session event", async () => {
-    // Session wait blocks forever; mail poll returns a message.
+    // Session wait blocks forever; mail poll returns a message dated in the future
+    // so it passes the HWM filter (createdAt > pollStart).
     const mailMsg = {
       id: 42,
       sender: "jacob",
@@ -1672,7 +1673,7 @@ describe("agent wait flags", () => {
       body: "CI broken",
       replyTo: null,
       read: false,
-      createdAt: "2026-04-12T22:47:00Z",
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const callTool = mock(() => new Promise(() => {})) as unknown as AgentDeps["callTool"];
     const deps = makeDeps({
@@ -1697,7 +1698,7 @@ describe("agent wait flags", () => {
       body: null,
       replyTo: null,
       read: false,
-      createdAt: "2026-04-12T22:47:00Z",
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as AgentDeps["callTool"],
@@ -1723,6 +1724,55 @@ describe("agent wait flags", () => {
   test("--mail-to without value errors", async () => {
     const deps = makeDeps();
     await expect(cmdAgent(["claude", "wait", "--mail-to"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("--mail-to does not wake on pre-existing unread mail (HWM filter)", async () => {
+    // Mail with a past createdAt predates the wait and must be filtered out.
+    // The wait should fall through to the session event, not surface stale mail.
+    const staleMail = {
+      id: 1,
+      sender: "jacob",
+      recipient: "orchestrator",
+      subject: "old message",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: new Date(Date.now() - 60_000).toISOString(), // 1 min ago
+    };
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ event: { event: "session:result" }, sessions: [] })),
+      pollMail: mock(async () => staleMail),
+    });
+    await cmdAgent(["claude", "wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).not.toContain('"source": "mail"');
+  });
+
+  test("--mail-to continues polling when pollMail throws transiently", async () => {
+    // First call throws (IPC blip), second call returns new mail. Wait must succeed.
+    const newMail = {
+      id: 99,
+      sender: "qa",
+      recipient: "orchestrator",
+      subject: "tests passing",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    let calls = 0;
+    const deps = makeDeps({
+      callTool: mock(() => new Promise(() => {})) as unknown as AgentDeps["callTool"],
+      pollMail: mock(async () => {
+        if (calls++ === 0) throw new Error("ECONNREFUSED");
+        return newMail;
+      }),
+    });
+    await cmdAgent(["claude", "wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    const output = logCalls(deps).join("\n");
+    const parsed = JSON.parse(output);
+    expect(parsed.source).toBe("mail");
+    expect(parsed.mail.id).toBe(99);
   });
 });
 

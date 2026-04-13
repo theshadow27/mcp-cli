@@ -2178,6 +2178,108 @@ describe("parseWaitArgs", () => {
   });
 });
 
+// ── claudeWait --mail-to behavioral tests ──
+
+describe("claudeWait --mail-to", () => {
+  test("wakes on incoming mail before session event", async () => {
+    // Session wait blocks forever; mail arrives with future createdAt (passes HWM filter).
+    const newMail = {
+      id: 42,
+      sender: "jacob",
+      recipient: "orchestrator",
+      subject: "main is red",
+      body: "CI broken",
+      replyTo: null,
+      read: false,
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const deps = makeDeps({
+      callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
+      pollMail: mock(async (recipient: string) => (recipient === "orchestrator" ? newMail : null)),
+    });
+    const origLog = console.log;
+    const logSpy = mock(() => {});
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
+    const parsed = JSON.parse(output);
+    expect(parsed.source).toBe("mail");
+    expect(parsed.mail.id).toBe(42);
+    expect(deps.pollMail).toHaveBeenCalledWith("orchestrator");
+  });
+
+  test("does not wake on pre-existing unread mail (HWM filter)", async () => {
+    // Mail created 1 minute ago predates the wait and must be ignored.
+    const staleMail = {
+      id: 1,
+      sender: "jacob",
+      recipient: "orchestrator",
+      subject: "old message",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    };
+    const deps = makeDeps({
+      callTool: mock(async () =>
+        toolResult({
+          event: { sessionId: "abc12345-1111-2222-3333-444444444444", event: "session:result" },
+          sessions: [],
+        }),
+      ),
+      pollMail: mock(async () => staleMail),
+    });
+    const origLog = console.log;
+    const logSpy = mock(() => {});
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
+    expect(output).not.toContain('"source": "mail"');
+  });
+
+  test("continues polling when pollMail throws transiently", async () => {
+    // First call throws (IPC blip), second returns new mail. Wait must succeed.
+    const newMail = {
+      id: 77,
+      sender: "qa",
+      recipient: "orchestrator",
+      subject: "tests passing",
+      body: null,
+      replyTo: null,
+      read: false,
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    let calls = 0;
+    const deps = makeDeps({
+      callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
+      pollMail: mock(async () => {
+        if (calls++ === 0) throw new Error("ECONNREFUSED");
+        return newMail;
+      }),
+    });
+    const origLog = console.log;
+    const logSpy = mock(() => {});
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
+    const parsed = JSON.parse(output);
+    expect(parsed.source).toBe("mail");
+    expect(parsed.mail.id).toBe(77);
+  });
+});
+
 // ── wait ──
 
 describe("mcx claude wait", () => {

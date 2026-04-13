@@ -185,17 +185,31 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
  * Poll for unread mail addressed to `recipient` until one arrives or the
  * deadline expires. Non-consuming — does not markRead, so the caller can
  * still read the message via `mcx mail -u <recipient>` afterward.
+ *
+ * `afterMs` is a `Date.now()` snapshot taken before polling begins. Only
+ * mail with `createdAt` strictly after that timestamp is surfaced, so
+ * pre-existing unread messages do not cause false-positive wakeups.
+ *
+ * Transient `pollMail` errors (IPC blips, daemon restart) are swallowed
+ * and retried until the deadline; a single network hiccup will not kill
+ * the entire wait.
  */
 async function pollMailUntil(
   d: Pick<AgentDeps, "pollMail">,
   recipient: string,
   timeoutMs: number,
+  afterMs: number,
   pollIntervalMs = 2000,
 ): Promise<MailMessage | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const msg = await d.pollMail(recipient);
-    if (msg) return msg;
+    let msg: MailMessage | null = null;
+    try {
+      msg = await d.pollMail(recipient);
+    } catch {
+      // Transient IPC error — continue polling until deadline
+    }
+    if (msg && new Date(msg.createdAt).getTime() > afterMs) return msg;
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await Bun.sleep(Math.min(pollIntervalMs, remaining));
@@ -995,7 +1009,8 @@ async function agentWait(
   let result: unknown;
   if (mailTo) {
     const totalMs = timeout ?? 300_000;
-    const mailPoll = pollMailUntil(d, mailTo, totalMs);
+    const pollStart = Date.now();
+    const mailPoll = pollMailUntil(d, mailTo, totalMs, pollStart);
     const winner = await Promise.race([
       waitPromise.then((r) => ({ kind: "session" as const, result: r })),
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
