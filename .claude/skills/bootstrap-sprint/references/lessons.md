@@ -250,3 +250,23 @@ session to re-learn the PR from scratch, discarding typed analysis
 session's verdict that depends on a resolvable external state should
 stay idle until the state resolves. Sessions are colleagues, not
 function calls.
+
+**30. Check repo ownership early — merge queue is org-only on GitHub.**
+Sprints that ship 15 PRs in parallel create an N² rebase cascade: each
+merge invalidates the others, so every auto-merge blocks on `BEHIND`.
+GitHub's merge queue solves this natively — but **only for
+Organization-owned repos on Team or Enterprise Cloud plans.** User-owned
+repos (personal accounts) cannot enable merge queue at any tier, and the
+option simply does not appear in the UI. During discovery, check
+`gh api users/<owner> --jq .type` — if it returns `User`, merge queue is
+off the table. The substitute is a long-lived sonnet "mergemaster"
+session (no worktree, only `gh pr update-branch --rebase` + poll CI +
+let auto-merge fire), started at sprint kickoff and fed PRs as they hit
+`qa:pass`. Document this trade-off explicitly in the generated sprint
+skill so the next operator knows *why* the workflow uses an agent
+instead of the native feature. Many consumers of this skill will be on
+orgs and should prefer the native queue; individual maintainers often
+migrate single-project repos into a personal org specifically to unlock
+merge queue and other collaboration-scale features (team-level
+CODEOWNERS, per-team runner groups, IP allowlisting, SSO). Mention both
+paths in the generated skill's pre-flight section.
