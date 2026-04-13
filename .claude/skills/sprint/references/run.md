@@ -177,6 +177,111 @@ Key invariants (not automatable, orchestrator discipline):
 **When a session fails to close an issue**, ask the user what to do. Don't
 silently move on. Every failure must be explicit in the retro.
 
+## Orchestrator-only nudges (not in worker prompts)
+
+Some directives apply to the orchestrator's coordination work and
+deliberately don't live in the worker spawn prompts (`.claude/commands/*.md`),
+because those prompts are also invoked by CI, by ad-hoc human runs, and by
+the GitHub Copilot integration — adding orchestrator-flow assumptions
+there pollutes the universal worker contract.
+
+### Before approving qa:pass for merge: enumerate all 4 PR-comment surfaces
+
+GitHub PR comments live on **four** distinct surfaces. Sprint 34's PR #1380
+shipped with **17 unresolved Copilot inline comments** because every phase
+agent only checked the PR-body surface. Before the orchestrator transitions
+a work item to `phase=done` (or hands it to the merge-runner), verify every
+open thread on every surface is addressed or dismissed:
+
+```bash
+PR=<pr-number>
+ISSUE=<issue-number>
+
+# Surface 1: PR body comments (the obvious one)
+gh pr view $PR --comments
+
+# Surface 2: Inline file:line comments — where Copilot code review lives
+gh api repos/<owner>/<repo>/pulls/$PR/comments \
+  --jq '[.[] | {id, path, line, user: .user.login, body: (.body[0:120])}]'
+
+# Surface 3: Review containers — APPROVED / CHANGES_REQUESTED / COMMENTED
+gh api repos/<owner>/<repo>/pulls/$PR/reviews \
+  --jq '[.[] | {state, user: .user.login, body: (.body[0:160])}]'
+
+# Surface 4: Linked-issue comments (the issue the PR `fixes`)
+gh issue view $ISSUE --comments
+```
+
+For each open thread, demand one of:
+
+- **Addressed:** code/doc fix in the PR + a reply on the thread citing the
+  fix commit. If the fix is present but the reply isn't, post one yourself
+  via `gh api repos/{o}/{r}/pulls/{pr}/comments/{thread-id}/replies -X POST -f body="..."`.
+- **Dismissed:** explicit reply explaining why (out of scope, incorrect,
+  resolved elsewhere). No silent skips.
+
+If any thread is neither, hold the merge — `send` the implementer or
+reviewer to address. Do not let `done` proceed.
+
+This will move into the `done.ts` phase script when #1397 (`mcx merge-queue`)
+or its precursor lands — at that point the check becomes deterministic and
+this section can be deleted.
+
+### Reviewer self-repair (micro-repair) — orchestrator send pattern
+
+When an adversarial reviewer posts `⚠️ Changes Requested` on a PR and the
+findings are 1–3 contained edits with file:line citations and concrete fix
+descriptions, **`send` the reviewer back to fix its own findings** instead
+of spawning a fresh opus repair session. Saved ~$10–15 across sprint 33
+and 34 across multiple PRs. The reviewer already has the worktree, the PR
+context, and its own diagnosis loaded.
+
+Send the reviewer something like:
+
+```text
+You flagged N issues on PR #<pr>. If they're contained fixes with your
+existing diagnosis, fix them yourself, push to <branch>, and update the
+sticky review with a delta table. If any need a redesign or multi-file
+judgment, reply 'needs opus repair'.
+```
+
+Let the reviewer self-select. When it replies `needs opus repair`, spawn a
+fresh opus repair session per the normal flow. When it pushes a fix and
+updates the sticky to ✅, transition the work item to QA.
+
+This pattern lives here (orchestrator-side) and not in
+`.claude/commands/adversarial-review.md` because the reviewer prompt is
+shared with CI-invoked reviews where there's no orchestrator to send back.
+
+### Auto-merge re-arm after force-push (when no merge-runner is active)
+
+When the orchestrator (rather than `agents/mergemaster.md` or a future
+`mcx merge-queue` service) is driving merges, force-push rebases silently
+invalidate GitHub auto-merge on some configurations. Before declaring a PR
+"queued for merge," verify:
+
+```bash
+gh pr view $PR --json autoMergeRequest
+```
+
+If `null`, re-arm with `gh pr merge $PR --squash --delete-branch --auto`.
+Once the merge-runner is active and owns the merge loop, this is its job
+(see `agents/mergemaster.md`); the orchestrator only intervenes when the
+runner has escalated.
+
+### qa:pass + qa:fail dual-label invariant (orchestrator audit)
+
+The QA worker swaps labels transactionally (`--add-label X --remove-label
+opposite`), but sprint 33's PR #1303 still ended up with both labels because
+an early QA didn't include the swap. As a defensive audit before merge:
+
+```bash
+gh pr view $PR --json labels -q '[.labels[].name]'
+```
+
+If both `qa:pass` and `qa:fail` appear, hold the merge and resolve manually
+— the QA history needs review, not a silent label cleanup.
+
 ## Sweeping main commits during a sprint
 
 If a commit lands on main mid-sprint that affects *every* branch (e.g.

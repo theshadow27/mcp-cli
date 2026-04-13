@@ -153,9 +153,17 @@ gh pr comment <pr-number> --body "$(cat <<'EOF'
 EOF
 )"
 
-# Then apply the label (one or the other — never both):
-gh pr edit <pr-number> --add-label qa:pass      # or qa:fail
+# Then apply the label TRANSACTIONALLY — one --add and one --remove in the
+# SAME command. Sprint 33's PR #1303 merged with both qa:pass AND qa:fail
+# attached because a re-QA after repair only added the new label without
+# removing the stale one. Always swap atomically:
+gh pr edit <pr-number> --add-label qa:pass --remove-label qa:fail
+# or
+gh pr edit <pr-number> --add-label qa:fail --remove-label qa:pass
 ```
+
+The `--remove-label` is a no-op if the opposite label isn't present, so the
+swap form is always safe to run regardless of prior state.
 
 **Do NOT merge the PR. Do NOT close the issue. Do NOT check out main.**
 Those actions are the orchestrator's responsibility. The orchestrator sits
@@ -210,6 +218,8 @@ File issues for:
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
 - **NEVER report READY FOR MERGE with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, report NOT READY.
+- **NEVER label `qa:pass` while open PR comment threads remain unaddressed.** All four surfaces (PR body, inline file:line, review containers, linked issue) must be clean. See Step 5b for enumeration commands.
+- **ALWAYS swap labels transactionally** — `gh pr edit <N> --add-label qa:pass --remove-label qa:fail` (or vice versa) in one command. Never `--add-label` without the matching `--remove-label`.
 - **NEVER move git branches.** No `git checkout main`, no `gh pr checkout`, no `gh pr merge`, no `git checkout <branch>`. Your worktree is already on the correct branch. Branch movement is the orchestrator's job.
 - Process ONE issue per invocation.
 - File issues for every problem you encounter, even if unrelated to the current task.
