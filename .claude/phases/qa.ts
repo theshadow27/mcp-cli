@@ -18,26 +18,39 @@ import { defineAlias, z } from "mcp-cli";
 
 const QA_FAIL_CAP = 2;
 
-function readQaLabel(prNumber: number): "pass" | "fail" | null {
+const ProviderSchema = z
+  .string()
+  .refine(
+    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
+    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
+  );
+
+function readQaLabels(prNumber: number): { hasPass: boolean; hasFail: boolean } {
   const proc = Bun.spawnSync({
     cmd: ["gh", "pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"],
     stdout: "pipe",
     stderr: "pipe",
   });
-  if (proc.exitCode !== 0) return null;
-  const lines = new TextDecoder().decode(proc.stdout).split(/\r?\n/);
-  for (const line of lines) {
-    if (line.trim() === "qa:pass") return "pass";
-    if (line.trim() === "qa:fail") return "fail";
-  }
-  return null;
+  if (proc.exitCode !== 0) return { hasPass: false, hasFail: false };
+  const names = new Set(
+    new TextDecoder().decode(proc.stdout).split(/\r?\n/).map((l) => l.trim()),
+  );
+  return { hasPass: names.has("qa:pass"), hasFail: names.has("qa:fail") };
+}
+
+function removeLabel(prNumber: number, label: string): void {
+  Bun.spawnSync({
+    cmd: ["gh", "pr", "edit", String(prNumber), "--remove-label", label],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 }
 
 defineAlias({
   name: "phase-qa",
   description: "Sprint phase: spawn QA session or act on its label verdict.",
   input: z.object({
-    provider: z.string().default("claude"),
+    provider: ProviderSchema.default("claude"),
   }),
   output: z.object({
     action: z.enum(["spawn", "wait", "goto"]),
@@ -77,14 +90,19 @@ defineAlias({
       };
     }
 
-    const label = readQaLabel(work.prNumber);
-    if (label === null) {
+    const { hasPass, hasFail } = readQaLabels(work.prNumber);
+    if (!hasPass && !hasFail) {
       return { action: "wait" as const, reason: "qa:pass / qa:fail label not set yet" };
     }
 
-    if (label === "pass") {
+    // Label hygiene: pass is the authoritative verdict when both are present
+    // (the most recent QA round set it). Strip the stale counterpart on
+    // every verdict so merge gates can trust "pass xor fail" (see #1303).
+    if (hasPass) {
+      if (hasFail) removeLabel(work.prNumber, "qa:fail");
       return { action: "goto" as const, target: "done" as const, reason: "qa:pass → done" };
     }
+    // hasFail only — no stale pass possible (we would have returned above).
 
     const round = ((await ctx.state.get<number>("qa_fail_round")) ?? 0) + 1;
     if (round > QA_FAIL_CAP) {

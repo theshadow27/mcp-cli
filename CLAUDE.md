@@ -64,9 +64,11 @@ packages/
 `.mcx.yaml` at the repo root declares the sprint phase graph (impl → triage
 → review/qa → repair/done/needs-attention). Per-phase logic lives in
 `.claude/phases/*.ts` as `defineAlias` scripts — inspect with `mcx phase
-show <name>` or preview with `mcx phase run <name> --dry-run`. Run `mcx
-phase install` after editing any phase source to regenerate `.mcx.lock`.
-See `docs/phases.md` for the manifest schema and authoring guide.
+show <name>`. Do not rely on `mcx phase run <name> --dry-run` to preview
+sprint phases: the current dry-run runner does not provide work-item
+context, so phases that require `ctx.workItem` will throw. Run `mcx phase
+install` after editing any phase source to regenerate `.mcx.lock`. See
+`docs/phases.md` for the manifest schema and authoring guide.
 
 ## Project Structure
 

@@ -18,11 +18,18 @@ import { defineAlias, z } from "mcp-cli";
 
 const REPAIR_ROUND_CAP = 3;
 
+const ProviderSchema = z
+  .string()
+  .refine(
+    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
+    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
+  );
+
 defineAlias({
   name: "phase-repair",
   description: "Sprint phase: spawn opus repair session for a PR with blockers.",
   input: z.object({
-    provider: z.string().default("claude"),
+    provider: ProviderSchema.default("claude"),
   }),
   output: z.object({
     action: z.enum(["spawn", "goto", "in-flight"]),

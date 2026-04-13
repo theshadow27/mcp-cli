@@ -21,6 +21,13 @@ import { defineAlias, z } from "mcp-cli";
 
 const REVIEW_ROUND_CAP = 2;
 
+const ProviderSchema = z
+  .string()
+  .refine(
+    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
+    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
+  );
+
 function scanReviewComments(prNumber: number): { found: boolean; hasBlockers: boolean; summary: string } {
   const proc = Bun.spawnSync({
     cmd: ["gh", "pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"],
@@ -40,7 +47,7 @@ defineAlias({
   name: "phase-review",
   description: "Sprint phase: spawn adversarial reviewer or act on its sticky comment.",
   input: z.object({
-    provider: z.string().default("claude"),
+    provider: ProviderSchema.default("claude"),
   }),
   output: z.object({
     action: z.enum(["spawn", "wait", "goto"]),

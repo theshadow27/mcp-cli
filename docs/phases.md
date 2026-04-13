@@ -53,7 +53,7 @@ export default defineAlias({
 
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
-| `version` | `1` | yes | Manifest format discriminator |
+| `version` | `1` | no | Manifest format discriminator; defaults to `1` when omitted |
 | `runsOn` | string | no | Branch the orchestrator must stand on (e.g. `main`) |
 | `worktree.setup` | string | no | Command run after worktree creation |
 | `worktree.teardown` | string | no | Command run before worktree removal |
@@ -133,6 +133,23 @@ mcx phase run <name> --dry-run     # execute the handler with a logging proxy
 
 Transitions are logged to `.mcx/transitions.jsonl`. Disallowed or regressive
 transitions fail unless `--force "<message>"` is supplied.
+
+### Dry-run limitations
+
+`mcx phase run <name> --dry-run` is currently unreliable for sprint-style
+phases:
+
+- The global `--dry-run` flag is stripped before `cmdPhase` sees it, so the
+  command dispatches to the transition validator instead of the handler
+  runner (#1396).
+- Once that bug is fixed, the dry-run runner invokes handlers with
+  `ctx.workItem = null` and an empty `ctx.state`. Handlers that assert on
+  `ctx.workItem` (e.g. the sprint phases in `.claude/phases/`) will throw
+  rather than preview.
+
+For now, use `mcx phase show <name>` to inspect the resolved source and
+schemas; run handlers under the real orchestrator to exercise their logic.
+Plumbing a work-item payload through dry-run is tracked in #1396.
 
 ## Copying mcp-cli's sprint pipeline
 

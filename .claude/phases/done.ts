@@ -1,5 +1,5 @@
 /**
- * Phase: done — terminal. Merge the PR, mark the work item done, untrack.
+ * Phase: done — terminal. Merge the PR, mark the work item done.
  *
  * Named failure modes (per #1284 spec): on any pre-merge guard failure,
  * return a structured error describing the single next action the operator
@@ -7,7 +7,9 @@
  *
  * Success side effects: squash-merge (delete branch), update work item
  * phase=done, git pull on main (safe — runsOn=main guarantees cwd), clear
- * per-work-item scratchpad.
+ * per-work-item scratchpad. The orchestrator handles untracking via the
+ * work_items MCP once phase=done is observed — this handler does not call
+ * untrack directly.
  */
 import { defineAlias, z } from "mcp-cli";
 
@@ -38,6 +40,16 @@ function mergePr(prNumber: number): MergeResult {
       ok: false,
       reason: "missing_qa_pass",
       nextAction: `spawn qa for PR #${prNumber}; do not transition to done until qa:pass is set`,
+    };
+  }
+  // Guard 1b: qa:fail must not also be present. Stale qa:fail from an
+  // earlier round means label hygiene failed upstream (see #1303) — block
+  // merge so operator can investigate which verdict is authoritative.
+  if (labels.includes("qa:fail")) {
+    return {
+      ok: false,
+      reason: "missing_qa_pass",
+      nextAction: `PR #${prNumber} has both qa:pass and qa:fail; remove the stale label before merge`,
     };
   }
 

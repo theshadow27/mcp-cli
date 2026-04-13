@@ -62,7 +62,15 @@ defineAlias({
     };
 
     // Flaky issues are always high scrutiny — adversarial review required.
-    const isFlaky = input.labels.includes("flaky");
+    // Labels come from input when the orchestrator passes them explicitly;
+    // otherwise fall back to the comma-separated string impl.ts wrote to state.
+    const labels = input.labels.length > 0
+      ? input.labels
+      : ((await ctx.state.get<string>("labels")) ?? "")
+          .split(",")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+    const isFlaky = labels.includes("flaky");
     const scrutiny = isFlaky ? "high" : raw.scrutiny;
     const reasons = isFlaky && raw.scrutiny !== "high" ? [...raw.reasons, "label:flaky forces high scrutiny"] : raw.reasons;
     const decision: z.infer<typeof DecisionSchema> = scrutiny === "high" ? "review" : "qa";
