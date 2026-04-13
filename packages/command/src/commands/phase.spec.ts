@@ -1026,6 +1026,10 @@ describe("parsePhaseLogArgs", () => {
   test("rejects bare --work-item", () => {
     expect(() => parsePhaseLogArgs(["--work-item"])).toThrow(/--work-item requires/);
   });
+
+  test("rejects --work-item= with empty value", () => {
+    expect(() => parsePhaseLogArgs(["--work-item="])).toThrow(/--work-item requires/);
+  });
 });
 
 describe("filterTransitionLog", () => {
@@ -1063,9 +1067,9 @@ describe("formatTransitionLog", () => {
 
 describe("cmdPhase log", () => {
   test("prints nothing-recorded message when log is empty", async () => {
-    const { deps, errs } = makeDriftDeps(dir);
+    const { deps, logs } = makeDriftDeps(dir);
     await cmdPhase(["log"], deps);
-    expect(errs.some((e) => e.includes("no transitions recorded"))).toBe(true);
+    expect(logs.some((l) => l.includes("no transitions recorded"))).toBe(true);
   });
 
   test("prints entries newest-first and honors --forced-only and --work-item", async () => {

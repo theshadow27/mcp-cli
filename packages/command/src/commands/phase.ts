@@ -274,9 +274,10 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
     const a = args[i];
     if (a === "--work-item") {
       workItemId = args[++i] ?? null;
-      if (workItemId === null) throw new Error("--work-item requires an id");
+      if (!workItemId) throw new Error("--work-item requires a non-empty id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
+      if (!workItemId) throw new Error("--work-item requires a non-empty id");
     } else if (a === "--forced-only") {
       forcedOnly = true;
     } else if (a === "--json") {
@@ -670,7 +671,7 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       if (opts.json) {
         for (const e of entries) d.log(JSON.stringify(e));
       } else if (entries.length === 0) {
-        d.logError("no transitions recorded");
+        d.log("no transitions recorded");
       } else {
         for (const line of formatTransitionLog(entries)) d.log(line);
       }

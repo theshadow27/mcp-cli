@@ -237,7 +237,7 @@ export function readTransitionHistory(
 
 /**
  * Read every transition log entry from a JSONL file, oldest first.
- * Missing file → empty array. Malformed lines skipped silently.
+ * Missing file → empty array. Malformed lines are warned to stderr and skipped.
  */
 export function readAllTransitions(logPath: string): TransitionLogEntry[] {
   let text: string;
@@ -248,12 +248,15 @@ export function readAllTransitions(logPath: string): TransitionLogEntry[] {
     throw err;
   }
   const out: TransitionLogEntry[] = [];
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  const onCorrupt = defaultOnCorruptLine(logPath);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line) continue;
     try {
       out.push(JSON.parse(line) as TransitionLogEntry);
-    } catch {
-      // skip corrupt line
+    } catch (err) {
+      onCorrupt(i + 1, line, err);
     }
   }
   return out;
