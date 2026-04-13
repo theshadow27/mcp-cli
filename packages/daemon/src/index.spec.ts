@@ -18,7 +18,7 @@ import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import type { DaemonHandle, PruneGitOps } from "./index";
-import { pruneOrphanedWorktrees, startDaemon } from "./index";
+import { pruneOrphanedWorktrees, startDaemon, sweepCoreBare } from "./index";
 
 setDefaultTimeout(15_000);
 
@@ -838,6 +838,180 @@ describe("pruneOrphanedWorktrees", () => {
       expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
       // And logged a warning
       expect(warnMessages.some((m) => m.includes("core.bare"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("instrumentation: logs which op flipped core.bare (#1330)", () => {
+    // Simulate core.bare being flipped to true *by* the worktree remove op —
+    // before=false, after=true. Warning should identify the op.
+    opts = testOptions();
+    const repoDir = join(opts.dir, "repo-instrument");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({ sessionId: "e1", pid: 99999, model: "sonnet", cwd: repoDir, worktree: "wt-e1" });
+      db.endSession("e1");
+
+      const warnMessages: string[] = [];
+      const logger = { ...silentLogger, warn: (msg: string) => warnMessages.push(msg) };
+
+      let removed = false;
+      pruneOrphanedWorktrees(
+        db,
+        logger,
+        mockGitOps({
+          pathExists: () => true,
+          removeWorktree: () => {
+            removed = true;
+            return { exitCode: 0 };
+          },
+          exec: (cmd: string[]) => {
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              // Flip only after removeWorktree runs
+              return { exitCode: 0, stdout: removed ? "true\n" : "false\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(warnMessages.some((m) => m.includes("flipped") && m.includes("worktree remove"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("sweepCoreBare (#1330)", () => {
+  let opts: ReturnType<typeof testOptions> | undefined;
+
+  afterEach(() => {
+    if (opts) {
+      opts[Symbol.dispose]();
+      opts = undefined;
+    }
+  });
+
+  test("heals stuck core.bare=true on repos from active + ended sessions", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "sweep-repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "active",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+      });
+
+      const execCalls: string[][] = [];
+      const warnMessages: string[] = [];
+      const logger = { ...silentLogger, warn: (msg: string) => warnMessages.push(msg) };
+
+      const healed = sweepCoreBare(
+        db,
+        logger,
+        mockGitOps({
+          exec: (cmd: string[]) => {
+            execCalls.push(cmd);
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(healed).toBe(1);
+      expect(execCalls.some((c) => c.includes("--unset") && c.includes("core.bare"))).toBe(true);
+      expect(warnMessages.some((m) => m.includes("Healed core.bare=true"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("returns 0 when no repos need healing", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "sweep-clean");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "active",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+      });
+
+      const healed = sweepCoreBare(
+        db,
+        silentLogger,
+        mockGitOps({
+          exec: () => ({ exitCode: 0, stdout: "false\n" }),
+        }),
+      );
+
+      expect(healed).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("uses cwd fallback when repoRoot is not set (legacy sessions)", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "sweep-cwd-fallback");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "legacy",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+      });
+
+      const execCalls: string[][] = [];
+      const healed = sweepCoreBare(
+        db,
+        silentLogger,
+        mockGitOps({
+          exec: (cmd: string[]) => {
+            execCalls.push(cmd);
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(healed).toBe(1);
+      expect(execCalls.some((c) => c.includes(repoDir))).toBe(true);
+      expect(execCalls.some((c) => c.includes("--unset") && c.includes("core.bare"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("survives when db has no sessions", () => {
+    opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      const healed = sweepCoreBare(db, silentLogger, mockGitOps());
+      expect(healed).toBe(0);
     } finally {
       db.close();
     }

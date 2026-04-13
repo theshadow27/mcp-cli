@@ -39,6 +39,17 @@ export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
 }
 
 /**
+ * Read-only probe: returns true when `core.bare` is set to "true" on the repo.
+ * Used to instrument git ops — compare before/after to detect which operation
+ * flipped the bit. See #1330.
+ */
+export function isCoreBareSet(cwd: string, exec: ExecFn): boolean {
+  if (!existsSync(join(cwd, ".git"))) return false;
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "core.bare"]);
+  return exitCode === 0 && stdout.trim() === "true";
+}
+
+/**
  * Environment for git repo-discovery commands: strip inherited GIT_DIR,
  * GIT_WORK_TREE, and GIT_COMMON_DIR so that the caller's git-hook environment
  * does not override filesystem-based discovery. findGitRoot is meant to
