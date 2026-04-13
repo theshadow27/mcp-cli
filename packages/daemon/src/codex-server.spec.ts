@@ -106,7 +106,10 @@ describe("CODEX_SERVER_NAME", () => {
   });
 });
 
-// ── CodexServer integration (real Worker + MCP handshake) ──
+// ── CodexServer tests (mix of real-Worker integration and mock-based unit tests) ──
+// Read-only and DB-event tests use real Workers. Crash-recovery tests use
+// mockWorkerFactory to avoid spawning multiple Workers in rapid succession
+// (see the "Crash recovery" section comment for details).
 
 describe("CodexServer", () => {
   let server: CodexServer | undefined;
@@ -375,9 +378,11 @@ describe("CodexServer", () => {
 
     await server.start();
 
-    let restartedCalled = false;
-    server.onRestarted = () => {
-      restartedCalled = true;
+    let restartedClient: unknown;
+    let restartedTransport: unknown;
+    server.onRestarted = (c, t) => {
+      restartedClient = c;
+      restartedTransport = t;
     };
 
     const crash = (
@@ -385,7 +390,8 @@ describe("CodexServer", () => {
     ).handleWorkerCrash.bind(server);
     await crash("test crash");
 
-    expect(restartedCalled).toBe(true);
+    expect(restartedClient).not.toBeNull();
+    expect(restartedTransport).not.toBeNull();
   });
 
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
