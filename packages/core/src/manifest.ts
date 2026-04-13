@@ -225,6 +225,8 @@ export function loadManifest(dir: string): { path: string; manifest: Manifest } 
     }
   } catch (err) {
     if (err instanceof ManifestError) throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
     throw new ManifestError(`failed to stat: ${err instanceof Error ? err.message : String(err)}`, path);
   }
 
