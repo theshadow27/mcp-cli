@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { silentLogger } from "@mcp-cli/core";
 import type { ClaudeOAuthToken } from "./auth/keychain";
 import { QuotaPoller, type QuotaStatus, parseUsageResponse } from "./quota";
 
@@ -215,6 +216,83 @@ describe("QuotaPoller", () => {
     });
     poller.stop();
     poller.stop();
+  });
+
+  test("applies exponential backoff on rate-limit error", async () => {
+    const warnings: string[] = [];
+    let calls = 0;
+    const poller = new QuotaPoller({
+      intervalMs: 20,
+      logger: {
+        info: () => {},
+        warn: (msg: string) => warnings.push(msg),
+        error: () => {},
+        debug: () => {},
+      },
+      readToken: async () => fakeToken,
+      fetchUsage: async () => {
+        calls++;
+        throw new Error(
+          'Quota API returned 429: {"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}',
+        );
+      },
+    });
+
+    poller.start();
+    await Bun.sleep(120);
+    poller.stop();
+
+    // With base interval of 20ms and backoff doubling (40ms, 80ms, ...), we should
+    // see fewer calls than without backoff (which would be ~6 in 120ms).
+    expect(calls).toBeLessThanOrEqual(4);
+    expect(poller.backoffMs).toBeGreaterThanOrEqual(40);
+    expect(poller.lastError).toContain("rate_limit_error");
+    expect(warnings.some((w) => w.includes("rate-limited") && w.includes("backing off"))).toBe(true);
+  });
+
+  test("preserves last cached status during rate-limit", async () => {
+    let callCount = 0;
+    const poller = new QuotaPoller({
+      intervalMs: 20,
+      logger: silentLogger,
+      readToken: async () => fakeToken,
+      fetchUsage: async () => {
+        callCount++;
+        if (callCount === 1) return parseUsageResponse(SAMPLE_RESPONSE);
+        throw new Error("Quota API returned 429: rate_limit_error");
+      },
+    });
+
+    poller.start();
+    await Bun.sleep(120);
+    poller.stop();
+
+    // Cached status from first successful fetch is still available
+    expect(poller.status?.fiveHour?.utilization).toBe(42);
+    expect(poller.lastError).toContain("429");
+  });
+
+  test("resets backoff after successful fetch", async () => {
+    let callCount = 0;
+    const poller = new QuotaPoller({
+      intervalMs: 20,
+      logger: silentLogger,
+      readToken: async () => fakeToken,
+      fetchUsage: async () => {
+        callCount++;
+        if (callCount <= 2) throw new Error("Quota API returned 429: rate_limit_error");
+        return parseUsageResponse(SAMPLE_RESPONSE);
+      },
+    });
+
+    poller.start();
+    // Wait long enough for: fail(20ms base) → backoff(40ms) → fail → backoff(80ms) → success
+    await Bun.sleep(250);
+    poller.stop();
+
+    expect(poller.lastError).toBeNull();
+    expect(poller.backoffMs).toBeNull();
+    expect(poller.status?.fiveHour?.utilization).toBe(42);
   });
 
   test("start is idempotent", async () => {
