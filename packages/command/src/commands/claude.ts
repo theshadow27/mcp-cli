@@ -1412,7 +1412,11 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         error = "--timeout requires a value in ms";
       } else {
         timeout = Number(val);
-        if (Number.isNaN(timeout)) error = "--timeout must be a number";
+        if (Number.isNaN(timeout)) {
+          error = "--timeout must be a number";
+        } else if (timeout > 299_000) {
+          error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout 270000 (4:30) or loop with shorter waits.`;
+        }
       }
     } else if (arg === "--after") {
       const val = args[++i];

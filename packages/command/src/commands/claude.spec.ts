@@ -2065,6 +2065,24 @@ describe("parseWaitArgs", () => {
     expect(result.error).toBe("--timeout requires a value in ms");
   });
 
+  test("rejects --timeout > 299000ms (cache TTL cap)", () => {
+    const result = parseWaitArgs(["--timeout", "300000"]);
+    expect(result.error).toContain("exceeds 4:59 cache-safe limit");
+    expect(result.error).toContain("300000ms");
+  });
+
+  test("accepts --timeout at cache-safe boundary (299000)", () => {
+    const result = parseWaitArgs(["--timeout", "299000"]);
+    expect(result.error).toBeUndefined();
+    expect(result.timeout).toBe(299000);
+  });
+
+  test("accepts recommended --timeout 270000", () => {
+    const result = parseWaitArgs(["--timeout", "270000"]);
+    expect(result.error).toBeUndefined();
+    expect(result.timeout).toBe(270000);
+  });
+
   test("parses --after flag", () => {
     const result = parseWaitArgs(["--after", "42"]);
     expect(result.afterSeq).toBe(42);
