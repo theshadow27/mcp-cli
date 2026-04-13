@@ -45,6 +45,30 @@ class Semaphore {
   }
 }
 
+/**
+ * Magic argument name used by MCP callers to pass their cwd through the
+ * CallToolRequest (which has no native cwd field). Stripped before the
+ * arguments reach the alias handler.
+ */
+export const ALIAS_MCP_CWD_ARG = "__cwd";
+
+/**
+ * Extract the `__cwd` magic argument from MCP tool call arguments.
+ * Returns the cwd (if valid) and a copy of the args with `__cwd` removed.
+ * Non-string `__cwd` values are ignored and stripped silently.
+ */
+export function extractMagicCwd(args: Record<string, unknown> | undefined): {
+  cwd: string | undefined;
+  sanitizedArgs: Record<string, unknown>;
+} {
+  if (!args || !(ALIAS_MCP_CWD_ARG in args)) {
+    return { cwd: undefined, sanitizedArgs: args ?? {} };
+  }
+  const { [ALIAS_MCP_CWD_ARG]: raw, ...rest } = args;
+  const cwd = typeof raw === "string" && raw.length > 0 ? raw : undefined;
+  return { cwd, sanitizedArgs: rest };
+}
+
 /** Serializable tool definition */
 export interface AliasToolDef {
   name: string;
@@ -114,8 +138,13 @@ export class AliasServer {
         };
       }
 
+      // The MCP CallToolRequest schema has no cwd field. Callers (e.g. Claude
+      // Code via `mcx serve`) pass a `__cwd` magic argument so ctx.state
+      // resolves to the correct repo root instead of the NO_REPO_ROOT bucket.
+      const { cwd, sanitizedArgs } = extractMagicCwd(args);
+
       try {
-        const result = await this.executeInSubprocess(aliasDef, args ?? {}, undefined, undefined);
+        const result = await this.executeInSubprocess(aliasDef, sanitizedArgs, undefined, cwd);
         const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
         return { content: [{ type: "text" as const, text }] };
       } catch (err) {
