@@ -351,11 +351,27 @@ describe("CodexServer", () => {
   });
 
   // ── Crash recovery ──
+  //
+  // These tests use mockWorkerFactory + instant-connect client to avoid
+  // spawning real Bun Workers. Rapid worker respawn on CI occasionally hits
+  // a module resolution race (`Cannot find module '@mcp-cli/permissions'`)
+  // that only affects the codex worker chain (see #1345). The crash-recovery
+  // logic is independent of real Worker/MCP IO, so mocks exercise the same
+  // code paths deterministically.
+
+  const instantClient = () =>
+    ({
+      connect: async () => {},
+      close: async () => {},
+    }) as unknown as Client;
+
+  const makeMockServer = (stateDb: StateDb) =>
+    new CodexServer(stateDb, undefined, instantClient, silentLogger, undefined, undefined, mockWorkerFactory());
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -375,7 +391,7 @@ describe("CodexServer", () => {
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -401,7 +417,7 @@ describe("CodexServer", () => {
   test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -423,7 +439,7 @@ describe("CodexServer", () => {
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
 
@@ -455,7 +471,7 @@ describe("CodexServer", () => {
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new CodexServer(db, undefined, undefined, silentLogger);
+    server = makeMockServer(db);
 
     await server.start();
     await server.stop();
