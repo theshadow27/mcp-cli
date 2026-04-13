@@ -199,16 +199,17 @@ describe("createWorktree", () => {
     const result = createWorktree({ name: "my-feat", repoRoot: tmpDir, branchPrefix: "claude/" }, deps);
     expect(result.shimmed).toBe(true);
 
-    // Verify core.bare was checked after worktree add
-    const coreBareReadIdx = execCalls.findIndex(
-      (c) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset"),
-    );
+    // Verify core.bare was checked both before and after worktree add
     const worktreeAddIdx = execCalls.findIndex((c) => c.includes("worktree") && c.includes("add"));
-    expect(coreBareReadIdx).toBeGreaterThan(worktreeAddIdx);
+    const isCoreBareRead = (c: string[]) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset");
+    // There should be a read BEFORE the add (pre-probe) and one AFTER (post-probe / fixCoreBare)
+    expect(execCalls.slice(0, worktreeAddIdx).some(isCoreBareRead)).toBe(true);
+    const coreBareReadAfterIdx = execCalls.findIndex((c, i) => i > worktreeAddIdx && isCoreBareRead(c));
+    expect(coreBareReadAfterIdx).toBeGreaterThan(worktreeAddIdx);
 
     // Verify it was fixed (core.bare unset)
     const coreBareFixIdx = execCalls.findIndex((c) => c.includes("--unset") && c.includes("core.bare"));
-    expect(coreBareFixIdx).toBeGreaterThan(coreBareReadIdx);
+    expect(coreBareFixIdx).toBeGreaterThan(coreBareReadAfterIdx);
 
     // Should log the fix
     expect(deps.printError).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");

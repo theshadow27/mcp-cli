@@ -11,7 +11,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecFn } from "./git";
-import { fixCoreBare } from "./git";
+import { fixCoreBare, isCoreBareSet } from "./git";
 import {
   buildHookEnv,
   hasWorktreeHooks,
@@ -132,9 +132,15 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 2: branchPrefix: false — create with raw branch name
   if (wtConfig?.branchPrefix === false) {
     const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
+    const bareBeforeAdd2 = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
     const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", name, "HEAD"]);
     if (exitCode !== 0) {
       throw new WorktreeError(`Failed to create worktree: ${stderr}`);
+    }
+    if (!bareBeforeAdd2 && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printError(
+        `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
+      );
     }
     if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
       deps.printError("Fixed core.bare=true after worktree add");
@@ -159,9 +165,15 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 4: Shim creates worktree with prefixed branch name
   const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
   const gitBranch = branchPrefix ? `${branchPrefix}${name}` : name;
+  const bareBeforeAdd4 = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
   const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", gitBranch, "HEAD"]);
   if (exitCode !== 0) {
     throw new WorktreeError(`Failed to create worktree: ${stderr}`);
+  }
+  if (!bareBeforeAdd4 && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError(
+      `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
+    );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
     deps.printError("Fixed core.bare=true after worktree add");
@@ -206,8 +218,14 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
         deps.printError(`Worktree teardown hook failed for: ${worktreePath}: ${hookStderr}`);
       }
     } else {
+      const bareBeforeCleanup = isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd));
       const { exitCode: removeExit } = deps.exec(["git", "-C", effectiveRoot, "worktree", "remove", worktreePath]);
       if (removeExit === 0) {
+        if (!bareBeforeCleanup && isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd))) {
+          deps.printError(
+            `[shim] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${effectiveRoot}) — see #1330`,
+          );
+        }
         if (fixCoreBare(effectiveRoot, (cmd) => deps.exec(cmd))) {
           deps.printError("Fixed core.bare=true after worktree removal");
         }
@@ -238,8 +256,12 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
 /** Delete a branch if it's been merged (git branch -d is safe — refuses unmerged). */
 function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
   if (!branch) return false;
+  const bareBeforeDelete = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
   const { exitCode } = deps.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
   if (exitCode === 0) {
+    if (!bareBeforeDelete && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printError(`[shim] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`);
+    }
     deps.printError(`Deleted branch: ${branch} (merged)`);
     return true;
   }
@@ -403,8 +425,14 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
         deps.printError(`Worktree teardown hook failed for: ${wt.path}: ${hookStderr}`);
       }
     } else {
+      const bareBeforePrune = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
       const { exitCode: removeExit } = deps.exec(["git", "-C", repoRoot, "worktree", "remove", wt.path]);
       if (removeExit === 0) {
+        if (!bareBeforePrune && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+          deps.printError(
+            `[shim] core.bare flipped to true by: git worktree remove ${wt.path} (repo=${repoRoot}) — see #1330`,
+          );
+        }
         if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
           deps.printError("Fixed core.bare=true after worktree removal");
         }

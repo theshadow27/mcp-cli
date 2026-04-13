@@ -167,6 +167,7 @@ export function sweepCoreBare(
     }
     for (const s of db.listSessions(false)) {
       if (s.repoRoot) roots.add(s.repoRoot);
+      else if (s.cwd) roots.add(s.cwd);
     }
     for (const root of roots) {
       if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
