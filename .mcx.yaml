@@ -1,0 +1,56 @@
+version: 1
+
+# Sprint pipeline — dogfooded from .claude/skills/sprint/references/run.md.
+# See docs/phases.md for the manifest schema and authoring guide.
+runsOn: main
+
+initial: impl
+
+# Built-ins (issueNumber, prNumber, branch, phase) are populated from the
+# work_items row via ctx.workItem. Keys below are the per-work-item
+# scratchpad accessible via ctx.state.get / .set. Types declared here are
+# advisory today (execution-time Zod enforcement tracked in #1286).
+state:
+  session_id: string?
+  review_session_id: string?
+  repair_session_id: string?
+  qa_session_id: string?
+  worktree_path: string?
+  triage_scrutiny: string?
+  triage_reasons: string?
+  review_round: number?
+  repair_round: number?
+  qa_fail_round: number?
+  previous_phase: string?
+  provider: string?
+  labels: string?
+  model: string?
+
+phases:
+  impl:
+    source: ./.claude/phases/impl.ts
+    next: [triage]
+
+  triage:
+    source: ./.claude/phases/triage.ts
+    next: [review, qa]
+
+  review:
+    source: ./.claude/phases/review.ts
+    next: [repair, qa]
+
+  repair:
+    source: ./.claude/phases/repair.ts
+    next: [review, qa, needs-attention]
+
+  qa:
+    source: ./.claude/phases/qa.ts
+    next: [done, repair, needs-attention]
+
+  done:
+    source: ./.claude/phases/done.ts
+    next: []
+
+  needs-attention:
+    source: ./.claude/phases/needs-attention.ts
+    next: []

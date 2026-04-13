@@ -16,3 +16,6 @@ tsconfig.tsbuildinfo
 .clone/
 .claude/worktrees/
 test-timings.json
+
+# Phase runtime state (ephemeral per sprint)
+.mcx/

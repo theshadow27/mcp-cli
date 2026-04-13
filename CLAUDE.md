@@ -59,6 +59,17 @@ packages/
 - **No implementation code in index files**: `index.ts` is for barrel exports only. Entry points go in `main.ts` (or `main.tsx`). This keeps testable code separate from untestable process boilerplate.
 - **Bun segfaults**: If you encounter a Bun segfault (panic/crash after tests pass, especially in CI), add the crash details (bun.report URL, address, worker count, Bun version) as a comment on #1004. We're collecting data for an upstream bug report. **Always `open` the bun.report URL** so the crash telemetry reaches Bun's team.
 
+## Orchestration manifest
+
+`.mcx.yaml` at the repo root declares the sprint phase graph (impl → triage
+→ review/qa → repair/done/needs-attention). Per-phase logic lives in
+`.claude/phases/*.ts` as `defineAlias` scripts — inspect with `mcx phase
+show <name>`. Do not rely on `mcx phase run <name> --dry-run` to preview
+sprint phases: the current dry-run runner does not provide work-item
+context, so phases that require `ctx.workItem` will throw. Run `mcx phase
+install` after editing any phase source to regenerate `.mcx.lock`. See
+`docs/phases.md` for the manifest schema and authoring guide.
+
 ## Project Structure
 
 ```
