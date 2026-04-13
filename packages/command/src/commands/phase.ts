@@ -721,9 +721,26 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
 async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   const positional: string[] = [];
   const flags = new Set<string>();
-  for (const a of argv) {
-    if (a.startsWith("--")) flags.add(a);
-    else positional.push(a);
+  const extraArgs: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--arg") {
+      const pair = argv[++i];
+      if (!pair) {
+        d.logError("--arg requires a key=val argument");
+        d.exit(1);
+      }
+      const eq = pair.indexOf("=");
+      if (eq === -1) {
+        d.logError(`--arg value must be in key=val form, got: ${pair}`);
+        d.exit(1);
+      }
+      extraArgs[pair.slice(0, eq)] = pair.slice(eq + 1);
+    } else if (a.startsWith("--")) {
+      flags.add(a);
+    } else {
+      positional.push(a);
+    }
   }
   const name = positional[0];
   if (!name) {
@@ -777,7 +794,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   };
   const baseCtx: AliasContext = {
     mcp: {},
-    args: {},
+    args: extraArgs,
     file: (p) => Bun.file(p).text(),
     json: async (p) => JSON.parse(await Bun.file(p).text()),
     // Dry-run: use an in-memory no-op cache so producers still run but
@@ -808,8 +825,10 @@ Subcommands:
       --force <message> bypasses disallowed-transition and regression checks;
       unknown-phase errors are never bypassable.
 
-  mcx phase run <name> --dry-run
+  mcx phase run <name> --dry-run [--arg key=val ...]
       Execute a phase handler with side effects logged but not dispatched.
+      Use --arg to forward key=val pairs into ctx.args so dry-run exercises
+      the same code paths as real execution.
 
   mcx phase list [--json]
       List all phases declared in the manifest with install status.

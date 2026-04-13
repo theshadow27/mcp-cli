@@ -217,6 +217,76 @@ defineAlias(({ z }) => ({
     ]);
   }, 15_000);
 
+  test("run --dry-run --arg forwards key=val into ctx.args", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(
+      join(dir, "impl.ts"),
+      `
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({}).optional(),
+  fn: async (_input, ctx) => {
+    await ctx.state.set("issue", ctx.args.issue);
+    await ctx.state.set("branch", ctx.args.branch);
+  },
+}));
+`.trim(),
+    );
+
+    const logs: string[] = [];
+    const errs: string[] = [];
+    await cmdPhase(["run", "implement", "--dry-run", "--arg", "issue=1296", "--arg", "branch=feat/x"], {
+      cwd: () => dir,
+      log: (m) => logs.push(m),
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        throw new Error(`exit(${code})`);
+      }) as (code: number) => never,
+    });
+
+    expect(logs).toEqual([`[dry-run] ctx.state.set("issue", "1296")`, `[dry-run] ctx.state.set("branch", "feat/x")`]);
+    expect(errs).toEqual([]);
+  }, 15_000);
+
+  test("run --dry-run --arg errors on missing value", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const errs: string[] = [];
+    let code: number | undefined;
+    await cmdPhase(["run", "implement", "--dry-run", "--arg"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((c: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as (c: number) => never,
+    }).catch(() => {});
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes("--arg requires"))).toBe(true);
+  });
+
+  test("run --dry-run --arg errors on missing = separator", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const errs: string[] = [];
+    let code: number | undefined;
+    await cmdPhase(["run", "implement", "--dry-run", "--arg", "noequals"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((c: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as (c: number) => never,
+    }).catch(() => {});
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes("key=val"))).toBe(true);
+  });
+
   test("run errors on unknown phase", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
