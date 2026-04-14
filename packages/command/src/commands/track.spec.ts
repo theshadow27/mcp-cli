@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { IpcMethod, IpcMethodResult, WorkItem } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, Manifest, WorkItem } from "@mcp-cli/core";
+import { loadManifest } from "@mcp-cli/core";
 import type { TrackDeps } from "./track";
 import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow } from "./track";
 
@@ -23,8 +24,17 @@ function makeDeps(overrides: Partial<Record<IpcMethod, unknown>> = {}): TrackDep
     exit: (code: number): never => {
       throw new ExitError(code);
     },
+    loadManifest: () => null,
   };
 }
+
+const realManifestLoader = (dir: string): Manifest | null => {
+  try {
+    return loadManifest(dir)?.manifest ?? null;
+  } catch {
+    return null;
+  }
+};
 
 function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
@@ -327,12 +337,15 @@ describe("formatWorkItemRow", () => {
     test("cmdTrack passes initialPhase from manifest", async () => {
       let captured: unknown;
       const item = makeWorkItem();
-      const deps = makeDeps({
-        trackWorkItem: (params: unknown) => {
-          captured = params;
-          return item;
-        },
-      });
+      const deps = {
+        ...makeDeps({
+          trackWorkItem: (params: unknown) => {
+            captured = params;
+            return item;
+          },
+        }),
+        loadManifest: realManifestLoader,
+      };
 
       await withManifestDir(
         "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
@@ -346,7 +359,7 @@ describe("formatWorkItemRow", () => {
         makeWorkItem({ phase: "plan" as unknown as WorkItem["phase"] }),
         makeWorkItem({ id: "#2", phase: "impl" }),
       ];
-      const deps = makeDeps({ listWorkItems: items });
+      const deps = { ...makeDeps({ listWorkItems: items }), loadManifest: realManifestLoader };
 
       const logs: string[] = [];
       const origLog = console.log;
@@ -366,12 +379,15 @@ describe("formatWorkItemRow", () => {
 
     test("cmdTracked --phase warns when phase is not declared, but still queries", async () => {
       let captured: unknown;
-      const deps = makeDeps({
-        listWorkItems: (params: unknown) => {
-          captured = params;
-          return [];
-        },
-      });
+      const deps = {
+        ...makeDeps({
+          listWorkItems: (params: unknown) => {
+            captured = params;
+            return [];
+          },
+        }),
+        loadManifest: realManifestLoader,
+      };
       const errs: string[] = [];
       const origErr = console.error;
       console.error = (msg: string) => errs.push(msg);
