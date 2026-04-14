@@ -856,8 +856,8 @@ describe("mcx claude spawn --headed", () => {
 
   test("headed --worktree skips prefix when branchPrefix: false", async () => {
     const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
-    writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
     try {
+      writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const ttyOpen = mock(async () => {});
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
       const deps = makeDeps({ ttyOpen, exec, getGitRoot: mock(() => fakeRoot) });
@@ -883,8 +883,8 @@ describe("mcx claude spawn --headed", () => {
 describe("mcx claude spawn --worktree branchPrefix", () => {
   test("headless --worktree pre-creates worktree without prefix when branchPrefix: false", async () => {
     const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
-    writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
     try {
+      writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
       const callTool = mock(async () => toolResult({ sessionId: "s1" }));
       const deps = makeDeps({ exec, callTool, getGitRoot: mock(() => fakeRoot) });
