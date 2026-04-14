@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
 import { _resetJqStateForTesting } from "../jq/index";
@@ -854,13 +855,12 @@ describe("mcx claude spawn --headed", () => {
   });
 
   test("headed --worktree skips prefix when branchPrefix: false", async () => {
-    const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
-    const migratedYamlPath = join(process.cwd(), ".mcx.yaml");
-    writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
+    const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
     try {
+      writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const ttyOpen = mock(async () => {});
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
-      const deps = makeDeps({ ttyOpen, exec });
+      const deps = makeDeps({ ttyOpen, exec, getGitRoot: mock(() => fakeRoot) });
 
       const origLog = console.log;
       console.log = mock(() => {});
@@ -875,21 +875,19 @@ describe("mcx claude spawn --headed", () => {
         console.log = origLog;
       }
     } finally {
-      if (existsSync(configPath)) unlinkSync(configPath);
-      if (existsSync(migratedYamlPath)) unlinkSync(migratedYamlPath);
+      rmSync(fakeRoot, { recursive: true, force: true });
     }
   });
 });
 
 describe("mcx claude spawn --worktree branchPrefix", () => {
   test("headless --worktree pre-creates worktree without prefix when branchPrefix: false", async () => {
-    const configPath = join(process.cwd(), WORKTREE_CONFIG_FILENAME);
-    const migratedYamlPath = join(process.cwd(), ".mcx.yaml");
-    writeFileSync(configPath, JSON.stringify({ worktree: { branchPrefix: false } }));
+    const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
     try {
+      writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
       const callTool = mock(async () => toolResult({ sessionId: "s1" }));
-      const deps = makeDeps({ exec, callTool });
+      const deps = makeDeps({ exec, callTool, getGitRoot: mock(() => fakeRoot) });
 
       const origLog = console.log;
       console.log = mock(() => {});
@@ -908,8 +906,7 @@ describe("mcx claude spawn --worktree branchPrefix", () => {
         console.log = origLog;
       }
     } finally {
-      if (existsSync(configPath)) unlinkSync(configPath);
-      if (existsSync(migratedYamlPath)) unlinkSync(migratedYamlPath);
+      rmSync(fakeRoot, { recursive: true, force: true });
     }
   });
 
