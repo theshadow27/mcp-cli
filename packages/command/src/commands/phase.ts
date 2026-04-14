@@ -812,7 +812,12 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   };
   const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
 
-  await d.executeAliasBundled(js, structured ? {} : undefined, ctx, structured);
+  try {
+    await d.executeAliasBundled(js, structured ? {} : undefined, ctx, structured);
+  } catch (err) {
+    d.logError(`phase "${name}" threw: ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
 }
 
 function printPhaseHelp(d: PhaseInstallDeps): void {
