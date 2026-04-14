@@ -19,6 +19,22 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync,
 import { dirname } from "node:path";
 import type { Manifest } from "./manifest";
 
+/**
+ * Lifecycle status of a transition log entry.
+ *
+ * - `"attempted"`: intent was logged but the phase handler has not (yet)
+ *   committed. Written before branch-guard / handler dispatch so attempts
+ *   from feature branches or crashed handlers leave an audit trail.
+ *   IGNORED by regression / graph-walk checks.
+ * - `"committed"`: the phase handler ran to completion and the transition
+ *   is now part of the work item's authoritative history.
+ *
+ * Legacy entries (written before issue #1381 re-entry fix) omit `status`;
+ * readers treat missing `status` as `"committed"` for back-compat so old
+ * logs continue to gate transitions the same way.
+ */
+export type TransitionStatus = "attempted" | "committed";
+
 /** One record in the transition log. JSONL on disk. */
 export interface TransitionLogEntry {
   /** ISO-8601 UTC timestamp. */
@@ -31,6 +47,13 @@ export interface TransitionLogEntry {
   to: string;
   /** When `--force` was used, the justification text. */
   forceMessage?: string;
+  /** Two-phase commit status. Missing → "committed" (legacy). */
+  status?: TransitionStatus;
+}
+
+/** True when `entry` should gate future transitions (committed or legacy). */
+export function isCommitted(entry: TransitionLogEntry): boolean {
+  return entry.status !== "attempted";
 }
 
 export class UnknownPhaseError extends Error {
@@ -158,6 +181,16 @@ export function validateTransition(input: ValidateTransitionInput): {
     return { from, target, forced: true };
   }
 
+  // Rule 2b: idempotent self-loop — a committed `X → X` where the most
+  // recent committed target is already `X` is a no-op re-entry, not a
+  // regression. Handlers are expected to be idempotent (they self-check
+  // state and return "in-flight" when already running), so calling
+  // `phase run X` twice in a row must not blow up with RegressionError.
+  // See PR #1407 adversarial review.
+  if (from !== null && from === target && history.length > 0 && history[history.length - 1] === target) {
+    return { from, target, forced: false };
+  }
+
   // Rule 3: unknown from — bypassable via --force above.
   if (from !== null && !declared.includes(from)) {
     throw new UnknownPhaseError(from, suggestPhases(from, declared));
@@ -271,6 +304,37 @@ export function historyTargets(entries: readonly TransitionLogEntry[]): string[]
 export function appendTransitionLog(logPath: string, entry: TransitionLogEntry): void {
   mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, `${JSON.stringify(entry)}\n`, "utf-8");
+}
+
+/**
+ * Log an "attempted" entry without validation. Unlike `commitTransition`,
+ * this never throws on regression / disallowed transitions — the point of
+ * an attempt record is to capture intent from any branch or context,
+ * including cases that will fail branch-guard or crash during dispatch.
+ * Attempted entries are IGNORED by graph-walk and regression checks
+ * (see `commitTransition`); they exist purely for audit (#1407).
+ */
+export function appendAttempt(
+  logPath: string,
+  input: {
+    workItemId: string | null;
+    from: string | null;
+    target: string;
+    forceMessage?: string | null;
+    now?: () => Date;
+  },
+): TransitionLogEntry {
+  const ts = (input.now?.() ?? new Date()).toISOString();
+  const entry: TransitionLogEntry = {
+    ts,
+    workItemId: input.workItemId,
+    from: input.from,
+    to: input.target,
+    status: "attempted",
+    ...(input.forceMessage ? { forceMessage: input.forceMessage } : {}),
+  };
+  appendTransitionLog(logPath, entry);
+  return entry;
 }
 
 /**
@@ -402,7 +466,9 @@ export function commitTransition(logPath: string, input: CommitTransitionInput):
   return withTransitionLock(
     logPath,
     () => {
-      const history = readTransitionHistory(logPath, workItemId, onCorrupt);
+      // Validation considers only committed entries; "attempted" entries
+      // are audit-only and must not gate future transitions (#1407).
+      const history = readTransitionHistory(logPath, workItemId, onCorrupt).filter(isCommitted);
       const targets = historyTargets(history);
 
       let from = input.from;
@@ -426,6 +492,7 @@ export function commitTransition(logPath: string, input: CommitTransitionInput):
         workItemId,
         from: decision.from,
         to: decision.target,
+        status: "committed",
         ...(force ? { forceMessage: force.message } : {}),
       };
       appendTransitionLog(logPath, entry);

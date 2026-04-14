@@ -19,7 +19,10 @@ import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "n
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   type AliasContext,
+  type AliasWorkItemInfo,
+  BranchGuardError,
   DisallowedTransitionError,
+  GLOBAL_STATE_NAMESPACE,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
   type LockedPhase,
@@ -27,25 +30,39 @@ import {
   type Manifest,
   ManifestError,
   type ManifestState,
+  NO_REPO_ROOT,
   RegressionError,
   type TransitionLogEntry,
   UnknownPhaseError,
+  type WorkItem,
+  appendAttempt,
   bundleAlias,
   canonicalJson,
+  checkRunsOn,
   commitTransition,
+  createAliasCache,
+  createAliasState,
+  createMcpProxy,
   executeAliasBundled,
   extractMetadata,
+  findGitRoot,
   hashFileSync,
+  historyTargets,
+  ipcCall,
+  isCommitted,
   isDefineAlias,
   loadManifest,
   parseLockfile,
   readAllTransitions,
+  readTransitionHistory,
   serializeLockfile,
   sha256Hex,
   suggestPhases,
+  validateTransition,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
+import type { ExecFn, ExecResult } from "@mcp-cli/core";
 import { printError } from "../output";
 
 export interface PhaseInstallDeps {
@@ -683,13 +700,16 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       assertNoDrift(d);
       if (argv.includes("--dry-run")) {
         await runPhase(argv, d);
-      } else {
-        const opts = parsePhaseRunArgs(argv);
+      } else if (argv.includes("--no-execute")) {
+        const filtered = argv.filter((a) => a !== "--no-execute");
+        const opts = parsePhaseRunArgs(filtered);
         const result = phaseRun(opts, { cwd: d.cwd() });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
         const tag = result.forced ? " [FORCED]" : "";
         const trail = result.from ?? "(initial)";
         d.logError(`approved${tag}: ${trail} → ${opts.target} (${source})`);
+      } else {
+        await executePhase(argv, d);
       }
       return;
     }
@@ -820,6 +840,314 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   }
 }
 
+/**
+ * Optional dependencies for real phase execution.
+ *
+ * Tests inject stubs for `ipcCall` and `exec` to avoid requiring a running
+ * daemon or real git. Production code falls through to `defaultExecuteDeps`
+ * which uses the real daemon IPC and `Bun.spawnSync`.
+ */
+export interface PhaseExecuteDeps {
+  ipcCall: typeof ipcCall;
+  exec: ExecFn;
+  findGitRoot: (cwd: string) => string | null;
+  now: () => Date;
+}
+
+const defaultExecuteDeps: PhaseExecuteDeps = {
+  ipcCall,
+  exec: (cmd: string[]): ExecResult => {
+    const [bin, ...rest] = cmd;
+    const r = Bun.spawnSync([bin, ...rest], { stdout: "pipe", stderr: "pipe" });
+    // `exitCode` is null when the child was terminated by a signal (e.g. SIGKILL).
+    // Surface that as a failure — `?? 0` previously masked signal-killed processes
+    // as success and let the branch guard wave through a git that never ran.
+    const exitCode = r.exitCode ?? 1;
+    return { stdout: new TextDecoder().decode(r.stdout), exitCode };
+  },
+  findGitRoot,
+  now: () => new Date(),
+};
+
+export interface PhaseExecuteArgs {
+  target: string;
+  from: string | null;
+  workItemId: string | null;
+  forceMessage: string | null;
+  args: Record<string, string>;
+  inputJson: string | null;
+}
+
+/**
+ * Parse `mcx phase run <target>` without `--dry-run` / `--no-execute`.
+ * Supports transition flags (--from, --work-item, --force) plus execution
+ * inputs: `--arg key=val` pairs and `--input <json>` for the handler input.
+ */
+export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
+  const passthrough: string[] = [];
+  const cliArgs: Record<string, string> = {};
+  let inputJson: string | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--arg") {
+      const pair = argv[++i];
+      if (!pair) throw new Error("--arg requires a key=val argument");
+      const eq = pair.indexOf("=");
+      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
+      const key = pair.slice(0, eq);
+      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
+      cliArgs[key] = pair.slice(eq + 1);
+    } else if (a.startsWith("--arg=")) {
+      const pair = a.slice("--arg=".length);
+      const eq = pair.indexOf("=");
+      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
+      const key = pair.slice(0, eq);
+      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
+      cliArgs[key] = pair.slice(eq + 1);
+    } else if (a === "--input") {
+      inputJson = argv[++i] ?? null;
+      if (inputJson === null) throw new Error("--input requires a JSON argument");
+    } else if (a.startsWith("--input=")) {
+      inputJson = a.slice("--input=".length);
+    } else {
+      passthrough.push(a);
+    }
+  }
+  const opts = parsePhaseRunArgs(passthrough);
+  return { ...opts, args: cliArgs, inputJson };
+}
+
+function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
+  return {
+    id: w.id,
+    issueNumber: w.issueNumber,
+    prNumber: w.prNumber,
+    branch: w.branch,
+    phase: w.phase,
+  };
+}
+
+/**
+ * Execute a phase handler with a real context (issue #1381).
+ *
+ * Two-phase transition log (PR #1407 adversarial-review fix):
+ *   1. Parse flags (transition + execution inputs)
+ *   2. Pre-validate the transition against committed history so bogus
+ *      moves fail fast before we bundle or dispatch anything.
+ *   3. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *      captures attempt evidence from ANY branch, including cases that
+ *      branch-guard rejects or handlers crash. Attempted entries are
+ *      ignored by graph-walk / regression checks (#1407).
+ *   4. Branch guard: refuse to dispatch outside the manifest's `runsOn`
+ *      branch. Attempt is already logged for audit.
+ *   5. Bundle the phase source
+ *   6. Fetch the work item from the daemon (if `--work-item` given)
+ *   7. Build a live AliasContext: real MCP proxy + daemon-backed state
+ *      (namespaced by the work-item id)
+ *   8. Execute the handler
+ *   9. On success (and only on success): `commitTransition` writes a
+ *      `"committed"` entry. The transition commit runs AFTER the handler
+ *      and branch guard, so failed or rejected runs leave only the
+ *      `"attempted"` audit entry — retries are not blocked.
+ *      `validateTransition` accepts an idempotent self-loop
+ *      (`from === target && tail === target`) so handlers can be re-run
+ *      without tripping `RegressionError` — handlers are expected to
+ *      self-check state and return `"in-flight"` when already running.
+ *
+ * If the handler crashes, no committed entry is written: the work item
+ * state is "tried but did not complete", and a retry will not be blocked
+ * by the transition log.
+ */
+export async function executePhase(
+  argv: string[],
+  deps: Partial<PhaseInstallDeps>,
+  execDeps?: Partial<PhaseExecuteDeps>,
+): Promise<void> {
+  const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
+  const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+  const cwd = d.cwd();
+
+  let parsed: PhaseExecuteArgs;
+  try {
+    parsed = parsePhaseExecuteArgs(argv);
+  } catch (err) {
+    d.logError(err instanceof Error ? err.message : String(err));
+    d.exit(1);
+  }
+
+  const loaded = d.loadManifest(cwd);
+  if (!loaded) {
+    d.logError("no .mcx.yaml or .mcx.json in this repo");
+    d.exit(1);
+  }
+
+  const phase = loaded.manifest.phases[parsed.target];
+  if (!phase) {
+    d.logError(
+      `unknown phase "${parsed.target}".${(() => {
+        const s = suggestPhases(parsed.target, Object.keys(loaded.manifest.phases));
+        return s.length > 0 ? ` did you mean: ${s.join(", ")}?` : "";
+      })()}`,
+    );
+    d.exit(1);
+  }
+
+  // Pre-validate the transition with committed-only history so bogus
+  // moves (unknown from, disallowed, un-forced regression) fail BEFORE
+  // we spend cycles running the handler. The final commit below repeats
+  // this under the transition lock; pre-check is a fail-fast guard, not
+  // the source of truth.
+  const logPath = transitionLogPath(cwd);
+  const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
+  const priorTargets = historyTargets(prior);
+  const resolvedFrom =
+    parsed.from !== null ? parsed.from : priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
+  validateTransition({
+    manifest: loaded.manifest,
+    from: resolvedFrom,
+    target: parsed.target,
+    history: priorTargets,
+    workItemId: parsed.workItemId,
+    force: parsed.forceMessage !== null ? { message: parsed.forceMessage } : null,
+    manifestPath: loaded.path,
+  });
+
+  // Two-phase log — append an "attempted" entry before branch-guard or
+  // handler dispatch so every invocation leaves an audit trail, even
+  // when branch-guard rejects or the handler crashes. Attempted entries
+  // are ignored by regression / graph-walk checks (#1407).
+  appendAttempt(logPath, {
+    workItemId: parsed.workItemId,
+    from: resolvedFrom,
+    target: parsed.target,
+    forceMessage: parsed.forceMessage,
+    now: ex.now,
+  });
+
+  // Branch guard — phases execute with full shell/mcp access, so refuse
+  // to dispatch from any branch other than the manifest's `runsOn`. The
+  // attempt entry above captured the intent for audit.
+  try {
+    checkRunsOn({ cwd, manifest: loaded.manifest, exec: ex.exec });
+  } catch (err) {
+    if (err instanceof BranchGuardError) {
+      d.logError(err.message);
+      d.exit(1);
+    }
+    throw err;
+  }
+
+  let resolved: string;
+  try {
+    resolved = resolvePhaseSource(phase.source, cwd);
+  } catch (err) {
+    d.logError(`phase "${parsed.target}": ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  let srcText: string;
+  try {
+    srcText = await d.readFile(resolved);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === "ENOENT") d.logError(`phase "${parsed.target}": source ${phase.source} not found`);
+    else d.logError(`phase "${parsed.target}": cannot read ${phase.source}: ${e?.message ?? String(err)}`);
+    d.exit(1);
+  }
+  const structured = isDefineAlias(srcText);
+  const { js } = await d.bundleAlias(resolved);
+
+  // Fetch work item from the daemon if caller supplied one. We do NOT
+  // auto-resolve the current branch to a work item — if the orchestrator
+  // doesn't pass --work-item, phases self-enforce by throwing from their
+  // own assertions (e.g. `if (!ctx.workItem) throw`).
+  let workItem: AliasWorkItemInfo | null = null;
+  if (parsed.workItemId !== null) {
+    try {
+      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      if (!wi) {
+        d.logError(`work item "${parsed.workItemId}" not found`);
+        d.exit(1);
+      }
+      workItem = toAliasWorkItem(wi);
+    } catch (err) {
+      d.logError(
+        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      d.exit(1);
+    }
+  }
+
+  const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
+  // State is namespaced by work-item id so every phase touching the same
+  // item sees the same scratchpad (see sprint state declarations in
+  // .mcx.yaml). When no work item is bound we fall back to a
+  // `phase:<target>:unbound` namespace — writes still persist through the
+  // daemon (createAliasState always hits SQLite), but they land in a
+  // separate bucket that won't collide with work-item scoped state.
+  const stateNamespace = workItem ? `workitem:${workItem.id}` : `phase:${parsed.target}:unbound`;
+  const ctx: AliasContext = {
+    mcp: createMcpProxy({ call: ex.ipcCall, cwd }),
+    args: parsed.args,
+    file: (p) => Bun.file(p).text(),
+    json: async (p) => JSON.parse(await Bun.file(p).text()),
+    cache: createAliasCache(`phase:${parsed.target}`),
+    state: createAliasState({ repoRoot, namespace: stateNamespace, call: ex.ipcCall }),
+    globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
+    workItem,
+  };
+
+  let input: unknown;
+  if (parsed.inputJson !== null && parsed.inputJson !== "") {
+    try {
+      input = JSON.parse(parsed.inputJson);
+    } catch {
+      // Fall through to raw string; schema will reject if it needs an object.
+      input = parsed.inputJson;
+    }
+  } else if (Object.keys(parsed.args).length > 0) {
+    input = parsed.args;
+  } else {
+    input = {};
+  }
+
+  let output: unknown;
+  try {
+    output = await d.executeAliasBundled(js, structured ? input : undefined, ctx, structured);
+  } catch (err) {
+    // No committed entry — only the "attempted" record remains, so a
+    // retry is not gated by this failure (#1407).
+    d.logError(`phase "${parsed.target}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  // Handler succeeded — commit the transition. Idempotent self-loop
+  // (`from === target && tail === target`) is accepted by
+  // validateTransition so successive `phase run <X>` calls don't
+  // trip RegressionError.
+  const txResult = phaseRun(
+    {
+      target: parsed.target,
+      from: parsed.from,
+      workItemId: parsed.workItemId,
+      forceMessage: parsed.forceMessage,
+    },
+    { cwd, now: ex.now },
+  );
+  const source = phase.source ?? "(unknown)";
+  const tag = txResult.forced ? " [FORCED]" : "";
+  const trail = txResult.from ?? "(initial)";
+  d.logError(`approved${tag}: ${trail} → ${parsed.target} (${source})`);
+
+  if (output !== undefined && output !== null) {
+    if (typeof output === "string") {
+      d.log(output);
+    } else {
+      d.log(JSON.stringify(output, null, 2));
+    }
+  }
+}
+
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
 
@@ -831,9 +1159,17 @@ Subcommands:
       Verify .mcx.lock matches the manifest and phase sources. Exits non-zero on drift.
 
   mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]
-      Validate and record a phase transition against .mcx.{yaml,json}.
-      --force <message> bypasses disallowed-transition and regression checks;
-      unknown-phase errors are never bypassable.
+                          [--arg key=val ...] [--input <json>]
+      Validate and record the transition, then execute the phase handler
+      with a live ctx (daemon-backed state, real MCP proxy, work-item info).
+      Structured return is printed to stdout as JSON so the orchestrator
+      can pipe it: e.g. \`action: "spawn" | "wait" | "goto"\` for sprint
+      phases. --force <message> bypasses disallowed-transition and
+      regression checks; unknown-phase errors are never bypassable.
+
+  mcx phase run <target> --no-execute [--from ...] [--work-item ...] [--force ...]
+      Validate + log the transition without executing the handler. Use
+      when the orchestrator wants to record intent separately from dispatch.
 
   mcx phase run <name> --dry-run [--arg key=val ...]
       Execute a phase handler with side effects logged but not dispatched.
