@@ -16,6 +16,29 @@ if [ -z "$staged_files" ]; then
   exit 0
 fi
 
+# Privacy: block staging of the local username in added/changed lines.
+# Catches raw (/Users/<user>/ or /home/<user>/) and Claude-slug forms
+# (-Users-<user>- where dots in usernames become dashes).
+if [ -z "${SKIP_PRIVACY_CHECK:-}" ]; then
+  user_raw="$USER"
+  user_slug="${user_raw//./-}"
+  privacy_pattern="(/Users/${user_raw}/|/home/${user_raw}/|-Users-${user_slug}-)"
+  # Grep added lines only (not context, not removed). -U disables newline
+  # normalization so we can reliably match within single diff lines.
+  privacy_hits=$(git diff --cached -U0 --no-color -- $staged_files \
+    | grep -E "^\+" | grep -E "$privacy_pattern" || true)
+  if [ -n "$privacy_hits" ]; then
+    echo "pre-commit: refusing to stage lines containing local home paths" >&2
+    echo "pattern: $privacy_pattern" >&2
+    echo "$privacy_hits" | head -20 >&2
+    echo >&2
+    echo "Redact the paths (use ~/ or <repo-root> or a generic placeholder)." >&2
+    echo "If you are certain this is intentional, bypass with:" >&2
+    echo "  SKIP_PRIVACY_CHECK=1 git commit ..." >&2
+    exit 1
+  fi
+fi
+
 # Classify staged files into tiers
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=classify.sh
