@@ -19,7 +19,10 @@ import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "n
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   type AliasContext,
+  type AliasWorkItemInfo,
+  BranchGuardError,
   DisallowedTransitionError,
+  GLOBAL_STATE_NAMESPACE,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
   type LockedPhase,
@@ -27,15 +30,24 @@ import {
   type Manifest,
   ManifestError,
   type ManifestState,
+  type McpProxy,
+  NO_REPO_ROOT,
   RegressionError,
   type TransitionLogEntry,
   UnknownPhaseError,
+  type WorkItem,
   bundleAlias,
   canonicalJson,
+  checkRunsOn,
   commitTransition,
+  createAliasCache,
+  createAliasState,
   executeAliasBundled,
+  extractContent,
   extractMetadata,
+  findGitRoot,
   hashFileSync,
+  ipcCall,
   isDefineAlias,
   loadManifest,
   parseLockfile,
@@ -46,6 +58,7 @@ import {
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
+import type { ExecFn, ExecResult } from "@mcp-cli/core";
 import { printError } from "../output";
 
 export interface PhaseInstallDeps {
@@ -683,13 +696,16 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       assertNoDrift(d);
       if (argv.includes("--dry-run")) {
         await runPhase(argv, d);
-      } else {
-        const opts = parsePhaseRunArgs(argv);
+      } else if (argv.includes("--no-execute")) {
+        const filtered = argv.filter((a) => a !== "--no-execute");
+        const opts = parsePhaseRunArgs(filtered);
         const result = phaseRun(opts, { cwd: d.cwd() });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
         const tag = result.forced ? " [FORCED]" : "";
         const trail = result.from ?? "(initial)";
         d.logError(`approved${tag}: ${trail} → ${opts.target} (${source})`);
+      } else {
+        await executePhase(argv, d);
       }
       return;
     }
@@ -820,6 +836,274 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   }
 }
 
+/**
+ * Optional dependencies for real phase execution.
+ *
+ * Tests inject stubs for `ipcCall` and `exec` to avoid requiring a running
+ * daemon or real git. Production code falls through to `defaultExecuteDeps`
+ * which uses the real daemon IPC and `Bun.spawnSync`.
+ */
+export interface PhaseExecuteDeps {
+  ipcCall: typeof ipcCall;
+  exec: ExecFn;
+  findGitRoot: (cwd: string) => string | null;
+  now: () => Date;
+}
+
+const defaultExecuteDeps: PhaseExecuteDeps = {
+  ipcCall,
+  exec: (cmd: string[]): ExecResult => {
+    const [bin, ...rest] = cmd;
+    const r = Bun.spawnSync([bin, ...rest], { stdout: "pipe", stderr: "pipe" });
+    return { stdout: new TextDecoder().decode(r.stdout), exitCode: r.exitCode ?? 0 };
+  },
+  findGitRoot,
+  now: () => new Date(),
+};
+
+export interface PhaseExecuteArgs {
+  target: string;
+  from: string | null;
+  workItemId: string | null;
+  forceMessage: string | null;
+  args: Record<string, string>;
+  inputJson: string | null;
+}
+
+/**
+ * Parse `mcx phase run <target>` without `--dry-run` / `--no-execute`.
+ * Supports transition flags (--from, --work-item, --force) plus execution
+ * inputs: `--arg key=val` pairs and `--input <json>` for the handler input.
+ */
+export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
+  const passthrough: string[] = [];
+  const cliArgs: Record<string, string> = {};
+  let inputJson: string | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--arg") {
+      const pair = argv[++i];
+      if (!pair) throw new Error("--arg requires a key=val argument");
+      const eq = pair.indexOf("=");
+      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
+      const key = pair.slice(0, eq);
+      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
+      cliArgs[key] = pair.slice(eq + 1);
+    } else if (a.startsWith("--arg=")) {
+      const pair = a.slice("--arg=".length);
+      const eq = pair.indexOf("=");
+      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
+      const key = pair.slice(0, eq);
+      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
+      cliArgs[key] = pair.slice(eq + 1);
+    } else if (a === "--input") {
+      inputJson = argv[++i] ?? null;
+      if (inputJson === null) throw new Error("--input requires a JSON argument");
+    } else if (a.startsWith("--input=")) {
+      inputJson = a.slice("--input=".length);
+    } else {
+      passthrough.push(a);
+    }
+  }
+  const opts = parsePhaseRunArgs(passthrough);
+  return { ...opts, args: cliArgs, inputJson };
+}
+
+function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
+  return {
+    id: w.id,
+    issueNumber: w.issueNumber,
+    prNumber: w.prNumber,
+    branch: w.branch,
+    phase: w.phase,
+  };
+}
+
+function makeRealMcpProxy(ipcCaller: typeof ipcCall, cwd: string): McpProxy {
+  return new Proxy({} as McpProxy, {
+    get(_t, serverName: string) {
+      return new Proxy({} as Record<string, (a?: Record<string, unknown>) => Promise<unknown>>, {
+        get(_i, toolName: string) {
+          return async (toolArgs?: Record<string, unknown>) => {
+            const result = await ipcCaller("callTool", {
+              server: serverName,
+              tool: toolName,
+              arguments: toolArgs ?? {},
+              cwd,
+            });
+            return extractContent(result);
+          };
+        },
+      });
+    },
+  });
+}
+
+/**
+ * Execute a phase handler with a real context (issue #1381).
+ *
+ * Flow:
+ *   1. Parse flags (transition + execution inputs)
+ *   2. Branch guard: refuse to run outside the manifest's `runsOn` branch
+ *   3. Commit the transition via `phaseRun` (same as --no-execute path)
+ *   4. Bundle the phase source
+ *   5. Fetch the work item from the daemon (if `--work-item` given)
+ *   6. Build a live AliasContext: real MCP proxy + daemon-backed state
+ *      (namespaced by the work-item id, so state writes persist per-item)
+ *   7. Execute the handler and emit its structured return on stdout
+ *
+ * The transition is committed before execution so a handler crash doesn't
+ * leave the graph inconsistent; handlers are idempotent on re-entry
+ * (see `.claude/phases/impl.ts` — if `session_id` is set, returns
+ * `in-flight` instead of re-spawning).
+ */
+export async function executePhase(
+  argv: string[],
+  deps: Partial<PhaseInstallDeps>,
+  execDeps?: Partial<PhaseExecuteDeps>,
+): Promise<void> {
+  const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
+  const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+  const cwd = d.cwd();
+
+  let parsed: PhaseExecuteArgs;
+  try {
+    parsed = parsePhaseExecuteArgs(argv);
+  } catch (err) {
+    d.logError(err instanceof Error ? err.message : String(err));
+    d.exit(1);
+  }
+
+  const loaded = d.loadManifest(cwd);
+  if (!loaded) {
+    d.logError("no .mcx.yaml or .mcx.json in this repo");
+    d.exit(1);
+  }
+
+  // Validate + commit the transition before branch-guarding, so
+  // unknown-phase and disallowed-transition errors fail fast without
+  // requiring a real git checkout. The transition log records intent;
+  // branch-guard below gates actual code execution.
+  const txResult = phaseRun(
+    {
+      target: parsed.target,
+      from: parsed.from,
+      workItemId: parsed.workItemId,
+      forceMessage: parsed.forceMessage,
+    },
+    { cwd, now: ex.now },
+  );
+  const source = txResult.manifest.phases[parsed.target]?.source ?? "(unknown)";
+  const tag = txResult.forced ? " [FORCED]" : "";
+  const trail = txResult.from ?? "(initial)";
+  d.logError(`approved${tag}: ${trail} → ${parsed.target} (${source})`);
+
+  // Branch guard — phases execute with full shell/mcp access, so refuse to
+  // dispatch from any branch other than the manifest's `runsOn`. Fires
+  // after transition commit so the intent is still logged on refusal.
+  try {
+    checkRunsOn({ cwd, manifest: loaded.manifest, exec: ex.exec });
+  } catch (err) {
+    if (err instanceof BranchGuardError) {
+      d.logError(err.message);
+      d.exit(1);
+    }
+    throw err;
+  }
+
+  const phase = loaded.manifest.phases[parsed.target];
+  // phaseRun would have thrown UnknownPhaseError if the target was invalid,
+  // so `phase` is defined here.
+
+  let resolved: string;
+  try {
+    resolved = resolvePhaseSource(phase.source, cwd);
+  } catch (err) {
+    d.logError(`phase "${parsed.target}": ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  let srcText: string;
+  try {
+    srcText = await d.readFile(resolved);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === "ENOENT") d.logError(`phase "${parsed.target}": source ${phase.source} not found`);
+    else d.logError(`phase "${parsed.target}": cannot read ${phase.source}: ${e?.message ?? String(err)}`);
+    d.exit(1);
+  }
+  const structured = isDefineAlias(srcText);
+  const { js } = await d.bundleAlias(resolved);
+
+  // Fetch work item from the daemon if caller supplied one. We do NOT
+  // auto-resolve the current branch to a work item — if the orchestrator
+  // doesn't pass --work-item, phases self-enforce by throwing from their
+  // own assertions (e.g. `if (!ctx.workItem) throw`).
+  let workItem: AliasWorkItemInfo | null = null;
+  if (parsed.workItemId !== null) {
+    try {
+      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      if (!wi) {
+        d.logError(`work item "${parsed.workItemId}" not found`);
+        d.exit(1);
+      }
+      workItem = toAliasWorkItem(wi);
+    } catch (err) {
+      d.logError(
+        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      d.exit(1);
+    }
+  }
+
+  const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
+  // State is namespaced by work-item id so every phase touching the same
+  // item sees the same scratchpad (see sprint state declarations in
+  // .mcx.yaml). When no work item is bound, writes are discarded into an
+  // ephemeral namespace so the handler doesn't fault on missing state.
+  const stateNamespace = workItem ? `workitem:${workItem.id}` : `phase:${parsed.target}:unbound`;
+  const ctx: AliasContext = {
+    mcp: makeRealMcpProxy(ex.ipcCall, cwd),
+    args: parsed.args,
+    file: (p) => Bun.file(p).text(),
+    json: async (p) => JSON.parse(await Bun.file(p).text()),
+    cache: createAliasCache(`phase:${parsed.target}`),
+    state: createAliasState({ repoRoot, namespace: stateNamespace, call: ex.ipcCall }),
+    globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
+    workItem,
+  };
+
+  let input: unknown;
+  if (parsed.inputJson !== null && parsed.inputJson !== "") {
+    try {
+      input = JSON.parse(parsed.inputJson);
+    } catch {
+      // Fall through to raw string; schema will reject if it needs an object.
+      input = parsed.inputJson;
+    }
+  } else if (Object.keys(parsed.args).length > 0) {
+    input = parsed.args;
+  } else {
+    input = {};
+  }
+
+  let output: unknown;
+  try {
+    output = await d.executeAliasBundled(js, structured ? input : undefined, ctx, structured);
+  } catch (err) {
+    d.logError(`phase "${parsed.target}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  if (output !== undefined && output !== null) {
+    if (typeof output === "string") {
+      d.log(output);
+    } else {
+      d.log(JSON.stringify(output, null, 2));
+    }
+  }
+}
+
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
 
@@ -831,9 +1115,17 @@ Subcommands:
       Verify .mcx.lock matches the manifest and phase sources. Exits non-zero on drift.
 
   mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]
-      Validate and record a phase transition against .mcx.{yaml,json}.
-      --force <message> bypasses disallowed-transition and regression checks;
-      unknown-phase errors are never bypassable.
+                          [--arg key=val ...] [--input <json>]
+      Validate and record the transition, then execute the phase handler
+      with a live ctx (daemon-backed state, real MCP proxy, work-item info).
+      Structured return is printed to stdout as JSON so the orchestrator
+      can pipe it: e.g. \`action: "spawn" | "wait" | "goto"\` for sprint
+      phases. --force <message> bypasses disallowed-transition and
+      regression checks; unknown-phase errors are never bypassable.
+
+  mcx phase run <target> --no-execute [--from ...] [--work-item ...] [--force ...]
+      Validate + log the transition without executing the handler. Use
+      when the orchestrator wants to record intent separately from dispatch.
 
   mcx phase run <name> --dry-run [--arg key=val ...]
       Execute a phase handler with side effects logged but not dispatched.

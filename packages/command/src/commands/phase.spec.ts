@@ -25,11 +25,13 @@ import {
   checkStateSubset,
   cmdPhase,
   detectDrift,
+  executePhase,
   explainTransition,
   filterTransitionLog,
   formatDriftWarning,
   formatPhaseTable,
   formatTransitionLog,
+  parsePhaseExecuteArgs,
   parsePhaseLogArgs,
   parsePhaseRunArgs,
   phaseRun,
@@ -348,16 +350,17 @@ defineAlias(({ z }) => ({
     expect(errs.some((e) => e.includes('phase "implement" threw') && e.includes("boom from handler"))).toBe(true);
   }, 15_000);
 
-  test("run without --dry-run dispatches to transition enforcement", async () => {
-    // Since #1293 merged, `run <target>` without --dry-run validates and records
-    // the transition (transition-enforcement path), not the dry-run execution path.
+  test("run --no-execute dispatches to transition enforcement only", async () => {
+    // #1381 wired real handler execution on `run <target>` without --dry-run.
+    // `--no-execute` is the escape hatch for orchestrators that want to log
+    // the transition separately from dispatch.
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
     const { deps: installDeps } = makeDriftDeps(dir);
     await cmdPhase(["install"], installDeps);
     const errs: string[] = [];
     let code: number | undefined;
-    await cmdPhase(["run", "implement"], {
+    await cmdPhase(["run", "implement", "--no-execute"], {
       cwd: () => dir,
       log: () => {},
       logError: (m) => errs.push(m),
@@ -594,16 +597,18 @@ describe("cmdPhase dispatch", () => {
     }
   });
 
-  test("run prints approval on valid transition", async () => {
-    const { err, code } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--from", "impl"])));
+  test("run --no-execute prints approval on valid transition", async () => {
+    const { err, code } = await withCwd(dir, () =>
+      catchExit(() => cmdPhase(["run", "qa", "--from", "impl", "--no-execute"])),
+    );
     expect(code).toBeUndefined();
     expect(err).toContain("approved");
     expect(err).toContain("impl → qa");
   });
 
-  test("run with --force tags output", async () => {
+  test("run --no-execute with --force tags output", async () => {
     const { err } = await withCwd(dir, () =>
-      catchExit(() => cmdPhase(["run", "repair", "--from", "impl", "--force", "emergency"])),
+      catchExit(() => cmdPhase(["run", "repair", "--from", "impl", "--force", "emergency", "--no-execute"])),
     );
     expect(err).toContain("[FORCED]");
   });
@@ -1261,4 +1266,326 @@ describe("cmdPhase check", () => {
     expect(getExitCode()).toBe(1);
     expect(errs.some((e) => e.includes("no .mcx.lock"))).toBe(true);
   });
+});
+
+describe("parsePhaseExecuteArgs", () => {
+  test("extracts --arg pairs, leaves transition flags for parsePhaseRunArgs", () => {
+    const parsed = parsePhaseExecuteArgs([
+      "impl",
+      "--from",
+      "qa",
+      "--work-item",
+      "#42",
+      "--arg",
+      "provider=claude",
+      "--arg",
+      "labels=flaky",
+    ]);
+    expect(parsed.target).toBe("impl");
+    expect(parsed.from).toBe("qa");
+    expect(parsed.workItemId).toBe("#42");
+    expect(parsed.args).toEqual({ provider: "claude", labels: "flaky" });
+    expect(parsed.inputJson).toBeNull();
+  });
+
+  test("--input carries JSON payload", () => {
+    const parsed = parsePhaseExecuteArgs(["impl", "--input", '{"provider":"copilot"}']);
+    expect(parsed.inputJson).toBe('{"provider":"copilot"}');
+  });
+
+  test("--input=<json> equals form works", () => {
+    const parsed = parsePhaseExecuteArgs(["impl", '--input={"x":1}']);
+    expect(parsed.inputJson).toBe('{"x":1}');
+  });
+
+  test("--arg without = fails", () => {
+    expect(() => parsePhaseExecuteArgs(["impl", "--arg", "noequals"])).toThrow(/key=val/);
+  });
+
+  test("--arg with empty key fails", () => {
+    expect(() => parsePhaseExecuteArgs(["impl", "--arg", "=val"])).toThrow(/non-empty/);
+  });
+});
+
+describe("executePhase (real handler dispatch, #1381)", () => {
+  function makeExecDeps(opts: {
+    branch?: string;
+    workItem?: Record<string, unknown> | null;
+    ipcRecord?: { calls: Array<{ method: string; params: unknown }> };
+    stateStore?: Map<string, unknown>;
+  }) {
+    const branch = opts.branch ?? "main";
+    const stateStore = opts.stateStore ?? new Map<string, unknown>();
+    const calls = opts.ipcRecord?.calls ?? [];
+    const ipcCall = async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      switch (method) {
+        case "getWorkItem":
+          return opts.workItem ?? null;
+        case "aliasStateGet": {
+          const p = params as { namespace: string; key: string };
+          return { value: stateStore.get(`${p.namespace}:${p.key}`) };
+        }
+        case "aliasStateSet": {
+          const p = params as { namespace: string; key: string; value: unknown };
+          stateStore.set(`${p.namespace}:${p.key}`, p.value);
+          return { ok: true };
+        }
+        case "aliasStateDelete": {
+          const p = params as { namespace: string; key: string };
+          stateStore.delete(`${p.namespace}:${p.key}`);
+          return { ok: true };
+        }
+        case "aliasStateAll":
+          return { entries: {} };
+        case "callTool": {
+          const p = params as { server: string; tool: string; arguments: unknown };
+          return { content: [{ type: "text", text: JSON.stringify({ server: p.server, tool: p.tool }) }] };
+        }
+        default:
+          return null;
+      }
+    };
+    const exec = (cmd: string[]) => {
+      // Emulate git for branch-guard: `git -C <cwd> symbolic-ref --short HEAD`
+      if (cmd.includes("rev-parse") && cmd.includes("--is-inside-work-tree")) {
+        return { stdout: "true", exitCode: 0 };
+      }
+      if (cmd.includes("symbolic-ref")) {
+        return { stdout: `${branch}\n`, exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    };
+    return {
+      ipcCall: ipcCall as unknown as typeof import("@mcp-cli/core").ipcCall,
+      exec,
+      findGitRoot: () => dir,
+      now: () => new Date("2026-04-14T00:00:00Z"),
+      stateStore,
+      calls,
+    };
+  }
+
+  const phaseAlias = `
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({ issue: z.number().optional() }).default({}),
+  output: z.object({ action: z.string(), sessionId: z.string().optional() }),
+  fn: async (input, ctx) => {
+    const existing = await ctx.state.get("session_id");
+    if (existing) {
+      return { action: "in-flight", sessionId: String(existing) };
+    }
+    await ctx.state.set("session_id", "sess-123");
+    await ctx.mcp._work_items.work_items_update({ id: ctx.workItem?.id ?? "none", phase: "impl" });
+    return { action: "spawn", sessionId: "sess-123" };
+  },
+}));
+`.trim();
+
+  const manifestMain = `
+runsOn: main
+initial: implement
+phases:
+  implement:
+    source: ./impl.ts
+    next: []
+`.trim();
+
+  async function install() {
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+  }
+
+  test("executes handler with real ctx and prints structured JSON to stdout", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const ex = makeExecDeps({
+      workItem: {
+        id: "#42",
+        issueNumber: 42,
+        prNumber: null,
+        branch: "feat/42",
+        prState: null,
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "pending",
+        phase: "implement",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+    const logs: string[] = [];
+    const errs: string[] = [];
+    await executePhase(
+      ["implement", "--work-item", "#42"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: (m) => logs.push(m),
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    );
+
+    // Transition approval surfaced to stderr.
+    expect(errs.some((e) => e.includes("approved") && e.includes("implement"))).toBe(true);
+    // Structured handler return surfaced to stdout as JSON.
+    const stdout = logs.join("\n");
+    expect(stdout).toContain('"action": "spawn"');
+    expect(stdout).toContain('"sessionId": "sess-123"');
+    // State was persisted under workitem:<id>.
+    expect(ex.stateStore.get("workitem:#42:session_id")).toBe("sess-123");
+    // MCP proxy dispatched a callTool.
+    const callToolInvocations = ex.calls.filter((c) => c.method === "callTool");
+    expect(callToolInvocations.length).toBe(1);
+    expect((callToolInvocations[0].params as { server: string }).server).toBe("_work_items");
+  }, 30_000);
+
+  test("re-entry is idempotent — returns in-flight when state already set", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const store = new Map<string, unknown>([["workitem:#42:session_id", "sess-existing"]]);
+    const ex = makeExecDeps({
+      workItem: {
+        id: "#42",
+        issueNumber: 42,
+        prNumber: null,
+        branch: "feat/42",
+        prState: null,
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "pending",
+        phase: "implement",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      stateStore: store,
+    });
+    const logs: string[] = [];
+    await executePhase(
+      ["implement", "--work-item", "#42"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: (m) => logs.push(m),
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    );
+
+    const stdout = logs.join("\n");
+    expect(stdout).toContain('"action": "in-flight"');
+    expect(stdout).toContain('"sessionId": "sess-existing"');
+    // No MCP call on re-entry — handler took the short path.
+    expect(ex.calls.some((c) => c.method === "callTool")).toBe(false);
+  }, 30_000);
+
+  test("branch guard fires when runsOn does not match current branch", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const ex = makeExecDeps({ branch: "feat/x" });
+    const errs: string[] = [];
+    let code: number | undefined;
+    await executePhase(
+      ["implement"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          code = c;
+          throw new Error("exit");
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    ).catch(() => {});
+
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes("phases only run from branch"))).toBe(true);
+  }, 30_000);
+
+  test("missing work item for --work-item id exits 1", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const ex = makeExecDeps({ workItem: null });
+    const errs: string[] = [];
+    let code: number | undefined;
+    await executePhase(
+      ["implement", "--work-item", "#999"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          code = c;
+          throw new Error("exit");
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    ).catch(() => {});
+
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes('work item "#999" not found'))).toBe(true);
+  }, 30_000);
+
+  test("transition is committed even when handler throws (idempotent re-entry)", async () => {
+    const throwAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({}).default({}),
+  output: z.object({}),
+  fn: async () => { throw new Error("handler boom"); },
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), throwAlias);
+    await install();
+
+    const ex = makeExecDeps({});
+    const errs: string[] = [];
+    let code: number | undefined;
+    await executePhase(
+      ["implement"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          code = c;
+          throw new Error("exit");
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    ).catch(() => {});
+
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes("approved"))).toBe(true);
+    expect(errs.some((e) => e.includes('phase "implement" failed'))).toBe(true);
+    // Transition log recorded the attempt so the orchestrator can see it.
+    const { readFileSync: rfs } = require("node:fs");
+    const log = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8");
+    expect(log).toContain('"to":"implement"');
+  }, 30_000);
 });
