@@ -314,6 +314,40 @@ defineAlias(({ z }) => ({
     expect(errs.some((e) => e.includes('unknown phase "nope"'))).toBe(true);
   });
 
+  test("run --dry-run formats handler errors with phase name (#1349)", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(
+      join(dir, "impl.ts"),
+      `
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({}).optional(),
+  fn: async () => {
+    throw new Error("boom from handler");
+  },
+}));
+`.trim(),
+    );
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+    const errs: string[] = [];
+    let code: number | undefined;
+    await cmdPhase(["run", "implement", "--dry-run"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((c: number) => {
+        code = c;
+        throw new Error("exit");
+      }) as (c: number) => never,
+    }).catch(() => {});
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes('phase "implement" threw') && e.includes("boom from handler"))).toBe(true);
+  }, 15_000);
+
   test("run without --dry-run dispatches to transition enforcement", async () => {
     // Since #1293 merged, `run <target>` without --dry-run validates and records
     // the transition (transition-enforcement path), not the dry-run execution path.
