@@ -13,23 +13,21 @@ import { basename, resolve } from "node:path";
 import {
   type AliasContext,
   GLOBAL_STATE_NAMESPACE,
-  type McpProxy,
   NO_REPO_ROOT,
   aliasUserNamespace,
   bundleAlias,
   createAliasCache,
   createAliasState,
+  createMcpProxy,
   executeAliasBundled,
-  extractContent,
   findGitRoot,
-  ipcCall,
   isDefineAlias,
   options,
 } from "@mcp-cli/core";
 import type { z } from "zod/v4";
 
 export async function runAlias(aliasPath: string, cliArgs: Record<string, string>, jsonInput?: string): Promise<void> {
-  const mcpProxy = createMcpProxy();
+  const mcpProxy = createMcpProxy({ cwd: () => process.cwd() });
 
   // Defense-in-depth: verify the alias path is inside the aliases directory
   const resolved = resolve(aliasPath);
@@ -120,26 +118,6 @@ export function formatAliasOutput(output: unknown): string | undefined {
   if (output === undefined || output === null) return undefined;
   if (typeof output === "string") return output;
   return JSON.stringify(output, null, 2);
-}
-
-function createMcpProxy(): McpProxy {
-  return new Proxy({} as McpProxy, {
-    get(_target, serverName: string) {
-      return new Proxy({} as Record<string, (args?: Record<string, unknown>) => Promise<unknown>>, {
-        get(_inner, toolName: string) {
-          return async (toolArgs?: Record<string, unknown>) => {
-            const result = await ipcCall("callTool", {
-              server: serverName,
-              tool: toolName,
-              arguments: toolArgs ?? {},
-              cwd: process.cwd(),
-            });
-            return extractContent(result);
-          };
-        },
-      });
-    },
-  });
 }
 
 // extractContent is now imported from @mcp-cli/core and re-exported for test compatibility

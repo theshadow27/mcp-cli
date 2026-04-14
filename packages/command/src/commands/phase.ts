@@ -30,7 +30,6 @@ import {
   type Manifest,
   ManifestError,
   type ManifestState,
-  type McpProxy,
   NO_REPO_ROOT,
   RegressionError,
   type TransitionLogEntry,
@@ -43,8 +42,8 @@ import {
   commitTransition,
   createAliasCache,
   createAliasState,
+  createMcpProxy,
   executeAliasBundled,
-  extractContent,
   extractMetadata,
   findGitRoot,
   hashFileSync,
@@ -860,7 +859,11 @@ const defaultExecuteDeps: PhaseExecuteDeps = {
   exec: (cmd: string[]): ExecResult => {
     const [bin, ...rest] = cmd;
     const r = Bun.spawnSync([bin, ...rest], { stdout: "pipe", stderr: "pipe" });
-    return { stdout: new TextDecoder().decode(r.stdout), exitCode: r.exitCode ?? 0 };
+    // `exitCode` is null when the child was terminated by a signal (e.g. SIGKILL).
+    // Surface that as a failure — `?? 0` previously masked signal-killed processes
+    // as success and let the branch guard wave through a git that never ran.
+    const exitCode = r.exitCode ?? 1;
+    return { stdout: new TextDecoder().decode(r.stdout), exitCode };
   },
   findGitRoot,
   now: () => new Date(),
@@ -924,44 +927,29 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
   };
 }
 
-function makeRealMcpProxy(ipcCaller: typeof ipcCall, cwd: string): McpProxy {
-  return new Proxy({} as McpProxy, {
-    get(_t, serverName: string) {
-      return new Proxy({} as Record<string, (a?: Record<string, unknown>) => Promise<unknown>>, {
-        get(_i, toolName: string) {
-          return async (toolArgs?: Record<string, unknown>) => {
-            const result = await ipcCaller("callTool", {
-              server: serverName,
-              tool: toolName,
-              arguments: toolArgs ?? {},
-              cwd,
-            });
-            return extractContent(result);
-          };
-        },
-      });
-    },
-  });
-}
-
 /**
  * Execute a phase handler with a real context (issue #1381).
  *
  * Two-phase transition log (PR #1407 adversarial-review fix):
  *   1. Parse flags (transition + execution inputs)
- *   2. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *   2. Pre-validate the transition against committed history so bogus
+ *      moves fail fast before we bundle or dispatch anything.
+ *   3. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
  *      captures attempt evidence from ANY branch, including cases that
  *      branch-guard rejects or handlers crash. Attempted entries are
  *      ignored by graph-walk / regression checks (#1407).
- *   3. Branch guard: refuse to dispatch outside the manifest's `runsOn`
+ *   4. Branch guard: refuse to dispatch outside the manifest's `runsOn`
  *      branch. Attempt is already logged for audit.
- *   4. Bundle the phase source
- *   5. Fetch the work item from the daemon (if `--work-item` given)
- *   6. Build a live AliasContext: real MCP proxy + daemon-backed state
+ *   5. Bundle the phase source
+ *   6. Fetch the work item from the daemon (if `--work-item` given)
+ *   7. Build a live AliasContext: real MCP proxy + daemon-backed state
  *      (namespaced by the work-item id)
- *   7. Execute the handler
- *   8. On success: `commitTransition` writes a `"committed"` entry.
- *      `validateTransition` now accepts an idempotent self-loop
+ *   8. Execute the handler
+ *   9. On success (and only on success): `commitTransition` writes a
+ *      `"committed"` entry. The transition commit runs AFTER the handler
+ *      and branch guard, so failed or rejected runs leave only the
+ *      `"attempted"` audit entry — retries are not blocked.
+ *      `validateTransition` accepts an idempotent self-loop
  *      (`from === target && tail === target`) so handlers can be re-run
  *      without tripping `RegressionError` — handlers are expected to
  *      self-check state and return `"in-flight"` when already running.
@@ -1093,11 +1081,13 @@ export async function executePhase(
   const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
   // State is namespaced by work-item id so every phase touching the same
   // item sees the same scratchpad (see sprint state declarations in
-  // .mcx.yaml). When no work item is bound, writes are discarded into an
-  // ephemeral namespace so the handler doesn't fault on missing state.
+  // .mcx.yaml). When no work item is bound we fall back to a
+  // `phase:<target>:unbound` namespace — writes still persist through the
+  // daemon (createAliasState always hits SQLite), but they land in a
+  // separate bucket that won't collide with work-item scoped state.
   const stateNamespace = workItem ? `workitem:${workItem.id}` : `phase:${parsed.target}:unbound`;
   const ctx: AliasContext = {
-    mcp: makeRealMcpProxy(ex.ipcCall, cwd),
+    mcp: createMcpProxy({ call: ex.ipcCall, cwd }),
     args: parsed.args,
     file: (p) => Bun.file(p).text(),
     json: async (p) => JSON.parse(await Bun.file(p).text()),
