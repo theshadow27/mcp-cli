@@ -25,11 +25,13 @@ function tryLoadManifest(dir: string): Manifest | null {
 export interface TrackDeps {
   ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   exit: (code: number) => never;
+  loadManifest?: (dir: string) => Manifest | null;
 }
 
 const defaultDeps: TrackDeps = {
   ipcCall,
   exit: (code) => process.exit(code),
+  loadManifest: tryLoadManifest,
 };
 
 // -- mcx track --
@@ -40,7 +42,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     return;
   }
 
-  const manifest = tryLoadManifest(process.cwd());
+  const manifest = (deps.loadManifest ?? tryLoadManifest)(process.cwd());
   const initialPhase = manifest?.initial;
 
   if (args[0] === "--branch") {
@@ -132,7 +134,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const jsonFlag = args.includes("--json");
   const phaseIdx = args.indexOf("--phase");
   let phase: string | undefined;
-  const manifest = tryLoadManifest(process.cwd());
+  const manifest = (deps.loadManifest ?? tryLoadManifest)(process.cwd());
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   if (phaseIdx >= 0) {
