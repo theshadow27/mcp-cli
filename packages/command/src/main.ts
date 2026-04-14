@@ -155,13 +155,13 @@ async function main(): Promise<void> {
   }
 
   // --dry-run is only valid for call (and shorthand call forms handled in the default branch)
-  // and for commands that opt in (gc).
-  if (dryRun && command && command !== "call" && command !== "gc") {
+  // and for commands that opt in (gc, phase run).
+  if (dryRun && command && command !== "call" && command !== "gc" && command !== "phase") {
     const isShorthand =
       !command.startsWith("-") &&
       (splitServerTool(command) !== null || (cleanArgs.length >= 2 && !cleanArgs[1].startsWith("-")));
     if (!isShorthand) {
-      printError(`--dry-run is only supported for the 'call' command, not '${command}'`);
+      printError(`--dry-run is only supported for 'call', 'gc', and 'phase run', not '${command}'`);
       process.exit(1);
     }
   }
@@ -293,9 +293,12 @@ async function main(): Promise<void> {
         await cmdGc(cleanArgs.slice(1), { dryRun: _dryRun });
         break;
 
-      case "phase":
-        await cmdPhase(cleanArgs.slice(1));
+      case "phase": {
+        const phaseArgs = cleanArgs.slice(1);
+        if (_dryRun && phaseArgs[0] === "run") phaseArgs.push("--dry-run");
+        await cmdPhase(phaseArgs);
         break;
+      }
 
       case "auth":
         await cmdAuth(cleanArgs.slice(1));
