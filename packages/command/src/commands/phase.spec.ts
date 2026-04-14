@@ -1548,7 +1548,7 @@ phases:
     expect(errs.some((e) => e.includes('work item "#999" not found'))).toBe(true);
   }, 30_000);
 
-  test("transition is committed even when handler throws (idempotent re-entry)", async () => {
+  test("handler crash leaves only an 'attempted' entry — no committed transition (#1407)", async () => {
     const throwAlias = `
 import { defineAlias, z } from "mcp-cli";
 defineAlias(({ z }) => ({
@@ -1581,11 +1581,85 @@ defineAlias(({ z }) => ({
     ).catch(() => {});
 
     expect(code).toBe(1);
-    expect(errs.some((e) => e.includes("approved"))).toBe(true);
     expect(errs.some((e) => e.includes('phase "implement" failed'))).toBe(true);
-    // Transition log recorded the attempt so the orchestrator can see it.
+    // "approved" is only logged on successful commit, never on crash.
+    expect(errs.some((e) => e.includes("approved"))).toBe(false);
+    // Log contains the attempted entry (audit trail) but NOT a committed one.
     const { readFileSync: rfs } = require("node:fs");
-    const log = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8");
-    expect(log).toContain('"to":"implement"');
+    const raw = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8") as string;
+    const entries = raw
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { to: string; status?: string });
+    const attempted = entries.filter((e) => e.status === "attempted");
+    const committed = entries.filter((e) => e.status === "committed");
+    expect(attempted.length).toBe(1);
+    expect(attempted[0].to).toBe("implement");
+    expect(committed.length).toBe(0);
+  }, 30_000);
+
+  test("back-to-back executePhase calls do not trip RegressionError (#1407)", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const store = new Map<string, unknown>();
+    const workItem = {
+      id: "#42",
+      issueNumber: 42,
+      prNumber: null,
+      branch: "feat/42",
+      prState: null,
+      prUrl: null,
+      ciStatus: "none" as const,
+      ciRunId: null,
+      ciSummary: null,
+      reviewStatus: "pending" as const,
+      phase: "implement",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+
+    const run = async () => {
+      const ex = makeExecDeps({ workItem, stateStore: store });
+      const logs: string[] = [];
+      const errs: string[] = [];
+      let code: number | undefined;
+      await executePhase(
+        ["implement", "--work-item", "#42"],
+        {
+          ...makeDriftDeps(dir).deps,
+          log: (m) => logs.push(m),
+          logError: (m) => errs.push(m),
+          exit: ((c: number) => {
+            code = c;
+            throw new Error(`exit(${c})`);
+          }) as (code: number) => never,
+        },
+        { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+      ).catch(() => {});
+      return { logs, errs, code };
+    };
+
+    const first = await run();
+    expect(first.code).toBeUndefined();
+    expect(first.logs.join("\n")).toContain('"action": "spawn"');
+
+    // Second call on the same manifest/work-item must NOT throw
+    // RegressionError. Handler self-checks state and returns "in-flight".
+    const second = await run();
+    expect(second.code).toBeUndefined();
+    expect(second.errs.some((e) => e.toLowerCase().includes("regress"))).toBe(false);
+    expect(second.logs.join("\n")).toContain('"action": "in-flight"');
+
+    // Both runs committed to the log (idempotent self-loop allowed).
+    const { readFileSync: rfs } = require("node:fs");
+    const raw = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8") as string;
+    const entries = raw
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { status?: string; to: string });
+    expect(entries.filter((e) => e.status === "committed").length).toBe(2);
+    expect(entries.filter((e) => e.status === "attempted").length).toBe(2);
   }, 30_000);
 });

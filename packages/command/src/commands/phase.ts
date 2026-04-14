@@ -36,6 +36,7 @@ import {
   type TransitionLogEntry,
   UnknownPhaseError,
   type WorkItem,
+  appendAttempt,
   bundleAlias,
   canonicalJson,
   checkRunsOn,
@@ -47,14 +48,18 @@ import {
   extractMetadata,
   findGitRoot,
   hashFileSync,
+  historyTargets,
   ipcCall,
+  isCommitted,
   isDefineAlias,
   loadManifest,
   parseLockfile,
   readAllTransitions,
+  readTransitionHistory,
   serializeLockfile,
   sha256Hex,
   suggestPhases,
+  validateTransition,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
@@ -942,20 +947,28 @@ function makeRealMcpProxy(ipcCaller: typeof ipcCall, cwd: string): McpProxy {
 /**
  * Execute a phase handler with a real context (issue #1381).
  *
- * Flow:
+ * Two-phase transition log (PR #1407 adversarial-review fix):
  *   1. Parse flags (transition + execution inputs)
- *   2. Branch guard: refuse to run outside the manifest's `runsOn` branch
- *   3. Commit the transition via `phaseRun` (same as --no-execute path)
+ *   2. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *      captures attempt evidence from ANY branch, including cases that
+ *      branch-guard rejects or handlers crash. Attempted entries are
+ *      ignored by graph-walk / regression checks (#1407).
+ *   3. Branch guard: refuse to dispatch outside the manifest's `runsOn`
+ *      branch. Attempt is already logged for audit.
  *   4. Bundle the phase source
  *   5. Fetch the work item from the daemon (if `--work-item` given)
  *   6. Build a live AliasContext: real MCP proxy + daemon-backed state
- *      (namespaced by the work-item id, so state writes persist per-item)
- *   7. Execute the handler and emit its structured return on stdout
+ *      (namespaced by the work-item id)
+ *   7. Execute the handler
+ *   8. On success: `commitTransition` writes a `"committed"` entry.
+ *      `validateTransition` now accepts an idempotent self-loop
+ *      (`from === target && tail === target`) so handlers can be re-run
+ *      without tripping `RegressionError` — handlers are expected to
+ *      self-check state and return `"in-flight"` when already running.
  *
- * The transition is committed before execution so a handler crash doesn't
- * leave the graph inconsistent; handlers are idempotent on re-entry
- * (see `.claude/phases/impl.ts` — if `session_id` is set, returns
- * `in-flight` instead of re-spawning).
+ * If the handler crashes, no committed entry is written: the work item
+ * state is "tried but did not complete", and a retry will not be blocked
+ * by the transition log.
  */
 export async function executePhase(
   argv: string[],
@@ -980,27 +993,52 @@ export async function executePhase(
     d.exit(1);
   }
 
-  // Validate + commit the transition before branch-guarding, so
-  // unknown-phase and disallowed-transition errors fail fast without
-  // requiring a real git checkout. The transition log records intent;
-  // branch-guard below gates actual code execution.
-  const txResult = phaseRun(
-    {
-      target: parsed.target,
-      from: parsed.from,
-      workItemId: parsed.workItemId,
-      forceMessage: parsed.forceMessage,
-    },
-    { cwd, now: ex.now },
-  );
-  const source = txResult.manifest.phases[parsed.target]?.source ?? "(unknown)";
-  const tag = txResult.forced ? " [FORCED]" : "";
-  const trail = txResult.from ?? "(initial)";
-  d.logError(`approved${tag}: ${trail} → ${parsed.target} (${source})`);
+  const phase = loaded.manifest.phases[parsed.target];
+  if (!phase) {
+    d.logError(
+      `unknown phase "${parsed.target}".${(() => {
+        const s = suggestPhases(parsed.target, Object.keys(loaded.manifest.phases));
+        return s.length > 0 ? ` did you mean: ${s.join(", ")}?` : "";
+      })()}`,
+    );
+    d.exit(1);
+  }
 
-  // Branch guard — phases execute with full shell/mcp access, so refuse to
-  // dispatch from any branch other than the manifest's `runsOn`. Fires
-  // after transition commit so the intent is still logged on refusal.
+  // Pre-validate the transition with committed-only history so bogus
+  // moves (unknown from, disallowed, un-forced regression) fail BEFORE
+  // we spend cycles running the handler. The final commit below repeats
+  // this under the transition lock; pre-check is a fail-fast guard, not
+  // the source of truth.
+  const logPath = transitionLogPath(cwd);
+  const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
+  const priorTargets = historyTargets(prior);
+  const resolvedFrom =
+    parsed.from !== null ? parsed.from : priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
+  validateTransition({
+    manifest: loaded.manifest,
+    from: resolvedFrom,
+    target: parsed.target,
+    history: priorTargets,
+    workItemId: parsed.workItemId,
+    force: parsed.forceMessage !== null ? { message: parsed.forceMessage } : null,
+    manifestPath: loaded.path,
+  });
+
+  // Two-phase log — append an "attempted" entry before branch-guard or
+  // handler dispatch so every invocation leaves an audit trail, even
+  // when branch-guard rejects or the handler crashes. Attempted entries
+  // are ignored by regression / graph-walk checks (#1407).
+  appendAttempt(logPath, {
+    workItemId: parsed.workItemId,
+    from: resolvedFrom,
+    target: parsed.target,
+    forceMessage: parsed.forceMessage,
+    now: ex.now,
+  });
+
+  // Branch guard — phases execute with full shell/mcp access, so refuse
+  // to dispatch from any branch other than the manifest's `runsOn`. The
+  // attempt entry above captured the intent for audit.
   try {
     checkRunsOn({ cwd, manifest: loaded.manifest, exec: ex.exec });
   } catch (err) {
@@ -1010,10 +1048,6 @@ export async function executePhase(
     }
     throw err;
   }
-
-  const phase = loaded.manifest.phases[parsed.target];
-  // phaseRun would have thrown UnknownPhaseError if the target was invalid,
-  // so `phase` is defined here.
 
   let resolved: string;
   try {
@@ -1091,9 +1125,29 @@ export async function executePhase(
   try {
     output = await d.executeAliasBundled(js, structured ? input : undefined, ctx, structured);
   } catch (err) {
+    // No committed entry — only the "attempted" record remains, so a
+    // retry is not gated by this failure (#1407).
     d.logError(`phase "${parsed.target}" failed: ${err instanceof Error ? err.message : String(err)}`);
     d.exit(1);
   }
+
+  // Handler succeeded — commit the transition. Idempotent self-loop
+  // (`from === target && tail === target`) is accepted by
+  // validateTransition so successive `phase run <X>` calls don't
+  // trip RegressionError.
+  const txResult = phaseRun(
+    {
+      target: parsed.target,
+      from: parsed.from,
+      workItemId: parsed.workItemId,
+      forceMessage: parsed.forceMessage,
+    },
+    { cwd, now: ex.now },
+  );
+  const source = phase.source ?? "(unknown)";
+  const tag = txResult.forced ? " [FORCED]" : "";
+  const trail = txResult.from ?? "(initial)";
+  d.logError(`approved${tag}: ${trail} → ${parsed.target} (${source})`);
 
   if (output !== undefined && output !== null) {
     if (typeof output === "string") {
