@@ -1,321 +1,216 @@
 # Sprint 35
 
-> Planned 2026-04-12 21:45 local. Updated 2026-04-13. Target: 12 PRs (reduced from 15 — see "Velocity" below).
+> Planned 2026-04-12 21:45 local. Updated 2026-04-13. Started 2026-04-14.
+> **RE-PLANNED 2026-04-14** — original plan's premise invalidated. Target: ship prerequisites, then validate.
 
-## ⚠️ Read this first: be a test pilot, not a zombie NPC
+## ⚠️ Re-plan notice (2026-04-14)
 
-**Sprint 35 runs on freshly-landed tooling.** Sprint 34 shipped `.mcx.yaml` +
-the phase script pipeline (#1299/#1380) plus several adjacent PRs that
-together rewrote how sprints are *supposed* to execute. None of it has been
-load-tested under real sprint conditions yet. **You are the first person
-flying this airframe.** Expect:
+**The original sprint-35 plan was built on a false premise: that v1.5.0
+shipped a working phase-pipeline skill.** It didn't. During pre-flight
+for the first `/sprint run`, the orchestrator discovered:
 
-- **Phase scripts that work in `--dry-run` may behave differently under real
-  execution** (#1381 is what wires real execution; until it lands you're
-  running the old way for transitions and the new way for inspection).
-- **Skill files (`run.md`, `qa.md`, `adversarial-review.md`) just got nudge
-  patches** for sprint-34 lessons. Some of those nudges may be wrong or
-  incomplete. If a worker does something stupid because of a skill
-  instruction, the skill is wrong, not the worker.
-- **Comment-surface enumeration** (the 4 PR-comment-surfaces orchestrator
-  check) is **brand-new orchestrator discipline** for this sprint. Sprint 34
-  got burned because nobody checked. Sprint 35 you have to actually do it.
-- **The release-train (`agents/mergemaster.md`) is one sprint old.** It has
-  known bugs (auto-merge re-arm after force-push). Doc'd in `run.md` →
-  "Orchestrator-only nudges". Watch the train's queue depth.
-- **GitHub branch protection now requires PRs** for main. The orchestrator
-  has admin bypass for meta commits, but workers cannot push direct.
+1. **`mcx phase run <name> --dry-run` does not execute the handler** —
+   the global `--dry-run` flag is stripped in `main.ts` before `cmdPhase`
+   sees it, so the command always falls through to the transition
+   validator. Filed as **#1396** (brand new). No CLI path currently
+   invokes a phase handler.
+2. **Autonomous handler execution (#1381) is unimplemented** — the
+   non-dry-run path is a transition recorder, not an executor. This is
+   a known deliverable, but it was scheduled as a *peer* of other
+   batch-1 work rather than a gate.
+3. **`run.md`'s orchestrator loop is unusable as written** — it tells
+   the orchestrator to parse `{action, command, prompt, ...}` from
+   `mcx phase run ... --dry-run` output, but the CLI discards that
+   output even when (after #1396) the handler runs. The loop silently
+   no-ops.
+4. **v1.5.0 was released as an RC under the assumption the pipeline
+   worked.** It shipped.
 
-### Be alert for these failure modes
+Why this wasn't caught in sprint-34 retro: the prior orchestrator ran
+to 345k tokens of context and produced unreliable "everything is done"
+assertions well short of the 1M limit. Context-rot, not memory exhaustion.
+The legacy instructions in the original sprint plan were the only reason
+`/sprint run` could even start. **Note this in the retro.**
 
-| Symptom | Likely cause | Action |
-|--|--|--|
-| Worker says "command not found: mcx phase X" | Worker's binary is stale (didn't pick up new build) | `mcx shutdown && mcx status`, then verify the worker spawned after restart |
-| Phase script throws on `ctx.workItem` | You ran `mcx phase run X --dry-run` for a phase that requires work-item context. Use real run via #1381 once it lands, or skip dry-run preview for those phases | Check `docs/phases.md` for which phases support dry-run |
-| QA approves PR but Copilot has 17 unaddressed inline comments | The 4-surface check wasn't done at orchestrator level | Stop, enumerate (run.md → "Before approving qa:pass"), repair |
-| Mergemaster session "polls forever" on a clean PR | Auto-merge invalidated by a prior force-push | `gh pr view N --json autoMergeRequest`; if null, re-arm with `gh pr merge N --squash --delete-branch --auto` |
-| qa:pass and qa:fail both on PR | Old QA didn't swap labels transactionally; new QA did but didn't see the pre-existing label | Strip both, re-run QA, file a follow-up bug |
-| `core.bare=true` recurrence | Sticky fix from #1330 — should be rare now, but check `git config core.bare` if any git op fails strangely | Hot-patch with `git config core.bare false` |
-| #1373/#1387-style merge conflicts mid-sprint | Branches landed in a different order than impl | Spawn a one-shot rebase worker per `run.md` "Sweeping main commits" |
+### What changed in this re-plan
 
-### When to STOP the sprint
-
-Pause and report to the user **immediately** if any of:
-
-- Two or more workers fail in the same way (could be skill-file bug).
-- The orchestrator skill produces a directive the orchestrator can't follow
-  (means the skill is internally inconsistent — likely from sprint-34
-  patches).
-- A phase script behaves differently in `--dry-run` vs real run AND that
-  divergence affects sprint correctness (not just preview accuracy).
-- Mergemaster sends `ESCALATE: <anything>` (per its prompt, this means it
-  hit something it can't handle).
-- More than 2 PRs need rebase-workers for merge conflicts in a single
-  batch (suggests bigger coordination problem).
-- Any PR that *should* qa:pass keeps failing repeatedly with no clear
-  cause — could be a regression in QA itself.
-
-The goal of sprint 35 is **prove the new tooling works under load**, not
-"hit 15 PRs." If you have to stop early to fix tooling, that is the
-correct outcome.
-
-## Quick guide: old way vs new way
-
-For each phase, here's what the prose pipeline used to do, what the phase
-script does now, and what to do if the new way breaks.
-
-### `impl`
-
-- **Old:** orchestrator chose model + provider + flags; spawned via prose.
-- **New:** `mcx phase run impl --dry-run --work-item #N` returns
-  `{action:"spawn", model, command, prompt, allowTools}`; orchestrator
-  executes the command verbatim. Phase script picks model (opus default,
-  sonnet for docs, opus for flaky).
-- **Recovery:** if `mcx phase run impl` errors, fall back to the old
-  pattern: `mcx claude spawn --worktree -t "/implement N" --allow Read
-  Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode` and track via
-  `mcx track N`.
-
-### `triage`
-
-- **Old:** orchestrator ran `bun .claude/skills/estimate/triage.ts --pr N
-  --json` after impl finished; manually read `scrutiny`, decided next phase.
-- **New:** `mcx phase run triage --work-item #N` does the same but emits a
-  decision (`{decision: "review" | "qa", scrutiny, reasons, prNumber}`).
-- **Recovery:** if the new path errors, fall back to running
-  `triage.ts --pr N --json` directly and inspecting yourself.
-
-### `review`
-
-- **Old:** orchestrator spawned an adversarial-review session, read its
-  posted sticky comment, decided next phase based on 🔴/🟡 count.
-- **New:** `mcx phase run review --work-item #N` spawns on first entry,
-  re-enters to read the sticky on subsequent ticks, routes to repair/qa
-  based on found markers. Caps at 2 rounds → `needs-attention`.
-- **Recovery:** if the phase script gets confused about whether a session
-  is in flight (state read of `review_session_id`), check
-  `mcx call _work_items work_items_get '{"id":"#N"}'` and either clear
-  the stale session ID or wait for the active one to complete.
-
-### `repair`
-
-- **Old:** orchestrator manually decided micro-repair vs fresh opus, spawned
-  accordingly.
-- **New:** `mcx phase run repair --work-item #N` spawns opus on a fresh
-  worktree with context-aware prompt (reads `previous_phase` to differentiate
-  review vs QA paths). Caps at 3 rounds → `needs-attention`.
-- **Recovery:** the **micro-repair pattern (orchestrator nudge)** isn't
-  inside the phase script — orchestrator still does it manually via
-  `send`. See `run.md` → "Reviewer self-repair".
-
-### `qa`
-
-- **Old:** orchestrator spawned QA, waited for `qa:pass`/`qa:fail` label.
-- **New:** `mcx phase run qa --work-item #N` spawns sonnet QA on first
-  entry; re-entry reads PR labels for `qa:pass`/`qa:fail`, routes to
-  `done` or `repair`. Caps `qa_fail` at 2 → `needs-attention`.
-- **Recovery:** if QA emits `qa:pass` but the orchestrator's 4-surface check
-  finds open Copilot threads, transition back to `repair` with explicit
-  guidance, not via the phase script (since the phase script can't see the
-  surfaces). Manual `mcx call _work_items work_items_update '{"id":"#N",
-  "phase":"repair", "force": true, "forceReason": "open inline comments"}'`.
-
-### `done`
-
-- **Old:** orchestrator did `gh pr merge --squash --delete-branch`.
-- **New:** `done.ts` checks `qa:pass` + green CI, calls merge, clears
-  scratchpad. **Auto-merge re-arm is NOT yet inside `done.ts`** — that's
-  the mergemaster's job today, will move into the merge-queue service in
-  #1397.
-- **Recovery:** if `done` returns `{merged: false, error: {...}}`, read the
-  error.reason. Common: "behind" (rebase needed — let mergemaster handle),
-  "qa:pass missing" (re-run QA), "ci:red" (real failure, repair).
-
-### `needs-attention`
-
-- **Old:** didn't exist as a formal state — orchestrator just stopped and
-  asked the user.
-- **New:** posts an escalation comment on the PR, strips stale QA labels,
-  marks the work item. Orchestrator surfaces these to user at end-of-tick.
-- **Recovery:** if a work item ends up here, read the comment for the
-  reason and decide manually whether to (a) drop the issue from the
-  sprint, (b) hand-craft a repair, or (c) close as won't-fix.
-
-## Velocity
-
-**Reduced target from 15 → 12 PRs** to budget for tooling debugging. The
-extra 3-PR slack lets you stop and fix without missing the goal. If by
-batch 2 the new tooling is behaving, increase batch 3 size to recover.
+- **Batch 1 is now a strict sequential gate**, not 5 parallel sessions.
+- **#1396** and **#1349** promoted to batch 1 ahead of #1381.
+- **#1383** promoted from batch 3 → batch 1 (recurred during pre-flight,
+  filed comment on issue with fresh data).
+- **Explicit validation checkpoint** added after #1381 lands — drive one
+  small issue through real `mcx phase run` end-to-end. This is the
+  actual skill-validation step. Original plan had none.
+- **Meta task**: patch `run.md` to document the legacy-fallback path
+  explicitly (not buried in recovery notes), since the orchestrator
+  loop as written silently no-ops.
+- **Target reduced 12 → "validation + as many backlog PRs as fit".**
+  Success is not PR count; it's "the skill is either validated or
+  demonstrably not-yet-validatable, with prereqs landed."
 
 ## Goal
 
-**Prove the v1.5.0 tooling under load + close the dogfood aftermath.**
-Sprint 34 shipped `.mcx.yaml` + the phase pipeline + the mergemaster
-discovery; sprint 35 stress-tests all of it on a realistic workload while
-clearing the highest-value follow-ups. The autonomous handler execution
-(#1381) and merge-queue service (#1397) are the v1.6.0 stretch goals.
+**Primary:** validate the v1.5.0 phase-pipeline skill works end-to-end
+(drive an issue through `mcx phase run` autonomously).
 
-## Meta (orchestrator-applied directly on main, NOT sprint items)
+**Backup** (if primary blocks): land all prerequisites (#1396, #1349,
+#1381, run.md patch) so that sprint 36 can be the first real validation
+sprint. Either outcome is success — we stop chasing PR counts.
 
-Apply during plan phase per `plan.md` Step 1a. Items already done during
-sprint-34 wind-down are noted; remaining items are the user's call:
+## Pre-flight observations (from today's start)
 
-1. **Block `--no-verify` via Claude settings hook.** `.claude/settings.json`
-   PreToolUse hook that scans Bash `command` for `--no-verify` on `git
-   commit|push` and exits non-zero. Prevents recurrence of #1338's
-   formatter-bypass. *Status: open — needs orchestrator + user to agree on
-   shape.*
-2. **User: enable `required_review_thread_resolution` on main ruleset.**
-   Backstop for the 4-surface check — unresolved threads block merge at
-   GitHub level. *Status: open — user-initiated.*
-3. **Consider `enforce_admins: true` on main ruleset.** *Status: open —
-   user call. Currently the orchestrator depends on admin bypass for meta
-   commits, so flipping this to true requires a new bypass design.*
-4. **DONE in sprint-34 wind-down:** orchestrator-side `run.md` updated with
-   4-surface enumeration, self-repair pattern, auto-merge re-arm, dual-label
-   audit (commit `20dbd268`).
-5. **DONE in sprint-34 wind-down:** `qa.md` got transactional label-swap.
-6. **DONE in sprint-34 wind-down:** `agents/mergemaster.md` written.
-7. **DONE in sprint-34 wind-down:** branch/worktree/remote-ref cleanup
-   (1181→399 branches, 25→3 worktrees, 107 dead remote refs pruned).
+- Build ✅ v1.5.0, protocol hash `8071f2608a29`
+- `.mcx.yaml` was **deleted from the working tree** on a clean branch
+  (recurrence of #1383). Restored via `git checkout HEAD`. Comment filed
+  on #1383 with fresh data.
+- Quota monitoring `"available": false` (`"Quota monitoring not started"`).
+  Flying blind on the 80%/95% gates. Unclear if this is a regression or a
+  fresh daemon always starts cold. **File a meta issue during sprint.**
+- 7 phases installed; lockfile matches sources.
+- 5 batch-1 sessions were spawned then killed after the debug pivot
+  (~$1 burned, partial work discarded, worktrees cleaned).
 
-## Issues
+## Stage A: Prerequisite gate (sequential, solo sessions)
 
-| # | Title | Scrutiny | Batch | Model | Category |
-|---|-------|----------|-------|-------|----------|
-| **1347** | **Flaky: findGitRoot tests fail under pre-commit (GIT_DIR leak)** | **high** | **1** | **opus** | **root-cause of #1338 bypass** |
-| 1393 | CI retry wrapper swallows Bun segfault stderr (bun.report URLs lost) | medium | 1 | opus | DX P1 — memory rule says always open those URLs |
-| 1378 | quota: _errorLogged not reset when error type changes | low | 1 | opus | #1329 follow-up |
-| 1377 | quota.spec.ts: replace fixed Bun.sleep() with polling | low | 1 | opus | #1329 follow-up; test hygiene |
-| **1381** | **feat(phases): wire autonomous handler execution (phase run without --dry-run)** | **high** | **1** | **opus** | **dogfood v2 — real execution** |
-| **1397** | **feat(merge-queue): local deterministic merge-queue service** | **high** | **2** | **opus** | **sprint-34 retro insight; depends on #1381** |
-| 1367 | repro harness: gh pr merge --delete-branch → core.bare=true | medium | 2 | opus | #1330 follow-up — proves sticky fix |
-| 1372 | bug(phases): O_EXCL lockfile not atomic on NFS | medium | 2 | opus | #1328 follow-up |
-| 1392 | Production: rapid codex worker respawn may hit Bun module-resolution race | medium | 2 | opus | DX P2 |
-| 1388 | fix(claude-wait): help text says --timeout default is 300000 | low | 3 | sonnet | #1341 follow-up; doc fix |
-| 1383 | bug: something in the test suite deletes root .mcx.yaml | medium | 3 | opus | test hygiene |
-| 1384 | CI grep-check: assert detectDrift call in phase run case | low | 3 | sonnet | #1346 follow-up |
+**These must land in order. Do not parallelize within Stage A.**
 
-**Excluded from active list (deferred to sprint 36):** #1375 (transitions.jsonl
-rotation), #1385 (truncate forceMessage), #1386 (combined --json+--work-item
-test), #1391 (assertNoDrift CI grep). All are filler-tier; bumped to make room
-for tooling-debugging slack.
+| Order | # | Title | Scrutiny | Model | Notes |
+|-------|---|-------|----------|-------|-------|
+| A1 | **1396** | phase run --dry-run flag stripped before cmdPhase | low | opus | ~1-line fix; unblocks everything else |
+| A2 | **1349** | catch and format handler errors in phase run --dry-run | low | opus | needs A1 landed to be testable |
+| A3 | **1381** | wire autonomous handler execution | **high** | opus | the big one; full-sprint cook acceptable |
+| A4 | **META** | patch `run.md` to document legacy fallback explicitly + document #1396's effect on the orchestrator loop | — | orchestrator | 15-min meta commit, direct to main (admin bypass) |
 
-## Batch Plan
-
-### Batch 1 (immediate — flaky root cause + dogfood v2 + quota cleanup)
-#1347, #1393, #1378, #1377, #1381
-
-- **#1347** is THE root cause that led to #1338's `--no-verify` bypass.
-  Fixing it removes the last "legitimate" reason anyone would use
-  `--no-verify`, reinforcing the settings-hook block from meta item 1.
-- **#1381** is dogfood v2 — autonomous handler execution. Big, full-sprint
-  cook. Without it, the phase scripts only run via `--dry-run` for preview
-  and orchestrator still drives transitions manually. After it lands,
-  sprint 36 can be the first fully-autonomous sprint.
-- **#1393** is blocking a memory-compliance rule (always open bun.report
-  URLs; if CI swallows them, can't open them).
-- #1377/#1378 are quota-related #1329 follow-ups; small but non-trivial.
-
-### Batch 2 (after Batch 1 starts settling — phase + DX hardening)
-#1397, #1367, #1372, #1392
-
-- **#1397** is the merge-queue service that retires the LLM mergemaster
-  for the common case. Depends on #1381 for autonomous execution support.
-- **#1367** proves #1330's sticky fix actually works under real `gh pr
-  merge` conditions. If it doesn't, fourth recurrence to diagnose.
-- #1372 (NFS) is non-blocking but worth flagging while code is fresh.
-- #1392 (Bun module-resolution race) is production-adjacent — cheap if
-  reproducible.
-
-### Batch 3 (filler — only if batch 1+2 are healthy)
-#1388, #1383, #1384
-
-- All three are small, low-risk filler. Pull from this batch if tooling is
-  cooperating; skip if you're spending cycles on pilot debugging.
-
-## Dependency graph
-
+After A1 lands, the orchestrator can verify by running:
 ```
-  #1347 ── unblocks #1356 closure (GIT_DIR root cause) — standalone
-  #1381 ── depends on #1299 landed (✅)
-  #1397 ── depends on #1381 (autonomous execution) — batch 2 starts after #1381 PR is up
-  #1367 ── depends on #1330 landed (✅)
-  #1377/#1378 ── depend on #1329 landed (✅)
-  #1372 ── depends on #1328 landed (✅)
-  #1383 / #1384 / #1388 / #1392 ── all independent
+mcx phase run impl --dry-run --work-item <tracked-id>
 ```
+and asserting handler-computed JSON actually appears on stdout. If it
+doesn't, A1 didn't land correctly and should be re-opened before A2.
 
-Critical path: #1347 (unblocks `--no-verify` retirement), #1381→#1397 (v1.6.0
-autonomous-execution gate).
+After A3 lands: attempt validation (Stage B). **Do not proceed to Stage
+C backlog work unless Stage B passes.**
 
-## Apply from sprint 34 retro
+## Stage B: Validation checkpoint (single session, orchestrator-driven)
 
-- **Spawn release-train at sprint kickoff**, not at wind-down. Per
-  `agents/mergemaster.md` spawn template. Enqueue PRs as each hits
-  `qa:pass` via `mcx claude send <id> "add PR #N to your queue"`.
-- **Reviewer self-select for repair vs opus.** Per `run.md` →
-  "Reviewer self-repair". Saves ~$10–15 per repair when contained.
-- **Rebase-before-QA when main has advanced** since impl start. Add to
-  QA's spawn message: "First rebase on origin/main, then verify."
-- **4-surface comment enumeration before approving any qa:pass.** Per
-  `run.md` → "Before approving qa:pass for merge". Sprint 34's
-  cautionary tale: PR #1380 had 17 unaddressed inline comments before
-  this got caught.
-- **Auto-merge re-arm after force-push.** Mergemaster handles this in
-  agent prompt; if orchestrator drives merges directly, see `run.md` →
-  "Auto-merge re-arm".
-- **`--no-verify` blocker hook** installed at plan time per meta item 1.
-- **Don't `bye` workers stuck on upstream-blocked CI.** Leave idle, send
-  rebase + re-run when upstream lands.
+Pick **one** small, contained issue from the backlog (e.g. #1388 — help
+text doc fix). Drive it through the pipeline manually, using the real
+(post-#1381) `mcx phase run` at each transition:
+
+1. `mcx track <n>`
+2. `mcx phase run impl --work-item <n>` → assert a session is spawned,
+   session ID persisted into work item.
+3. Let session produce PR.
+4. `mcx phase run triage --work-item <n>` → assert decision emitted.
+5. `mcx phase run <decision> --work-item <n>` → assert next phase
+   progresses.
+6. Continue to `done`.
+
+**Pass criteria:** the orchestrator never hand-spawns a session after
+Stage B begins. All transitions go through `mcx phase run`. Each phase's
+handler output is visible and actionable.
+
+**Fail criteria:** orchestrator has to fall back to legacy spawn at any
+point → file a bug per failure, stop Stage C, declare sprint in "prereqs
+landed, validation blocked" state.
+
+## Stage C: Backlog (parallel, only if Stage B passes)
+
+**Only start Stage C if Stage B's single issue merged end-to-end via
+real pipeline.** Otherwise skip to wind-down.
+
+### Batch C1 (high-value, independent)
+| # | Title | Scrutiny | Model | Category |
+|---|-------|----------|-------|----------|
+| **1347** | Flaky: findGitRoot tests fail under pre-commit (GIT_DIR leak) | high | opus | root-cause of #1338 bypass |
+| **1393** | CI retry wrapper swallows Bun segfault stderr | medium | opus | DX P1 |
+| **1383** | test suite deletes root .mcx.yaml | medium | opus | infra hygiene (already recurred today) |
+
+### Batch C2 (post-#1381 consumers)
+| # | Title | Scrutiny | Model | Category |
+|---|-------|----------|-------|----------|
+| **1397** | feat(merge-queue): local deterministic merge-queue service | high | opus | sprint-34 retro insight; strict dep on #1381 |
+| 1367 | repro harness: gh pr merge → core.bare=true | medium | opus | proves #1330 sticky fix |
+| 1378 | quota: _errorLogged not reset when error type changes | low | opus | #1329 follow-up |
+| 1377 | quota.spec.ts: replace fixed Bun.sleep with polling | low | opus | #1329 follow-up |
+| 1372 | bug(phases): O_EXCL lockfile not atomic on NFS | medium | opus | #1328 follow-up |
+| 1392 | Production: rapid codex worker respawn Bun module race | medium | opus | DX P2 |
+
+### Batch C3 (filler — only if C1+C2 healthy)
+| # | Title | Scrutiny | Model | Category |
+|---|-------|----------|-------|----------|
+| 1388 | fix(claude-wait): help text says --timeout default 300000 | low | sonnet | (may be consumed by Stage B) |
+| 1384 | CI grep-check: assert detectDrift call in phase run case | low | sonnet | #1346 follow-up |
+
+### Excluded from sprint 35 (push to 36)
+- **Phase-pipeline polish**: #1350 (dead stubState), #1313 (wire parseSource
+  into install), #1344 (cycle detection), #1343 (installedAt field),
+  #1351 (validate initialPhase), #1352 (orphan transition rows), #1353
+  (workItemResolver timeout), #1370 (loadManifest ENOENT race),
+  #1375 (transitions.jsonl rotation), #1385 (truncate forceMessage),
+  #1386 (combined --json+--work-item test), #1391 (assertNoDrift CI).
+  Good sprint-36 batch: a polish sprint for the now-validated pipeline.
+- **Originals deferred**: #1356 (close after #1347), #1361/#1319 (JSDoc),
+  fast-import cluster, #1300/#1398 (mcx gc daemon unreachable — needs
+  repro), #1355 (cosmetic).
+
+## Meta items (orchestrator-applied, NOT sprint items)
+
+Apply during the sprint on main. Items from the original plan + new:
+
+1. **Patch `run.md`** to surface legacy-fallback path (Stage A meta
+   item; deliverable of Stage A4).
+2. **File meta issue**: quota monitoring cold-start `"available":
+   false` — why? Investigate during or after sprint.
+3. **Block `--no-verify` via Claude settings hook** (carried from
+   original plan; user + orchestrator agree on shape; not urgent).
+4. **User: enable `required_review_thread_resolution` on main ruleset**
+   (carried; backstop for 4-surface check).
+5. **Consider `enforce_admins: true`** (carried; user call).
+
+Already done in sprint-34 wind-down (commit `20dbd268`): 4-surface
+enumeration in run.md, self-repair pattern, auto-merge re-arm,
+dual-label audit, transactional QA label-swap, `mergemaster.md`,
+branch/worktree cleanup.
+
+## Success criteria
+
+**Primary success:** Stage B passes. One issue merged end-to-end via
+real `mcx phase run`. Sprint 36 can open the aperture to full
+autonomous sprints.
+
+**Backup success:** #1396, #1349, #1381 merged. Stage B attempted and
+documented (pass or fail). run.md patched to match reality. Retro
+captures the context-rot failure mode that caused this re-plan.
+
+**Failure:** Stage A doesn't complete within sprint budget. Escalate
+to user before extending — we need to understand why (is #1381 bigger
+than scoped? is there a deeper architecture problem?).
 
 ## Risks
 
-- **Tooling regression masquerading as worker error.** Sprint 34 ended
-  with the `.mcx.yaml`/phase pipeline freshly landed. If sprint 35 sees
-  workers do something stupid, your first hypothesis should be "the
-  freshly-patched skill or phase script is wrong," not "the worker is
-  bad." File the meta bug, hot-patch, continue.
-- **#1381 (autonomous execution)** is the biggest unknown. If phase
-  handlers can't safely execute without orchestrator oversight (spawn
-  sessions, push PRs), this may need to land as "gated autonomous"
-  (dry-run + confirm) before full autonomy. Budget the full sprint.
-- **#1347 (GIT_DIR leak)** has been flaky across multiple sprints. Real
-  fix requires understanding why pre-commit's `git commit` context leaks
-  GIT_DIR into the test process — may need subprocess-isolation or
-  env-var scrubbing.
-- **Mergemaster scaling.** Without #1397 deployed yet, all 12 PRs go
-  through the LLM mergemaster again. If the queue gets stuck, fall back
-  to manual rebase workers per PR (sprint 34 endgame pattern).
-- **Skill-file patches from sprint 34 are unproven.** `run.md` got ~150
-  lines of new orchestrator nudges; they may be wrong or contradictory.
-  Watch for orchestrator confusion, not just worker confusion.
+- **#1396 could hide other bugs.** Once --dry-run actually runs the
+  handler, we may discover handlers throw on `ctx.workItem=null` (the
+  Copilot premise from #1380). #1349 lands immediately after to make
+  those errors legible.
+- **#1381 may require a new architectural decision.** If phase handlers
+  can't safely spawn sessions without orchestrator oversight, #1381 may
+  need to ship as "gated autonomous" (dry-run + confirm) first. Budget
+  the full sprint for it; don't rush.
+- **Context rot in the orchestrator itself.** This re-plan exists
+  because the prior orchestrator asserted "done" on things that weren't.
+  Mitigation: smaller batches, frequent checkpoints, explicit pass/fail
+  criteria (Stage B has them), retro captures warning signs.
+- **Original plan's risks carry forward**: #1347 still flaky across
+  sprints; mergemaster scaling without #1397; skill-file patches
+  unproven under load.
 
-## Excluded
+## What this plan is *not* doing
 
-- **#1365** — instrument shim prune paths: overlaps with #1330's own fix
-  (already has shim probes). Close as done or fold into #1367 harness.
-- **#1366** — core_bare_healed_total metric: low-urgency operational
-  improvement.
-- **#1374** — sweepCoreBare cwd fallback test: already added during
-  #1330 repair; close.
-- **#1356** — already investigated this sprint; close after #1347 lands.
-- **#1361, #1319** — JSDoc fixes: trivial; fold into a docs polish sprint.
-- **fast-import cluster** (#1277–#1281, #1311, #1312, #1323) — designated
-  git-remote-mcx sprint.
-- **#1300** (mcx gc: daemon unreachable) — partially covered by #1398
-  (sprint-34 filing); needs repro steps.
-- **#1355** (worktree nag lacks repo path) — cosmetic.
-- **Older backlog** (#1049, #935, #698) — not ready.
-
-## Stretch (only if everything is going great)
-
-If the sprint is unexpectedly smooth (no tooling debugging needed), pull
-from sprint 36 candidate list:
-
-- **Cross-swarm mail design discussion** — file the issue first.
-- **`enforce_admins: true` on ruleset** with new bypass design.
-- Any of the 4 deferred fillers: #1375, #1385, #1386, #1391.
-
-Don't take stretch work unless batches 1 + 2 are entirely landed and the
-new tooling is verifiably stable.
+- **Not targeting 12 PRs.** That target came from the original plan
+  under a false premise.
+- **Not running the mergemaster at kickoff.** Wait until Stage B passes
+  and C1 is in flight — otherwise nothing for it to do.
+- **Not attempting Stage C if Stage B fails.** Shipping more backlog
+  via legacy spawn while the pipeline is unvalidated defeats the
+  sprint's purpose.
