@@ -1566,7 +1566,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // without waiting for the orphaned claude_wait (daemon has its own timeout).
   let result: unknown;
   if (parsed.mailTo) {
-    const totalMs = parsed.timeout ?? 300_000;
+    const totalMs = parsed.timeout ?? 270_000;
     const pollStart = Date.now();
     const mailPoll = pollMailUntil(d, parsed.mailTo, totalMs, pollStart);
     const winner = await Promise.race([
@@ -1838,7 +1838,7 @@ Options:
   --model, -m <name>         Model: opus, sonnet, haiku, or full ID (default: opus)
   --cwd <path>               Working directory for the session
   --wait                     Block until Claude produces a result
-  --timeout <ms>             Max wait time in ms (default: 300000, only with --wait)
+  --timeout <ms>             Max wait time in ms (default: 270000, only with --wait)
 
 Examples:
   mcx claude spawn --task "run the test suite and fix failures"
@@ -1882,7 +1882,7 @@ Spawn options:
   --resume <id>               Resume a previous session
   --allow <tools...>          Pre-approved tool patterns (default: Read Glob Grep Write Edit)
   --cwd <path>                Working directory for Claude
-  --timeout <ms>              Max wait time (default: 300000, only with --wait)
+  --timeout <ms>              Max wait time (default: 270000, only with --wait)
 
 Resume options:
   --fresh                     Use git-context prompt instead of conversation history
@@ -1890,7 +1890,7 @@ Resume options:
   --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID
   --allow <tools...>          Pre-approved tool patterns
   --wait                      Block until Claude produces a result
-  --timeout <ms>              Max wait time (default: 300000, only with --wait)
+  --timeout <ms>              Max wait time (default: 270000, only with --wait)
 
 Send options:
   --wait                      Block until Claude produces a result
@@ -1900,7 +1900,7 @@ List/Wait options:
 
 Wait options:
   --after <seq>               Sequence cursor for race-free polling (from previous response)
-  --timeout, -t <ms>          Max wait time (default: 300000)
+  --timeout, -t <ms>          Max wait time (default: 270000)
 
 Approve/Deny options:
   --request-id, -r <id>       Specific request ID (auto-detects latest if omitted)

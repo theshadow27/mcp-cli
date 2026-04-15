@@ -374,7 +374,7 @@ function handleTranscript(args: Record<string, unknown>): ToolResult {
 
 async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
   const sessionId = args.sessionId as string | undefined;
-  const timeoutMs = (args.timeout as number) ?? 300_000;
+  const timeoutMs = (args.timeout as number) ?? 270_000;
   const afterSeq = args.afterSeq as number | undefined;
 
   // afterSeq cursor: check buffer first, then block
