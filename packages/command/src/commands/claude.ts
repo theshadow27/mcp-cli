@@ -1566,7 +1566,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // without waiting for the orphaned claude_wait (daemon has its own timeout).
   let result: unknown;
   if (parsed.mailTo) {
-    const totalMs = parsed.timeout ?? 300_000;
+    const totalMs = parsed.timeout ?? 270_000;
     const pollStart = Date.now();
     const mailPoll = pollMailUntil(d, parsed.mailTo, totalMs, pollStart);
     const winner = await Promise.race([
