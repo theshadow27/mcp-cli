@@ -22,6 +22,7 @@
     "lint": "bun install && bunx biome check --write .",
     "lint:check": "bun install && bunx biome check .",
     "lint:shell": "bun scripts/check-shell-injection.ts",
+    "check:phase-drift": "bun scripts/check-phase-drift.ts",
     "test": "bun install && bun test",
     "test:coverage": "bun scripts/check-coverage.ts",
     "dev:daemon": "bun packages/daemon/src/main.ts",
