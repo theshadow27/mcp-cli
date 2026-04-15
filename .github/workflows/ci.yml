@@ -63,6 +63,14 @@ jobs:
           else
             exit $code
           fi
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/test_*.txt
+          if-no-files-found: ignore
+          retention-days: 30
 
   coverage:
     runs-on: ubuntu-latest
@@ -109,6 +117,14 @@ jobs:
           else
             exit $code
           fi
+      - name: Upload coverage logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-coverage-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/coverage_*.txt
+          if-no-files-found: ignore
+          retention-days: 30
 
   build:
     runs-on: ubuntu-latest
