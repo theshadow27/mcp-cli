@@ -1008,7 +1008,7 @@ async function agentWait(
   // without waiting for the orphaned wait — daemon has its own timeout.
   let result: unknown;
   if (mailTo) {
-    const totalMs = timeout ?? 300_000;
+    const totalMs = timeout ?? 270_000;
     const pollStart = Date.now();
     const mailPoll = pollMailUntil(d, mailTo, totalMs, pollStart);
     const winner = await Promise.race([
@@ -1581,7 +1581,7 @@ function printSpawnUsage(
     "  --model, -m <name>         Model (default: provider default)",
     "  --cwd <path>               Working directory",
     "  --wait                     Block until result",
-    "  --timeout <ms>             Max wait time (default: 300000)",
+    "  --timeout <ms>             Max wait time (default: 270000)",
     "  --json                     Output raw JSON",
   ];
 
