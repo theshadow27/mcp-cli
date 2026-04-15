@@ -363,11 +363,10 @@ describe("evaluate", () => {
 
   test("literal bash glob * is not a wildcard", () => {
     const rules: PermissionRule[] = [
-      { tool: "Bash(ls -lS ~/.claude/projects/-Users-jacob-dilles-github-mcp-cli/*.jsonl)", action: "allow" },
+      { tool: "Bash(ls -lS ~/.claude/projects/-Users-user-github-mcp-cli/*.jsonl)", action: "allow" },
     ];
     expect(
-      evaluate(rules, req("Bash", { command: "ls -lS ~/.claude/projects/-Users-jacob-dilles-github-mcp-cli/*.jsonl" }))
-        .allow,
+      evaluate(rules, req("Bash", { command: "ls -lS ~/.claude/projects/-Users-user-github-mcp-cli/*.jsonl" })).allow,
     ).toBe(true);
     expect(evaluate(rules, req("Bash", { command: "ls -lS ~/.claude/projects/other/*.jsonl" })).allow).toBe(false);
   });
