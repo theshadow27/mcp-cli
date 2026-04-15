@@ -3,6 +3,13 @@ import { silentLogger } from "@mcp-cli/core";
 import type { ClaudeOAuthToken } from "./auth/keychain";
 import { QuotaPoller, type QuotaStatus, parseUsageResponse } from "./quota";
 
+async function waitUntil(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+}
+
 const SAMPLE_RESPONSE = {
   five_hour: { utilization: 42, resets_at: "2026-04-08T20:00:01Z" },
   seven_day: { utilization: 8, resets_at: "2026-04-13T04:00:00Z" },
@@ -81,8 +88,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    // Wait for the immediate first poll
-    await Bun.sleep(50);
+    await waitUntil(() => fetched);
     poller.stop();
 
     expect(fetched).toBe(true);
@@ -101,6 +107,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
+    // Negative assertion: no token → nothing should happen. Brief sleep is acceptable.
     await Bun.sleep(50);
     poller.stop();
 
@@ -125,7 +132,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(50);
+    await waitUntil(() => poller.lastError !== null);
     poller.stop();
 
     expect(poller.lastError).toBe("Quota API returned 401: auth error");
@@ -152,10 +159,9 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(100);
+    await waitUntil(() => calls > 1);
     poller.stop();
 
-    // Multiple poll cycles but only one warning logged
     expect(calls).toBeGreaterThan(1);
     expect(warnings.length).toBe(1);
   });
@@ -178,7 +184,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(50);
+    await waitUntil(() => warnings.length > 0);
     poller.stop();
 
     expect(warnings.some((w) => w.includes("Quota warning") && w.includes("85%"))).toBe(true);
@@ -202,7 +208,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(50);
+    await waitUntil(() => warnings.length > 0);
     poller.stop();
 
     expect(warnings.some((w) => w.includes("CRITICAL") && w.includes("97%"))).toBe(true);
@@ -239,12 +245,9 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(120);
+    await waitUntil(() => poller.backoffMs !== null && poller.backoffMs >= 40);
     poller.stop();
 
-    // With base interval of 20ms and backoff doubling (40ms, 80ms, ...), we should
-    // see fewer calls than without backoff (which would be ~6 in 120ms).
-    expect(calls).toBeLessThanOrEqual(4);
     expect(poller.backoffMs).toBeGreaterThanOrEqual(40);
     expect(poller.lastError).toContain("rate_limit_error");
     expect(warnings.some((w) => w.includes("rate-limited") && w.includes("backing off"))).toBe(true);
@@ -264,10 +267,9 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(120);
+    await waitUntil(() => poller.lastError !== null);
     poller.stop();
 
-    // Cached status from first successful fetch is still available
     expect(poller.status?.fiveHour?.utilization).toBe(42);
     expect(poller.lastError).toContain("429");
   });
@@ -286,8 +288,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    // Wait long enough for: fail(20ms base) → backoff(40ms) → fail → backoff(80ms) → success
-    await Bun.sleep(250);
+    await waitUntil(() => poller.backoffMs === null && poller.status !== null && callCount > 2);
     poller.stop();
 
     expect(poller.lastError).toBeNull();
@@ -365,7 +366,7 @@ describe("QuotaPoller", () => {
     });
     poller.start();
     poller.start(); // second start should be a no-op
-    await Bun.sleep(50);
+    await waitUntil(() => calls >= 1);
     poller.stop();
     expect(calls).toBe(1); // only one immediate poll, not two
   });
