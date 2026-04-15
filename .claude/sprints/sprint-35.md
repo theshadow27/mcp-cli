@@ -205,6 +205,33 @@ than scoped? is there a deeper architecture problem?).
   sprints; mergemaster scaling without #1397; skill-file patches
   unproven under load.
 
+## Results
+
+- **Released**: v1.5.1 — https://github.com/theshadow27/mcp-cli/releases/tag/v1.5.1
+- **PRs merged**: 12 (11 from sprint tracker + 2 worker-direct commits to main)
+  - Stage A (prereqs): #1401 (#1396), #1405 (#1402 hidden blocker), #1406 (#1349), #1403 (#1383), #1407 (#1381)
+  - Stage B (validation): #1415 (#1388) — drove end-to-end through real `mcx phase run`
+  - Stage C (backlog): #1417 (#1393), #1418 (#1347), #1420 (#1378), #1421 (#1377), #1423 (#1384)
+  - Worker-direct (meta-file violations, unplanned, preserved as `saved/*` branches): d1910cfd (permissions test slug anonymization), 7c8bafcf (git-hooks path guard)
+- **Issues closed**: 11 by the tracked PRs
+- **Issues dropped**: 0 from active list; #1367, #1372, #1392, #1397 deferred to sprint 36 per re-plan
+- **New issues filed during run**: #1402 (test CI unblocker, pre-existing broken-on-main discovered mid-run), #1424 (triage branch-field DX), #1425 (worker committed to main — meta violation), #1426 (disconnected sessions balloon to 100k tokens)
+
+### Skill-validation outcome
+
+**Primary: PASS.** `mcx phase run` drove 6 issues post-#1381 end-to-end through impl → triage → review/qa → done with real handler execution. JSON output is parsed, state persists, two-phase transition log works, branch guard fires correctly. **#1286 (fully autonomous in-handler spawning) is still open** — the orchestrator executes spawn commands from phase-emitted descriptors rather than handlers spawning sessions themselves. That's the next goal for v1.6.0.
+
+## Hand-off to sprint 36 (added 2026-04-14 mid-execution)
+
+User-flagged candidates for sprint 36, **assuming Stage A lands**
+(critical customer issues + softballs for first real autonomous-pipeline
+sprint):
+
+- **#1410, #1411, #1412, #1413, #1414** — critical customer issues,
+  also serve as easy-filler validation work for the post-#1381 pipeline.
+
+These should be batch-1 of sprint 36, not deferred.
+
 ## What this plan is *not* doing
 
 - **Not targeting 12 PRs.** That target came from the original plan
