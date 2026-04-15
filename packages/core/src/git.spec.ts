@@ -126,8 +126,7 @@ function cleanGitEnv(): Record<string, string | undefined> {
 }
 
 describe("findGitRoot", () => {
-  // Strip hook-injected git env vars so fixture git calls work even under pre-commit.
-  const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_INDEX_FILE: _i, ...cleanEnv } = process.env;
+  const cleanEnv = cleanGitEnv();
   const gitOpts = { env: cleanEnv, stdout: "ignore" as const, stderr: "ignore" as const };
 
   test("returns the repo root from a subdirectory inside a real repo", () => {
