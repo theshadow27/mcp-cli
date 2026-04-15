@@ -57,6 +57,9 @@ if $has_source; then
   echo "  lint:shell..."
   bun run lint:shell
 
+  echo "  check:phase-drift..."
+  bun run check:phase-drift
+
   echo "  test + coverage..."
   if ! bun run test:coverage; then
     echo "  (test failures logged to ~/.mcp-cli/test-failures.log)"
