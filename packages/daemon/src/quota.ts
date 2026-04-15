@@ -124,6 +124,7 @@ export class QuotaPoller {
   private _status: QuotaStatus | null = null;
   private _lastError: string | null = null;
   private _errorLogged = false;
+  private _lastErrorType: "rate-limit" | "other" | null = null;
   private _backoffMs: number | null = null;
   private logger: Logger;
   private intervalMs: number;
@@ -195,6 +196,7 @@ export class QuotaPoller {
       this._status = status;
       this._lastError = null;
       this._errorLogged = false;
+      this._lastErrorType = null;
       this._backoffMs = null;
 
       this.checkThresholds(status);
@@ -202,9 +204,13 @@ export class QuotaPoller {
       const msg = err instanceof Error ? err.message : String(err);
       this._lastError = msg;
 
-      if (isRateLimitError(msg)) {
-        // Exponential backoff on rate limit — don't keep adding to the flood.
-        // Preserves last cached _status; consumers read .lastError for the reason.
+      const errorType = isRateLimitError(msg) ? "rate-limit" : "other";
+      if (this._lastErrorType !== errorType) {
+        this._errorLogged = false;
+      }
+      this._lastErrorType = errorType;
+
+      if (errorType === "rate-limit") {
         const next = this._backoffMs == null ? this.intervalMs * 2 : this._backoffMs * 2;
         this._backoffMs = Math.min(next, MAX_BACKOFF_MS);
         if (!this._errorLogged) {
@@ -212,7 +218,6 @@ export class QuotaPoller {
           this._errorLogged = true;
         }
       } else {
-        // Non-rate-limit error — stay on normal cadence, log once.
         this._backoffMs = null;
         if (!this._errorLogged) {
           this.logger.warn(`[mcpd] Quota fetch failed: ${msg}`);
