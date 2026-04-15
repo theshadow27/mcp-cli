@@ -1581,7 +1581,7 @@ function printSpawnUsage(
     "  --model, -m <name>         Model (default: provider default)",
     "  --cwd <path>               Working directory",
     "  --wait                     Block until result",
-    "  --timeout <ms>             Max wait time (default: 300000)",
+    "  --timeout <ms>             Max wait time (default: 270000)",
     "  --json                     Output raw JSON",
   ];
 

@@ -148,7 +148,7 @@ async function handlePrompt(
   isError?: boolean;
 }> {
   const prompt = args.prompt as string;
-  const timeoutMs = (args.timeout as number) ?? 300_000;
+  const timeoutMs = (args.timeout as number) ?? 270_000;
 
   let sessionId = args.sessionId as string | undefined;
 
@@ -375,7 +375,7 @@ async function handleWait(
   isError?: boolean;
 }> {
   const sessionId = (args.sessionId as string | undefined) ?? null;
-  const timeoutMs = (args.timeout as number) ?? 300_000;
+  const timeoutMs = (args.timeout as number) ?? 270_000;
   const afterSeq = args.afterSeq as number | undefined;
   const repoRoot = args.repoRoot as string | undefined;
   const scopeRoot = args.scopeRoot as string | undefined;

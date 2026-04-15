@@ -69,7 +69,7 @@ const sessionIdProp: JsonSchemaProperty = {
 
 const timeoutProp: JsonSchemaProperty = {
   type: "number",
-  description: "Max wait time in ms (default: 300000)",
+  description: "Max wait time in ms (default: 270000)",
 };
 
 const limitProp: JsonSchemaProperty = {
