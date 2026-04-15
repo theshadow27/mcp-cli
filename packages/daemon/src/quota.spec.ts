@@ -295,6 +295,64 @@ describe("QuotaPoller", () => {
     expect(poller.status?.fiveHour?.utilization).toBe(42);
   });
 
+  test("logs new error when error type changes (rate-limit → other)", async () => {
+    const warnings: string[] = [];
+    let callCount = 0;
+    const poller = new QuotaPoller({
+      intervalMs: 20,
+      logger: {
+        info: () => {},
+        warn: (msg: string) => warnings.push(msg),
+        error: () => {},
+        debug: () => {},
+      },
+      readToken: async () => fakeToken,
+      fetchUsage: async () => {
+        callCount++;
+        if (callCount <= 2) throw new Error("Quota API returned 429: rate_limit_error");
+        throw new Error("network timeout");
+      },
+    });
+
+    poller.start();
+    await Bun.sleep(250);
+    poller.stop();
+
+    const rateLimitWarnings = warnings.filter((w) => w.includes("rate-limited"));
+    const fetchFailedWarnings = warnings.filter((w) => w.includes("Quota fetch failed"));
+    expect(rateLimitWarnings.length).toBe(1);
+    expect(fetchFailedWarnings.length).toBe(1);
+  });
+
+  test("logs new error when error type changes (other → rate-limit)", async () => {
+    const warnings: string[] = [];
+    let callCount = 0;
+    const poller = new QuotaPoller({
+      intervalMs: 20,
+      logger: {
+        info: () => {},
+        warn: (msg: string) => warnings.push(msg),
+        error: () => {},
+        debug: () => {},
+      },
+      readToken: async () => fakeToken,
+      fetchUsage: async () => {
+        callCount++;
+        if (callCount <= 2) throw new Error("network timeout");
+        throw new Error("Quota API returned 429: rate_limit_error");
+      },
+    });
+
+    poller.start();
+    await Bun.sleep(250);
+    poller.stop();
+
+    const rateLimitWarnings = warnings.filter((w) => w.includes("rate-limited"));
+    const fetchFailedWarnings = warnings.filter((w) => w.includes("Quota fetch failed"));
+    expect(fetchFailedWarnings.length).toBe(1);
+    expect(rateLimitWarnings.length).toBe(1);
+  });
+
   test("start is idempotent", async () => {
     let calls = 0;
     const poller = new QuotaPoller({
