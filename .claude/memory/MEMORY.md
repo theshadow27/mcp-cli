@@ -17,6 +17,7 @@
 - [Background-task notifications work](feedback_background_task_notify.md) — workers "waiting for notification" is correct; ask duration, don't prescribe polling
 - [Don't bye spikes](feedback_dont_bye_spikes.md) — keep exploratory sessions alive for follow-up questions
 - [Flaky test handling](feedback_flaky_tests.md) — root-cause fixes, not timeout increases
+- [Orchestrator context rot](feedback_context_rot.md) — long-running orchestrators degrade at ~300k tokens; verify "done" claims with a probe
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
