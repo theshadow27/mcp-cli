@@ -75,10 +75,21 @@ Use this template exactly:
 ## Commit and push
 
 ```bash
+# SPRINT_OVERRIDE=1 bypasses the sprint-active pre-commit guard (#1443).
 git add .claude/diary/{filename}
-git commit -m "retro: sprint {N} — {short title}"
+SPRINT_OVERRIDE=1 git commit -m "retro: sprint {N} — {short title}"
 git push origin main
 ```
+
+## Clear the sprint-active sentinel
+
+```bash
+rm -f .claude/sprints/.active
+```
+
+This lifts the pre-commit guard (#1443) so post-sprint maintenance commits
+on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the retro push
+succeeds — a stuck sentinel on a dead sprint still blocks commits.
 
 ## Guidelines
 
