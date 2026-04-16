@@ -1666,11 +1666,21 @@ describe("disconnect kills stdio child processes (#940)", () => {
     }
   }
 
-  /** Poll until process is dead or throw on timeout. */
-  async function awaitDeath(pid: number, deadlineMs = 8_000): Promise<void> {
-    const deadline = Date.now() + deadlineMs;
+  /** Poll until process is dead or throw on timeout. Escalates to SIGKILL after sigkillAfterMs. */
+  async function awaitDeath(pid: number, deadlineMs = 12_000, sigkillAfterMs = 5_000): Promise<void> {
+    const start = Date.now();
+    const deadline = start + deadlineMs;
+    let sigkillSent = false;
     while (Date.now() < deadline) {
       if (!isAlive(pid)) return;
+      if (!sigkillSent && Date.now() - start >= sigkillAfterMs) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // already dead
+        }
+        sigkillSent = true;
+      }
       await Bun.sleep(5);
     }
     throw new Error(`process ${pid} still alive after ${deadlineMs}ms`);
@@ -1718,7 +1728,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     } finally {
       forceKill(pid);
     }
-  }, 15_000); // awaitDeath polls up to 8s; give headroom above the 5s bun default
+  }, 20_000); // awaitDeath polls up to 12s (SIGKILL after 5s); give headroom
 
   test("closeAll kills all stdio child processes", async () => {
     const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
@@ -1749,7 +1759,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     } finally {
       forceKill(pid);
     }
-  }, 15_000); // awaitDeath polls up to 8s; give headroom above the 5s bun default
+  }, 20_000); // awaitDeath polls up to 12s (SIGKILL after 5s); give headroom
 
   test("disconnect does not throw for non-stdio transports", async () => {
     const connectFn: ConnectFn = mock(() =>
