@@ -53,8 +53,12 @@ defineAlias({
     if (!work) {
       throw new Error("phase-repair requires a work item (got: null)");
     }
-    if (work.prNumber == null) {
-      throw new Error(`phase-repair requires 'prNumber' on the work item ${work.id} (missing: prNumber)`);
+    const missing: string[] = [];
+    if (work.prNumber == null) missing.push("prNumber");
+    if (missing.length > 0) {
+      throw new Error(
+        `phase-repair requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
+      );
     }
 
     // In-flight guard — repair session already running; don't spawn a second.

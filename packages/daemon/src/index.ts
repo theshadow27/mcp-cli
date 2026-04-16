@@ -66,6 +66,7 @@ import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } fro
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
+import { resolveBranchFromPr } from "./github/resolve-branch";
 import { WorkItemPoller } from "./github/work-item-poller";
 import { IpcServer } from "./ipc-server";
 import { MailServer, buildMailToolCache } from "./mail-server";
@@ -102,26 +103,6 @@ export function acquirePidLock(logger: Logger): number {
   // Now that we hold the lock, truncate to clear any previous content
   ftruncateSync(fd, 0);
   return fd;
-}
-
-/**
- * Resolve a PR number to its head branch name via `gh pr view`.
- *
- * Returns null when gh fails or the PR is not found. Best-effort: callers
- * should treat a null return as "branch not known" rather than a hard error.
- * Used by WorkItemsServer to auto-populate `branch` on a work item when only
- * `prNumber` is known (see #1424).
- */
-export async function resolveBranchFromPr(prNumber: number): Promise<string | null> {
-  const proc = Bun.spawn(["gh", "pr", "view", String(prNumber), "--json", "headRefName", "-q", ".headRefName"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) return null;
-  const stdout = await new Response(proc.stdout as ReadableStream).text();
-  const branch = stdout.trim();
-  return branch.length > 0 ? branch : null;
 }
 
 /**
@@ -870,7 +851,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 return null;
               }
             },
-            resolveBranchFromPr,
+            resolveBranchFromPr: async (prNumber: number) => {
+              // Re-use the cached repo detected from daemon startup cwd so the
+              // --repo flag is always explicit (avoids `gh pr view` resolving
+              // against an ambiguous cwd). Returns null when repo detection
+              // fails; caller treats that as "branch not known" and continues.
+              if (!cachedRepo) {
+                try {
+                  cachedRepo = await detectRepo(process.cwd());
+                } catch {
+                  return null;
+                }
+              }
+              return resolveBranchFromPr(prNumber, { repo: cachedRepo });
+            },
             logger,
           });
           const {
