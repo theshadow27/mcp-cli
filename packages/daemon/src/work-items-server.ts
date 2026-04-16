@@ -5,8 +5,8 @@
  * Tools: track, untrack, list, get, update — mapping to WorkItemDb CRUD.
  */
 
-import type { Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
-import { WORK_ITEMS_SERVER_NAME, canTransition } from "@mcp-cli/core";
+import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -146,16 +146,25 @@ export class WorkItemsServer {
   /** Resolves a manifest for a given repo root, or returns null. Injected for testability. */
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
 
+  /** Resolves a PR number to its head branch name. Injected for testability. */
+  private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
+
+  private logger: Logger;
+
   constructor(
     workItemDb: WorkItemDb,
     opts?: {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
+      resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
+      logger?: Logger;
     },
   ) {
     this.workItemDb = workItemDb;
     this.onTrack = opts?.onTrack ?? null;
     this.loadManifestFn = opts?.loadManifest ?? null;
+    this.resolveBranchFromPr = opts?.resolveBranchFromPr ?? null;
+    this.logger = opts?.logger ?? consoleLogger;
   }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
@@ -331,6 +340,23 @@ export class WorkItemsServer {
             if (a.reviewStatus !== undefined) patch.reviewStatus = String(a.reviewStatus) as WorkItem["reviewStatus"];
             if (a.branch !== undefined) patch.branch = String(a.branch);
             if (a.issueNumber !== undefined) patch.issueNumber = requireInt(a.issueNumber, "issueNumber");
+
+            // Auto-populate branch when prNumber is being set and neither the patch nor the
+            // existing item has a branch. Best-effort: a resolver failure is logged but does
+            // not fail the update. See #1424 for the DX rationale.
+            const newPrNumber = patch.prNumber;
+            if (newPrNumber != null && patch.branch === undefined && this.resolveBranchFromPr) {
+              const existing = this.workItemDb.getWorkItem(id);
+              if (existing && existing.branch == null) {
+                try {
+                  const branch = await this.resolveBranchFromPr(newPrNumber);
+                  if (branch) patch.branch = branch;
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  this.logger.warn(`[mcpd] Failed to resolve branch for PR #${newPrNumber}: ${msg}`);
+                }
+              }
+            }
 
             const updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
             return { content: [{ type: "text" as const, text: JSON.stringify(updated) }] };

@@ -23,8 +23,16 @@ defineAlias({
   }),
   fn: async (_input, ctx) => {
     const work = ctx.workItem;
-    if (!work || work.prNumber == null || work.issueNumber == null) {
-      throw new Error("phase-needs-attention requires a work item with prNumber and issueNumber");
+    if (!work) {
+      throw new Error("phase-needs-attention requires a work item (got: null)");
+    }
+    const missing: string[] = [];
+    if (work.prNumber == null) missing.push("prNumber");
+    if (work.issueNumber == null) missing.push("issueNumber");
+    if (missing.length > 0) {
+      throw new Error(
+        `phase-needs-attention requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
+      );
     }
 
     const reviewRound = (await ctx.state.get<number>("review_round")) ?? 0;

@@ -50,8 +50,11 @@ defineAlias({
   }),
   fn: async (input, ctx) => {
     const work = ctx.workItem;
-    if (!work || work.prNumber == null) {
-      throw new Error("phase-repair requires a work item with prNumber");
+    if (!work) {
+      throw new Error("phase-repair requires a work item (got: null)");
+    }
+    if (work.prNumber == null) {
+      throw new Error(`phase-repair requires 'prNumber' on the work item ${work.id} (missing: prNumber)`);
     }
 
     // In-flight guard — repair session already running; don't spawn a second.

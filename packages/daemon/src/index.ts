@@ -105,6 +105,26 @@ export function acquirePidLock(logger: Logger): number {
 }
 
 /**
+ * Resolve a PR number to its head branch name via `gh pr view`.
+ *
+ * Returns null when gh fails or the PR is not found. Best-effort: callers
+ * should treat a null return as "branch not known" rather than a hard error.
+ * Used by WorkItemsServer to auto-populate `branch` on a work item when only
+ * `prNumber` is known (see #1424).
+ */
+export async function resolveBranchFromPr(prNumber: number): Promise<string | null> {
+  const proc = Bun.spawn(["gh", "pr", "view", String(prNumber), "--json", "headRefName", "-q", ".headRefName"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const stdout = await new Response(proc.stdout as ReadableStream).text();
+  const branch = stdout.trim();
+  return branch.length > 0 ? branch : null;
+}
+
+/**
  * Write PID data to the already-locked PID file descriptor.
  */
 function writePidData(fd: number, data: Record<string, unknown>): void {
@@ -850,6 +870,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 return null;
               }
             },
+            resolveBranchFromPr,
+            logger,
           });
           const {
             client: workItemsClient,

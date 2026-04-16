@@ -643,4 +643,127 @@ describe("WorkItemsServer", () => {
     expect(last.forced).toBe(true);
     expect(last.forceReason).toBe("test reopen");
   });
+
+  test("work_items_update auto-populates branch from prNumber when item has no branch (#1424)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const calls: number[] = [];
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async (pr) => {
+        calls.push(pr);
+        return "feat/auto-resolved";
+      },
+    });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1378 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:1378", prNumber: 1420 },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.prNumber).toBe(1420);
+    expect(item.branch).toBe("feat/auto-resolved");
+    expect(calls).toEqual([1420]);
+  });
+
+  test("work_items_update explicit branch wins over auto-resolve", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    let resolverCalled = false;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => {
+        resolverCalled = true;
+        return "auto";
+      },
+    });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:42", prNumber: 99, branch: "explicit/branch" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.branch).toBe("explicit/branch");
+    expect(resolverCalled).toBe(false);
+  });
+
+  test("work_items_update does not auto-resolve when branch already set", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    let resolverCalled = false;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => {
+        resolverCalled = true;
+        return "auto";
+      },
+    });
+    const { client } = await server.start();
+    await client.callTool({
+      name: "work_items_track",
+      arguments: { issueNumber: 10, branch: "existing" },
+    });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:10", prNumber: 20 },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.branch).toBe("existing");
+    expect(resolverCalled).toBe(false);
+  });
+
+  test("work_items_update tolerates resolver failure", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => {
+        throw new Error("gh not found");
+      },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:1", prNumber: 2 },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.prNumber).toBe(2);
+    expect(item.branch).toBeNull();
+  });
+
+  test("work_items_update does not auto-resolve when resolver returns null", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => null,
+    });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 5 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:5", prNumber: 6 },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.branch).toBeNull();
+  });
 });
