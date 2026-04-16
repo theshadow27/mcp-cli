@@ -1,6 +1,6 @@
 # Sprint 37
 
-> Planned 2026-04-16 12:30 ET. Target: 15 PRs.
+> Planned 2026-04-16 12:30 ET. Updated 2026-04-16 to add #1435 (critical). Target: 16 PRs.
 
 ## Goal
 
@@ -9,11 +9,14 @@ Sprint 36 proved the pipeline works end-to-end for real customer bugs;
 sprint 37 makes it reliable — polish the phase scripts, fix the CI
 flakes that blocked commits during sprint 36, and land the merge-queue
 service that removes the orchestrator's manual rebase/merge loop.
+Also update the `bootstrap-sprint` skill to emit the validated phase
+pipeline format so new projects inherit the proven pattern.
 
 ## Issues
 
 | # | Title | Scrutiny | Batch | Model | Category |
 |---|-------|----------|-------|-------|----------|
+| **1435** | fix(bootstrap-sprint): update skill to emit .mcx.yaml + phase scripts instead of legacy format | medium | 1 | opus | **critical**, docs/skill |
 | **1424** | DX: triage error should say which field is missing, auto-populate branch from prNumber | medium | 1 | opus | rollover, DX |
 | **1433** | flaky: server-pool.spec.ts SIGTERM timeout causes CI failures | low | 1 | sonnet | CI stability |
 | **1422** | fix(tests): check-shell-injection.spec.ts false positive on comment line | low | 1 | sonnet | CI stability |
@@ -32,9 +35,16 @@ service that removes the orchestrator's manual rebase/merge loop.
 
 ## Batch Plan
 
-### Batch 1 — Rollovers + CI blockers (immediate)
-#1424, #1433, #1422, #1419, #1404
+### Batch 1 — Critical + Rollovers + CI blockers (immediate)
+#1435, #1424, #1433, #1422, #1419, #1404
 
+- **#1435 (critical)** updates the `bootstrap-sprint` skill to emit the
+  validated phase pipeline format (`.mcx.yaml` + `.claude/phases/*.ts` +
+  `.mcx.lock`). Added mid-plan per user directive — new projects should
+  inherit the proven sprint-36 pipeline, not the legacy format. Touches
+  `.claude/skills/bootstrap-sprint/**` which is a one-shot generator
+  (not read live during sprint orchestration), so safe to modify during
+  a sprint.
 - **#1424** is the sprint-36 rollover DX fix — the orchestrator hit this
   papercut 3–4 times during sprint 35 and once more during sprint 36.
   Auto-populate `branch` from `prNumber` on `work_items_update`, and
@@ -69,6 +79,7 @@ service that removes the orchestrator's manual rebase/merge loop.
 ## Dependency graph
 
 ```
+  #1435 — independent (bootstrap-sprint skill templates)
   #1424 — independent (work_items_update + triage phase)
   #1433 — independent (server-pool.spec.ts)
   #1422 — independent (check-shell-injection.spec.ts)
