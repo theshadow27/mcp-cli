@@ -8,6 +8,7 @@ import {
   executeAliasBundled,
   extractMetadata,
   stripMcpCliImport,
+  stripModuleSyntax,
   stubProxy,
   validateAliasBundled,
 } from "./alias-bundle";
@@ -84,6 +85,50 @@ describe("stripMcpCliImport", () => {
     const input = `import { defineAlias } from 'mcp-cli';\nconsole.log("hello");`;
     const result = stripMcpCliImport(input);
     expect(result.trim()).toBe('console.log("hello");');
+  });
+});
+
+describe("stripModuleSyntax", () => {
+  test("strips single-line export block", () => {
+    const input = "var x = 1;\nexport { x as default };";
+    expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+  });
+
+  test("strips multi-line export block", () => {
+    const input = "var x = 1;\nexport {\n  x as default\n};";
+    expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+  });
+
+  test("strips export default statement", () => {
+    const input = "var x = 1;\nexport default x;";
+    expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+  });
+
+  test("replaces import.meta with empty object", () => {
+    const input = "var url = import.meta.url;\nconsole.log(url);";
+    expect(stripModuleSyntax(input)).toContain("({}).url");
+    expect(stripModuleSyntax(input)).not.toContain("import.meta");
+  });
+
+  test("handles Bun.build typical output with import + export", () => {
+    const input = [
+      "// @bun",
+      'import { defineAlias, z } from "mcp-cli";',
+      'var define_test_default = defineAlias({ name: "test", fn: () => 42 });',
+      "export {",
+      "  define_test_default as default",
+      "};",
+    ].join("\n");
+    const result = stripModuleSyntax(input);
+    expect(result).not.toContain("import");
+    expect(result).not.toContain("export");
+    expect(result).toContain("define_test_default");
+  });
+
+  test("backwards compat alias stripMcpCliImport works", () => {
+    const input = `import { z } from "mcp-cli";\nexport { z as default };`;
+    const result = stripMcpCliImport(input);
+    expect(result.trim()).toBe("");
   });
 });
 
@@ -351,6 +396,43 @@ describe("executeAliasBundled", () => {
       true,
     );
     expect(result).toEqual({ message: "hello" });
+  });
+
+  test("executes export default defineAlias script (issue #1410)", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "export-default.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "export default defineAlias({",
+        '  name: "test-define",',
+        '  description: "test",',
+        "  input: z.object({ msg: z.string() }),",
+        "  handler: async (input) => ({ echoed: input.msg }),",
+        "  fn: async (input) => ({ echoed: input.msg }),",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await executeAliasBundled(
+      js,
+      { msg: "hi" },
+      {
+        mcp: stubProxy,
+        args: {},
+        file: async () => "",
+        json: async () => null,
+        cache: async (_k, p) => p(),
+        state: stubState,
+        globalState: stubState,
+        workItem: null,
+      },
+      true,
+    );
+
+    expect(result).toEqual({ echoed: "hi" });
   });
 
   test("freeform script returns undefined", async () => {
