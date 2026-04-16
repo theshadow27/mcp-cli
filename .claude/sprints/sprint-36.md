@@ -1,6 +1,6 @@
 # Sprint 36
 
-> Planned 2026-04-16. Demo scheduled 2026-04-17.
+> Planned 2026-04-16. Started 2026-04-16 11:10 ET. Demo scheduled 2026-04-17.
 > Target: 8 PRs + 1 investigation. Customer issues + pipeline polish.
 
 ## Goal
