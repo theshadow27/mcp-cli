@@ -73,7 +73,7 @@ import { checkDeprecatedName } from "./deprecation";
 import { maybeAutoSaveEphemeral } from "./ephemeral";
 import { readFileWithLimit } from "./file-read";
 import { maybeShowFirstRunPrompt } from "./first-run";
-import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis } from "./jq/index";
+import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis, jqParseErrorHints } from "./jq/index";
 import {
   extractErrorMessage,
   formatToolResult,
@@ -559,8 +559,16 @@ async function cmdCall(args: string[]): Promise<void> {
   // Explicit --jq filter: apply client-side regardless of size/env
   if (jqFilter) {
     const formatted = formatToolResult(result);
+    let data: unknown;
     try {
-      const data = JSON.parse(formatted);
+      data = JSON.parse(formatted);
+    } catch {
+      for (const hint of jqParseErrorHints(formatted)) {
+        printError(hint);
+      }
+      process.exit(1);
+    }
+    try {
       const filtered = await applyJqFilter(data, jqFilter);
       console.log(JSON.stringify(filtered, null, 2));
     } catch (err) {

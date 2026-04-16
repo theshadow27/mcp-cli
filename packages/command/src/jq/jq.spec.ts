@@ -7,6 +7,7 @@ import {
   analyzeStructure,
   applyJqFilter,
   generateAnalysis,
+  jqParseErrorHints,
 } from "./index";
 
 describe("applyJqFilter", () => {
@@ -80,6 +81,31 @@ describe("analyzeStructure", () => {
   test("handles nested objects", () => {
     const paths = analyzeStructure({ a: { b: { c: 42 } } });
     expect(paths.get("a.b.c")).toMatchObject({ type: "number", count: 1 });
+  });
+});
+
+describe("jqParseErrorHints", () => {
+  test("returns hints for truncated server response", () => {
+    const text = "Response too large (81.8KB). Structure analysis:\n\n  entities[].contacts: array";
+    const hints = jqParseErrorHints(text);
+    expect(hints).toHaveLength(2);
+    expect(hints[0]).toContain("--jq filter requires JSON");
+    expect(hints[0]).toContain("Response too large");
+    expect(hints[1]).toContain("raw:true");
+    expect(hints[1]).toContain("server-side jq");
+  });
+
+  test("truncates long previews to 120 chars", () => {
+    const text = "x".repeat(200);
+    const hints = jqParseErrorHints(text);
+    expect(hints[0]).toContain(`"${"x".repeat(120)}..."`);
+  });
+
+  test("replaces newlines in preview", () => {
+    const text = "line1\nline2\nline3";
+    const hints = jqParseErrorHints(text);
+    expect(hints[0]).toContain("line1 line2 line3");
+    expect(hints[0]).not.toContain("\n");
   });
 });
 
