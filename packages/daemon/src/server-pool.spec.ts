@@ -1666,18 +1666,22 @@ describe("disconnect kills stdio child processes (#940)", () => {
     }
   }
 
-  /** Poll until process is dead or throw on timeout. Escalates to SIGKILL after sigkillAfterMs. */
-  async function awaitDeath(pid: number, deadlineMs = 12_000, sigkillAfterMs = 5_000): Promise<void> {
+  /**
+   * Poll until process is dead or throw on timeout.
+   * Returns true if SIGKILL escalation was needed (process survived beyond sigkillAfterMs).
+   */
+  async function awaitDeath(pid: number, deadlineMs = 12_000, sigkillAfterMs = 5_000): Promise<boolean> {
     const start = Date.now();
     const deadline = start + deadlineMs;
     let sigkillSent = false;
     while (Date.now() < deadline) {
-      if (!isAlive(pid)) return;
+      if (!isAlive(pid)) return sigkillSent;
       if (!sigkillSent && Date.now() - start >= sigkillAfterMs) {
         try {
           process.kill(pid, "SIGKILL");
-        } catch {
-          // already dead
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+          // ESRCH means the process already exited — loop will detect it next iteration
         }
         sigkillSent = true;
       }
@@ -1722,8 +1726,9 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      // Poll until the process exits (replaces fixed Bun.sleep)
-      await awaitDeath(pid);
+      // Poll until the process exits; assert SIGTERM alone was sufficient (no SIGKILL escalation)
+      const escalated = await awaitDeath(pid);
+      expect(escalated).toBe(false);
       expect(isAlive(pid)).toBe(false);
     } finally {
       forceKill(pid);
