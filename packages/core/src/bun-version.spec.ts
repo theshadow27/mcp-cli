@@ -13,8 +13,8 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      // Current Bun version must be >= 1.2.18 for tests to run at all
       expect(() => assertBunVersion(MIN_BUN_VERSION)).not.toThrow();
+      expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
       exitSpy.mockRestore();
       stderrSpy.mockRestore();
@@ -51,6 +51,68 @@ describe("assertBunVersion", () => {
     try {
       // Any currently-shipping Bun (>=1.2.18) should satisfy a >=1.2.0 requirement
       expect(() => assertBunVersion("1.2.0")).not.toThrow();
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  // Boundary tests using the injectable `current` parameter
+  it("exits when injected version is one patch below minimum", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit called");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      expect(() => assertBunVersion("1.2.18", "1.2.17")).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("does not exit when injected version exactly matches minimum", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit called");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      expect(() => assertBunVersion("1.2.18", "1.2.18")).not.toThrow();
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("does not exit for a canary build at the exact minimum version", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit called");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      expect(() => assertBunVersion("1.2.18", "1.2.18-canary.20250401")).not.toThrow();
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("exits for a canary build below the minimum version", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit called");
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      expect(() => assertBunVersion("1.2.18", "1.2.17-canary.20250401")).toThrow("process.exit called");
+      expect(exitSpy).toHaveBeenCalledWith(1);
     } finally {
       exitSpy.mockRestore();
       stderrSpy.mockRestore();
