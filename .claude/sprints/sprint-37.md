@@ -1,6 +1,6 @@
 # Sprint 37
 
-> Planned 2026-04-16 12:30 ET. Updated 2026-04-16 to add #1435 (critical). Target: 16 PRs.
+> Planned 2026-04-16 12:30 ET. Updated 2026-04-16 to add #1435 (critical). Started 2026-04-16. Target: 16 PRs.
 
 ## Goal
 
