@@ -27,9 +27,19 @@ These work via `mcx claude send`. Other slash commands (like `/help`, `/compact`
 
 ## Monitoring Signals
 
-- **State**: `active` (working), `idle` (waiting for input), `waiting_permission` (needs approval), `ended`
+- **State**: `active` (working), `idle` (waiting for input), `waiting_permission` (needs approval), `disconnected` (see below), `ended`
 - **Cost**: >$15 suggests struggle/complexity
 - **Tokens**: stalled token count may indicate a stuck session
+- **Tokens past `session:result`**: a session that keeps producing output after emitting its final `session:result` is leaking — see `disconnected` below
+
+### `disconnected` (#1426 — undocumented in daemon)
+
+A session shown as `disconnected` in `mcx claude ls` may continue
+generating tokens silently. Sprint 35 saw a sonnet QA session reach
+**111,962 output tokens** (~5x cost overrun) before being noticed.
+Treat any `disconnected` session as an immediate `bye` candidate unless
+you are actively investigating it. Don't wait for the next `mcx claude
+wait` event — it may never arrive.
 
 ### Unsticking sessions
 1. Check logs: `mcx claude log <id> --last 5`

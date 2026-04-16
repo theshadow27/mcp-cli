@@ -56,7 +56,17 @@ mcx shutdown                           # stop the stale daemon
 mcx status                             # auto-starts the daemon with new binary
 git config --get core.bare             # must be "false" — see note below
 mcx phase install                      # ensure phase lockfile matches sources
+git fetch origin main \
+  && git log HEAD ^origin/main --oneline   # MUST be empty
 ```
+
+**Phantom local commits on main** (#1425). The last line above must
+return no output. If it does, a worker session escaped its worktree and
+committed (and possibly pushed) directly to your main checkout during a
+prior sprint. Do not proceed: save each phantom commit to a backup
+branch (`git branch saved/<sha-prefix> <sha>`), then `git fetch origin
+main && git reset --hard origin/main`. Investigate which session did it
+before starting the new sprint.
 
 Only restart when no sessions are active. Restarting kills running sessions,
 including from a concurrent sprint in a different repo.
@@ -94,6 +104,18 @@ item — the phase scripts update them via `_work_items.work_items_update`.
 | `mcx untrack <number>` | Stop tracking |
 | `mcx claude wait --timeout 30000` | Block until session or work-item event |
 
+**`work_items_update` does NOT auto-populate `branch` from `prNumber`**
+(#1424). The triage phase requires both, and its error message
+("requires a work item with issueNumber and branch") doesn't say which
+is missing. Always set both together when attaching a PR:
+
+```bash
+PR=<n>
+BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
+mcx call _work_items work_items_update \
+  "{\"id\":\"#$ISSUE\",\"prNumber\":$PR,\"branch\":\"$BRANCH\"}"
+```
+
 Poller event types surfaced via `mcx claude wait`:
 
 | Event | Meaning |
@@ -110,8 +132,15 @@ they accumulate understanding of the codebase over time. That context is
 an asset worth preserving.
 
 A session should only be ended (`bye`) when its area of responsibility is
-finished — the PR is pushed, QA is done, the issue is closed. These are
-**not** reasons to end a session:
+**conclusively** finished. For an impl session, that's *PR merged* OR
+(`qa:pass` + zero open threads on all 4 comment surfaces + CI green).
+**Pushing the PR is not enough** — Copilot inline reviews arrive
+*after* the push and *before* merge, and a fresh repair session loses
+the worktree + PR context the impl session has. Sprint 35 burned an
+extra opus repair on #1401 because the impl session was `bye`d the
+moment its PR was pushed.
+
+These are **not** reasons to end a session:
 
 - Needing clarification or plan approval
 - Waiting for a dependency or rate limit
