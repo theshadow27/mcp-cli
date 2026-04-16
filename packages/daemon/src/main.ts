@@ -7,6 +7,29 @@
 
 import { startDaemon } from "./index";
 
+/**
+ * Worker entries that can be dispatched via argv in compiled binaries.
+ *
+ * In compiled mode, Bun.spawn([process.execPath, './alias-executor.ts'])
+ * re-invokes the mcpd binary with the worker path as an argument. Without
+ * this dispatch, the binary unconditionally starts a second daemon (#1411).
+ */
+const WORKER_ENTRIES: Record<string, string> = {
+  "alias-executor.ts": "./alias-executor.ts",
+};
+
+/** Check if argv indicates a worker subprocess dispatch. */
+export function resolveWorkerEntry(argv: string[]): string | undefined {
+  const lastArg = argv.at(-1);
+  if (!lastArg) return undefined;
+  for (const [suffix, modulePath] of Object.entries(WORKER_ENTRIES)) {
+    if (lastArg === `./${suffix}` || lastArg.endsWith(`/${suffix}`)) {
+      return modulePath;
+    }
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   // Prevent EPIPE on stderr from crashing the daemon when the parent
   // terminal disconnects. This is a safety net — individual write sites
@@ -44,8 +67,13 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch((err) => {
-    console.error("[mcpd] Fatal:", err);
-    process.exit(1);
-  });
+  const workerEntry = resolveWorkerEntry(process.argv);
+  if (workerEntry) {
+    import(workerEntry);
+  } else {
+    main().catch((err) => {
+      console.error("[mcpd] Fatal:", err);
+      process.exit(1);
+    });
+  }
 }
