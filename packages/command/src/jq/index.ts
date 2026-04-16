@@ -80,6 +80,22 @@ export async function applyJqFilter(data: unknown, filter: string): Promise<unkn
 }
 
 // ============================================================================
+// JQ parse error diagnostics
+// ============================================================================
+
+/**
+ * Build a user-friendly error message when --jq receives non-JSON text.
+ * Returns an array of lines suitable for printing to stderr.
+ */
+export function jqParseErrorHints(text: string): string[] {
+  const preview = text.slice(0, 120).replace(/\n/g, " ");
+  return [
+    `--jq filter requires JSON but the response is plain text: "${preview}..."`,
+    "The server may have truncated or transformed the response. Try adding raw:true to the tool arguments, or use a server-side jq parameter if the tool supports one.",
+  ];
+}
+
+// ============================================================================
 // Structure Analysis (ported from phoenix-octovalve)
 // ============================================================================
 
