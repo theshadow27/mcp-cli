@@ -21,9 +21,12 @@ import {
   PING_TIMEOUT_MS,
   ProtocolMismatchError,
   VERSION,
+  assertBunVersion,
   maybeShowTelemetryNotice,
   recordCommand,
 } from "@mcp-cli/core";
+
+assertBunVersion();
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";

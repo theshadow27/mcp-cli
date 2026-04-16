@@ -5,7 +5,10 @@
  * TUI for managing the mcpd daemon: connection status, auth, logs.
  */
 
+import { assertBunVersion } from "@mcp-cli/core";
 import { render } from "ink";
+
+assertBunVersion();
 import React from "react";
 import { App } from "./app.js";
 

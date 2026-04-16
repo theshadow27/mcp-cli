@@ -5,7 +5,10 @@
  * isn't penalized by untestable process-level boilerplate.
  */
 
+import { assertBunVersion } from "@mcp-cli/core";
 import { startDaemon } from "./index";
+
+assertBunVersion();
 
 /**
  * Worker entries that can be dispatched via argv in compiled binaries.
