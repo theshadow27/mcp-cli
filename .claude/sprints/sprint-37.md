@@ -1,6 +1,6 @@
 # Sprint 37
 
-> Planned 2026-04-16 12:30 ET. Updated 2026-04-16 to add #1435 (critical). Target: 16 PRs.
+> Planned 2026-04-16 12:30 ET. Updated 2026-04-16 to add #1435 (critical), then #1442 + #1443 (containment hardening after sprint-37 #1425 recurrences). Started 2026-04-16. Target: 18 PRs.
 
 ## Goal
 
@@ -22,6 +22,8 @@ pipeline format so new projects inherit the proven pattern.
 | **1422** | fix(tests): check-shell-injection.spec.ts false positive on comment line | low | 1 | sonnet | CI stability |
 | **1419** | coverage CI: Bun exit-1 crash not handled same as exit-132 in check-coverage.ts | low | 1 | sonnet | CI stability |
 | **1404** | flaky: cmdTrack tests fail intermittently (.mcx-worktree.json parse error) | low | 1 | sonnet | CI stability |
+| **1442** | feat: pin GIT_DIR/GIT_WORK_TREE on worker spawn — cheap containment win | low | 2 | sonnet | **containment**, #1425 |
+| **1443** | feat: pre-commit hook on main rejects commits while sprint is active | medium | 2 | opus | **containment**, #1425 |
 | **1350** | fix(phases): remove dead stubState from runPhase baseCtx | low | 2 | sonnet | phase polish |
 | **1409** | fix(phases): unbound executePhase uses stable stateNamespace — state leaks between runs | medium | 2 | opus | phase polish |
 | **1408** | fix(phases): defaultExecuteDeps.exec should return exitCode=1 on null (killed process) | low | 2 | sonnet | phase polish |
@@ -54,9 +56,19 @@ pipeline format so new projects inherit the proven pattern.
   flaky test (`claude.spec.ts` daemon stderr leak) blocked commits during
   the retro phase. These four clean up the test suite so commits flow.
 
-### Batch 2 — Phase polish + follow-ups (backfill)
-#1350, #1409, #1408, #1430, #1400
+### Batch 2 — Containment hardening + Phase polish + follow-ups (backfill)
+#1442, #1443, #1350, #1409, #1408, #1430, #1400
 
+- **#1442 + #1443 (containment — added mid-sprint)**: #1425 recurred twice
+  during sprint-37 startup alone (branch-switch-on-main from #1433 worker,
+  then Edit-tool absolute-path escape from same worker during repair).
+  #1442 is the 5-line GIT_DIR pinning quick win; #1443 is the reactive
+  pre-commit hook on main. Together they address the bulk of the
+  containment risk without waiting for #1441's design-heavy enforcement.
+  **Bootstrap caveat on #1443:** the hook blocks commits during active
+  sprint, so landing and retro commits need the override env var from
+  day one. Implementer must verify orchestrator paths (`/release`,
+  `/retro`, sprint-plan commits) all set `SPRINT_OVERRIDE=1`.
 - **#1350, #1409, #1408** are phase-pipeline internals: dead code removal,
   state namespace leaks, and null-process exit code handling. All small,
   well-scoped fixes that harden `mcx phase run`.
@@ -80,6 +92,8 @@ pipeline format so new projects inherit the proven pattern.
 
 ```
   #1435 — independent (bootstrap-sprint skill templates)
+  #1442 — independent (worker-spawn env vars in daemon)
+  #1443 — independent (pre-commit hook under .git-hooks/)
   #1424 — independent (work_items_update + triage phase)
   #1433 — independent (server-pool.spec.ts)
   #1422 — independent (check-shell-injection.spec.ts)
