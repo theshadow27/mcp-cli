@@ -235,9 +235,10 @@ export class WorkItemsServer {
             // Auto-populate branch when prNumber is known but branch isn't —
             // fires on the initial track call too, not just update (#1449).
             if (prNumber != null && item.branch == null) {
-              const resolvedBranch = await this.maybeResolveBranch(id, prNumber);
-              if (resolvedBranch) {
-                item = this.workItemDb.updateWorkItem(id, { branch: resolvedBranch });
+              const wrote = await this.maybeResolveAndSetBranch(id, prNumber);
+              if (wrote) {
+                const refreshed = this.workItemDb.getWorkItem(id);
+                if (refreshed) item = refreshed;
               }
             }
 
@@ -348,19 +349,27 @@ export class WorkItemsServer {
             if (a.ciRunId !== undefined) patch.ciRunId = requireInt(a.ciRunId, "ciRunId");
             if (a.ciSummary !== undefined) patch.ciSummary = String(a.ciSummary);
             if (a.reviewStatus !== undefined) patch.reviewStatus = String(a.reviewStatus) as WorkItem["reviewStatus"];
-            if (a.branch !== undefined) patch.branch = String(a.branch);
+            // Treat `null` the same as absent — otherwise String(null) persists the literal
+            // string "null" as the branch (round-3 Copilot inline comment).
+            if (a.branch != null) patch.branch = String(a.branch);
             if (a.issueNumber !== undefined) patch.issueNumber = requireInt(a.issueNumber, "issueNumber");
 
-            // Auto-populate branch when prNumber is being set and neither the patch nor the
-            // existing item has a branch. Best-effort: a resolver failure is logged but does
-            // not fail the update. See #1424 for the DX rationale.
+            let updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
+
+            // Auto-populate branch when prNumber is being set and the patch didn't
+            // supply a branch. Runs AFTER the main update so the helper's atomic
+            // `setBranchIfNull` sees the latest row state and skips if another
+            // writer won the race. Best-effort: a resolver failure is logged but
+            // does not fail the update. See #1424 for the DX rationale.
             const newPrNumber = patch.prNumber;
             if (newPrNumber != null && patch.branch === undefined) {
-              const resolved = await this.maybeResolveBranch(id, newPrNumber);
-              if (resolved) patch.branch = resolved;
+              const wrote = await this.maybeResolveAndSetBranch(id, newPrNumber);
+              if (wrote) {
+                const refreshed = this.workItemDb.getWorkItem(id);
+                if (refreshed) updated = refreshed;
+              }
             }
 
-            const updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
             return { content: [{ type: "text" as const, text: JSON.stringify(updated) }] };
           }
 
@@ -384,30 +393,30 @@ export class WorkItemsServer {
   }
 
   /**
-   * Best-effort branch resolution for a work item that has a prNumber but no branch.
+   * Best-effort branch auto-populate: resolves a branch for the given PR and
+   * writes it to the row ONLY if branch is still NULL at commit time.
    *
-   * Used by both `work_items_track` and `work_items_update`. Re-reads the work item
-   * *after* the async gh call to close the TOCTOU window where a concurrent explicit
-   * `branch` write could be clobbered by the resolved value (see #1424 review round 2).
-   * Returns the resolved branch only if the item still has no branch at write time.
+   * The atomic `setBranchIfNull` (WHERE branch IS NULL) closes the TOCTOU
+   * window across the async gh call — a concurrent writer that set an
+   * explicit branch during the await wins because the UPDATE's WHERE
+   * filter drops our row (#1424 review round 3).
+   *
+   * Returns true when the branch was written, false on any failure or skip.
    */
-  private async maybeResolveBranch(id: string, prNumber: number): Promise<string | null> {
-    if (!this.resolveBranchFromPr) return null;
+  private async maybeResolveAndSetBranch(id: string, prNumber: number): Promise<boolean> {
+    if (!this.resolveBranchFromPr) return false;
     const existing = this.workItemDb.getWorkItem(id);
-    if (!existing || existing.branch != null) return null;
+    if (!existing || existing.branch != null) return false;
     let resolved: string | null = null;
     try {
       resolved = await this.resolveBranchFromPr(prNumber);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] Failed to resolve branch for PR #${prNumber}: ${msg}`);
-      return null;
+      return false;
     }
-    if (!resolved) return null;
-    // Re-read: another update may have set branch while we awaited gh.
-    const current = this.workItemDb.getWorkItem(id);
-    if (!current || current.branch != null) return null;
-    return resolved;
+    if (!resolved) return false;
+    return this.workItemDb.setBranchIfNull(id, resolved);
   }
 
   async stop(): Promise<void> {

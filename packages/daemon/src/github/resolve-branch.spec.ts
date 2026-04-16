@@ -76,6 +76,28 @@ describe("resolveBranchFromPr", () => {
     expect(branch).toBeNull();
   });
 
+  test("returns null when spawn throws (e.g., gh not installed)", async () => {
+    const spawn = (() => {
+      throw new Error("gh: command not found");
+    }) as unknown as typeof Bun.spawn;
+
+    let debugMsg: string | undefined;
+    const logger = {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: (msg: string) => {
+        debugMsg = msg;
+      },
+    };
+
+    const branch = await resolveBranchFromPr(42, { repo, spawn, logger });
+
+    expect(branch).toBeNull();
+    expect(debugMsg).toContain("spawn failed");
+    expect(debugMsg).toContain("gh: command not found");
+  });
+
   test("passes --repo flag so cwd-based repo inference is never used", async () => {
     let receivedArgs: string[] = [];
     const spawn = ((args: string[]) => {

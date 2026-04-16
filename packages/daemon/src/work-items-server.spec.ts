@@ -802,6 +802,30 @@ describe("WorkItemsServer", () => {
     expect(final?.branch).toBe("explicit/winner");
   });
 
+  test("work_items_update treats branch=null as absent (no 'null' string coercion)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({
+      name: "work_items_track",
+      arguments: { issueNumber: 55, branch: "feat/existing" },
+    });
+
+    // Sending `branch: null` must not overwrite the existing branch with the
+    // literal string "null" (round-3 Copilot inline comment).
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:55", branch: null, ciStatus: "passed" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.branch).toBe("feat/existing");
+    expect(item.ciStatus).toBe("passed");
+  });
+
   test("work_items_track auto-populates branch from prNumber (#1449)", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
