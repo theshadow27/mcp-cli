@@ -766,4 +766,88 @@ describe("WorkItemsServer", () => {
     const item = JSON.parse(content[0].text);
     expect(item.branch).toBeNull();
   });
+
+  test("work_items_update does not clobber branch written during async resolve (TOCTOU)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => {
+        // Simulate a concurrent explicit-branch write landing during the
+        // gh subprocess await, then resolve with a "stale" value.
+        await gate;
+        return "resolved/from-gh";
+      },
+    });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 77 } });
+
+    const slowUpdate = client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:77", prNumber: 88 },
+    });
+
+    // Simulate the concurrent explicit-branch write committing directly to
+    // the DB while the slow update is awaiting its resolver. The guard
+    // re-reads after the await and must not overwrite this value.
+    db.updateWorkItem("issue:77", { branch: "explicit/winner" });
+    release();
+
+    const result = await slowUpdate;
+    expect(result.isError).toBeFalsy();
+    const final = db.getWorkItem("issue:77");
+    expect(final?.branch).toBe("explicit/winner");
+  });
+
+  test("work_items_track auto-populates branch from prNumber (#1449)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const calls: number[] = [];
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async (pr) => {
+        calls.push(pr);
+        return "feat/from-track";
+      },
+    });
+    const { client } = await server.start();
+
+    const result = await client.callTool({
+      name: "work_items_track",
+      arguments: { prNumber: 1420 },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.prNumber).toBe(1420);
+    expect(item.branch).toBe("feat/from-track");
+    expect(calls).toEqual([1420]);
+  });
+
+  test("work_items_track does not auto-resolve when branch is explicitly provided", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    let resolverCalled = false;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async () => {
+        resolverCalled = true;
+        return "auto";
+      },
+    });
+    const { client } = await server.start();
+
+    const result = await client.callTool({
+      name: "work_items_track",
+      arguments: { prNumber: 99, branch: "explicit/branch" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.branch).toBe("explicit/branch");
+    expect(resolverCalled).toBe(false);
+  });
 });

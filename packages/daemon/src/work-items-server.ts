@@ -223,7 +223,7 @@ export class WorkItemsServer {
               existing?.id ?? (prNumber ? `pr:${prNumber}` : issueNumber ? `issue:${issueNumber}` : `branch:${branch}`);
 
             // Atomic upsert — avoids TOCTOU race between concurrent track calls
-            const item = this.workItemDb.upsertWorkItem({
+            let item = this.workItemDb.upsertWorkItem({
               id,
               issueNumber: issueNumber ?? undefined,
               prNumber: prNumber ?? undefined,
@@ -231,6 +231,16 @@ export class WorkItemsServer {
               prUrl: a.prUrl !== undefined ? String(a.prUrl) : undefined,
               phase: (a.phase as WorkItemPhase | undefined) ?? (existing ? undefined : "impl"),
             });
+
+            // Auto-populate branch when prNumber is known but branch isn't —
+            // fires on the initial track call too, not just update (#1449).
+            if (prNumber != null && item.branch == null) {
+              const resolvedBranch = await this.maybeResolveBranch(id, prNumber);
+              if (resolvedBranch) {
+                item = this.workItemDb.updateWorkItem(id, { branch: resolvedBranch });
+              }
+            }
+
             this.onTrack?.();
             return { content: [{ type: "text" as const, text: JSON.stringify(item) }] };
           }
@@ -345,17 +355,9 @@ export class WorkItemsServer {
             // existing item has a branch. Best-effort: a resolver failure is logged but does
             // not fail the update. See #1424 for the DX rationale.
             const newPrNumber = patch.prNumber;
-            if (newPrNumber != null && patch.branch === undefined && this.resolveBranchFromPr) {
-              const existing = this.workItemDb.getWorkItem(id);
-              if (existing && existing.branch == null) {
-                try {
-                  const branch = await this.resolveBranchFromPr(newPrNumber);
-                  if (branch) patch.branch = branch;
-                } catch (err) {
-                  const msg = err instanceof Error ? err.message : String(err);
-                  this.logger.warn(`[mcpd] Failed to resolve branch for PR #${newPrNumber}: ${msg}`);
-                }
-              }
+            if (newPrNumber != null && patch.branch === undefined) {
+              const resolved = await this.maybeResolveBranch(id, newPrNumber);
+              if (resolved) patch.branch = resolved;
             }
 
             const updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
@@ -379,6 +381,33 @@ export class WorkItemsServer {
     await this.client.connect(clientTransport);
 
     return { client: this.client, transport: this.clientTransport, tools: buildWorkItemsToolCache() };
+  }
+
+  /**
+   * Best-effort branch resolution for a work item that has a prNumber but no branch.
+   *
+   * Used by both `work_items_track` and `work_items_update`. Re-reads the work item
+   * *after* the async gh call to close the TOCTOU window where a concurrent explicit
+   * `branch` write could be clobbered by the resolved value (see #1424 review round 2).
+   * Returns the resolved branch only if the item still has no branch at write time.
+   */
+  private async maybeResolveBranch(id: string, prNumber: number): Promise<string | null> {
+    if (!this.resolveBranchFromPr) return null;
+    const existing = this.workItemDb.getWorkItem(id);
+    if (!existing || existing.branch != null) return null;
+    let resolved: string | null = null;
+    try {
+      resolved = await this.resolveBranchFromPr(prNumber);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[mcpd] Failed to resolve branch for PR #${prNumber}: ${msg}`);
+      return null;
+    }
+    if (!resolved) return null;
+    // Re-read: another update may have set branch while we awaited gh.
+    const current = this.workItemDb.getWorkItem(id);
+    if (!current || current.branch != null) return null;
+    return resolved;
   }
 
   async stop(): Promise<void> {
