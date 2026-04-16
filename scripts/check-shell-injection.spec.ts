@@ -14,6 +14,7 @@ describe("check-shell-injection pattern", () => {
     "execFileSync(`/bin/sh -c ${cmd}`)",
     "execSync(  `foo ${bar}`)",
     "execSync(`${cmd}`)",
+    "// execSync(`git commit -m ${msg}`)", // comment lines are flagged — regex can't distinguish
   ];
 
   const shouldNotMatch = [
@@ -23,7 +24,6 @@ describe("check-shell-injection pattern", () => {
     "execSync(`git add -A`, opts)",
     'spawnSync("git", ["commit", "-m", msg], opts)',
     'execFileSync("git", ["commit", "-m", msg], opts)',
-    "// execSync(`git commit -m ${msg}`)", // comment — but regex doesn't know; acceptable false positive
   ];
 
   for (const line of shouldMatch) {
