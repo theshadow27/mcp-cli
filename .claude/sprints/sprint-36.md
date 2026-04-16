@@ -41,11 +41,93 @@ Sprint 35 landed a lot. Confirm the following BEFORE starting sprint 36:
       JSON on stdout (not just transition validator)
 - [x] `mcx phase run <name> --work-item "#N"` (real) executes the
       handler and persists state via daemon
-- [ ] **Decide fate of worker-direct commits on main** from sprint 35:
-      `d1910cfd` (permissions test slug anonymization) and `7c8bafcf`
-      (path-pattern guard on `.git-hooks/pre-commit`). Preserved on
-      `saved/d1910cfd-permissions` and `saved/7c8bafcf-prehook-v2`.
-      User call before sprint kicks off — keep, revert, or re-do via PR?
+- [x] **Sprint-35 worker-direct commits on main — DECISION: keep both.**
+      `d1910cfd` (permissions test fixture: replace hardcoded
+      `jacob-dilles` with generic `user` slug) and `7c8bafcf` (path-pattern
+      privacy guard on `.git-hooks/pre-commit`). The fixture fix makes
+      the permissions test suite portable across developer machines —
+      demo-critical for sprint 36. The privacy hook is a benign safety
+      mechanism that has never blocked a legitimate commit. Both live
+      on main. Backup branches (`saved/*`) deleted. Direct-push
+      provenance is captured in sprint-35 retro.
+
+## Portability context (fresh-machine demo)
+
+The demo runs on a different computer that **will not** have this
+orchestrator's auto-memory (`~/.claude/projects/.../memory/`).
+Everything a fresh orchestrator needs is below or in the repo's
+`.claude/skills/sprint/` + `CLAUDE.md`.
+
+### Critical rules baked into skill files (trust them)
+
+These are already in `.claude/skills/sprint/references/`:
+
+- **Cache TTL** (`run.md`): wait timeouts ≤ 270000ms to stay inside
+  5-min prompt-cache. `mcx claude wait --timeout 270000 --short` is
+  the event loop.
+- **Phantom commit check** (`run.md` pre-flight): `git log HEAD
+  ^origin/main --oneline` must be empty before starting. Non-empty =
+  worker escaped its worktree.
+- **Bye discipline** (`run.md`): end impl session only after PR merged
+  OR (qa:pass + 0 open threads on 4 comment surfaces + CI green).
+- **Work item branch field** (`run.md`): `work_items_update` does NOT
+  auto-populate `branch` from `prNumber` (see #1424); set both.
+- **Release cut is non-atomic** (`review.md`): `bun lint` + `bun
+  typecheck` BEFORE `git commit`; tag only after commit verified.
+- **`disconnected` sessions** (`mcx-claude.md`): immediate `bye` — they
+  silently burn tokens (#1426 saw 111k-token leak).
+
+### Repo-level rules in `CLAUDE.md`
+
+- Meta files (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`,
+  `.gitignore`) are orchestrator + retro only. Workers never touch
+  them during a sprint.
+- `core.bare=true` recurrence: hotpatch with `git config core.bare
+  false` before git ops if you see strange worktree errors (#1206/
+  #1243/#1330).
+- Bun segfaults: append to #1004 with bun.report URL, and always
+  `open` the URL so telemetry reaches Bun's team.
+- Never use `git worktree remove --force` — let the safety check catch
+  uncommitted work.
+
+### Repo state at sprint-36 kickoff
+
+```
+main:    01057eaf (sprint-36 plan + skill fixes committed)
+tag:     v1.5.1 — https://github.com/theshadow27/mcp-cli/releases/tag/v1.5.1
+worktrees: only repo root, /private/tmp/mcp-cli-pre1389 (prior sprint
+           artifact, leave alone), .claude/worktrees/repair-1342-branch
+           (prior sprint, leave alone)
+saved/ branches: deleted (direct commits decided as KEEP)
+tracked work items: none (cleared during wind-down)
+daemon: restart required — see "First command after fresh clone" below
+```
+
+### First commands after fresh clone on demo machine
+
+```bash
+git clone <repo> mcp-cli && cd mcp-cli
+bun install                               # deps
+bun run build                             # dist/mcpd, dist/mcx, dist/mcpctl
+# Add dist/ to PATH OR use `bun dev:mcx --` for dev mode
+mcx status                                # starts daemon
+mcx phase install                         # resolve .mcx.yaml → .mcx.lock
+gh auth status                            # must be authenticated
+mcx call _metrics quota_status            # check headroom (≥80% → impl freeze)
+git fetch origin main \
+  && git log HEAD ^origin/main --oneline  # phantom-commit pre-flight (MUST be empty)
+```
+
+### If the demo machine's credentials differ
+
+- Git user: workers will commit with `git config user.email/name` on
+  the demo machine. That's fine — release commits carry the
+  co-author line. Do NOT run `git config --global` — honor whatever
+  the user's local config is.
+- GitHub auth: `gh auth login` with a token scoped to the repo.
+  Admin bypass on branch protection is orchestrator-only and may or
+  may not be available on the demo account — if not, meta commits
+  must go through PR (this is the desired state anyway).
 
 ## Meta items (orchestrator-applied, NOT sprint work items)
 
