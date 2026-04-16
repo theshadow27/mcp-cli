@@ -29,8 +29,178 @@ This sprint is scheduled to run during a work demo. Plan accordingly:
   slides.
 - **Have a rollback plan.** If something misbehaves during the demo,
   pause the sprint, show the retro + v1.5.1 release notes, and point
-  at what's already working. Sprint-35's `saved/*` branches + re-plan
-  are also demonstrable artifacts if the live run breaks.
+  at what's already working. Sprint-35 retro + the v1.5.1 changelog
+  are demonstrable artifacts if the live run breaks.
+
+## Demo choreography (copy-paste ready)
+
+Three customer bugs (#1410, #1411, #1412) are demo-friendly: all have
+trivial repros that take ~30 seconds combined. #1424 is a self-
+reflective bonus (orchestrator DX complaining about itself).
+
+### Two modes — pick one before the demo
+
+**Mode A — "Tour of the pipeline" (RECOMMENDED, ~15 min).** Show the
+bugs, walk through `mcx phase run impl --work-item "#1410"` live,
+read the emitted JSON aloud, show one `mcx claude spawn` start,
+**then cut to a branch where the fix is already merged** (build from
+post-sprint main, or from a pre-prepared `demo/sprint-36-fixed`
+branch). Re-run the reproducers. Audience sees the mechanism + the
+outcome without waiting 15+ minutes on a real impl session.
+
+**Mode B — "Live sprint run" (risky, 45–90 min).** Run the real sprint
+while talking. Good for a longer session or a demo recording. Not
+recommended for a single live slot.
+
+### Pre-demo setup (one-time, on the demo machine)
+
+```bash
+# 1. Fresh clone + build
+git clone git@github.com:theshadow27/mcp-cli.git && cd mcp-cli
+bun install
+bun run build
+export PATH="$PWD/dist:$PATH"         # or alias mcx to dist/mcx
+
+# 2. Verify pipeline is ready
+mcx status
+mcx phase install
+git log HEAD ^origin/main --oneline   # MUST be empty
+
+# 3. Mode A ONLY: prebuild the "after" branch (or rely on post-sprint main)
+git fetch origin
+git checkout -b demo/sprint-36-fixed origin/main      # placeholder; re-point after sprint runs
+git checkout main
+
+# 4. Prepare a clean project dir for the #1412 demo
+mkdir -p /tmp/demo-fresh-project && cd /tmp/demo-fresh-project
+cd -   # back to repo
+```
+
+### Act 1 — "Three customer bugs came in this week" (90 sec)
+
+All three show the broken behavior verbatim. Keep your terminal scroll
+visible.
+
+**#1410 + #1411 (paired, 30 sec) — `mcx alias save` and `mcx run` are both broken for defineAlias:**
+
+```bash
+cat > /tmp/define-test.ts <<'TS'
+import { defineAlias, z } from "mcp-cli";
+export default defineAlias({
+  name: "test-define",
+  description: "test",
+  input: z.object({ msg: z.string() }),
+  handler: async (input) => ({ echoed: input.msg })
+});
+TS
+
+mcx alias save define-test @/tmp/define-test.ts
+# Saved alias "define-test" → ~/.mcp-cli/aliases/define-test.ts
+# ✗ Validation failed                                            ← #1411
+
+mcx run define-test '{"msg":"hi"}'
+# Error: Unexpected keyword 'export'                              ← #1410
+```
+
+**#1412 (15 sec) — `mcx import` ignores Claude Code's global config:**
+
+```bash
+cd /tmp/demo-fresh-project      # no .mcp.json here
+mcx import
+# Nothing to import.            ← user expected ~/.claude.json to be picked up
+ls ~/.claude.json && echo "(but this file has MCP servers the user wants)"
+cd -
+```
+
+### Act 2 — "Let's watch the pipeline fix them" (90 sec)
+
+```bash
+# Track the first customer bug
+mcx track 1410
+
+# Real phase run — NOT --dry-run — handler executes, state persists,
+# spawn descriptor emitted as JSON
+mcx phase run impl --work-item "#1410"
+```
+
+Narrate while the JSON emits:
+
+> "That JSON is the spawn descriptor. The phase handler decided the
+> model (opus), the prompt (`/implement 1410`), and the allowed tools,
+> then persisted state. The orchestrator pipes this into `mcx claude
+> spawn` — let's do that."
+
+```bash
+# Execute the spawn descriptor
+mcx claude spawn --worktree --model opus \
+  -t "/implement 1410" \
+  --allow Read Glob Grep Write Edit Bash ExitPlanMode EnterPlanMode
+
+# Stream the session's progress
+mcx claude wait --timeout 270000 --short
+```
+
+**Mode A cutaway:** "This would take ~5 minutes on its own, let me
+show you what it looks like when it's done." Switch to the
+post-sprint branch.
+
+**Mode B (live):** Keep narrating through triage → review/qa → done.
+Hit #1424 mid-sprint to set up the cliffhanger.
+
+### Act 3 — "Here's the orchestrator's own papercut" (45 sec, Mode B only)
+
+When attaching the PR to the work item, intentionally forget `branch`:
+
+```bash
+# Set only prNumber (the common orchestrator mistake)
+mcx call _work_items work_items_update '{"id":"#1410","prNumber":XXXX}'
+mcx phase run triage --work-item "#1410"
+# Error: phase-triage requires a work item with issueNumber and branch
+# (doesn't say WHICH is missing)                                 ← #1424
+```
+
+> "Notice the orchestrator just hit its own DX papercut. We're eating
+> our own dogfood. That's #1424 in batch 2 — the sprint will fix this
+> self-reflection."
+
+Then workaround on the spot (set branch explicitly, continue).
+
+### Act 4 — "Run the reproducers again" (30 sec)
+
+Switch to the post-sprint state (Mode A: `git checkout
+demo/sprint-36-fixed`; Mode B: just stay on main after the sprint
+finishes). Rebuild if needed.
+
+```bash
+# Same files, same commands as Act 1
+mcx alias save define-test @/tmp/define-test.ts
+# Saved alias "define-test" → ~/.mcp-cli/aliases/define-test.ts
+# ✓ Validated successfully
+
+mcx run define-test '{"msg":"hi"}'
+# {"echoed":"hi"}
+
+cd /tmp/demo-fresh-project && mcx import
+# Imported 12 servers from ~/.claude.json.
+```
+
+### Closing line
+
+> "Twelve sprints ago these were one-off Slack fires we'd triage by
+> hand. Now the customer repro lands, `mcx track` + `mcx phase run`
+> does the rest, and we ship a release. The pipeline is thin enough
+> to read in one sitting — `.claude/phases/*.ts`, seven files."
+
+### Safety nets
+
+- **If Act 1's repros don't show the bug:** you may be on a
+  post-fix binary. Rebuild from a commit **before** the first sprint-36
+  PR lands (`git checkout origin/main~1` or similar), rebuild, retry.
+- **If the daemon is unreachable mid-demo:** `mcx shutdown && mcx
+  status`. Takes <3 seconds. Practice this before going live.
+- **If you need to abandon:** skip to `gh release view v1.5.1` and
+  walk through last sprint's changelog. The story of *how we got
+  here* is also demo material.
 
 ## Pre-flight acknowledgements
 
