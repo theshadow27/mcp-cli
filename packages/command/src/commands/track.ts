@@ -26,6 +26,8 @@ export interface TrackDeps {
   ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   exit: (code: number) => never;
   loadManifest?: (dir: string) => Manifest | null;
+  /** Override `process.cwd()` for testing — avoids process.chdir() in tests. */
+  cwd?: () => string;
 }
 
 const defaultDeps: TrackDeps = {
@@ -42,7 +44,8 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     return;
   }
 
-  const manifest = (deps.loadManifest ?? tryLoadManifest)(process.cwd());
+  const cwd = (deps.cwd ?? (() => process.cwd()))();
+  const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
   const initialPhase = manifest?.initial;
 
   if (args[0] === "--branch") {
@@ -134,7 +137,8 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const jsonFlag = args.includes("--json");
   const phaseIdx = args.indexOf("--phase");
   let phase: string | undefined;
-  const manifest = (deps.loadManifest ?? tryLoadManifest)(process.cwd());
+  const cwd = (deps.cwd ?? (() => process.cwd()))();
+  const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   if (phaseIdx >= 0) {
