@@ -40,7 +40,7 @@ sprint_active_check() {
     return 0
   fi
 
-  if [ -n "${SPRINT_OVERRIDE:-}" ]; then
+  if [ "${SPRINT_OVERRIDE:-}" = "1" ]; then
     echo "pre-commit: SPRINT_OVERRIDE=1 — allowing commit to main during active sprint" >&2
     return 0
   fi
