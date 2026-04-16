@@ -125,6 +125,17 @@ item should be confirmed before proceeding to the next.
     - references/mcx-claude.md
     - Any additional references (gates.md, etc.)
 
+[ ] Phase graph scaffolded and installed
+    - .mcx.yaml at repo root declares phases + transitions (see docs/phases.md)
+    - .claude/phases/*.ts: one defineAlias handler per phase, with typed
+      Zod input/output and an fn that returns {action: "spawn"|"wait"|"goto"}
+    - Run `mcx phase install` to generate .mcx.lock (commit the lock)
+    - Run `mcx phase list` to confirm all phases resolve cleanly
+    - Run `mcx phase show <name>` on each phase to verify source + schema
+    - Starting template: copy mcp-cli's .mcx.yaml + .claude/phases/, then
+      edit spawn commands / providers / round caps to match the target
+      project; delete phases that don't apply
+
 [ ] Worker skills verified
     - Implementation skill exists and is autonomous (no "wait for user" steps)
     - Fix/repair workflow is documented (even if inline in run.md)

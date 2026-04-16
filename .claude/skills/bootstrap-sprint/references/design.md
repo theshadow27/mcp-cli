@@ -51,6 +51,104 @@ session and it completes, what happens next? If the answer is "report to user an
 wait" — the orchestrator will stall. There must be autonomous work between
 implementation and the human gate. That's what keeps the sprint running.
 
+### The declarative phase graph (`.mcx.yaml` + `.claude/phases/*.ts`)
+
+The pipeline shape above is a concept. The *artifact* is the `.mcx.yaml` manifest
+at the repo root plus one `defineAlias` script per phase under `.claude/phases/`.
+This is the proven pattern — sprint 36 on mcp-cli ran entirely through this
+format, and `docs/phases.md` in the mcp-cli repo is the authoritative schema
+reference. Generate these files during bootstrap; don't leave the pipeline as
+prose-only instructions in `run.md`.
+
+**`.mcx.yaml`** declares phases and legal transitions:
+
+```yaml
+version: 1
+runsOn: main
+initial: impl
+state:
+  session_id: string?
+  review_round: number?
+  # ...declare per-work-item scratchpad keys here
+phases:
+  impl:
+    source: ./.claude/phases/impl.ts
+    next: [triage]
+  triage:
+    source: ./.claude/phases/triage.ts
+    next: [review, qa]
+  review:
+    source: ./.claude/phases/review.ts
+    next: [repair, qa]
+  repair:
+    source: ./.claude/phases/repair.ts
+    next: [review, qa, needs-attention]
+  qa:
+    source: ./.claude/phases/qa.ts
+    next: [done, repair, needs-attention]
+  done:
+    source: ./.claude/phases/done.ts
+    next: []
+  needs-attention:
+    source: ./.claude/phases/needs-attention.ts
+    next: []
+```
+
+**Each phase is a `defineAlias` script** with typed Zod input/output and an
+`onEnter` handler that returns one of three actions:
+
+```typescript
+// .claude/phases/impl.ts
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias({
+  name: "phase-impl",
+  description: "Sprint phase: spawn implementation session.",
+  input: z.object({
+    provider: z.enum(["claude", "copilot", "gemini"]).default("claude"),
+    labels: z.array(z.string()).default([]),
+  }),
+  output: z.object({
+    action: z.enum(["spawn", "wait", "goto"]),
+    command: z.array(z.string()).optional(),
+    prompt: z.string().optional(),
+    // ...
+  }),
+  fn: async (input, ctx) => {
+    const work = ctx.workItem;  // { id, issueNumber, prNumber, branch, phase }
+    // Read/write per-work-item state via ctx.state
+    // Shell out to gh / git / project tooling via Bun.spawnSync
+    // Return { action: "spawn" | "wait" | "goto", ... }
+  },
+});
+```
+
+Handler outputs the orchestrator consumes:
+- `{ action: "spawn", command: [...], prompt, model }` — the orchestrator executes the spawn
+- `{ action: "wait", reason }` — back off; re-enter the same phase later
+- `{ action: "goto", target, reason }` — transition to a neighbour phase
+
+**After authoring or editing phase scripts, run `mcx phase install`** to generate
+`.mcx.lock`. The lock pins every source by content hash so the orchestrator can
+detect drift between the committed graph and what's on disk. `mcx phase list`
+and `mcx phase show <name>` validate that phases resolve cleanly before the
+first sprint.
+
+Starting template: copy `.mcx.yaml` and the seven scripts in `.claude/phases/`
+from mcp-cli itself as the default graph, then edit the spawn commands to
+match the target project's slash commands and provider list. Run `mcx phase
+install` after edits. See `docs/phases.md` (in the mcp-cli repo) for the full
+schema, source-URI formats, and the phase handler API.
+
+**Why this matters.** A phase graph declared in YAML + TypeScript is
+machine-readable: the orchestrator can ask "what transitions are legal from
+`review`?" without re-reading a markdown file and guessing. Transitions are
+logged to `.mcx/transitions.jsonl`. Rounds, scratchpad keys, and state
+machines become code with types — not prose the orchestrator interprets. The
+markdown `run.md` still exists, but its job shrinks: it documents how the
+orchestrator *uses* the phase graph (pre-flight checks, the main loop, stop
+conditions), not what the graph *is*.
+
 ### The planning phase
 
 This varies based on issue quality:
@@ -106,8 +204,28 @@ waiting for the human. That's how stalls happen.
 
 ## What to produce
 
-You're writing markdown files that instruct a Claude orchestrator. Not code. Not
-templates. Instructions with context.
+You're writing two things: **markdown** that instructs the Claude orchestrator
+(SKILL.md, plan.md, run.md, review.md, mcx-claude.md) and the **declarative
+phase graph** that formalises the pipeline (`.mcx.yaml` + `.claude/phases/*.ts`).
+The markdown teaches intent; the phase graph is the executable contract the
+orchestrator drives.
+
+### The phase graph (`.mcx.yaml` + `.claude/phases/*.ts`)
+
+See "The declarative phase graph" above for the schema. Concretely, generate:
+
+- `.mcx.yaml` at the repo root declaring `version`, `runsOn`, `initial`,
+  `state` keys, and the `phases` map with `source` + `next` per phase
+- One TypeScript file per phase under `.claude/phases/` using `defineAlias`
+  from `mcp-cli`, with typed Zod `input` / `output` schemas and a handler
+  that returns `{ action: "spawn" | "wait" | "goto", ... }`
+- `.mcx.lock` generated by `mcx phase install` (never edit by hand; commit it)
+
+The starting template is mcp-cli's own `.claude/phases/` directory —
+copy the seven scripts (impl, triage, review, repair, qa, done,
+needs-attention), edit the spawn commands to match the target project's slash
+commands, adjust provider lists, and delete phases that don't apply. Then run
+`mcx phase install` and `mcx phase list` to verify.
 
 ### The sprint router (SKILL.md)
 
@@ -126,16 +244,23 @@ specific commands for this project's issue tracker and board.
 This is the big one. It contains:
 
 1. **Pre-flight checks** — what to verify before spawning anything
-2. **The pipeline** — phase-by-phase instructions with exact spawn commands
-3. **The main loop** — pseudocode for the orchestrator's event loop
-4. **State tracking** — how and where to persist issue/session/PR state
+2. **How the phase graph works** — summary of the `.mcx.yaml` pipeline and
+   how to invoke it (`mcx phase run <name> --work-item "#N"`). The authoritative
+   phase logic lives in `.claude/phases/*.ts`, not in this document.
+3. **The main loop** — pseudocode for the orchestrator's event loop: read
+   handler output (`spawn` / `wait` / `goto`), execute spawns, record
+   transitions, iterate.
+4. **State tracking** — how and where to persist issue/session/PR state. Most
+   per-work-item state lives in the phase scratchpad declared in `.mcx.yaml`
+   under `state:` and accessed via `ctx.state`.
 5. **Key rules** — the hard-won lessons (verify push before bye, don't restart
    daemon mid-batch, etc.)
 6. **Stop conditions** — when to halt and report
 
-Write the spawn commands verbatim. The orchestrator should be able to copy-paste
-them. Include the `--allow` flags, the model selection, the worktree flags. Don't
-make the orchestrator figure these out at runtime.
+Write the spawn commands verbatim inside the phase handlers, not in `run.md`.
+The handler returns the exact `command`, `--allow` flags, model, and worktree
+flags; the orchestrator executes them without interpretation. `run.md`
+documents how to *drive* the graph, not what the graph *is*.
 
 ### The session management reference (mcx-claude.md)
 
