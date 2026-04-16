@@ -1359,8 +1359,12 @@ describe("mcx claude ls", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["ls"], deps);
-      expect(errSpy.mock.calls.length).toBe(1);
-      expect((errSpy.mock.calls[0] as string[])[0]).toBe("No active sessions.");
+      // Find the "No active sessions." call — other stderr output (e.g. daemon
+      // startup noise from prior tests) may also land in errSpy.
+      const noSessionsCall = errSpy.mock.calls.find(
+        (args: unknown[]) => (args as string[])[0] === "No active sessions.",
+      );
+      expect(noSessionsCall).toBeDefined();
     } finally {
       console.error = origErr;
       console.log = origLog;

@@ -94,7 +94,36 @@ bun test
 
 Run the full test suite. All tests — including any you just wrote — must pass. If any fail, fix them before proceeding.
 
-### Step 5b: Check CI Status
+### Step 5b: Check All 4 PR Comment Surfaces
+
+Before labeling, enumerate every open thread across all four GitHub comment
+surfaces. Copilot inline reviews arrive *after* the push and often *after*
+local tests pass — sprint 36 had QA label `qa:pass` while 2 valid Copilot
+comments sat unaddressed on PR #1427.
+
+```bash
+PR=<pr-number>
+ISSUE=<issue-number>
+
+# Surface 1: PR body comments
+gh pr view $PR --comments
+
+# Surface 2: Inline file:line comments (where Copilot code review lives)
+gh api repos/theshadow27/mcp-cli/pulls/$PR/comments \
+  --jq '[.[] | {id, path, line, user: .user.login, body: (.body[0:120])}]'
+
+# Surface 3: Review containers (APPROVED / CHANGES_REQUESTED / COMMENTED)
+gh api repos/theshadow27/mcp-cli/pulls/$PR/reviews \
+  --jq '[.[] | {state, user: .user.login, body: (.body[0:160])}]'
+
+# Surface 4: Linked-issue comments
+gh issue view $ISSUE --comments
+```
+
+If any inline comment is unaddressed (no reply, no code fix), that's a
+`qa:fail` blocker — list the comment IDs and summaries in your verdict.
+
+### Step 5c: Check CI Status
 
 If working from a PR, check that CI checks are passing:
 

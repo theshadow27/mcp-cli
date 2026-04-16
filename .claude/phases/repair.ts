@@ -18,6 +18,14 @@ import { defineAlias, z } from "mcp-cli";
 
 const REPAIR_ROUND_CAP = 3;
 
+function removeLabel(prNumber: number, label: string): void {
+  Bun.spawnSync({
+    cmd: ["gh", "pr", "edit", String(prNumber), "--remove-label", label],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 const ProviderSchema = z
   .string()
   .refine(
@@ -82,6 +90,12 @@ defineAlias({
       : ["mcx", input.provider, "spawn"];
     const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
     const command = [...cmdBase, ...worktreeFlags, "--model", "opus", "-t", prompt, "--allow", ...allowTools];
+
+    // Clear stale QA state so the qa phase re-spawns fresh after repair.
+    // Without this, qa sees the old qa:fail label and loops back to repair
+    // instead of running a new QA session (sprint 36 hit this on #1412).
+    await ctx.state.delete("qa_session_id");
+    removeLabel(work.prNumber, "qa:fail");
 
     // Persist round and sentinel before returning. Orchestrator replaces
     // repair_session_id with real session ID; deletes on spawn failure.
