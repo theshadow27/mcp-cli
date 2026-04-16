@@ -1,6 +1,6 @@
 # Sprint 36
 
-> Planned 2026-04-16. Started 2026-04-16 11:10 ET. Demo scheduled 2026-04-17.
+> Planned 2026-04-16. Started 2026-04-16 11:10 ET. Ended 2026-04-16 12:10 ET. Demo scheduled 2026-04-17.
 > Target: 8 PRs + 1 investigation. Customer issues + pipeline polish.
 
 ## Goal
@@ -448,3 +448,15 @@ spawning is tracked in #1286 (not in sprint 36).
   (e.g. #1350, #1344).
 - File sprint-37 candidate: "phase-pipeline polish sprint" grouping
   the 12 deferred issues.
+
+## Results
+
+- **Released**: v1.5.2
+- **PRs merged**: 4 (#1427, #1428, #1431, #1432)
+- **Issues closed**: 4 (#1410, #1411, #1413, #1414)
+- **In flight**: 1 (#1412 — PR #1429 auto-merge armed, flaky CI re-run)
+- **Issues dropped**: 5 (Batch 2: #1424, #1367; Batch 3: #1397, #1372, #1392 — time constraint, demo ended after Batch 1)
+- **New issues filed**: 2 (#1430 filed by reviewer on #1413, #1433 flaky server-pool.spec.ts)
+- **Duration**: ~60 minutes (Batch 1 only)
+- **Total session cost**: ~$15 across 17 sessions
+- **Pipeline**: all 4 merged PRs went through `impl → triage → [review|qa] → done` via `mcx phase run`
