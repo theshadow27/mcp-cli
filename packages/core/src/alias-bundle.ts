@@ -3,7 +3,7 @@
  *
  * Replaces the Worker + bun.plugin() virtual module approach with:
  * 1. Bun.build to bundle alias scripts (externalizing "mcp-cli")
- * 2. stripMcpCliImport to remove the external import from bundled output
+ * 2. stripModuleSyntax to remove module-level constructs from bundled output
  * 3. AsyncFunction eval with injected dependencies
  *
  * This eliminates segfaults caused by concurrent import() with cache-busting
@@ -81,24 +81,38 @@ export async function computeSourceHash(sourcePath: string): Promise<string> {
 }
 
 /**
- * Strip the "mcp-cli" import/require from Bun.build output.
+ * Strip module syntax from Bun.build output so it can run inside AsyncFunction.
  *
- * Bun.build with external: ["mcp-cli"] produces either:
- * - ESM: import { defineAlias, z, ... } from "mcp-cli";
- * - CJS: var/const { ... } = require("mcp-cli");
- *
- * We remove these lines so the bundled code can be eval'd with
- * injected dependencies.
+ * Removes:
+ * 1. "mcp-cli" imports (ESM and CJS) — dependencies are injected at eval time
+ * 2. export blocks (`export { ... };` and `export default ...`) — Bun.build adds
+ *    these for the module's default export, but AsyncFunction bodies aren't modules
+ * 3. import.meta references — replaced with a plain object stub
  */
-export function stripMcpCliImport(bundledJs: string): string {
+export function stripModuleSyntax(bundledJs: string): string {
   // ESM: import { ... } from "mcp-cli";  or  import ... from "mcp-cli";
   // Uses [^;]*? to handle multi-line imports from Bun.build (e.g. import {\n  defineAlias,\n  z\n} from "mcp-cli";)
   const esmPattern = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
+  // Side-effect import: import "mcp-cli";
+  const esmSideEffectPattern = /^import\s+["']mcp-cli["'];?[ \t]*$/gm;
   // CJS: var/const/let { ... } = require("mcp-cli");
   const cjsPattern = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
+  // export { ... };  (possibly multi-line, as Bun.build emits for default exports)
+  const exportBlockPattern = /^export\s*\{[^}]*\};?[ \t]*$/gms;
+  // export default <expr>; — dotall so it matches multi-line (e.g. export default defineAlias({\n...\n});)
+  const exportDefaultPattern = /^export\s+default\b[^;]*;[ \t]*$/gms;
 
-  return bundledJs.replace(esmPattern, "").replace(cjsPattern, "");
+  return bundledJs
+    .replace(esmPattern, "")
+    .replace(esmSideEffectPattern, "")
+    .replace(cjsPattern, "")
+    .replace(exportBlockPattern, "")
+    .replace(exportDefaultPattern, "")
+    .replace(/\bimport\.meta\b/g, "({})");
 }
+
+/** @deprecated Use stripModuleSyntax — kept for backwards compatibility of test imports */
+export const stripMcpCliImport = stripModuleSyntax;
 
 /**
  * Eval bundled alias JS with injected context, capturing any defineAlias call.
@@ -116,7 +130,7 @@ async function evalBundledJs(
   },
   timeoutMs?: number,
 ): Promise<AliasDefinition | null> {
-  const stripped = stripMcpCliImport(bundledJs);
+  const stripped = stripModuleSyntax(bundledJs);
 
   let captured: AliasDefinition | null = null;
 
