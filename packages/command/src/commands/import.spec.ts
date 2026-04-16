@@ -500,8 +500,7 @@ describe("mcx import", () => {
       using opts = testOptions({
         files: { "claude.json": { mcpServers: { notion: FIXTURES.notion } } },
       });
-      // opts.dir has no .mcp.json, so fallback to ~/.claude.json triggers
-      await cmdImport([], opts.dir);
+      await cmdImport([], { cwd: opts.dir, findFile: () => null });
 
       const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
@@ -511,9 +510,9 @@ describe("mcx import", () => {
       using opts = testOptions({
         files: { "claude.json": { mcpServers: { github: FIXTURES.github } } },
       });
-      writeMcpJson(opts.dir, fixtureConfig("sentry"));
+      const mcpPath = writeMcpJson(opts.dir, fixtureConfig("sentry"));
 
-      await cmdImport([], opts.dir);
+      await cmdImport([], { cwd: opts.dir, findFile: () => mcpPath });
 
       const result = readConfigFile(join(opts.dir, "servers.json"));
       // sentry from .mcp.json should be imported
