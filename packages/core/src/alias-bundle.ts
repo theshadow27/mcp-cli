@@ -93,15 +93,18 @@ export function stripModuleSyntax(bundledJs: string): string {
   // ESM: import { ... } from "mcp-cli";  or  import ... from "mcp-cli";
   // Uses [^;]*? to handle multi-line imports from Bun.build (e.g. import {\n  defineAlias,\n  z\n} from "mcp-cli";)
   const esmPattern = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
+  // Side-effect import: import "mcp-cli";
+  const esmSideEffectPattern = /^import\s+["']mcp-cli["'];?[ \t]*$/gm;
   // CJS: var/const/let { ... } = require("mcp-cli");
   const cjsPattern = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
   // export { ... };  (possibly multi-line, as Bun.build emits for default exports)
   const exportBlockPattern = /^export\s*\{[^}]*\};?[ \t]*$/gms;
-  // export default <expr>;
-  const exportDefaultPattern = /^export\s+default\b[^;]*;?[ \t]*$/gm;
+  // export default <expr>; — dotall so it matches multi-line (e.g. export default defineAlias({\n...\n});)
+  const exportDefaultPattern = /^export\s+default\b[^;]*;[ \t]*$/gms;
 
   return bundledJs
     .replace(esmPattern, "")
+    .replace(esmSideEffectPattern, "")
     .replace(cjsPattern, "")
     .replace(exportBlockPattern, "")
     .replace(exportDefaultPattern, "")

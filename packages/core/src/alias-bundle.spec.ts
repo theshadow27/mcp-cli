@@ -86,6 +86,18 @@ describe("stripMcpCliImport", () => {
     const result = stripMcpCliImport(input);
     expect(result.trim()).toBe('console.log("hello");');
   });
+
+  test("strips side-effect import", () => {
+    const input = `import "mcp-cli";\nconsole.log("hello");`;
+    const result = stripMcpCliImport(input);
+    expect(result.trim()).toBe('console.log("hello");');
+  });
+
+  test("strips side-effect import with single quotes", () => {
+    const input = `import 'mcp-cli';\nconsole.log("hello");`;
+    const result = stripMcpCliImport(input);
+    expect(result.trim()).toBe('console.log("hello");');
+  });
 });
 
 describe("stripModuleSyntax", () => {
@@ -101,6 +113,22 @@ describe("stripModuleSyntax", () => {
 
   test("strips export default statement", () => {
     const input = "var x = 1;\nexport default x;";
+    expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+  });
+
+  test("strips multi-line export default statement", () => {
+    const input = [
+      "var x = 1;",
+      "export default defineAlias({",
+      '  name: "test",',
+      "  fn: () => x",
+      "});",
+    ].join("\n");
+    expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+  });
+
+  test("strips side-effect import of mcp-cli", () => {
+    const input = `import "mcp-cli";\nvar x = 1;`;
     expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
   });
 
