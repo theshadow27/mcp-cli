@@ -228,7 +228,7 @@ export async function importFromKeychain(
   }
 }
 
-export async function cmdImport(args: string[]): Promise<void> {
+export async function cmdImport(args: string[], cwd = process.cwd()): Promise<void> {
   // Parse flags
   let scope: ConfigScope | undefined;
   let claude = false;
@@ -267,6 +267,36 @@ export async function cmdImport(args: string[]): Promise<void> {
   }
 
   const source = positional[0];
+
+  // No explicit source: walk up for .mcp.json, then fall through to ~/.claude.json
+  if (!source) {
+    const found = findFileUpward(PROJECT_MCP_FILENAME, cwd);
+    if (!found) {
+      console.error(`No ${PROJECT_MCP_FILENAME} found. Falling back to ~/.claude.json…`);
+      await importFromClaude(scope ?? "user", false);
+      return;
+    }
+    let content: string;
+    try {
+      content = readFileSync(found, "utf-8");
+    } catch {
+      throw new Error(`Cannot read ${found}`);
+    }
+    let config: McpConfigFile;
+    try {
+      config = JSON.parse(content) as McpConfigFile;
+    } catch {
+      throw new Error(`Invalid JSON in ${found}`);
+    }
+    const servers = config.mcpServers;
+    if (!servers || Object.keys(servers).length === 0) {
+      console.error(`No servers found in ${found}`);
+      return;
+    }
+    importServers(servers, scope ?? "user", found);
+    return;
+  }
+
   const { filePath, defaultScope } = resolveSource(source);
   const effectiveScope = scope ?? defaultScope;
 
@@ -355,16 +385,7 @@ interface ResolvedSource {
   defaultScope: ConfigScope;
 }
 
-function resolveSource(source: string | undefined): ResolvedSource {
-  // No arg: walk up to find .mcp.json
-  if (!source) {
-    const found = findFileUpward(PROJECT_MCP_FILENAME, process.cwd());
-    if (!found) {
-      throw new Error(`No ${PROJECT_MCP_FILENAME} found in ${process.cwd()} or any parent directory`);
-    }
-    return { filePath: found, defaultScope: "user" };
-  }
-
+function resolveSource(source: string): ResolvedSource {
   const resolved = resolve(source);
 
   // Directory: look for .mcp.json inside it

@@ -495,6 +495,34 @@ describe("mcx import", () => {
     });
   });
 
+  describe("cmdImport no-arg fallback to ~/.claude.json", () => {
+    test("falls back to claude.json when no .mcp.json found in cwd", async () => {
+      using opts = testOptions({
+        files: { "claude.json": { mcpServers: { notion: FIXTURES.notion } } },
+      });
+      // opts.dir has no .mcp.json, so fallback to ~/.claude.json triggers
+      await cmdImport([], opts.dir);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
+    });
+
+    test("imports from .mcp.json when present, skips fallback", async () => {
+      using opts = testOptions({
+        files: { "claude.json": { mcpServers: { github: FIXTURES.github } } },
+      });
+      writeMcpJson(opts.dir, fixtureConfig("sentry"));
+
+      await cmdImport([], opts.dir);
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      // sentry from .mcp.json should be imported
+      expect(result.mcpServers?.sentry).toEqual(FIXTURES.sentry);
+      // github from claude.json should NOT be imported (no fallback)
+      expect(result.mcpServers?.github).toBeUndefined();
+    });
+  });
+
   describe("cmdImport with file source", () => {
     test("imports from a specific JSON file", async () => {
       using opts = testOptions();
