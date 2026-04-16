@@ -38,3 +38,4 @@ export * from "./work-item";
 export * from "./telemetry";
 export * from "./phase-source";
 export * from "./mcp-proxy";
+export * from "./bun-version";
