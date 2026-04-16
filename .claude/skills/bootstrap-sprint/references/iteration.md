@@ -128,7 +128,11 @@ item should be confirmed before proceeding to the next.
 [ ] Phase graph scaffolded and installed
     - .mcx.yaml at repo root declares phases + transitions (see docs/phases.md)
     - .claude/phases/*.ts: one defineAlias handler per phase, with typed
-      Zod input/output and an fn that returns {action: "spawn"|"wait"|"goto"}
+      Zod input/output. Output shape depends on phase kind:
+      session-driving phases (impl, review, repair, qa) conventionally
+      return an action union ({action: "spawn"|"in-flight"|"wait"|"goto"});
+      compute/terminal phases (triage, done, needs-attention) return
+      domain outputs the orchestrator special-cases.
     - Run `mcx phase install` to generate .mcx.lock (commit the lock)
     - Run `mcx phase list` to confirm all phases resolve cleanly
     - Run `mcx phase show <name>` on each phase to verify source + schema
