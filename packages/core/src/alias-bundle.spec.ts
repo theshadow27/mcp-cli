@@ -117,13 +117,7 @@ describe("stripModuleSyntax", () => {
   });
 
   test("strips multi-line export default statement", () => {
-    const input = [
-      "var x = 1;",
-      "export default defineAlias({",
-      '  name: "test",',
-      "  fn: () => x",
-      "});",
-    ].join("\n");
+    const input = ["var x = 1;", "export default defineAlias({", '  name: "test",', "  fn: () => x", "});"].join("\n");
     expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
   });
 
