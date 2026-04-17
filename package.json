@@ -16,7 +16,8 @@
     "@theshadow27/mcp-cli-darwin-arm64": "0.0.0",
     "@theshadow27/mcp-cli-darwin-x64": "0.0.0",
     "@theshadow27/mcp-cli-linux-x64": "0.0.0",
-    "@theshadow27/mcp-cli-linux-arm64": "0.0.0"
+    "@theshadow27/mcp-cli-linux-arm64": "0.0.0",
+    "playwright": "^1.58.0"
   },
   "files": ["bin/", "packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
   "scripts": {

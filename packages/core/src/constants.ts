@@ -128,6 +128,8 @@ const _originalOptions = {
   EPHEMERAL_ALIAS_PROMOTION_THRESHOLD: 3,
   /** Sprint state file path (pause/resume state) */
   SPRINT_STATE_PATH: join(MCP_CLI_DIR, "sprint-state.json"),
+  /** Directory for site configs, catalogs, and browser profiles */
+  SITES_DIR: join(MCP_CLI_DIR, "sites"),
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
@@ -244,3 +246,4 @@ export const MAIL_SERVER_NAME = "_mail";
 export const WORK_ITEMS_SERVER_NAME = "_work_items";
 export const MOCK_SERVER_NAME = "_mock";
 export const TRACING_SERVER_NAME = "_tracing";
+export const SITE_SERVER_NAME = "_site";
