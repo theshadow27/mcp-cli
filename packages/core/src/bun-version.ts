@@ -11,9 +11,7 @@ export const MIN_BUN_VERSION = "1.2.18";
 export function assertBunVersion(minVersion: string = MIN_BUN_VERSION, current: string = Bun.version): void {
   // Strip pre-release/build metadata: 1.2.18-canary.X satisfies >=1.2.18.
   const currentBase = current.split(/[-+]/)[0];
-  // compareVersions(a, b) returns positive if b > a (see upgrade.ts JSDoc — non-standard).
-  // So > 0 here means minVersion > currentBase, i.e. the running Bun is too old.
-  if (compareVersions(currentBase, minVersion) > 0) {
+  if (compareVersions(minVersion, currentBase) > 0) {
     process.stderr.write(
       `error: mcp-cli requires Bun >=${minVersion}, found ${current}\n  upgrade with: bun upgrade\n`,
     );
