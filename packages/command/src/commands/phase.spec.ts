@@ -38,6 +38,7 @@ import {
   phaseRun,
   resolvePhaseSource,
   shortestPhasePath,
+  spawnExec,
   transitionLogPath,
 } from "./phase";
 
@@ -1646,4 +1647,22 @@ defineAlias(({ z }) => ({
     expect(entries.filter((e) => e.status === "committed").length).toBe(2);
     expect(entries.filter((e) => e.status === "attempted").length).toBe(2);
   }, 30_000);
+});
+
+describe("spawnExec (#1408)", () => {
+  test("returns exitCode=1 and message when binary does not exist", () => {
+    const result = spawnExec(["/nonexistent/binary/that/cannot/be/found"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.length).toBeGreaterThan(0);
+  });
+
+  test("returns exitCode from successful process", () => {
+    const result = spawnExec(["true"]);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("returns exitCode=1 for failing process", () => {
+    const result = spawnExec(["false"]);
+    expect(result.exitCode).toBe(1);
+  });
 });
