@@ -125,6 +125,21 @@ item should be confirmed before proceeding to the next.
     - references/mcx-claude.md
     - Any additional references (gates.md, etc.)
 
+[ ] Phase graph scaffolded and installed
+    - .mcx.yaml at repo root declares phases + transitions (see docs/phases.md)
+    - .claude/phases/*.ts: one defineAlias handler per phase, with typed
+      Zod input/output. Output shape depends on phase kind:
+      session-driving phases (impl, review, repair, qa) conventionally
+      return an action union ({action: "spawn"|"in-flight"|"wait"|"goto"});
+      compute/terminal phases (triage, done, needs-attention) return
+      domain outputs the orchestrator special-cases.
+    - Run `mcx phase install` to generate .mcx.lock (commit the lock)
+    - Run `mcx phase list` to confirm all phases resolve cleanly
+    - Run `mcx phase show <name>` on each phase to verify source + schema
+    - Starting template: copy mcp-cli's .mcx.yaml + .claude/phases/, then
+      edit spawn commands / providers / round caps to match the target
+      project; delete phases that don't apply
+
 [ ] Worker skills verified
     - Implementation skill exists and is autonomous (no "wait for user" steps)
     - Fix/repair workflow is documented (even if inline in run.md)
