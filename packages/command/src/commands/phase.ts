@@ -19,6 +19,7 @@ import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "n
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   type AliasContext,
+  type AliasStateAccessor,
   type AliasWorkItemInfo,
   BranchGuardError,
   DisallowedTransitionError,
@@ -812,12 +813,6 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
 
   const { js } = await d.bundleAlias(resolved);
 
-  const stubState = {
-    get: async () => undefined,
-    all: async () => ({}),
-    set: async () => {},
-    delete: async () => {},
-  };
   const baseCtx: AliasContext = {
     mcp: {},
     args: extraArgs,
@@ -827,8 +822,8 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     // nothing is written to ~/.mcp-cli/cache — avoids caching `undefined`
     // (the dry-run proxy return value) and corrupting real cache entries.
     cache: async (_k, producer) => producer() as Promise<never>,
-    state: stubState,
-    globalState: stubState,
+    state: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
+    globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     workItem: null,
   };
   const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
