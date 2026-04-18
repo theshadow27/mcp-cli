@@ -40,6 +40,28 @@ export interface AliasStateOptions {
  * read, so anything JSON-serialisable round-trips cleanly. Structured-schema
  * validation is a no-op today; the manifest (#1286) will wire in a validator.
  */
+/**
+ * No-op accessor that discards writes and returns empty reads.
+ * Used when no work item is bound so state never leaks between unrelated runs.
+ */
+export function createEphemeralState(): AliasStateAccessor {
+  const store = new Map<string, unknown>();
+  return {
+    async get<T = unknown>(key: string): Promise<T | undefined> {
+      return store.get(key) as T | undefined;
+    },
+    async set(key: string, value: unknown): Promise<void> {
+      store.set(key, value);
+    },
+    async delete(key: string): Promise<void> {
+      store.delete(key);
+    },
+    async all(): Promise<Record<string, unknown>> {
+      return Object.fromEntries(store);
+    },
+  };
+}
+
 export function createAliasState(opts: AliasStateOptions): AliasStateAccessor {
   const call = opts.call ?? ipcCall;
   const { repoRoot, namespace } = opts;

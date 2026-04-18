@@ -42,6 +42,7 @@ import {
   commitTransition,
   createAliasCache,
   createAliasState,
+  createEphemeralState,
   createMcpProxy,
   executeAliasBundled,
   extractMetadata,
@@ -1081,18 +1082,19 @@ export async function executePhase(
   const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
   // State is namespaced by work-item id so every phase touching the same
   // item sees the same scratchpad (see sprint state declarations in
-  // .mcx.yaml). When no work item is bound we fall back to a
-  // `phase:<target>:unbound` namespace — writes still persist through the
-  // daemon (createAliasState always hits SQLite), but they land in a
-  // separate bucket that won't collide with work-item scoped state.
-  const stateNamespace = workItem ? `workitem:${workItem.id}` : `phase:${parsed.target}:unbound`;
+  // .mcx.yaml). When no work item is bound we use an in-memory ephemeral
+  // state that is discarded after the process exits, preventing cross-run
+  // state leaks between unrelated invocations.
+  const state = workItem
+    ? createAliasState({ repoRoot, namespace: `workitem:${workItem.id}`, call: ex.ipcCall })
+    : createEphemeralState();
   const ctx: AliasContext = {
     mcp: createMcpProxy({ call: ex.ipcCall, cwd }),
     args: parsed.args,
     file: (p) => Bun.file(p).text(),
     json: async (p) => JSON.parse(await Bun.file(p).text()),
     cache: createAliasCache(`phase:${parsed.target}`),
-    state: createAliasState({ repoRoot, namespace: stateNamespace, call: ex.ipcCall }),
+    state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
   };
