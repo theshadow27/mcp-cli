@@ -8,6 +8,14 @@
 
 set -euo pipefail
 
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Sprint-active guard (#1425, #1443) — reject commits to main's checkout
+# while a sprint is active. Worktree commits and overrides are allowed.
+# shellcheck source=sprint-active.sh
+source "$HOOK_DIR/sprint-active.sh"
+sprint_active_check || exit 1
+
 # Get list of staged files (excludes deleted files)
 staged_files=$(git diff --cached --name-only --diff-filter=d)
 
@@ -40,7 +48,6 @@ if [ -z "${SKIP_PRIVACY_CHECK:-}" ]; then
 fi
 
 # Classify staged files into tiers
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=classify.sh
 source "$HOOK_DIR/classify.sh"
 classify_files <<< "$staged_files"

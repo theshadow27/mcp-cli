@@ -42,6 +42,15 @@ Record the start timestamp in the sprint file header (append to the `>` line):
 > Planned {date}. Started {date} {HH:MM local}. Target: 15 PRs.
 ```
 
+Mark the sprint active for the main-checkout pre-commit guard (#1443):
+```bash
+echo "{N}" > .claude/sprints/.active
+```
+The sentinel is gitignored. It blocks commits on main's checkout so workers
+that escape their worktree fail loudly instead of landing phantom commits
+on main (see #1425). `/sprint retro` removes it. Orchestrator commits
+(sprint-plan updates, release, retro) must set `SPRINT_OVERRIDE=1`.
+
 ## Pre-flight
 
 Before spawning any sessions, ensure the daemon is running the latest build.
