@@ -1,0 +1,18 @@
+{
+  "url": "https://teams.cloud.microsoft/v2/",
+  "domains": [
+    "*.teams.microsoft.com",
+    "*.teams.cloud.microsoft",
+    "*.office.com",
+    "substrate.office.com",
+    "*.loki.delve.office.com"
+  ],
+  "blockProtocols": ["msteams://"],
+  "captureMode": "firehose",
+  "captureFilters": {
+    "match": ["api/chatsvc", "ng\\.msg\\.teams", "asyncgw\\.teams", "api/csa", "api/mt"],
+    "skip": ["imgo", "profilepicturev2", "mergedProfilePicturev2"]
+  },
+  "wiggle": "wiggle.js",
+  "seed": "teams"
+}

@@ -51,6 +51,7 @@ import { cmdRun } from "./commands/run";
 import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
+import { cmdSite } from "./commands/site";
 import { cmdSpans } from "./commands/spans";
 import { cmdTelemetry } from "./commands/telemetry";
 import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
@@ -335,6 +336,14 @@ async function main(): Promise<void> {
 
       case "mail":
         await cmdMail(cleanArgs.slice(1));
+        break;
+
+      case "site":
+        await cmdSite(cleanArgs.slice(1));
+        break;
+
+      case "sites":
+        await cmdSite(["list", ...cleanArgs.slice(1)]);
         break;
 
       case "note":
