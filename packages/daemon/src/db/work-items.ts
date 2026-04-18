@@ -222,6 +222,21 @@ export class WorkItemDb {
     return row ? rowToWorkItem(row) : null;
   }
 
+  /**
+   * Atomically set `branch` only when it is currently NULL. Returns true if
+   * the row was updated, false if the row is missing or already has a branch.
+   *
+   * Closes the TOCTOU window in the auto-populate flow (#1424 round 3): a
+   * concurrent writer setting an explicit branch between a read and this
+   * call cannot be clobbered because the WHERE clause filters on branch IS NULL.
+   */
+  setBranchIfNull(id: string, branch: string): boolean {
+    const result = this.db
+      .prepare("UPDATE work_items SET branch = $branch, updated_at = datetime('now') WHERE id = $id AND branch IS NULL")
+      .run({ $id: id, $branch: branch });
+    return result.changes > 0;
+  }
+
   updateWorkItem(id: string, patch: Partial<WorkItem>, opts?: { forced?: boolean; forceReason?: string }): WorkItem {
     const existing = this.getWorkItem(id);
     if (!existing) {

@@ -27,8 +27,16 @@ defineAlias({
   }),
   fn: async (input, ctx) => {
     const work = ctx.workItem;
-    if (!work || work.issueNumber == null || work.branch == null) {
-      throw new Error("phase-triage requires a work item with issueNumber and branch");
+    if (!work) {
+      throw new Error("phase-triage requires a work item (got: null)");
+    }
+    const missing: string[] = [];
+    if (work.issueNumber == null) missing.push("issueNumber");
+    if (work.branch == null) missing.push("branch");
+    if (missing.length > 0) {
+      throw new Error(
+        `phase-triage requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
+      );
     }
 
     // Resolve PR number via gh. Work item's prNumber is authoritative when set.
