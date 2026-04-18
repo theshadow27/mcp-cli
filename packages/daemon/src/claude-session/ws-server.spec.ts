@@ -1406,6 +1406,60 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastOpts.env).toBeUndefined();
   });
 
+  test("spawnClaude pins GIT_DIR and GIT_WORK_TREE when worktree and cwd are both set", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    const worktreePath = "/repo/.claude/worktrees/my-tree";
+    server.prepareSession("wt-pinned-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: worktreePath,
+    });
+    server.spawnClaude("wt-pinned-session");
+
+    expect(ms.lastOpts.env).toMatchObject({
+      GIT_DIR: `${worktreePath}/.git`,
+      GIT_WORK_TREE: worktreePath,
+    });
+  });
+
+  test("spawnClaude does not pin GIT_DIR when only worktree name is set (no cwd)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("wt-name-only-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+    });
+    server.spawnClaude("wt-name-only-session");
+
+    expect(ms.lastOpts.env).toBeUndefined();
+  });
+
+  test("spawnClaude includes both TRACEPARENT and GIT pins when all are set", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    const worktreePath = "/repo/.claude/worktrees/my-tree";
+    const tp = `00-${"c".repeat(32)}-${"d".repeat(16)}-01`;
+    server.prepareSession("wt-trace-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: worktreePath,
+    });
+    server.spawnClaude("wt-trace-session", tp);
+
+    expect(ms.lastOpts.env).toEqual({
+      TRACEPARENT: tp,
+      GIT_DIR: `${worktreePath}/.git`,
+      GIT_WORK_TREE: worktreePath,
+    });
+  });
+
   test("bye returns null worktree for non-worktree session", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
