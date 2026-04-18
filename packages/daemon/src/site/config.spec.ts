@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
-import { domainMatches, getSite, getSiteForDomain, listSites, writeSiteConfig } from "./config";
+import { domainMatches, getSite, getSiteForDomain, listSites, validateSiteName, writeSiteConfig } from "./config";
 
 let tmp: string;
 
@@ -16,6 +16,36 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
   _restoreOptions();
+});
+
+describe("validateSiteName", () => {
+  test("accepts plain alphanumerics and hyphens/underscores", () => {
+    expect(() => validateSiteName("teams")).not.toThrow();
+    expect(() => validateSiteName("my-site_2")).not.toThrow();
+  });
+
+  test("rejects path traversal and separators", () => {
+    expect(() => validateSiteName("..")).toThrow(/Invalid site name/);
+    expect(() => validateSiteName("../etc")).toThrow(/Invalid site name/);
+    expect(() => validateSiteName("a/b")).toThrow(/Invalid site name/);
+    expect(() => validateSiteName("a\\b")).toThrow(/Invalid site name/);
+  });
+
+  test("rejects empty or leading punctuation", () => {
+    expect(() => validateSiteName("")).toThrow();
+    expect(() => validateSiteName("-leading")).toThrow(/Invalid site name/);
+    expect(() => validateSiteName("_leading")).toThrow(/Invalid site name/);
+  });
+
+  test("rejects names over 64 chars", () => {
+    expect(() => validateSiteName("a".repeat(65))).toThrow(/Invalid site name/);
+  });
+});
+
+describe("writeSiteConfig validates name", () => {
+  test("rejects path-traversal names before touching disk", () => {
+    expect(() => writeSiteConfig("../escape", { url: "https://x" })).toThrow(/Invalid site name/);
+  });
 });
 
 describe("domainMatches", () => {

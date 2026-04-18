@@ -71,6 +71,7 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     throw new Error(`No credentials available for site '${site}'. Run 'mcx site browser ${site}' and complete login.`);
   }
 
+  let usedAud = pick.aud;
   let merged = mergeHeaders(pick.headers, pick.bearer, resolved.headers);
   let result = await doFetch(resolved.url, resolved.method, merged, resolved.body);
 
@@ -84,6 +85,7 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
       ? (vault.getAll(site).find((c) => c.aud === aud) ?? null)
       : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site);
     if (fresh) {
+      usedAud = fresh.aud;
       merged = mergeHeaders(fresh.headers, fresh.bearer, resolved.headers);
       result = await doFetch(resolved.url, resolved.method, merged, resolved.body);
     }
@@ -93,7 +95,7 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     status: result.status,
     url: resolved.url,
     method: resolved.method,
-    usedAud: pick.aud,
+    usedAud,
     responseHeaders: result.headers,
     body: result.parsed,
   };

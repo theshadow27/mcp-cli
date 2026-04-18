@@ -38,7 +38,7 @@ export const SITE_TOOLS: SiteToolDef[] = [
     name: "site_add",
     description:
       "Create or update a site. Only the supplied fields are written; existing fields are preserved. " +
-      "Required on first creation: url and domains.",
+      "For a brand-new site you'll typically want to pass url + domains as well, but only name is required by the schema.",
     inputSchema: {
       type: "object",
       properties: {
@@ -58,8 +58,8 @@ export const SITE_TOOLS: SiteToolDef[] = [
         },
         browserEngine: {
           type: "string",
-          enum: ["playwright", "webview"],
-          description: "Browser engine. Defaults to playwright.",
+          enum: ["playwright"],
+          description: "Browser engine. Only 'playwright' is implemented today; 'webview' is tracked in #1453.",
         },
         chromeProfile: { type: "string", description: "Profile directory name. Defaults to 'default'." },
         wiggle: { type: "string", description: "Path (relative to site dir) to a wiggle.js keep-alive module" },

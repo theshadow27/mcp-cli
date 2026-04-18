@@ -52,10 +52,17 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     this.events = events;
     for (const s of sites) this.siteSpecs.set(s.name, s);
 
-    // Playwright requires a real directory to persist — use the first site's profile as the context root.
-    // When multiple sites share a profile dir (they shouldn't, but may), Playwright merges them.
     if (sites.length === 0) throw new Error("PlaywrightBrowserEngine.start: at least one site is required");
-    const profileDir = sites[0].profileDir;
+
+    // A single persistent Playwright context has exactly one user-data directory.
+    // Sites opened together must agree on profileDir; mixed profiles need separate start() calls.
+    const profileDirs = [...new Set(sites.map((s) => s.profileDir))];
+    if (profileDirs.length > 1) {
+      throw new Error(
+        `PlaywrightBrowserEngine.start: all sites opened together must share one profileDir. Got ${profileDirs.length}: ${profileDirs.join(", ")}`,
+      );
+    }
+    const profileDir = profileDirs[0];
     mkdirSync(profileDir, { recursive: true });
 
     const ctx = await chromium.launchPersistentContext(profileDir, {
@@ -74,8 +81,11 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     const blockedPatterns: RegExp[] = [];
     for (const s of sites) {
       for (const proto of s.blockProtocols ?? []) {
-        const escaped = proto.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        blockedPatterns.push(new RegExp(`^${escaped.replace(/:\/\/$/, ":")}`));
+        // Normalize "msteams://" / "msteams:" → "msteams", then build a regex that
+        // matches both the colon-only and the colon-slash-slash forms.
+        const normalized = proto.replace(/:\/\/$/, "").replace(/:$/, "");
+        const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        blockedPatterns.push(new RegExp(`^${escaped}:(?:\\/\\/)?`));
       }
     }
     if (blockedPatterns.length > 0) {

@@ -428,7 +428,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Mock server: always available (no external binary needed)
   const mockServer = new MockServer(db, daemonId, undefined, logger);
 
-  // Site server: always available. Worker is lightweight; Playwright is lazy-loaded only if a browser tool is invoked.
+  // Site server: always started. The worker itself is lightweight — Playwright (and its ~200MB install)
+  // is only loaded via dynamic import the first time a browser-dependent tool runs. Users with no
+  // browser tool invocation pay the worker startup cost but nothing more.
   const siteServer = new SiteServer(daemonId, undefined, undefined, logger);
 
   // Start quota poller for proactive usage monitoring
@@ -611,6 +613,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     opencodeServer.onActivity = () => resetIdleTimer();
   }
   mockServer.onActivity = () => resetIdleTimer();
+  // Site browser sessions can sit idle during interactive login — keep the daemon alive.
+  siteServer.onActivity = () => resetIdleTimer();
 
   // Start idle timer
   resetIdleTimer();

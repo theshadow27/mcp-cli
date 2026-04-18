@@ -27,6 +27,7 @@ import {
   getSiteForDomain,
   listSites,
   resolveSiteAsset,
+  validateSiteName,
   writeSiteConfig,
 } from "./site/config";
 import { CredentialVault, summarizeCredential } from "./site/credentials";
@@ -76,10 +77,21 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
     );
   }
   if (engine === "playwright") {
-    const mod = await import("./site/browser/playwright");
-    browser = new mod.PlaywrightBrowserEngine();
-    browserEngineName = "playwright";
-    return browser;
+    try {
+      const mod = await import("./site/browser/playwright");
+      browser = new mod.PlaywrightBrowserEngine();
+      browserEngineName = "playwright";
+      return browser;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Module not found/.test(msg)) {
+        throw new Error(
+          "Playwright is not installed. Sites with browser tools require the optional 'playwright' dependency: run `bun add -D playwright` and retry.",
+          { cause: err instanceof Error ? err : undefined },
+        );
+      }
+      throw err;
+    }
   }
   throw new Error(`Browser engine '${engine}' is not yet implemented. Use 'playwright'.`);
 }
@@ -131,7 +143,11 @@ function handleShow(args: Record<string, unknown>): ToolResult {
 
 function handleAdd(args: Record<string, unknown>): ToolResult {
   const name = args.name as string;
-  if (!name) return error("Missing 'name'");
+  try {
+    validateSiteName(name);
+  } catch (err) {
+    return error(err instanceof Error ? err.message : String(err));
+  }
   const existing = getSite(name);
   const { name: _omit, ...existingWithoutName } = existing ?? {};
   const merged: Record<string, unknown> = {
@@ -157,6 +173,11 @@ function handleAdd(args: Record<string, unknown>): ToolResult {
 
 function handleRemove(args: Record<string, unknown>): ToolResult {
   const name = args.name as string;
+  try {
+    validateSiteName(name);
+  } catch (err) {
+    return error(err instanceof Error ? err.message : String(err));
+  }
   const dir = sitePath(name);
   if (!existsSync(dir)) return error(`Site '${name}' has no user directory`);
   rmSync(dir, { recursive: true, force: true });

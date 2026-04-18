@@ -11,6 +11,18 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { siteConfigPath, sitePath, sitesDir } from "./paths";
 
+const SITE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+
+/** Reject site names that could escape SITES_DIR (path traversal) or collide with special FS entries. */
+export function validateSiteName(name: string): void {
+  if (!name || typeof name !== "string") throw new Error("Site name is required");
+  if (!SITE_NAME_RE.test(name)) {
+    throw new Error(
+      `Invalid site name '${name}'. Must be alphanumeric (plus -/_), 1–64 chars, and start with a letter or digit.`,
+    );
+  }
+}
+
 export interface BrowserConfig {
   /** Browser engine adapter. Defaults to "playwright". */
   engine?: "playwright" | "webview";
@@ -42,7 +54,7 @@ export interface SiteConfig {
 
 export type PartialSiteConfig = Partial<SiteConfig>;
 
-const SEEDS_DIR = join(__dirname, "seeds");
+const SEEDS_DIR = join(import.meta.dir, "seeds");
 
 function loadBuiltinSeeds(): Record<string, PartialSiteConfig> {
   const seeds: Record<string, PartialSiteConfig> = {};
@@ -118,6 +130,7 @@ export function getSite(name: string): SiteConfig | null {
 
 /** Write (or overwrite) a site's user config. Creates the directory if needed. */
 export function writeSiteConfig(name: string, config: PartialSiteConfig): void {
+  validateSiteName(name);
   const path = siteConfigPath(name);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(config, null, 2));

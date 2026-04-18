@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CapturedRequest } from "./browser/engine";
-import { CredentialVault, decodeJwt } from "./credentials";
+import { CredentialVault, decodeJwt, summarizeCredential } from "./credentials";
 
 function makeJwt(claims: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
@@ -78,6 +78,15 @@ describe("CredentialVault", () => {
 
     const pick = v.pickCredentialFor("https://api.example.com/a/b", "GET", ["api.example.com"], "demo");
     expect(pick?.aud).toBe("https://api.example.com/");
+  });
+
+  test("summarizeCredential does not include bearer token material", () => {
+    const v = new CredentialVault();
+    const token = makeJwt({ aud: "https://api.example.com/", iat: 1, upn: "me@x.com" });
+    v.noteRequest("demo", req("https://api.example.com/a", "GET", token));
+    const summary = summarizeCredential(v.getAll("demo")[0]);
+    expect("bearerPrefix" in summary).toBe(false);
+    expect(JSON.stringify(summary)).not.toContain(token.slice(0, 16));
   });
 
   test("pickCredentialFor returns null for empty vault", () => {

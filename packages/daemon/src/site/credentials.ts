@@ -205,7 +205,6 @@ export function summarizeCredential(c: Credential): Record<string, unknown> {
     observations: c.observations,
     sampleMethod: c.sampleMethod,
     sampleUrl: c.sampleUrl,
-    bearerPrefix: `${c.bearer.slice(0, 16)}…`,
     bearerBytes: c.bearer.length,
     headersPresent: Object.keys(c.headers),
   };

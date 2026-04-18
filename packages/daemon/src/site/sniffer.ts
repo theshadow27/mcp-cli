@@ -3,9 +3,11 @@
  * writes request/response artifacts to disk for later `mcx site calls` curation.
  *
  * Modes:
- *   off       — events are observed for credentials only; no disk writes, no rings.
- *   filtered  — only URLs matching the site's captureFilters.match (and not skip) are kept.
- *   firehose  — everything is kept.
+ *   off       — events are observed for credentials only; no disk writes. Lightweight
+ *                request-metadata ring entries are still kept (URL/method/resourceType, no headers).
+ *   filtered  — URLs matching the site's captureFilters.match (and not skip) are written to disk
+ *                and kept in rings with full headers/body.
+ *   firehose  — everything is kept, including WebSocket frames.
  *
  * This module is pure TypeScript — no Playwright imports.
  */
@@ -115,8 +117,10 @@ export class Sniffer {
   }
 
   private passesFilter(site: string, url: string): boolean {
+    // No filters configured yet (site never configureSite'd) — treat as match-all so
+    // switching to `filtered` mode before start-up doesn't silently drop captures.
     const f = this.filters.get(site);
-    if (!f) return false;
+    if (!f) return true;
     if (f.skip.some((re) => re.test(url))) return false;
     if (f.match.length === 0) return true;
     return f.match.some((re) => re.test(url));
@@ -246,7 +250,14 @@ function pushRing<T>(ring: T[], item: T): void {
 
 function filterRing<T>(ring: T[], filter: string | undefined, fields: (entry: T) => string[]): T[] {
   if (!filter) return [...ring];
-  const re = new RegExp(filter, "i");
+  let re: RegExp;
+  try {
+    re = new RegExp(filter, "i");
+  } catch {
+    // Invalid regex from user input — fall back to substring match (case-insensitive).
+    const needle = filter.toLowerCase();
+    return ring.filter((entry) => fields(entry).some((f) => f.toLowerCase().includes(needle)));
+  }
   return ring.filter((entry) => fields(entry).some((f) => re.test(f)));
 }
 

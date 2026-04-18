@@ -35,7 +35,7 @@ export interface NamedCall {
 
 export type Catalog = Record<string, NamedCall>;
 
-const SEEDS_DIR = join(__dirname, "seeds");
+const SEEDS_DIR = join(import.meta.dir, "seeds");
 
 function loadSeed(seedName: string): Catalog {
   const catalogPath = join(SEEDS_DIR, seedName, "catalog.json");
