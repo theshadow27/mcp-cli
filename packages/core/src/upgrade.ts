@@ -50,8 +50,8 @@ export function selectAsset(platform: string = process.platform, arch: string = 
 }
 
 /**
- * Compare two semver-ish version strings.
- * Returns positive if b > a, negative if a > b, 0 if equal.
+ * Compare two semver-ish version strings (standard convention).
+ * Returns positive if a > b, negative if b > a, 0 if equal.
  * Strips leading 'v' and ignores build metadata (+epoch).
  * Pre-release versions (e.g. 1.0.0-dev) are ordered before their
  * release counterparts per semver: 1.0.0-dev < 1.0.0.
@@ -73,13 +73,13 @@ export function compareVersions(a: string, b: string): number {
   const len = Math.max(pa.parts.length, pb.parts.length);
 
   for (let i = 0; i < len; i++) {
-    const diff = (pb.parts[i] ?? 0) - (pa.parts[i] ?? 0);
+    const diff = (pa.parts[i] ?? 0) - (pb.parts[i] ?? 0);
     if (diff !== 0) return diff;
   }
 
   // Equal core versions: a pre-release is less than no pre-release
-  if (pa.prerelease !== null && pb.prerelease === null) return 1; // b > a
-  if (pa.prerelease === null && pb.prerelease !== null) return -1; // a > b
+  if (pa.prerelease !== null && pb.prerelease === null) return -1; // a < b
+  if (pa.prerelease === null && pb.prerelease !== null) return 1; // a > b
   return 0;
 }
 
@@ -184,7 +184,7 @@ export async function checkForUpdate(
       return {
         current: currentVersion,
         latest: cached.latest,
-        updateAvailable: compareVersions(currentVersion, cached.latest) > 0,
+        updateAvailable: compareVersions(cached.latest, currentVersion) > 0,
         asset,
       };
     }
@@ -196,7 +196,7 @@ export async function checkForUpdate(
   return {
     current: currentVersion,
     latest: release.version,
-    updateAvailable: compareVersions(currentVersion, release.version) > 0,
+    updateAvailable: compareVersions(release.version, currentVersion) > 0,
     asset,
   };
 }

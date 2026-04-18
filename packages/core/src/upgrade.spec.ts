@@ -17,15 +17,15 @@ describe("compareVersions", () => {
     expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
   });
 
-  test("newer remote returns positive", () => {
-    expect(compareVersions("1.0.0", "1.1.0")).toBeGreaterThan(0);
-    expect(compareVersions("1.0.0", "2.0.0")).toBeGreaterThan(0);
-    expect(compareVersions("1.0.0", "1.0.1")).toBeGreaterThan(0);
+  test("a > b returns positive", () => {
+    expect(compareVersions("1.1.0", "1.0.0")).toBeGreaterThan(0);
+    expect(compareVersions("2.0.0", "1.0.0")).toBeGreaterThan(0);
+    expect(compareVersions("1.0.1", "1.0.0")).toBeGreaterThan(0);
   });
 
-  test("older remote returns negative", () => {
-    expect(compareVersions("2.0.0", "1.0.0")).toBeLessThan(0);
-    expect(compareVersions("1.1.0", "1.0.0")).toBeLessThan(0);
+  test("a < b returns negative", () => {
+    expect(compareVersions("1.0.0", "2.0.0")).toBeLessThan(0);
+    expect(compareVersions("1.0.0", "1.1.0")).toBeLessThan(0);
   });
 
   test("strips leading v", () => {
@@ -35,15 +35,15 @@ describe("compareVersions", () => {
 
   test("ignores build metadata", () => {
     expect(compareVersions("1.0.0+12345", "1.0.0+67890")).toBe(0);
-    expect(compareVersions("1.0.0+12345", "1.1.0")).toBeGreaterThan(0);
+    expect(compareVersions("1.1.0", "1.0.0+12345")).toBeGreaterThan(0);
   });
 
   test("pre-release is less than release (semver)", () => {
-    // 1.0.0-dev < 1.0.0 → b > a → positive
-    expect(compareVersions("1.0.0-dev", "1.0.0")).toBeGreaterThan(0);
-    expect(compareVersions("1.0.0-dev", "1.1.0")).toBeGreaterThan(0);
-    // release > pre-release → negative
-    expect(compareVersions("1.0.0", "1.0.0-dev")).toBeLessThan(0);
+    // 1.0.0-dev < 1.0.0 → a < b → negative
+    expect(compareVersions("1.0.0-dev", "1.0.0")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-dev", "1.1.0")).toBeLessThan(0);
+    // release > pre-release → positive
+    expect(compareVersions("1.0.0", "1.0.0-dev")).toBeGreaterThan(0);
     // both pre-release with same core → equal
     expect(compareVersions("1.0.0-alpha", "1.0.0-beta")).toBe(0);
   });
