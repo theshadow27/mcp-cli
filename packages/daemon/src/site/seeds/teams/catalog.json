@@ -1,0 +1,355 @@
+{
+  "list_updates": {
+    "name": "list_updates",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v3/teams/users/me/updates",
+    "method": "GET",
+    "description": "Everything in the sidebar: chats, teams, channels, conversation folders.",
+    "paramDocs": {
+      "isPrefetch": "optional bool, default false",
+      "enableMembershipSummary": "optional bool, default true"
+    }
+  },
+  "discover": {
+    "name": "discover",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/discover",
+    "method": "GET",
+    "description": "Discover feed — teams/channels suggested to the user.",
+    "paramDocs": {
+      "pageSize": "default 7",
+      "continuationToken": "pagination cursor"
+    }
+  },
+  "pinned_channels": {
+    "name": "pinned_channels",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/pinnedChannels",
+    "method": "GET",
+    "description": "User's pinned channels."
+  },
+  "get_messages": {
+    "name": "get_messages",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
+    "method": "GET",
+    "description": "Fetch messages in a chat or channel thread.",
+    "paramDocs": {
+      "threadId": "required — e.g. 19:abc@thread.v2 or 19:uid1_uid2@unq.gbl.spaces",
+      "pageSize": "default 20, max 200",
+      "view": "default 'msnp24Equivalent|supportsMessageProperties'",
+      "startTime": "epoch ms — use 1 for the beginning",
+      "syncState": "delta token from a previous response's _metadata.syncState"
+    },
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
+  },
+  "consumption_horizons": {
+    "name": "consumption_horizons",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/threads/:threadId/consumptionhorizons",
+    "method": "GET",
+    "description": "Read positions / seen markers for a thread.",
+    "paramDocs": {
+      "threadId": "required — the thread id"
+    },
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
+  },
+  "thread_replies": {
+    "name": "thread_replies",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId;messageid=:messageId/messages",
+    "method": "GET",
+    "description": "Replies to a specific parent message (channel thread).",
+    "paramDocs": {
+      "threadId": "channel thread id",
+      "messageId": "parent message id",
+      "pageSize": "default 200"
+    },
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
+  },
+  "user_fetch": {
+    "name": "user_fetch",
+    "url": "https://teams.cloud.microsoft/api/mt/emea/beta/users/fetch",
+    "method": "POST",
+    "description": "Resolve userIds / emails to display names + avatars.",
+    "paramDocs": {
+      "_body": "JSON body: array of identifiers, e.g. [{ mri: '8:orgid:<guid>' }]."
+    }
+  },
+  "search_teams": {
+    "name": "search_teams",
+    "url": "https://substrate.office.com/searchservice/api/v2/query",
+    "method": "POST",
+    "description": "Substrate search across Teams chat messages.",
+    "paramDocs": {
+      "q": "required — plain-text query",
+      "size": "optional — max hits, default 3"
+    },
+    "jq_input": ".params as $p | .body_default | .AnswerEntityRequests[].Query.QueryString = $p.q | (.EntityRequests[] | select(.query != null)).query.displayQueryString = $p.q | (.EntityRequests[] | select(.query != null)).query.queryString = $p.q | (.EntityRequests[] | select(.Query != null)).Query.DisplayQueryString = $p.q | (.EntityRequests[] | select(.Query != null)).Query.QueryString = $p.q | (.EntityRequests[] | select(.entityType == \"Message\")).query.queryString = (\"NOT (isClientSoftDeleted:TRUE) AND \" + $p.q) | (.EntityRequests[] | select(.entityType == \"Message\")).size = ($p.size // 3)",
+    "jq_output": "{ total: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Results // [] | map(.Source | { id: .Id, threadId: .ClientThreadId, from: .From.EmailAddress.Name, preview: .Preview, dateTime: .DateTimeSent, hasAttachments: .HasAttachments })) }",
+    "body_default": {
+      "AnswerEntityRequests": [
+        {
+          "Query": {
+            "QueryString": "merge"
+          },
+          "EntityTypes": ["Event"],
+          "Size": 5,
+          "From": 0,
+          "EnableAsyncResolution": true
+        }
+      ],
+      "EntityRequests": [
+        {
+          "entityType": "Message",
+          "contentSources": ["Teams"],
+          "fields": [
+            "Extension_SkypeSpaces_ConversationPost_Extension_FromSkypeInternalId_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_FileData_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_ThreadType_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_SkypeGroupId_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_SenderTenantId_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_ParentMessageId_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_ImageSrc_String",
+            "Extension_SkypeSpaces_ConversationPost_Extension_AmsReferences_StringArray"
+          ],
+          "propertySet": "Optimized",
+          "query": {
+            "queryString": "NOT (isClientSoftDeleted:TRUE) AND merge",
+            "displayQueryString": "merge"
+          },
+          "size": 3,
+          "topResultsCount": 3
+        },
+        {
+          "contentSources": ["OneDriveBusiness", "Exchange"],
+          "EnableQueryUnderstanding": false,
+          "EnableSpeller": false,
+          "EntityType": "File",
+          "extendedQueries": [
+            {
+              "SearchProvider": "SharePoint",
+              "Query": {
+                "SourceId": "8413CD39-2156-4E00-B54D-11EFD9ABDB89",
+                "EnableQueryRules": false,
+                "TrimDuplicates": false,
+                "BypassResultTypes": true,
+                "ProcessBestBets": false,
+                "ProcessPersonalFavorites": false,
+                "EnableInterleaving": false,
+                "EnableMultiGeo": true,
+                "RankingModelId": "ABBAABBA-AAAA-AAAA-CCCC-000000000426",
+                "Culture": 1033
+              }
+            }
+          ],
+          "Fields": [
+            "DefaultEncodingUrl",
+            "FileName",
+            "FileType",
+            "HitHighlightedSummary",
+            "LastModifiedTime",
+            "LinkingUrl",
+            "ModifiedBy",
+            "OriginalPath",
+            "Path",
+            "Title",
+            "ServerRedirectedPreviewUrl",
+            "SpWebUrl",
+            "ChannelGroupId",
+            "FileExtension",
+            "VisualizationAccessURL",
+            "LastSharedWithMailboxOwnerByDisplayName",
+            "LastSharedWithMailboxOwnerDateTime",
+            "FileContextType",
+            "ClassicAttachmentVisualizationUrl",
+            "UniqueId"
+          ],
+          "From": 0,
+          "HitHighlight": {
+            "HitHighlightedProperties": ["HitHighlightedSummary"],
+            "SummaryLength": 200
+          },
+          "IdFormat": "EwsId",
+          "ParserType": "None",
+          "PropertySet": "Optimized",
+          "Query": {
+            "QueryString": "merge",
+            "DisplayQueryString": "merge"
+          },
+          "RefiningQueries": [
+            {
+              "RefinerString": "or(andnot(IsDocument:true,Title:or(OneNote_DeletedPages,OneNote_RecycleBin),SecondaryFileExtension:onetoc2,FileExtension:vtt,ContentClass:ExternalLink,and(ContentClass:STS_List_DocumentLibrary,SiteTemplateId:21),FileType:or(aspx,htm,html,mhtml),and(ContentTypeId:0x0101009D1CB255DA76424F860D91F20E6C4118*,PromotedState:2)),ContentTypeId:or(0x010100F3754F12A9B6490D9622A01FE9D8F012,0x0120D520A808*),SecondaryFileExtension:or(wmv,avi,mpg,asf,mp4,ogg,ogv,webm,mov),FileType:or(ai,bmp,dib,dst,emb,eps,gif,ico,jpeg,jpg,odg,png,rle,svg,tiff,webp,wmf,wpd))"
+            }
+          ],
+          "ResultsMerge": {
+            "Type": "Interleaved"
+          },
+          "size": 3,
+          "Sort": [
+            {
+              "Field": "PersonalScore",
+              "SortDirection": "Desc"
+            }
+          ],
+          "EnableResultAnnotations": true,
+          "AnnotationsCount": 1
+        },
+        {
+          "entityType": "People",
+          "Filter": {
+            "And": [
+              {
+                "Or": [
+                  {
+                    "Term": {
+                      "Flags": "NonHidden"
+                    }
+                  }
+                ]
+              },
+              {
+                "Or": [
+                  {
+                    "Term": {
+                      "PeopleType": "Person"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleType": "Other"
+                    }
+                  }
+                ]
+              },
+              {
+                "Or": [
+                  {
+                    "Term": {
+                      "PeopleSubtype": "OrganizationUser"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleSubtype": "MTOUser"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleSubtype": "Guest"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleSubtype": "Room"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleSubtype": "PersonalContact"
+                    }
+                  },
+                  {
+                    "Term": {
+                      "PeopleSubtype": "ImplicitContact"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "contentSources": ["Exchange"],
+          "query": {
+            "queryString": "merge",
+            "displayQueryString": "merge"
+          },
+          "size": 8
+        },
+        {
+          "entityType": "Chat",
+          "contentSources": ["Teams"],
+          "propertySet": "Optimized",
+          "fields": [],
+          "query": {
+            "queryString": "merge",
+            "displayQueryString": "merge"
+          },
+          "extendedQueries": [
+            {
+              "query": {}
+            }
+          ],
+          "from": 0,
+          "size": 3
+        },
+        {
+          "entityType": "TeamsChannel",
+          "contentSources": ["Teams"],
+          "HitHighlight": {
+            "HitHighlightedProperties": ["HitHighlightedSummary"],
+            "SummaryLength": 200
+          },
+          "fields": [],
+          "query": {
+            "queryString": "merge",
+            "displayQueryString": "merge"
+          },
+          "extendedQueries": [
+            {
+              "query": {}
+            }
+          ],
+          "from": 0,
+          "size": 3
+        }
+      ],
+      "QueryAlterationOptions": {
+        "EnableAlteration": true,
+        "EnableSuggestion": true,
+        "SupportedRecourseDisplayTypes": ["Suggestion", "ServiceSideRecourseLink"]
+      },
+      "cvid": "dc970193-3c8a-47d0-b0e5-2a65fdb8ff20",
+      "logicalId": "462b56ad-86e6-4ba3-877c-3e11f0143f51",
+      "scenario": {
+        "Dimensions": [
+          {
+            "DimensionName": "QueryType",
+            "DimensionValue": "All"
+          },
+          {
+            "DimensionName": "FormFactor",
+            "DimensionValue": "general.web.reactSearch"
+          }
+        ],
+        "Name": "powerbar"
+      },
+      "WholePageRankingOptions": {
+        "EntityResultTypeRankingOptions": [
+          {
+            "MaxEntitySetCount": 1,
+            "ResultType": "Answer"
+          }
+        ],
+        "EnableEnrichedRanking": true,
+        "EnableLayoutHints": true,
+        "SupportedSerpRegions": ["MainLine"],
+        "SupportedRankingVersion": "V3"
+      },
+      "Context": {
+        "EntityContext": [
+          {
+            "@odata.type": "Microsoft.OutlookServices.Message",
+            "Id": "",
+            "ClientThreadId": "19:a2dae14c-c008-4117-88d7-49a13d0e235a_d0938f3c-ef54-45ab-a2c4-9095a7fcc5c1@unq.gbl.spaces"
+          }
+        ]
+      }
+    }
+  },
+  "search_files": {
+    "name": "search_files",
+    "url": "https://substrate.office.com/searchservice/api/v2/query",
+    "method": "POST",
+    "description": "Substrate search across files (OneDrive, SharePoint).",
+    "paramDocs": {
+      "q": "required — the search query",
+      "size": "optional — max hits, default 15"
+    },
+    "jq_input": "{ EntityRequests: [{ entityType: \"File\", contentSources: [\"OneDriveBusiness\",\"Exchange\"], fields: [\"FileName\",\"FileType\",\"HitHighlightedSummary\",\"LastModifiedTime\",\"LinkingUrl\",\"ModifiedBy\",\"Path\",\"Title\",\"SpWebUrl\",\"FileExtension\"], query: { queryString: .q, displayQueryString: .q }, size: (.size // 15), from: 0 }] }",
+    "jq_output": "{ total: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Results // [] | map(.Source | { title: .Title, fileName: .FileName, fileType: .FileType, summary: .HitHighlightedSummary, modified: .LastModifiedTime, modifiedBy: (.ModifiedBy // {}).DisplayName, url: .LinkingUrl })) }"
+  }
+}

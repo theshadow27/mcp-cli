@@ -40,6 +40,7 @@ import {
   MOCK_SERVER_NAME,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
+  SITE_SERVER_NAME,
   TRACING_SERVER_NAME,
   WORK_ITEMS_SERVER_NAME,
   auditRuntimePermissions,
@@ -76,6 +77,7 @@ import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
+import { SiteServer, buildSiteToolCache } from "./site-server";
 import { TracingServer } from "./tracing-server";
 import { WorkItemsServer } from "./work-items-server";
 
@@ -426,6 +428,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Mock server: always available (no external binary needed)
   const mockServer = new MockServer(db, daemonId, undefined, logger);
 
+  // Site server: always started. The worker itself is lightweight — Playwright (and its ~200MB install)
+  // is only loaded via dynamic import the first time a browser-dependent tool runs. Users with no
+  // browser tool invocation pay the worker startup cost but nothing more.
+  const siteServer = new SiteServer(daemonId, undefined, undefined, logger);
+
   // Start quota poller for proactive usage monitoring
   const quotaPoller = new QuotaPoller({ logger });
   quotaPoller.start();
@@ -606,6 +613,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     opencodeServer.onActivity = () => resetIdleTimer();
   }
   mockServer.onActivity = () => resetIdleTimer();
+  // Site browser sessions can sit idle during interactive login — keep the daemon alive.
+  siteServer.onActivity = () => resetIdleTimer();
 
   // Start idle timer
   resetIdleTimer();
@@ -734,6 +743,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           logger.info("[mcpd] Mock session server started");
         } catch (err) {
           logger.error(`[mcpd] Failed to start mock server: ${err}`);
+        }
+      })(),
+    );
+
+    pool.registerPendingVirtualServer(
+      SITE_SERVER_NAME,
+      (async () => {
+        try {
+          const { client: siteClient, transport: siteTransport } = await siteServer.start();
+          const siteTools = buildSiteToolCache();
+          pool.registerVirtualServer(SITE_SERVER_NAME, siteClient, siteTransport, siteTools);
+          logger.info("[mcpd] Site server started");
+        } catch (err) {
+          logger.error(`[mcpd] Failed to start site server: ${err}`);
         }
       })(),
     );
@@ -913,6 +936,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           [ACP_SERVER_NAME, acpServer],
           [OPENCODE_SERVER_NAME, opencodeServer],
           [MOCK_SERVER_NAME, mockServer],
+          [SITE_SERVER_NAME, siteServer],
           [ALIAS_SERVER_NAME, aliasServer],
           [METRICS_SERVER_NAME, metricsServer],
           [TRACING_SERVER_NAME, tracingServer],

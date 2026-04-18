@@ -1,0 +1,164 @@
+{
+  "AnswerEntityRequests": [
+    {
+      "Query": { "QueryString": "merge" },
+      "EntityTypes": ["Event"],
+      "Size": 5,
+      "From": 0,
+      "EnableAsyncResolution": true
+    }
+  ],
+  "EntityRequests": [
+    {
+      "entityType": "Message",
+      "contentSources": ["Teams"],
+      "fields": [
+        "Extension_SkypeSpaces_ConversationPost_Extension_FromSkypeInternalId_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_FileData_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_ThreadType_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_SkypeGroupId_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_SenderTenantId_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_ParentMessageId_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_ImageSrc_String",
+        "Extension_SkypeSpaces_ConversationPost_Extension_AmsReferences_StringArray"
+      ],
+      "propertySet": "Optimized",
+      "query": { "queryString": "NOT (isClientSoftDeleted:TRUE) AND merge", "displayQueryString": "merge" },
+      "size": 3,
+      "topResultsCount": 3
+    },
+    {
+      "contentSources": ["OneDriveBusiness", "Exchange"],
+      "EnableQueryUnderstanding": false,
+      "EnableSpeller": false,
+      "EntityType": "File",
+      "extendedQueries": [
+        {
+          "SearchProvider": "SharePoint",
+          "Query": {
+            "SourceId": "8413CD39-2156-4E00-B54D-11EFD9ABDB89",
+            "EnableQueryRules": false,
+            "TrimDuplicates": false,
+            "BypassResultTypes": true,
+            "ProcessBestBets": false,
+            "ProcessPersonalFavorites": false,
+            "EnableInterleaving": false,
+            "EnableMultiGeo": true,
+            "RankingModelId": "ABBAABBA-AAAA-AAAA-CCCC-000000000426",
+            "Culture": 1033
+          }
+        }
+      ],
+      "Fields": [
+        "DefaultEncodingUrl",
+        "FileName",
+        "FileType",
+        "HitHighlightedSummary",
+        "LastModifiedTime",
+        "LinkingUrl",
+        "ModifiedBy",
+        "OriginalPath",
+        "Path",
+        "Title",
+        "ServerRedirectedPreviewUrl",
+        "SpWebUrl",
+        "ChannelGroupId",
+        "FileExtension",
+        "VisualizationAccessURL",
+        "LastSharedWithMailboxOwnerByDisplayName",
+        "LastSharedWithMailboxOwnerDateTime",
+        "FileContextType",
+        "ClassicAttachmentVisualizationUrl",
+        "UniqueId"
+      ],
+      "From": 0,
+      "HitHighlight": { "HitHighlightedProperties": ["HitHighlightedSummary"], "SummaryLength": 200 },
+      "IdFormat": "EwsId",
+      "ParserType": "None",
+      "PropertySet": "Optimized",
+      "Query": { "QueryString": "merge", "DisplayQueryString": "merge" },
+      "RefiningQueries": [
+        {
+          "RefinerString": "or(andnot(IsDocument:true,Title:or(OneNote_DeletedPages,OneNote_RecycleBin),SecondaryFileExtension:onetoc2,FileExtension:vtt,ContentClass:ExternalLink,and(ContentClass:STS_List_DocumentLibrary,SiteTemplateId:21),FileType:or(aspx,htm,html,mhtml),and(ContentTypeId:0x0101009D1CB255DA76424F860D91F20E6C4118*,PromotedState:2)),ContentTypeId:or(0x010100F3754F12A9B6490D9622A01FE9D8F012,0x0120D520A808*),SecondaryFileExtension:or(wmv,avi,mpg,asf,mp4,ogg,ogv,webm,mov),FileType:or(ai,bmp,dib,dst,emb,eps,gif,ico,jpeg,jpg,odg,png,rle,svg,tiff,webp,wmf,wpd))"
+        }
+      ],
+      "ResultsMerge": { "Type": "Interleaved" },
+      "size": 3,
+      "Sort": [{ "Field": "PersonalScore", "SortDirection": "Desc" }],
+      "EnableResultAnnotations": true,
+      "AnnotationsCount": 1
+    },
+    {
+      "entityType": "People",
+      "Filter": {
+        "And": [
+          { "Or": [{ "Term": { "Flags": "NonHidden" } }] },
+          { "Or": [{ "Term": { "PeopleType": "Person" } }, { "Term": { "PeopleType": "Other" } }] },
+          {
+            "Or": [
+              { "Term": { "PeopleSubtype": "OrganizationUser" } },
+              { "Term": { "PeopleSubtype": "MTOUser" } },
+              { "Term": { "PeopleSubtype": "Guest" } },
+              { "Term": { "PeopleSubtype": "Room" } },
+              { "Term": { "PeopleSubtype": "PersonalContact" } },
+              { "Term": { "PeopleSubtype": "ImplicitContact" } }
+            ]
+          }
+        ]
+      },
+      "contentSources": ["Exchange"],
+      "query": { "queryString": "merge", "displayQueryString": "merge" },
+      "size": 8
+    },
+    {
+      "entityType": "Chat",
+      "contentSources": ["Teams"],
+      "propertySet": "Optimized",
+      "fields": [],
+      "query": { "queryString": "merge", "displayQueryString": "merge" },
+      "extendedQueries": [{ "query": {} }],
+      "from": 0,
+      "size": 3
+    },
+    {
+      "entityType": "TeamsChannel",
+      "contentSources": ["Teams"],
+      "HitHighlight": { "HitHighlightedProperties": ["HitHighlightedSummary"], "SummaryLength": 200 },
+      "fields": [],
+      "query": { "queryString": "merge", "displayQueryString": "merge" },
+      "extendedQueries": [{ "query": {} }],
+      "from": 0,
+      "size": 3
+    }
+  ],
+  "QueryAlterationOptions": {
+    "EnableAlteration": true,
+    "EnableSuggestion": true,
+    "SupportedRecourseDisplayTypes": ["Suggestion", "ServiceSideRecourseLink"]
+  },
+  "cvid": "dc970193-3c8a-47d0-b0e5-2a65fdb8ff20",
+  "logicalId": "462b56ad-86e6-4ba3-877c-3e11f0143f51",
+  "scenario": {
+    "Dimensions": [
+      { "DimensionName": "QueryType", "DimensionValue": "All" },
+      { "DimensionName": "FormFactor", "DimensionValue": "general.web.reactSearch" }
+    ],
+    "Name": "powerbar"
+  },
+  "WholePageRankingOptions": {
+    "EntityResultTypeRankingOptions": [{ "MaxEntitySetCount": 1, "ResultType": "Answer" }],
+    "EnableEnrichedRanking": true,
+    "EnableLayoutHints": true,
+    "SupportedSerpRegions": ["MainLine"],
+    "SupportedRankingVersion": "V3"
+  },
+  "Context": {
+    "EntityContext": [
+      {
+        "@odata.type": "Microsoft.OutlookServices.Message",
+        "Id": "",
+        "ClientThreadId": "19:a2dae14c-c008-4117-88d7-49a13d0e235a_d0938f3c-ef54-45ab-a2c4-9095a7fcc5c1@unq.gbl.spaces"
+      }
+    ]
+  }
+}
