@@ -854,17 +854,22 @@ export interface PhaseExecuteDeps {
   now: () => Date;
 }
 
-const defaultExecuteDeps: PhaseExecuteDeps = {
-  ipcCall,
-  exec: (cmd: string[]): ExecResult => {
-    const [bin, ...rest] = cmd;
+export function spawnExec(cmd: string[]): ExecResult {
+  const [bin, ...rest] = cmd;
+  try {
     const r = Bun.spawnSync([bin, ...rest], { stdout: "pipe", stderr: "pipe" });
     // `exitCode` is null when the child was terminated by a signal (e.g. SIGKILL).
     // Surface that as a failure — `?? 0` previously masked signal-killed processes
     // as success and let the branch guard wave through a git that never ran.
-    const exitCode = r.exitCode ?? 1;
-    return { stdout: new TextDecoder().decode(r.stdout), exitCode };
-  },
+    return { stdout: new TextDecoder().decode(r.stdout), exitCode: r.exitCode ?? 1 };
+  } catch (error) {
+    return { stdout: error instanceof Error ? error.message : String(error), exitCode: 1 };
+  }
+}
+
+const defaultExecuteDeps: PhaseExecuteDeps = {
+  ipcCall,
+  exec: spawnExec,
   findGitRoot,
   now: () => new Date(),
 };
