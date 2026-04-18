@@ -20,6 +20,7 @@ import {
   validateManifest,
 } from "@mcp-cli/core";
 import {
+  type PhaseInstallDeps,
   buildPhaseList,
   buildPhaseShow,
   checkStateSubset,
@@ -556,16 +557,6 @@ describe("cmdPhase dispatch", () => {
     return { code: exitCode, out, err };
   }
 
-  async function withCwd<T>(newCwd: string, fn: () => Promise<T>): Promise<T> {
-    const prev = process.cwd();
-    process.chdir(newCwd);
-    try {
-      return await fn();
-    } finally {
-      process.chdir(prev);
-    }
-  }
-
   test("no args prints usage", async () => {
     const { out, code } = await catchExit(() => cmdPhase([]));
     expect(code).toBeUndefined();
@@ -578,7 +569,7 @@ describe("cmdPhase dispatch", () => {
   });
 
   test("list prints phases alphabetically", async () => {
-    const { out } = await withCwd(dir, () => catchExit(() => cmdPhase(["list"])));
+    const { out } = await catchExit(() => cmdPhase(["list"], { cwd: () => dir }));
     const lines = out.trim().split("\n");
     // skip header; remaining rows should be alphabetical by name
     const names = lines.slice(1).map((l) => l.split(/\s+/)[0]);
@@ -589,7 +580,7 @@ describe("cmdPhase dispatch", () => {
   test("list exits 1 when no manifest", async () => {
     const empty = mkdtempSync(join(tmpdir(), "mcx-phase-cmd-empty-"));
     try {
-      const { code, err } = await withCwd(empty, () => catchExit(() => cmdPhase(["list"])));
+      const { code, err } = await catchExit(() => cmdPhase(["list"], { cwd: () => empty }));
       expect(code).toBe(1);
       expect(err).toContain("no .mcx.yaml");
     } finally {
@@ -598,8 +589,8 @@ describe("cmdPhase dispatch", () => {
   });
 
   test("run --no-execute prints approval on valid transition", async () => {
-    const { err, code } = await withCwd(dir, () =>
-      catchExit(() => cmdPhase(["run", "qa", "--from", "impl", "--no-execute"])),
+    const { err, code } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--from", "impl", "--no-execute"], { cwd: () => dir }),
     );
     expect(code).toBeUndefined();
     expect(err).toContain("approved");
@@ -607,27 +598,27 @@ describe("cmdPhase dispatch", () => {
   });
 
   test("run --no-execute with --force tags output", async () => {
-    const { err } = await withCwd(dir, () =>
-      catchExit(() => cmdPhase(["run", "repair", "--from", "impl", "--force", "emergency", "--no-execute"])),
+    const { err } = await catchExit(() =>
+      cmdPhase(["run", "repair", "--from", "impl", "--force", "emergency", "--no-execute"], { cwd: () => dir }),
     );
     expect(err).toContain("[FORCED]");
   });
 
   test("run on unknown phase exits 1 with suggestions", async () => {
-    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qaa", "--from", "impl"])));
+    const { code, err } = await catchExit(() => cmdPhase(["run", "qaa", "--from", "impl"], { cwd: () => dir }));
     expect(code).toBe(1);
     expect(err).toContain("unknown phase");
     expect(err).toContain("qa");
   });
 
   test("run on disallowed transition exits 1", async () => {
-    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "repair", "--from", "impl"])));
+    const { code, err } = await catchExit(() => cmdPhase(["run", "repair", "--from", "impl"], { cwd: () => dir }));
     expect(code).toBe(1);
     expect(err).toContain("not an approved transition");
   });
 
   test("run with bad flag exits 1", async () => {
-    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--bogus"])));
+    const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--bogus"], { cwd: () => dir }));
     expect(code).toBe(1);
     expect(err).toContain("unknown flag");
   });
@@ -635,7 +626,7 @@ describe("cmdPhase dispatch", () => {
   test("run with no manifest exits 1", async () => {
     const empty = mkdtempSync(join(tmpdir(), "mcx-phase-cmd-empty2-"));
     try {
-      const { code, err } = await withCwd(empty, () => catchExit(() => cmdPhase(["run", "qa"])));
+      const { code, err } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => empty }));
       expect(code).toBe(1);
       // drift-check fires first; no-lockfile precedes no-manifest when both are absent
       expect(err).toContain("no .mcx.lock");
@@ -647,7 +638,7 @@ describe("cmdPhase dispatch", () => {
   test("run aborts with drift warning when phase source is tampered", async () => {
     // Mutate a phase source after install — drift check must block dispatch
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
-    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--from", "impl"])));
+    const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--from", "impl"], { cwd: () => dir }));
     expect(code).toBe(1);
     expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
     expect(err).toContain("qa.ts");
@@ -655,7 +646,7 @@ describe("cmdPhase dispatch", () => {
 
   test("run --dry-run aborts on drift before dispatch", async () => {
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
-    const { code, err } = await withCwd(dir, () => catchExit(() => cmdPhase(["run", "qa", "--dry-run"])));
+    const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--dry-run"], { cwd: () => dir }));
     expect(code).toBe(1);
     expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
   });
@@ -788,17 +779,10 @@ describe("cmdPhase show / why / list-json — integration", () => {
     }
   });
 
-  async function withCwd<T>(newCwd: string, fn: () => Promise<T>): Promise<T> {
-    const prev = process.cwd();
-    process.chdir(newCwd);
-    try {
-      return await fn();
-    } finally {
-      process.chdir(prev);
-    }
-  }
-
-  async function runCapture(args: string[]): Promise<{ code: number | undefined; out: string; err: string }> {
+  async function runCapture(
+    args: string[],
+    deps?: Partial<PhaseInstallDeps>,
+  ): Promise<{ code: number | undefined; out: string; err: string }> {
     const origExit = process.exit;
     const origLog = console.log;
     const origErr = console.error;
@@ -816,7 +800,7 @@ describe("cmdPhase show / why / list-json — integration", () => {
       err += `${a.join(" ")}\n`;
     };
     try {
-      await cmdPhase(args).catch((e) => {
+      await cmdPhase(args, deps).catch((e) => {
         if ((e as Error).message !== "__exit__") throw e;
       });
     } finally {
@@ -828,7 +812,7 @@ describe("cmdPhase show / why / list-json — integration", () => {
   }
 
   test("list renders table with NAME/SOURCE/STATUS/NEXT", async () => {
-    const { out } = await withCwd(dir, () => runCapture(["list"]));
+    const { out } = await runCapture(["list"], { cwd: () => dir });
     expect(out).toContain("NAME");
     expect(out).toContain("SOURCE");
     expect(out).toContain("STATUS");
@@ -838,7 +822,7 @@ describe("cmdPhase show / why / list-json — integration", () => {
   });
 
   test("list --json emits structured output", async () => {
-    const { out } = await withCwd(dir, () => runCapture(["list", "--json"]));
+    const { out } = await runCapture(["list", "--json"], { cwd: () => dir });
     const rows = JSON.parse(out);
     expect(Array.isArray(rows)).toBe(true);
     expect(rows[0]).toHaveProperty("name");
@@ -847,7 +831,7 @@ describe("cmdPhase show / why / list-json — integration", () => {
   });
 
   test("show prints phase details", async () => {
-    const { out, code } = await withCwd(dir, () => runCapture(["show", "impl"]));
+    const { out, code } = await runCapture(["show", "impl"], { cwd: () => dir });
     expect(code).toBeUndefined();
     expect(out).toContain("phase: impl");
     expect(out).toContain("source: ./impl.ts");
@@ -856,59 +840,59 @@ describe("cmdPhase show / why / list-json — integration", () => {
   });
 
   test("show on unknown phase exits 1 with suggestions", async () => {
-    const { code, err } = await withCwd(dir, () => runCapture(["show", "impll"]));
+    const { code, err } = await runCapture(["show", "impll"], { cwd: () => dir });
     expect(code).toBe(1);
     expect(err).toContain("unknown phase");
     expect(err).toContain("impl");
   });
 
   test("show --json returns JSON", async () => {
-    const { out } = await withCwd(dir, () => runCapture(["show", "impl", "--json"]));
+    const { out } = await runCapture(["show", "impl", "--json"], { cwd: () => dir });
     const info = JSON.parse(out);
     expect(info.name).toBe("impl");
     expect(info.next).toContain("qa");
   });
 
   test("show without name exits 1", async () => {
-    const { code, err } = await withCwd(dir, () => runCapture(["show"]));
+    const { code, err } = await runCapture(["show"], { cwd: () => dir });
     expect(code).toBe(1);
     expect(err).toContain("Usage:");
   });
 
   test("why reports direct transitions", async () => {
-    const { out, code } = await withCwd(dir, () => runCapture(["why", "impl", "qa"]));
+    const { out, code } = await runCapture(["why", "impl", "qa"], { cwd: () => dir });
     expect(code).toBeUndefined();
     expect(out).toContain("approved direct transition");
   });
 
   test("why reports indirect transitions", async () => {
-    const { out, code } = await withCwd(dir, () => runCapture(["why", "impl", "done"]));
+    const { out, code } = await runCapture(["why", "impl", "done"], { cwd: () => dir });
     expect(code).toBeUndefined();
     expect(out).toContain("shortest legal path");
     expect(out).toContain("qa");
   });
 
   test("why reports regression with exit 1", async () => {
-    const { out, code } = await withCwd(dir, () => runCapture(["why", "done", "impl"]));
+    const { out, code } = await runCapture(["why", "done", "impl"], { cwd: () => dir });
     expect(code).toBe(1);
     expect(out).toContain("regress");
   });
 
   test("why reports unknown phase with exit 1", async () => {
-    const { out, code } = await withCwd(dir, () => runCapture(["why", "impll", "qa"]));
+    const { out, code } = await runCapture(["why", "impll", "qa"], { cwd: () => dir });
     expect(code).toBe(1);
     expect(out).toContain("unknown phase");
   });
 
   test("why --json returns JSON", async () => {
-    const { out } = await withCwd(dir, () => runCapture(["why", "impl", "qa", "--json"]));
+    const { out } = await runCapture(["why", "impl", "qa", "--json"], { cwd: () => dir });
     const res = JSON.parse(out);
     expect(res.legal).toBe(true);
     expect(res.kind).toBe("direct");
   });
 
   test("why with wrong arity exits 1", async () => {
-    const { code, err } = await withCwd(dir, () => runCapture(["why", "impl"]));
+    const { code, err } = await runCapture(["why", "impl"], { cwd: () => dir });
     expect(code).toBe(1);
     expect(err).toContain("Usage:");
   });

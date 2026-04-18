@@ -136,7 +136,15 @@ const daemonWorkers = [
   "packages/daemon/src/claude-session-worker.ts",
   "packages/daemon/src/codex-session-worker.ts",
   "packages/daemon/src/mock-session-worker.ts",
+  "packages/daemon/src/site-worker.ts",
 ];
+
+// Packages excluded from bundling — resolved at runtime from node_modules.
+// playwright ships with a large optional-dep tree (electron, chromium-bidi, etc.)
+// that can't bundle cleanly; the site-worker loads it via dynamic import only
+// when a browser tool is actually invoked.
+const daemonExternal = ["playwright", "playwright-core", "electron", "chromium-bidi"];
+const externalFlags = daemonExternal.flatMap((p) => ["--external", p]);
 
 interface BinaryBuildConfig {
   entrypoint: string;
@@ -216,7 +224,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -235,7 +243,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);

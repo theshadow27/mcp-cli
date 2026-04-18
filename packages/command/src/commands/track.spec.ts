@@ -319,17 +319,14 @@ describe("formatWorkItemRow", () => {
   });
 
   describe("manifest integration", () => {
-    const origCwd = process.cwd();
     const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
     const { tmpdir } = require("node:os");
     const { join } = require("node:path");
 
-    function withManifestDir(manifestYaml: string, run: () => Promise<void>): Promise<void> {
+    function withManifestDir(manifestYaml: string, run: (dir: string) => Promise<void>): Promise<void> {
       const dir = mkdtempSync(join(tmpdir(), "mcx-track-manifest-"));
       writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
-      process.chdir(dir);
-      return run().finally(() => {
-        process.chdir(origCwd);
+      return run(dir).finally(() => {
         rmSync(dir, { recursive: true, force: true });
       });
     }
@@ -337,19 +334,22 @@ describe("formatWorkItemRow", () => {
     test("cmdTrack passes initialPhase from manifest", async () => {
       let captured: unknown;
       const item = makeWorkItem();
-      const deps = {
-        ...makeDeps({
-          trackWorkItem: (params: unknown) => {
-            captured = params;
-            return item;
-          },
-        }),
-        loadManifest: realManifestLoader,
-      };
 
       await withManifestDir(
         "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
-        () => cmdTrack(["1135"], deps),
+        (dir) => {
+          const deps = {
+            ...makeDeps({
+              trackWorkItem: (params: unknown) => {
+                captured = params;
+                return item;
+              },
+            }),
+            loadManifest: realManifestLoader,
+            cwd: () => dir,
+          };
+          return cmdTrack(["1135"], deps);
+        },
       );
       expect(captured).toEqual({ number: 1135, initialPhase: "plan" });
     });
@@ -359,7 +359,6 @@ describe("formatWorkItemRow", () => {
         makeWorkItem({ phase: "plan" as unknown as WorkItem["phase"] }),
         makeWorkItem({ id: "#2", phase: "impl" }),
       ];
-      const deps = { ...makeDeps({ listWorkItems: items }), loadManifest: realManifestLoader };
 
       const logs: string[] = [];
       const origLog = console.log;
@@ -367,7 +366,10 @@ describe("formatWorkItemRow", () => {
       try {
         await withManifestDir(
           "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
-          () => cmdTracked(["--json"], deps),
+          (dir) => {
+            const deps = { ...makeDeps({ listWorkItems: items }), loadManifest: realManifestLoader, cwd: () => dir };
+            return cmdTracked(["--json"], deps);
+          },
         );
       } finally {
         console.log = origLog;
@@ -379,22 +381,25 @@ describe("formatWorkItemRow", () => {
 
     test("cmdTracked --phase warns when phase is not declared, but still queries", async () => {
       let captured: unknown;
-      const deps = {
-        ...makeDeps({
-          listWorkItems: (params: unknown) => {
-            captured = params;
-            return [];
-          },
-        }),
-        loadManifest: realManifestLoader,
-      };
       const errs: string[] = [];
       const origErr = console.error;
       console.error = (msg: string) => errs.push(msg);
       try {
         await withManifestDir(
           "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
-          () => cmdTracked(["--phase", "impl"], deps),
+          (dir) => {
+            const deps = {
+              ...makeDeps({
+                listWorkItems: (params: unknown) => {
+                  captured = params;
+                  return [];
+                },
+              }),
+              loadManifest: realManifestLoader,
+              cwd: () => dir,
+            };
+            return cmdTracked(["--phase", "impl"], deps);
+          },
         );
       } finally {
         console.error = origErr;
