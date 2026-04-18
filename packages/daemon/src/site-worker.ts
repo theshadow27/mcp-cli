@@ -36,6 +36,7 @@ import { proxyCall } from "./site/proxy";
 import { resolve as resolveCall } from "./site/resolver";
 import { Sniffer } from "./site/sniffer";
 import { SITE_TOOLS, SITE_TOOL_NAMES } from "./site/tools";
+import { applyFetchFilter, applyJqInput, applyJqOutput } from "./site/transforms";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -213,17 +214,20 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
   let resolved: ReturnType<typeof resolveCall>;
   try {
     resolved = resolveCall(call, params, rawBody);
+    resolved = await applyJqInput(call, params, resolved);
+    resolved = applyFetchFilter(call, resolved);
   } catch (err) {
     return error(err instanceof Error ? err.message : String(err));
   }
 
   try {
-    const result = await proxyCall(vault, {
+    let result = await proxyCall(vault, {
       site: site.name,
       resolved,
       audHints: call.audHints,
       onWiggle: browser ? async () => void (await browser?.wiggle(site.name)) : undefined,
     });
+    result = await applyJqOutput(call, result);
     return ok(result);
   } catch (err) {
     return error(err instanceof Error ? err.message : String(err));
