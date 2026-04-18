@@ -1,0 +1,314 @@
+/**
+ * Playwright-backed BrowserEngine adapter.
+ *
+ * Launches a single persistent Chrome context with one tab per configured
+ * site. Requests, responses, and WebSocket frames are forwarded to
+ * BrowserEvents so the credential vault + sniffer can observe them.
+ *
+ * IMPORTANT: this file is only imported via dynamic `import()` inside the
+ * site-worker. Static imports would force every daemon startup to load
+ * Playwright's heavy binding module. See `../../site-worker.ts`.
+ */
+
+import { existsSync, mkdirSync } from "node:fs";
+import type {
+  BrowserContext,
+  Page,
+  Request as PwRequest,
+  Response as PwResponse,
+  WebSocket as PwWebSocket,
+} from "playwright";
+import { chromium } from "playwright";
+import type {
+  BrowserEngine,
+  BrowserEvents,
+  CapturedRequest,
+  CapturedResponse,
+  ColdStartResult,
+  SiteSpec,
+} from "./engine";
+
+function isTextual(contentType: string): boolean {
+  if (!contentType) return true;
+  return (
+    contentType.includes("json") ||
+    contentType.startsWith("text/") ||
+    contentType.includes("xml") ||
+    contentType.includes("javascript") ||
+    contentType.includes("form")
+  );
+}
+
+export class PlaywrightBrowserEngine implements BrowserEngine {
+  private context: BrowserContext | null = null;
+  private pages = new Map<string, Page>();
+  private siteSpecs = new Map<string, SiteSpec>();
+  /** Serializes browser calls to avoid cross-interleaved operations on the same page. */
+  private lock: Promise<unknown> = Promise.resolve();
+  private events: BrowserEvents = {};
+
+  async start(sites: SiteSpec[], events: BrowserEvents): Promise<void> {
+    if (this.context) return;
+    this.events = events;
+    for (const s of sites) this.siteSpecs.set(s.name, s);
+
+    if (sites.length === 0) throw new Error("PlaywrightBrowserEngine.start: at least one site is required");
+
+    // A single persistent Playwright context has exactly one user-data directory.
+    // Sites opened together must agree on profileDir; mixed profiles need separate start() calls.
+    const profileDirs = [...new Set(sites.map((s) => s.profileDir))];
+    if (profileDirs.length > 1) {
+      throw new Error(
+        `PlaywrightBrowserEngine.start: all sites opened together must share one profileDir. Got ${profileDirs.length}: ${profileDirs.join(", ")}`,
+      );
+    }
+    const profileDir = profileDirs[0];
+    mkdirSync(profileDir, { recursive: true });
+
+    const ctx = await chromium.launchPersistentContext(profileDir, {
+      channel: "chrome",
+      headless: false,
+      viewport: { width: 1280, height: 900 },
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+      ],
+    });
+    this.context = ctx;
+
+    const blockedPatterns: RegExp[] = [];
+    for (const s of sites) {
+      for (const proto of s.blockProtocols ?? []) {
+        // Normalize "msteams://" / "msteams:" → "msteams", then build a regex that
+        // matches both the colon-only and the colon-slash-slash forms.
+        const normalized = proto.replace(/:\/\/$/, "").replace(/:$/, "");
+        const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        blockedPatterns.push(new RegExp(`^${escaped}:(?:\\/\\/)?`));
+      }
+    }
+    if (blockedPatterns.length > 0) {
+      await ctx.route("**/*", async (route) => {
+        const url = route.request().url();
+        if (blockedPatterns.some((re) => re.test(url))) {
+          await route.abort();
+          return;
+        }
+        await route.continue();
+      });
+    }
+
+    const usedPages = new Set<Page>();
+    for (const s of sites) {
+      const page = ctx.pages().find((p) => !usedPages.has(p)) ?? (await ctx.newPage());
+      usedPages.add(page);
+      this.pages.set(s.name, page);
+
+      this.attachListeners(page, s.name);
+
+      try {
+        await page.goto(s.url, { waitUntil: "domcontentloaded" });
+      } catch {
+        // Navigation failures are non-fatal — the page is still useful for auth.
+      }
+    }
+  }
+
+  private attachListeners(page: Page, siteName: string): void {
+    page.on("request", (req: PwRequest) => {
+      try {
+        const captured: CapturedRequest = {
+          url: req.url(),
+          method: req.method(),
+          headers: req.headers(),
+          postData: req.postData() ?? null,
+          resourceType: req.resourceType(),
+        };
+        this.events.onRequest?.(siteName, captured);
+      } catch {
+        // Never let listener errors propagate into the page.
+      }
+    });
+
+    page.on("response", (resp: PwResponse) => {
+      void this.handleResponse(resp, siteName);
+    });
+
+    page.on("websocket", (ws: PwWebSocket) => {
+      const wsUrl = ws.url();
+      const forward = (direction: "tx" | "rx", payload: string | Buffer): void => {
+        try {
+          const payloadStr = typeof payload === "string" ? payload : payload.toString("utf-8");
+          const bytes = typeof payload === "string" ? Buffer.byteLength(payload) : payload.length;
+          this.events.onWsFrame?.(siteName, { wsUrl, direction, bytes, payload: payloadStr });
+        } catch {
+          // Ignore — capture is best-effort.
+        }
+      };
+      ws.on("framesent", (d) => forward("tx", d.payload));
+      ws.on("framereceived", (d) => forward("rx", d.payload));
+    });
+  }
+
+  private async handleResponse(resp: PwResponse, siteName: string): Promise<void> {
+    try {
+      const req = resp.request();
+      const headers = resp.headers();
+      const contentType = headers["content-type"] ?? "";
+      const textual = isTextual(contentType);
+
+      let bodyText: string | null = null;
+      let bodyBytes = 0;
+      try {
+        if (textual) {
+          const buf = await resp.body();
+          bodyBytes = buf.length;
+          bodyText = buf.toString("utf-8");
+        } else {
+          const buf = await resp.body().catch(() => Buffer.alloc(0));
+          bodyBytes = buf.length;
+        }
+      } catch {
+        // Body may be unavailable on redirects/cancelled requests — keep metadata.
+      }
+
+      const captured: CapturedResponse = {
+        url: resp.url(),
+        method: req.method(),
+        status: resp.status(),
+        contentType,
+        headers,
+        bodyBytes,
+        bodyText,
+        requestHeaders: req.headers(),
+        requestPostData: req.postData() ?? null,
+      };
+      this.events.onResponse?.(siteName, captured);
+    } catch {
+      // Never propagate capture errors.
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.context) return;
+    try {
+      await this.context.close();
+    } catch {
+      // Context may already be dead.
+    }
+    this.context = null;
+    this.pages.clear();
+    this.siteSpecs.clear();
+    this.events = {};
+  }
+
+  isRunning(): boolean {
+    return this.context !== null;
+  }
+
+  getSiteNames(): string[] {
+    return [...this.pages.keys()];
+  }
+
+  private async withPage<T>(site: string | undefined, fn: (page: Page) => Promise<T>): Promise<T> {
+    const prev = this.lock;
+    let release!: () => void;
+    this.lock = new Promise<void>((r) => {
+      release = r;
+    });
+    try {
+      await prev;
+      if (!this.context) throw new Error("Browser not started");
+      let page: Page | undefined;
+      if (site) page = this.pages.get(site);
+      if (!page) {
+        if (this.pages.size === 1) {
+          page = this.pages.values().next().value;
+        } else {
+          page = this.context.pages()[0] ?? (await this.context.newPage());
+        }
+      }
+      if (!page) throw new Error("No browser page available");
+      return await fn(page);
+    } finally {
+      release();
+    }
+  }
+
+  async coldStart(site?: string): Promise<ColdStartResult> {
+    const cleared: string[] = [];
+    await this.withPage(site, async (page) => {
+      const origin = new URL(page.url()).origin;
+      try {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Storage.clearDataForOrigin", {
+          origin,
+          storageTypes:
+            "appcache,cache_storage,file_systems,indexeddb,local_storage,service_workers,shader_cache,websql,cachestorage",
+        });
+        cleared.push(`storage-for-origin:${origin}`);
+      } catch {
+        // clearDataForOrigin is best-effort.
+      }
+      try {
+        await page.evaluate(() => {
+          try {
+            window.localStorage.clear();
+          } catch {
+            /* localStorage may be blocked by the page */
+          }
+          try {
+            window.sessionStorage.clear();
+          } catch {
+            /* sessionStorage may be blocked */
+          }
+        });
+        cleared.push("window-storage");
+      } catch {
+        // evaluate may fail mid-navigation.
+      }
+      try {
+        await page.reload({ waitUntil: "domcontentloaded" });
+      } catch {
+        // Reload is best-effort.
+      }
+    });
+    return { cleared, reloaded: true };
+  }
+
+  async wiggle(site?: string): Promise<string[]> {
+    const siteName = site ?? [...this.pages.keys()][0];
+    if (!siteName) return ["no-site"];
+
+    const spec = this.siteSpecs.get(siteName);
+    const wigglePath = spec?.wigglePath;
+    if (!wigglePath || !existsSync(wigglePath)) return ["no-wiggle-configured"];
+
+    // Fresh-require so edits to wiggle.js take effect without restarting the worker.
+    try {
+      delete require.cache[require.resolve(wigglePath)];
+    } catch {
+      // Non-CJS resolvers may not populate require.cache — that's fine.
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const wiggleFn = require(wigglePath) as (page: Page) => Promise<string[]>;
+    return this.withPage(site, (page) => wiggleFn(page));
+  }
+
+  async evalInPage(code: string, site?: string): Promise<unknown> {
+    return this.withPage(site, (page) => page.evaluate(code));
+  }
+
+  async getUrl(site?: string): Promise<string> {
+    return this.withPage(site, async (page) => page.url());
+  }
+
+  async getTitle(site?: string): Promise<string> {
+    return this.withPage(site, async (page) => page.title());
+  }
+
+  async getHtml(site?: string): Promise<string> {
+    return this.withPage(site, async (page) => page.content());
+  }
+}
