@@ -152,3 +152,24 @@ the pipeline internals and cleaning up the CI flakes that caused friction.
 
 v1.5.2 is the current release. #1412 is auto-merge armed and should land
 before sprint 37 starts.
+
+## Results
+
+- **Released**: v1.6.0 (minor bump — `mcx site` is a new top-level command group)
+- **Ran**: 2026-04-16 to 2026-04-18 (across multiple user-away gaps)
+- **PRs merged**: 14 total
+  - From plan: 13 of 18 planned (72%)
+  - Bonus contrib: #1454 (sites feature, 4253 additions, manually tested + zero-blocker audit)
+- **Issues closed**: 14 (#1419 #1422 #1433 #1435 #1424 #1404 #1442 #1443 #1350 #1408 #1409 #1430 #1452)
+- **Issues dropped**: 6
+  - #1400 — blocked by #1412 (still open issue, never PR'd)
+  - Batch 3 (#1367, #1397 stretch, #1344, #1385, #1416) — deferred due to pipeline bandwidth and to avoid scope creep; all reclaimed in sprint 38 plan
+- **New issues filed**: 6 during the run
+  - #1425 — three new recurrence comments (branch-switch-on-main, Edit-tool path escape, send-triggered re-escape)
+  - #1437 — impl.ts doesn't read model from sprint plan (all defaults to opus)
+  - #1441 — worktree containment enforcement feature (design)
+  - #1445 — phase-namespace state opacity (work_items_update can't write phase keys)
+  - #1465 — `mcx gc` bails on `acp_session_list` unreachable
+  - #1442 + #1443 (not filed during run but added to plan mid-sprint as containment hardening)
+- **Containment incidents**: #1425 recurred 3 times in single sprint (same worker session #4c271533, all recovered without data loss); drove the mid-sprint addition of #1442 + #1443
+- **Process notes**: phase-framework state decoupled from work_items (#1445) forced mostly-manual pipeline driving (gh + mcx claude send) for transitions. Auto-merge + single-pointer update-branch cascades worked well once adopted late in the sprint (see new memory `feedback_sprint_bulk_and_cascade.md`).
