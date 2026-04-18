@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GLOBAL_STATE_NAMESPACE, NO_REPO_ROOT, createAliasState } from "./alias-state";
+import { GLOBAL_STATE_NAMESPACE, NO_REPO_ROOT, createAliasState, createEphemeralState } from "./alias-state";
 import type { IpcMethod, IpcMethodResult } from "./ipc";
 
 type Call = { method: string; params: unknown };
@@ -99,5 +99,41 @@ describe("createAliasState", () => {
   test("exports stable sentinels", () => {
     expect(GLOBAL_STATE_NAMESPACE).toBe("__global__");
     expect(NO_REPO_ROOT).toBe("__none__");
+  });
+});
+
+describe("createEphemeralState", () => {
+  test("set then get round-trips in memory", async () => {
+    const s = createEphemeralState();
+    await s.set("k", { x: 1 });
+    expect(await s.get<{ x: number }>("k")).toEqual({ x: 1 });
+  });
+
+  test("get returns undefined for missing key", async () => {
+    const s = createEphemeralState();
+    expect(await s.get("missing")).toBeUndefined();
+  });
+
+  test("separate instances are isolated", async () => {
+    const a = createEphemeralState();
+    const b = createEphemeralState();
+    await a.set("k", "a-value");
+    await b.set("k", "b-value");
+    expect(await a.get<string>("k")).toBe("a-value");
+    expect(await b.get<string>("k")).toBe("b-value");
+  });
+
+  test("delete removes a key", async () => {
+    const s = createEphemeralState();
+    await s.set("k", 1);
+    await s.delete("k");
+    expect(await s.get("k")).toBeUndefined();
+  });
+
+  test("all returns every key", async () => {
+    const s = createEphemeralState();
+    await s.set("a", 1);
+    await s.set("b", 2);
+    expect(await s.all()).toEqual({ a: 1, b: 2 });
   });
 });
