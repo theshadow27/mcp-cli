@@ -60,8 +60,16 @@ defineAlias({
   }),
   fn: async (input, ctx) => {
     const work = ctx.workItem;
-    if (!work || work.prNumber == null || work.branch == null) {
-      throw new Error("phase-review requires a work item with prNumber and branch");
+    if (!work) {
+      throw new Error("phase-review requires a work item (got: null)");
+    }
+    const missing: string[] = [];
+    if (work.prNumber == null) missing.push("prNumber");
+    if (work.branch == null) missing.push("branch");
+    if (missing.length > 0) {
+      throw new Error(
+        `phase-review requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
+      );
     }
 
     const round = (await ctx.state.get<number>("review_round")) ?? 1;
