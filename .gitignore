@@ -19,3 +19,6 @@ test-timings.json
 
 # Phase runtime state (ephemeral per sprint)
 .mcx/
+
+# Sprint-active sentinel (pre-commit guard, #1443)
+.claude/sprints/.active

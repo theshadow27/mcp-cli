@@ -60,8 +60,9 @@ bun lint          # applies biome fixes (e.g. package.json array collapse)
 bun typecheck     # catches TS errors before the hook does
 
 # (c) Commit — capture the sha so we only tag if this actually succeeded
+# SPRINT_OVERRIDE=1 bypasses the sprint-active pre-commit guard (#1443).
 git add package.json
-git commit -m "release: vX.Y.Z"
+SPRINT_OVERRIDE=1 git commit -m "release: vX.Y.Z"
 RELEASE_SHA=$(git rev-parse HEAD)
 git log -1 --oneline "$RELEASE_SHA"   # verify it's the release commit
 
