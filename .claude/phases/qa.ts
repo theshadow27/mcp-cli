@@ -63,8 +63,17 @@ defineAlias({
   }),
   fn: async (input, ctx) => {
     const work = ctx.workItem;
-    if (!work || work.prNumber == null || work.branch == null || work.issueNumber == null) {
-      throw new Error("phase-qa requires a work item with issueNumber, branch, prNumber");
+    if (!work) {
+      throw new Error("phase-qa requires a work item (got: null)");
+    }
+    const missing: string[] = [];
+    if (work.issueNumber == null) missing.push("issueNumber");
+    if (work.branch == null) missing.push("branch");
+    if (work.prNumber == null) missing.push("prNumber");
+    if (missing.length > 0) {
+      throw new Error(
+        `phase-qa requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
+      );
     }
 
     const sessionId = await ctx.state.get<string>("qa_session_id");
