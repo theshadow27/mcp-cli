@@ -642,12 +642,22 @@ export class ClaudeWsServer {
       }
     }
 
+    const envOverrides: Record<string, string | undefined> = {};
+    if (traceparent) envOverrides.TRACEPARENT = traceparent;
+    // Pin GIT_DIR/GIT_WORK_TREE so the worker cannot escape its worktree via
+    // git even if cwd drifts. Only applies when a pre-created worktree is in
+    // use (both cwd and worktree name are set — see comment at --worktree flag
+    // above).
+    if (session.config.cwd && session.config.worktree) {
+      envOverrides.GIT_DIR = `${session.config.cwd}/.git`;
+      envOverrides.GIT_WORK_TREE = session.config.cwd;
+    }
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: "ignore",
       stderr: "pipe",
       stdin: "ignore",
-      env: traceparent ? { TRACEPARENT: traceparent } : undefined,
+      env: Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
     });
 
     session.pid = proc.pid;
