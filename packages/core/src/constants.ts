@@ -227,6 +227,9 @@ export const DAEMON_DEV_SCRIPT = "packages/daemon/src/main.ts";
 /** IPC timeout for prompt-like commands (claude send/wait, codex) that may take minutes (ms) */
 export const PROMPT_IPC_TIMEOUT_MS = 330_000;
 
+/** Default wait timeout in ms. Stays below the 5-minute prompt-cache TTL (299000ms cap). */
+export const DEFAULT_TIMEOUT_MS = 270_000;
+
 /**
  * Default WebSocket port for Claude Code SDK sessions (survives daemon restarts).
  * Chosen to be below Linux's ephemeral range (32768–60999) and above the

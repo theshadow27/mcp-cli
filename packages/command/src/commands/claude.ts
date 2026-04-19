@@ -8,6 +8,7 @@
 import { dirname, resolve } from "node:path";
 import {
   CLAUDE_SERVER_NAME,
+  DEFAULT_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   cleanupWorktree,
@@ -1415,7 +1416,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         if (Number.isNaN(timeout)) {
           error = "--timeout must be a number";
         } else if (timeout > 299_000) {
-          error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout 270000 (4:30) or loop with shorter waits.`;
+          error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout ${DEFAULT_TIMEOUT_MS} (4:30) or loop with shorter waits.`;
         }
       }
     } else if (arg === "--after") {
@@ -1566,7 +1567,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // without waiting for the orphaned claude_wait (daemon has its own timeout).
   let result: unknown;
   if (parsed.mailTo) {
-    const totalMs = parsed.timeout ?? 270_000;
+    const totalMs = parsed.timeout ?? DEFAULT_TIMEOUT_MS;
     const pollStart = Date.now();
     const mailPoll = pollMailUntil(d, parsed.mailTo, totalMs, pollStart);
     const winner = await Promise.race([
@@ -1838,7 +1839,7 @@ Options:
   --model, -m <name>         Model: opus, sonnet, haiku, or full ID (default: opus)
   --cwd <path>               Working directory for the session
   --wait                     Block until Claude produces a result
-  --timeout <ms>             Max wait time in ms (default: 270000, only with --wait)
+  --timeout <ms>             Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)
 
 Examples:
   mcx claude spawn --task "run the test suite and fix failures"
@@ -1882,7 +1883,7 @@ Spawn options:
   --resume <id>               Resume a previous session
   --allow <tools...>          Pre-approved tool patterns (default: Read Glob Grep Write Edit)
   --cwd <path>                Working directory for Claude
-  --timeout <ms>              Max wait time (default: 270000, only with --wait)
+  --timeout <ms>              Max wait time (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)
 
 Resume options:
   --fresh                     Use git-context prompt instead of conversation history
@@ -1890,7 +1891,7 @@ Resume options:
   --model, -m <name>          Model to use: opus, sonnet, haiku, or full ID
   --allow <tools...>          Pre-approved tool patterns
   --wait                      Block until Claude produces a result
-  --timeout <ms>              Max wait time (default: 270000, only with --wait)
+  --timeout <ms>              Max wait time (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)
 
 Send options:
   --wait                      Block until Claude produces a result
@@ -1900,7 +1901,7 @@ List/Wait options:
 
 Wait options:
   --after <seq>               Sequence cursor for race-free polling (from previous response)
-  --timeout, -t <ms>          Max wait time (default: 270000)
+  --timeout, -t <ms>          Max wait time (default: ${DEFAULT_TIMEOUT_MS})
 
 Approve/Deny options:
   --request-id, -r <id>       Specific request ID (auto-detects latest if omitted)

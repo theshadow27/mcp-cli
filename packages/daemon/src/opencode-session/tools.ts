@@ -5,6 +5,8 @@
  * and the main thread (tool cache for ServerPool).
  */
 
+import { DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+
 export const OPENCODE_TOOLS = [
   {
     name: "opencode_prompt",
@@ -36,7 +38,7 @@ export const OPENCODE_TOOLS = [
         },
         worktree: { type: "string", description: "Git worktree name for isolation" },
         repoRoot: { type: "string", description: "Repository root for worktree cleanup" },
-        timeout: { type: "number", description: "Max wait time in ms (default: 270000)" },
+        timeout: { type: "number", description: `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS})` },
         wait: { type: "boolean", description: "Block until result (default: false)" },
       },
       required: ["prompt"],
@@ -102,7 +104,7 @@ export const OPENCODE_TOOLS = [
       type: "object" as const,
       properties: {
         sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
-        timeout: { type: "number", description: "Max wait time in ms (default: 270000)" },
+        timeout: { type: "number", description: `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS})` },
         afterSeq: {
           type: "number",
           description: "Return events after this sequence number. Enables race-free polling.",
