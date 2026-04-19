@@ -988,10 +988,17 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const sessionPrefix = rest[0];
+
+  if (containmentReset && rest.length > 1) {
+    d.printError("mcx claude send --containment-reset takes no message argument");
+    d.exit(1);
+  }
+
   const message = containmentReset ? "/containment-reset" : rest.slice(1).join(" ").trim();
 
   if (!sessionPrefix || !message) {
-    d.printError("Usage: mcx claude send [--wait] [--containment-reset] <session-id> [message]");
+    d.printError("Usage: mcx claude send [--wait] <session-id> <message>");
+    d.printError("       mcx claude send --containment-reset <session-id>");
     d.exit(1);
   }
 

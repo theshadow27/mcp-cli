@@ -1626,7 +1626,6 @@ export class ClaudeWsServer {
       case "session:containment_reset":
         this.logger.info(`[_claude] Containment reset for session ${sessionId}: ${event.reason}`);
         try {
-          session.pendingImmediate = true;
           this.resolveEventWaiters(sessionId, {
             sessionId,
             event: event.type,
