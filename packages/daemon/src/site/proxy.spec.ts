@@ -65,6 +65,40 @@ describe("proxyCall", () => {
     expect(result.usedAud).toBe("https://b.example/");
   });
 
+  test("mergeHeaders: callHeaders content-type wins over credHeaders, injected bearer always wins over callHeaders Authorization", async () => {
+    const vault = new CredentialVault();
+    const token = makeJwt({ aud: "https://a.example/", iat: 100 });
+    vault.noteRequest("demo", authReq("https://a.example/v1", token));
+    const cred = vault.getAll("demo")[0];
+    if (!cred) throw new Error("no cred");
+    cred.headers["Content-Type"] = "application/octet-stream";
+
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = init?.headers;
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const resolved: ResolvedCall = {
+      url: "https://a.example/v1/upload",
+      method: "POST",
+      // Mixed-case content-type should win over cred; attacker-supplied Authorization must NOT win.
+      headers: { "Content-type": "text/plain", Authorization: "Bearer attacker-token" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await proxyCall(vault, { site: "demo", resolved });
+
+    const headerObj = capturedHeaders as Record<string, string>;
+    // Exactly one content-type key, from callHeaders (call wins over cred).
+    expect(Object.keys(headerObj).filter((k) => k.toLowerCase() === "content-type")).toHaveLength(1);
+    expect(headerObj["content-type"]).toBe("text/plain");
+    // Injected bearer always wins over any callHeaders Authorization.
+    expect(Object.keys(headerObj).filter((k) => k.toLowerCase() === "authorization")).toHaveLength(1);
+    expect(headerObj.authorization).toBe(`Bearer ${cred.bearer}`);
+  });
+
   test("throws when no credentials exist", async () => {
     const vault = new CredentialVault();
     const resolved: ResolvedCall = {

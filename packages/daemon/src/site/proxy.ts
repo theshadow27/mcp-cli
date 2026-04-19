@@ -31,14 +31,24 @@ export interface ProxyCallResult {
 
 const STRIP_HEADERS = new Set(["host", "content-length", "connection"]);
 
+function normalizeKeys(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) out[k.toLowerCase()] = v;
+  return out;
+}
+
 function mergeHeaders(
   credHeaders: Record<string, string>,
   bearer: string,
   callHeaders: Record<string, string>,
 ): Record<string, string> {
-  const merged: Record<string, string> = { ...credHeaders, authorization: `Bearer ${bearer}`, ...callHeaders };
+  const merged: Record<string, string> = {
+    ...normalizeKeys(credHeaders),
+    ...normalizeKeys(callHeaders),
+    authorization: `Bearer ${bearer}`,
+  };
   for (const k of Object.keys(merged)) {
-    if (STRIP_HEADERS.has(k.toLowerCase())) delete merged[k];
+    if (STRIP_HEADERS.has(k)) delete merged[k];
   }
   return merged;
 }
