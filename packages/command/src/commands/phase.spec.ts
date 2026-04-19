@@ -1170,7 +1170,7 @@ describe("formatTransitionLog", () => {
     const out = formatTransitionLog([
       { ts: "2026-01-01T00:00:00Z", workItemId: "#1", from: "impl", to: "qa", forceMessage: longMsg },
     ]);
-    const noteCell = out[1].slice(out[1].lastIndexOf("  ")).trim();
+    const noteCell = out[1].slice(out[0].indexOf("NOTE")).trim();
     expect(noteCell.length).toBeLessThanOrEqual(60);
     expect(noteCell.endsWith("…")).toBe(true);
   });
