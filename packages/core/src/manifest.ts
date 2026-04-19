@@ -262,18 +262,21 @@ export function detectCycles(manifest: Manifest): string[][] {
 
 /**
  * Returns true if the given phase is part of at least one cycle (i.e., it
- * can reach itself through one or more other phases).
+ * can reach itself, whether directly via a self-loop or through other phases).
  */
 export function isPhaseInCycle(manifest: Manifest, phase: string): boolean {
   const neighbors = manifest.phases[phase]?.next ?? [];
   const queue = [...neighbors];
   const seen = new Set<string>();
-  while (queue.length > 0) {
-    const node = queue.shift() as string;
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++];
     if (node === phase) return true;
     if (seen.has(node)) continue;
     seen.add(node);
-    queue.push(...(manifest.phases[node]?.next ?? []));
+    for (const next of manifest.phases[node]?.next ?? []) {
+      queue.push(next);
+    }
   }
   return false;
 }
