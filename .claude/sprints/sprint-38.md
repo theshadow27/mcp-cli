@@ -1,6 +1,6 @@
 # Sprint 38
 
-> Planned 2026-04-18. Started 2026-04-18 22:12 local. Target: 15 PRs.
+> Planned 2026-04-18. Started 2026-04-18 22:12 local. Ended 2026-04-19 00:38 local. Target: 15 PRs. Shipped: 15 (14 merged PRs + #1457 closed-as-implemented).
 
 ## Goal
 
