@@ -1164,6 +1164,24 @@ describe("formatTransitionLog", () => {
     expect(out[1]).toContain("impl → qa");
     expect(out[1]).toContain("FORCED: urgent");
   });
+
+  test("truncates NOTE column at 60 chars with ellipsis", () => {
+    const longMsg = "a".repeat(80);
+    const out = formatTransitionLog([
+      { ts: "2026-01-01T00:00:00Z", workItemId: "#1", from: "impl", to: "qa", forceMessage: longMsg },
+    ]);
+    const noteCell = out[1].slice(out[1].lastIndexOf("  ")).trim();
+    expect(noteCell.length).toBeLessThanOrEqual(60);
+    expect(noteCell.endsWith("…")).toBe(true);
+  });
+
+  test("does not truncate NOTE shorter than 60 chars", () => {
+    const out = formatTransitionLog([
+      { ts: "2026-01-01T00:00:00Z", workItemId: "#1", from: "impl", to: "qa", forceMessage: "short msg" },
+    ]);
+    expect(out[1]).toContain("FORCED: short msg");
+    expect(out[1]).not.toContain("…");
+  });
 });
 
 describe("cmdPhase log", () => {
