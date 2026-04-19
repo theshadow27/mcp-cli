@@ -24,6 +24,8 @@ export const LockedPhaseSchema = z
     contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     /** sha256 of the extracted output-schema JSON, or empty string if none. */
     schemaHash: z.string().regex(/^([a-f0-9]{64}|)$/),
+    /** ISO 8601 timestamp of when this phase was last installed. Optional for backward compat. */
+    installedAt: z.string().datetime().optional(),
   })
   .strict();
 export type LockedPhase = z.infer<typeof LockedPhaseSchema>;

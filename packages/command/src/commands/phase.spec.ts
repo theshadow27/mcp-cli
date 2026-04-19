@@ -160,6 +160,7 @@ describe("cmdPhase install — integration", () => {
     expect(lock.phases[0].resolvedPath).toBe("impl.ts");
     expect(lock.phases[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(lock.phases[0].schemaHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(lock.phases[0].installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     expect(logs.some((l) => l.includes("Installed 1 phase"))).toBe(true);
   }, 15_000);
 
@@ -804,6 +805,52 @@ describe("buildPhaseShow", () => {
     const full = buildPhaseShow("implement", m.phases.implement, m, null, dir, true);
     expect(full.preview.length).toBeGreaterThan(20);
     expect(full.previewTruncated).toBe(false);
+  });
+
+  test("reads installedAt from locked phase, not lockfile mtime", () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const m = loadTestManifest(simpleManifest);
+    const ts = "2024-01-15T10:30:00.000Z";
+    const lock = parseLockfile(
+      JSON.stringify({
+        version: 1,
+        manifestHash: "a".repeat(64),
+        phases: [
+          {
+            name: "implement",
+            resolvedPath: "impl.ts",
+            contentHash: "b".repeat(64),
+            schemaHash: "",
+            installedAt: ts,
+          },
+        ],
+      }),
+    );
+    const info = buildPhaseShow("implement", m.phases.implement, m, lock, dir, false);
+    expect(info.lastInstalled).toBe(ts);
+  });
+
+  test("returns null lastInstalled when locked phase has no installedAt", () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const m = loadTestManifest(simpleManifest);
+    const lock = parseLockfile(
+      JSON.stringify({
+        version: 1,
+        manifestHash: "a".repeat(64),
+        phases: [
+          {
+            name: "implement",
+            resolvedPath: "impl.ts",
+            contentHash: "b".repeat(64),
+            schemaHash: "",
+          },
+        ],
+      }),
+    );
+    const info = buildPhaseShow("implement", m.phases.implement, m, lock, dir, false);
+    expect(info.lastInstalled).toBeNull();
   });
 });
 

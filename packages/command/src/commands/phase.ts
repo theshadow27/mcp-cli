@@ -15,7 +15,7 @@
  *   - RegressionError
  */
 
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   type AliasContext,
@@ -204,6 +204,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
       resolvedPath: rel === "" ? "." : rel,
       contentHash,
       schemaHash,
+      installedAt: new Date().toISOString(),
     });
   }
 
@@ -1303,15 +1304,7 @@ export function buildPhaseShow(
   } catch {
     // unresolvable source (e.g. remote)
   }
-  let lastInstalled: string | null = null;
-  if (lock) {
-    try {
-      const st = statSync(resolvePath(cwd, LOCKFILE_NAME));
-      lastInstalled = st.mtime.toISOString();
-    } catch {
-      // ignore
-    }
-  }
+  const lastInstalled = locked?.installedAt ?? null;
   return {
     name,
     source: phase.source,
