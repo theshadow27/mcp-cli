@@ -44,8 +44,8 @@ function mergeHeaders(
 ): Record<string, string> {
   const merged: Record<string, string> = {
     ...normalizeKeys(credHeaders),
-    authorization: `Bearer ${bearer}`,
     ...normalizeKeys(callHeaders),
+    authorization: `Bearer ${bearer}`,
   };
   for (const k of Object.keys(merged)) {
     if (STRIP_HEADERS.has(k)) delete merged[k];
