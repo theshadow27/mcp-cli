@@ -65,6 +65,36 @@ describe("proxyCall", () => {
     expect(result.usedAud).toBe("https://b.example/");
   });
 
+  test("mergeHeaders deduplicates headers that differ only in case, with call headers winning", async () => {
+    const vault = new CredentialVault();
+    const token = makeJwt({ aud: "https://a.example/", iat: 100 });
+    vault.noteRequest("demo", authReq("https://a.example/v1", token));
+    const cred = vault.getAll("demo")[0];
+    if (!cred) throw new Error("no cred");
+    cred.headers["content-type"] = "application/octet-stream";
+
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = init?.headers;
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const resolved: ResolvedCall = {
+      url: "https://a.example/v1/upload",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await proxyCall(vault, { site: "demo", resolved });
+
+    const headerObj = capturedHeaders as Record<string, string>;
+    const keys = Object.keys(headerObj);
+    expect(keys.filter((k) => k.toLowerCase() === "content-type")).toHaveLength(1);
+    expect(headerObj["content-type"]).toBe("application/json");
+  });
+
   test("throws when no credentials exist", async () => {
     const vault = new CredentialVault();
     const resolved: ResolvedCall = {
