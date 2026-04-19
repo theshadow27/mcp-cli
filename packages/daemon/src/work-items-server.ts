@@ -14,22 +14,16 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { WorkItemDb } from "./db/work-items";
 
-const WORK_ITEMS_UPDATE_KNOWN_KEYS = new Set([
-  "id",
-  "phase",
-  "repoRoot",
-  "force",
-  "forceReason",
-  "prNumber",
-  "prState",
-  "prUrl",
-  "ciStatus",
-  "ciRunId",
-  "ciSummary",
-  "reviewStatus",
-  "branch",
-  "issueNumber",
-]);
+/** Derived from the work_items_update inputSchema — single source of truth. */
+let _updateKnownKeys: ReadonlySet<string> | null = null;
+function updateKnownKeys(): ReadonlySet<string> {
+  if (!_updateKnownKeys) {
+    const updateTool = TOOLS.find((t) => t.name === "work_items_update");
+    if (!updateTool) throw new Error("work_items_update tool definition missing");
+    _updateKnownKeys = new Set(Object.keys(updateTool.inputSchema.properties));
+  }
+  return _updateKnownKeys;
+}
 
 /** Parse a value to integer, returning undefined if absent or NaN. */
 function parseIntOrUndefined(value: unknown): number | undefined {
@@ -309,13 +303,20 @@ export class WorkItemsServer {
               return { content: [{ type: "text" as const, text: "id is required" }], isError: true };
             }
 
-            const unknownKeys = Object.keys(a).filter((k) => !WORK_ITEMS_UPDATE_KNOWN_KEYS.has(k));
+            const known = updateKnownKeys();
+            const unknownKeys = Object.keys(a)
+              .filter((k) => !known.has(k))
+              .sort();
             if (unknownKeys.length > 0) {
+              const accepted = [...known]
+                .filter((k) => k !== "id")
+                .sort()
+                .join(", ");
               return {
                 content: [
                   {
                     type: "text" as const,
-                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts work-item columns (${[...WORK_ITEMS_UPDATE_KNOWN_KEYS].filter((k) => k !== "id").join(", ")}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase handler ctx.state to read/write it.`,
+                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts known keys (${accepted}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase handler ctx.state to read/write it.`,
                   },
                 ],
                 isError: true,
