@@ -15,7 +15,7 @@
  */
 
 import { resolve } from "node:path";
-import { type AgentSessionEvent, MOCK_SERVER_NAME } from "@mcp-cli/core";
+import { type AgentSessionEvent, DEFAULT_TIMEOUT_MS, MOCK_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { MOCK_TOOLS } from "./mock-session/tools";
@@ -374,7 +374,7 @@ function handleTranscript(args: Record<string, unknown>): ToolResult {
 
 async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
   const sessionId = args.sessionId as string | undefined;
-  const timeoutMs = (args.timeout as number) ?? 270_000;
+  const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
 
   // afterSeq cursor: check buffer first, then block
