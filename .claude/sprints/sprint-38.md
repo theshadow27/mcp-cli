@@ -156,3 +156,14 @@ tool calls, not covered by either landed fix. #1441 is the real answer.
 Orchestrator-DX findings during sprint 37 drove #1437, #1445, #1465.
 Fixing these makes sprint 38 (and every subsequent sprint) cheaper to
 drive, regardless of the containment work.
+
+## Results
+
+- **Released**: v1.6.1
+- **PRs merged**: 14
+- **Issues closed**: 15 (14 via PR + #1457 closed as already-implemented)
+- **Issues dropped**: 0
+- **New issues filed**: 6 — #1475 (Bash-write architectural follow-up), #1479 (meta: /repair slash doesn't exist), #1480/#1481/#1482 (containment follow-ups: cwd resolve, symlink, escalation recovery), #1488 (P0: worker worktree escape regressed twice during sprint)
+- **Plus** #1486 (user-authored mid-sprint): `mcx monitor` streaming event bus — proposed as sprint 39 anchor
+- **Merge strategy change**: dropped `strict_required_status_checks_policy` mid-sprint on ruleset 13509324 — 11-PR tail cluster merged in minutes instead of ~77 min serialized rebase
+- **Wall time**: 2h26m (22:12 → 00:38 local)
