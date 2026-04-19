@@ -2,13 +2,59 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
 import { WorkItemDb } from "./db/work-items";
-import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
+import { type PhaseStateStore, WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
 
 function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
   const raw = new Database(":memory:");
   raw.exec("PRAGMA journal_mode = WAL");
   const db = new WorkItemDb(raw);
   return { db, raw };
+}
+
+function createPhaseStateStore(raw: Database): PhaseStateStore {
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS alias_state (
+      repo_root TEXT NOT NULL,
+      namespace TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (repo_root, namespace, key)
+    )
+  `);
+  return {
+    getAliasState(repoRoot: string, namespace: string, key: string): unknown {
+      const row = raw
+        .query<{ value_json: string }, [string, string, string]>(
+          "SELECT value_json FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?",
+        )
+        .get(repoRoot, namespace, key);
+      if (!row) return undefined;
+      return JSON.parse(row.value_json);
+    },
+    setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
+      const json = JSON.stringify(value);
+      raw.run(
+        `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
+         VALUES (?, ?, ?, ?, unixepoch())
+         ON CONFLICT(repo_root, namespace, key) DO UPDATE SET
+           value_json = excluded.value_json, updated_at = excluded.updated_at`,
+        [repoRoot, namespace, key, json],
+      );
+    },
+    listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
+      const rows = raw
+        .query<{ key: string; value_json: string }, [string, string]>(
+          "SELECT key, value_json FROM alias_state WHERE repo_root = ? AND namespace = ?",
+        )
+        .all(repoRoot, namespace);
+      const out: Record<string, unknown> = {};
+      for (const row of rows) {
+        out[row.key] = JSON.parse(row.value_json);
+      }
+      return out;
+    },
+  };
 }
 
 describe("WORK_ITEMS_SERVER_NAME", () => {
@@ -18,14 +64,17 @@ describe("WORK_ITEMS_SERVER_NAME", () => {
 });
 
 describe("buildWorkItemsToolCache", () => {
-  test("returns all 5 tools", () => {
+  test("returns all 8 tools", () => {
     const cache = buildWorkItemsToolCache();
-    expect(cache.size).toBe(5);
+    expect(cache.size).toBe(8);
     expect(cache.has("work_items_track")).toBe(true);
     expect(cache.has("work_items_untrack")).toBe(true);
     expect(cache.has("work_items_list")).toBe(true);
     expect(cache.has("work_items_get")).toBe(true);
     expect(cache.has("work_items_update")).toBe(true);
+    expect(cache.has("phase_state_get")).toBe(true);
+    expect(cache.has("phase_state_set")).toBe(true);
+    expect(cache.has("phase_state_list")).toBe(true);
   });
 
   test("each tool has correct server name", () => {
@@ -47,7 +96,7 @@ describe("WorkItemsServer", () => {
     rawDb = undefined;
   });
 
-  test("start() connects and listTools returns 5 tools", async () => {
+  test("start() connects and listTools returns 8 tools", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -55,7 +104,7 @@ describe("WorkItemsServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(8);
     const names = tools.map((t) => t.name);
     expect(names).toContain("work_items_track");
     expect(names).toContain("work_items_untrack");
@@ -938,5 +987,174 @@ describe("WorkItemsServer", () => {
     const item = JSON.parse(content[0].text);
     expect(item.branch).toBe("explicit/branch");
     expect(resolverCalled).toBe(false);
+  });
+});
+
+describe("phase_state tools", () => {
+  let server: WorkItemsServer | undefined;
+  let rawDb: Database | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    rawDb?.close();
+    server = undefined;
+    rawDb = undefined;
+  });
+
+  test("phase_state_set and phase_state_get round-trip a value", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
+
+    const setResult = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id", value: "abc-123" },
+    });
+    expect(setResult.isError).toBeFalsy();
+    const setBody = JSON.parse((setResult.content as Array<{ text: string }>)[0].text);
+    expect(setBody.ok).toBe(true);
+    expect(setBody.phase).toBe("impl");
+
+    const getResult = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id" },
+    });
+    expect(getResult.isError).toBeFalsy();
+    const getBody = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
+    expect(getBody.value).toBe("abc-123");
+    expect(getBody.phase).toBe("impl");
+  });
+
+  test("phase_state_get returns undefined for missing key", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "nonexistent" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.value).toBeUndefined();
+  });
+
+  test("phase_state_list returns all keys for the phase", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo", key: "session_id", value: "s1" },
+    });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo", key: "worktree", value: "/tmp/wt" },
+    });
+
+    const result = await client.callTool({
+      name: "phase_state_list",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.count).toBe(2);
+    expect(body.entries.session_id).toBe("s1");
+    expect(body.entries.worktree).toBe("/tmp/wt");
+    expect(body.phase).toBe("impl");
+  });
+
+  test("phase override reads from a different phase namespace", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 4 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id", value: "review-sess", phase: "review" },
+    });
+
+    const defaultResult = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id" },
+    });
+    const defaultBody = JSON.parse((defaultResult.content as Array<{ text: string }>)[0].text);
+    expect(defaultBody.value).toBeUndefined();
+
+    const overrideResult = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id", phase: "review" },
+    });
+    const overrideBody = JSON.parse((overrideResult.content as Array<{ text: string }>)[0].text);
+    expect(overrideBody.value).toBe("review-sess");
+    expect(overrideBody.phase).toBe("review");
+  });
+
+  test("phase_state_get errors for nonexistent work item", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:999", repoRoot: "/repo", key: "x" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("Work item not found");
+  });
+
+  test("phase_state tools error when no stateDb configured", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 5 } });
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:5", repoRoot: "/repo", key: "x" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("not available");
+  });
+
+  test("phase_state_set rejects undefined value", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 6 } });
+
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:6", repoRoot: "/repo", key: "k" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("value is required");
   });
 });
