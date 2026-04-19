@@ -11,6 +11,8 @@ function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
   return { db, raw };
 }
 
+const ALIAS_STATE_MAX_VALUE_BYTES = 256 * 1024;
+
 function createPhaseStateStore(raw: Database): PhaseStateStore {
   raw.exec(`
     CREATE TABLE IF NOT EXISTS alias_state (
@@ -30,10 +32,23 @@ function createPhaseStateStore(raw: Database): PhaseStateStore {
         )
         .get(repoRoot, namespace, key);
       if (!row) return undefined;
-      return JSON.parse(row.value_json);
+      try {
+        return JSON.parse(row.value_json);
+      } catch {
+        return undefined;
+      }
     },
     setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
+      if (value === undefined) {
+        throw new Error("alias state value cannot be undefined; use delete(key) to remove a key");
+      }
       const json = JSON.stringify(value);
+      if (json === undefined) {
+        throw new Error("alias state value is not JSON-serialisable");
+      }
+      if (Buffer.byteLength(json, "utf-8") > ALIAS_STATE_MAX_VALUE_BYTES) {
+        throw new Error(`alias state value exceeds max size of ${ALIAS_STATE_MAX_VALUE_BYTES} bytes`);
+      }
       raw.run(
         `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
          VALUES (?, ?, ?, ?, unixepoch())
@@ -41,6 +56,14 @@ function createPhaseStateStore(raw: Database): PhaseStateStore {
            value_json = excluded.value_json, updated_at = excluded.updated_at`,
         [repoRoot, namespace, key, json],
       );
+    },
+    deleteAliasState(repoRoot: string, namespace: string, key: string): boolean {
+      const result = raw.run("DELETE FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?", [
+        repoRoot,
+        namespace,
+        key,
+      ]);
+      return result.changes > 0;
     },
     listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
       const rows = raw
@@ -50,7 +73,11 @@ function createPhaseStateStore(raw: Database): PhaseStateStore {
         .all(repoRoot, namespace);
       const out: Record<string, unknown> = {};
       for (const row of rows) {
-        out[row.key] = JSON.parse(row.value_json);
+        try {
+          out[row.key] = JSON.parse(row.value_json);
+        } catch {
+          // match StateDb: silently drop unparseable rows
+        }
       }
       return out;
     },
@@ -64,9 +91,9 @@ describe("WORK_ITEMS_SERVER_NAME", () => {
 });
 
 describe("buildWorkItemsToolCache", () => {
-  test("returns all 8 tools", () => {
+  test("returns all 9 tools", () => {
     const cache = buildWorkItemsToolCache();
-    expect(cache.size).toBe(8);
+    expect(cache.size).toBe(9);
     expect(cache.has("work_items_track")).toBe(true);
     expect(cache.has("work_items_untrack")).toBe(true);
     expect(cache.has("work_items_list")).toBe(true);
@@ -74,6 +101,7 @@ describe("buildWorkItemsToolCache", () => {
     expect(cache.has("work_items_update")).toBe(true);
     expect(cache.has("phase_state_get")).toBe(true);
     expect(cache.has("phase_state_set")).toBe(true);
+    expect(cache.has("phase_state_delete")).toBe(true);
     expect(cache.has("phase_state_list")).toBe(true);
   });
 
@@ -96,7 +124,7 @@ describe("WorkItemsServer", () => {
     rawDb = undefined;
   });
 
-  test("start() connects and listTools returns 8 tools", async () => {
+  test("start() connects and listTools returns 9 tools", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -104,7 +132,7 @@ describe("WorkItemsServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
     expect(names).toContain("work_items_track");
     expect(names).toContain("work_items_untrack");
@@ -1017,7 +1045,6 @@ describe("phase_state tools", () => {
     expect(setResult.isError).toBeFalsy();
     const setBody = JSON.parse((setResult.content as Array<{ text: string }>)[0].text);
     expect(setBody.ok).toBe(true);
-    expect(setBody.phase).toBe("impl");
 
     const getResult = await client.callTool({
       name: "phase_state_get",
@@ -1026,7 +1053,56 @@ describe("phase_state tools", () => {
     expect(getResult.isError).toBeFalsy();
     const getBody = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
     expect(getBody.value).toBe("abc-123");
-    expect(getBody.phase).toBe("impl");
+  });
+
+  test("namespace uses workitem:{id} — matches ctx.state in phase handlers", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 10 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:10", repoRoot: "/repo", key: "session_id", value: "s10" },
+    });
+
+    const row = raw.query<{ namespace: string }, []>("SELECT namespace FROM alias_state LIMIT 1").get();
+    expect(row?.namespace).toBe("workitem:issue:10");
+  });
+
+  test("parallel work items are isolated — no cross-contamination", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id", value: "sess-1" },
+    });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "session_id", value: "sess-2" },
+    });
+
+    const get1 = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id" },
+    });
+    const get2 = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "session_id" },
+    });
+
+    expect(JSON.parse((get1.content as Array<{ text: string }>)[0].text).value).toBe("sess-1");
+    expect(JSON.parse((get2.content as Array<{ text: string }>)[0].text).value).toBe("sess-2");
   });
 
   test("phase_state_get returns undefined for missing key", async () => {
@@ -1047,7 +1123,7 @@ describe("phase_state tools", () => {
     expect(body.value).toBeUndefined();
   });
 
-  test("phase_state_list returns all keys for the phase", async () => {
+  test("phase_state_list returns all keys for the work item", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     const stateDb = createPhaseStateStore(raw);
@@ -1074,37 +1150,54 @@ describe("phase_state tools", () => {
     expect(body.count).toBe(2);
     expect(body.entries.session_id).toBe("s1");
     expect(body.entries.worktree).toBe("/tmp/wt");
-    expect(body.phase).toBe("impl");
   });
 
-  test("phase override reads from a different phase namespace", async () => {
+  test("phase_state_delete removes a key", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     const stateDb = createPhaseStateStore(raw);
     server = new WorkItemsServer(db, { stateDb });
     const { client } = await server.start();
 
-    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 4 } });
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 7 } });
 
     await client.callTool({
       name: "phase_state_set",
-      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id", value: "review-sess", phase: "review" },
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id", value: "to-delete" },
     });
 
-    const defaultResult = await client.callTool({
-      name: "phase_state_get",
-      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id" },
+    const delResult = await client.callTool({
+      name: "phase_state_delete",
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id" },
     });
-    const defaultBody = JSON.parse((defaultResult.content as Array<{ text: string }>)[0].text);
-    expect(defaultBody.value).toBeUndefined();
+    expect(delResult.isError).toBeFalsy();
+    const delBody = JSON.parse((delResult.content as Array<{ text: string }>)[0].text);
+    expect(delBody.deleted).toBe(true);
 
-    const overrideResult = await client.callTool({
+    const getResult = await client.callTool({
       name: "phase_state_get",
-      arguments: { workItemId: "issue:4", repoRoot: "/repo", key: "session_id", phase: "review" },
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id" },
     });
-    const overrideBody = JSON.parse((overrideResult.content as Array<{ text: string }>)[0].text);
-    expect(overrideBody.value).toBe("review-sess");
-    expect(overrideBody.phase).toBe("review");
+    const getBody = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
+    expect(getBody.value).toBeUndefined();
+  });
+
+  test("phase_state_delete returns false for nonexistent key", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 8 } });
+
+    const result = await client.callTool({
+      name: "phase_state_delete",
+      arguments: { workItemId: "issue:8", repoRoot: "/repo", key: "nope" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.deleted).toBe(false);
   });
 
   test("phase_state_get errors for nonexistent work item", async () => {
@@ -1131,13 +1224,15 @@ describe("phase_state tools", () => {
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 5 } });
 
-    const result = await client.callTool({
-      name: "phase_state_get",
-      arguments: { workItemId: "issue:5", repoRoot: "/repo", key: "x" },
-    });
-    expect(result.isError).toBe(true);
-    const text = (result.content as Array<{ text: string }>)[0].text;
-    expect(text).toContain("not available");
+    for (const toolName of ["phase_state_get", "phase_state_set", "phase_state_delete", "phase_state_list"] as const) {
+      const result = await client.callTool({
+        name: toolName,
+        arguments: { workItemId: "issue:5", repoRoot: "/repo", key: "x", value: "v" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("not available");
+    }
   });
 
   test("phase_state_set rejects undefined value", async () => {
@@ -1156,5 +1251,24 @@ describe("phase_state tools", () => {
     expect(result.isError).toBe(true);
     const text = (result.content as Array<{ text: string }>)[0].text;
     expect(text).toContain("value is required");
+  });
+
+  test("phase_state_set surfaces StateDb errors as isError response", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const stateDb = createPhaseStateStore(raw);
+    server = new WorkItemsServer(db, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 9 } });
+
+    const bigValue = "x".repeat(300 * 1024);
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:9", repoRoot: "/repo", key: "big", value: bigValue },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("exceeds max size");
   });
 });
