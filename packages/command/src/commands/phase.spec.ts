@@ -1213,6 +1213,24 @@ describe("cmdPhase log", () => {
     expect(first.ts).toBe("t2");
     expect(first.forceMessage).toBe("x");
   });
+
+  test("--json + --work-item filters by work item and emits JSONL", async () => {
+    const log = transitionLogPath(dir);
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+    appendTransitionLog(log, { ts: "t2", workItemId: "#2", from: null, to: "impl" });
+    appendTransitionLog(log, { ts: "t3", workItemId: "#1", from: "impl", to: "qa", forceMessage: "retry" });
+    appendTransitionLog(log, { ts: "t4", workItemId: "#2", from: "impl", to: "qa" });
+    const { deps, logs } = makeDriftDeps(dir);
+    await cmdPhase(["log", "--json", "--work-item", "#1"], deps);
+    expect(logs.length).toBe(2);
+    const entries = logs.map((l) => JSON.parse(l));
+    expect(entries[0].ts).toBe("t3");
+    expect(entries[0].workItemId).toBe("#1");
+    expect(entries[0].forceMessage).toBe("retry");
+    expect(entries[1].ts).toBe("t1");
+    expect(entries[1].workItemId).toBe("#1");
+    expect(entries.every((e) => e.workItemId === "#1")).toBe(true);
+  });
 });
 
 describe("cmdPhase check", () => {
