@@ -1,4 +1,4 @@
-// Worktree containment enforcement — see #1441 for design rationale.
+// Worktree containment enforcement — see #1441 for design.
 
 import { resolve } from "node:path";
 
@@ -73,40 +73,37 @@ function extractGitSubcommand(command: string): string | null {
 }
 
 function bashTargetsOutsidePath(command: string, worktreeRoot: string): boolean {
-  const outsideWorktree = (p: string) => {
-    const t = resolve(p);
-    return !t.startsWith(`${worktreeRoot}/`) && t !== worktreeRoot;
-  };
+  const outside = (p: string) => isPathOutside(p, worktreeRoot);
 
   // git -C <path>
   const gitCMatch = command.match(/\bgit\s+-C\s+(\S+)/);
-  if (gitCMatch?.[1] && outsideWorktree(gitCMatch[1])) return true;
+  if (gitCMatch?.[1] && outside(gitCMatch[1])) return true;
 
   // git --work-tree=<path> or git --work-tree <path>
   const wtEqMatch = command.match(/--work-tree=(\S+)/);
-  if (wtEqMatch?.[1] && outsideWorktree(wtEqMatch[1])) return true;
+  if (wtEqMatch?.[1] && outside(wtEqMatch[1])) return true;
   const wtSpaceMatch = command.match(/--work-tree\s+(\S+)/);
-  if (wtSpaceMatch?.[1] && !wtSpaceMatch[1].startsWith("-") && outsideWorktree(wtSpaceMatch[1])) return true;
+  if (wtSpaceMatch?.[1] && !wtSpaceMatch[1].startsWith("-") && outside(wtSpaceMatch[1])) return true;
 
   // git --git-dir=<path> or git --git-dir <path>
   const gdEqMatch = command.match(/--git-dir=(\S+)/);
-  if (gdEqMatch?.[1] && outsideWorktree(gdEqMatch[1])) return true;
+  if (gdEqMatch?.[1] && outside(gdEqMatch[1])) return true;
   const gdSpaceMatch = command.match(/--git-dir\s+(\S+)/);
-  if (gdSpaceMatch?.[1] && !gdSpaceMatch[1].startsWith("-") && outsideWorktree(gdSpaceMatch[1])) return true;
+  if (gdSpaceMatch?.[1] && !gdSpaceMatch[1].startsWith("-") && outside(gdSpaceMatch[1])) return true;
 
   // GIT_DIR=<path> or GIT_WORK_TREE=<path> env var prefixes
   const envDirMatch = command.match(/\bGIT_DIR=(\S+)/);
-  if (envDirMatch?.[1] && outsideWorktree(envDirMatch[1])) return true;
+  if (envDirMatch?.[1] && outside(envDirMatch[1])) return true;
   const envWtMatch = command.match(/\bGIT_WORK_TREE=(\S+)/);
-  if (envWtMatch?.[1] && outsideWorktree(envWtMatch[1])) return true;
+  if (envWtMatch?.[1] && outside(envWtMatch[1])) return true;
 
   // cd / pushd <path> followed by a command separator
   const cdMatch = command.match(/\b(?:cd|pushd)\s+(\S+)\s*[;&|)]/);
-  if (cdMatch?.[1] && outsideWorktree(cdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
+  if (cdMatch?.[1] && outside(cdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
 
   // bash -c "cd <path> && ..." or subshell (cd <path> && ...)
   const subshellCdMatch = command.match(/(?:bash\s+-c\s+["']|[(])\s*cd\s+(\S+)/);
-  if (subshellCdMatch?.[1] && outsideWorktree(subshellCdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
+  if (subshellCdMatch?.[1] && outside(subshellCdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
 
   return false;
 }

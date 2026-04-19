@@ -216,6 +216,7 @@ export interface SessionWaitEvent {
   errors?: string[];
   requestId?: string;
   toolName?: string;
+  strikes?: number;
   /** Full session snapshot at the time of the event (same fields as claude_session_list). */
   session?: SessionInfo;
 }
@@ -1554,6 +1555,7 @@ export class ClaudeWsServer {
             event: event.type,
             toolName: event.toolName,
             result: event.reason,
+            strikes: event.strikes,
           });
         } catch (err) {
           logErr("resolveEventWaiters failed", err);

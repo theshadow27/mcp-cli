@@ -159,6 +159,19 @@ describe("ContainmentGuard — file writes outside worktree", () => {
     expect(r.action).toBe("allow");
     expect(r.strikes).toBe(0);
   });
+
+  test("allows Write to //private/tmp (double-slash normalized by resolve)", () => {
+    const g = guard();
+    const r = g.evaluate("Write", { file_path: "//private/tmp/test.json" });
+    expect(r.action).toBe("allow");
+    expect(r.strikes).toBe(0);
+  });
+
+  test("allows shell redirect to //tmp (double-slash normalized)", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: 'echo "x" > //tmp/scratch.txt' });
+    expect(r.action).toBe("allow");
+  });
 });
 
 // ── Read outside worktree (warn only) ──
