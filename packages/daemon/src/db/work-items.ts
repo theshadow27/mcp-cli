@@ -309,6 +309,7 @@ export class WorkItemDb {
   }
 
   deleteWorkItem(id: string): boolean {
+    this.db.query("DELETE FROM work_item_transitions WHERE work_item_id = ?").run(id);
     this.db.query("DELETE FROM work_items WHERE id = ?").run(id);
     return (this.db.query<{ c: number }, []>("SELECT changes() as c").get()?.c ?? 0) > 0;
   }
