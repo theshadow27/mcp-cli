@@ -71,13 +71,26 @@ describe("parseRemoteUrl", () => {
 
 describe("runGitRemoteHelper", () => {
   let gitDir: string;
+  let savedGitEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     gitDir = mkdtempSync(join(tmpdir(), "mcx-grh-test-"));
+    // Git hook environments (pre-commit, pre-push, etc.) set GIT_* vars that
+    // can cause tests to pass for wrong reasons. Clear them all for isolation.
+    savedGitEnv = {};
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("GIT_")) {
+        savedGitEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+    }
   });
 
   afterEach(() => {
     rmSync(gitDir, { recursive: true, force: true });
+    for (const [key, val] of Object.entries(savedGitEnv)) {
+      process.env[key] = val;
+    }
   });
 
   function emptyStdin(): ReadableStream<Uint8Array> {
@@ -132,25 +145,16 @@ describe("runGitRemoteHelper", () => {
   });
 
   test("requires GIT_DIR", async () => {
-    // Git sets GIT_DIR in hook environments (commit hooks, etc.), so the
-    // handler's fallback to process.env.GIT_DIR would hide the negative
-    // assertion. Isolate the test from the ambient environment.
-    const savedGitDir = process.env.GIT_DIR;
-    // Assigning `undefined` coerces to the string "undefined"; must delete.
-    // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined"
-    delete process.env.GIT_DIR;
-    try {
-      const { stream } = collect();
-      await expect(
-        runGitRemoteHelper({
-          argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
-          stdin: emptyStdin(),
-          stdout: stream,
-        }),
-      ).rejects.toThrow(/GIT_DIR/);
-    } finally {
-      if (savedGitDir !== undefined) process.env.GIT_DIR = savedGitDir;
-    }
+    // GIT_* env vars are cleared by beforeEach, so process.env.GIT_DIR is
+    // absent here — the fallback must fail.
+    const { stream } = collect();
+    await expect(
+      runGitRemoteHelper({
+        argv: ["bun", "git-remote-mcx", "origin", "mcx://confluence/FOO"],
+        stdin: emptyStdin(),
+        stdout: stream,
+      }),
+    ).rejects.toThrow(/GIT_DIR/);
   });
 
   test("responds to capabilities command", async () => {
