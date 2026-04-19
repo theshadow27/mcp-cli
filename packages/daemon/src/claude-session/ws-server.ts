@@ -782,6 +782,12 @@ export class ClaudeWsServer {
   sendPrompt(sessionId: string, message: string): void {
     const trimmed = message.trim();
 
+    // Intercept /containment-reset — clear strikes and escalation without restarting session
+    if (trimmed === "/containment-reset") {
+      this.resetContainment(sessionId);
+      return;
+    }
+
     // Intercept /clear — kill process and respawn for fresh context
     if (trimmed === "/clear") {
       this.clearSession(sessionId).catch((err) => {
@@ -820,6 +826,22 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
     this.sendToWs(session, outbound);
+  }
+
+  /** Reset containment strikes and escalation so the session can resume tool use. */
+  resetContainment(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    if (!session.containment) {
+      this.logger.warn(`[_claude] resetContainment called on session ${sessionId} with no containment guard`);
+      return;
+    }
+    session.containment.reset();
+    this.logger.info(`[_claude] Containment reset for session ${sessionId}`);
+    this.handleSessionEvent(sessionId, session, {
+      type: "session:containment_reset",
+      reason: "Containment guard reset by orchestrator",
+      strikes: 0,
+    });
   }
 
   /**
@@ -1594,6 +1616,19 @@ export class ClaudeWsServer {
             sessionId,
             event: event.type,
             toolName: event.toolName,
+            result: event.reason,
+            strikes: event.strikes,
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        break;
+      case "session:containment_reset":
+        this.logger.info(`[_claude] Containment reset for session ${sessionId}: ${event.reason}`);
+        try {
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: event.type,
             result: event.reason,
             strikes: event.strikes,
           });

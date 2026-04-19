@@ -488,6 +488,52 @@ describe("ContainmentGuard — pushd and subshell cd", () => {
   });
 });
 
+// ── Reset ──
+
+describe("ContainmentGuard — reset", () => {
+  test("reset clears strikes and allows tool calls again", () => {
+    const g = guard();
+    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
+    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
+    expect(g.strikes).toBe(2);
+
+    g.reset();
+    expect(g.strikes).toBe(0);
+    expect(g.escalated).toBe(false);
+
+    const r = g.evaluate("Write", { file_path: `${WORKTREE}/ok.ts` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("reset after escalation re-enables tool calls", () => {
+    const g = guard();
+    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
+    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
+    g.evaluate("Edit", { file_path: "/Users/test/repo/c.ts" });
+    expect(g.escalated).toBe(true);
+
+    g.reset();
+    expect(g.escalated).toBe(false);
+    expect(g.strikes).toBe(0);
+
+    const r = g.evaluate("Write", { file_path: `${WORKTREE}/ok.ts` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("strikes accumulate again after reset", () => {
+    const g = guard();
+    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
+    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
+    g.evaluate("Edit", { file_path: "/Users/test/repo/c.ts" });
+    g.reset();
+
+    const r = g.evaluate("Write", { file_path: "/Users/test/repo/d.ts" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+    expect(g.escalated).toBe(false);
+  });
+});
+
 // ── Adversarial: git clone and worktree add ──
 
 describe("ContainmentGuard — git clone and worktree add", () => {
