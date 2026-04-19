@@ -87,9 +87,12 @@ describe("runGitRemoteHelper", () => {
   });
 
   afterEach(() => {
-    rmSync(gitDir, { recursive: true, force: true });
-    for (const [key, val] of Object.entries(savedGitEnv)) {
-      process.env[key] = val;
+    try {
+      rmSync(gitDir, { recursive: true, force: true });
+    } finally {
+      for (const [key, val] of Object.entries(savedGitEnv)) {
+        process.env[key] = val;
+      }
     }
   });
 
