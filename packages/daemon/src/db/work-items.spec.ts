@@ -163,6 +163,18 @@ describe("WorkItemDb", () => {
       const db = createDb();
       expect(db.deleteWorkItem("missing")).toBe(false);
     });
+
+    test("removes transition rows when work item is deleted", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      db.updateWorkItem(item.id, { phase: "review" });
+      expect(db.listTransitions(item.id).length).toBeGreaterThan(0);
+      db.deleteWorkItem(item.id);
+      expect(db.listTransitions(item.id)).toHaveLength(0);
+      const rawDb: Database = (db as unknown as { db: Database }).db;
+      const row = rawDb.query("SELECT COUNT(*) as c FROM work_items WHERE id = ?").get(item.id) as { c: number } | null;
+      expect(row?.c ?? 0).toBe(0);
+    });
   });
 
   describe("listWorkItems", () => {
