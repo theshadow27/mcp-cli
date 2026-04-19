@@ -109,6 +109,8 @@ function bashTargetsOutsidePath(command: string, worktreeRoot: string): boolean 
 }
 
 // ── Bash file write detection ──
+// Known gap: runtime writes (node -e "fs.writeFileSync(...)", bun run script.ts)
+// cannot be detected via regex — requires filesystem sandboxing (#1475).
 
 const SHELL_WRITE_CMDS = new Set(["cp", "mv", "tee", "ln", "install", "rsync"]);
 
@@ -120,16 +122,59 @@ function extractBashWriteTargets(command: string): string[] {
     if (m[1]) targets.push(m[1]);
   }
 
-  // Common write commands with absolute path arguments
-  // Split on command separators to handle chained commands
+  // dd of=/path
+  for (const m of command.matchAll(/\bdd\b[^;|&]*\bof=(\/\S+)/g)) {
+    if (m[1]) targets.push(m[1]);
+  }
+
+  // sed -i / sed --in-place: last non-flag argument is the target file
+  // curl -o / curl --output: next argument is the output path
+  // wget -O / wget --output-document: next argument is the output path
   const segments = command.split(/[;&|]+/);
   for (const seg of segments) {
     const tokens = seg.trim().split(/\s+/);
-    // Skip env var assignments
     let cmdIdx = 0;
     while (cmdIdx < tokens.length && tokens[cmdIdx]?.includes("=") && !tokens[cmdIdx]?.startsWith("-")) cmdIdx++;
     const cmd = tokens[cmdIdx];
-    if (!cmd || !SHELL_WRITE_CMDS.has(cmd)) continue;
+    if (!cmd) continue;
+
+    if (cmd === "sed") {
+      const hasDashI = tokens.some((t, i) => i > cmdIdx && (t === "-i" || t === "--in-place" || /^-[^-]*i/.test(t)));
+      if (hasDashI) {
+        for (let k = tokens.length - 1; k > cmdIdx; k--) {
+          const t = tokens[k] ?? "";
+          if (t.startsWith("-") || t.startsWith("'") || t.startsWith('"') || t.startsWith("s/") || t.startsWith("s|"))
+            continue;
+          if (t.startsWith("/")) {
+            targets.push(t);
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (cmd === "curl" || cmd === "wget") {
+      const outputFlags = cmd === "curl" ? ["-o", "--output"] : ["-O", "--output-document"];
+      for (let k = cmdIdx + 1; k < tokens.length; k++) {
+        const t = tokens[k] ?? "";
+        // -o=/path or --output=/path form
+        for (const flag of outputFlags) {
+          if (t.startsWith(`${flag}=`)) {
+            const val = t.slice(flag.length + 1);
+            if (val.startsWith("/")) targets.push(val);
+          }
+        }
+        if (outputFlags.includes(t) && k + 1 < tokens.length) {
+          const val = tokens[k + 1] ?? "";
+          if (val.startsWith("/")) targets.push(val);
+          k++;
+        }
+      }
+      continue;
+    }
+
+    if (!SHELL_WRITE_CMDS.has(cmd)) continue;
 
     // Extract absolute path arguments (skip flags)
     for (let k = cmdIdx + 1; k < tokens.length; k++) {
