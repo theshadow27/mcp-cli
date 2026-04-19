@@ -19,9 +19,9 @@ jobs:
       - run: bun run lint:check
       - name: Phase drift guard
         run: bun run check:phase-drift
-      # scripts/*.spec.ts are excluded from pathIgnorePatterns in bunfig.toml so that
-      # `bun test` auto-discovery doesn't scan scripts/. We override that exclusion via
-      # --path-ignore-patterns so the 10 scripts specs run in CI.
+      # scripts/** is ignored by default via pathIgnorePatterns in bunfig.toml so that
+      # `bun test` auto-discovery doesn't scan scripts/. This step overrides that
+      # ignore list via --path-ignore-patterns so the 10 scripts specs run in CI.
       - name: Test (scripts)
         run: bun test --path-ignore-patterns=".claude/**,dist/**,.git-hooks/**" ./scripts/*.spec.ts
       # Split daemon tests into a separate invocation to avoid a non-deterministic
