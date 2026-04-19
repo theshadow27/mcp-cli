@@ -260,7 +260,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
   }
 }
 
-/** Delete a branch if its commits are reachable from the upstream (git branch -d is safe — refuses otherwise). */
+/** Delete a branch if git branch -d allows it (merged into upstream or HEAD — safe, no data loss). */
 function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
   if (!branch) return false;
   const bareBeforeDelete = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
@@ -269,7 +269,7 @@ function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps
     if (!bareBeforeDelete && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
       deps.printError(`[shim] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`);
     }
-    logStatus(deps, `Deleted branch: ${branch} (pushed)`);
+    logStatus(deps, `Deleted branch: ${branch} (safe to delete)`);
     return true;
   }
   return false;
