@@ -6,7 +6,9 @@ import {
   DEFAULT_RUNS_ON,
   MANIFEST_FILENAMES,
   ManifestError,
+  detectCycles,
   findManifest,
+  isPhaseInCycle,
   loadManifest,
   parseManifestText,
   resolveRunsOn,
@@ -289,5 +291,159 @@ describe("resolveRunsOn", () => {
 
   test("returns explicit runsOn when set", () => {
     expect(resolveRunsOn({ runsOn: "develop" })).toBe("develop");
+  });
+});
+
+describe("detectCycles", () => {
+  test("returns empty array for a DAG", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        phases: {
+          a: { source: "./a.ts", next: ["b"] },
+          b: { source: "./b.ts", next: ["c"] },
+          c: { source: "./c.ts", next: [] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(detectCycles(m)).toEqual([]);
+  });
+
+  test("detects a direct 2-node cycle", () => {
+    const m = validateManifest(
+      {
+        initial: "review",
+        phases: {
+          review: { source: "./r.ts", next: ["repair"] },
+          repair: { source: "./p.ts", next: ["review"] },
+        },
+      },
+      "/tmp/x",
+    );
+    const cycles = detectCycles(m);
+    expect(cycles.length).toBeGreaterThan(0);
+    const flat = cycles.flat();
+    expect(flat).toContain("review");
+    expect(flat).toContain("repair");
+  });
+
+  test("detects a longer cycle", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        phases: {
+          a: { source: "./a.ts", next: ["b"] },
+          b: { source: "./b.ts", next: ["c"] },
+          c: { source: "./c.ts", next: ["a"] },
+        },
+      },
+      "/tmp/x",
+    );
+    const cycles = detectCycles(m);
+    expect(cycles.length).toBeGreaterThan(0);
+    const cycle = cycles[0];
+    expect(cycle[0]).toBe(cycle[cycle.length - 1]);
+  });
+
+  test("cycle paths are closed (first === last)", () => {
+    const m = validateManifest(
+      {
+        initial: "review",
+        phases: {
+          review: { source: "./r.ts", next: ["repair"] },
+          repair: { source: "./p.ts", next: ["review", "done"] },
+          done: { source: "./d.ts", next: [] },
+        },
+      },
+      "/tmp/x",
+    );
+    const cycles = detectCycles(m);
+    for (const cycle of cycles) {
+      expect(cycle[0]).toBe(cycle[cycle.length - 1]);
+    }
+  });
+});
+
+describe("isPhaseInCycle", () => {
+  test("returns false for phases with no outgoing edges", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        phases: {
+          a: { source: "./a.ts", next: ["b"] },
+          b: { source: "./b.ts", next: [] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(isPhaseInCycle(m, "b")).toBe(false);
+  });
+
+  test("returns false for a phase in a DAG", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        phases: {
+          a: { source: "./a.ts", next: ["b"] },
+          b: { source: "./b.ts", next: ["c"] },
+          c: { source: "./c.ts", next: [] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(isPhaseInCycle(m, "a")).toBe(false);
+    expect(isPhaseInCycle(m, "b")).toBe(false);
+  });
+
+  test("returns true for phases in a 2-node cycle", () => {
+    const m = validateManifest(
+      {
+        initial: "review",
+        phases: {
+          review: { source: "./r.ts", next: ["repair"] },
+          repair: { source: "./p.ts", next: ["review"] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(isPhaseInCycle(m, "review")).toBe(true);
+    expect(isPhaseInCycle(m, "repair")).toBe(true);
+  });
+
+  test("returns true for phases in a longer cycle", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        phases: {
+          a: { source: "./a.ts", next: ["b"] },
+          b: { source: "./b.ts", next: ["c"] },
+          c: { source: "./c.ts", next: ["a"] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(isPhaseInCycle(m, "a")).toBe(true);
+    expect(isPhaseInCycle(m, "b")).toBe(true);
+    expect(isPhaseInCycle(m, "c")).toBe(true);
+  });
+
+  test("returns false for a phase that can reach a cycle but is not in it", () => {
+    const m = validateManifest(
+      {
+        initial: "start",
+        phases: {
+          start: { source: "./s.ts", next: ["review"] },
+          review: { source: "./r.ts", next: ["repair"] },
+          repair: { source: "./p.ts", next: ["review", "done"] },
+          done: { source: "./d.ts", next: [] },
+        },
+      },
+      "/tmp/x",
+    );
+    expect(isPhaseInCycle(m, "start")).toBe(false);
+    expect(isPhaseInCycle(m, "done")).toBe(false);
+    expect(isPhaseInCycle(m, "review")).toBe(true);
+    expect(isPhaseInCycle(m, "repair")).toBe(true);
   });
 });
