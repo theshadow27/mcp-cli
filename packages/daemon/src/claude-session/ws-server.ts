@@ -16,6 +16,7 @@ import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum, Wor
 import { consoleLogger, generateSessionName } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
+import { ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -270,6 +271,7 @@ interface WsSession {
   proc: { kill: (signal?: number) => void; exited: Promise<number> } | null;
   spawnAlive: boolean;
   worktree: string | null;
+  containment: ContainmentGuard | null;
   resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
   clearing: boolean;
@@ -534,6 +536,7 @@ export class ClaudeWsServer {
         proc: null,
         spawnAlive: false,
         worktree: s.worktree,
+        containment: s.worktree && s.cwd ? new ContainmentGuard(s.cwd) : null,
         resultWaiters: [],
         keepAliveTimer: null,
         clearing: false,
@@ -582,6 +585,7 @@ export class ClaudeWsServer {
       proc: null,
       spawnAlive: false,
       worktree: config.worktree ?? null,
+      containment: config.worktree && config.cwd ? new ContainmentGuard(config.cwd) : null,
       resultWaiters: [],
       keepAliveTimer: null,
       clearing: false,
@@ -1440,7 +1444,7 @@ export class ClaudeWsServer {
         } catch (err) {
           logErr("resolveEventWaiters failed", err);
         }
-        this.handlePermissionRequest(session, event.requestId, event.request).catch((err) => {
+        this.handlePermissionRequest(sessionId, session, event.requestId, event.request).catch((err) => {
           this.logger.error(
             `[_claude] Permission evaluation failed for session ${sessionId}: ${err instanceof Error ? err.stack : err}`,
           );
@@ -1539,14 +1543,53 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         break;
+      case "session:containment_warning":
+      case "session:containment_denied":
+      case "session:containment_escalated":
+        this.logger.warn(`[_claude] Containment ${event.type.split(":")[1]} for session ${sessionId}: ${event.reason}`);
+        try {
+          session.pendingImmediate = true;
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: event.type,
+            toolName: event.toolName,
+            result: event.reason,
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        break;
     }
   }
 
   private async handlePermissionRequest(
+    sessionId: string,
     session: WsSession,
     requestId: string,
     request: CanUseToolRequest,
   ): Promise<void> {
+    // Containment check — runs before permission router for worktree sessions
+    if (session.containment) {
+      const result = session.containment.evaluate(request.tool_name, request.input);
+      if (result.event) {
+        const containmentEvent = {
+          type: result.event,
+          toolName: request.tool_name,
+          reason: result.reason,
+          strikes: result.strikes,
+        } as const;
+        this.handleSessionEvent(sessionId, session, containmentEvent);
+      }
+      if (result.action === "deny") {
+        session.state.respondToPermission(requestId, false, result.reason);
+        this.sendToWs(
+          session,
+          permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
+        );
+        return;
+      }
+    }
+
     if (session.router.strategy === "delegate") {
       return;
     }

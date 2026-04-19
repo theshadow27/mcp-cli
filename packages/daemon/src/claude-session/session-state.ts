@@ -40,7 +40,10 @@ export type SessionEvent =
   | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" }
   | { type: "session:cleared" }
-  | { type: "session:model_changed"; model: string };
+  | { type: "session:model_changed"; model: string }
+  | { type: "session:containment_warning"; toolName: string; reason: string; strikes: number }
+  | { type: "session:containment_denied"; toolName: string; reason: string; strikes: number }
+  | { type: "session:containment_escalated"; toolName: string; reason: string; strikes: number };
 
 // ── Outbound message (string ready to send over WS) ──
 
