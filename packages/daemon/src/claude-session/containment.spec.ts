@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { ContainmentGuard } from "./containment";
 
 const WORKTREE = "/Users/test/repo/.claude/worktrees/my-worktree";
@@ -508,10 +509,9 @@ describe("ContainmentGuard — git clone and worktree add", () => {
 describe("ContainmentGuard — relative path resolution", () => {
   test("relative traversal in Write resolves against worktree root, not daemon cwd", () => {
     const g = guard();
-    // ../../.. from WORKTREE lands at /Users, which is outside the worktree
     const r = g.evaluate("Write", { file_path: "../../../etc/passwd" });
     expect(r.action).toBe("deny");
-    expect(r.reason).toContain("/etc/passwd");
+    expect(r.reason).toContain(resolve(WORKTREE, "../../../etc/passwd"));
   });
 
   test("relative path inside worktree resolves correctly", () => {
@@ -525,7 +525,7 @@ describe("ContainmentGuard — relative path resolution", () => {
     const g = guard();
     const r = g.evaluate("Read", { file_path: "../../../../etc/hosts" });
     expect(r.action).toBe("warn");
-    expect(r.reason).toContain("/etc/hosts");
+    expect(r.reason).toContain(resolve(WORKTREE, "../../../../etc/hosts"));
   });
 
   test("relative traversal in Edit resolves against worktree root", () => {

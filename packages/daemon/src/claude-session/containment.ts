@@ -165,8 +165,8 @@ function isPathOutside(filePath: string, worktreeRoot: string): boolean {
 
 const ALLOWED_EXTERNAL_PREFIXES = ["/tmp", "/var/tmp", "/private/tmp"];
 
-function isAllowedExternalPath(filePath: string, sessionCwd: string): boolean {
-  const resolved = resolve(sessionCwd, filePath);
+function isAllowedExternalPath(filePath: string, baseDir: string): boolean {
+  const resolved = resolve(baseDir, filePath);
   return ALLOWED_EXTERNAL_PREFIXES.some((p) => resolved.startsWith(`${p}/`) || resolved === p);
 }
 
