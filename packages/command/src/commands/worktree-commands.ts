@@ -42,10 +42,22 @@ export async function getAllActiveSessionWorktrees(
         if (s.worktree) combined.add(s.worktree);
       }
     } catch (e) {
-      // IpcCallError means the daemon is reachable but this provider server is
-      // not connected. A disconnected server has no active sessions, so it is
-      // safe to skip rather than aborting the entire gc.
-      if (e instanceof IpcCallError) continue;
+      if (e instanceof IpcCallError) {
+        // Only skip when the error indicates the provider server is disconnected
+        // or unreachable — a disconnected server has no active sessions, so it
+        // is safe to skip. Re-throw for logic errors (invalid-params, internal, etc.)
+        // that indicate a real problem with the call itself.
+        const msg = e.message.toLowerCase();
+        if (
+          msg.includes("not connected") ||
+          msg.includes("disconnected") ||
+          msg.includes("not reachable") ||
+          msg.includes("unreachable")
+        ) {
+          continue;
+        }
+        throw e;
+      }
       if (failClosed) {
         throw new Error(`Cannot reach daemon to query ${tool}. Aborting prune to prevent destroying active worktrees.`);
       }

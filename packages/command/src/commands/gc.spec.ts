@@ -247,7 +247,7 @@ describe("runGc worktrees", () => {
     expect(d.logs.some((l) => l.includes("wt-a") && l.includes("- "))).toBe(false);
   });
 
-  test("live mode continues when a provider returns IpcCallError (server not connected)", async () => {
+  test("skips disconnected provider when IpcCallError indicates server not connected", async () => {
     // Regression for #1465: if _acp (or any provider) is not connected, calling
     // acp_session_list throws IpcCallError. gc should skip that provider (no
     // active sessions possible on a disconnected server) rather than aborting.
