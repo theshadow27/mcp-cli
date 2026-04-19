@@ -5,7 +5,7 @@
  * that any provider can add to its command dispatch.
  */
 
-import { WorktreeError, listMcxWorktrees, pruneWorktrees } from "@mcp-cli/core";
+import { IpcCallError, WorktreeError, listMcxWorktrees, pruneWorktrees } from "@mcp-cli/core";
 import type { WorktreeShimDeps } from "@mcp-cli/core";
 import { c, formatToolResult } from "../output";
 
@@ -41,7 +41,23 @@ export async function getAllActiveSessionWorktrees(
       for (const s of sessions) {
         if (s.worktree) combined.add(s.worktree);
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof IpcCallError) {
+        // Only skip when the error indicates the provider server is disconnected
+        // or unreachable — a disconnected server has no active sessions, so it
+        // is safe to skip. Re-throw for logic errors (invalid-params, internal, etc.)
+        // that indicate a real problem with the call itself.
+        const msg = e.message.toLowerCase();
+        if (
+          msg.includes("not connected") ||
+          msg.includes("disconnected") ||
+          msg.includes("not reachable") ||
+          msg.includes("unreachable")
+        ) {
+          continue;
+        }
+        throw e;
+      }
       if (failClosed) {
         throw new Error(`Cannot reach daemon to query ${tool}. Aborting prune to prevent destroying active worktrees.`);
       }
