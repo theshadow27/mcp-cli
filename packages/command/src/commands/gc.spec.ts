@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { IpcCallError } from "@mcp-cli/core";
 import type { GcDeps } from "./gc";
 import { cmdGc, defaultGcDeps, parseDuration, parseGcArgs, runGc } from "./gc";
 
@@ -244,6 +245,34 @@ describe("runGc worktrees", () => {
     expect(d.logs.some((l) => l.includes("would remove 1"))).toBe(true);
     expect(d.logs.some((l) => l.includes("wt-b"))).toBe(true);
     expect(d.logs.some((l) => l.includes("wt-a") && l.includes("- "))).toBe(false);
+  });
+
+  test("live mode continues when a provider returns IpcCallError (server not connected)", async () => {
+    // Regression for #1465: if _acp (or any provider) is not connected, calling
+    // acp_session_list throws IpcCallError. gc should skip that provider (no
+    // active sessions possible on a disconnected server) rather than aborting.
+    const responses = makeWorktreeResponses();
+    let claudeCallCount = 0;
+    const d = makeDeps({
+      execResponses: responses,
+      callTool: async (tool) => {
+        if (tool === "claude_session_list") {
+          claudeCallCount++;
+          return [];
+        }
+        // All other providers are unreachable at the IPC level (server not connected)
+        throw new IpcCallError({ code: -32000, message: "server not connected", data: undefined });
+      },
+    });
+
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    // Must NOT abort — gc should proceed despite provider IpcCallErrors
+    expect(d.logs.some((l) => l.includes("would remove"))).toBe(true);
+    // The daemon-reachable provider was still called
+    expect(claudeCallCount).toBeGreaterThan(0);
+    // Must not emit the fatal "Cannot reach daemon" error
+    expect(d.errors.some((e) => e.includes("Cannot reach daemon"))).toBe(false);
   });
 
   test("live mode fails closed when session list throws", async () => {
