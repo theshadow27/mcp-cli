@@ -10,8 +10,6 @@
  * but the definitions are generated from a single source of truth.
  */
 
-import { DEFAULT_TIMEOUT_MS } from "./constants";
-
 // ---------------------------------------------------------------------------
 // JSON Schema helpers (matches the shape MCP SDK expects)
 // ---------------------------------------------------------------------------
@@ -71,7 +69,7 @@ const sessionIdProp: JsonSchemaProperty = {
 
 const timeoutProp: JsonSchemaProperty = {
   type: "number",
-  description: `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS})`,
+  description: "Max wait time in ms (default: 270000)",
 };
 
 const limitProp: JsonSchemaProperty = {

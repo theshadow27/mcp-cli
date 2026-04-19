@@ -1,6 +1,30 @@
 // Worktree containment enforcement — see #1441 for design.
 
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+
+// Resolve symlinks; for non-existent paths, walk up the directory chain until
+// realpathSync succeeds, then re-join the missing tail. A single dirname fallback
+// is insufficient: if `escape` is a symlink and `newdir` doesn't exist inside
+// the target, dirname of the full path still throws (#1481).
+function resolveRealpath(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    const missingSegments: string[] = [];
+    let current = resolve(filePath);
+    while (true) {
+      const parent = dirname(current);
+      if (parent === current) return resolve(filePath);
+      missingSegments.unshift(basename(current));
+      try {
+        return join(realpathSync(parent), ...missingSegments);
+      } catch {
+        current = parent;
+      }
+    }
+  }
+}
 
 // ── Types ──
 
@@ -254,7 +278,9 @@ function extractFilePath(toolName: string, input: Record<string, unknown>): stri
 }
 
 function isPathOutside(filePath: string, worktreeRoot: string): boolean {
-  const resolved = resolve(worktreeRoot, filePath);
+  // resolve(worktreeRoot, filePath) handles relative paths against worktreeRoot;
+  // resolveRealpath then follows any symlinks so escapes via symlinks are caught (#1481).
+  const resolved = resolveRealpath(resolve(worktreeRoot, filePath));
   return !resolved.startsWith(`${worktreeRoot}/`) && resolved !== worktreeRoot;
 }
 
@@ -262,9 +288,15 @@ function isPathOutside(filePath: string, worktreeRoot: string): boolean {
 
 const ALLOWED_EXTERNAL_PREFIXES = ["/tmp", "/var/tmp", "/private/tmp"];
 
-function isAllowedExternalPath(filePath: string, baseDir: string): boolean {
-  const resolved = resolve(baseDir, filePath);
-  return ALLOWED_EXTERNAL_PREFIXES.some((p) => resolved.startsWith(`${p}/`) || resolved === p);
+function isAllowedExternalPath(filePath: string, worktreeRoot: string): boolean {
+  const normalized = resolve(worktreeRoot, filePath);
+  // Symlink escape: nominal path is inside the worktree but real path is outside.
+  // The /tmp exemption must not apply — otherwise a session creates
+  // worktree/escape → /tmp/outside and writes freely (#1481).
+  if (normalized.startsWith(`${worktreeRoot}/`)) return false;
+  // Resolve symlinks before prefix check so /tmp/link → /etc/passwd is not allowed.
+  const real = resolveRealpath(normalized);
+  return ALLOWED_EXTERNAL_PREFIXES.some((p) => real.startsWith(`${p}/`) || real === p);
 }
 
 // ── Guard ──
@@ -277,8 +309,9 @@ export class ContainmentGuard {
   private _escalated = false;
 
   constructor(worktreeRoot: string) {
-    // Normalize: strip trailing slash for consistent prefix comparison
-    this.worktreeRoot = worktreeRoot.replace(/\/+$/, "");
+    // Strip trailing slash then resolve symlinks (iterative walk so non-existent paths
+    // like /tmp/worktree still resolve /tmp → /private/tmp on macOS).
+    this.worktreeRoot = resolveRealpath(worktreeRoot.replace(/\/+$/, ""));
   }
 
   get strikes(): number {
@@ -353,7 +386,7 @@ export class ContainmentGuard {
   }
 
   private evaluateFileAccess(toolName: string, filePath: string): ContainmentResult {
-    const resolved = resolve(this.worktreeRoot, filePath);
+    const resolved = resolveRealpath(resolve(this.worktreeRoot, filePath));
 
     // Read-class tools: warn only, no strike
     if (toolName === "Read" || toolName === "Glob" || toolName === "Grep") {
@@ -366,7 +399,7 @@ export class ContainmentGuard {
     }
 
     // Write/Edit: strike-counted gray zone
-    // Allow /tmp writes without penalty
+    // Allow /tmp writes without penalty (symlink escapes excluded via worktreeRoot guard)
     if (isAllowedExternalPath(filePath, this.worktreeRoot)) {
       return { action: "allow", reason: "", strikes: this._strikes };
     }

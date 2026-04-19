@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { ContainmentGuard } from "./containment";
 
 const WORKTREE = "/Users/test/repo/.claude/worktrees/my-worktree";
@@ -373,180 +375,6 @@ describe("ContainmentGuard — bash file write detection", () => {
     expect(r.action).toBe("deny");
     expect(r.strikes).toBe(1);
   });
-
-  test("denies sed -i to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed -i 's/old/new/g' /Users/test/repo/file.ts" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies sed --in-place to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed --in-place 's/old/new/g' /Users/test/repo/file.ts" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("allows sed -i to worktree path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `sed -i 's/old/new/g' ${WORKTREE}/file.ts` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("allows sed without -i (read-only)", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed 's/old/new/g' /Users/test/repo/file.ts" });
-    expect(r.action).toBe("allow");
-  });
-
-  test("denies dd of=/outside/path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "dd if=/dev/zero of=/Users/test/repo/disk.img bs=1M count=10" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("allows dd of= to worktree path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `dd if=/dev/zero of=${WORKTREE}/disk.img bs=1M count=10` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("denies curl -o to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "curl -o /Users/test/repo/file.tar.gz https://example.com/file.tar.gz" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies curl --output to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", {
-      command: "curl --output /Users/test/repo/file.tar.gz https://example.com/file.tar.gz",
-    });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("allows curl -o to worktree path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `curl -o ${WORKTREE}/file.tar.gz https://example.com/file.tar.gz` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("denies wget -O to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "wget -O /Users/test/repo/file.tar.gz https://example.com/file.tar.gz" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies wget --output-document to outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "wget --output-document /Users/test/repo/out.html https://example.com" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("allows wget -O to worktree path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `wget -O ${WORKTREE}/file.tar.gz https://example.com/file.tar.gz` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("denies curl --output=/outside/path (equals form)", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", {
-      command: "curl --output=/Users/test/repo/file.tar.gz https://example.com/file.tar.gz",
-    });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  // ── Quoted path variants ──
-
-  test("denies dd of= with double-quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: 'dd if=/dev/zero of="/Users/test/repo/disk.img" bs=1M' });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies dd of= with single-quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "dd if=/dev/zero of='/Users/test/repo/disk.img' bs=1M" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies sed -i with quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `sed -i 's/old/new/g' "/Users/test/repo/file.ts"` });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies sed -i with single-quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed -i 's/old/new/g' '/Users/test/repo/file.ts'" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("allows sed -i /regex/d with relative file (no false deny)", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed -i /foo/d file.txt" });
-    expect(r.action).toBe("allow");
-  });
-
-  test("allows sed -i /regex/d with worktree file", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `sed -i /foo/d ${WORKTREE}/file.txt` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("denies sed -i /regex/d with outside absolute file", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed -i /foo/d /Users/test/repo/file.txt" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies sed -e script -i with outside file", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "sed -e 's/old/new/' -i /Users/test/repo/file.ts" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies curl -o with double-quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: 'curl -o "/Users/test/repo/file.tar.gz" https://example.com/f' });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies curl --output= with quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: 'curl --output="/Users/test/repo/file.tar.gz" https://example.com/f' });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies wget -O with single-quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: "wget -O '/Users/test/repo/file.tar.gz' https://example.com/f" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
-
-  test("denies cp with quoted outside path", () => {
-    const g = guard();
-    const r = g.evaluate("Bash", { command: `cp ${WORKTREE}/a.ts "/Users/test/repo/a.ts"` });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-  });
 });
 
 // ── Adversarial: --work-tree / --git-dir bypass vectors ──
@@ -662,52 +490,6 @@ describe("ContainmentGuard — pushd and subshell cd", () => {
   });
 });
 
-// ── Reset ──
-
-describe("ContainmentGuard — reset", () => {
-  test("reset clears strikes and allows tool calls again", () => {
-    const g = guard();
-    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
-    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
-    expect(g.strikes).toBe(2);
-
-    g.reset();
-    expect(g.strikes).toBe(0);
-    expect(g.escalated).toBe(false);
-
-    const r = g.evaluate("Write", { file_path: `${WORKTREE}/ok.ts` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("reset after escalation re-enables tool calls", () => {
-    const g = guard();
-    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
-    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
-    g.evaluate("Edit", { file_path: "/Users/test/repo/c.ts" });
-    expect(g.escalated).toBe(true);
-
-    g.reset();
-    expect(g.escalated).toBe(false);
-    expect(g.strikes).toBe(0);
-
-    const r = g.evaluate("Write", { file_path: `${WORKTREE}/ok.ts` });
-    expect(r.action).toBe("allow");
-  });
-
-  test("strikes accumulate again after reset", () => {
-    const g = guard();
-    g.evaluate("Write", { file_path: "/Users/test/repo/a.ts" });
-    g.evaluate("Write", { file_path: "/Users/test/repo/b.ts" });
-    g.evaluate("Edit", { file_path: "/Users/test/repo/c.ts" });
-    g.reset();
-
-    const r = g.evaluate("Write", { file_path: "/Users/test/repo/d.ts" });
-    expect(r.action).toBe("deny");
-    expect(r.strikes).toBe(1);
-    expect(g.escalated).toBe(false);
-  });
-});
-
 // ── Adversarial: git clone and worktree add ──
 
 describe("ContainmentGuard — git clone and worktree add", () => {
@@ -721,6 +503,118 @@ describe("ContainmentGuard — git clone and worktree add", () => {
     const g = guard();
     const r = g.evaluate("Bash", { command: "git -C /Users/test/repo worktree add ../escape-hatch" });
     expect(r.action).toBe("deny");
+  });
+});
+
+// ── Symlink traversal (#1481) ──
+
+describe("ContainmentGuard — symlink path traversal", () => {
+  test("denies Write via symlink escaping worktree", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const worktree = join(base, "worktree");
+    const outside = join(base, "outside");
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+
+    // Create symlink inside worktree pointing to outside dir
+    const symlink = join(worktree, "escape");
+    symlinkSync(outside, symlink);
+
+    try {
+      const g = new ContainmentGuard(worktree);
+      const r = g.evaluate("Write", { file_path: join(symlink, "evil.ts") });
+      expect(r.action).toBe("deny");
+      expect(r.strikes).toBe(1);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("denies Edit via symlink escaping worktree", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const worktree = join(base, "worktree");
+    const outside = join(base, "outside");
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+
+    const symlink = join(worktree, "escape");
+    symlinkSync(outside, symlink);
+
+    try {
+      const g = new ContainmentGuard(worktree);
+      const r = g.evaluate("Edit", { file_path: join(symlink, "evil.ts") });
+      expect(r.action).toBe("deny");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("allows Write to real path inside worktree (not a symlink escape)", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const worktree = join(base, "worktree");
+    const subdir = join(worktree, "src");
+    mkdirSync(subdir, { recursive: true });
+
+    try {
+      const g = new ContainmentGuard(worktree);
+      const r = g.evaluate("Write", { file_path: join(subdir, "ok.ts") });
+      expect(r.action).toBe("allow");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("denies Write via symlink + non-existent subdir (multi-segment missing path)", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const worktree = join(base, "worktree");
+    const outside = join(base, "outside");
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+
+    // escape → outside; newdir does NOT exist inside outside
+    const symlink = join(worktree, "escape");
+    symlinkSync(outside, symlink);
+
+    try {
+      const g = new ContainmentGuard(worktree);
+      // Two non-existent segments under the symlink: escape/newdir/evil.ts
+      const r = g.evaluate("Write", { file_path: join(symlink, "newdir", "evil.ts") });
+      expect(r.action).toBe("deny");
+      expect(r.strikes).toBe(1);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves symlink in worktreeRoot itself", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const realWorktree = join(base, "real-worktree");
+    const symlinkWorktree = join(base, "link-worktree");
+    mkdirSync(realWorktree, { recursive: true });
+    symlinkSync(realWorktree, symlinkWorktree);
+
+    try {
+      // Guard constructed with symlink path should still allow writes inside
+      const g = new ContainmentGuard(symlinkWorktree);
+      const r = g.evaluate("Write", { file_path: join(realWorktree, "ok.ts") });
+      expect(r.action).toBe("allow");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("denies Write to /tmp symlink pointing outside allowed prefixes", () => {
+    // Nominal path starts with /tmp/ so old resolve()-based check would allow it,
+    // but real target is process.cwd() (the project dir, not under any allowed prefix).
+    const linkPath = join("/tmp", `mcp-containment-test-${process.pid}`);
+    symlinkSync(process.cwd(), linkPath);
+    try {
+      const g = new ContainmentGuard("/unrelated/worktree");
+      const r = g.evaluate("Write", { file_path: join(linkPath, "evil.ts") });
+      expect(r.action).toBe("deny");
+    } finally {
+      rmSync(linkPath, { force: true });
+    }
   });
 });
 

@@ -228,41 +228,7 @@ export async function importFromKeychain(
   }
 }
 
-function loadMcpConfigFile(filePath: string): McpConfigFile {
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    throw new Error(`Cannot read ${filePath}`);
-  }
-  let config: McpConfigFile;
-  try {
-    config = JSON.parse(content) as McpConfigFile;
-  } catch {
-    throw new Error(`Invalid JSON in ${filePath}`);
-  }
-  return config;
-}
-
-function importFromMcpFile(filePath: string, scope: ConfigScope): void {
-  const config = loadMcpConfigFile(filePath);
-  const servers = config.mcpServers;
-  if (!servers || Object.keys(servers).length === 0) {
-    console.error(`No servers found in ${filePath}`);
-    return;
-  }
-  importServers(servers, scope, filePath);
-}
-
-export interface CmdImportOptions {
-  cwd?: string;
-  findFile?: (filename: string, startDir: string) => string | null;
-}
-
-export async function cmdImport(args: string[], opts?: string | CmdImportOptions): Promise<void> {
-  const normalizedOpts: CmdImportOptions = typeof opts === "string" ? { cwd: opts } : (opts ?? {});
-  const cwd = normalizedOpts.cwd ?? process.cwd();
-  const findFile = normalizedOpts.findFile ?? findFileUpward;
+export async function cmdImport(args: string[]): Promise<void> {
   // Parse flags
   let scope: ConfigScope | undefined;
   let claude = false;
@@ -296,27 +262,37 @@ export async function cmdImport(args: string[], opts?: string | CmdImportOptions
   }
 
   if (claude) {
-    await importFromClaude(scope ?? "user", all, undefined, cwd);
+    await importFromClaude(scope ?? "user", all);
     return;
   }
 
   const source = positional[0];
+  const { filePath, defaultScope } = resolveSource(source);
+  const effectiveScope = scope ?? defaultScope;
 
-  // No explicit source: walk up for .mcp.json, then fall through to ~/.claude.json
-  if (!source) {
-    const found = findFile(PROJECT_MCP_FILENAME, cwd);
-    if (!found) {
-      console.error(`No ${PROJECT_MCP_FILENAME} found. Falling back to ~/.claude.json…`);
-      await importFromClaude(scope ?? "user", all, undefined, cwd);
-      return;
-    }
-    importFromMcpFile(found, scope ?? "user");
+  // Read and validate source file
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf-8");
+  } catch {
+    throw new Error(`Cannot read ${filePath}`);
+  }
+
+  let config: McpConfigFile;
+  try {
+    config = JSON.parse(content) as McpConfigFile;
+  } catch {
+    throw new Error(`Invalid JSON in ${filePath}`);
+  }
+
+  const servers = config.mcpServers;
+  if (!servers || Object.keys(servers).length === 0) {
+    console.error(`No servers found in ${filePath}`);
     return;
   }
 
-  const { filePath, defaultScope } = resolveSource(source);
-  const effectiveScope = scope ?? defaultScope;
-  importFromMcpFile(filePath, effectiveScope);
+  // Import each server
+  importServers(servers, effectiveScope, filePath);
 }
 
 export function importServers(servers: ServerConfigMap, scope: ConfigScope, source: string): void {
@@ -341,7 +317,6 @@ export async function importFromClaude(
   scope: ConfigScope,
   all: boolean,
   configPath = options.CLAUDE_CONFIG_PATH,
-  cwd = process.cwd(),
 ): Promise<void> {
   if (!existsSync(configPath)) {
     throw new Error(`Claude Code config not found: ${configPath}`);
@@ -354,6 +329,7 @@ export async function importFromClaude(
     throw new Error(`Cannot parse ${configPath}`);
   }
 
+  const cwd = process.cwd();
   const { servers, sources, warnings } = collectClaudeServers(claudeConfig, cwd, all);
 
   for (const w of warnings) {
@@ -379,7 +355,16 @@ interface ResolvedSource {
   defaultScope: ConfigScope;
 }
 
-function resolveSource(source: string): ResolvedSource {
+function resolveSource(source: string | undefined): ResolvedSource {
+  // No arg: walk up to find .mcp.json
+  if (!source) {
+    const found = findFileUpward(PROJECT_MCP_FILENAME, process.cwd());
+    if (!found) {
+      throw new Error(`No ${PROJECT_MCP_FILENAME} found in ${process.cwd()} or any parent directory`);
+    }
+    return { filePath: found, defaultScope: "user" };
+  }
+
   const resolved = resolve(source);
 
   // Directory: look for .mcp.json inside it

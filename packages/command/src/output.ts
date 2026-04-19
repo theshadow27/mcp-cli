@@ -299,8 +299,3 @@ export function extractErrorMessage(err: unknown): string {
 export function printError(message: string): void {
   console.error(`${c.red}Error${c.reset}: ${message}`);
 }
-
-/** Print an informational status message to stderr (no error prefix) */
-export function printStatus(message: string): void {
-  console.error(message);
-}

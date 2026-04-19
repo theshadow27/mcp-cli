@@ -44,7 +44,7 @@ export type SessionEvent =
   | { type: "session:containment_warning"; toolName: string; reason: string; strikes: number }
   | { type: "session:containment_denied"; toolName: string; reason: string; strikes: number }
   | { type: "session:containment_escalated"; toolName: string; reason: string; strikes: number }
-  | { type: "session:containment_reset"; reason: string; strikes: number };
+  | { type: "session:containment_reset"; toolName: string; reason: string; strikes: number };
 
 // ── Outbound message (string ready to send over WS) ──
 
