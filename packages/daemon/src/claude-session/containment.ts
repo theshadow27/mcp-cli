@@ -9,7 +9,8 @@ export type ContainmentAction = "allow" | "deny" | "warn";
 export type ContainmentEventType =
   | "session:containment_warning"
   | "session:containment_denied"
-  | "session:containment_escalated";
+  | "session:containment_escalated"
+  | "session:containment_reset";
 
 export interface ContainmentResult {
   action: ContainmentAction;
@@ -190,6 +191,12 @@ export class ContainmentGuard {
 
   get escalated(): boolean {
     return this._escalated;
+  }
+
+  /** Reset strikes and escalation state, allowing the session to resume. */
+  reset(): void {
+    this._strikes = 0;
+    this._escalated = false;
   }
 
   /**

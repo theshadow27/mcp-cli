@@ -975,20 +975,23 @@ function joinSessionsToWorkItems(sessions: SessionInfo[], workItems: WorkItem[])
 
 async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   let wait = false;
+  let containmentReset = false;
   const rest: string[] = [];
   for (const arg of args) {
     if (arg === "--wait") {
       wait = true;
+    } else if (arg === "--containment-reset") {
+      containmentReset = true;
     } else {
       rest.push(arg);
     }
   }
 
   const sessionPrefix = rest[0];
-  const message = rest.slice(1).join(" ").trim();
+  const message = containmentReset ? "/containment-reset" : rest.slice(1).join(" ").trim();
 
   if (!sessionPrefix || !message) {
-    d.printError("Usage: mcx claude send [--wait] <session-id> <message>");
+    d.printError("Usage: mcx claude send [--wait] [--containment-reset] <session-id> [message]");
     d.exit(1);
   }
 
