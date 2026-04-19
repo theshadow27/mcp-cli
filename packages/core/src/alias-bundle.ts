@@ -56,7 +56,11 @@ export async function bundleAlias(sourcePath: string): Promise<BundleResult> {
 
   const result = await Bun.build({
     entrypoints: [sourcePath],
-    external: ["mcp-cli"],
+    // "mcp-cli" is the virtual alias-sdk module (injected at eval time).
+    // "@mcp-cli/core" is this package — externalizing lets phase scripts
+    // import core utilities (e.g. findModelInSprintPlan) and have them
+    // resolved at eval time rather than bundled into the script.
+    external: ["mcp-cli", "@mcp-cli/core"],
     target: "bun",
   });
 
@@ -83,29 +87,57 @@ export async function computeSourceHash(sourcePath: string): Promise<string> {
 /**
  * Strip module syntax from Bun.build output so it can run inside AsyncFunction.
  *
- * Removes:
- * 1. "mcp-cli" imports (ESM and CJS) — dependencies are injected at eval time
- * 2. export blocks (`export { ... };` and `export default ...`) — Bun.build adds
- *    these for the module's default export, but AsyncFunction bodies aren't modules
- * 3. import.meta references — replaced with a plain object stub
+ * Handles:
+ * 1. "mcp-cli" imports (ESM and CJS) — stripped; deps injected at eval time
+ * 2. "@mcp-cli/core" imports — rewritten to destructure from `__mcp_core__`,
+ *    which is the live core module passed into the AsyncFunction at eval time
+ * 3. export blocks (`export { ... };` and `export default ...`) — Bun.build
+ *    emits these; AsyncFunction bodies aren't modules, so they must go
+ * 4. import.meta — replaced with a plain object stub
  */
 export function stripModuleSyntax(bundledJs: string): string {
   // ESM: import { ... } from "mcp-cli";  or  import ... from "mcp-cli";
-  // Uses [^;]*? to handle multi-line imports from Bun.build (e.g. import {\n  defineAlias,\n  z\n} from "mcp-cli";)
-  const esmPattern = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
-  // Side-effect import: import "mcp-cli";
-  const esmSideEffectPattern = /^import\s+["']mcp-cli["'];?[ \t]*$/gm;
-  // CJS: var/const/let { ... } = require("mcp-cli");
-  const cjsPattern = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
-  // export { ... };  (possibly multi-line, as Bun.build emits for default exports)
+  const mcpCliEsm = /^import\b[^;]*?from\s+["']mcp-cli["'];?[ \t]*$/gms;
+  const mcpCliEsmSideEffect = /^import\s+["']mcp-cli["'];?[ \t]*$/gm;
+  const mcpCliCjs = /^(?:var|const|let)\s+.*=\s*require\(["']mcp-cli["']\);?\s*$/gm;
+
+  // @mcp-cli/core: rewrite (don't strip) so named imports resolve at eval.
+  // import { X, Y } from "@mcp-cli/core"  →  const { X, Y } = __mcp_core__;
+  // Aliased specifiers ({ X as Y }) are converted to JS destructure ({ X: Y }).
+  const coreEsmNamed = /^import\s*(\{[^}]*\})\s*from\s*["']@mcp-cli\/core["'];?[ \t]*$/gms;
+  // import * as core from "@mcp-cli/core"  →  const core = __mcp_core__;
+  const coreEsmNamespace = /^import\s*\*\s*as\s*(\w+)\s*from\s*["']@mcp-cli\/core["'];?[ \t]*$/gms;
+  // import core from "@mcp-cli/core"  →  const core = __mcp_core__.default ?? __mcp_core__;
+  const coreEsmDefault = /^import\s+(\w+)\s+from\s*["']@mcp-cli\/core["'];?[ \t]*$/gms;
+  // Side-effect import: import "@mcp-cli/core";  →  drop
+  const coreEsmSideEffect = /^import\s+["']@mcp-cli\/core["'];?[ \t]*$/gm;
+  // CJS: var/const/let <binding> = require("@mcp-cli/core");
+  const coreCjs = /^(var|const|let)\s+(\{[^}]*\}|\w+)\s*=\s*require\(["']@mcp-cli\/core["']\);?[ \t]*$/gm;
+
   const exportBlockPattern = /^export\s*\{[^}]*\};?[ \t]*$/gms;
-  // export default <expr>; — dotall so it matches multi-line (e.g. export default defineAlias({\n...\n});)
   const exportDefaultPattern = /^export\s+default\b[^;]*;[ \t]*$/gms;
 
+  const rewriteCoreNamed = (_m: string, specifiers: string): string => {
+    // Convert { X as Y, Z } → { X: Y, Z } for JS destructure syntax.
+    const inner = specifiers
+      .slice(1, -1)
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => s.replace(/\s+as\s+/, ": "))
+      .join(", ");
+    return `const { ${inner} } = __mcp_core__;`;
+  };
+
   return bundledJs
-    .replace(esmPattern, "")
-    .replace(esmSideEffectPattern, "")
-    .replace(cjsPattern, "")
+    .replace(mcpCliEsm, "")
+    .replace(mcpCliEsmSideEffect, "")
+    .replace(mcpCliCjs, "")
+    .replace(coreEsmNamed, rewriteCoreNamed)
+    .replace(coreEsmNamespace, "const $1 = __mcp_core__;")
+    .replace(coreEsmDefault, "const $1 = __mcp_core__.default ?? __mcp_core__;")
+    .replace(coreEsmSideEffect, "")
+    .replace(coreCjs, "$1 $2 = __mcp_core__;")
     .replace(exportBlockPattern, "")
     .replace(exportDefaultPattern, "")
     .replace(/\bimport\.meta\b/g, "({})");
@@ -132,6 +164,12 @@ async function evalBundledJs(
 ): Promise<AliasDefinition | null> {
   const stripped = stripModuleSyntax(bundledJs);
 
+  // Lazy-load the @mcp-cli/core barrel at eval time. alias-bundle.ts is part
+  // of core and re-exported from ./index, so static `import * as` would
+  // self-cycle; dynamic import defers resolution until all sibling modules
+  // are initialized.
+  const coreBarrel = await import("./index");
+
   let captured: AliasDefinition | null = null;
 
   const injected = {
@@ -151,18 +189,18 @@ async function evalBundledJs(
   };
 
   const code = `const { defineAlias, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
-  const fn = new AsyncFunction("__mcp_inject__", code);
+  const fn = new AsyncFunction("__mcp_inject__", "__mcp_core__", code);
 
   if (timeoutMs !== undefined) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
-      fn(injected),
+      fn(injected, coreBarrel),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs);
       }),
     ]).finally(() => clearTimeout(timer));
   } else {
-    await fn(injected);
+    await fn(injected, coreBarrel);
   }
 
   return captured;
