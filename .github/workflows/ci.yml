@@ -65,6 +65,8 @@ jobs:
           else
             exit $code
           fi
+      # Preserve tee'd output (including bun.report crash URLs from SIGILL panics)
+      # so we can aggregate CI-side crash signatures. See #1393 / #1004.
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
