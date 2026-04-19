@@ -22,7 +22,7 @@ import {
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
-import { c, printError as defaultPrintError, formatToolResult } from "../output";
+import { c, printError as defaultPrintError, printStatus as defaultPrintStatus, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   colorState,
@@ -48,6 +48,8 @@ export interface PrStatus {
 export interface SharedSessionDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   printError: (msg: string) => void;
+  /** Print an informational status message (no error prefix). Falls back to printError if not provided. */
+  printStatus?: (msg: string) => void;
   exit: (code: number) => never;
   /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
   exec: (
@@ -168,6 +170,7 @@ export const defaultDeps: ClaudeDeps = {
     return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
   },
   printError: defaultPrintError,
+  printStatus: defaultPrintStatus,
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
   getPrStatus: defaultGetPrStatus,
