@@ -9,11 +9,19 @@
  * The handler is idempotent on re-entry: if `session_id` is already set in
  * state, it returns the existing session plus `action: "in-flight"`.
  *
+ * Model resolution order (first match wins):
+ *   1. `input.model` — explicit override from the orchestrator
+ *   2. `ctx.state.get("model")` — pre-populated by a prior call or mcx track
+ *   3. Sprint plan table — reads the latest `.claude/sprints/sprint-*.md` and
+ *      locates the Model column for this issue number (fixes #1437)
+ *   4. `pickModel(labels)` — label-based heuristic fallback
+ *
  * State writes (this handler): model, provider, labels, session_id sentinel.
  * Orchestrator responsibility: replace session_id "pending:*" with the real
  * session ID after spawn; write worktree_path once the worktree is known;
  * delete session_id on spawn failure so next entry re-spawns cleanly.
  */
+import { findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 
 type Provider = "claude" | "copilot" | "gemini" | `acp:${string}`;
@@ -46,6 +54,7 @@ defineAlias({
   input: z.object({
     provider: ProviderSchema.default("claude"),
     labels: z.array(z.string()).default([]),
+    model: z.enum(["opus", "sonnet"]).optional(),
   }),
   output: z.object({
     action: z.enum(["spawn", "in-flight"]),
@@ -77,7 +86,20 @@ defineAlias({
       };
     }
 
-    const model = pickModel(input.labels);
+    // Resolve model: explicit input → pre-set state → sprint plan → label heuristic
+    let model: "opus" | "sonnet";
+    if (input.model) {
+      model = input.model;
+    } else {
+      const stateModel = await ctx.state.get<string>("model");
+      if (stateModel === "opus" || stateModel === "sonnet") {
+        model = stateModel;
+      } else {
+        const planModel = findModelInSprintPlan(work.issueNumber, process.cwd());
+        model = planModel ?? pickModel(input.labels);
+      }
+    }
+
     const provider = input.provider;
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
     const prompt = `/implement ${work.issueNumber}`;
