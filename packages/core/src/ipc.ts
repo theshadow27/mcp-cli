@@ -438,6 +438,8 @@ export const TrackWorkItemParamsSchema = z
     branch: z.string().optional(),
     /** Optional starting phase (e.g. from manifest `initial:`). Default: "impl". */
     initialPhase: z.string().optional(),
+    /** Absolute path to the repo root; used server-side to locate a .mcx manifest for initialPhase validation. */
+    repoRoot: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",

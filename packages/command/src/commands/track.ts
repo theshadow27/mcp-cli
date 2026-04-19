@@ -55,7 +55,11 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       return deps.exit(1);
     }
     try {
-      const item = await deps.ipcCall("trackWorkItem", { branch, ...(initialPhase ? { initialPhase } : {}) });
+      const item = await deps.ipcCall("trackWorkItem", {
+        branch,
+        ...(initialPhase ? { initialPhase } : {}),
+        repoRoot: cwd,
+      });
       console.error(`Tracking branch ${branch} (${item.id})`);
     } catch (err) {
       printError(`Failed to track branch: ${err instanceof Error ? err.message : String(err)}`);
@@ -71,7 +75,11 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   }
 
   try {
-    const item = await deps.ipcCall("trackWorkItem", { number: num, ...(initialPhase ? { initialPhase } : {}) });
+    const item = await deps.ipcCall("trackWorkItem", {
+      number: num,
+      ...(initialPhase ? { initialPhase } : {}),
+      repoRoot: cwd,
+    });
     console.error(`Tracking #${num} (${item.id})`);
   } catch (err) {
     printError(`Failed to track #${num}: ${err instanceof Error ? err.message : String(err)}`);

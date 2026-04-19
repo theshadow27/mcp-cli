@@ -2090,4 +2090,77 @@ describe("IpcServer HTTP transport", () => {
     expect(calls[0].cwd).toBe("/caller/repo");
     expect(calls[0].chain).toEqual(["parent"]);
   });
+
+  describe("trackWorkItem initialPhase server-side validation", () => {
+    const fakeManifest = {
+      version: 1,
+      phases: { impl: { source: "./impl.ts" }, review: { source: "./review.ts" } },
+    };
+
+    function startWithLoadManifest(loadManifest: (repoRoot: string) => unknown): void {
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        loadManifest: loadManifest as never,
+      });
+      server.start(socketPath);
+    }
+
+    test("rejects initialPhase not declared in manifest", async () => {
+      startWithLoadManifest(() => fakeManifest);
+
+      const res = await rpc("/rpc", {
+        id: "ti1",
+        method: "trackWorkItem",
+        params: { number: 42, initialPhase: "bogus", repoRoot: "/repo" },
+      });
+      const json = (await res.json()) as IpcResponse;
+      expect(json.error).toBeDefined();
+      expect(json.error?.message).toContain("unknown initialPhase");
+      expect(json.error?.message).toContain("bogus");
+      expect(json.error?.message).toContain("impl");
+    });
+
+    test("accepts initialPhase declared in manifest", async () => {
+      startWithLoadManifest(() => fakeManifest);
+
+      const res = await rpc("/rpc", {
+        id: "ti2",
+        method: "trackWorkItem",
+        params: { number: 43, initialPhase: "review", repoRoot: "/repo" },
+      });
+      const json = (await res.json()) as IpcResponse;
+      expect(json.error).toBeUndefined();
+      const item = json.result as { phase: string };
+      expect(item.phase).toBe("review");
+    });
+
+    test("accepts any initialPhase when repoRoot is absent (legacy)", async () => {
+      startWithLoadManifest(() => fakeManifest);
+
+      const res = await rpc("/rpc", {
+        id: "ti3",
+        method: "trackWorkItem",
+        params: { number: 44, initialPhase: "anything-goes" },
+      });
+      const json = (await res.json()) as IpcResponse;
+      expect(json.error).toBeUndefined();
+      const item = json.result as { phase: string };
+      expect(item.phase).toBe("anything-goes");
+    });
+
+    test("accepts any initialPhase when manifest is not found at repoRoot", async () => {
+      startWithLoadManifest(() => null);
+
+      const res = await rpc("/rpc", {
+        id: "ti4",
+        method: "trackWorkItem",
+        params: { number: 45, initialPhase: "free-form", repoRoot: "/no-manifest-here" },
+      });
+      const json = (await res.json()) as IpcResponse;
+      expect(json.error).toBeUndefined();
+      const item = json.result as { phase: string };
+      expect(item.phase).toBe("free-form");
+    });
+  });
 });
