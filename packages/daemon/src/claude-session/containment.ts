@@ -114,6 +114,13 @@ function bashTargetsOutsidePath(command: string, worktreeRoot: string): boolean 
 
 const SHELL_WRITE_CMDS = new Set(["cp", "mv", "tee", "ln", "install", "rsync"]);
 
+function unquote(s: string): string {
+  if (s.length >= 2 && ((s[0] === '"' && s.at(-1) === '"') || (s[0] === "'" && s.at(-1) === "'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
 function extractBashWriteTargets(command: string): string[] {
   const targets: string[] = [];
 
@@ -122,14 +129,12 @@ function extractBashWriteTargets(command: string): string[] {
     if (m[1]) targets.push(m[1]);
   }
 
-  // dd of=/path
-  for (const m of command.matchAll(/\bdd\b[^;|&]*\bof=(\/\S+)/g)) {
-    if (m[1]) targets.push(m[1]);
+  // dd of=/path, of="/path", or of='/path'
+  for (const m of command.matchAll(/\bdd\b[^;|&]*\bof=("(\/[^"]*)"|'(\/[^']*)'|(\/\S+))/g)) {
+    const target = m[2] ?? m[3] ?? m[4];
+    if (target) targets.push(target);
   }
 
-  // sed -i / sed --in-place: last non-flag argument is the target file
-  // curl -o / curl --output: next argument is the output path
-  // wget -O / wget --output-document: next argument is the output path
   const segments = command.split(/[;&|]+/);
   for (const seg of segments) {
     const tokens = seg.trim().split(/\s+/);
@@ -139,15 +144,61 @@ function extractBashWriteTargets(command: string): string[] {
     if (!cmd) continue;
 
     if (cmd === "sed") {
-      const hasDashI = tokens.some((t, i) => i > cmdIdx && (t === "-i" || t === "--in-place" || /^-[^-]*i/.test(t)));
+      const hasDashI = tokens.some(
+        (t, i) => i > cmdIdx && (t === "-i" || t === "--in-place" || t.startsWith("--in-place=") || /^-[^-]*i/.test(t)),
+      );
       if (hasDashI) {
-        for (let k = tokens.length - 1; k > cmdIdx; k--) {
+        let expectsScriptArg = false;
+        let sawScript = false;
+        let fileArgStart = -1;
+
+        for (let k = cmdIdx + 1; k < tokens.length; k++) {
           const t = tokens[k] ?? "";
-          if (t.startsWith("-") || t.startsWith("'") || t.startsWith('"') || t.startsWith("s/") || t.startsWith("s|"))
+
+          if (expectsScriptArg) {
+            expectsScriptArg = false;
+            sawScript = true;
             continue;
-          if (t.startsWith("/")) {
-            targets.push(t);
+          }
+
+          if (t === "-e" || t === "-f") {
+            expectsScriptArg = true;
+            continue;
+          }
+
+          if (t.startsWith("--expression=") || t.startsWith("--file=")) {
+            sawScript = true;
+            continue;
+          }
+
+          if (t === "-i" || t === "--in-place" || t.startsWith("--in-place=") || /^-[^-]*i/.test(t)) {
+            continue;
+          }
+
+          if (t === "--") {
+            fileArgStart = k + 1;
             break;
+          }
+
+          if (t.startsWith("-")) continue;
+
+          if (!sawScript) {
+            sawScript = true;
+            continue;
+          }
+
+          fileArgStart = k;
+          break;
+        }
+
+        if (fileArgStart !== -1) {
+          for (let k = fileArgStart; k < tokens.length; k++) {
+            const raw = tokens[k] ?? "";
+            const t = unquote(raw);
+            if (t.startsWith("/")) {
+              targets.push(t);
+              break;
+            }
           }
         }
       }
@@ -157,16 +208,15 @@ function extractBashWriteTargets(command: string): string[] {
     if (cmd === "curl" || cmd === "wget") {
       const outputFlags = cmd === "curl" ? ["-o", "--output"] : ["-O", "--output-document"];
       for (let k = cmdIdx + 1; k < tokens.length; k++) {
-        const t = tokens[k] ?? "";
-        // -o=/path or --output=/path form
+        const raw = tokens[k] ?? "";
         for (const flag of outputFlags) {
-          if (t.startsWith(`${flag}=`)) {
-            const val = t.slice(flag.length + 1);
+          if (raw.startsWith(`${flag}=`)) {
+            const val = unquote(raw.slice(flag.length + 1));
             if (val.startsWith("/")) targets.push(val);
           }
         }
-        if (outputFlags.includes(t) && k + 1 < tokens.length) {
-          const val = tokens[k + 1] ?? "";
+        if (outputFlags.includes(raw) && k + 1 < tokens.length) {
+          const val = unquote(tokens[k + 1] ?? "");
           if (val.startsWith("/")) targets.push(val);
           k++;
         }
@@ -178,8 +228,9 @@ function extractBashWriteTargets(command: string): string[] {
 
     // Extract absolute path arguments (skip flags)
     for (let k = cmdIdx + 1; k < tokens.length; k++) {
-      const t = tokens[k] ?? "";
-      if (t.startsWith("-")) continue;
+      const raw = tokens[k] ?? "";
+      if (raw.startsWith("-")) continue;
+      const t = unquote(raw);
       if (t.startsWith("/")) targets.push(t);
     }
   }
