@@ -502,3 +502,42 @@ describe("ContainmentGuard — git clone and worktree add", () => {
     expect(r.action).toBe("deny");
   });
 });
+
+// ── Relative path resolution — uses session cwd, not daemon cwd ──
+
+describe("ContainmentGuard — relative path resolution", () => {
+  test("relative traversal in Write resolves against worktree root, not daemon cwd", () => {
+    const g = guard();
+    // ../../.. from WORKTREE lands at /Users, which is outside the worktree
+    const r = g.evaluate("Write", { file_path: "../../../etc/passwd" });
+    expect(r.action).toBe("deny");
+    expect(r.reason).toContain("/etc/passwd");
+  });
+
+  test("relative path inside worktree resolves correctly", () => {
+    const g = guard();
+    // ./src/main.ts resolves to WORKTREE/src/main.ts — allowed
+    const r = g.evaluate("Write", { file_path: "./src/main.ts" });
+    expect(r.action).toBe("allow");
+  });
+
+  test("relative traversal in Read resolves against worktree root", () => {
+    const g = guard();
+    const r = g.evaluate("Read", { file_path: "../../../../etc/hosts" });
+    expect(r.action).toBe("warn");
+    expect(r.reason).toContain("/etc/hosts");
+  });
+
+  test("relative traversal in Edit resolves against worktree root", () => {
+    const g = guard();
+    const r = g.evaluate("Edit", { file_path: "../../evil.ts", old_string: "a", new_string: "b" });
+    expect(r.action).toBe("deny");
+  });
+
+  test("relative path to /tmp resolves correctly and is allowed for writes", () => {
+    // A relative path that happens to land in /tmp after resolution is allowed
+    const g = new ContainmentGuard("/tmp/worktree");
+    const r = g.evaluate("Write", { file_path: "./output.txt" });
+    expect(r.action).toBe("allow");
+  });
+});
