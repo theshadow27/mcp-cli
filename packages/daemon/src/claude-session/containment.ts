@@ -110,8 +110,17 @@ function bashTargetsOutsidePath(command: string, worktreeRoot: string): boolean 
 }
 
 // ── Bash file write detection ──
+// Known gap: runtime writes (node -e "fs.writeFileSync(...)", bun run script.ts)
+// cannot be detected via regex — requires filesystem sandboxing (#1475).
 
 const SHELL_WRITE_CMDS = new Set(["cp", "mv", "tee", "ln", "install", "rsync"]);
+
+function unquote(s: string): string {
+  if (s.length >= 2 && ((s[0] === '"' && s.at(-1) === '"') || (s[0] === "'" && s.at(-1) === "'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
 
 function extractBashWriteTargets(command: string): string[] {
   const targets: string[] = [];
@@ -121,21 +130,108 @@ function extractBashWriteTargets(command: string): string[] {
     if (m[1]) targets.push(m[1]);
   }
 
-  // Common write commands with absolute path arguments
-  // Split on command separators to handle chained commands
+  // dd of=/path, of="/path", or of='/path'
+  for (const m of command.matchAll(/\bdd\b[^;|&]*\bof=("(\/[^"]*)"|'(\/[^']*)'|(\/\S+))/g)) {
+    const target = m[2] ?? m[3] ?? m[4];
+    if (target) targets.push(target);
+  }
+
   const segments = command.split(/[;&|]+/);
   for (const seg of segments) {
     const tokens = seg.trim().split(/\s+/);
-    // Skip env var assignments
     let cmdIdx = 0;
     while (cmdIdx < tokens.length && tokens[cmdIdx]?.includes("=") && !tokens[cmdIdx]?.startsWith("-")) cmdIdx++;
     const cmd = tokens[cmdIdx];
-    if (!cmd || !SHELL_WRITE_CMDS.has(cmd)) continue;
+    if (!cmd) continue;
+
+    if (cmd === "sed") {
+      const hasDashI = tokens.some(
+        (t, i) => i > cmdIdx && (t === "-i" || t === "--in-place" || t.startsWith("--in-place=") || /^-[^-]*i/.test(t)),
+      );
+      if (hasDashI) {
+        let expectsScriptArg = false;
+        let sawScript = false;
+        let fileArgStart = -1;
+
+        for (let k = cmdIdx + 1; k < tokens.length; k++) {
+          const t = tokens[k] ?? "";
+
+          if (expectsScriptArg) {
+            expectsScriptArg = false;
+            sawScript = true;
+            continue;
+          }
+
+          if (t === "-e" || t === "-f") {
+            expectsScriptArg = true;
+            continue;
+          }
+
+          if (t.startsWith("--expression=") || t.startsWith("--file=")) {
+            sawScript = true;
+            continue;
+          }
+
+          if (t === "-i" || t === "--in-place" || t.startsWith("--in-place=") || /^-[^-]*i/.test(t)) {
+            continue;
+          }
+
+          if (t === "--") {
+            fileArgStart = k + 1;
+            break;
+          }
+
+          if (t.startsWith("-")) continue;
+
+          if (!sawScript) {
+            sawScript = true;
+            continue;
+          }
+
+          fileArgStart = k;
+          break;
+        }
+
+        if (fileArgStart !== -1) {
+          for (let k = fileArgStart; k < tokens.length; k++) {
+            const raw = tokens[k] ?? "";
+            const t = unquote(raw);
+            if (t.startsWith("/")) {
+              targets.push(t);
+              break;
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    if (cmd === "curl" || cmd === "wget") {
+      const outputFlags = cmd === "curl" ? ["-o", "--output"] : ["-O", "--output-document"];
+      for (let k = cmdIdx + 1; k < tokens.length; k++) {
+        const raw = tokens[k] ?? "";
+        for (const flag of outputFlags) {
+          if (raw.startsWith(`${flag}=`)) {
+            const val = unquote(raw.slice(flag.length + 1));
+            if (val.startsWith("/")) targets.push(val);
+          }
+        }
+        if (outputFlags.includes(raw) && k + 1 < tokens.length) {
+          const val = unquote(tokens[k + 1] ?? "");
+          if (val.startsWith("/")) targets.push(val);
+          k++;
+        }
+      }
+      continue;
+    }
+
+    if (!SHELL_WRITE_CMDS.has(cmd)) continue;
 
     // Extract absolute path arguments (skip flags)
     for (let k = cmdIdx + 1; k < tokens.length; k++) {
-      const t = tokens[k] ?? "";
-      if (t.startsWith("-")) continue;
+      const raw = tokens[k] ?? "";
+      if (raw.startsWith("-")) continue;
+      const t = unquote(raw);
       if (t.startsWith("/")) targets.push(t);
     }
   }

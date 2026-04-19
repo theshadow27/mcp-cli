@@ -373,6 +373,180 @@ describe("ContainmentGuard — bash file write detection", () => {
     expect(r.action).toBe("deny");
     expect(r.strikes).toBe(1);
   });
+
+  test("denies sed -i to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed -i 's/old/new/g' /Users/test/repo/file.ts" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies sed --in-place to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed --in-place 's/old/new/g' /Users/test/repo/file.ts" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("allows sed -i to worktree path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `sed -i 's/old/new/g' ${WORKTREE}/file.ts` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("allows sed without -i (read-only)", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed 's/old/new/g' /Users/test/repo/file.ts" });
+    expect(r.action).toBe("allow");
+  });
+
+  test("denies dd of=/outside/path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "dd if=/dev/zero of=/Users/test/repo/disk.img bs=1M count=10" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("allows dd of= to worktree path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `dd if=/dev/zero of=${WORKTREE}/disk.img bs=1M count=10` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("denies curl -o to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "curl -o /Users/test/repo/file.tar.gz https://example.com/file.tar.gz" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies curl --output to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", {
+      command: "curl --output /Users/test/repo/file.tar.gz https://example.com/file.tar.gz",
+    });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("allows curl -o to worktree path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `curl -o ${WORKTREE}/file.tar.gz https://example.com/file.tar.gz` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("denies wget -O to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "wget -O /Users/test/repo/file.tar.gz https://example.com/file.tar.gz" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies wget --output-document to outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "wget --output-document /Users/test/repo/out.html https://example.com" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("allows wget -O to worktree path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `wget -O ${WORKTREE}/file.tar.gz https://example.com/file.tar.gz` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("denies curl --output=/outside/path (equals form)", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", {
+      command: "curl --output=/Users/test/repo/file.tar.gz https://example.com/file.tar.gz",
+    });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  // ── Quoted path variants ──
+
+  test("denies dd of= with double-quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: 'dd if=/dev/zero of="/Users/test/repo/disk.img" bs=1M' });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies dd of= with single-quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "dd if=/dev/zero of='/Users/test/repo/disk.img' bs=1M" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies sed -i with quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `sed -i 's/old/new/g' "/Users/test/repo/file.ts"` });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies sed -i with single-quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed -i 's/old/new/g' '/Users/test/repo/file.ts'" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("allows sed -i /regex/d with relative file (no false deny)", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed -i /foo/d file.txt" });
+    expect(r.action).toBe("allow");
+  });
+
+  test("allows sed -i /regex/d with worktree file", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `sed -i /foo/d ${WORKTREE}/file.txt` });
+    expect(r.action).toBe("allow");
+  });
+
+  test("denies sed -i /regex/d with outside absolute file", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed -i /foo/d /Users/test/repo/file.txt" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies sed -e script -i with outside file", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "sed -e 's/old/new/' -i /Users/test/repo/file.ts" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies curl -o with double-quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: 'curl -o "/Users/test/repo/file.tar.gz" https://example.com/f' });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies curl --output= with quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: 'curl --output="/Users/test/repo/file.tar.gz" https://example.com/f' });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies wget -O with single-quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "wget -O '/Users/test/repo/file.tar.gz' https://example.com/f" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
+
+  test("denies cp with quoted outside path", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `cp ${WORKTREE}/a.ts "/Users/test/repo/a.ts"` });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
+  });
 });
 
 // ── Adversarial: --work-tree / --git-dir bypass vectors ──
