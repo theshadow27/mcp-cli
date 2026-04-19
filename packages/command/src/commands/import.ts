@@ -244,6 +244,16 @@ function loadMcpConfigFile(filePath: string): McpConfigFile {
   return config;
 }
 
+function importFromMcpFile(filePath: string, scope: ConfigScope): void {
+  const config = loadMcpConfigFile(filePath);
+  const servers = config.mcpServers;
+  if (!servers || Object.keys(servers).length === 0) {
+    console.error(`No servers found in ${filePath}`);
+    return;
+  }
+  importServers(servers, scope, filePath);
+}
+
 export interface CmdImportOptions {
   cwd?: string;
   findFile?: (filename: string, startDir: string) => string | null;
@@ -297,31 +307,16 @@ export async function cmdImport(args: string[], opts?: string | CmdImportOptions
     const found = findFile(PROJECT_MCP_FILENAME, cwd);
     if (!found) {
       console.error(`No ${PROJECT_MCP_FILENAME} found. Falling back to ~/.claude.json…`);
-      await importFromClaude(scope ?? "user", false, undefined, cwd);
+      await importFromClaude(scope ?? "user", all, undefined, cwd);
       return;
     }
-    const config = loadMcpConfigFile(found);
-    const servers = config.mcpServers;
-    if (!servers || Object.keys(servers).length === 0) {
-      console.error(`No servers found in ${found}`);
-      return;
-    }
-    importServers(servers, scope ?? "user", found);
+    importFromMcpFile(found, scope ?? "user");
     return;
   }
 
   const { filePath, defaultScope } = resolveSource(source);
   const effectiveScope = scope ?? defaultScope;
-
-  const config = loadMcpConfigFile(filePath);
-  const servers = config.mcpServers;
-  if (!servers || Object.keys(servers).length === 0) {
-    console.error(`No servers found in ${filePath}`);
-    return;
-  }
-
-  // Import each server
-  importServers(servers, effectiveScope, filePath);
+  importFromMcpFile(filePath, effectiveScope);
 }
 
 export function importServers(servers: ServerConfigMap, scope: ConfigScope, source: string): void {

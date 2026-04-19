@@ -226,13 +226,16 @@ describe("mcx import", () => {
       expect(found).toBe(join(opts.dir, ".mcp.json"));
     });
 
-    test("returns null when no .mcp.json found", () => {
+    test("returns null when no .mcp.json found in controlled dir", () => {
       using opts = testOptions();
       const isolated = join(opts.dir, "isolated");
       mkdirSync(isolated);
 
+      // findFileUpward walks up from isolated. No .mcp.json was placed in opts.dir
+      // or isolated, so the result must not be inside our test directory.
       const result = findFileUpward(".mcp.json", isolated);
-      expect(result === null || typeof result === "string").toBe(true);
+      expect(result).not.toBe(join(isolated, ".mcp.json"));
+      expect(result).not.toBe(join(opts.dir, ".mcp.json"));
     });
   });
 
@@ -504,6 +507,22 @@ describe("mcx import", () => {
 
       const result = readConfigFile(join(opts.dir, "servers.json"));
       expect(result.mcpServers?.notion).toEqual(FIXTURES.notion);
+    });
+
+    test("passes --all flag through to claude.json fallback", async () => {
+      using opts = testOptions({
+        files: {
+          "claude.json": {
+            projects: {
+              "/some/other/path": { mcpServers: { github: FIXTURES.github } },
+            },
+          },
+        },
+      });
+      await cmdImport(["--all"], { cwd: opts.dir, findFile: () => null });
+
+      const result = readConfigFile(join(opts.dir, "servers.json"));
+      expect(result.mcpServers?.github).toEqual(FIXTURES.github);
     });
 
     test("imports from .mcp.json when present, skips fallback", async () => {
