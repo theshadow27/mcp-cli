@@ -322,13 +322,19 @@ export function filterTransitionLog(
   return out.reverse();
 }
 
+const NOTE_MAX_WIDTH = 60;
+
+function truncateNote(s: string): string {
+  return s.length > NOTE_MAX_WIDTH ? `${s.slice(0, NOTE_MAX_WIDTH - 1)}…` : s;
+}
+
 /** Render transition entries as a human-readable table, newest first. */
 export function formatTransitionLog(entries: readonly TransitionLogEntry[]): string[] {
   const rows = entries.map((e) => [
     e.ts,
     e.workItemId ?? "—",
     `${e.from ?? "(initial)"} → ${e.to}`,
-    e.forceMessage ? `FORCED: ${e.forceMessage}` : "",
+    truncateNote(e.forceMessage ? `FORCED: ${e.forceMessage}` : ""),
   ]);
   const headers = ["TIMESTAMP", "WORK-ITEM", "TRANSITION", "NOTE"];
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
