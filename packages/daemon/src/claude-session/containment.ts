@@ -1,13 +1,4 @@
-/**
- * Worktree containment enforcement for Claude Code sessions.
- *
- * Intercepts can_use_tool permission requests and applies tiered policy:
- * - Git writes outside worktree → hard deny (first attempt)
- * - Write/Edit outside worktree → strike-counted (3-strike cap → hard stop)
- * - Read/cd outside worktree → warn only (no strike)
- *
- * See #1441 for design rationale.
- */
+// Worktree containment enforcement — see #1441 for design rationale.
 
 import { resolve } from "node:path";
 
@@ -48,61 +39,110 @@ const GIT_WRITE_SUBCOMMANDS = new Set([
   "rm",
   "switch",
   "restore",
+  "clone",
+  "worktree",
 ]);
 
 const GIT_CMD_PATTERN = /\bgit\b/;
 
-/**
- * Extract the git subcommand from a shell command string.
- * Handles: git commit, git -C /path commit, git --no-pager commit, etc.
- * Returns null if not a git command or subcommand is unrecognized.
- */
 function extractGitSubcommand(command: string): string | null {
   if (!GIT_CMD_PATTERN.test(command)) return null;
 
-  // Tokenize naively — good enough for detecting subcommands.
-  // We don't need a full shell parser; false negatives are acceptable
-  // (the GIT_DIR/GIT_WORK_TREE env pinning is the true guardrail).
   const tokens = command.split(/[;&|]+/).flatMap((seg) => seg.trim().split(/\s+/));
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] !== "git" && !tokens[i]?.endsWith("/git")) continue;
+    const tok = tokens[i] ?? "";
+    // Skip env var assignments before the command (VAR=val git ...)
+    if (tok.includes("=") && !tok.startsWith("-")) continue;
+    if (tok !== "git" && !tok.endsWith("/git")) continue;
 
-    // Skip flags and -C/--git-dir arguments after "git"
     let j = i + 1;
     while (j < tokens.length) {
-      const tok = tokens[j] ?? "";
-      if (tok === "-C" || tok === "--git-dir" || tok === "--work-tree") {
-        j += 2; // skip flag + its argument
-      } else if (tok.startsWith("-")) {
+      const t = tokens[j] ?? "";
+      if (t === "-C" || t === "--git-dir" || t === "--work-tree") {
+        j += 2;
+      } else if (t.startsWith("--work-tree=") || t.startsWith("--git-dir=")) {
+        j++;
+      } else if (t.startsWith("-")) {
         j++;
       } else {
-        return tok;
+        return t;
       }
     }
   }
   return null;
 }
 
-/**
- * Check whether a Bash command explicitly targets a path outside the worktree
- * via `git -C <path>` or `cd <path> &&`.
- */
 function bashTargetsOutsidePath(command: string, worktreeRoot: string): boolean {
+  const outsideWorktree = (p: string) => {
+    const t = resolve(p);
+    return !t.startsWith(`${worktreeRoot}/`) && t !== worktreeRoot;
+  };
+
   // git -C <path>
   const gitCMatch = command.match(/\bgit\s+-C\s+(\S+)/);
-  if (gitCMatch?.[1]) {
-    const target = resolve(gitCMatch[1]);
-    if (!target.startsWith(worktreeRoot)) return true;
-  }
+  if (gitCMatch?.[1] && outsideWorktree(gitCMatch[1])) return true;
 
-  // cd <path> && git ...
-  const cdMatch = command.match(/\bcd\s+(\S+)\s*[;&|]/);
-  if (cdMatch?.[1]) {
-    const target = resolve(cdMatch[1]);
-    if (!target.startsWith(worktreeRoot) && GIT_CMD_PATTERN.test(command)) return true;
-  }
+  // git --work-tree=<path> or git --work-tree <path>
+  const wtEqMatch = command.match(/--work-tree=(\S+)/);
+  if (wtEqMatch?.[1] && outsideWorktree(wtEqMatch[1])) return true;
+  const wtSpaceMatch = command.match(/--work-tree\s+(\S+)/);
+  if (wtSpaceMatch?.[1] && !wtSpaceMatch[1].startsWith("-") && outsideWorktree(wtSpaceMatch[1])) return true;
+
+  // git --git-dir=<path> or git --git-dir <path>
+  const gdEqMatch = command.match(/--git-dir=(\S+)/);
+  if (gdEqMatch?.[1] && outsideWorktree(gdEqMatch[1])) return true;
+  const gdSpaceMatch = command.match(/--git-dir\s+(\S+)/);
+  if (gdSpaceMatch?.[1] && !gdSpaceMatch[1].startsWith("-") && outsideWorktree(gdSpaceMatch[1])) return true;
+
+  // GIT_DIR=<path> or GIT_WORK_TREE=<path> env var prefixes
+  const envDirMatch = command.match(/\bGIT_DIR=(\S+)/);
+  if (envDirMatch?.[1] && outsideWorktree(envDirMatch[1])) return true;
+  const envWtMatch = command.match(/\bGIT_WORK_TREE=(\S+)/);
+  if (envWtMatch?.[1] && outsideWorktree(envWtMatch[1])) return true;
+
+  // cd / pushd <path> followed by a command separator
+  const cdMatch = command.match(/\b(?:cd|pushd)\s+(\S+)\s*[;&|)]/);
+  if (cdMatch?.[1] && outsideWorktree(cdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
+
+  // bash -c "cd <path> && ..." or subshell (cd <path> && ...)
+  const subshellCdMatch = command.match(/(?:bash\s+-c\s+["']|[(])\s*cd\s+(\S+)/);
+  if (subshellCdMatch?.[1] && outsideWorktree(subshellCdMatch[1]) && GIT_CMD_PATTERN.test(command)) return true;
 
   return false;
+}
+
+// ── Bash file write detection ──
+
+const SHELL_WRITE_CMDS = new Set(["cp", "mv", "tee", "ln", "install", "rsync"]);
+
+function extractBashWriteTargets(command: string): string[] {
+  const targets: string[] = [];
+
+  // Shell redirects: > /path or >> /path (only absolute paths)
+  for (const m of command.matchAll(/>{1,2}\s*(\/\S+)/g)) {
+    if (m[1]) targets.push(m[1]);
+  }
+
+  // Common write commands with absolute path arguments
+  // Split on command separators to handle chained commands
+  const segments = command.split(/[;&|]+/);
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    // Skip env var assignments
+    let cmdIdx = 0;
+    while (cmdIdx < tokens.length && tokens[cmdIdx]?.includes("=") && !tokens[cmdIdx]?.startsWith("-")) cmdIdx++;
+    const cmd = tokens[cmdIdx];
+    if (!cmd || !SHELL_WRITE_CMDS.has(cmd)) continue;
+
+    // Extract absolute path arguments (skip flags)
+    for (let k = cmdIdx + 1; k < tokens.length; k++) {
+      const t = tokens[k] ?? "";
+      if (t.startsWith("-")) continue;
+      if (t.startsWith("/")) targets.push(t);
+    }
+  }
+
+  return targets;
 }
 
 // ── File path extraction ──
@@ -187,26 +227,28 @@ export class ContainmentGuard {
     const command = typeof input.command === "string" ? input.command : "";
     if (!command) return { action: "allow", reason: "", strikes: this._strikes };
 
+    // Check git write commands
     const subcommand = extractGitSubcommand(command);
-    if (!subcommand) return { action: "allow", reason: "", strikes: this._strikes };
-
-    // Only enforce on git write subcommands
-    if (!GIT_WRITE_SUBCOMMANDS.has(subcommand)) {
-      return { action: "allow", reason: "", strikes: this._strikes };
+    if (subcommand && GIT_WRITE_SUBCOMMANDS.has(subcommand)) {
+      if (bashTargetsOutsidePath(command, this.worktreeRoot)) {
+        return {
+          action: "deny",
+          reason: `Git write command "git ${subcommand}" targets path outside worktree ${this.worktreeRoot}. This is never allowed.`,
+          event: "session:containment_denied",
+          strikes: this._strikes,
+        };
+      }
     }
 
-    // Check if the command explicitly targets outside the worktree
-    if (bashTargetsOutsidePath(command, this.worktreeRoot)) {
-      return {
-        action: "deny",
-        reason: `Git write command "git ${subcommand}" targets path outside worktree ${this.worktreeRoot}. This is never allowed.`,
-        event: "session:containment_denied",
-        strikes: this._strikes,
-      };
+    // Check shell file writes (redirects, cp, mv, tee, ln, etc.)
+    const writeTargets = extractBashWriteTargets(command);
+    for (const target of writeTargets) {
+      if (isAllowedExternalPath(target)) continue;
+      if (isPathOutside(target, this.worktreeRoot)) {
+        return this.evaluateFileAccess("Bash", target);
+      }
     }
 
-    // Git write commands without explicit external path are allowed —
-    // the GIT_DIR/GIT_WORK_TREE env vars pin git to the worktree.
     return { action: "allow", reason: "", strikes: this._strikes };
   }
 
