@@ -13,6 +13,7 @@ import type {
   IpcResponse,
   LiveSpan,
   Logger,
+  Manifest,
   ResolvedConfig,
   ServeInstanceInfo,
   ServerAuthStatus,
@@ -66,6 +67,7 @@ import {
   consoleLogger,
   hardenFile,
   isDefineAlias,
+  loadManifest,
   options,
   safeAliasPath,
   startSpan,
@@ -110,6 +112,7 @@ export class IpcServer {
   private getWsPortInfo: (() => { actual: number | null; expected: number }) | null = null;
   private getQuotaStatus: (() => IpcMethodResult["quotaStatus"]) | null = null;
   private resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null = null;
+  private loadManifestFn: ((repoRoot: string) => Manifest | null) | null = null;
   private aliasServer: AliasServer | null = null;
   private daemonId: string;
   private startedAt: number;
@@ -136,6 +139,8 @@ export class IpcServer {
       getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
       /** Resolve an issue/PR number to its associated PR number via GitHub API. */
       resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
+      /** Load a manifest from the given repo root; injected for testability. Defaults to core loadManifest. */
+      loadManifest?: (repoRoot: string) => Manifest | null;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -149,6 +154,7 @@ export class IpcServer {
     this.getWsPortInfo = options.getWsPortInfo ?? null;
     this.getQuotaStatus = options.getQuotaStatus ?? null;
     this.resolveIssuePr = options.resolveIssuePr ?? null;
+    this.loadManifestFn = options.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null);
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
     this.workItemDb = new WorkItemDb(this.db.getDatabase());
     this.registerHandlers();
@@ -1102,7 +1108,22 @@ export class IpcServer {
     // -- Work item tracking --
 
     this.handlers.set("trackWorkItem", async (params, _ctx) => {
-      const { number, branch, initialPhase } = TrackWorkItemParamsSchema.parse(params);
+      const { number, branch, initialPhase, repoRoot } = TrackWorkItemParamsSchema.parse(params);
+
+      // Validate initialPhase server-side when a manifest is available (#1351).
+      // When no manifest is present (repoRoot absent or manifest missing), accept any string.
+      if (initialPhase && repoRoot && this.loadManifestFn) {
+        const manifest = this.loadManifestFn(repoRoot);
+        if (manifest) {
+          const declared = Object.keys(manifest.phases);
+          if (!declared.includes(initialPhase)) {
+            throw Object.assign(
+              new Error(`unknown initialPhase "${initialPhase}". declared phases: ${declared.join(", ")}.`),
+              { code: IPC_ERROR.INVALID_PARAMS },
+            );
+          }
+        }
+      }
 
       // Check if already tracked
       if (number) {
@@ -1121,8 +1142,6 @@ export class IpcServer {
 
       // Create the item immediately (non-blocking) so the caller isn't waiting on GitHub
       const id = number ? `#${number}` : `branch:${branch}`;
-      // initialPhase comes from the caller's manifest (#1287), so it's already identifier-validated.
-      // Cast to WorkItemPhase to satisfy the narrower type; DB stores arbitrary phase strings.
       const item = this.workItemDb.createWorkItem({
         id,
         issueNumber: number ?? null,

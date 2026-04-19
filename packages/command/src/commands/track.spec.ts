@@ -67,7 +67,7 @@ describe("cmdTrack", () => {
     });
 
     await cmdTrack(["1135"], deps);
-    expect(captured).toEqual({ number: 1135 });
+    expect(captured).toEqual({ number: 1135, repoRoot: expect.any(String) });
   });
 
   test("tracks a branch", async () => {
@@ -81,7 +81,7 @@ describe("cmdTrack", () => {
     });
 
     await cmdTrack(["--branch", "feat/test"], deps);
-    expect(captured).toEqual({ branch: "feat/test" });
+    expect(captured).toEqual({ branch: "feat/test", repoRoot: expect.any(String) });
   });
 
   test("rejects missing args", async () => {
@@ -351,7 +351,7 @@ describe("formatWorkItemRow", () => {
           return cmdTrack(["1135"], deps);
         },
       );
-      expect(captured).toEqual({ number: 1135, initialPhase: "plan" });
+      expect(captured).toEqual({ number: 1135, initialPhase: "plan", repoRoot: expect.any(String) });
     });
 
     test("cmdTracked --json annotates phaseValid from manifest", async () => {
