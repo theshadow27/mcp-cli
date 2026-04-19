@@ -9,6 +9,7 @@ import { dirname, resolve } from "node:path";
 import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   cleanupWorktree,
@@ -1415,7 +1416,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         timeout = Number(val);
         if (Number.isNaN(timeout)) {
           error = "--timeout must be a number";
-        } else if (timeout > 299_000) {
+        } else if (timeout > MAX_TIMEOUT_MS) {
           error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout ${DEFAULT_TIMEOUT_MS} (4:30) or loop with shorter waits.`;
         }
       }
