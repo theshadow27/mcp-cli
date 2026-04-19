@@ -152,6 +152,69 @@ describe("stripModuleSyntax", () => {
     const result = stripMcpCliImport(input);
     expect(result.trim()).toBe("");
   });
+
+  describe("@mcp-cli/core rewrite", () => {
+    test("rewrites named ESM import", () => {
+      const input = `import { findModelInSprintPlan } from "@mcp-cli/core";\nconst m = findModelInSprintPlan(1, ".");`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const { findModelInSprintPlan } = __mcp_core__;");
+      expect(result).not.toContain("@mcp-cli/core");
+    });
+
+    test("rewrites multiple named imports", () => {
+      const input = `import { foo, bar, baz } from "@mcp-cli/core";\nfoo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const { foo, bar, baz } = __mcp_core__;");
+    });
+
+    test("rewrites multi-line named imports (Bun.build output)", () => {
+      const input = `import {\n  findModelInSprintPlan,\n  parseModelFromSprintTable\n} from "@mcp-cli/core";\nfoo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toMatch(/const \{\s*findModelInSprintPlan, parseModelFromSprintTable\s*\} = __mcp_core__;/);
+    });
+
+    test("rewrites aliased imports (X as Y)", () => {
+      const input = `import { findModelInSprintPlan as find } from "@mcp-cli/core";\nfind(1, ".");`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const { findModelInSprintPlan: find } = __mcp_core__;");
+    });
+
+    test("rewrites namespace import", () => {
+      const input = `import * as core from "@mcp-cli/core";\ncore.foo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const core = __mcp_core__;");
+    });
+
+    test("rewrites default import", () => {
+      const input = `import core from "@mcp-cli/core";\ncore.foo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const core = __mcp_core__.default ?? __mcp_core__;");
+    });
+
+    test("drops side-effect import", () => {
+      const input = `import "@mcp-cli/core";\nvar x = 1;`;
+      expect(stripModuleSyntax(input).trim()).toBe("var x = 1;");
+    });
+
+    test("rewrites CJS named require", () => {
+      const input = `var { foo } = require("@mcp-cli/core");\nfoo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("var { foo } = __mcp_core__;");
+    });
+
+    test("rewrites CJS namespace require", () => {
+      const input = `const core = require("@mcp-cli/core");\ncore.foo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).toContain("const core = __mcp_core__;");
+    });
+
+    test("preserves mcp-cli stripping alongside core rewrite", () => {
+      const input = `import { defineAlias } from "mcp-cli";\nimport { findModelInSprintPlan } from "@mcp-cli/core";\nfoo();`;
+      const result = stripModuleSyntax(input);
+      expect(result).not.toContain('from "mcp-cli"');
+      expect(result).toContain("const { findModelInSprintPlan } = __mcp_core__;");
+    });
+  });
 });
 
 describe("bundleAlias", () => {
@@ -184,6 +247,49 @@ describe("bundleAlias", () => {
     writeFileSync(scriptPath, "this is not valid typescript {{{");
 
     await expect(bundleAlias(scriptPath)).rejects.toThrow();
+  });
+
+  test("externalizes @mcp-cli/core (end-to-end)", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "core-import.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        'import { findModelInSprintPlan } from "@mcp-cli/core";',
+        "defineAlias({",
+        '  name: "core-import-test",',
+        "  input: z.object({}),",
+        "  fn: () => ({ hasFn: typeof findModelInSprintPlan === 'function' }),",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    // The bundled output should reference @mcp-cli/core (externalized, not inlined)
+    expect(js).toContain("@mcp-cli/core");
+    // After strip, the import is rewritten to use __mcp_core__
+    const stripped = stripModuleSyntax(js);
+    expect(stripped).toContain("__mcp_core__");
+    expect(stripped).not.toMatch(/import[^;]*from\s*["']@mcp-cli\/core["']/);
+
+    // Execute and verify the core function is reachable at runtime
+    const result = await executeAliasBundled(
+      js,
+      {},
+      {
+        mcp: stubProxy,
+        args: {},
+        file: async () => "",
+        json: async () => null,
+        cache: async (_k, p) => p(),
+        state: stubState,
+        globalState: stubState,
+        workItem: null,
+      },
+      true,
+    );
+    expect(result).toEqual({ hasFn: true });
   });
 });
 
