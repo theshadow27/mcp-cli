@@ -157,7 +157,7 @@ function extractFilePath(toolName: string, input: Record<string, unknown>): stri
 }
 
 function isPathOutside(filePath: string, worktreeRoot: string): boolean {
-  const resolved = resolve(filePath);
+  const resolved = resolve(worktreeRoot, filePath);
   return !resolved.startsWith(`${worktreeRoot}/`) && resolved !== worktreeRoot;
 }
 
@@ -165,8 +165,8 @@ function isPathOutside(filePath: string, worktreeRoot: string): boolean {
 
 const ALLOWED_EXTERNAL_PREFIXES = ["/tmp", "/var/tmp", "/private/tmp"];
 
-function isAllowedExternalPath(filePath: string): boolean {
-  const resolved = resolve(filePath);
+function isAllowedExternalPath(filePath: string, baseDir: string): boolean {
+  const resolved = resolve(baseDir, filePath);
   return ALLOWED_EXTERNAL_PREFIXES.some((p) => resolved.startsWith(`${p}/`) || resolved === p);
 }
 
@@ -240,7 +240,7 @@ export class ContainmentGuard {
     // Check shell file writes (redirects, cp, mv, tee, ln, etc.)
     const writeTargets = extractBashWriteTargets(command);
     for (const target of writeTargets) {
-      if (isAllowedExternalPath(target)) continue;
+      if (isAllowedExternalPath(target, this.worktreeRoot)) continue;
       if (isPathOutside(target, this.worktreeRoot)) {
         return this.evaluateFileAccess("Bash", target);
       }
@@ -250,7 +250,7 @@ export class ContainmentGuard {
   }
 
   private evaluateFileAccess(toolName: string, filePath: string): ContainmentResult {
-    const resolved = resolve(filePath);
+    const resolved = resolve(this.worktreeRoot, filePath);
 
     // Read-class tools: warn only, no strike
     if (toolName === "Read" || toolName === "Glob" || toolName === "Grep") {
@@ -264,7 +264,7 @@ export class ContainmentGuard {
 
     // Write/Edit: strike-counted gray zone
     // Allow /tmp writes without penalty
-    if (isAllowedExternalPath(filePath)) {
+    if (isAllowedExternalPath(filePath, this.worktreeRoot)) {
       return { action: "allow", reason: "", strikes: this._strikes };
     }
 
