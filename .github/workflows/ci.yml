@@ -105,7 +105,7 @@ jobs:
             echo "::warning::Bun crash (exit $code) after all coverage tests passed — treating as pass (see #1004, #1419)"
             exit 0
           elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
-            echo "::warning::Bun segfault (exit $code) — retrying once (see #1004)"
+            echo "::warning::Bun crash (exit $code) — retrying once (see #1004)"
             bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_retry.txt
             code2=${PIPESTATUS[0]}
             if [ $code2 -eq 0 ]; then
@@ -117,7 +117,7 @@ jobs:
               echo "::warning::Bun crash (exit $code2) on retry after all coverage tests passed — treating as pass (see #1004, #1419)"
               exit 0
             elif [ $code2 -eq 132 ] || [ $code2 -eq 139 ]; then
-              echo "::warning::Bun segfault on retry too — treating as pass (known upstream bug, see #1004)"
+              echo "::warning::Bun crash on retry too — treating as pass (known upstream bug, see #1004)"
               exit 0
             else
               exit $code2
