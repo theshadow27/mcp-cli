@@ -14,6 +14,23 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { WorkItemDb } from "./db/work-items";
 
+const WORK_ITEMS_UPDATE_KNOWN_KEYS = new Set([
+  "id",
+  "phase",
+  "repoRoot",
+  "force",
+  "forceReason",
+  "prNumber",
+  "prState",
+  "prUrl",
+  "ciStatus",
+  "ciRunId",
+  "ciSummary",
+  "reviewStatus",
+  "branch",
+  "issueNumber",
+]);
+
 /** Parse a value to integer, returning undefined if absent or NaN. */
 function parseIntOrUndefined(value: unknown): number | undefined {
   if (value === undefined) return undefined;
@@ -290,6 +307,19 @@ export class WorkItemsServer {
             const id = String(a.id ?? "");
             if (!id) {
               return { content: [{ type: "text" as const, text: "id is required" }], isError: true };
+            }
+
+            const unknownKeys = Object.keys(a).filter((k) => !WORK_ITEMS_UPDATE_KNOWN_KEYS.has(k));
+            if (unknownKeys.length > 0) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts work-item columns (${[...WORK_ITEMS_UPDATE_KNOWN_KEYS].filter((k) => k !== "id").join(", ")}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase handler ctx.state to read/write it.`,
+                  },
+                ],
+                isError: true,
+              };
             }
 
             const force = a.force === true;

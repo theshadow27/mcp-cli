@@ -851,6 +851,71 @@ describe("WorkItemsServer", () => {
     expect(calls).toEqual([1420]);
   });
 
+  test("work_items_update rejects unknown keys (#1445)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 42 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:42", qa_session_id: "abc-123", session_id: "def-456" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("Unknown keys");
+    expect(content[0].text).toContain("qa_session_id");
+    expect(content[0].text).toContain("session_id");
+    expect(content[0].text).toContain("Phase-namespace state");
+  });
+
+  test("work_items_update rejects mix of known and unknown keys (#1445)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 42 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:42", ciStatus: "passed", model: "opus" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("model");
+    // Only "model" should be listed as unknown, not "ciStatus"
+    expect(content[0].text).toMatch(/^Unknown keys: model\./);
+  });
+
+  test("work_items_update accepts all known keys without error", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 42 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: {
+        id: "pr:42",
+        phase: "review",
+        ciStatus: "passed",
+        reviewStatus: "approved",
+        prState: "open",
+        prUrl: "https://example.com",
+        ciRunId: 123,
+        ciSummary: "all green",
+        branch: "feat/test",
+        issueNumber: 99,
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+  });
+
   test("work_items_track does not auto-resolve when branch is explicitly provided", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
