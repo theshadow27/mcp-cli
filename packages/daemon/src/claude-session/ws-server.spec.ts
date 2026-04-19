@@ -669,6 +669,34 @@ describe("ClaudeWsServer", () => {
     expect(sessions[0].spawnAlive).toBe(false);
   });
 
+  test("process exit auto-terminates idle session instead of leaving disconnected", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Drive session to idle: connect WS, send init + result
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+    ws.close();
+    // Process exits after session completed work
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().length === 0);
+
+    // Session should be fully terminated, not left as disconnected
+    expect(server.listSessions().length).toBe(0);
+    expect(events.some((e) => e.type === "session:ended")).toBe(true);
+  });
+
   test("WS close marks session as disconnected and rejects result waiters", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

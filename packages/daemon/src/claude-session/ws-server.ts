@@ -714,7 +714,7 @@ export class ClaudeWsServer {
         })
       : Promise.resolve();
 
-    // Watch for process exit — mark spawn as dead but don't terminate the session
+    // Watch for process exit
     proc.exited.then(async () => {
       // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
@@ -724,8 +724,20 @@ export class ClaudeWsServer {
       // the process, but the pipe may still have buffered data.
       await drainDone;
       const suffix = procStderrLines.length > 0 ? `: ${procStderrLines.join("\n")}` : "";
-      this.logger.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid})${suffix}`);
-      // Move to disconnected state regardless of WS — spawn is gone
+      const prevState = session.state.state;
+      this.logger.error(`[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid}, was ${prevState})${suffix}`);
+
+      // If the session already completed its work (idle), auto-terminate
+      // instead of leaving a zombie disconnected session that consumes no
+      // tokens but clutters ls output and confuses orchestrators.
+      if (prevState === "idle") {
+        this.logger.info(`[_claude] Auto-terminating idle session ${sessionId} after process exit`);
+        await this.terminateSession(sessionId, session, "Process exited after completion");
+        return;
+      }
+
+      // For non-idle sessions, transition to disconnected — the orchestrator
+      // may still want to inspect them or they may reconnect.
       const events = session.state.disconnect("spawn exited");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
@@ -1255,6 +1267,7 @@ export class ClaudeWsServer {
    * that detects a broken WS — not just handleClose.
    */
   private disconnectSessionWs(sessionId: string, session: WsSession, reason: string): void {
+    const prevState = session.state.state;
     session.ws = null;
 
     if (session.keepAliveTimer) {
@@ -1262,8 +1275,18 @@ export class ClaudeWsServer {
       session.keepAliveTimer = null;
     }
 
+    // If the session was idle (work complete) and the process is dead,
+    // auto-terminate instead of leaving a zombie disconnected entry.
+    if (prevState === "idle" && !session.spawnAlive) {
+      this.logger.info(`[_claude] Auto-terminating idle session ${sessionId} on WS disconnect (spawn dead)`);
+      this.terminateSession(sessionId, session, "WS disconnected after completion").catch((err) => {
+        this.logger.error(`[_claude] Auto-terminate failed for ${sessionId}: ${err}`);
+      });
+      return;
+    }
+
     // Transition state if not already ended/disconnected/clearing
-    if (session.state.state !== "ended" && session.state.state !== "disconnected" && !session.clearing) {
+    if (prevState !== "ended" && prevState !== "disconnected" && !session.clearing) {
       const events = session.state.disconnect(reason);
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
