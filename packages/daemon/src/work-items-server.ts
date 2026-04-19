@@ -173,7 +173,10 @@ const TOOLS = [
         workItemId: { type: "string", description: "Work item ID" },
         repoRoot: { type: "string", description: "Absolute path to repo root" },
         key: { type: "string", description: "State key to write" },
-        value: { description: "JSON-serialisable value to store (max 256 KB). Use phase_state_delete to remove." },
+        value: {
+          type: ["string", "number", "boolean", "object", "array", "null"] as const,
+          description: "JSON-serialisable value to store (max 256 KB). Use phase_state_delete to remove.",
+        },
       },
       required: ["workItemId", "repoRoot", "key", "value"],
     },
