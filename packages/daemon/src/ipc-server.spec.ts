@@ -2093,11 +2093,12 @@ describe("IpcServer HTTP transport", () => {
 
   describe("trackWorkItem initialPhase server-side validation", () => {
     const fakeManifest = {
-      version: 1,
+      version: 1 as const,
+      initial: "impl",
       phases: { impl: { source: "./impl.ts" }, review: { source: "./review.ts" } },
     };
 
-    function startWithLoadManifest(loadManifest: (repoRoot: string) => unknown): void {
+    function startWithLoadManifest(loadManifest: (repoRoot: string) => typeof fakeManifest | null): void {
       socketPath = tmpSocket();
       server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
         ...opts(),
@@ -2116,6 +2117,7 @@ describe("IpcServer HTTP transport", () => {
       });
       const json = (await res.json()) as IpcResponse;
       expect(json.error).toBeDefined();
+      expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
       expect(json.error?.message).toContain("unknown initialPhase");
       expect(json.error?.message).toContain("bogus");
       expect(json.error?.message).toContain("impl");

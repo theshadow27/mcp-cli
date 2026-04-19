@@ -1117,7 +1117,10 @@ export class IpcServer {
         if (manifest) {
           const declared = Object.keys(manifest.phases);
           if (!declared.includes(initialPhase)) {
-            throw new Error(`unknown initialPhase "${initialPhase}". declared phases: ${declared.join(", ")}.`);
+            throw Object.assign(
+              new Error(`unknown initialPhase "${initialPhase}". declared phases: ${declared.join(", ")}.`),
+              { code: IPC_ERROR.INVALID_PARAMS },
+            );
           }
         }
       }
