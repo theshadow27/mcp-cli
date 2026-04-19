@@ -171,6 +171,9 @@ describe("WorkItemDb", () => {
       expect(db.listTransitions(item.id).length).toBeGreaterThan(0);
       db.deleteWorkItem(item.id);
       expect(db.listTransitions(item.id)).toHaveLength(0);
+      const rawDb: Database = (db as unknown as { db: Database }).db;
+      const row = rawDb.query("SELECT COUNT(*) as c FROM work_items WHERE id = ?").get(item.id) as { c: number } | null;
+      expect(row?.c ?? 0).toBe(0);
     });
   });
 
