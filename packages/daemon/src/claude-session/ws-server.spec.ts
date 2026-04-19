@@ -669,7 +669,7 @@ describe("ClaudeWsServer", () => {
     expect(sessions[0].spawnAlive).toBe(false);
   });
 
-  test("process exit auto-terminates idle session instead of leaving disconnected", async () => {
+  test("process exit auto-terminates completed session (proc exits while idle)", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     const port = await server.start();
@@ -693,6 +693,37 @@ describe("ClaudeWsServer", () => {
     await pollUntil(() => server?.listSessions().length === 0);
 
     // Session should be fully terminated, not left as disconnected
+    expect(server.listSessions().length).toBe(0);
+    expect(events.some((e) => e.type === "session:ended")).toBe(true);
+  });
+
+  test("WS-close-then-exit auto-terminates completed session (not zombie disconnected)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    const events: SessionEvent[] = [];
+    server.onSessionEvent = (_id, event) => events.push(event);
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Drive session to idle
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+    // WS closes first — session transitions to disconnected while spawn is still alive
+    ws.close();
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    // Now process exits — should auto-terminate because workCompleted is set,
+    // even though state is already "disconnected" (not "idle")
+    ms.exitResolve(0);
+    await pollUntil(() => server?.listSessions().length === 0);
+
     expect(server.listSessions().length).toBe(0);
     expect(events.some((e) => e.type === "session:ended")).toBe(true);
   });
