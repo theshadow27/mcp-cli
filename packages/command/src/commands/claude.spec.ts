@@ -2,7 +2,6 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from "@mcp-cli/core";
 import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
 import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
@@ -35,7 +34,6 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
   return {
     callTool: mock(async () => ({ content: [{ type: "text", text: "[]" }] })),
     printError: mock(() => {}),
-    printStatus: mock(() => {}),
     exit: mock((code: number) => {
       throw new ExitError(code);
     }) as ClaudeDeps["exit"],
@@ -1621,8 +1619,8 @@ describe("mcx claude bye", () => {
       if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printStatus });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
@@ -1634,9 +1632,9 @@ describe("mcx claude bye", () => {
       );
       expect(removeCalls.length).toBe(1);
       expect(removeCalls[0][0]).toContain("/repo/.claude/worktrees/claude-abc123");
-      // Removal message goes to printStatus (no "Error:" prefix)
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
+      // Should print removal message via printError
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
     } finally {
       console.log = origLog;
     }
@@ -1652,8 +1650,8 @@ describe("mcx claude bye", () => {
       if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printStatus });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
@@ -1666,8 +1664,8 @@ describe("mcx claude bye", () => {
       expect(removeCalls.length).toBe(1);
       // The worktree path should contain the worktree name
       expect(removeCalls[0][0].join(" ")).toContain("claude-abc123");
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
     } finally {
       console.log = origLog;
     }
@@ -2068,22 +2066,22 @@ describe("parseWaitArgs", () => {
     expect(result.error).toBe("--timeout requires a value in ms");
   });
 
-  test("rejects --timeout > MAX_TIMEOUT_MS (cache TTL cap)", () => {
-    const result = parseWaitArgs(["--timeout", String(MAX_TIMEOUT_MS + 1)]);
+  test("rejects --timeout > 299000ms (cache TTL cap)", () => {
+    const result = parseWaitArgs(["--timeout", "300000"]);
     expect(result.error).toContain("exceeds 4:59 cache-safe limit");
-    expect(result.error).toContain(`${MAX_TIMEOUT_MS + 1}ms`);
+    expect(result.error).toContain("300000ms");
   });
 
-  test("accepts --timeout at cache-safe boundary (MAX_TIMEOUT_MS)", () => {
-    const result = parseWaitArgs(["--timeout", String(MAX_TIMEOUT_MS)]);
+  test("accepts --timeout at cache-safe boundary (299000)", () => {
+    const result = parseWaitArgs(["--timeout", "299000"]);
     expect(result.error).toBeUndefined();
-    expect(result.timeout).toBe(MAX_TIMEOUT_MS);
+    expect(result.timeout).toBe(299000);
   });
 
-  test("accepts recommended --timeout DEFAULT_TIMEOUT_MS", () => {
-    const result = parseWaitArgs(["--timeout", String(DEFAULT_TIMEOUT_MS)]);
+  test("accepts recommended --timeout 270000", () => {
+    const result = parseWaitArgs(["--timeout", "270000"]);
     expect(result.error).toBeUndefined();
-    expect(result.timeout).toBe(DEFAULT_TIMEOUT_MS);
+    expect(result.timeout).toBe(270000);
   });
 
   test("parses --after flag", () => {
@@ -3080,8 +3078,8 @@ describe("mcx claude bye branch cleanup", () => {
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printStatus });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
@@ -3093,9 +3091,8 @@ describe("mcx claude bye branch cleanup", () => {
       );
       expect(branchCalls.length).toBe(1);
       expect(branchCalls[0][0]).toContain("feat/issue-42");
-      // Status messages (no error prefix) go to printStatus
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Deleted branch: feat/issue-42 (safe to delete)");
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Deleted branch: feat/issue-42 (merged)");
     } finally {
       console.log = origLog;
     }
@@ -3113,16 +3110,16 @@ describe("mcx claude bye branch cleanup", () => {
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 }; // unmerged
       return { stdout: "", stderr: "", exitCode: 0 };
     });
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printStatus });
+    const printError = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["bye", "def"], deps);
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
-      expect(statusOutput).not.toContain("Deleted branch:");
+      const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).not.toContain("Deleted branch:");
     } finally {
       console.log = origLog;
     }
@@ -3239,17 +3236,15 @@ describe("mcx claude worktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printError, printStatus });
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["worktrees", "--prune"], deps);
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
-      expect(statusOutput).toContain("Deleted branch: feat/orphan (safe to delete)");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Deleted branch: feat/orphan (merged)");
       expect(errOutput).toContain("Pruned 1 worktree.");
     } finally {
       console.log = origLog;
@@ -3424,17 +3419,15 @@ describe("mcx claude worktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printError, printStatus });
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["worktrees", "--prune"], deps);
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
-      expect(statusOutput).toContain("Deleted branch: feat/done (safe to delete)");
+      expect(errOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Deleted branch: feat/done (merged)");
       expect(errOutput).toContain("Pruned 1 worktree.");
     } finally {
       console.log = origLog;
@@ -3468,17 +3461,15 @@ describe("mcx claude worktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printError, printStatus });
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["worktrees", "--prune"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(errOutput).toContain("Warning: could not determine merged branches");
-      expect(statusOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Removed worktree:");
       expect(errOutput).toContain("Pruned 1 worktree.");
     } finally {
       console.log = origLog;
@@ -3512,18 +3503,16 @@ describe("mcx claude worktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
-    const printStatus = mock(() => {});
-    const deps = makeDeps({ callTool, exec, printError, printStatus });
+    const deps = makeDeps({ callTool, exec, printError });
 
     const origLog = console.log;
     console.log = mock(() => {});
     try {
       await cmdClaude(["worktrees", "--prune"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      const statusOutput = printStatus.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(statusOutput).toContain("Removed worktree:");
+      expect(errOutput).toContain("Removed worktree:");
       expect(errOutput).toContain("Pruned 1 worktree.");
-      expect(statusOutput).not.toContain("Deleted branch:");
+      expect(errOutput).not.toContain("Deleted branch:");
     } finally {
       console.log = origLog;
     }
