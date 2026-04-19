@@ -723,6 +723,41 @@ describe("explainTransition", () => {
     expect(r.kind).toBe("disallowed");
     expect(r.message).toContain("already");
   });
+
+  test("cycle: from-phase is in a cycle but cannot reach to-phase", () => {
+    // Manifest: entry → left → right → left (left/right form a cycle).
+    // Asking left → entry: left is in a cycle, has no forward path to entry,
+    // but entry can reach left — should return kind:"cycle", not "regression".
+    const cycleManifest = loadTestManifest(
+      `
+initial: entry
+phases:
+  entry:
+    source: ./entry.ts
+    next: [left]
+  left:
+    source: ./left.ts
+    next: [right]
+  right:
+    source: ./right.ts
+    next: [left]
+`.trim(),
+    );
+    const r = explainTransition(cycleManifest, "left", "entry");
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("cycle");
+    expect(r.message).toContain("cycle");
+    expect(r.message).toContain("entry");
+    expect(r.path).toBeDefined();
+  });
+
+  test("regression stays regression when from-phase is NOT in a cycle", () => {
+    // done is terminal (not in a cycle), so done → impl is a plain regression
+    const r = explainTransition(m, "done", "impl");
+    expect(r.legal).toBe(false);
+    expect(r.kind).toBe("regression");
+    expect(r.message).toContain("regress");
+  });
 });
 
 describe("buildPhaseList / formatPhaseTable", () => {

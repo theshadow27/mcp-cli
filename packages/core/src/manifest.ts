@@ -220,6 +220,68 @@ export function validateManifest(raw: unknown, path: string): Manifest {
 }
 
 /**
+ * Detect all cycles in the phase graph using DFS back-edge detection.
+ * Returns each cycle as a closed path array: `[a, b, ..., a]` where the
+ * last element repeats the first. A manifest with no cycles returns `[]`.
+ *
+ * Cycles are intentional in many sprint manifests (e.g. review → repair →
+ * review). This function lets callers inspect or report them without
+ * treating them as errors.
+ */
+export function detectCycles(manifest: Manifest): string[][] {
+  const visited = new Set<string>();
+  const onStack = new Set<string>();
+  const cycles: string[][] = [];
+
+  function dfs(node: string, stack: string[]): void {
+    visited.add(node);
+    onStack.add(node);
+    stack.push(node);
+
+    for (const next of manifest.phases[node]?.next ?? []) {
+      if (!visited.has(next)) {
+        dfs(next, stack);
+      } else if (onStack.has(next)) {
+        const cycleStart = stack.indexOf(next);
+        cycles.push([...stack.slice(cycleStart), next]);
+      }
+    }
+
+    stack.pop();
+    onStack.delete(node);
+  }
+
+  for (const phase of Object.keys(manifest.phases)) {
+    if (!visited.has(phase)) {
+      dfs(phase, []);
+    }
+  }
+
+  return cycles;
+}
+
+/**
+ * Returns true if the given phase is part of at least one cycle (i.e., it
+ * can reach itself, whether directly via a self-loop or through other phases).
+ */
+export function isPhaseInCycle(manifest: Manifest, phase: string): boolean {
+  const neighbors = manifest.phases[phase]?.next ?? [];
+  const queue = [...neighbors];
+  const seen = new Set<string>();
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++];
+    if (node === phase) return true;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    for (const next of manifest.phases[node]?.next ?? []) {
+      queue.push(next);
+    }
+  }
+  return false;
+}
+
+/**
  * Load and validate a manifest from `dir`. Returns null if no manifest file
  * exists. Throws ManifestError on parse, size, or validation failure.
  */

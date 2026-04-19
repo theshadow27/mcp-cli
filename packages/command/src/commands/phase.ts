@@ -53,6 +53,7 @@ import {
   ipcCall,
   isCommitted,
   isDefineAlias,
+  isPhaseInCycle,
   loadManifest,
   parseLockfile,
   readAllTransitions,
@@ -1357,7 +1358,7 @@ export function formatPhaseShow(info: PhaseShowInfo): string[] {
 
 export interface PhaseWhyResult {
   legal: boolean;
-  kind: "direct" | "indirect" | "unknown-phase" | "disallowed" | "regression";
+  kind: "direct" | "indirect" | "unknown-phase" | "disallowed" | "regression" | "cycle";
   from: string;
   to: string;
   path?: string[];
@@ -1435,6 +1436,16 @@ export function explainTransition(manifest: Manifest, from: string, to: string):
 
   const reverse = shortestPhasePath(manifest, to, from);
   if (reverse) {
+    if (isPhaseInCycle(manifest, from)) {
+      return {
+        legal: false,
+        kind: "cycle",
+        from,
+        to,
+        path: reverse,
+        message: `"${from}" is part of a cycle and has no forward path to "${to}" (${to} → ${from} reachable via: ${reverse.join(" → ")}). If this transition is intended, add "${to}" to phase "${from}"'s next: list.`,
+      };
+    }
     return {
       legal: false,
       kind: "regression",
