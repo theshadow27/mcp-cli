@@ -142,6 +142,19 @@ describe("cmdUntrack", () => {
     expect(captured).toEqual({ branch: "feat/test" });
   });
 
+  test("untracks branch:NAME format emitted by mcx tracked --json", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["branch:feat/test"], deps);
+    expect(captured).toEqual({ branch: "feat/test" });
+  });
+
   test("handles not tracked", async () => {
     const deps = makeDeps({
       untrackWorkItem: () => ({ ok: true, deleted: false }),
