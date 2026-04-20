@@ -195,3 +195,73 @@ export function openLogStream(params: {
 
   return { entries: iterate(), abort: () => controller.abort() };
 }
+
+/**
+ * Open an NDJSON stream to the daemon's GET /events endpoint.
+ *
+ * Returns an async iterable of MonitorEvent objects plus an abort function.
+ * Each event is a complete JSON object on its own line.
+ *
+ * Part of #1486 (monitor epic), #1515 (projection layer).
+ */
+export function openEventStream(params: {
+  subscribe?: string;
+  session?: string;
+  pr?: number;
+  workItem?: string;
+  type?: string;
+  src?: string;
+  phase?: string;
+  since?: number;
+  responseTail?: string;
+}): { events: AsyncIterable<import("./monitor-event").MonitorEvent>; abort: () => void } {
+  const qs = new URLSearchParams();
+  if (params.subscribe) qs.set("subscribe", params.subscribe);
+  if (params.session) qs.set("session", params.session);
+  if (params.pr !== undefined) qs.set("pr", String(params.pr));
+  if (params.workItem) qs.set("workItem", params.workItem);
+  if (params.type) qs.set("type", params.type);
+  if (params.src) qs.set("src", params.src);
+  if (params.phase) qs.set("phase", params.phase);
+  if (params.since !== undefined) qs.set("since", String(params.since));
+  if (params.responseTail) qs.set("responseTail", params.responseTail);
+
+  const controller = new AbortController();
+  const url = `http://localhost/events?${qs.toString()}`;
+
+  async function* iterate(): AsyncGenerator<import("./monitor-event").MonitorEvent> {
+    const res = await fetch(url, {
+      method: "GET",
+      unix: options.SOCKET_PATH,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.ok) {
+      throw new Error(`Event stream error: ${res.status} ${await res.text()}`);
+    }
+
+    const body = res.body;
+    if (!body) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const chunk of body) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          yield JSON.parse(trimmed) as import("./monitor-event").MonitorEvent;
+        } catch {
+          // Skip malformed lines
+        }
+      }
+    }
+  }
+
+  return { events: iterate(), abort: () => controller.abort() };
+}

@@ -186,6 +186,9 @@ export class IpcServer {
 
     this.server = Bun.serve({
       unix: socketPath,
+      // idleTimeout is a valid Bun runtime option not yet in @types/bun@1.3.12.
+      // Disabled (0) so NDJSON/SSE streaming connections stay open indefinitely.
+      ...({ idleTimeout: 0 } as Record<string, unknown>),
       async fetch(req) {
         const url = new URL(req.url);
 
@@ -199,6 +202,11 @@ export class IpcServer {
         // GET /logs — SSE stream for real-time log tailing
         if (url.pathname === "/logs" && req.method === "GET") {
           return self.handleLogsSSE(url);
+        }
+
+        // GET /events — NDJSON stream for unified monitor event bus (#1515)
+        if (url.pathname === "/events" && req.method === "GET") {
+          return self.handleEventsNDJSON(url);
         }
 
         if (req.method !== "POST") {
@@ -1322,6 +1330,87 @@ export class IpcServer {
     return new Response(stream, {
       headers: {
         "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
+  /**
+   * Handle GET /events — NDJSON stream from the unified monitor event bus.
+   *
+   * Query params:
+   *   subscribe=<categories>   Comma-separated category filter (session,work_item,mail)
+   *   session=<id>             Filter to one session ID
+   *   pr=<n>                   Filter to one PR number
+   *   workItem=<id>            Filter to one work item ID
+   *   type=<glob>              Event name filter (exact match; future: glob)
+   *   src=<pattern>            Source attribution filter (exact match; future: glob)
+   *   phase=<name>             Phase filter on work item phase
+   *   since=<seq>              Replay from this seq (not yet implemented; reserved)
+   *   responseTail=<sessionId> Include session.response chunks for this session only
+   *
+   * Each event is emitted as one JSON line followed by a newline character.
+   * session.response events are excluded by default unless responseTail matches.
+   */
+  private handleEventsNDJSON(url: URL): Response {
+    if (!this.eventBus) {
+      return new Response("Event bus not available", { status: 503 });
+    }
+
+    const subscribeFilter = url.searchParams.get("subscribe");
+    const sessionFilter = url.searchParams.get("session");
+    const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
+    const workItemFilter = url.searchParams.get("workItem");
+    const typeFilter = url.searchParams.get("type");
+    const srcFilter = url.searchParams.get("src");
+    const responseTail = url.searchParams.get("responseTail");
+
+    const categories = subscribeFilter ? new Set(subscribeFilter.split(",").map((s) => s.trim())) : null;
+
+    const bus = this.eventBus;
+    let subId: number | null = null;
+
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      start: (controller) => {
+        // Flush an initial newline so Bun sends response headers immediately.
+        // Without this, headers are buffered until the first event arrives.
+        controller.enqueue(encoder.encode("\n"));
+
+        subId = bus.subscribe(
+          (event) => {
+            try {
+              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+            } catch {
+              // Stream closed
+              if (subId !== null) bus.unsubscribe(subId);
+            }
+          },
+          (event) => {
+            // Default: exclude session.response chunks unless responseTail matches
+            if (event.event === "session.response") {
+              return responseTail !== null && event.sessionId === responseTail;
+            }
+            if (categories !== null && !categories.has(event.category)) return false;
+            if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
+            if (prFilter !== undefined && event.prNumber !== prFilter) return false;
+            if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
+            if (typeFilter !== null && event.event !== typeFilter) return false;
+            if (srcFilter !== null && event.src !== srcFilter) return false;
+            return true;
+          },
+        );
+      },
+      cancel: () => {
+        if (subId !== null) bus.unsubscribe(subId);
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "content-type": "application/x-ndjson",
         "cache-control": "no-cache",
         connection: "keep-alive",
       },
