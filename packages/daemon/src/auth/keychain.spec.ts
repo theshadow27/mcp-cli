@@ -146,6 +146,47 @@ describe("readKeychainTokens", () => {
     expect(result?.refreshToken).toBe("refresh-tok");
   });
 
+  test("returns null for zombie entry (expiresAt=0, empty accessToken, no refreshToken)", async () => {
+    if (originalPlatform !== "darwin") return;
+    const keychainData = {
+      mcpOAuth: {
+        "atlassian|1eb778bd626fb68d": {
+          serverName: "atlassian",
+          serverUrl: "https://mcp.atlassian.com/v1/mcp",
+          accessToken: "",
+          refreshToken: null,
+          expiresAt: 0,
+          clientId: "zombie-id",
+        },
+      },
+    };
+
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://mcp.atlassian.com/v1/mcp"),
+    );
+    expect(result).toBeNull();
+  });
+
+  test("returns null for entry with accessToken but no expiresAt and no refreshToken", async () => {
+    if (originalPlatform !== "darwin") return;
+    const keychainData = {
+      mcpOAuth: {
+        "srv|b": {
+          serverName: "srv",
+          serverUrl: "https://api.example.com",
+          accessToken: "some-token",
+          expiresAt: 0,
+          clientId: "cid",
+        },
+      },
+    };
+
+    const result = await withSpawnMock(["echo", JSON.stringify(keychainData)], () =>
+      readKeychainTokens("https://api.example.com"),
+    );
+    expect(result).toBeNull();
+  });
+
   test("returns null on malformed JSON", async () => {
     if (originalPlatform !== "darwin") return;
     const result = await withSpawnMock(["echo", "not-valid-json{{{"], () =>

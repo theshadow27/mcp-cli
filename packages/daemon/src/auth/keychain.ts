@@ -68,11 +68,12 @@ export async function readKeychainTokens(serverUrl: string): Promise<KeychainTok
     // Find entry matching our server URL
     for (const entry of Object.values(mcpOAuth)) {
       if (entry.serverUrl === serverUrl) {
-        // Check if token is expired
-        if (entry.expiresAt && entry.expiresAt < Date.now()) {
-          // Token expired but we may still have a refresh token
-          if (!entry.refreshToken) return null;
-        }
+        // An entry is usable if it has a refresh token (we can refresh)
+        // or a non-expired access token. Entries with only a clientId and
+        // empty/zero tokens are pre-authorization artifacts — return null
+        // so the SDK falls through to dynamic client registration.
+        const hasAccessToken = !!entry.accessToken && !!entry.expiresAt && entry.expiresAt > Date.now();
+        if (!entry.refreshToken && !hasAccessToken) return null;
 
         return {
           accessToken: entry.accessToken,
