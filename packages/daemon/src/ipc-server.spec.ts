@@ -2330,17 +2330,68 @@ describe("IpcServer HTTP transport", () => {
     } as RequestInit);
 
     expect(res.status).toBe(200);
+    if (!server) throw new Error("server not started");
+    expect(server.eventSubscriberCount).toBe(1);
 
-    // Abort the stream
+    // Abort the stream and poll until cleanup propagates
     controller.abort();
-
-    // Give cleanup a tick to run
-    await new Promise((r) => setTimeout(r, 50));
+    await pollUntil(() => server?.eventSubscriberCount === 0);
 
     // Pushing an event after abort should not throw
-    if (!server) throw new Error("server not started");
     const s = server;
     expect(() => s.pushEvent({ t: "after-abort" })).not.toThrow();
+  });
+
+  test("GET /events ring buffer preserves FIFO order after overflow", async () => {
+    startServer();
+    if (!server) throw new Error("server not started");
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Push capacity + 10 events (256 + 10 = 266) to force ring overflow
+    const CAPACITY = 256;
+    const TOTAL = CAPACITY + 10;
+    for (let i = 0; i < TOTAL; i++) {
+      server.pushEvent({ t: "overflow-test", n: i });
+    }
+
+    // Collect all lines (connected + TOTAL events; oldest 10 dropped, 256 remain)
+    let buffer = "";
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const count = buffer.split("\n").filter(Boolean).length;
+      // connected + 256 events
+      if (count >= CAPACITY + 1) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    const lines = buffer
+      .split("\n")
+      .filter(Boolean)
+      .filter((l) => l.includes('"overflow-test"'));
+
+    expect(lines.length).toBe(CAPACITY);
+
+    // Events must arrive in ascending n order (FIFO, oldest surviving = n:10)
+    const ns = lines.map((l) => (JSON.parse(l) as Record<string, unknown>).n as number);
+    expect(ns[0]).toBe(10); // first 10 were dropped
+    for (let i = 1; i < ns.length; i++) {
+      expect(ns[i]).toBe((ns[i - 1] as number) + 1);
+    }
   });
 
   test("GET /events heartbeat fires after silence", async () => {

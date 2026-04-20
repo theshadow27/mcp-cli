@@ -241,6 +241,15 @@ export function openEventStream(params?: {
         }
       }
     }
+    // Flush any trailing bytes buffered by the streaming decoder
+    const trailing = decoder.decode();
+    if (trailing) {
+      try {
+        yield JSON.parse(trailing) as Record<string, unknown>;
+      } catch {
+        // Ignore incomplete trailing data
+      }
+    }
   }
 
   return { events: iterate(), abort: () => controller.abort() };

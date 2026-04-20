@@ -1260,14 +1260,26 @@ export class IpcServer {
   pushEvent(event: Record<string, unknown>): void {
     const seq = ++this.eventSeq;
     const envelope = { ...event, seq };
+    const failed: ((event: Record<string, unknown>) => void)[] = [];
     for (const cb of this.eventSubscribers) {
-      cb(envelope);
+      try {
+        cb(envelope);
+      } catch (err) {
+        this.logger.warn(`[events] subscriber threw, dropping: ${err}`);
+        failed.push(cb);
+      }
     }
+    for (const cb of failed) this.eventSubscribers.delete(cb);
   }
 
   /** Current event sequence number (for testing / status). */
   get currentEventSeq(): number {
     return this.eventSeq;
+  }
+
+  /** Number of active event stream subscribers (for testing). */
+  get eventSubscriberCount(): number {
+    return this.eventSubscribers.size;
   }
 
   private static readonly EVENT_RING_CAPACITY = 256;
@@ -1291,13 +1303,23 @@ export class IpcServer {
 
     const encoder = new TextEncoder();
 
+    // Hoisted so both start and cancel can share it
+    const cleanup = () => {
+      unsubscribe?.();
+      unsubscribe = undefined;
+      if (heartbeatTimer !== undefined) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+    };
+
     const stream = new ReadableStream({
       start: (controller) => {
         const flush = () => {
           if (!pending) return;
           pending = false;
           const count = dropped > 0 ? capacity : writeIdx;
-          const start = dropped > 0 ? writeIdx : 0;
+          const start = dropped > 0 ? dropped % capacity : 0;
           for (let i = 0; i < count; i++) {
             const line = ring[(start + i) % capacity] as string;
             try {
@@ -1321,15 +1343,6 @@ export class IpcServer {
           pending = true;
           lastWriteTime = Date.now();
           queueMicrotask(flush);
-        };
-
-        const cleanup = () => {
-          unsubscribe?.();
-          unsubscribe = undefined;
-          if (heartbeatTimer !== undefined) {
-            clearInterval(heartbeatTimer);
-            heartbeatTimer = undefined;
-          }
         };
 
         // Flush a "connected" line to force response headers out immediately
@@ -1356,14 +1369,9 @@ export class IpcServer {
             }
           }
         }, IpcServer.HEARTBEAT_INTERVAL_MS);
+        heartbeatTimer.unref();
       },
-      cancel: () => {
-        unsubscribe?.();
-        if (heartbeatTimer !== undefined) {
-          clearInterval(heartbeatTimer);
-          heartbeatTimer = undefined;
-        }
-      },
+      cancel: cleanup,
     });
 
     return new Response(stream, {
