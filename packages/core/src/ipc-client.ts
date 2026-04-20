@@ -195,3 +195,62 @@ export function openLogStream(params: {
 
   return { entries: iterate(), abort: () => controller.abort() };
 }
+
+/**
+ * Open an NDJSON stream to the daemon's GET /events endpoint.
+ * Returns an async iterable of parsed event objects plus an abort function.
+ */
+export function openEventStream(params?: {
+  since?: number;
+}): { events: AsyncIterable<Record<string, unknown>>; abort: () => void } {
+  const qs = new URLSearchParams();
+  if (params?.since !== undefined) qs.set("since", String(params.since));
+
+  const controller = new AbortController();
+  const qsStr = qs.toString();
+  const url = `http://localhost/events${qsStr ? `?${qsStr}` : ""}`;
+
+  async function* iterate(): AsyncGenerator<Record<string, unknown>> {
+    const res = await fetch(url, {
+      method: "GET",
+      unix: options.SOCKET_PATH,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.ok) {
+      throw new Error(`Event stream error: ${res.status} ${await res.text()}`);
+    }
+
+    const body = res.body;
+    if (!body) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const chunk of body) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          yield JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          // Skip malformed NDJSON lines
+        }
+      }
+    }
+    // Flush any trailing bytes buffered by the streaming decoder
+    const trailing = decoder.decode();
+    if (trailing) {
+      try {
+        yield JSON.parse(trailing) as Record<string, unknown>;
+      } catch {
+        // Ignore incomplete trailing data
+      }
+    }
+  }
+
+  return { events: iterate(), abort: () => controller.abort() };
+}

@@ -2165,4 +2165,281 @@ describe("IpcServer HTTP transport", () => {
       expect(item.phase).toBe("free-form");
     });
   });
+
+  // -- NDJSON /events endpoint tests --
+
+  test("GET /events returns NDJSON content-type", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/x-ndjson");
+
+    controller.abort();
+  });
+
+  test("GET /events delivers pushed events as NDJSON lines", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Push a synthetic event
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ t: "test", data: "hello" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("hello")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    const lines = buffer.split("\n").filter(Boolean);
+    // First line is the "connected" event, second is our pushed event
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    const connected = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(connected.t).toBe("connected");
+    const parsed = JSON.parse(lines[1] as string) as Record<string, unknown>;
+    expect(parsed.t).toBe("test");
+    expect(parsed.data).toBe("hello");
+    expect(typeof parsed.seq).toBe("number");
+    expect(parsed.seq).toBe(1);
+  });
+
+  test("GET /events supports multiple concurrent subscribers", async () => {
+    startServer();
+
+    const controllers = [new AbortController(), new AbortController()];
+    const responses = await Promise.all(
+      controllers.map((c) =>
+        fetch("http://localhost/events", {
+          method: "GET",
+          unix: socketPath,
+          signal: c.signal,
+        } as RequestInit),
+      ),
+    );
+
+    for (const res of responses) {
+      expect(res.status).toBe(200);
+    }
+
+    const readers = responses.map((r) => {
+      if (!r.body) throw new Error("Expected response body");
+      return r.body.getReader();
+    });
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ t: "broadcast", value: 42 });
+
+    for (const reader of readers) {
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("broadcast")) break;
+      }
+      const lines = buffer.split("\n").filter(Boolean);
+      // Find the broadcast event (skip connected line)
+      const broadcastLine = lines.find((l) => l.includes("broadcast"));
+      expect(broadcastLine).toBeDefined();
+      const parsed = JSON.parse(broadcastLine as string) as Record<string, unknown>;
+      expect(parsed.t).toBe("broadcast");
+      expect(parsed.value).toBe(42);
+      reader.releaseLock();
+    }
+
+    for (const c of controllers) c.abort();
+  });
+
+  test("GET /events assigns monotonically increasing seq numbers", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ t: "a" });
+    server.pushEvent({ t: "b" });
+    server.pushEvent({ t: "c" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const linesSoFar = buffer.split("\n").filter(Boolean);
+      // connected + 3 events = 4 lines
+      if (linesSoFar.length >= 4) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    const lines = buffer.split("\n").filter(Boolean);
+    // Skip connected line, take the 3 event lines
+    const eventLines = lines.filter((l) => !l.includes('"connected"'));
+    expect(eventLines.length).toBeGreaterThanOrEqual(3);
+    const seqs = eventLines.map((l) => (JSON.parse(l) as Record<string, unknown>).seq as number);
+    expect(seqs[0]).toBeLessThan(seqs[1] as number);
+    expect(seqs[1]).toBeLessThan(seqs[2] as number);
+  });
+
+  test("GET /events cleans up subscriber on abort", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!server) throw new Error("server not started");
+    expect(server.eventSubscriberCount).toBe(1);
+
+    // Abort the stream and poll until cleanup propagates
+    controller.abort();
+    await pollUntil(() => server?.eventSubscriberCount === 0);
+
+    // Pushing an event after abort should not throw
+    const s = server;
+    expect(() => s.pushEvent({ t: "after-abort" })).not.toThrow();
+  });
+
+  test("GET /events ring buffer preserves FIFO order after overflow", async () => {
+    startServer();
+    if (!server) throw new Error("server not started");
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Push capacity + 10 events (256 + 10 = 266) to force ring overflow
+    const CAPACITY = 256;
+    const TOTAL = CAPACITY + 10;
+    for (let i = 0; i < TOTAL; i++) {
+      server.pushEvent({ t: "overflow-test", n: i });
+    }
+
+    // Collect all lines (connected + TOTAL events; oldest 10 dropped, 256 remain)
+    let buffer = "";
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const count = buffer.split("\n").filter(Boolean).length;
+      // connected + 256 events
+      if (count >= CAPACITY + 1) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    const lines = buffer
+      .split("\n")
+      .filter(Boolean)
+      .filter((l) => l.includes('"overflow-test"'));
+
+    expect(lines.length).toBe(CAPACITY);
+
+    // Events must arrive in ascending n order (FIFO, oldest surviving = n:10)
+    const ns = lines.map((l) => (JSON.parse(l) as Record<string, unknown>).n as number);
+    expect(ns[0]).toBe(10); // first 10 were dropped
+    for (let i = 1; i < ns.length; i++) {
+      expect(ns[i]).toBe((ns[i - 1] as number) + 1);
+    }
+  });
+
+  test("GET /events heartbeat fires after silence", async () => {
+    socketPath = tmpSocket();
+    const origInterval = (IpcServer as unknown as Record<string, number>).HEARTBEAT_INTERVAL_MS;
+
+    // Patch the static for this test — 200ms heartbeat
+    Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", { value: 200, configurable: true });
+
+    try {
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+      server.start(socketPath);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Wait for heartbeat
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("heartbeat")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      const lines = buffer.split("\n").filter(Boolean);
+      const hbLine = lines.find((l) => l.includes('"heartbeat"'));
+      expect(hbLine).toBeDefined();
+      const hb = JSON.parse(hbLine as string) as Record<string, unknown>;
+      expect(hb.t).toBe("heartbeat");
+      expect(typeof hb.seq).toBe("number");
+    } finally {
+      Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
+        value: origInterval ?? 30_000,
+        configurable: true,
+      });
+    }
+  });
 });
