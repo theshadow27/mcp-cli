@@ -317,6 +317,32 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
     `);
+
+    // -- Canonicalize alias_state rows written with trailing-slash repo_root --
+    // path.resolve() was added in v1.6.3 to normalize repoRoot, but rows written
+    // before that fix used raw caller-supplied paths (e.g. "/repo/"). Strip trailing
+    // slashes from any such rows so they merge with their canonical counterparts.
+    // Rows that collide on (stripped_root, namespace, key) are deleted (the
+    // non-trailing-slash row is canonical and takes precedence by updated_at).
+    this.db.transaction(() => {
+      // Delete losers — trailing-slash rows where a canonical row already exists
+      this.db.run(`
+        DELETE FROM alias_state
+        WHERE repo_root LIKE '%/'
+          AND EXISTS (
+            SELECT 1 FROM alias_state AS canonical
+            WHERE canonical.repo_root = rtrim(alias_state.repo_root, '/')
+              AND canonical.namespace  = alias_state.namespace
+              AND canonical.key        = alias_state.key
+          )
+      `);
+      // Migrate winners — remaining trailing-slash rows have no conflict
+      this.db.run(`
+        UPDATE alias_state
+        SET repo_root = rtrim(repo_root, '/')
+        WHERE repo_root LIKE '%/'
+      `);
+    })();
   }
 
   // -- Tool cache --

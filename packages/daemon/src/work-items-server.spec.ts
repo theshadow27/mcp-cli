@@ -1,8 +1,26 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
+import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
-import { type PhaseStateStore, WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
+import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
+
+function tmpDbPath(): string {
+  return join(tmpdir(), `mcp-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+}
+
+function cleanupDb(p: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      unlinkSync(p + suffix);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
   const raw = new Database(":memory:");
@@ -11,77 +29,13 @@ function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
   return { db, raw };
 }
 
-const ALIAS_STATE_MAX_VALUE_BYTES = 256 * 1024;
-
-function createPhaseStateStore(raw: Database): PhaseStateStore {
-  raw.exec(`
-    CREATE TABLE IF NOT EXISTS alias_state (
-      repo_root TEXT NOT NULL,
-      namespace TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      PRIMARY KEY (repo_root, namespace, key)
-    )
-  `);
-  return {
-    getAliasState(repoRoot: string, namespace: string, key: string): unknown {
-      const row = raw
-        .query<{ value_json: string }, [string, string, string]>(
-          "SELECT value_json FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?",
-        )
-        .get(repoRoot, namespace, key);
-      if (!row) return undefined;
-      try {
-        return JSON.parse(row.value_json);
-      } catch {
-        return undefined;
-      }
-    },
-    setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
-      if (value === undefined) {
-        throw new Error("alias state value cannot be undefined; use delete(key) to remove a key");
-      }
-      const json = JSON.stringify(value);
-      if (json === undefined) {
-        throw new Error("alias state value is not JSON-serialisable");
-      }
-      if (Buffer.byteLength(json, "utf-8") > ALIAS_STATE_MAX_VALUE_BYTES) {
-        throw new Error(`alias state value exceeds max size of ${ALIAS_STATE_MAX_VALUE_BYTES} bytes`);
-      }
-      raw.run(
-        `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
-         VALUES (?, ?, ?, ?, unixepoch())
-         ON CONFLICT(repo_root, namespace, key) DO UPDATE SET
-           value_json = excluded.value_json, updated_at = excluded.updated_at`,
-        [repoRoot, namespace, key, json],
-      );
-    },
-    deleteAliasState(repoRoot: string, namespace: string, key: string): boolean {
-      const result = raw.run("DELETE FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?", [
-        repoRoot,
-        namespace,
-        key,
-      ]);
-      return result.changes > 0;
-    },
-    listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
-      const rows = raw
-        .query<{ key: string; value_json: string }, [string, string]>(
-          "SELECT key, value_json FROM alias_state WHERE repo_root = ? AND namespace = ?",
-        )
-        .all(repoRoot, namespace);
-      const out: Record<string, unknown> = {};
-      for (const row of rows) {
-        try {
-          out[row.key] = JSON.parse(row.value_json);
-        } catch {
-          // match StateDb: silently drop unparseable rows
-        }
-      }
-      return out;
-    },
-  };
+/** Create a real StateDb (temp file) and a WorkItemDb sharing its underlying database — matches production wiring. */
+function createRealStateDbs(): { stateDb: StateDb; workItemDb: WorkItemDb; raw: Database; dbPath: string } {
+  const dbPath = tmpDbPath();
+  const stateDb = new StateDb(dbPath);
+  const raw = stateDb.getDatabase();
+  const workItemDb = new WorkItemDb(raw);
+  return { stateDb, workItemDb, raw, dbPath };
 }
 
 describe("WORK_ITEMS_SERVER_NAME", () => {
@@ -1024,20 +978,29 @@ describe("WorkItemsServer", () => {
 
 describe("phase_state tools", () => {
   let server: WorkItemsServer | undefined;
-  let rawDb: Database | undefined;
+  let stateDbInst: StateDb | undefined;
+  let dbPathToClean: string | undefined;
+  // rawWiDb tracks :memory: WorkItemDb instances used by no-stateDb tests
+  let rawWiDb: Database | undefined;
 
   afterEach(async () => {
     await server?.stop();
-    rawDb?.close();
+    stateDbInst?.close();
+    rawWiDb?.close();
     server = undefined;
-    rawDb = undefined;
+    stateDbInst = undefined;
+    rawWiDb = undefined;
+    if (dbPathToClean) {
+      cleanupDb(dbPathToClean);
+      dbPathToClean = undefined;
+    }
   });
 
   test("phase_state_set and phase_state_get round-trip a value", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1060,10 +1023,10 @@ describe("phase_state tools", () => {
   });
 
   test("repoRoot is canonicalized — trailing slash and no slash resolve to same row", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 20 } });
@@ -1082,11 +1045,29 @@ describe("phase_state tools", () => {
     expect(body.value).toBe("v");
   });
 
+  test("empty repoRoot is rejected — does not fall back to process.cwd()", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 99 } });
+
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:99", repoRoot: "", key: "k", value: "v" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("required");
+  });
+
   test("namespace uses workitem:{id} — matches ctx.state in phase handlers", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, raw, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 10 } });
@@ -1101,10 +1082,10 @@ describe("phase_state tools", () => {
   });
 
   test("parallel work items are isolated — no cross-contamination", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1133,10 +1114,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_get returns undefined for missing key", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
@@ -1151,10 +1132,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_list returns all keys for the work item", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 } });
@@ -1180,10 +1161,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_delete removes a key", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 7 } });
@@ -1210,10 +1191,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_delete returns false for nonexistent key", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 8 } });
@@ -1228,10 +1209,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_get errors for nonexistent work item", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     const result = await client.callTool({
@@ -1245,7 +1226,7 @@ describe("phase_state tools", () => {
 
   test("phase_state tools error when no stateDb configured", async () => {
     const { db, raw } = createWorkItemDb();
-    rawDb = raw;
+    rawWiDb = raw;
     server = new WorkItemsServer(db);
     const { client } = await server.start();
 
@@ -1263,10 +1244,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_set rejects undefined value", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 6 } });
@@ -1281,10 +1262,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_set surfaces StateDb errors as isError response", async () => {
-    const { db, raw } = createWorkItemDb();
-    rawDb = raw;
-    const stateDb = createPhaseStateStore(raw);
-    server = new WorkItemsServer(db, { stateDb });
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 9 } });
