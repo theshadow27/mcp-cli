@@ -91,7 +91,29 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
 
 export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
   if (!args.length || args[0] === "--help" || args[0] === "-h") {
-    console.log("Usage: mcx untrack <number>\n       mcx untrack --branch <name>");
+    console.log(
+      "Usage: mcx untrack <number|#NNNN|pr:NNNN>\n       mcx untrack --branch <name>\n       mcx untrack branch:<name>",
+    );
+    return;
+  }
+
+  if (args[0].startsWith("branch:")) {
+    const branch = args[0].slice("branch:".length);
+    if (!branch) {
+      printError("Usage: mcx untrack branch:<name>");
+      return deps.exit(1);
+    }
+    try {
+      const result = await deps.ipcCall("untrackWorkItem", { branch });
+      if (result.deleted) {
+        console.error(`Untracked branch ${branch}`);
+      } else {
+        console.error(`Branch ${branch} was not tracked`);
+      }
+    } catch (err) {
+      printError(`Failed to untrack branch: ${err instanceof Error ? err.message : String(err)}`);
+      return deps.exit(1);
+    }
     return;
   }
 
@@ -115,7 +137,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     return;
   }
 
-  const num = Number(args[0]);
+  const raw = args[0].replace(/^#/, "").replace(/^pr:/, "");
+  const num = Number(raw);
   if (!Number.isInteger(num) || num <= 0) {
     printError(`Invalid number: ${args[0]}`);
     return deps.exit(1);

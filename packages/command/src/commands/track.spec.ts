@@ -142,6 +142,19 @@ describe("cmdUntrack", () => {
     expect(captured).toEqual({ branch: "feat/test" });
   });
 
+  test("untracks branch:NAME format emitted by mcx tracked --json", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["branch:feat/test"], deps);
+    expect(captured).toEqual({ branch: "feat/test" });
+  });
+
   test("handles not tracked", async () => {
     const deps = makeDeps({
       untrackWorkItem: () => ({ ok: true, deleted: false }),
@@ -157,6 +170,32 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["--branch", "feat/nonexistent"], deps);
+  });
+
+  test("untracks #NNNN format", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["#1135"], deps);
+    expect(captured).toEqual({ number: 1135 });
+  });
+
+  test("untracks pr:NNNN format", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["pr:1186"], deps);
+    expect(captured).toEqual({ number: 1186 });
   });
 
   test("rejects invalid number", async () => {
