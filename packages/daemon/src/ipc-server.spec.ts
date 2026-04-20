@@ -2395,52 +2395,51 @@ describe("IpcServer HTTP transport", () => {
   });
 
   test("GET /events heartbeat fires after silence", async () => {
-    // Create server with short heartbeat for testing
     socketPath = tmpSocket();
     const origInterval = (IpcServer as unknown as Record<string, number>).HEARTBEAT_INTERVAL_MS;
 
     // Patch the static for this test — 200ms heartbeat
     Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", { value: 200, configurable: true });
 
-    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
-    server.start(socketPath);
+    try {
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+      server.start(socketPath);
 
-    const controller = new AbortController();
-    const res = await fetch("http://localhost/events", {
-      method: "GET",
-      unix: socketPath,
-      signal: controller.signal,
-    } as RequestInit);
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
 
-    if (!res.body) throw new Error("Expected response body");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
 
-    // Wait for heartbeat
-    let buffer = "";
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      if (buffer.includes("heartbeat")) break;
+      // Wait for heartbeat
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("heartbeat")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      const lines = buffer.split("\n").filter(Boolean);
+      const hbLine = lines.find((l) => l.includes('"heartbeat"'));
+      expect(hbLine).toBeDefined();
+      const hb = JSON.parse(hbLine as string) as Record<string, unknown>;
+      expect(hb.t).toBe("heartbeat");
+      expect(typeof hb.seq).toBe("number");
+    } finally {
+      Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
+        value: origInterval ?? 30_000,
+        configurable: true,
+      });
     }
-
-    controller.abort();
-    reader.releaseLock();
-
-    // Restore
-    Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
-      value: origInterval ?? 30_000,
-      configurable: true,
-    });
-
-    const lines = buffer.split("\n").filter(Boolean);
-    // Find heartbeat line (skip connected line)
-    const hbLine = lines.find((l) => l.includes('"heartbeat"'));
-    expect(hbLine).toBeDefined();
-    const hb = JSON.parse(hbLine as string) as Record<string, unknown>;
-    expect(hb.t).toBe("heartbeat");
-    expect(typeof hb.seq).toBe("number");
   });
 });
