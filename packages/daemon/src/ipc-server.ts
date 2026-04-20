@@ -1302,9 +1302,14 @@ export class IpcServer {
    * Handle GET /events — NDJSON stream for real-time event delivery.
    *
    * Query params:
-   *   since=<seq>  — reserved for future replay (#1513), currently ignored
+   *   since=<seq>  — replay events after this cursor from the durable log,
+   *                  then seamlessly switch to live delivery (#1513)
    */
-  private handleEventsNDJSON(_url: URL): Response {
+  private handleEventsNDJSON(url: URL): Response {
+    const sinceParam = url.searchParams.get("since");
+    const sinceSeq = sinceParam !== null ? Number(sinceParam) : null;
+    const eventLog = this.eventBus?.eventLog ?? null;
+
     const capacity = IpcServer.EVENT_RING_CAPACITY;
     const ring: string[] = new Array(capacity);
     let writeIdx = 0;
@@ -1328,6 +1333,10 @@ export class IpcServer {
 
     const stream = new ReadableStream({
       start: (controller) => {
+        // Track the highest seq sent so live events can skip duplicates
+        // after backfill.
+        let highWaterMark = 0;
+
         const flush = () => {
           if (!pending) return;
           pending = false;
@@ -1346,7 +1355,9 @@ export class IpcServer {
           dropped = 0;
         };
 
-        const enqueue = (line: string) => {
+        const enqueue = (line: string, seq?: number) => {
+          if (seq !== undefined && seq <= highWaterMark) return;
+          if (seq !== undefined) highWaterMark = seq;
           if (writeIdx < capacity) {
             ring[writeIdx++] = line;
           } else {
@@ -1362,14 +1373,32 @@ export class IpcServer {
         controller.enqueue(encoder.encode(`${JSON.stringify({ t: "connected", seq: this.eventSeq })}\n`));
         lastWriteTime = Date.now();
 
+        // Subscribe to live events BEFORE backfilling so nothing is missed
+        // during the gap between query and subscription.
         const subscriber = (event: Record<string, unknown>) => {
-          enqueue(`${JSON.stringify(event)}\n`);
+          enqueue(`${JSON.stringify(event)}\n`, event.seq as number | undefined);
         };
 
         this.eventSubscribers.add(subscriber);
         unsubscribe = () => {
           this.eventSubscribers.delete(subscriber);
         };
+
+        // Backfill from durable log when client provides a cursor
+        if (sinceSeq !== null && !Number.isNaN(sinceSeq) && eventLog) {
+          const backfill = eventLog.getSince(sinceSeq);
+          for (const event of backfill) {
+            const line = `${JSON.stringify(event)}\n`;
+            try {
+              highWaterMark = event.seq;
+              controller.enqueue(encoder.encode(line));
+            } catch {
+              cleanup();
+              return;
+            }
+          }
+          lastWriteTime = Date.now();
+        }
 
         heartbeatTimer = setInterval(() => {
           if (Date.now() - lastWriteTime >= IpcServer.HEARTBEAT_INTERVAL_MS) {
