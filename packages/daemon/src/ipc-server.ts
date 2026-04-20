@@ -1374,9 +1374,17 @@ export class IpcServer {
         lastWriteTime = Date.now();
 
         // Subscribe to live events BEFORE backfilling so nothing is missed
-        // during the gap between query and subscription.
+        // during the gap between query and subscription. Live events are
+        // buffered during backfill and drained after to preserve ordering.
+        let liveBuffer: Array<{ line: string; seq: number | undefined }> | null = null;
         const subscriber = (event: Record<string, unknown>) => {
-          enqueue(`${JSON.stringify(event)}\n`, event.seq as number | undefined);
+          const line = `${JSON.stringify(event)}\n`;
+          const seq = event.seq as number | undefined;
+          if (liveBuffer !== null) {
+            liveBuffer.push({ line, seq });
+          } else {
+            enqueue(line, seq);
+          }
         };
 
         this.eventSubscribers.add(subscriber);
@@ -1384,18 +1392,30 @@ export class IpcServer {
           this.eventSubscribers.delete(subscriber);
         };
 
-        // Backfill from durable log when client provides a cursor
-        if (sinceSeq !== null && !Number.isNaN(sinceSeq) && eventLog) {
-          const backfill = eventLog.getSince(sinceSeq);
-          for (const event of backfill) {
-            const line = `${JSON.stringify(event)}\n`;
-            try {
-              highWaterMark = event.seq;
-              controller.enqueue(encoder.encode(line));
-            } catch {
-              cleanup();
-              return;
+        // Backfill from durable log when client provides a valid cursor
+        if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
+          liveBuffer = [];
+          let cursor = sinceSeq;
+          while (true) {
+            const batch = eventLog.getSince(cursor, 1000);
+            for (const event of batch) {
+              const line = `${JSON.stringify(event)}\n`;
+              try {
+                highWaterMark = event.seq;
+                controller.enqueue(encoder.encode(line));
+              } catch {
+                cleanup();
+                return;
+              }
             }
+            if (batch.length < 1000) break;
+            cursor = batch[batch.length - 1]?.seq ?? cursor;
+          }
+          // Drain buffered live events; HWM dedup in enqueue() drops overlaps.
+          const buffered = liveBuffer;
+          liveBuffer = null;
+          for (const { line, seq } of buffered) {
+            enqueue(line, seq);
           }
           lastWriteTime = Date.now();
         }

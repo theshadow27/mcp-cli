@@ -258,4 +258,34 @@ describe("EventBus with EventLog", () => {
     const bus = new EventBus();
     expect(bus.eventLog).toBeNull();
   });
+
+  test("getSince round-trip: backfilled events have correct seq, not placeholder 0", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    bus.publish(sessionEvent("session.result"));
+    bus.publish(workItemEvent("pr.merged"));
+    bus.publish(sessionEvent("session.started"));
+
+    const backfilled = log.getSince(0);
+    expect(backfilled).toHaveLength(3);
+    expect(backfilled[0].seq).toBe(1);
+    expect(backfilled[1].seq).toBe(2);
+    expect(backfilled[2].seq).toBe(3);
+  });
+
+  test("append failure falls back to in-memory seq without throwing", () => {
+    const db = new Database(":memory:");
+    db.exec("PRAGMA journal_mode = WAL");
+    const log = new EventLog(db);
+    const bus = new EventBus(log);
+
+    // Close the DB to force append failures
+    db.close();
+
+    // publish must not throw; seq must still advance
+    const e1 = bus.publish(sessionEvent());
+    const e2 = bus.publish(sessionEvent());
+    expect(e1.seq).toBeGreaterThan(0);
+    expect(e2.seq).toBeGreaterThan(e1.seq);
+  });
 });

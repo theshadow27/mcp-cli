@@ -40,9 +40,14 @@ export class EventBus {
     let seq: number;
 
     if (this.log) {
-      const event = { ...input, seq: 0, ts } satisfies MonitorEvent;
-      seq = this.log.append(event);
-      this.seq = seq;
+      try {
+        const event = { ...input, seq: 0, ts } satisfies MonitorEvent;
+        seq = this.log.append(event);
+        this.seq = seq;
+      } catch (err) {
+        console.error("[EventBus] EventLog append failed, falling back to in-memory seq:", err);
+        seq = ++this.seq;
+      }
     } else {
       seq = ++this.seq;
     }

@@ -165,6 +165,35 @@ describe("EventLog", () => {
     expect(events[0].prNumber).toBe(42);
   });
 
+  test("getSince returns authoritative seq from DB, not placeholder 0", () => {
+    const log = freshLog();
+    log.append(makeEvent({ event: "a" }));
+    log.append(makeEvent({ event: "b" }));
+    log.append(makeEvent({ event: "c" }));
+
+    const events = log.getSince(0);
+    expect(events[0].seq).toBe(1);
+    expect(events[1].seq).toBe(2);
+    expect(events[2].seq).toBe(3);
+  });
+
+  test("currentSeq returns correct value after prune empties table", () => {
+    const log = freshLog();
+    log.append(makeEvent());
+    log.append(makeEvent());
+    log.append(makeEvent());
+
+    log.prune(new Date(Date.now() + 1000));
+    expect(log.getSince(0)).toHaveLength(0);
+
+    // AUTOINCREMENT counter in sqlite_sequence must still reflect 3
+    expect(log.currentSeq()).toBe(3);
+
+    // Next append must get seq > 3
+    const seq = log.append(makeEvent());
+    expect(seq).toBe(4);
+  });
+
   test("startPruning and stopPruning lifecycle", () => {
     const log = freshLog();
     // Should not throw when called multiple times

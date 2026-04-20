@@ -39,22 +39,23 @@ export class EventLog {
     const version = row?.version ?? 0;
 
     if (version < 1) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS monitor_events (
-          seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts           TEXT    NOT NULL,
-          src          TEXT    NOT NULL,
-          event        TEXT    NOT NULL,
-          category     TEXT    NOT NULL,
-          work_item_id TEXT,
-          session_id   TEXT,
-          pr_number    INTEGER,
-          payload      TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_monitor_events_ts ON monitor_events(ts);
-      `);
-
-      this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 1]);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS monitor_events (
+            seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts           TEXT    NOT NULL,
+            src          TEXT    NOT NULL,
+            event        TEXT    NOT NULL,
+            category     TEXT    NOT NULL,
+            work_item_id TEXT,
+            session_id   TEXT,
+            pr_number    INTEGER,
+            payload      TEXT    NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_monitor_events_ts ON monitor_events(ts);
+        `);
+        this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 1]);
+      })();
     }
   }
 
@@ -82,12 +83,13 @@ export class EventLog {
 
   getSince(afterSeq: number, limit = 1000): MonitorEvent[] {
     const rows = this.db
-      .query<{ payload: string }, [number, number]>(
-        "SELECT payload FROM monitor_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+      .query<{ seq: number; payload: string }, [number, number]>(
+        "SELECT seq, payload FROM monitor_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
       )
       .all(afterSeq, limit);
 
-    return rows.map((r) => JSON.parse(r.payload) as MonitorEvent);
+    // Overlay the authoritative seq from the DB column — payload stores seq=0 placeholder.
+    return rows.map((r) => ({ ...(JSON.parse(r.payload) as MonitorEvent), seq: r.seq }));
   }
 
   prune(olderThan: Date): number {
@@ -96,7 +98,10 @@ export class EventLog {
   }
 
   currentSeq(): number {
-    const row = this.db.query<{ seq: number }, []>("SELECT seq FROM monitor_events ORDER BY seq DESC LIMIT 1").get();
+    // sqlite_sequence is the authoritative AUTOINCREMENT counter — survives pruning.
+    const row = this.db
+      .query<{ seq: number }, [string]>("SELECT seq FROM sqlite_sequence WHERE name = ?")
+      .get("monitor_events");
     return row?.seq ?? 0;
   }
 
