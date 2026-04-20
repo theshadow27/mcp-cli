@@ -118,6 +118,10 @@ export class IpcServer {
   private startedAt: number;
   private logger: Logger;
 
+  /** Event stream infrastructure */
+  private eventSeq = 0;
+  private eventSubscribers = new Set<(event: Record<string, unknown>) => void>();
+
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
@@ -193,6 +197,11 @@ export class IpcServer {
         // GET /logs — SSE stream for real-time log tailing
         if (url.pathname === "/logs" && req.method === "GET") {
           return self.handleLogsSSE(url);
+        }
+
+        // GET /events — NDJSON stream for real-time event delivery
+        if (url.pathname === "/events" && req.method === "GET") {
+          return self.handleEventsNDJSON(url);
         }
 
         if (req.method !== "POST") {
@@ -1239,6 +1248,131 @@ export class IpcServer {
       this.draining = true;
       this.startDrainTimeout();
       return { ok: true };
+    });
+  }
+
+  /**
+   * Push an event to all connected NDJSON event stream subscribers.
+   * Each event is assigned a monotonically increasing sequence number.
+   * The envelope shape is `{ t: string, seq: number, ...payload }` —
+   * callers supply the full object including `t`.
+   */
+  pushEvent(event: Record<string, unknown>): void {
+    const seq = ++this.eventSeq;
+    const envelope = { ...event, seq };
+    for (const cb of this.eventSubscribers) {
+      cb(envelope);
+    }
+  }
+
+  /** Current event sequence number (for testing / status). */
+  get currentEventSeq(): number {
+    return this.eventSeq;
+  }
+
+  private static readonly EVENT_RING_CAPACITY = 256;
+  private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
+
+  /**
+   * Handle GET /events — NDJSON stream for real-time event delivery.
+   *
+   * Query params:
+   *   since=<seq>  — reserved for future replay (#1513), currently ignored
+   */
+  private handleEventsNDJSON(_url: URL): Response {
+    const capacity = IpcServer.EVENT_RING_CAPACITY;
+    const ring: string[] = new Array(capacity);
+    let writeIdx = 0;
+    let dropped = 0;
+    let pending = false;
+    let unsubscribe: (() => void) | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let lastWriteTime = Date.now();
+
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      start: (controller) => {
+        const flush = () => {
+          if (!pending) return;
+          pending = false;
+          const count = dropped > 0 ? capacity : writeIdx;
+          const start = dropped > 0 ? writeIdx : 0;
+          for (let i = 0; i < count; i++) {
+            const line = ring[(start + i) % capacity] as string;
+            try {
+              controller.enqueue(encoder.encode(line));
+            } catch {
+              cleanup();
+              return;
+            }
+          }
+          writeIdx = 0;
+          dropped = 0;
+        };
+
+        const enqueue = (line: string) => {
+          if (writeIdx < capacity) {
+            ring[writeIdx++] = line;
+          } else {
+            ring[dropped % capacity] = line;
+            dropped++;
+          }
+          pending = true;
+          lastWriteTime = Date.now();
+          queueMicrotask(flush);
+        };
+
+        const cleanup = () => {
+          unsubscribe?.();
+          unsubscribe = undefined;
+          if (heartbeatTimer !== undefined) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = undefined;
+          }
+        };
+
+        // Flush a "connected" line to force response headers out immediately
+        controller.enqueue(encoder.encode(`${JSON.stringify({ t: "connected", seq: this.eventSeq })}\n`));
+        lastWriteTime = Date.now();
+
+        const subscriber = (event: Record<string, unknown>) => {
+          enqueue(`${JSON.stringify(event)}\n`);
+        };
+
+        this.eventSubscribers.add(subscriber);
+        unsubscribe = () => {
+          this.eventSubscribers.delete(subscriber);
+        };
+
+        heartbeatTimer = setInterval(() => {
+          if (Date.now() - lastWriteTime >= IpcServer.HEARTBEAT_INTERVAL_MS) {
+            const hb = `${JSON.stringify({ t: "heartbeat", seq: this.eventSeq })}\n`;
+            try {
+              controller.enqueue(encoder.encode(hb));
+              lastWriteTime = Date.now();
+            } catch {
+              cleanup();
+            }
+          }
+        }, IpcServer.HEARTBEAT_INTERVAL_MS);
+      },
+      cancel: () => {
+        unsubscribe?.();
+        if (heartbeatTimer !== undefined) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "content-type": "application/x-ndjson",
+        "transfer-encoding": "chunked",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
     });
   }
 
