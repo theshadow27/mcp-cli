@@ -284,6 +284,28 @@ describe("cmdMail", () => {
     expect(d.state.exitCode).toBeUndefined(); // no exit, just prints
   });
 
+  test("no args prints help instead of silently reading mail", async () => {
+    let ipcCallCount = 0;
+    const d = testDeps({
+      ipcCall: (async () => {
+        ipcCallCount++;
+        return {};
+      }) as MailDeps["ipcCall"],
+    });
+    await cmdMail([], d);
+    expect(d.state.stderr).toContain("mcx mail");
+    expect(d.state.stderr).toContain("Recipients are string role-names");
+    expect(d.state.exitCode).toBeUndefined();
+    expect(ipcCallCount).toBe(0);
+  });
+
+  test("help text explains recipient naming conventions", async () => {
+    const d = testDeps();
+    await cmdMail(["--help"], d);
+    expect(d.state.stderr).toContain("orchestrator");
+    expect(d.state.stderr).toContain("Mailboxes are created implicitly");
+  });
+
   test("parse error exits with message", async () => {
     const d = testDeps();
     await expect(cmdMail(["-s"], d)).rejects.toThrow("exit(1)");

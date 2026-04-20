@@ -26,6 +26,11 @@ import { readStdin } from "../parse";
 
 const MAIL_HELP = `mcx mail — interagent message queue
 
+Recipients are string role-names that identify a mailbox.
+Common names: orchestrator, manager, implementer, reviewer, qa.
+Use \`mcx mail -u <name>\` to read a specific mailbox by name.
+Mailboxes are created implicitly on first send.
+
 Usage:
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
   mcx mail -H                        List message headers
@@ -187,7 +192,7 @@ export async function cmdMail(args: string[], deps?: Partial<MailDeps>): Promise
   const d: MailDeps = { ...defaultDeps, ...deps };
   const parsed = parseMailArgs(args);
 
-  if (parsed.error === "HELP") {
+  if (args.length === 0 || parsed.error === "HELP") {
     d.writeStderr(MAIL_HELP);
     return;
   }
