@@ -131,6 +131,11 @@ If working from a PR, check that CI checks are passing:
 gh pr checks <pr-number>
 ```
 
+- If CI is **in-progress / pending / queued**, **wait** — pending is not failing. Block on the actual conclusion before forming a verdict:
+  ```bash
+  gh run watch <run-id> --exit-status   # cap at 270s to stay within the 5-min prompt cache; if it takes longer, loop with another watch
+  ```
+  Premature `qa:fail` on pending CI forces a corrective pass and a second comment. An accurate label after waiting is cheaper than a race-verdict cleanup.
 - If CI is **failing**, investigate the failure logs with `gh run view <run-id> --log-failed`.
 - Red CI means `qa:fail` — that outcome is fine and valued (see Step 6). Don't contort reality to reach `qa:pass`; an accurate `qa:fail` with specifics is more useful than a false pass.
 - If the failure looks pre-existing (not caused by this PR), you can fix it in the PR if it's quick. Otherwise, capture the evidence and apply `qa:fail`.
