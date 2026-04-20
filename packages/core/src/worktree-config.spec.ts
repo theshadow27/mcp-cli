@@ -141,7 +141,7 @@ describe("readWorktreeConfig migration (#1288)", () => {
       // Filter specifically for nag messages (which contain the legacy filename).
       // Unrelated console.error calls (e.g. environment-specific I/O warnings on Linux)
       // are excluded so the test stays green across platforms.
-      const nagCalls = errSpy.mock.calls.filter(([msg]) => String(msg).includes(WORKTREE_CONFIG_FILENAME));
+      const nagCalls = errSpy.mock.calls.filter(([msg]) => String(msg).startsWith(dir));
       expect(nagCalls).toHaveLength(1);
       const msg = String(nagCalls[0]?.[0]);
       expect(msg).toContain(dir); // full path includes repo root
