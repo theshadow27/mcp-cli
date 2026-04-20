@@ -175,7 +175,7 @@ export function sweepCoreBare(
     for (const root of roots) {
       if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
         logger.warn(`[mcpd] Healed core.bare=true on ${root} (sweep) — see #1330`);
-        metrics.counter("core_bare_healed_total", { source: "sweep" }).inc();
+        metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).inc();
         healed++;
       }
     }
@@ -233,7 +233,7 @@ export function pruneOrphanedWorktrees(
         }
         if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
           logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
-          metrics.counter("core_bare_healed_total", { source: "worktree_remove" }).inc();
+          metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
         affectedRepoRoots.add(repoRoot);
         pruned++;
@@ -249,7 +249,7 @@ export function pruneOrphanedWorktrees(
                 `[mcpd] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`,
               );
               if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
-                metrics.counter("core_bare_healed_total", { source: "branch_delete" }).inc();
+                metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).inc();
               }
             }
             logger.info(`[mcpd] Deleted branch: ${branch} (merged)`);
@@ -264,7 +264,7 @@ export function pruneOrphanedWorktrees(
       for (const root of affectedRepoRoots) {
         if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
           logger.warn("[mcpd] Fixed core.bare=true after batch worktree prune");
-          metrics.counter("core_bare_healed_total", { source: "worktree_remove" }).inc();
+          metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
       }
       logger.info(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);

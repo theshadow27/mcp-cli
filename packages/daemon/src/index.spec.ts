@@ -1020,9 +1020,9 @@ describe("sweepCoreBare (#1330)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// core_bare_healed_total counter tests
+// mcpd_core_bare_healed_total counter tests
 // ---------------------------------------------------------------------------
-describe("core_bare_healed_total counter", () => {
+describe("mcpd_core_bare_healed_total counter", () => {
   let opts: ReturnType<typeof testOptions> | undefined;
 
   beforeEach(() => {
@@ -1060,8 +1060,8 @@ describe("core_bare_healed_total counter", () => {
         }),
       );
 
-      expect(metrics.counter("core_bare_healed_total", { source: "sweep" }).value()).toBe(1);
-      expect(metrics.counter("core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).value()).toBe(1);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
     } finally {
       db.close();
     }
@@ -1079,7 +1079,7 @@ describe("core_bare_healed_total counter", () => {
 
       sweepCoreBare(db, silentLogger, mockGitOps({ exec: () => ({ exitCode: 0, stdout: "false\n" }) }));
 
-      expect(metrics.counter("core_bare_healed_total", { source: "sweep" }).value()).toBe(0);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).value()).toBe(0);
     } finally {
       db.close();
     }
@@ -1121,7 +1121,62 @@ describe("core_bare_healed_total counter", () => {
         }),
       );
 
-      expect(metrics.counter("core_bare_healed_total", { source: "worktree_remove" }).value()).toBeGreaterThan(0);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("pruneOrphanedWorktrees increments branch_delete counter when core.bare flips after branch deletion", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "counter-branch-delete-repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "ended-bd",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+        worktree: "bd-wt",
+      });
+      db.endSession("ended-bd");
+
+      // Simulate: core.bare is fine before/after worktree remove, but flips after branch delete,
+      // then fixCoreBare succeeds (unset returns exitCode 0).
+      // Non-unset config core.bare call sequence:
+      //   1: isCoreBareSet(bareBeforeRemove)  → false
+      //   2: isCoreBareSet(bareAfterRemove)   → false
+      //   3: fixCoreBare (post-remove check)  → false (no heal)
+      //   4: isCoreBareSet(bareBeforeBranch)  → false
+      //   5: isCoreBareSet(bareAfterBranch)   → true  (flip detected)
+      //   6: fixCoreBare (branch_delete heal) → true  (heals, increments branch_delete)
+      //   7: fixCoreBare (batch guard)        → false (already healed)
+      let callCount = 0;
+      pruneOrphanedWorktrees(
+        db,
+        silentLogger,
+        mockGitOps({
+          pathExists: () => true,
+          status: () => ({ exitCode: 0, stdout: "" }),
+          showBranch: () => ({ exitCode: 0, stdout: "feat/bd-branch" }),
+          removeWorktree: () => ({ exitCode: 0 }),
+          deleteBranch: () => ({ exitCode: 0 }),
+          exec: (cmd: string[]) => {
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              callCount++;
+              return { exitCode: 0, stdout: callCount === 5 || callCount === 6 ? "true\n" : "false\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).value()).toBe(1);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
     } finally {
       db.close();
     }
