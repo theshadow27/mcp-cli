@@ -43,6 +43,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdMonitor } from "./commands/monitor";
 import { cmdNote } from "./commands/note";
 import { cmdPhase } from "./commands/phase";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
@@ -328,6 +329,10 @@ async function main(): Promise<void> {
 
       case "logs":
         await cmdLogs(cleanArgs.slice(1));
+        break;
+
+      case "monitor":
+        await cmdMonitor(cleanArgs.slice(1));
         break;
 
       case "spans":
@@ -936,6 +941,7 @@ Utility:
   mcx search/install/update           Registry search and install
   mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx logs <server> [-f]              View server stderr
+  mcx monitor [flags]                 Stream daemon events as NDJSON (| jq friendly)
   mcx mail <subcommand>               Inter-session messaging
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server

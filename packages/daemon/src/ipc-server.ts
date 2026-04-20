@@ -96,6 +96,64 @@ export interface RequestContext {
 
 type RequestHandler = (params: unknown, ctx: RequestContext) => Promise<unknown>;
 
+/**
+ * Convert a glob pattern (supporting * and ?) to a RegExp.
+ * Used for --type and --src filter matching.
+ */
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Build a server-side predicate from GET /events query params.
+ * Returns null if no filters are specified (pass-through).
+ */
+export function buildEventFilter(params: URLSearchParams): ((event: Record<string, unknown>) => boolean) | null {
+  const subscribeRaw = params.get("subscribe");
+  const session = params.get("session");
+  const prRaw = params.get("pr");
+  const workItem = params.get("workItem");
+  const typeRaw = params.get("type");
+  const srcRaw = params.get("src");
+  const phase = params.get("phase");
+
+  if (!subscribeRaw && !session && !prRaw && !workItem && !typeRaw && !srcRaw && !phase) {
+    return null;
+  }
+
+  const categories = subscribeRaw ? new Set(subscribeRaw.split(",").map((s) => s.trim())) : null;
+  const prNumber = prRaw !== null ? Number(prRaw) : null;
+  const typePatterns = typeRaw
+    ? typeRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map(globToRegex)
+    : null;
+  const srcPattern = srcRaw ? globToRegex(srcRaw) : null;
+
+  return (event: Record<string, unknown>): boolean => {
+    if (categories && !categories.has(event.category as string)) return false;
+    if (session && event.sessionId !== session) return false;
+    if (prNumber !== null && event.prNumber !== prNumber) return false;
+    if (workItem && event.workItemId !== workItem) return false;
+    if (typePatterns) {
+      if (typeof event.event !== "string") return false;
+      if (!typePatterns.some((re) => re.test(event.event as string))) return false;
+    }
+    if (srcPattern) {
+      if (typeof event.src !== "string") return false;
+      if (!srcPattern.test(event.src)) return false;
+    }
+    if (phase && event.phase !== phase) return false;
+    return true;
+  };
+}
+
 export class IpcServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private socketPath = options.SOCKET_PATH;
@@ -1302,9 +1360,17 @@ export class IpcServer {
    * Handle GET /events — NDJSON stream for real-time event delivery.
    *
    * Query params:
-   *   since=<seq>  — reserved for future replay (#1513), currently ignored
+   *   since=<seq>       reserved for future replay (#1513), currently ignored
+   *   subscribe=<cats>  comma-separated categories to include (e.g. "session,work_item")
+   *   session=<id>      only events with matching sessionId
+   *   pr=<n>            only events with matching prNumber
+   *   workItem=<id>     only events with matching workItemId
+   *   type=<globs>      comma-separated event name globs (e.g. "pr.*,session.idle")
+   *   src=<pattern>     glob pattern against src field
+   *   phase=<name>      only events with matching phase
    */
-  private handleEventsNDJSON(_url: URL): Response {
+  private handleEventsNDJSON(url: URL): Response {
+    const filter = buildEventFilter(url.searchParams);
     const capacity = IpcServer.EVENT_RING_CAPACITY;
     const ring: string[] = new Array(capacity);
     let writeIdx = 0;
@@ -1363,6 +1429,7 @@ export class IpcServer {
         lastWriteTime = Date.now();
 
         const subscriber = (event: Record<string, unknown>) => {
+          if (filter && !filter(event)) return;
           enqueue(`${JSON.stringify(event)}\n`);
         };
 
