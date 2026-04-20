@@ -12,9 +12,40 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentPermissionRequest, Logger, SessionInfo, SessionStateEnum, WorkItemEvent } from "@mcp-cli/core";
-import { consoleLogger, generateSessionName } from "@mcp-cli/core";
+import type {
+  AgentPermissionRequest,
+  Logger,
+  MonitorEventInput,
+  SessionInfo,
+  SessionStateEnum,
+  WorkItemEvent,
+} from "@mcp-cli/core";
+import {
+  CHECKS_FAILED,
+  CHECKS_PASSED,
+  CHECKS_STARTED,
+  PHASE_CHANGED,
+  PR_CLOSED,
+  PR_MERGED,
+  PR_OPENED,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
+  SESSION_CLEARED,
+  SESSION_CONTAINMENT_DENIED,
+  SESSION_CONTAINMENT_ESCALATED,
+  SESSION_CONTAINMENT_WARNING,
+  SESSION_DISCONNECTED,
+  SESSION_ENDED,
+  SESSION_ERROR,
+  SESSION_MODEL_CHANGED,
+  SESSION_PERMISSION_REQUEST,
+  SESSION_RATE_LIMITED,
+  SESSION_RESULT,
+  consoleLogger,
+  generateSessionName,
+} from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
+import type { EventBus } from "../event-bus";
 import { killPid } from "../process-util";
 import { ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
@@ -350,6 +381,9 @@ export class ClaudeWsServer {
 
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
+
+  /** Optional event bus for unified monitor event stream (#1512). */
+  eventBus: EventBus | null = null;
 
   constructor(deps?: {
     spawn?: SpawnFn;
@@ -1251,6 +1285,8 @@ export class ClaudeWsServer {
     // Buffer the event so waiters registered after dispatch can still see it
     this.workItemBuffer.push({ event: waitEvent, ts: Date.now() });
     this.trimWorkItemBuffer();
+
+    this.publishWorkItemMonitorEvent(event);
   }
 
   /** Find and consume a buffered work item event matching the given filters. */
@@ -1602,6 +1638,81 @@ export class ClaudeWsServer {
         }
         break;
     }
+
+    this.publishSessionMonitorEvent(sessionId, event);
+  }
+
+  private static readonly SESSION_EVENT_MAP: Record<string, string> = {
+    "session:permission_request": SESSION_PERMISSION_REQUEST,
+    "session:result": SESSION_RESULT,
+    "session:error": SESSION_ERROR,
+    "session:cleared": SESSION_CLEARED,
+    "session:model_changed": SESSION_MODEL_CHANGED,
+    "session:rate_limited": SESSION_RATE_LIMITED,
+    "session:disconnected": SESSION_DISCONNECTED,
+    "session:ended": SESSION_ENDED,
+    "session:containment_warning": SESSION_CONTAINMENT_WARNING,
+    "session:containment_denied": SESSION_CONTAINMENT_DENIED,
+    "session:containment_escalated": SESSION_CONTAINMENT_ESCALATED,
+  };
+
+  private publishSessionMonitorEvent(sessionId: string, event: SessionEvent): void {
+    if (!this.eventBus) return;
+    const mapped = ClaudeWsServer.SESSION_EVENT_MAP[event.type];
+    if (!mapped) return;
+
+    const input: MonitorEventInput = {
+      src: "daemon.claude-server",
+      event: mapped,
+      category: "session",
+      sessionId,
+    };
+
+    if ("cost" in event) input.cost = event.cost;
+    if ("tokens" in event) input.tokens = event.tokens;
+    if ("numTurns" in event) input.numTurns = event.numTurns;
+    if ("result" in event) input.result = event.result;
+    if ("errors" in event) input.errors = event.errors;
+    if ("requestId" in event) input.requestId = event.requestId;
+    if ("toolName" in event) input.toolName = event.toolName;
+    if ("strikes" in event) input.strikes = event.strikes;
+    if ("reason" in event) input.reason = event.reason;
+
+    this.eventBus.publish(input);
+  }
+
+  private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {
+    "pr:opened": PR_OPENED,
+    "pr:merged": PR_MERGED,
+    "pr:closed": PR_CLOSED,
+    "checks:started": CHECKS_STARTED,
+    "checks:passed": CHECKS_PASSED,
+    "checks:failed": CHECKS_FAILED,
+    "review:approved": REVIEW_APPROVED,
+    "review:changes_requested": REVIEW_CHANGES_REQUESTED,
+    "phase:changed": PHASE_CHANGED,
+  };
+
+  private publishWorkItemMonitorEvent(event: WorkItemEvent): void {
+    if (!this.eventBus) return;
+    const mapped = ClaudeWsServer.WORK_ITEM_EVENT_MAP[event.type];
+    if (!mapped) return;
+
+    const input: MonitorEventInput = {
+      src: "daemon.work-item-poller",
+      event: mapped,
+      category: "work_item",
+    };
+
+    if ("prNumber" in event) input.prNumber = event.prNumber;
+    if ("failedJob" in event) input.failedJob = event.failedJob;
+    if ("reviewer" in event) input.reviewer = event.reviewer;
+    if ("itemId" in event) input.workItemId = event.itemId;
+    if ("from" in event) input.from = event.from;
+    if ("to" in event) input.to = event.to;
+    if ("runId" in event) input.runId = event.runId;
+
+    this.eventBus.publish(input);
   }
 
   private async handlePermissionRequest(
