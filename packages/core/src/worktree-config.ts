@@ -131,7 +131,7 @@ function emitNag(legacyPath: string, manifestPath: string): void {
   if (naggedPaths.has(legacyPath)) return;
   naggedPaths.add(legacyPath);
   console.error(
-    `${WORKTREE_CONFIG_FILENAME} is ignored — its contents were migrated to ${basename(manifestPath)} under \`worktree:\`. Delete ${WORKTREE_CONFIG_FILENAME} to silence this warning.`,
+    `${legacyPath} is ignored — its contents were migrated to ${basename(manifestPath)} under \`worktree:\`. Delete ${legacyPath} to silence this warning.`,
   );
 }
 
