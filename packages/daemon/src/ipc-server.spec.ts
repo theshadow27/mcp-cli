@@ -2442,4 +2442,122 @@ describe("IpcServer HTTP transport", () => {
       });
     }
   });
+
+  test("GET /events respects subscribe filter server-side", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?subscribe=session", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    // session event — should pass
+    server.pushEvent({ event: "session.result", category: "session", t: "ev" });
+    // mail event — should be filtered out
+    server.pushEvent({ event: "mail.received", category: "mail", t: "ev" });
+    // second session event — used as terminator to know mail was skipped
+    server.pushEvent({ event: "session.ended", category: "session", t: "ev" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.ended")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    const lines = buffer
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const events = lines.filter((l) => l.t === "ev");
+    expect(events.every((e) => e.category === "session")).toBe(true);
+    expect(events.find((e) => e.event === "mail.received")).toBeUndefined();
+  });
+});
+
+// ── buildEventFilter unit tests ──
+
+import { buildEventFilter } from "./ipc-server";
+
+describe("buildEventFilter", () => {
+  function params(obj: Record<string, string>): URLSearchParams {
+    return new URLSearchParams(obj);
+  }
+
+  test("returns null when no filters specified", () => {
+    expect(buildEventFilter(params({}))).toBeNull();
+  });
+
+  test("subscribe filters by category", () => {
+    const filter = buildEventFilter(params({ subscribe: "session,work_item" }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ category: "session", event: "session.result" })).toBe(true);
+    expect(filter?.({ category: "work_item", event: "pr.merged" })).toBe(true);
+    expect(filter?.({ category: "mail", event: "mail.received" })).toBe(false);
+  });
+
+  test("session filter matches sessionId", () => {
+    const filter = buildEventFilter(params({ session: "abc123" }));
+    expect(filter?.({ category: "session", sessionId: "abc123", event: "session.result" })).toBe(true);
+    expect(filter?.({ category: "session", sessionId: "other", event: "session.result" })).toBe(false);
+  });
+
+  test("pr filter matches prNumber", () => {
+    const filter = buildEventFilter(params({ pr: "42" }));
+    expect(filter?.({ category: "work_item", prNumber: 42, event: "pr.merged" })).toBe(true);
+    expect(filter?.({ category: "work_item", prNumber: 99, event: "pr.merged" })).toBe(false);
+  });
+
+  test("workItem filter matches workItemId", () => {
+    const filter = buildEventFilter(params({ workItem: "#1441" }));
+    expect(filter?.({ workItemId: "#1441", event: "phase.changed" })).toBe(true);
+    expect(filter?.({ workItemId: "#9999", event: "phase.changed" })).toBe(false);
+  });
+
+  test("type glob matches event field", () => {
+    const filter = buildEventFilter(params({ type: "pr.*" }));
+    expect(filter?.({ event: "pr.merged" })).toBe(true);
+    expect(filter?.({ event: "pr.closed" })).toBe(true);
+    expect(filter?.({ event: "session.result" })).toBe(false);
+  });
+
+  test("type glob supports multiple comma-separated patterns", () => {
+    const filter = buildEventFilter(params({ type: "pr.*,session.idle" }));
+    expect(filter?.({ event: "pr.opened" })).toBe(true);
+    expect(filter?.({ event: "session.idle" })).toBe(true);
+    expect(filter?.({ event: "mail.received" })).toBe(false);
+  });
+
+  test("src glob matches src field", () => {
+    const filter = buildEventFilter(params({ src: "daemon.*" }));
+    expect(filter?.({ src: "daemon.work-item-poller", event: "pr.merged" })).toBe(true);
+    expect(filter?.({ src: "external.thing", event: "pr.merged" })).toBe(false);
+  });
+
+  test("phase filter matches phase field", () => {
+    const filter = buildEventFilter(params({ phase: "review" }));
+    expect(filter?.({ phase: "review", event: "phase.changed" })).toBe(true);
+    expect(filter?.({ phase: "impl", event: "phase.changed" })).toBe(false);
+  });
+
+  test("multiple filters are ANDed", () => {
+    const filter = buildEventFilter(params({ session: "s1", type: "session.*" }));
+    expect(filter?.({ sessionId: "s1", event: "session.result" })).toBe(true);
+    expect(filter?.({ sessionId: "s2", event: "session.result" })).toBe(false);
+    expect(filter?.({ sessionId: "s1", event: "pr.merged" })).toBe(false);
+  });
 });

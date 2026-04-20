@@ -202,9 +202,30 @@ export function openLogStream(params: {
  */
 export function openEventStream(params?: {
   since?: number;
+  /** Comma-separated event categories (e.g. "session,work_item") */
+  subscribe?: string;
+  /** Filter to a specific session ID */
+  session?: string;
+  /** Filter to a specific PR number */
+  pr?: number;
+  /** Filter to a specific work item ID */
+  workItem?: string;
+  /** Comma-separated event type globs (e.g. "pr.*,session.idle") */
+  type?: string;
+  /** Source attribution pattern */
+  src?: string;
+  /** Filter to a specific phase */
+  phase?: string;
 }): { events: AsyncIterable<Record<string, unknown>>; abort: () => void } {
   const qs = new URLSearchParams();
   if (params?.since !== undefined) qs.set("since", String(params.since));
+  if (params?.subscribe) qs.set("subscribe", params.subscribe);
+  if (params?.session) qs.set("session", params.session);
+  if (params?.pr !== undefined) qs.set("pr", String(params.pr));
+  if (params?.workItem) qs.set("workItem", params.workItem);
+  if (params?.type) qs.set("type", params.type);
+  if (params?.src) qs.set("src", params.src);
+  if (params?.phase) qs.set("phase", params.phase);
 
   const controller = new AbortController();
   const qsStr = qs.toString();

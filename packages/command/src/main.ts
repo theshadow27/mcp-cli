@@ -43,6 +43,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdMonitor } from "./commands/monitor";
 import { cmdNote } from "./commands/note";
 import { cmdPhase } from "./commands/phase";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
@@ -328,6 +329,10 @@ async function main(): Promise<void> {
 
       case "logs":
         await cmdLogs(cleanArgs.slice(1));
+        break;
+
+      case "monitor":
+        await cmdMonitor(cleanArgs.slice(1));
         break;
 
       case "spans":
