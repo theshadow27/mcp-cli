@@ -1379,7 +1379,7 @@ export class IpcServer {
         let liveBuffer: Array<{ line: string; seq: number | undefined }> | null = null;
         const subscriber = (event: Record<string, unknown>) => {
           const line = `${JSON.stringify(event)}\n`;
-          const seq = event.seq as number | undefined;
+          const seq = typeof event.seq === "number" ? event.seq : undefined;
           if (liveBuffer !== null) {
             liveBuffer.push({ line, seq });
           } else {
