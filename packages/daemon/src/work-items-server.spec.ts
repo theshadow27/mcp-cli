@@ -1,14 +1,41 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
+import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
+
+function tmpDbPath(): string {
+  return join(tmpdir(), `mcp-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+}
+
+function cleanupDb(p: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      unlinkSync(p + suffix);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
   const raw = new Database(":memory:");
   raw.exec("PRAGMA journal_mode = WAL");
   const db = new WorkItemDb(raw);
   return { db, raw };
+}
+
+/** Create a real StateDb (temp file) and a WorkItemDb sharing its underlying database — matches production wiring. */
+function createRealStateDbs(): { stateDb: StateDb; workItemDb: WorkItemDb; raw: Database; dbPath: string } {
+  const dbPath = tmpDbPath();
+  const stateDb = new StateDb(dbPath);
+  const raw = stateDb.getDatabase();
+  const workItemDb = new WorkItemDb(raw);
+  return { stateDb, workItemDb, raw, dbPath };
 }
 
 describe("WORK_ITEMS_SERVER_NAME", () => {
@@ -18,14 +45,18 @@ describe("WORK_ITEMS_SERVER_NAME", () => {
 });
 
 describe("buildWorkItemsToolCache", () => {
-  test("returns all 5 tools", () => {
+  test("returns all 9 tools", () => {
     const cache = buildWorkItemsToolCache();
-    expect(cache.size).toBe(5);
+    expect(cache.size).toBe(9);
     expect(cache.has("work_items_track")).toBe(true);
     expect(cache.has("work_items_untrack")).toBe(true);
     expect(cache.has("work_items_list")).toBe(true);
     expect(cache.has("work_items_get")).toBe(true);
     expect(cache.has("work_items_update")).toBe(true);
+    expect(cache.has("phase_state_get")).toBe(true);
+    expect(cache.has("phase_state_set")).toBe(true);
+    expect(cache.has("phase_state_delete")).toBe(true);
+    expect(cache.has("phase_state_list")).toBe(true);
   });
 
   test("each tool has correct server name", () => {
@@ -47,7 +78,7 @@ describe("WorkItemsServer", () => {
     rawDb = undefined;
   });
 
-  test("start() connects and listTools returns 5 tools", async () => {
+  test("start() connects and listTools returns 9 tools", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -55,13 +86,17 @@ describe("WorkItemsServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
     expect(names).toContain("work_items_track");
     expect(names).toContain("work_items_untrack");
     expect(names).toContain("work_items_list");
     expect(names).toContain("work_items_get");
     expect(names).toContain("work_items_update");
+    expect(names).toContain("phase_state_get");
+    expect(names).toContain("phase_state_set");
+    expect(names).toContain("phase_state_delete");
+    expect(names).toContain("phase_state_list");
   });
 
   test("work_items_track creates a new item by PR number", async () => {
@@ -938,5 +973,310 @@ describe("WorkItemsServer", () => {
     const item = JSON.parse(content[0].text);
     expect(item.branch).toBe("explicit/branch");
     expect(resolverCalled).toBe(false);
+  });
+});
+
+describe("phase_state tools", () => {
+  let server: WorkItemsServer | undefined;
+  let stateDbInst: StateDb | undefined;
+  let dbPathToClean: string | undefined;
+  // rawWiDb tracks :memory: WorkItemDb instances used by no-stateDb tests
+  let rawWiDb: Database | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    stateDbInst?.close();
+    rawWiDb?.close();
+    server = undefined;
+    stateDbInst = undefined;
+    rawWiDb = undefined;
+    if (dbPathToClean) {
+      cleanupDb(dbPathToClean);
+      dbPathToClean = undefined;
+    }
+  });
+
+  test("phase_state_set and phase_state_get round-trip a value", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
+
+    const setResult = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id", value: "abc-123" },
+    });
+    expect(setResult.isError).toBeFalsy();
+    const setBody = JSON.parse((setResult.content as Array<{ text: string }>)[0].text);
+    expect(setBody.ok).toBe(true);
+
+    const getResult = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id" },
+    });
+    expect(getResult.isError).toBeFalsy();
+    const getBody = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
+    expect(getBody.value).toBe("abc-123");
+  });
+
+  test("repoRoot is canonicalized — trailing slash and no slash resolve to same row", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 20 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:20", repoRoot: "/repo/path/", key: "k", value: "v" },
+    });
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:20", repoRoot: "/repo/path", key: "k" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.value).toBe("v");
+  });
+
+  test("empty repoRoot is rejected — does not fall back to process.cwd()", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 99 } });
+
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:99", repoRoot: "", key: "k", value: "v" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("required");
+  });
+
+  test("namespace uses workitem:{id} — matches ctx.state in phase handlers", async () => {
+    const { stateDb, workItemDb, raw, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 10 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:10", repoRoot: "/repo", key: "session_id", value: "s10" },
+    });
+
+    const row = raw.query<{ namespace: string }, []>("SELECT namespace FROM alias_state LIMIT 1").get();
+    expect(row?.namespace).toBe("workitem:issue:10");
+  });
+
+  test("parallel work items are isolated — no cross-contamination", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id", value: "sess-1" },
+    });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "session_id", value: "sess-2" },
+    });
+
+    const get1 = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:1", repoRoot: "/repo", key: "session_id" },
+    });
+    const get2 = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "session_id" },
+    });
+
+    expect(JSON.parse((get1.content as Array<{ text: string }>)[0].text).value).toBe("sess-1");
+    expect(JSON.parse((get2.content as Array<{ text: string }>)[0].text).value).toBe("sess-2");
+  });
+
+  test("phase_state_get returns undefined for missing key", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:2", repoRoot: "/repo", key: "nonexistent" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.value).toBeUndefined();
+  });
+
+  test("phase_state_list returns all keys for the work item", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo", key: "session_id", value: "s1" },
+    });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo", key: "worktree", value: "/tmp/wt" },
+    });
+
+    const result = await client.callTool({
+      name: "phase_state_list",
+      arguments: { workItemId: "issue:3", repoRoot: "/repo" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.count).toBe(2);
+    expect(body.entries.session_id).toBe("s1");
+    expect(body.entries.worktree).toBe("/tmp/wt");
+  });
+
+  test("phase_state_delete removes a key", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 7 } });
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id", value: "to-delete" },
+    });
+
+    const delResult = await client.callTool({
+      name: "phase_state_delete",
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id" },
+    });
+    expect(delResult.isError).toBeFalsy();
+    const delBody = JSON.parse((delResult.content as Array<{ text: string }>)[0].text);
+    expect(delBody.deleted).toBe(true);
+
+    const getResult = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:7", repoRoot: "/repo", key: "session_id" },
+    });
+    const getBody = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
+    expect(getBody.value).toBeUndefined();
+  });
+
+  test("phase_state_delete returns false for nonexistent key", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 8 } });
+
+    const result = await client.callTool({
+      name: "phase_state_delete",
+      arguments: { workItemId: "issue:8", repoRoot: "/repo", key: "nope" },
+    });
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(body.deleted).toBe(false);
+  });
+
+  test("phase_state_get errors for nonexistent work item", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    const result = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:999", repoRoot: "/repo", key: "x" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("Work item not found");
+  });
+
+  test("phase_state tools error when no stateDb configured", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawWiDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 5 } });
+
+    for (const toolName of ["phase_state_get", "phase_state_set", "phase_state_delete", "phase_state_list"] as const) {
+      const result = await client.callTool({
+        name: toolName,
+        arguments: { workItemId: "issue:5", repoRoot: "/repo", key: "x", value: "v" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("not available");
+    }
+  });
+
+  test("phase_state_set rejects undefined value", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 6 } });
+
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:6", repoRoot: "/repo", key: "k" },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("value is required");
+  });
+
+  test("phase_state_set surfaces StateDb errors as isError response", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 9 } });
+
+    const bigValue = "x".repeat(300 * 1024);
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:9", repoRoot: "/repo", key: "big", value: bigValue },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("exceeds max size");
   });
 });

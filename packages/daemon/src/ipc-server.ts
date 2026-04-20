@@ -5,6 +5,7 @@
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type {
   IpcError,
   IpcMethod,
@@ -1201,25 +1202,29 @@ export class IpcServer {
     // -- Alias state (per-work-item / per-alias scratchpad) --
 
     this.handlers.set("aliasStateGet", async (params, _ctx) => {
-      const { repoRoot, namespace, key } = AliasStateGetParamsSchema.parse(params);
-      return { value: this.db.getAliasState(repoRoot, namespace, key) };
+      const parsed = AliasStateGetParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key) };
     });
 
     this.handlers.set("aliasStateSet", async (params, _ctx) => {
-      const { repoRoot, namespace, key, value } = AliasStateSetParamsSchema.parse(params);
-      this.db.setAliasState(repoRoot, namespace, key, value);
+      const parsed = AliasStateSetParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value);
       return { ok: true as const };
     });
 
     this.handlers.set("aliasStateDelete", async (params, _ctx) => {
-      const { repoRoot, namespace, key } = AliasStateDeleteParamsSchema.parse(params);
-      const deleted = this.db.deleteAliasState(repoRoot, namespace, key);
+      const parsed = AliasStateDeleteParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key);
       return { ok: true as const, deleted };
     });
 
     this.handlers.set("aliasStateAll", async (params, _ctx) => {
-      const { repoRoot, namespace } = AliasStateAllParamsSchema.parse(params);
-      return { entries: this.db.listAliasState(repoRoot, namespace) };
+      const parsed = AliasStateAllParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {

@@ -865,6 +865,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           });
 
           workItemsServer = new WorkItemsServer(workItemDb, {
+            stateDb: db,
             onTrack: () => workItemPoller?.pollNow(),
             loadManifest: (repoRoot) => {
               try {
