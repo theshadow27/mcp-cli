@@ -28,8 +28,7 @@ const MAIL_HELP = `mcx mail — interagent message queue
 
 Recipients are string role-names that identify a mailbox.
 Common names: orchestrator, manager, implementer, reviewer, qa.
-A session reads mail sent to a recipient if its MCX_AGENT_NAME matches.
-Use \`mcx mail -u <name>\` to read a specific mailbox.
+Use \`mcx mail -u <name>\` to read a specific mailbox by name.
 Mailboxes are created implicitly on first send.
 
 Usage:
