@@ -159,6 +159,32 @@ describe("cmdUntrack", () => {
     await cmdUntrack(["--branch", "feat/nonexistent"], deps);
   });
 
+  test("untracks #NNNN format", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["#1135"], deps);
+    expect(captured).toEqual({ number: 1135 });
+  });
+
+  test("untracks pr:NNNN format", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      untrackWorkItem: (params: unknown) => {
+        captured = params;
+        return { ok: true, deleted: true };
+      },
+    });
+
+    await cmdUntrack(["pr:1186"], deps);
+    expect(captured).toEqual({ number: 1186 });
+  });
+
   test("rejects invalid number", async () => {
     const deps = makeDeps();
     await expect(cmdUntrack(["abc"], deps)).rejects.toThrow("exit(1)");

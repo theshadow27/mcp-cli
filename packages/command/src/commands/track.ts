@@ -115,7 +115,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     return;
   }
 
-  const num = Number(args[0]);
+  const raw = args[0].replace(/^#/, "").replace(/^pr:/, "");
+  const num = Number(raw);
   if (!Number.isInteger(num) || num <= 0) {
     printError(`Invalid number: ${args[0]}`);
     return deps.exit(1);
