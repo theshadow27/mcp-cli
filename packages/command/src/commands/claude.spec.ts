@@ -3093,7 +3093,7 @@ describe("mcx claude bye branch cleanup", () => {
       expect(branchCalls.length).toBe(1);
       expect(branchCalls[0][0]).toContain("feat/issue-42");
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(errOutput).toContain("Deleted branch: feat/issue-42 (merged)");
+      expect(errOutput).toContain("Deleted branch: feat/issue-42 (safe)");
     } finally {
       console.log = origLog;
     }
@@ -3245,7 +3245,7 @@ describe("mcx claude worktrees", () => {
       await cmdClaude(["worktrees", "--prune"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(errOutput).toContain("Removed worktree:");
-      expect(errOutput).toContain("Deleted branch: feat/orphan (merged)");
+      expect(errOutput).toContain("Deleted branch: feat/orphan (safe)");
       expect(errOutput).toContain("Pruned 1 worktree.");
     } finally {
       console.log = origLog;
@@ -3428,7 +3428,7 @@ describe("mcx claude worktrees", () => {
       await cmdClaude(["worktrees", "--prune"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(errOutput).toContain("Removed worktree:");
-      expect(errOutput).toContain("Deleted branch: feat/done (merged)");
+      expect(errOutput).toContain("Deleted branch: feat/done (safe)");
       expect(errOutput).toContain("Pruned 1 worktree.");
     } finally {
       console.log = origLog;
