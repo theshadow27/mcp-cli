@@ -213,7 +213,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
       if (hookExit === 0) {
         deps.printError(`Removed worktree via hook: ${worktreePath}`);
-        deleteIfMerged(branch, effectiveRoot, deps);
+        deleteIfSafeToDelete(branch, effectiveRoot, deps);
       } else {
         deps.printError(`Worktree teardown hook failed for: ${worktreePath}: ${hookStderr}`);
       }
@@ -230,7 +230,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
           deps.printError("Fixed core.bare=true after worktree removal");
         }
         deps.printError(`Removed worktree: ${worktreePath}`);
-        deleteIfMerged(branch, effectiveRoot, deps);
+        deleteIfSafeToDelete(branch, effectiveRoot, deps);
       } else {
         deps.printError(`Failed to remove worktree: ${worktreePath}`);
       }
@@ -253,8 +253,8 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
   }
 }
 
-/** Delete a branch if it's been merged (git branch -d is safe — refuses unmerged). */
-function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
+/** Delete a branch if git branch -d considers it safe (merged into HEAD or upstream). */
+function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
   if (!branch) return false;
   const bareBeforeDelete = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
   const { exitCode } = deps.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
@@ -262,7 +262,7 @@ function deleteIfMerged(branch: string, repoRoot: string, deps: WorktreeShimDeps
     if (!bareBeforeDelete && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
       deps.printError(`[shim] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`);
     }
-    deps.printError(`Deleted branch: ${branch} (merged)`);
+    deps.printError(`Deleted branch: ${branch} (safe)`);
     return true;
   }
   return false;
@@ -418,7 +418,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       if (hookExit === 0) {
         deps.printError(`Removed worktree via hook: ${wt.path}`);
         pruned++;
-        if (wt.branch && deleteIfMerged(wt.branch, repoRoot, deps)) {
+        if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
         }
       } else {
@@ -438,7 +438,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
         }
         deps.printError(`Removed worktree: ${wt.path}`);
         pruned++;
-        if (wt.branch && deleteIfMerged(wt.branch, repoRoot, deps)) {
+        if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
         }
       }

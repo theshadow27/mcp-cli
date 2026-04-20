@@ -350,7 +350,7 @@ describe("runGc worktrees", () => {
   });
 
   test("default mode: worktree-phase branch deletions don't cause false branch-phase failures", async () => {
-    // Regression: when the worktree phase's deleteIfMerged removes a branch,
+    // Regression: when the worktree phase's deleteIfSafeToDelete removes a branch,
     // the branch phase must skip it rather than trying `git branch -d` again
     // and reporting a false failure.
     const responses = makeWorktreeResponses();
