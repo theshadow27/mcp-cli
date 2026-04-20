@@ -205,6 +205,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
     const config: OpenCodeSessionConfig = {
       cwd,
       prompt,
+      name: args.name as string | undefined,
       provider: args.provider as string | undefined,
       model: args.model as string | undefined,
       allowedTools: args.allowedTools as string[] | undefined,
@@ -222,6 +223,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
       type: "db:upsert",
       session: {
         sessionId,
+        name: config.name ?? undefined,
         state: "connecting",
         cwd,
         worktree: config.worktree,
@@ -327,6 +329,9 @@ function handleBye(args: Record<string, unknown>): {
     return { content: [{ type: "text", text: `Unknown session: ${sessionId}` }], isError: true };
   }
   const info = session.getInfo();
+  if (typeof args.message === "string" && args.message.length > 0) {
+    session.appendNote(args.message);
+  }
   session.terminate();
   return {
     content: [

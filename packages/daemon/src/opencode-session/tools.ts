@@ -34,16 +34,49 @@ export const OPENCODE_TOOLS = buildAgentTools({
         },
       },
     },
+    session_status: {
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID to query" },
+      },
+    },
+    interrupt: {
+      description: "Interrupt the current prompt of an OpenCode agent session (sends abort).",
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID to interrupt" },
+      },
+    },
+    bye: {
+      description: "Terminate an OpenCode agent session: kill the process and clean up.",
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID to end" },
+      },
+    },
+    transcript: {
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID to query" },
+      },
+    },
     wait: {
       description:
         "Block until an OpenCode agent session event occurs (result, error, permission request, or ended). " +
         "If sessionId is provided, waits for that session only. Otherwise waits for any session. " +
         "Use afterSeq for race-free cursor-based polling: returns immediately if events exist past the cursor.",
       extraProperties: {
+        sessionId: { type: "string", description: "Session ID to wait on (omit for any session)" },
         afterSeq: {
           type: "number",
           description: "Return events after this sequence number. Enables race-free polling.",
         },
+      },
+    },
+    approve: {
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID containing the permission request" },
+      },
+    },
+    deny: {
+      extraProperties: {
+        sessionId: { type: "string", description: "Session ID containing the permission request" },
       },
     },
   },

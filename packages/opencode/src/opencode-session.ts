@@ -54,6 +54,8 @@ export interface OpenCodeSessionConfig {
   worktree?: string;
   /** Repository root for worktree cleanup. */
   repoRoot?: string;
+  /** Human-readable session name. */
+  name?: string;
   /** Extra environment variables. */
   env?: Record<string, string>;
   /** Watchdog timeout in ms. Defaults to WATCHDOG_TIMEOUT_MS (5 min). Set 0 to disable. */
@@ -76,6 +78,7 @@ export class OpenCodeSession {
   private readonly rules: PermissionRule[];
   private readonly pendingPermissions = new Map<string, AgentPermissionRequest>();
   private readonly transcript: TranscriptEntry[] = [];
+  private sessionName: string | null = null;
   private model: string | null = null;
   private diff: string | null = null;
   private readonly eventHandler: SessionEventHandler;
@@ -94,6 +97,7 @@ export class OpenCodeSession {
     this.transcriptState = createTranscriptState();
     this.rules = buildRules(config.allowedTools, config.disallowedTools);
     this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? WATCHDOG_TIMEOUT_MS;
+    this.sessionName = config.name ?? null;
   }
 
   /** Start the session: spawn process, discover URL, connect SSE, create session, send first prompt. */
@@ -291,7 +295,7 @@ export class OpenCodeSession {
   getInfo(): AgentSessionInfo {
     return {
       sessionId: this.sessionId,
-      name: null,
+      name: this.sessionName,
       provider: "opencode",
       state: this.state,
       model: this.model,
@@ -313,6 +317,11 @@ export class OpenCodeSession {
   /** Get the transcript. */
   getTranscript(): readonly TranscriptEntry[] {
     return this.transcript;
+  }
+
+  /** Append a note to the in-memory transcript (e.g. a closing message). */
+  appendNote(text: string): void {
+    this.transcript.push(userEntry(text));
   }
 
   /** Current session state. */
