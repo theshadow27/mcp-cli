@@ -42,3 +42,36 @@ describe("built-in teams seed", () => {
     }
   });
 });
+
+describe("built-in owa seed", () => {
+  test("listSites includes owa with merged seed config", () => {
+    const names = listSites().map((s) => s.name);
+    expect(names).toContain("owa");
+    const owa = getSite("owa");
+    expect(owa?.url).toBe("https://outlook.cloud.microsoft/mail/");
+    expect(owa?.domains).toContain("*.outlook.cloud.microsoft");
+    expect(owa?.domains).toContain("substrate.office.com");
+    expect(owa?.browser?.engine).toBe("playwright");
+  });
+
+  test("loadCatalog seeds owa catalog on first read", () => {
+    const catalog = loadCatalog("owa", "owa");
+    const names = Object.keys(catalog);
+    expect(names).toContain("inbox");
+    expect(names).toContain("read_mail");
+    for (const call of Object.values(catalog)) {
+      expect(call.name).toBeTruthy();
+      expect(call.url).toMatch(/^https?:\/\//);
+      expect(call.method).toBe("POST");
+    }
+  });
+
+  test("all owa calls declare fetchFilter and jq transforms", () => {
+    const catalog = loadCatalog("owa", "owa");
+    for (const call of Object.values(catalog)) {
+      expect(call.fetchFilter).toBe("owa-urlpostdata");
+      expect(call.jq_input).toBeTruthy();
+      expect(call.jq_output).toBeTruthy();
+    }
+  });
+});
