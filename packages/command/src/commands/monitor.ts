@@ -13,9 +13,10 @@
  *   --src <pattern>      Glob pattern against src field
  *   --phase <name>       Filter to a specific phase
  *   --since <seq>        Replay from cursor (passed to daemon)
- *   --until <type>       Exit (code 0) when this event type is seen
- *   --timeout <seconds>  Exit after N seconds (code 0)
- *   --max-events <n>     Exit after N events (code 0)
+ *   --until <type>       Exit (code 0) when this event type is seen (exact dot-delimited name, e.g. "pr.merged")
+ *   --timeout <seconds>  Exit after N seconds (code 0); must be > 0
+ *   --max-events <n>     Exit after N events (code 0); must be > 0
+ *   --since <seq>        Replay from cursor (passed to daemon; replay pending #1513)
  *   --json               Raw JSON output (default; explicit for clarity)
  */
 
@@ -52,7 +53,7 @@ const defaultDeps: MonitorDeps = {
   writeStdout: (line) => process.stdout.write(line),
   writeStderr: (msg) => process.stderr.write(msg),
   exit: (code) => process.exit(code),
-  onSigint: (fn) => process.on("SIGINT", fn),
+  onSigint: (fn) => process.once("SIGINT", fn),
 };
 
 export function parseMonitorArgs(args: string[]): MonitorArgs {
@@ -94,19 +95,25 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
       if (!phase) return { error: "--phase requires a value" };
     } else if (arg === "--since") {
       const raw = args[++i];
-      if (!raw || Number.isNaN(Number(raw))) return { error: "--since requires a number" };
-      since = Number(raw);
+      const n = Number(raw);
+      if (!raw || Number.isNaN(n)) return { error: "--since requires a number" };
+      if (n < 0) return { error: "--since must be >= 0" };
+      since = n;
     } else if (arg === "--until") {
       until = args[++i];
       if (!until) return { error: "--until requires an event type" };
     } else if (arg === "--timeout") {
       const raw = args[++i];
-      if (!raw || Number.isNaN(Number(raw))) return { error: "--timeout requires a number" };
-      timeout = Number(raw);
+      const n = Number(raw);
+      if (!raw || Number.isNaN(n)) return { error: "--timeout requires a number" };
+      if (n <= 0) return { error: "--timeout must be > 0" };
+      timeout = n;
     } else if (arg === "--max-events") {
       const raw = args[++i];
-      if (!raw || Number.isNaN(Number(raw))) return { error: "--max-events requires a number" };
-      maxEvents = Number(raw);
+      const n = Number(raw);
+      if (!raw || Number.isNaN(n)) return { error: "--max-events requires a number" };
+      if (n <= 0) return { error: "--max-events must be > 0" };
+      maxEvents = n;
     } else if (arg === "--json") {
       // no-op: JSON is always the output format
     } else if (arg.startsWith("-")) {
@@ -152,17 +159,17 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   if (parsed.timeout !== undefined) {
     timeoutHandle = setTimeout(() => finish(0), parsed.timeout * 1000);
-    // Don't let the timer keep the process alive artificially
-    timeoutHandle.unref?.();
+    timeoutHandle.unref();
   }
 
   let eventCount = 0;
 
   try {
     for await (const event of events) {
-      // Skip internal control events (connected, heartbeat)
+      // Skip only the one-time 'connected' handshake; pass heartbeats through
+      // so consumers can use them for liveness detection.
       const t = (event as Record<string, unknown>).t as string | undefined;
-      if (t === "connected" || t === "heartbeat") continue;
+      if (t === "connected") continue;
 
       d.writeStdout(`${JSON.stringify(event)}\n`);
       eventCount++;
@@ -183,8 +190,9 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     }
   } catch (err) {
     if (done) return; // already exiting cleanly (finish was called)
+    const name = (err as { name?: string }).name;
+    if (name === "AbortError") return;
     if (err instanceof DOMException && err.name === "AbortError") return;
-    if (err instanceof Error && err.message.includes("AbortError")) return;
     d.writeStderr(`monitor: ${err instanceof Error ? err.message : String(err)}\n`);
     d.exit(1);
   }

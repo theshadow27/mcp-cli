@@ -87,6 +87,19 @@ describe("parseMonitorArgs", () => {
     expect(result.error).toContain("--session");
   });
 
+  test("returns error for --timeout <= 0", () => {
+    expect(parseMonitorArgs(["--timeout", "0"]).error).toContain("> 0");
+    expect(parseMonitorArgs(["--timeout", "-5"]).error).toContain("> 0");
+  });
+
+  test("returns error for --max-events <= 0", () => {
+    expect(parseMonitorArgs(["--max-events", "0"]).error).toContain("> 0");
+  });
+
+  test("returns error for --since < 0", () => {
+    expect(parseMonitorArgs(["--since", "-1"]).error).toContain(">= 0");
+  });
+
   test("parses multiple flags", () => {
     const result = parseMonitorArgs(["--session", "s1", "--type", "pr.*", "--max-events", "5"]);
     expect(result.session).toBe("s1");
@@ -152,7 +165,7 @@ describe("cmdMonitor", () => {
     expect(JSON.parse(stdout[1] as string)).toMatchObject({ event: "session.result" });
   });
 
-  test("skips connected and heartbeat control events", async () => {
+  test("skips connected handshake but passes through heartbeat events", async () => {
     const events = [
       { t: "connected", seq: 0 },
       { event: "pr.merged", category: "work_item" },
@@ -162,21 +175,24 @@ describe("cmdMonitor", () => {
 
     await cmdMonitor([], deps);
 
-    expect(stdout).toHaveLength(1);
+    // connected is skipped; heartbeat passes through for liveness detection
+    expect(stdout).toHaveLength(2);
     expect(JSON.parse(stdout[0] as string)).toMatchObject({ event: "pr.merged" });
+    expect(JSON.parse(stdout[1] as string)).toMatchObject({ t: "heartbeat" });
   });
 
   test("--max-events exits after N events", async () => {
     const events = Array.from({ length: 10 }, (_, i) => ({ event: `ev.${i}`, seq: i }));
-    const { deps, stdout } = makeDeps(events);
+    const ctx = makeDeps(events);
 
     try {
-      await cmdMonitor(["--max-events", "3"], deps);
-    } catch (err) {
-      expect((err as Error).message).toBe("exit:0");
+      await cmdMonitor(["--max-events", "3"], ctx.deps);
+    } catch {
+      // exit() throws in tests
     }
 
-    expect(stdout).toHaveLength(3);
+    expect(ctx.exitCode).toBe(0);
+    expect(ctx.stdout).toHaveLength(3);
   });
 
   test("--until exits when matching event type is seen", async () => {
@@ -185,17 +201,18 @@ describe("cmdMonitor", () => {
       { event: "pr.merged", category: "work_item" },
       { event: "session.result", category: "session" },
     ];
-    const { deps, stdout } = makeDeps(events);
+    const ctx = makeDeps(events);
 
     try {
-      await cmdMonitor(["--until", "pr.merged"], deps);
-    } catch (err) {
-      expect((err as Error).message).toBe("exit:0");
+      await cmdMonitor(["--until", "pr.merged"], ctx.deps);
+    } catch {
+      // exit() throws in tests
     }
 
+    expect(ctx.exitCode).toBe(0);
     // should have written pr.opened and pr.merged before exiting
-    expect(stdout).toHaveLength(2);
-    expect(JSON.parse(stdout[1] as string)).toMatchObject({ event: "pr.merged" });
+    expect(ctx.stdout).toHaveLength(2);
+    expect(JSON.parse(ctx.stdout[1] as string)).toMatchObject({ event: "pr.merged" });
   });
 
   test("exits with code 1 on parse error", async () => {

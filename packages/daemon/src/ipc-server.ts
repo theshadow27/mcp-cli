@@ -141,8 +141,14 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
     if (session && event.sessionId !== session) return false;
     if (prNumber !== null && event.prNumber !== prNumber) return false;
     if (workItem && event.workItemId !== workItem) return false;
-    if (typePatterns && !typePatterns.some((re) => re.test(event.event as string))) return false;
-    if (srcPattern && !srcPattern.test(event.src as string)) return false;
+    if (typePatterns) {
+      if (typeof event.event !== "string") return false;
+      if (!typePatterns.some((re) => re.test(event.event as string))) return false;
+    }
+    if (srcPattern) {
+      if (typeof event.src !== "string") return false;
+      if (!srcPattern.test(event.src)) return false;
+    }
     if (phase && event.phase !== phase) return false;
     return true;
   };

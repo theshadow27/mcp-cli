@@ -2560,4 +2560,17 @@ describe("buildEventFilter", () => {
     expect(filter?.({ sessionId: "s2", event: "session.result" })).toBe(false);
     expect(filter?.({ sessionId: "s1", event: "pr.merged" })).toBe(false);
   });
+
+  test("src filter is fail-closed when src field is missing", () => {
+    const filter = buildEventFilter(params({ src: "*" }));
+    // event with no src field must NOT pass through, even with wildcard
+    expect(filter?.({ event: "pr.merged" })).toBe(false);
+    expect(filter?.({ src: "daemon.poller", event: "pr.merged" })).toBe(true);
+  });
+
+  test("type filter is fail-closed when event field is missing", () => {
+    const filter = buildEventFilter(params({ type: "*" }));
+    expect(filter?.({ category: "session" })).toBe(false);
+    expect(filter?.({ event: "session.result", category: "session" })).toBe(true);
+  });
 });

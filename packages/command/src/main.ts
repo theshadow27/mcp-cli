@@ -941,6 +941,7 @@ Utility:
   mcx search/install/update           Registry search and install
   mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx logs <server> [-f]              View server stderr
+  mcx monitor [flags]                 Stream daemon events as NDJSON (| jq friendly)
   mcx mail <subcommand>               Inter-session messaging
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
