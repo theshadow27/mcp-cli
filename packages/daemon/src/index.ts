@@ -66,6 +66,7 @@ import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import { EventBus } from "./event-bus";
 import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
 import { resolveBranchFromPr } from "./github/resolve-branch";
 import { WorkItemPoller } from "./github/work-item-poller";
@@ -562,6 +563,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   watcher.start();
 
+  const mailEventBus = new EventBus();
+
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     daemonId,
@@ -599,6 +602,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       const resolved = await resolveNumber(cachedRepo, number);
       return { prNumber: resolved.prNumber };
     },
+    eventBus: mailEventBus,
   });
   ipcServer.start();
 

@@ -81,6 +81,8 @@ import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider } from "./auth/oauth-provider";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import type { EventBus } from "./event-bus";
+import { publishMailReceived } from "./mail-events";
 import { metrics } from "./metrics";
 import { getPortHolder } from "./port-holder";
 import { killPid } from "./process-util";
@@ -114,6 +116,7 @@ export class IpcServer {
   private resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null = null;
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null = null;
   private aliasServer: AliasServer | null = null;
+  private eventBus: EventBus | null = null;
   private daemonId: string;
   private startedAt: number;
   private logger: Logger;
@@ -141,6 +144,8 @@ export class IpcServer {
       resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
       /** Load a manifest from the given repo root; injected for testability. Defaults to core loadManifest. */
       loadManifest?: (repoRoot: string) => Manifest | null;
+      /** Event bus for unified monitor stream; mail events are published here. */
+      eventBus?: EventBus;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -156,6 +161,7 @@ export class IpcServer {
     this.resolveIssuePr = options.resolveIssuePr ?? null;
     this.loadManifestFn = options.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null);
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
+    this.eventBus = options.eventBus ?? null;
     this.workItemDb = new WorkItemDb(this.db.getDatabase());
     this.registerHandlers();
     // Prune expired ephemeral aliases on startup
@@ -925,6 +931,7 @@ export class IpcServer {
     this.handlers.set("sendMail", async (params, _ctx) => {
       const { sender, recipient, subject, body, replyTo } = SendMailParamsSchema.parse(params);
       const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
+      publishMailReceived(this.eventBus, { mailId: id, sender, recipient });
       return { id };
     });
 

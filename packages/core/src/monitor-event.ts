@@ -14,7 +14,6 @@ export type MonitorCategory = "session" | "work_item" | "mail";
 
 // ── Session event names ──
 
-export const SESSION_IDLE = "session.idle" as const;
 export const SESSION_RESULT = "session.result" as const;
 export const SESSION_PERMISSION_REQUEST = "session.permission_request" as const;
 export const SESSION_ENDED = "session.ended" as const;

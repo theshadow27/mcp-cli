@@ -29,9 +29,14 @@ export class EventBus {
       seq: ++this.seq,
       ts: new Date().toISOString(),
     } satisfies MonitorEvent;
-    for (const sub of this.subscribers.values()) {
+    // Snapshot before iterating so unsubscribe during callback doesn't skip subs.
+    for (const sub of Array.from(this.subscribers.values())) {
       if (sub.filter === null || sub.filter(event)) {
-        sub.callback(event);
+        try {
+          sub.callback(event);
+        } catch (err) {
+          console.error(`[EventBus] subscriber ${sub.id} threw:`, err);
+        }
       }
     }
     return event;
