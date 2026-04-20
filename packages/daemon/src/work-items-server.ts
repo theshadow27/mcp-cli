@@ -5,6 +5,7 @@
  * Tools: track, untrack, list, get, update — mapping to WorkItemDb CRUD.
  */
 
+import { resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,6 +14,14 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { WorkItemDb } from "./db/work-items";
+
+/** Narrow interface for alias_state operations — avoids coupling to full StateDb. */
+export interface PhaseStateStore {
+  getAliasState(repoRoot: string, namespace: string, key: string): unknown;
+  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void;
+  deleteAliasState(repoRoot: string, namespace: string, key: string): boolean;
+  listAliasState(repoRoot: string, namespace: string): Record<string, unknown>;
+}
 
 /** Derived from the work_items_update inputSchema — single source of truth. */
 let _updateKnownKeys: ReadonlySet<string> | null = null;
@@ -142,6 +151,62 @@ const TOOLS = [
       required: ["id"],
     },
   },
+  {
+    name: "phase_state_get",
+    description: "Read a single key from a work item's phase-scoped key-value store.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        workItemId: { type: "string", description: "Work item ID" },
+        repoRoot: { type: "string", description: "Absolute path to repo root" },
+        key: { type: "string", description: "State key to read" },
+      },
+      required: ["workItemId", "repoRoot", "key"],
+    },
+  },
+  {
+    name: "phase_state_set",
+    description:
+      "Write a key to a work item's phase-scoped key-value store. Value must be JSON-serialisable and under 256 KB.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        workItemId: { type: "string", description: "Work item ID" },
+        repoRoot: { type: "string", description: "Absolute path to repo root" },
+        key: { type: "string", description: "State key to write" },
+        value: {
+          type: ["string", "number", "boolean", "object", "array", "null"] as const,
+          description: "JSON-serialisable value to store (max 256 KB). Use phase_state_delete to remove.",
+        },
+      },
+      required: ["workItemId", "repoRoot", "key", "value"],
+    },
+  },
+  {
+    name: "phase_state_delete",
+    description: "Delete a key from a work item's phase-scoped key-value store.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        workItemId: { type: "string", description: "Work item ID" },
+        repoRoot: { type: "string", description: "Absolute path to repo root" },
+        key: { type: "string", description: "State key to delete" },
+      },
+      required: ["workItemId", "repoRoot", "key"],
+    },
+  },
+  {
+    name: "phase_state_list",
+    description: "List all key-value pairs in a work item's phase-scoped key-value store.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        workItemId: { type: "string", description: "Work item ID" },
+        repoRoot: { type: "string", description: "Absolute path to repo root" },
+      },
+      required: ["workItemId", "repoRoot"],
+    },
+  },
 ] as const;
 
 export class WorkItemsServer {
@@ -160,6 +225,9 @@ export class WorkItemsServer {
   /** Resolves a PR number to its head branch name. Injected for testability. */
   private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
 
+  /** Optional store for phase-scoped state (alias_state table). */
+  private stateDb: PhaseStateStore | null;
+
   private logger: Logger;
 
   constructor(
@@ -168,6 +236,7 @@ export class WorkItemsServer {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
       resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
+      stateDb?: PhaseStateStore;
       logger?: Logger;
     },
   ) {
@@ -175,6 +244,7 @@ export class WorkItemsServer {
     this.onTrack = opts?.onTrack ?? null;
     this.loadManifestFn = opts?.loadManifest ?? null;
     this.resolveBranchFromPr = opts?.resolveBranchFromPr ?? null;
+    this.stateDb = opts?.stateDb ?? null;
     this.logger = opts?.logger ?? consoleLogger;
   }
 
@@ -316,7 +386,7 @@ export class WorkItemsServer {
                 content: [
                   {
                     type: "text" as const,
-                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts known keys (${accepted}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase handler ctx.state to read/write it.`,
+                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts known keys (${accepted}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase_state_get/set/list tools to read/write it.`,
                   },
                 ],
                 isError: true,
@@ -325,7 +395,8 @@ export class WorkItemsServer {
 
             const force = a.force === true;
             const forceReason = a.forceReason !== undefined ? String(a.forceReason) : undefined;
-            const repoRoot = a.repoRoot !== undefined ? String(a.repoRoot) : undefined;
+            // Canonicalize to remove trailing slashes and resolve symlinks in the key
+            const repoRoot = a.repoRoot !== undefined ? resolve(String(a.repoRoot)) : undefined;
 
             // Validate phase if a new phase is being set
             if (a.phase !== undefined) {
@@ -402,6 +473,123 @@ export class WorkItemsServer {
             }
 
             return { content: [{ type: "text" as const, text: JSON.stringify(updated) }] };
+          }
+
+          case "phase_state_get": {
+            if (!this.stateDb) {
+              return {
+                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
+                isError: true,
+              };
+            }
+            const workItemId = String(a.workItemId ?? "");
+            const repoRoot = a.repoRoot !== undefined ? resolve(String(a.repoRoot)) : "";
+            const key = String(a.key ?? "");
+            if (!workItemId || !repoRoot || !key) {
+              return {
+                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
+                isError: true,
+              };
+            }
+            if (!this.workItemDb.getWorkItem(workItemId)) {
+              return {
+                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
+                isError: true,
+              };
+            }
+            const ns = `workitem:${workItemId}`;
+            const value = this.stateDb.getAliasState(repoRoot, ns, key);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ key, value }) }] };
+          }
+
+          case "phase_state_set": {
+            if (!this.stateDb) {
+              return {
+                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
+                isError: true,
+              };
+            }
+            const workItemId = String(a.workItemId ?? "");
+            const repoRoot = a.repoRoot !== undefined ? resolve(String(a.repoRoot)) : "";
+            const key = String(a.key ?? "");
+            if (!workItemId || !repoRoot || !key) {
+              return {
+                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
+                isError: true,
+              };
+            }
+            if (a.value === undefined) {
+              return {
+                content: [{ type: "text" as const, text: "value is required; use phase_state_delete to remove a key" }],
+                isError: true,
+              };
+            }
+            if (!this.workItemDb.getWorkItem(workItemId)) {
+              return {
+                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
+                isError: true,
+              };
+            }
+            const ns = `workitem:${workItemId}`;
+            this.stateDb.setAliasState(repoRoot, ns, key, a.value);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key }) }] };
+          }
+
+          case "phase_state_delete": {
+            if (!this.stateDb) {
+              return {
+                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
+                isError: true,
+              };
+            }
+            const workItemId = String(a.workItemId ?? "");
+            const repoRoot = a.repoRoot !== undefined ? resolve(String(a.repoRoot)) : "";
+            const key = String(a.key ?? "");
+            if (!workItemId || !repoRoot || !key) {
+              return {
+                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
+                isError: true,
+              };
+            }
+            if (!this.workItemDb.getWorkItem(workItemId)) {
+              return {
+                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
+                isError: true,
+              };
+            }
+            const ns = `workitem:${workItemId}`;
+            const deleted = this.stateDb.deleteAliasState(repoRoot, ns, key);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key, deleted }) }] };
+          }
+
+          case "phase_state_list": {
+            if (!this.stateDb) {
+              return {
+                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
+                isError: true,
+              };
+            }
+            const workItemId = String(a.workItemId ?? "");
+            const repoRoot = a.repoRoot !== undefined ? resolve(String(a.repoRoot)) : "";
+            if (!workItemId || !repoRoot) {
+              return {
+                content: [{ type: "text" as const, text: "workItemId and repoRoot are required" }],
+                isError: true,
+              };
+            }
+            if (!this.workItemDb.getWorkItem(workItemId)) {
+              return {
+                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
+                isError: true,
+              };
+            }
+            const ns = `workitem:${workItemId}`;
+            const entries = this.stateDb.listAliasState(repoRoot, ns);
+            return {
+              content: [
+                { type: "text" as const, text: JSON.stringify({ entries, count: Object.keys(entries).length }) },
+              ],
+            };
           }
 
           default:
