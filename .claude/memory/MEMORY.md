@@ -19,6 +19,7 @@
 - [Flaky test handling](feedback_flaky_tests.md) — root-cause fixes, not timeout increases
 - [Orchestrator context rot](feedback_context_rot.md) — long-running orchestrators degrade at ~300k tokens; verify "done" claims with a probe
 - [Bulk reads + serialized cascades](feedback_sprint_bulk_and_cascade.md) — no `for` loops for status (use bulk jq), single-pointer update-branch cascades (avoid N² CI)
+- [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
@@ -41,4 +42,4 @@
 - Pre-commit hook: typecheck + lint + test + coverage (timing budget warn-only, see #812)
 - `bun dev:mcx --` for running CLI in dev mode
 - Release process: no auto-versioning. Intentional at sprint boundaries via `/release`. Tag push triggers Release workflow. Diary = retro (internal). Release notes = changelog (user-facing).
-- Branch protection enabled on `main`: `check`/`coverage`/`build` required, auto-merge enabled.
+- Branch protection on `main`: `check`/`coverage`/`build` required, auto-merge enabled. As of sprint 38, `strict_required_status_checks_policy: false` (ruleset 13509324) — branches do NOT need to be up-to-date. Merge order is orchestrator's responsibility; main-CI is the gate.

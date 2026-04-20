@@ -1,6 +1,6 @@
 # Sprint 39
 
-> Planned 2026-04-19. Target: 15 work PRs + 5 direct closures = 20 issues.
+> Planned 2026-04-19. Started 2026-04-19 (after #1489 unblock). Target: 15 work PRs + 5 direct closures = 20 issues.
 
 ## Goal
 
@@ -192,3 +192,45 @@ dangling PR tails (#1399, #1429) land in batch 2.
 With 15 work PRs + 5 closures in a sprint where every PR should QA-pass
 on first try (no new architectural ground), wall-time target is
 **~2 hours, similar to sprint 38 but with zero rebase cascade overhead.**
+
+## Results (2026-04-19)
+
+**13 PRs merged** (target 15) + **9 closures** (target 5) = **22 items resolved** (target 20). Met target.
+
+### Merged PRs
+| # | PR | Notes |
+|---|-----|-------|
+| 1489 | — | **Pre-flight: bundler fix**. @mcp-cli/core import in impl.ts failed to bundle; externalized + strip pass rewrite; unblocked /sprint 39. |
+| 1480 | #1490 | containment resolve() sessionCwd. Self-repair on 4 Copilot inline comments. |
+| 1481 | #1491 | symlink realpath. 3 QA rounds — CI-trigger gap forced workflow_dispatch; Eve found 2 real bypasses beyond the original scope (multi-segment dirname walk, prefix-check realpath). |
+| 1482 | #1494 | ContainmentGuard.reset(). Adversarial review caught 2 blockers; self-repair clean. |
+| 1468 | #1492 | phase_state tools. Adversarial review caught namespace mismatch — tools wrote to dead bucket. Carol repaired. |
+| 1484 | #1493 | scripts/*.spec.ts in CI. |
+| 1343 | #1496 | installedAt field. |
+| 1314 | #1497 | GIT_* env isolation. |
+| 1255 | #1498 | bye branch with open PR. |
+| 1416 | #1499 | DEFAULT_TIMEOUT_MS constant. Reviewer self-repair path saved a repair session. |
+| 1475 | #1503 | Bash write detection (sed, dd, curl, wget). Pam kept scope bounded per risk note. |
+| PR #1429 | merged | Dangling `/repair`; qa:pass retained. |
+| PR #1399 | merged | Dangling; rebase + fresh QA. |
+
+### Direct closures during sprint
+- **#1302, #1267, #1356** — workers discovered already-fixed or pure-config issues; closed with evidence.
+
+### Direct closures from planning
+- **#1488, #1425, #1301, #1306, #1309, #1315** — 6 items closed at plan time.
+
+### Outstanding issues discovered mid-sprint
+- **#1491 CI trigger gap**: `pull_request` event did not fire on rapid force-pushes to existing PRs; required `workflow_dispatch` + eventual rebase to trigger required checks. Worth filing.
+- **`work_items_update` setting prNumber=0 / prState="null"** when passed JSON `null` — should accept null and clear the field.
+- **`mcx untrack pr:NNNN`** rejected "Invalid number" — untrack should accept the same IDs `tracked` emits.
+- **QA premature qa:fail on pending CI** — already captured as `feedback_qa_ci_pending.md` memory.
+
+### Cost / throughput
+- 24 sessions spawned across impl/review/qa/repair.
+- Reviewer self-repair (#1494, #1499) shipped fixes without fresh opus sessions — pattern continues paying.
+- Bob's #1491 arc (4 repair rounds) was the sprint tail — finding real bugs, not noise.
+
+### What's next (sprint 40 anchor)
+`mcx monitor` epic (#1486) — the runway is clear. Phase-state tools (#1468) are now in place as a prerequisite. Batch 3 fillers drained.
+
