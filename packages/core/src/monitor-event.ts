@@ -16,7 +16,6 @@ export type MonitorCategory = "session" | "work_item" | "mail" | "heartbeat";
 // ── Session event names ──
 
 export const SESSION_RESULT = "session.result" as const;
-export const SESSION_IDLE = "session.idle" as const;
 export const SESSION_RESPONSE = "session.response" as const;
 export const SESSION_PERMISSION_REQUEST = "session.permission_request" as const;
 export const SESSION_ENDED = "session.ended" as const;
@@ -32,19 +31,14 @@ export const SESSION_CONTAINMENT_ESCALATED = "session.containment_escalated" as 
 // ── Work item event names ──
 
 export const PR_OPENED = "pr.opened" as const;
-export const PR_PUSHED = "pr.pushed" as const;
 export const PR_MERGED = "pr.merged" as const;
 export const PR_CLOSED = "pr.closed" as const;
 export const CHECKS_STARTED = "checks.started" as const;
 export const CHECKS_PASSED = "checks.passed" as const;
 export const CHECKS_FAILED = "checks.failed" as const;
-export const CI_FINISHED = "ci.finished" as const;
 export const REVIEW_APPROVED = "review.approved" as const;
 export const REVIEW_CHANGES_REQUESTED = "review.changes_requested" as const;
 export const PHASE_CHANGED = "phase.changed" as const;
-export const PHASE_TRANSITION = "phase.transition" as const;
-export const QA_VERDICT = "qa.verdict" as const;
-export const COPILOT_INLINE_POSTED = "copilot.inline_posted" as const;
 
 // ── Mail event names ──
 
@@ -121,11 +115,6 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), sid(e), cost(e), turns(e)) + preview;
   },
 
-  [SESSION_IDLE]: (e) => {
-    const preview = typeof e.resultPreview === "string" ? `  "${cap(e.resultPreview.replace(/\n/g, " "), 60)}"` : "";
-    return join(wi(e), sid(e), cost(e), turns(e)) + preview;
-  },
-
   [SESSION_PERMISSION_REQUEST]: (e) => {
     const tool = typeof e.toolName === "string" ? e.toolName : "";
     return join(wi(e), sid(e), tool);
@@ -166,12 +155,6 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
 
   [PR_OPENED]: (e) => join(wi(e), pr(e)),
 
-  [PR_PUSHED]: (e) => {
-    const commits = typeof e.commits === "number" ? `${e.commits} commits` : "";
-    const churn = typeof e.srcChurn === "number" ? `+${e.srcChurn} lines` : "";
-    return join(wi(e), pr(e), commits, churn);
-  },
-
   [PR_MERGED]: (e) => join(wi(e), pr(e)),
 
   [PR_CLOSED]: (e) => join(wi(e), pr(e)),
@@ -183,23 +166,6 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [CHECKS_FAILED]: (e) => {
     const job = typeof e.failedJob === "string" ? e.failedJob : "";
     return join(wi(e), pr(e), job);
-  },
-
-  [CI_FINISHED]: (e) => {
-    const checks = Array.isArray(e.checks)
-      ? e.checks
-          .slice(0, 4)
-          .map((c: unknown) => {
-            if (typeof c === "object" && c !== null) {
-              const obj = c as Record<string, unknown>;
-              return obj.conclusion === "success" ? `✓ ${obj.name}` : `✗ ${obj.name}`;
-            }
-            return "";
-          })
-          .join(" ")
-      : "";
-    const status = e.allGreen === true ? "allGreen" : "FAILED";
-    return join(wi(e), pr(e), checks, status);
   },
 
   [REVIEW_APPROVED]: (e) => {
@@ -218,28 +184,10 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), from && to ? `${from} → ${to}` : from || to);
   },
 
-  [PHASE_TRANSITION]: (e) => {
-    const from = typeof e.from === "string" ? e.from : "";
-    const to = typeof e.to === "string" ? e.to : "";
-    const reason = typeof e.reason === "string" ? cap(e.reason, 40) : "";
-    return join(wi(e), from && to ? `${from} → ${to}` : from || to, reason);
-  },
-
-  [QA_VERDICT]: (e) => {
-    const verdict = typeof e.verdict === "string" ? e.verdict.toUpperCase() : "";
-    const blockers = Array.isArray(e.blockers) ? `${e.blockers.length} blockers` : "";
-    return join(wi(e), pr(e), verdict, blockers);
-  },
-
-  [COPILOT_INLINE_POSTED]: (e) => {
-    const count = typeof e.newCount === "number" ? `${e.newCount} new comments` : "";
-    const first = typeof e.firstLine === "string" ? `first: ${e.firstLine}` : "";
-    return join(wi(e), pr(e), count, first);
-  },
-
   [MAIL_RECEIVED]: (e) => {
     const sender = typeof e.sender === "string" ? e.sender : "";
-    return join(sender);
+    const recipient = typeof e.recipient === "string" ? e.recipient : "";
+    return join(sender, "→", recipient);
   },
 
   [HEARTBEAT]: (e) => `seq:${e.seq}`,

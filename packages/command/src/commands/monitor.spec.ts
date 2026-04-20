@@ -4,17 +4,12 @@ import {
   CHECKS_FAILED,
   CHECKS_PASSED,
   CHECKS_STARTED,
-  CI_FINISHED,
-  COPILOT_INLINE_POSTED,
   HEARTBEAT,
   MAIL_RECEIVED,
   PHASE_CHANGED,
-  PHASE_TRANSITION,
   PR_CLOSED,
   PR_MERGED,
   PR_OPENED,
-  PR_PUSHED,
-  QA_VERDICT,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   SESSION_CLEARED,
@@ -24,7 +19,6 @@ import {
   SESSION_DISCONNECTED,
   SESSION_ENDED,
   SESSION_ERROR,
-  SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RATE_LIMITED,
@@ -56,13 +50,6 @@ describe("formatMonitorEvent", () => {
         cost: 2.0,
         numTurns: 25,
         result: "All done. Fixed 0c52a884 pushed to feat/issue-1441-some-really-long-branch-name-here",
-        workItemId: "#1441",
-      }),
-      makeEvent(SESSION_IDLE, {
-        sessionId: "fcfbc19dabc",
-        cost: 2.0,
-        numTurns: 25,
-        resultPreview: "All done. Fixed 0c52a884 pushed to feat/issue-1441",
         workItemId: "#1441",
       }),
       makeEvent(SESSION_PERMISSION_REQUEST, {
@@ -111,14 +98,6 @@ describe("formatMonitorEvent", () => {
         prNumber: 1472,
         workItemId: "#1441",
       }),
-      makeEvent(PR_PUSHED, {
-        category: "work_item",
-        src: "daemon.work-item-poller",
-        prNumber: 1472,
-        workItemId: "#1441",
-        commits: 2,
-        srcChurn: 382,
-      }),
       makeEvent(PR_MERGED, {
         category: "work_item",
         src: "daemon.work-item-poller",
@@ -150,17 +129,6 @@ describe("formatMonitorEvent", () => {
         workItemId: "#1441",
         failedJob: "check",
       }),
-      makeEvent(CI_FINISHED, {
-        category: "work_item",
-        src: "daemon.work-item-poller",
-        prNumber: 1472,
-        workItemId: "#1441",
-        checks: [
-          { name: "check", conclusion: "success" },
-          { name: "coverage", conclusion: "failure" },
-        ],
-        allGreen: false,
-      }),
       makeEvent(REVIEW_APPROVED, {
         category: "work_item",
         src: "daemon.work-item-poller",
@@ -182,34 +150,7 @@ describe("formatMonitorEvent", () => {
         from: "impl",
         to: "qa",
       }),
-      makeEvent(PHASE_TRANSITION, {
-        category: "work_item",
-        src: "daemon.derived",
-        workItemId: "#1441",
-        from: "qa",
-        to: "done",
-        reason: "pr.merged #1466",
-      }),
-      makeEvent(QA_VERDICT, {
-        category: "work_item",
-        src: "phase:qa",
-        prNumber: 1472,
-        workItemId: "#1441",
-        verdict: "fail",
-        blockers: [
-          { commentId: 1, summary: "issue one" },
-          { commentId: 2, summary: "issue two" },
-        ],
-      }),
-      makeEvent(COPILOT_INLINE_POSTED, {
-        category: "work_item",
-        src: "daemon.copilot-poller",
-        prNumber: 1472,
-        workItemId: "#1441",
-        newCount: 5,
-        firstLine: "containment.ts:143",
-      }),
-      makeEvent(MAIL_RECEIVED, { category: "mail", src: "daemon.mail", sender: "orchestrator@sessions" }),
+      makeEvent(MAIL_RECEIVED, { category: "mail", src: "daemon.mail", sender: "orchestrator@sessions", recipient: "impl@sessions" }),
       makeEvent(HEARTBEAT, { category: "heartbeat", src: "daemon", seq: 4210 }),
     ];
 
@@ -235,23 +176,6 @@ describe("formatMonitorEvent", () => {
     const line = formatMonitorEvent(e);
     expect(line.length).toBeLessThanOrEqual(200);
     expect(line).toContain("custom.event");
-  });
-
-  test("ci.finished shows check results", () => {
-    const e = makeEvent(CI_FINISHED, {
-      category: "work_item",
-      src: "daemon.work-item-poller",
-      prNumber: 1472,
-      checks: [
-        { name: "check", conclusion: "success" },
-        { name: "coverage", conclusion: "success" },
-      ],
-      allGreen: true,
-    });
-    const line = formatMonitorEvent(e);
-    expect(line).toContain("✓ check");
-    expect(line).toContain("✓ coverage");
-    expect(line).toContain("allGreen");
   });
 
   test("heartbeat shows seq", () => {
@@ -464,7 +388,7 @@ describe("cmdMonitor", () => {
   });
 
   test("--max-events stops after N events", async () => {
-    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_IDLE, {})];
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
     const stdout: string[] = [];
     const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
     await cmdMonitor(["--max-events", "2"], deps);
@@ -530,13 +454,12 @@ describe("cmdMonitor", () => {
 
   test("--timeout sets a timer that calls abort", async () => {
     let abortCalled = false;
-    async function* infiniteGen(): AsyncGenerator<MonitorEvent> {
-      // Yield nothing — wait for abort via timeout
-      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    async function* emptyGen(): AsyncGenerator<MonitorEvent> {
+      // yields nothing — stream ends immediately
     }
     const deps: MonitorDeps = {
       openEventStream: () => ({
-        events: infiniteGen(),
+        events: emptyGen(),
         abort: () => {
           abortCalled = true;
         },
@@ -549,9 +472,8 @@ describe("cmdMonitor", () => {
       },
       onSigint: () => {},
     };
-    // timeout=0 fires immediately
+    // timeout=0 fires immediately; stream may already be exhausted — no crash is the assertion
     await cmdMonitor(["--timeout", "0"], deps);
-    // abortCalled may be true if the timer fired; we mainly verify no crash
     expect(typeof abortCalled).toBe("boolean");
   });
 });

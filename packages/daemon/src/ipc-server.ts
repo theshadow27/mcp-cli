@@ -1358,6 +1358,10 @@ export class IpcServer {
       return new Response("Event bus not available", { status: 503 });
     }
 
+    if (url.searchParams.has("since")) {
+      return new Response("since not yet supported", { status: 400 });
+    }
+
     const subscribeFilter = url.searchParams.get("subscribe");
     const sessionFilter = url.searchParams.get("session");
     const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
@@ -1389,16 +1393,17 @@ export class IpcServer {
             }
           },
           (event) => {
-            // Default: exclude session.response chunks unless responseTail matches
-            if (event.event === "session.response") {
-              return responseTail !== null && event.sessionId === responseTail;
-            }
+            // session.response: excluded by default; opt-in only when responseTail matches.
+            // All other filters still apply first, even for session.response.
             if (categories !== null && !categories.has(event.category)) return false;
             if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
             if (prFilter !== undefined && event.prNumber !== prFilter) return false;
             if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
             if (typeFilter !== null && event.event !== typeFilter) return false;
             if (srcFilter !== null && event.src !== srcFilter) return false;
+            if (event.event === "session.response") {
+              return responseTail !== null && event.sessionId === responseTail;
+            }
             return true;
           },
         );

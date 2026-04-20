@@ -2221,15 +2221,16 @@ describe("IpcServer HTTP transport", () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      setTimeout(() => {
-        bus.publish({
-          src: "test",
-          event: "session.result",
-          category: "session",
-          sessionId: "s1",
-          cost: 1.5,
-        });
-      }, 10);
+      // Drain the initial flush newline — once read, the subscription is active.
+      await reader.read();
+
+      bus.publish({
+        src: "test",
+        event: "session.result",
+        category: "session",
+        sessionId: "s1",
+        cost: 1.5,
+      });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2264,10 +2265,10 @@ describe("IpcServer HTTP transport", () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      setTimeout(() => {
-        bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
-        bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
-      }, 10);
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+      bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2299,9 +2300,9 @@ describe("IpcServer HTTP transport", () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      setTimeout(() => {
-        bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
-      }, 10);
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2332,10 +2333,10 @@ describe("IpcServer HTTP transport", () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      setTimeout(() => {
-        bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
-        bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
-      }, 10);
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+      bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2367,10 +2368,10 @@ describe("IpcServer HTTP transport", () => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      setTimeout(() => {
-        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
-        bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
-      }, 10);
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2386,6 +2387,55 @@ describe("IpcServer HTTP transport", () => {
 
       expect(buffer).not.toContain("session.result");
       expect(buffer).toContain("pr.merged");
+    });
+
+    test("returns 400 when since param is present", async () => {
+      startServerWithBus();
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=42", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+      controller.abort();
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("since not yet supported");
+    });
+
+    test("responseTail does not bypass category filter", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      // subscribe=mail only, but with responseTail set — session.response should still be excluded
+      const res = await fetch("http://localhost/events?subscribe=mail&responseTail=s1", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hi" });
+      bus.publish({ src: "test", event: "mail.received", category: "mail", mailId: 1, sender: "a", recipient: "b" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("mail.received")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("mail.received");
     });
   });
 });
