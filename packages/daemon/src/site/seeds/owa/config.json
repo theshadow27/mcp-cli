@@ -1,0 +1,11 @@
+{
+  "url": "https://outlook.cloud.microsoft/mail/",
+  "domains": ["*.outlook.cloud.microsoft", "outlook.cloud.microsoft", "substrate.office.com"],
+  "captureMode": "filtered",
+  "captureFilters": {
+    "match": ["owa/service\\.svc", "searchservice"],
+    "skip": ["telemetry", "sessiondata", "pimg"]
+  },
+  "wiggle": "wiggle.js",
+  "seed": "owa"
+}
