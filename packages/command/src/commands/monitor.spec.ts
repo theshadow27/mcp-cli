@@ -150,7 +150,12 @@ describe("formatMonitorEvent", () => {
         from: "impl",
         to: "qa",
       }),
-      makeEvent(MAIL_RECEIVED, { category: "mail", src: "daemon.mail", sender: "orchestrator@sessions", recipient: "impl@sessions" }),
+      makeEvent(MAIL_RECEIVED, {
+        category: "mail",
+        src: "daemon.mail",
+        sender: "orchestrator@sessions",
+        recipient: "impl@sessions",
+      }),
       makeEvent(HEARTBEAT, { category: "heartbeat", src: "daemon", seq: 4210 }),
     ];
 
