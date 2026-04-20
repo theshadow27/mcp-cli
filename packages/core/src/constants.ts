@@ -224,8 +224,15 @@ export const DAEMON_BINARY_NAME = "mcpd";
 /** Daemon dev-mode script path (relative to workspace root) */
 export const DAEMON_DEV_SCRIPT = "packages/daemon/src/main.ts";
 
-/** IPC timeout for prompt-like commands (claude send/wait, codex) that may take minutes (ms) */
-export const PROMPT_IPC_TIMEOUT_MS = 330_000;
+/** Default wait timeout for claude/codex wait commands — stays inside the 5-min prompt cache TTL (ms) */
+export const DEFAULT_TIMEOUT_MS = 270_000;
+
+/** Maximum allowed wait timeout — values above this cross the 5-min prompt cache TTL boundary (ms) */
+export const MAX_TIMEOUT_MS = 299_000;
+
+/** IPC timeout for prompt-like commands (claude send/wait, codex) that may take minutes (ms).
+ * 60s slack over DEFAULT_TIMEOUT_MS so the daemon can clean up before IPC times out. */
+export const PROMPT_IPC_TIMEOUT_MS = DEFAULT_TIMEOUT_MS + 60_000;
 
 /**
  * Default WebSocket port for Claude Code SDK sessions (survives daemon restarts).
