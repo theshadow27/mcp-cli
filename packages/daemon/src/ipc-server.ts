@@ -969,6 +969,7 @@ export class IpcServer {
       }
       const replySubject = subject ?? (original.subject ? `Re: ${original.subject}` : undefined);
       const newId = this.db.insertMail(sender, original.sender, replySubject, body, id);
+      publishMailReceived(this.eventBus, { mailId: newId, sender, recipient: original.sender });
       return { id: newId };
     });
 
