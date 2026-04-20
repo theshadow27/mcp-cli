@@ -2,8 +2,8 @@
  * In-memory event bus for the unified monitor event stream.
  *
  * Bridges session, work-item, and mail event sources into a single
- * typed stream of MonitorEvent envelopes. Seq is globally monotonic
- * across all sources; ts is stamped at publish time.
+ * typed stream of MonitorEvent envelopes. Seq is monotonically increasing
+ * within a single EventBus instance; ts is stamped at publish time.
  *
  * #1512
  */

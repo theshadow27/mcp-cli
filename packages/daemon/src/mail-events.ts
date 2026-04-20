@@ -4,7 +4,7 @@
  * Publishes mail lifecycle events to the EventBus. Kept separate from
  * ipc-server.ts to avoid merge conflicts with #1511 (GET /events endpoint).
  *
- * Usage: call publishMailEvent() from the sendMail / replyToMail handlers.
+ * Usage: call publishMailReceived() from the sendMail / replyToMail handlers.
  *
  * #1512
  */
