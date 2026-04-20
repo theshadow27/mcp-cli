@@ -802,7 +802,7 @@ describe("WorkItemsServer", () => {
     expect(final?.branch).toBe("explicit/winner");
   });
 
-  test("work_items_update treats branch=null as absent (no 'null' string coercion)", async () => {
+  test("work_items_update branch=null clears the branch field (#1505)", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -812,8 +812,6 @@ describe("WorkItemsServer", () => {
       arguments: { issueNumber: 55, branch: "feat/existing" },
     });
 
-    // Sending `branch: null` must not overwrite the existing branch with the
-    // literal string "null" (round-3 Copilot inline comment).
     const result = await client.callTool({
       name: "work_items_update",
       arguments: { id: "issue:55", branch: null, ciStatus: "passed" },
@@ -822,8 +820,57 @@ describe("WorkItemsServer", () => {
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
     const item = JSON.parse(content[0].text);
-    expect(item.branch).toBe("feat/existing");
+    // null clears the field — does NOT persist the literal string "null"
+    expect(item.branch).toBeNull();
     expect(item.ciStatus).toBe("passed");
+  });
+
+  test("work_items_update prNumber=null clears the prNumber field (#1505)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 999 } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:999", prNumber: null, prState: null },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    // null must clear to SQL NULL, not coerce to 0 or the string "null"
+    expect(item.prNumber).toBeNull();
+    expect(item.prState).toBeNull();
+  });
+
+  test("work_items_update nullable fields coerce to null, not 0 or 'null' (#1505)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    // Track by issue only so the ID is "issue:88"
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 88 } });
+    // Set some nullable fields to non-null values first
+    await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:88", prNumber: 42, ciRunId: 7, ciSummary: "ok", prUrl: "https://example.com/42" },
+    });
+
+    // Now clear them all with null
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "issue:88", prNumber: null, ciRunId: null, ciSummary: null, prUrl: null },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const item = JSON.parse(content[0].text);
+    expect(item.prNumber).toBeNull();
+    expect(item.ciRunId).toBeNull();
+    expect(item.ciSummary).toBeNull();
+    expect(item.prUrl).toBeNull();
   });
 
   test("work_items_track auto-populates branch from prNumber (#1449)", async () => {

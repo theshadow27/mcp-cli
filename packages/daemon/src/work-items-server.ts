@@ -121,23 +121,26 @@ const TOOLS = [
           type: "string",
           description: "Human-readable reason recorded in the transition log when force=true.",
         },
-        prNumber: { type: "number", description: "PR number" },
-        prState: { type: "string", enum: ["draft", "open", "merged", "closed"], description: "PR state" },
-        prUrl: { type: "string", description: "PR URL" },
+        prNumber: { type: ["number", "null"], description: "PR number; null clears the field" },
+        prState: {
+          anyOf: [{ type: "string", enum: ["draft", "open", "merged", "closed"] }, { type: "null" }],
+          description: "PR state; null clears the field",
+        },
+        prUrl: { type: ["string", "null"], description: "PR URL; null clears the field" },
         ciStatus: {
           type: "string",
           enum: ["none", "pending", "running", "passed", "failed"],
           description: "CI status",
         },
-        ciRunId: { type: "number", description: "CI run ID" },
-        ciSummary: { type: "string", description: "CI summary text" },
+        ciRunId: { type: ["number", "null"], description: "CI run ID; null clears the field" },
+        ciSummary: { type: ["string", "null"], description: "CI summary text; null clears the field" },
         reviewStatus: {
           type: "string",
           enum: ["none", "pending", "approved", "changes_requested"],
           description: "Review status",
         },
-        branch: { type: "string", description: "Branch name" },
-        issueNumber: { type: "number", description: "Issue number" },
+        branch: { type: ["string", "null"], description: "Branch name; null clears the field" },
+        issueNumber: { type: ["number", "null"], description: "Issue number; null clears the field" },
       },
       required: ["id"],
     },
@@ -373,17 +376,21 @@ export class WorkItemsServer {
 
             const patch: Partial<WorkItem> = {};
             if (a.phase !== undefined) patch.phase = String(a.phase) as WorkItemPhase;
-            if (a.prNumber !== undefined) patch.prNumber = requireInt(a.prNumber, "prNumber");
-            if (a.prState !== undefined) patch.prState = String(a.prState) as WorkItem["prState"];
-            if (a.prUrl !== undefined) patch.prUrl = String(a.prUrl);
-            if (a.ciStatus !== undefined) patch.ciStatus = String(a.ciStatus) as WorkItem["ciStatus"];
-            if (a.ciRunId !== undefined) patch.ciRunId = requireInt(a.ciRunId, "ciRunId");
-            if (a.ciSummary !== undefined) patch.ciSummary = String(a.ciSummary);
-            if (a.reviewStatus !== undefined) patch.reviewStatus = String(a.reviewStatus) as WorkItem["reviewStatus"];
-            // Treat `null` the same as absent — otherwise String(null) persists the literal
-            // string "null" as the branch (round-3 Copilot inline comment).
-            if (a.branch != null) patch.branch = String(a.branch);
-            if (a.issueNumber !== undefined) patch.issueNumber = requireInt(a.issueNumber, "issueNumber");
+            // For nullable fields: explicit null clears the field (stores SQL NULL).
+            // undefined means "not provided — leave unchanged".
+            if (a.prNumber !== undefined)
+              patch.prNumber = a.prNumber === null ? null : requireInt(a.prNumber, "prNumber");
+            if (a.prState !== undefined)
+              patch.prState = a.prState === null ? null : (String(a.prState) as WorkItem["prState"]);
+            if (a.prUrl !== undefined) patch.prUrl = a.prUrl === null ? null : String(a.prUrl);
+            // ciStatus and reviewStatus are non-nullable (default "none"); skip null.
+            if (a.ciStatus != null) patch.ciStatus = String(a.ciStatus) as WorkItem["ciStatus"];
+            if (a.ciRunId !== undefined) patch.ciRunId = a.ciRunId === null ? null : requireInt(a.ciRunId, "ciRunId");
+            if (a.ciSummary !== undefined) patch.ciSummary = a.ciSummary === null ? null : String(a.ciSummary);
+            if (a.reviewStatus != null) patch.reviewStatus = String(a.reviewStatus) as WorkItem["reviewStatus"];
+            if (a.branch !== undefined) patch.branch = a.branch === null ? null : String(a.branch);
+            if (a.issueNumber !== undefined)
+              patch.issueNumber = a.issueNumber === null ? null : requireInt(a.issueNumber, "issueNumber");
 
             let updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
 
