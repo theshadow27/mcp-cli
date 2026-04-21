@@ -249,6 +249,9 @@ export class IpcServer {
 
     this.server = Bun.serve({
       unix: socketPath,
+      // idleTimeout is a valid Bun runtime option not yet in @types/bun@1.3.12.
+      // Disabled (0) so NDJSON/SSE streaming connections stay open indefinitely.
+      ...({ idleTimeout: 0 } as Record<string, unknown>),
       async fetch(req) {
         const url = new URL(req.url);
 
@@ -264,7 +267,7 @@ export class IpcServer {
           return self.handleLogsSSE(url);
         }
 
-        // GET /events — NDJSON stream for real-time event delivery
+        // GET /events — NDJSON stream for unified monitor event bus (#1515)
         if (url.pathname === "/events" && req.method === "GET") {
           return self.handleEventsNDJSON(url);
         }
@@ -1357,19 +1360,183 @@ export class IpcServer {
   private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
 
   /**
-   * Handle GET /events — NDJSON stream for real-time event delivery.
+   * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
    *
    * Query params:
-   *   since=<seq>       reserved for future replay (#1513), currently ignored
-   *   subscribe=<cats>  comma-separated categories to include (e.g. "session,work_item")
-   *   session=<id>      only events with matching sessionId
-   *   pr=<n>            only events with matching prNumber
-   *   workItem=<id>     only events with matching workItemId
-   *   type=<globs>      comma-separated event name globs (e.g. "pr.*,session.idle")
-   *   src=<pattern>     glob pattern against src field
-   *   phase=<name>      only events with matching phase
+   *   server=<name>  — stream stderr from a specific MCP server
+   *   daemon=true    — stream daemon logs
+   *   lines=<n>      — number of initial backfill lines (default 50)
+   *   since=<ts>     — only backfill lines after this timestamp (ms)
+   */
+  private handleLogsSSE(url: URL): Response {
+    const serverName = url.searchParams.get("server");
+    const isDaemon = url.searchParams.get("daemon") === "true";
+    const lines = Number(url.searchParams.get("lines") ?? "50");
+    const since = url.searchParams.has("since") ? Number(url.searchParams.get("since")) : undefined;
+
+    if (!serverName && !isDaemon) {
+      return new Response("Missing ?server=<name> or ?daemon=true", { status: 400 });
+    }
+
+    let unsubscribe: (() => void) | undefined;
+
+    const stream = new ReadableStream({
+      start: (controller) => {
+        const encoder = new TextEncoder();
+        const send = (entry: { timestamp: number; line: string }) => {
+          try {
+            const data = JSON.stringify({ timestamp: entry.timestamp, line: entry.line });
+            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+          } catch {
+            // Stream closed — clean up
+            unsubscribe?.();
+          }
+        };
+
+        // Backfill initial lines
+        if (isDaemon) {
+          let backfill = getDaemonLogLines(lines);
+          if (since !== undefined) {
+            backfill = backfill.filter((l) => l.timestamp > since);
+          }
+          for (const entry of backfill) {
+            send(entry);
+          }
+        } else if (serverName) {
+          let backfill = this.pool.getStderrLines(serverName, since === undefined ? lines : undefined);
+          if (since !== undefined) {
+            backfill = backfill.filter((l) => l.timestamp > since);
+            if (backfill.length > lines) backfill = backfill.slice(-lines);
+          }
+          for (const entry of backfill) {
+            send(entry);
+          }
+        }
+
+        // Subscribe to new lines
+        if (isDaemon) {
+          unsubscribe = subscribeDaemonLogs((entry) => send(entry));
+        } else if (serverName) {
+          unsubscribe = this.pool.subscribeStderr((server, entry) => {
+            if (server !== serverName) return;
+            send(entry);
+          });
+        }
+      },
+      cancel: () => {
+        unsubscribe?.();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
+  /**
+   * Handle GET /events — NDJSON stream for real-time event delivery.
+   *
+   * When an EventBus is configured (unified monitor architecture, #1512):
+   *   Uses EventBus subscriptions with session.response suppression and responseTail opt-in.
+   *
+   * Fallback (no EventBus, direct push via pushEvent()):
+   *   Uses ring-buffer based delivery with connected/heartbeat envelope.
+   *
+   * Query params:
+   *   subscribe=<categories>   Comma-separated category filter (session,work_item,mail)
+   *   session=<id>             Filter to one session ID
+   *   pr=<n>                   Filter to one PR number
+   *   workItem=<id>            Filter to one work item ID
+   *   type=<glob>              Event name filter (exact match; future: glob)
+   *   src=<pattern>            Source attribution filter (exact match; future: glob)
+   *   phase=<name>             Phase filter on work item phase
+   *   since=<seq>              Replay from this seq (not yet implemented; reserved)
+   *   responseTail=<sessionId> Include session.response chunks for this session only
+   *
+   * Each event is emitted as one JSON line followed by a newline character.
+   * session.response events are excluded by default unless responseTail matches.
    */
   private handleEventsNDJSON(url: URL): Response {
+    // ── EventBus path (unified monitor architecture, #1512/#1515) ──
+    if (this.eventBus) {
+      if (url.searchParams.has("since")) {
+        return new Response("since not yet supported", { status: 400 });
+      }
+
+      const subscribeFilter = url.searchParams.get("subscribe");
+      const sessionFilter = url.searchParams.get("session");
+      const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
+      const workItemFilter = url.searchParams.get("workItem");
+      const typeFilter = url.searchParams.get("type");
+      const srcFilter = url.searchParams.get("src");
+      const responseTail = url.searchParams.get("responseTail");
+
+      const categoryList = subscribeFilter
+        ? subscribeFilter
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+        : null;
+      if (categoryList !== null && categoryList.length === 0) {
+        return new Response("subscribe must not be empty", { status: 400 });
+      }
+      const categories = categoryList ? new Set(categoryList) : null;
+
+      const bus = this.eventBus;
+      let subId: number | null = null;
+
+      const encoder = new TextEncoder();
+
+      const stream = new ReadableStream({
+        start: (controller) => {
+          // Flush an initial newline so Bun sends response headers immediately.
+          // Without this, headers are buffered until the first event arrives.
+          controller.enqueue(encoder.encode("\n"));
+
+          subId = bus.subscribe(
+            (event) => {
+              try {
+                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+              } catch {
+                // Stream closed
+                if (subId !== null) bus.unsubscribe(subId);
+              }
+            },
+            (event) => {
+              // session.response: excluded by default; opt-in only when responseTail matches.
+              // All other filters still apply first, even for session.response.
+              if (categories !== null && !categories.has(event.category)) return false;
+              if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
+              if (prFilter !== undefined && event.prNumber !== prFilter) return false;
+              if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
+              if (typeFilter !== null && event.event !== typeFilter) return false;
+              if (srcFilter !== null && event.src !== srcFilter) return false;
+              if (event.event === "session.response") {
+                return responseTail !== null && event.sessionId === responseTail;
+              }
+              return true;
+            },
+          );
+        },
+        cancel: () => {
+          if (subId !== null) bus.unsubscribe(subId);
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "content-type": "application/x-ndjson",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        },
+      });
+    }
+
+    // ── Ring-buffer fallback path (direct pushEvent(), no EventBus) ──
     const filter = buildEventFilter(url.searchParams);
     const capacity = IpcServer.EVENT_RING_CAPACITY;
     const ring: string[] = new Array(capacity);
@@ -1458,84 +1625,6 @@ export class IpcServer {
       headers: {
         "content-type": "application/x-ndjson",
         "transfer-encoding": "chunked",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      },
-    });
-  }
-
-  /**
-   * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
-   *
-   * Query params:
-   *   server=<name>  — stream stderr from a specific MCP server
-   *   daemon=true    — stream daemon logs
-   *   lines=<n>      — number of initial backfill lines (default 50)
-   *   since=<ts>     — only backfill lines after this timestamp (ms)
-   */
-  private handleLogsSSE(url: URL): Response {
-    const serverName = url.searchParams.get("server");
-    const isDaemon = url.searchParams.get("daemon") === "true";
-    const lines = Number(url.searchParams.get("lines") ?? "50");
-    const since = url.searchParams.has("since") ? Number(url.searchParams.get("since")) : undefined;
-
-    if (!serverName && !isDaemon) {
-      return new Response("Missing ?server=<name> or ?daemon=true", { status: 400 });
-    }
-
-    let unsubscribe: (() => void) | undefined;
-
-    const stream = new ReadableStream({
-      start: (controller) => {
-        const encoder = new TextEncoder();
-        const send = (entry: { timestamp: number; line: string }) => {
-          try {
-            const data = JSON.stringify({ timestamp: entry.timestamp, line: entry.line });
-            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-          } catch {
-            // Stream closed — clean up
-            unsubscribe?.();
-          }
-        };
-
-        // Backfill initial lines
-        if (isDaemon) {
-          let backfill = getDaemonLogLines(lines);
-          if (since !== undefined) {
-            backfill = backfill.filter((l) => l.timestamp > since);
-          }
-          for (const entry of backfill) {
-            send(entry);
-          }
-        } else if (serverName) {
-          let backfill = this.pool.getStderrLines(serverName, since === undefined ? lines : undefined);
-          if (since !== undefined) {
-            backfill = backfill.filter((l) => l.timestamp > since);
-            if (backfill.length > lines) backfill = backfill.slice(-lines);
-          }
-          for (const entry of backfill) {
-            send(entry);
-          }
-        }
-
-        // Subscribe to new lines
-        if (isDaemon) {
-          unsubscribe = subscribeDaemonLogs((entry) => send(entry));
-        } else if (serverName) {
-          unsubscribe = this.pool.subscribeStderr((server, entry) => {
-            if (server !== serverName) return;
-            send(entry);
-          });
-        }
-      },
-      cancel: () => {
-        unsubscribe?.();
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
       },

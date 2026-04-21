@@ -7,6 +7,7 @@ import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { installDaemonLogCapture } from "./daemon-log";
+import { EventBus } from "./event-bus";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
 
@@ -2166,7 +2167,267 @@ describe("IpcServer HTTP transport", () => {
     });
   });
 
-  // -- NDJSON /events endpoint tests --
+  // -- GET /events NDJSON endpoint tests (EventBus path, #1515) --
+
+  describe("GET /events (EventBus)", () => {
+    function startServerWithBus(): { bus: EventBus } {
+      const bus = new EventBus();
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+      return { bus };
+    }
+
+    test("returns 200 with application/x-ndjson content-type", async () => {
+      const { bus: _bus } = startServerWithBus();
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+      controller.abort();
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/x-ndjson");
+    });
+
+    test("streams published events as NDJSON lines", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Drain the initial flush newline — once read, the subscription is active.
+      await reader.read();
+
+      bus.publish({
+        src: "test",
+        event: "session.result",
+        category: "session",
+        sessionId: "s1",
+        cost: 1.5,
+      });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.result")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      const line = buffer.trim().split("\n")[0];
+      const parsed = JSON.parse(line ?? "{}") as Record<string, unknown>;
+      expect(parsed.event).toBe("session.result");
+      expect(parsed.seq).toBe(1);
+      expect(typeof parsed.ts).toBe("string");
+    });
+
+    test("session.response events are excluded by default", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+      bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.ended")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("session.ended");
+    });
+
+    test("session.response included when responseTail matches sessionId", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?responseTail=s1", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.response")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).toContain("session.response");
+    });
+
+    test("session.response NOT included when responseTail is different sessionId", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?responseTail=other-session", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+      bus.publish({ src: "test", event: "session.ended", category: "session", sessionId: "s1" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.ended")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("session.ended");
+    });
+
+    test("category filter excludes events from other categories", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?subscribe=work_item", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.result");
+      expect(buffer).toContain("pr.merged");
+    });
+
+    test("returns 400 when since param is present", async () => {
+      startServerWithBus();
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=42", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+      controller.abort();
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("since not yet supported");
+    });
+
+    test("responseTail does not bypass category filter", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      // subscribe=mail only, but with responseTail set — session.response should still be excluded
+      const res = await fetch("http://localhost/events?subscribe=mail&responseTail=s1", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush — subscription is now active
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hi" });
+      bus.publish({ src: "test", event: "mail.received", category: "mail", mailId: 1, sender: "a", recipient: "b" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("mail.received")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("mail.received");
+    });
+  });
+
+  // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
 
   test("GET /events returns NDJSON content-type", async () => {
     startServer();

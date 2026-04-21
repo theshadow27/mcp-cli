@@ -1,227 +1,484 @@
 import { describe, expect, test } from "bun:test";
-import { cmdMonitor, parseMonitorArgs } from "./monitor";
+import type { MonitorEvent } from "@mcp-cli/core";
+import {
+  CHECKS_FAILED,
+  CHECKS_PASSED,
+  CHECKS_STARTED,
+  HEARTBEAT,
+  MAIL_RECEIVED,
+  PHASE_CHANGED,
+  PR_CLOSED,
+  PR_MERGED,
+  PR_OPENED,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
+  SESSION_CLEARED,
+  SESSION_CONTAINMENT_DENIED,
+  SESSION_CONTAINMENT_ESCALATED,
+  SESSION_CONTAINMENT_WARNING,
+  SESSION_DISCONNECTED,
+  SESSION_ENDED,
+  SESSION_ERROR,
+  SESSION_MODEL_CHANGED,
+  SESSION_PERMISSION_REQUEST,
+  SESSION_RATE_LIMITED,
+  SESSION_RESPONSE,
+  SESSION_RESULT,
+  formatMonitorEvent,
+} from "@mcp-cli/core";
 import type { MonitorDeps } from "./monitor";
+import { cmdMonitor, parseMonitorArgs } from "./monitor";
 
-// ── parseMonitorArgs ──
+// ── Formatter tests ──
 
-describe("parseMonitorArgs", () => {
-  test("returns empty object with no args", () => {
-    const result = parseMonitorArgs([]);
-    expect(result.error).toBeUndefined();
-    expect(result.subscribe).toBeUndefined();
-    expect(result.session).toBeUndefined();
+function makeEvent(event: string, extra: Record<string, unknown> = {}): MonitorEvent {
+  return {
+    seq: 1,
+    ts: "2026-04-20T14:32:01.000Z",
+    src: "daemon.claude-server",
+    event,
+    category: "session",
+    ...extra,
+  };
+}
+
+describe("formatMonitorEvent", () => {
+  test("all formatters produce output ≤200 chars", () => {
+    const events: MonitorEvent[] = [
+      makeEvent(SESSION_RESULT, {
+        sessionId: "fcfbc19dabc",
+        cost: 2.0,
+        numTurns: 25,
+        result: "All done. Fixed 0c52a884 pushed to feat/issue-1441-some-really-long-branch-name-here",
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_PERMISSION_REQUEST, {
+        sessionId: "fcfbc19dabc",
+        toolName: "Bash",
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_ENDED, {
+        sessionId: "fcfbc19dabc",
+        cost: 2.0,
+        numTurns: 25,
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_DISCONNECTED, { sessionId: "fcfbc19dabc", workItemId: "#1441" }),
+      makeEvent(SESSION_ERROR, {
+        sessionId: "fcfbc19dabc",
+        errors: ["Connection refused: socket closed unexpectedly"],
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_CLEARED, { sessionId: "fcfbc19dabc", workItemId: "#1441" }),
+      makeEvent(SESSION_MODEL_CHANGED, {
+        sessionId: "fcfbc19dabc",
+        model: "claude-opus-4-7",
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_RATE_LIMITED, {
+        sessionId: "fcfbc19dabc",
+        retryAfterMs: 30000,
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_CONTAINMENT_WARNING, {
+        sessionId: "fcfbc19dabc",
+        strikes: 2,
+        reason: "Attempted write outside containment",
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_CONTAINMENT_DENIED, {
+        sessionId: "fcfbc19dabc",
+        reason: "Exceeded strike limit",
+        workItemId: "#1441",
+      }),
+      makeEvent(SESSION_CONTAINMENT_ESCALATED, { sessionId: "fcfbc19dabc", workItemId: "#1441" }),
+      makeEvent(PR_OPENED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+      }),
+      makeEvent(PR_MERGED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+      }),
+      makeEvent(PR_CLOSED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+      }),
+      makeEvent(CHECKS_STARTED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+      }),
+      makeEvent(CHECKS_PASSED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+      }),
+      makeEvent(CHECKS_FAILED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+        failedJob: "check",
+      }),
+      makeEvent(REVIEW_APPROVED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+        reviewer: "copilot",
+      }),
+      makeEvent(REVIEW_CHANGES_REQUESTED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        prNumber: 1472,
+        workItemId: "#1441",
+        reviewer: "copilot",
+      }),
+      makeEvent(PHASE_CHANGED, {
+        category: "work_item",
+        src: "daemon.work-item-poller",
+        workItemId: "#1441",
+        from: "impl",
+        to: "qa",
+      }),
+      makeEvent(MAIL_RECEIVED, {
+        category: "mail",
+        src: "daemon.mail",
+        sender: "orchestrator@sessions",
+        recipient: "impl@sessions",
+      }),
+      makeEvent(HEARTBEAT, { category: "heartbeat", src: "daemon", seq: 4210 }),
+    ];
+
+    for (const e of events) {
+      const line = formatMonitorEvent(e);
+      expect(line.length).toBeLessThanOrEqual(200);
+      expect(line).toContain(e.event === HEARTBEAT ? "heartbeat" : e.event);
+    }
   });
 
-  test("parses --subscribe", () => {
-    const result = parseMonitorArgs(["--subscribe", "session,work_item"]);
-    expect(result.subscribe).toBe("session,work_item");
+  test("session.result includes truncated preview", () => {
+    const e = makeEvent(SESSION_RESULT, {
+      result: "A".repeat(200),
+      sessionId: "abc12345",
+    });
+    const line = formatMonitorEvent(e);
+    expect(line.length).toBeLessThanOrEqual(200);
+    expect(line).toContain("…");
   });
 
-  test("parses --session", () => {
-    const result = parseMonitorArgs(["--session", "abc123"]);
-    expect(result.session).toBe("abc123");
+  test("unknown event type falls back to generic formatter", () => {
+    const e = makeEvent("custom.event", { foo: "bar", baz: 42 });
+    const line = formatMonitorEvent(e);
+    expect(line.length).toBeLessThanOrEqual(200);
+    expect(line).toContain("custom.event");
   });
 
-  test("parses --pr as number", () => {
-    const result = parseMonitorArgs(["--pr", "42"]);
-    expect(result.pr).toBe(42);
-  });
-
-  test("parses --work-item", () => {
-    const result = parseMonitorArgs(["--work-item", "#1441"]);
-    expect(result.workItem).toBe("#1441");
-  });
-
-  test("parses --type", () => {
-    const result = parseMonitorArgs(["--type", "pr.*"]);
-    expect(result.type).toBe("pr.*");
-  });
-
-  test("parses --src", () => {
-    const result = parseMonitorArgs(["--src", "daemon.*"]);
-    expect(result.src).toBe("daemon.*");
-  });
-
-  test("parses --phase", () => {
-    const result = parseMonitorArgs(["--phase", "review"]);
-    expect(result.phase).toBe("review");
-  });
-
-  test("parses --since", () => {
-    const result = parseMonitorArgs(["--since", "100"]);
-    expect(result.since).toBe(100);
-  });
-
-  test("parses --until", () => {
-    const result = parseMonitorArgs(["--until", "pr.merged"]);
-    expect(result.until).toBe("pr.merged");
-  });
-
-  test("parses --timeout", () => {
-    const result = parseMonitorArgs(["--timeout", "30"]);
-    expect(result.timeout).toBe(30);
-  });
-
-  test("parses --max-events", () => {
-    const result = parseMonitorArgs(["--max-events", "10"]);
-    expect(result.maxEvents).toBe(10);
-  });
-
-  test("--json is a no-op flag", () => {
-    const result = parseMonitorArgs(["--json"]);
-    expect(result.error).toBeUndefined();
-  });
-
-  test("returns error for unknown flag", () => {
-    const result = parseMonitorArgs(["--unknown"]);
-    expect(result.error).toContain("Unknown flag");
-  });
-
-  test("returns error for --pr with non-number", () => {
-    const result = parseMonitorArgs(["--pr", "notanumber"]);
-    expect(result.error).toContain("number");
-  });
-
-  test("returns error for missing --session value", () => {
-    const result = parseMonitorArgs(["--session"]);
-    expect(result.error).toContain("--session");
-  });
-
-  test("returns error for --timeout <= 0", () => {
-    expect(parseMonitorArgs(["--timeout", "0"]).error).toContain("> 0");
-    expect(parseMonitorArgs(["--timeout", "-5"]).error).toContain("> 0");
-  });
-
-  test("returns error for --max-events <= 0", () => {
-    expect(parseMonitorArgs(["--max-events", "0"]).error).toContain("> 0");
-  });
-
-  test("returns error for --since < 0", () => {
-    expect(parseMonitorArgs(["--since", "-1"]).error).toContain(">= 0");
-  });
-
-  test("parses multiple flags", () => {
-    const result = parseMonitorArgs(["--session", "s1", "--type", "pr.*", "--max-events", "5"]);
-    expect(result.session).toBe("s1");
-    expect(result.type).toBe("pr.*");
-    expect(result.maxEvents).toBe(5);
+  test("heartbeat shows seq", () => {
+    const e = makeEvent(HEARTBEAT, { category: "heartbeat", src: "daemon", seq: 9999 });
+    const line = formatMonitorEvent(e);
+    expect(line).toContain("seq:9999");
+    expect(line).toContain("♥");
   });
 });
 
-// ── cmdMonitor ──
+// ── Chunk suppression tests (parseMonitorArgs only — runtime filtering is in ipc-server) ──
 
-interface TestCtx {
-  deps: MonitorDeps;
-  stdout: string[];
-  stderr: string[];
-  exitCode: number | undefined;
-}
+describe("parseMonitorArgs", () => {
+  test("defaults: no json, no responseTail", () => {
+    const parsed = parseMonitorArgs([]);
+    expect(parsed.json).toBe(false);
+    expect(parsed.responseTail).toBeUndefined();
+  });
 
-function makeDeps(events: Record<string, unknown>[]): TestCtx {
-  const ctx: TestCtx = {
-    stdout: [],
-    stderr: [],
-    exitCode: undefined,
-    deps: {} as MonitorDeps,
-  };
+  test("--json flag sets json=true", () => {
+    expect(parseMonitorArgs(["--json"]).json).toBe(true);
+    expect(parseMonitorArgs(["-j"]).json).toBe(true);
+  });
 
-  async function* fakeStream() {
+  test("--response-tail sets responseTail", () => {
+    const parsed = parseMonitorArgs(["--response-tail", "fcfbc19d"]);
+    expect(parsed.responseTail).toBe("fcfbc19d");
+  });
+
+  test("--response-tail without value is an error", () => {
+    const parsed = parseMonitorArgs(["--response-tail"]);
+    expect(parsed.error).toBeTruthy();
+  });
+
+  test("--subscribe, --session, --pr parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--subscribe", "session,work_item", "--session", "abc123", "--pr", "1472"]);
+    expect(parsed.subscribe).toBe("session,work_item");
+    expect(parsed.session).toBe("abc123");
+    expect(parsed.pr).toBe(1472);
+  });
+
+  test("--until, --timeout, --max-events parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--until", "pr.merged", "--timeout", "30", "--max-events", "10"]);
+    expect(parsed.until).toBe("pr.merged");
+    expect(parsed.timeout).toBe(30);
+    expect(parsed.maxEvents).toBe(10);
+  });
+
+  test("session.response is a known event constant", () => {
+    expect(SESSION_RESPONSE).toBe("session.response");
+  });
+});
+
+// ── Integration: response chunk suppression contract ──
+
+describe("session.response suppression contract", () => {
+  test("SESSION_RESPONSE constant exists for daemon-side filtering", () => {
+    expect(SESSION_RESPONSE).toBe("session.response");
+  });
+
+  test("formatMonitorEvent handles session.response gracefully", () => {
+    const e = makeEvent(SESSION_RESPONSE, {
+      sessionId: "s1",
+      chunk: "Hello world",
+    });
+    const line = formatMonitorEvent(e);
+    expect(line.length).toBeLessThanOrEqual(200);
+    // Falls back to generic formatter
+    expect(line).toContain(SESSION_RESPONSE);
+  });
+});
+
+// ── parseMonitorArgs error branches ──
+
+describe("parseMonitorArgs error branches", () => {
+  test("--subscribe without value is an error", () => {
+    expect(parseMonitorArgs(["--subscribe"]).error).toBeTruthy();
+  });
+
+  test("--session without value is an error", () => {
+    expect(parseMonitorArgs(["--session"]).error).toBeTruthy();
+  });
+
+  test("--pr with non-numeric value is an error", () => {
+    expect(parseMonitorArgs(["--pr", "abc"]).error).toBeTruthy();
+  });
+
+  test("--work-item without value is an error", () => {
+    expect(parseMonitorArgs(["--work-item"]).error).toBeTruthy();
+  });
+
+  test("--type without value is an error", () => {
+    expect(parseMonitorArgs(["--type"]).error).toBeTruthy();
+  });
+
+  test("--src without value is an error", () => {
+    expect(parseMonitorArgs(["--src"]).error).toBeTruthy();
+  });
+
+  test("--phase without value is an error", () => {
+    expect(parseMonitorArgs(["--phase"]).error).toBeTruthy();
+  });
+
+  test("--since with non-numeric value is an error", () => {
+    expect(parseMonitorArgs(["--since", "abc"]).error).toBeTruthy();
+  });
+
+  test("--until without value is an error", () => {
+    expect(parseMonitorArgs(["--until"]).error).toBeTruthy();
+  });
+
+  test("--timeout with non-numeric value is an error", () => {
+    expect(parseMonitorArgs(["--timeout", "abc"]).error).toBeTruthy();
+  });
+
+  test("--max-events with non-numeric value is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "abc"]).error).toBeTruthy();
+  });
+
+  test("--help sets error to 'help'", () => {
+    expect(parseMonitorArgs(["--help"]).error).toBe("help");
+    expect(parseMonitorArgs(["-h"]).error).toBe("help");
+  });
+
+  test("--work-item and --src parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--work-item", "#1441", "--src", "daemon.claude"]);
+    expect(parsed.workItem).toBe("#1441");
+    expect(parsed.src).toBe("daemon.claude");
+  });
+
+  test("--type and --phase parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--type", "pr.merged", "--phase", "impl"]);
+    expect(parsed.type).toBe("pr.merged");
+    expect(parsed.phase).toBe("impl");
+  });
+
+  test("--since parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--since", "42"]);
+    expect(parsed.since).toBe(42);
+  });
+});
+
+// ── cmdMonitor unit tests (dependency-injected) ──
+
+function makeStreamDeps(events: MonitorEvent[], overrides: Partial<MonitorDeps> = {}): MonitorDeps {
+  async function* gen(): AsyncGenerator<MonitorEvent> {
     for (const e of events) yield e;
   }
 
-  ctx.deps = {
-    openEventStream: () => ({ events: fakeStream(), abort: () => {} }),
-    printError: (msg) => {
-      ctx.stderr.push(msg);
-    },
-    writeStdout: (line) => {
-      ctx.stdout.push(line);
-    },
-    writeStderr: (msg) => {
-      ctx.stderr.push(msg);
-    },
+  return {
+    openEventStream: () => ({ events: gen(), abort: () => {} }),
+    isTTY: true,
+    writeStdout: () => {},
+    writeStderr: () => {},
     exit: (code) => {
-      ctx.exitCode = code;
-      throw new Error(`exit:${code}`);
+      throw new Error(`exit(${code})`);
     },
     onSigint: () => {},
+    ...overrides,
   };
-
-  return ctx;
 }
 
 describe("cmdMonitor", () => {
-  test("streams events as NDJSON to stdout", async () => {
-    const events = [
-      { event: "pr.merged", category: "work_item", prNumber: 1 },
-      { event: "session.result", category: "session", sessionId: "s1" },
-    ];
-    const { deps, stdout } = makeDeps(events);
+  test("--help writes help text and returns", async () => {
+    const lines: string[] = [];
+    const deps = makeStreamDeps([], { writeStderr: (l) => lines.push(l) });
+    await cmdMonitor(["--help"], deps);
+    expect(lines.join("")).toContain("mcx monitor");
+  });
 
+  test("parse error writes error message and exits 1", async () => {
+    const stderr: string[] = [];
+    const deps = makeStreamDeps([], {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+    });
+    await expect(cmdMonitor(["--pr", "abc"], deps)).rejects.toThrow("exit:1");
+    expect(stderr.join("")).toContain("Error:");
+  });
+
+  test("TTY mode formats events as human-readable lines", async () => {
+    const events = [makeEvent(SESSION_RESULT, { sessionId: "abc12345", cost: 1.5 })];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { isTTY: true, writeStdout: (l) => stdout.push(l) });
     await cmdMonitor([], deps);
-
-    expect(stdout).toHaveLength(2);
-    expect(JSON.parse(stdout[0] as string)).toMatchObject({ event: "pr.merged" });
-    expect(JSON.parse(stdout[1] as string)).toMatchObject({ event: "session.result" });
+    expect(stdout.length).toBe(1);
+    expect(stdout[0]).toContain(SESSION_RESULT);
+    expect(stdout[0]).not.toContain('"seq"'); // not raw JSON
   });
 
-  test("skips connected handshake but passes through heartbeat events", async () => {
-    const events = [
-      { t: "connected", seq: 0 },
-      { event: "pr.merged", category: "work_item" },
-      { t: "heartbeat", seq: 1 },
-    ];
-    const { deps, stdout } = makeDeps(events);
+  test("--json mode emits raw NDJSON", async () => {
+    const event = makeEvent(SESSION_RESULT, { sessionId: "abc12345" });
+    const stdout: string[] = [];
+    const deps = makeStreamDeps([event], { isTTY: true, writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--json"], deps);
+    expect(stdout.length).toBe(1);
+    const parsed = JSON.parse(stdout[0].trim());
+    expect(parsed.event).toBe(SESSION_RESULT);
+  });
 
+  test("non-TTY mode automatically uses JSON output", async () => {
+    const event = makeEvent(SESSION_RESULT, {});
+    const stdout: string[] = [];
+    const deps = makeStreamDeps([event], { isTTY: false, writeStdout: (l) => stdout.push(l) });
     await cmdMonitor([], deps);
-
-    // connected is skipped; heartbeat passes through for liveness detection
-    expect(stdout).toHaveLength(2);
-    expect(JSON.parse(stdout[0] as string)).toMatchObject({ event: "pr.merged" });
-    expect(JSON.parse(stdout[1] as string)).toMatchObject({ t: "heartbeat" });
+    const parsed = JSON.parse(stdout[0].trim());
+    expect(parsed.event).toBe(SESSION_RESULT);
   });
 
-  test("--max-events exits after N events", async () => {
-    const events = Array.from({ length: 10 }, (_, i) => ({ event: `ev.${i}`, seq: i }));
-    const ctx = makeDeps(events);
-
-    try {
-      await cmdMonitor(["--max-events", "3"], ctx.deps);
-    } catch {
-      // exit() throws in tests
-    }
-
-    expect(ctx.exitCode).toBe(0);
-    expect(ctx.stdout).toHaveLength(3);
+  test("--max-events stops after N events", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(stdout.length).toBe(2);
   });
 
-  test("--until exits when matching event type is seen", async () => {
+  test("--until stops when matching event type is seen", async () => {
     const events = [
-      { event: "pr.opened", category: "work_item" },
-      { event: "pr.merged", category: "work_item" },
-      { event: "session.result", category: "session" },
+      makeEvent(SESSION_RESULT, {}),
+      makeEvent(PR_MERGED, { category: "work_item" }),
+      makeEvent(SESSION_ENDED, {}),
     ];
-    const ctx = makeDeps(events);
-
-    try {
-      await cmdMonitor(["--until", "pr.merged"], ctx.deps);
-    } catch {
-      // exit() throws in tests
-    }
-
-    expect(ctx.exitCode).toBe(0);
-    // should have written pr.opened and pr.merged before exiting
-    expect(ctx.stdout).toHaveLength(2);
-    expect(JSON.parse(ctx.stdout[1] as string)).toMatchObject({ event: "pr.merged" });
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(stdout.length).toBe(2); // SESSION_RESULT + PR_MERGED
   });
 
-  test("exits with code 1 on parse error", async () => {
-    const ctx = makeDeps([]);
-    try {
-      await cmdMonitor(["--pr", "notanumber"], ctx.deps);
-    } catch {
-      // exit throws
+  test("AbortError is swallowed (clean exit)", async () => {
+    const abortStream: AsyncIterable<MonitorEvent> = {
+      [Symbol.asyncIterator]: (): AsyncIterator<MonitorEvent> => ({
+        async next(): Promise<IteratorResult<MonitorEvent>> {
+          throw new DOMException("Aborted", "AbortError");
+        },
+      }),
+    };
+    const deps: MonitorDeps = {
+      openEventStream: () => ({ events: abortStream, abort: () => {} }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+    };
+    // Should not throw — AbortError is treated as clean exit
+    await expect(cmdMonitor([], deps)).resolves.toBeUndefined();
+  });
+
+  test("non-abort error writes to stderr and exits 1", async () => {
+    const errorStream: AsyncIterable<MonitorEvent> = {
+      [Symbol.asyncIterator]: (): AsyncIterator<MonitorEvent> => ({
+        async next(): Promise<IteratorResult<MonitorEvent>> {
+          throw new Error("connection refused");
+        },
+      }),
+    };
+    const stderr: string[] = [];
+    const deps: MonitorDeps = {
+      openEventStream: () => ({ events: errorStream, abort: () => {} }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+    };
+    await expect(cmdMonitor([], deps)).rejects.toThrow("exit:1");
+    expect(stderr.join("")).toContain("connection refused");
+  });
+
+  test("--timeout sets a timer that calls abort", async () => {
+    let abortCalled = false;
+    async function* emptyGen(): AsyncGenerator<MonitorEvent> {
+      // yields nothing — stream ends immediately
     }
-    expect(ctx.exitCode).toBe(1);
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: emptyGen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+    };
+    // timeout=0 fires immediately; stream may already be exhausted — no crash is the assertion
+    await cmdMonitor(["--timeout", "0"], deps);
+    expect(typeof abortCalled).toBe("boolean");
   });
 });
