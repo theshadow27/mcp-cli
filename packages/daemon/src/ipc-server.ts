@@ -1499,10 +1499,19 @@ export class IpcServer {
           // Without this, headers are buffered until the first event arrives.
           controller.enqueue(encoder.encode("\n"));
 
+          // Buffer live events during backfill to avoid gaps or duplicates.
+          let liveBuffer: Array<string> | null = sinceSeq !== null && eventLog ? [] : null;
+          let highWaterMark = 0;
+
           subId = bus.subscribe(
             (event) => {
               try {
-                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+                const line = `${JSON.stringify(event)}\n`;
+                if (liveBuffer !== null) {
+                  liveBuffer.push(line);
+                } else {
+                  controller.enqueue(encoder.encode(line));
+                }
               } catch {
                 // Stream closed
                 if (subId !== null) bus.unsubscribe(subId);
@@ -1523,6 +1532,39 @@ export class IpcServer {
               return true;
             },
           );
+
+          // Backfill from durable log when client provides a valid cursor.
+          if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
+            let cursor = sinceSeq;
+            while (true) {
+              const batch = eventLog.getSince(cursor, 1000);
+              for (const event of batch) {
+                highWaterMark = event.seq;
+                try {
+                  controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+                } catch {
+                  if (subId !== null) bus.unsubscribe(subId);
+                  return;
+                }
+              }
+              if (batch.length < 1000) break;
+              cursor = batch[batch.length - 1]?.seq ?? cursor;
+            }
+            // Drain buffered live events; seq-based HWM drops overlaps.
+            const buffered = liveBuffer ?? [];
+            liveBuffer = null;
+            for (const line of buffered) {
+              try {
+                const parsed = JSON.parse(line) as Record<string, unknown>;
+                const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
+                if (seq !== undefined && seq <= highWaterMark) continue;
+                controller.enqueue(encoder.encode(line));
+              } catch {
+                if (subId !== null) bus.unsubscribe(subId);
+                return;
+              }
+            }
+          }
         },
         cancel: () => {
           if (subId !== null) bus.unsubscribe(subId);
