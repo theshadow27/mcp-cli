@@ -56,9 +56,19 @@ export interface ColdStartResult {
   reloaded: boolean;
 }
 
+export interface StartSiteResult {
+  site: string;
+  url: string;
+  status: "navigated" | "failed" | "already-running";
+  error?: string;
+}
+
 export interface BrowserEngine {
-  /** Idempotent; subsequent calls are a no-op. `events` is wired for the lifetime. */
-  start(sites: SiteSpec[], events: BrowserEvents): Promise<void>;
+  /**
+   * Idempotent; if already running, returns each pinned site with status `already-running`.
+   * `events` is wired for the lifetime.
+   */
+  start(sites: SiteSpec[], events: BrowserEvents): Promise<StartSiteResult[]>;
   stop(): Promise<void>;
   isRunning(): boolean;
   /** Names of sites currently pinned to a tab/window. */
