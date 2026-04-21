@@ -26,6 +26,7 @@ import type {
   CapturedResponse,
   ColdStartResult,
   SiteSpec,
+  StartSiteResult,
 } from "./engine";
 
 function isTextual(contentType: string): boolean {
@@ -39,6 +40,58 @@ function isTextual(contentType: string): boolean {
   );
 }
 
+/**
+ * Minimal BrowserContext surface used by {@link openSitesInContext}. Exists so
+ * the loop can be unit-tested against fakes without spawning real Chromium.
+ */
+export interface OpenCtxLike {
+  newPage(): Promise<OpenPageLike>;
+}
+
+export interface OpenPageLike {
+  goto(url: string, opts?: { waitUntil?: string }): Promise<unknown>;
+  bringToFront(): Promise<void>;
+}
+
+/**
+ * Open a fresh tab per site and navigate it. Exported for unit tests.
+ *
+ * Why fresh tabs: reusing `ctx.pages()` picks up tabs restored from the
+ * persistent Chrome profile, which leaves the user staring at a blank
+ * foreground tab while navigation happens off-screen (#1588).
+ *
+ * The first site is brought to front so the user sees something load.
+ * Navigation errors are recorded per site and do not abort the loop.
+ */
+export async function openSitesInContext<P extends OpenPageLike>(
+  ctx: { newPage(): Promise<P> },
+  sites: SiteSpec[],
+  onPage: (page: P, siteName: string) => void,
+): Promise<StartSiteResult[]> {
+  const results: StartSiteResult[] = [];
+  for (const [i, s] of sites.entries()) {
+    const page = await ctx.newPage();
+    onPage(page, s.name);
+
+    try {
+      await page.goto(s.url, { waitUntil: "domcontentloaded" });
+      results.push({ site: s.name, url: s.url, status: "navigated" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[site] goto failed site=${s.name} url=${s.url}: ${message}`);
+      results.push({ site: s.name, url: s.url, status: "failed", error: message });
+    }
+    if (i === 0) {
+      try {
+        await page.bringToFront();
+      } catch {
+        // Window may have been closed during navigation; non-fatal.
+      }
+    }
+  }
+  return results;
+}
+
 export class PlaywrightBrowserEngine implements BrowserEngine {
   private context: BrowserContext | null = null;
   private pages = new Map<string, Page>();
@@ -47,8 +100,14 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
   private lock: Promise<unknown> = Promise.resolve();
   private events: BrowserEvents = {};
 
-  async start(sites: SiteSpec[], events: BrowserEvents): Promise<void> {
-    if (this.context) return;
+  async start(sites: SiteSpec[], events: BrowserEvents): Promise<StartSiteResult[]> {
+    if (this.context) {
+      return [...this.pages.entries()].map(([name, page]) => ({
+        site: name,
+        url: page.url(),
+        status: "already-running" as const,
+      }));
+    }
     this.events = events;
     for (const s of sites) this.siteSpecs.set(s.name, s);
 
@@ -99,20 +158,23 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       });
     }
 
-    const usedPages = new Set<Page>();
-    for (const s of sites) {
-      const page = ctx.pages().find((p) => !usedPages.has(p)) ?? (await ctx.newPage());
-      usedPages.add(page);
-      this.pages.set(s.name, page);
-
-      this.attachListeners(page, s.name);
-
-      try {
-        await page.goto(s.url, { waitUntil: "domcontentloaded" });
-      } catch {
-        // Navigation failures are non-fatal — the page is still useful for auth.
+    // If the user closes the browser window without going through stop(), the
+    // Playwright context disconnects. Clear our handles so a subsequent start()
+    // launches a fresh browser instead of silently no-op'ing on a dead context.
+    ctx.on("close", () => {
+      if (this.context === ctx) {
+        this.context = null;
+        this.pages.clear();
+        this.siteSpecs.clear();
+        this.events = {};
       }
-    }
+    });
+
+    const results = await openSitesInContext(ctx, sites, (page, name) => {
+      this.pages.set(name, page);
+      this.attachListeners(page, name);
+    });
+    return results;
   }
 
   private attachListeners(page: Page, siteName: string): void {

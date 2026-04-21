@@ -279,10 +279,10 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 
   const eng = await loadBrowser(engine);
   const specs = sites.map(siteSpecFor);
-  await eng.start(specs, sniffer.asEvents());
+  const startResults = await eng.start(specs, sniffer.asEvents());
   for (const s of sites) sitesOpenInBrowser.add(s.name);
 
-  return ok({ ok: true, engine, sites: eng.getSiteNames() });
+  return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
 }
 
 async function handleDisconnect(): Promise<ToolResult> {
