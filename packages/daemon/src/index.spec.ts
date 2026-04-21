@@ -9,7 +9,7 @@
  * - Mocked git ops for worktree prune tests (no subprocess overhead)
  * - Tighter pollUntil deadlines
  */
-import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
@@ -19,6 +19,7 @@ import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import type { DaemonHandle, PruneGitOps } from "./index";
 import { pruneOrphanedWorktrees, startDaemon, sweepCoreBare } from "./index";
+import { metrics } from "./metrics";
 
 setDefaultTimeout(15_000);
 
@@ -1012,6 +1013,170 @@ describe("sweepCoreBare (#1330)", () => {
     try {
       const healed = sweepCoreBare(db, silentLogger, mockGitOps());
       expect(healed).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mcpd_core_bare_healed_total counter tests
+// ---------------------------------------------------------------------------
+describe("mcpd_core_bare_healed_total counter", () => {
+  let opts: ReturnType<typeof testOptions> | undefined;
+
+  beforeEach(() => {
+    metrics.reset();
+  });
+
+  afterEach(() => {
+    metrics.reset();
+    if (opts) {
+      opts[Symbol.dispose]();
+      opts = undefined;
+    }
+  });
+
+  test("sweepCoreBare increments counter with source=sweep", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "counter-sweep-repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({ sessionId: "s1", pid: 99999, model: "sonnet", cwd: repoDir, repoRoot: repoDir });
+
+      sweepCoreBare(
+        db,
+        silentLogger,
+        mockGitOps({
+          exec: (cmd: string[]) => {
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).value()).toBe(1);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("sweepCoreBare does not increment counter when nothing healed", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "counter-sweep-clean");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({ sessionId: "s2", pid: 99999, model: "sonnet", cwd: repoDir, repoRoot: repoDir });
+
+      sweepCoreBare(db, silentLogger, mockGitOps({ exec: () => ({ exitCode: 0, stdout: "false\n" }) }));
+
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).value()).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("pruneOrphanedWorktrees increments worktree_remove counter when core.bare healed after removal", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "counter-prune-repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "ended-wt",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+        worktree: "wt",
+      });
+      db.endSession("ended-wt");
+
+      pruneOrphanedWorktrees(
+        db,
+        silentLogger,
+        mockGitOps({
+          pathExists: () => true,
+          status: () => ({ exitCode: 0, stdout: "" }),
+          showBranch: () => ({ exitCode: 0, stdout: "" }),
+          removeWorktree: () => ({ exitCode: 0 }),
+          deleteBranch: () => ({ exitCode: 1 }),
+          exec: (cmd: string[]) => {
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "true\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("pruneOrphanedWorktrees increments branch_delete counter when core.bare flips after branch deletion", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "counter-branch-delete-repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "ended-bd",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+        worktree: "bd-wt",
+      });
+      db.endSession("ended-bd");
+
+      // Simulate: core.bare is fine before/after worktree remove, but flips after branch delete,
+      // then fixCoreBare succeeds (unset returns exitCode 0).
+      // Non-unset config core.bare call sequence:
+      //   1: isCoreBareSet(bareBeforeRemove)  → false
+      //   2: isCoreBareSet(bareAfterRemove)   → false
+      //   3: fixCoreBare (post-remove check)  → false (no heal)
+      //   4: isCoreBareSet(bareBeforeBranch)  → false
+      //   5: isCoreBareSet(bareAfterBranch)   → true  (flip detected)
+      //   6: fixCoreBare (branch_delete heal) → true  (heals, increments branch_delete)
+      //   7: fixCoreBare (batch guard)        → false (already healed)
+      let callCount = 0;
+      pruneOrphanedWorktrees(
+        db,
+        silentLogger,
+        mockGitOps({
+          pathExists: () => true,
+          status: () => ({ exitCode: 0, stdout: "" }),
+          showBranch: () => ({ exitCode: 0, stdout: "feat/bd-branch" }),
+          removeWorktree: () => ({ exitCode: 0 }),
+          deleteBranch: () => ({ exitCode: 0 }),
+          exec: (cmd: string[]) => {
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              callCount++;
+              return { exitCode: 0, stdout: callCount === 5 || callCount === 6 ? "true\n" : "false\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).value()).toBe(1);
+      expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
     } finally {
       db.close();
     }
