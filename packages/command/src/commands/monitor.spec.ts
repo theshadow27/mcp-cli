@@ -216,8 +216,8 @@ describe("parseMonitorArgs", () => {
   });
 
   test("--subscribe, --session, --pr parsed correctly", () => {
-    const parsed = parseMonitorArgs(["--subscribe", "session,pr", "--session", "abc123", "--pr", "1472"]);
-    expect(parsed.subscribe).toBe("session,pr");
+    const parsed = parseMonitorArgs(["--subscribe", "session,work_item", "--session", "abc123", "--pr", "1472"]);
+    expect(parsed.subscribe).toBe("session,work_item");
     expect(parsed.session).toBe("abc123");
     expect(parsed.pr).toBe(1472);
   });

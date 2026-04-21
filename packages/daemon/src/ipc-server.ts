@@ -1370,7 +1370,16 @@ export class IpcServer {
     const srcFilter = url.searchParams.get("src");
     const responseTail = url.searchParams.get("responseTail");
 
-    const categories = subscribeFilter ? new Set(subscribeFilter.split(",").map((s) => s.trim())) : null;
+    const categoryList = subscribeFilter
+      ? subscribeFilter
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : null;
+    if (categoryList !== null && categoryList.length === 0) {
+      return new Response("subscribe must not be empty", { status: 400 });
+    }
+    const categories = categoryList ? new Set(categoryList) : null;
 
     const bus = this.eventBus;
     let subId: number | null = null;
