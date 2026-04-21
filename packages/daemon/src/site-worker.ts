@@ -202,6 +202,7 @@ function handleDescribe(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
+  resetIfBrowserDied();
   const site = requireSite(args.site as string);
   const callName = args.call as string;
   const catalog = loadCatalog(site.name, site.seed ?? site.name);
@@ -257,7 +258,22 @@ function handleRemoveCall(args: Record<string, unknown>): ToolResult {
   return ok({ ok: true, removed });
 }
 
+/**
+ * If the engine's underlying browser closed unexpectedly (user clicked X,
+ * Chrome crashed, network disconnect), PlaywrightBrowserEngine's `ctx.on("close")`
+ * listener clears its internal state but nothing notifies this outer module —
+ * so `browser` stays truthy while every call fails. Detect and reset.
+ */
+function resetIfBrowserDied(): void {
+  if (browser && !browser.isRunning()) {
+    browser = null;
+    browserEngineName = null;
+    sitesOpenInBrowser.clear();
+  }
+}
+
 async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
+  resetIfBrowserDied();
   const siteNames =
     (args.sites as string[] | undefined) ??
     listSites()
@@ -286,6 +302,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 }
 
 async function handleDisconnect(): Promise<ToolResult> {
+  resetIfBrowserDied();
   if (!browser) return ok({ ok: true, note: "browser was not running" });
   await browser.stop();
   browser = null;
@@ -322,6 +339,7 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> {
+  resetIfBrowserDied();
   if (!browser) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
   const touched = await browser.wiggle(site);
@@ -329,6 +347,7 @@ async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> 
 }
 
 async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
+  resetIfBrowserDied();
   if (!browser) return error("Browser is not running. Start it with site_browser_start.");
   const code = args.code as string;
   if (!code) return error("Missing 'code'");
@@ -337,6 +356,7 @@ async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
 }
 
 async function handleColdStart(args: Record<string, unknown>): Promise<ToolResult> {
+  resetIfBrowserDied();
   if (!browser) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
   return ok(await browser.coldStart(site));

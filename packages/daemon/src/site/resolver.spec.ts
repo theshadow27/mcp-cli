@@ -60,4 +60,21 @@ describe("resolve", () => {
     const r = resolve(call, { extra: "yes" });
     expect(r.url).toBe("https://api.example.com/v1/things?fixed=1&extra=yes");
   });
+
+  test("POST with jq_input leaves body undefined so applyJqInput can shape it", () => {
+    const call: NamedCall = {
+      ...POST_CALL,
+      jq_input: ".body_default + {q: .params.q}",
+      body_default: { baseline: true },
+    };
+    const r = resolve(call, { q: "hi", size: 3 });
+    expect(r.body).toBeUndefined();
+    expect(r.residualParams).toEqual(["q", "size"]);
+  });
+
+  test("POST with jq_input still honors explicit rawBody override", () => {
+    const call: NamedCall = { ...POST_CALL, jq_input: ".body_default" };
+    const r = resolve(call, { q: "ignored" }, "explicit-body");
+    expect(r.body).toBe("explicit-body");
+  });
 });
