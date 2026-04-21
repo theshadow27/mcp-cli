@@ -8,6 +8,7 @@ import { IPC_ERROR, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/cor
 import { testOptions } from "../../../test/test-options";
 import { installDaemonLogCapture } from "./daemon-log";
 import { EventBus } from "./event-bus";
+import { EventLog } from "./event-log";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
 
@@ -2377,17 +2378,54 @@ describe("IpcServer HTTP transport", () => {
       expect(buffer).toContain("pr.merged");
     });
 
-    test("returns 400 when since param is present", async () => {
-      startServerWithBus();
+    test("backfills events from event log when since=<seq> is provided", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      // Publish two events before any client connects — they are persisted to the durable log
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 7 });
+
+      // Connect with since=0 — should receive both historical events as backfill
       const controller = new AbortController();
-      const res = await fetch("http://localhost/events?since=42", {
+      const res = await fetch("http://localhost/events?since=0", {
         method: "GET",
         unix: socketPath,
         signal: controller.signal,
       } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
       controller.abort();
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain("since not yet supported");
+      reader.releaseLock();
+
+      expect(buffer).toContain("session.result");
+      expect(buffer).toContain("pr.merged");
+
+      // Events must arrive with ascending seq numbers
+      const lines = buffer.split("\n").filter((l) => l.includes('"session.result"') || l.includes('"pr.merged"'));
+      expect(lines.length).toBe(2);
+      const seqs = lines.map((l) => (JSON.parse(l) as Record<string, unknown>).seq as number);
+      expect(seqs[0]).toBeLessThan(seqs[1] as number);
     });
 
     test("responseTail does not bypass category filter", async () => {

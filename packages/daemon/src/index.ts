@@ -67,6 +67,7 @@ import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } fro
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { EventBus } from "./event-bus";
+import { EventLog } from "./event-log";
 import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
 import { resolveBranchFromPr } from "./github/resolve-branch";
 import { WorkItemPoller } from "./github/work-item-poller";
@@ -568,7 +569,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   watcher.start();
 
-  const mailEventBus = new EventBus();
+  const eventLog = new EventLog(db.getDatabase());
+  eventLog.startPruning();
+  const mailEventBus = new EventBus(eventLog);
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
@@ -934,6 +937,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
+      eventLog.stopPruning();
       quotaPoller.stop();
       workItemPoller?.stop();
       try {

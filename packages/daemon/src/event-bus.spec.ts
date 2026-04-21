@@ -1,6 +1,8 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { EventBus } from "./event-bus";
+import { EventLog } from "./event-log";
 
 function sessionEvent(event = "session.result", sessionId = "s1"): MonitorEventInput {
   return { src: "daemon.claude-server", event, category: "session", sessionId };
@@ -184,5 +186,106 @@ describe("EventBus", () => {
     bus.publish(workItemEvent());
     expect(received).toHaveLength(1);
     expect(received[0].event).toBe("pr.merged");
+  });
+});
+
+function freshLog(): EventLog {
+  const db = new Database(":memory:");
+  db.exec("PRAGMA journal_mode = WAL");
+  return new EventLog(db);
+}
+
+describe("EventBus with EventLog", () => {
+  test("seq comes from SQLite when EventLog is provided", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    const e1 = bus.publish(sessionEvent());
+    const e2 = bus.publish(workItemEvent());
+    expect(e1.seq).toBe(1);
+    expect(e2.seq).toBe(2);
+  });
+
+  test("events are persisted and retrievable from the log", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    bus.publish(sessionEvent("session.result"));
+    bus.publish(workItemEvent("pr.merged"));
+
+    const events = log.getSince(0);
+    expect(events).toHaveLength(2);
+    expect(events[0].event).toBe("session.result");
+    expect(events[1].event).toBe("pr.merged");
+  });
+
+  test("seq continuity survives simulated restart", () => {
+    const db = new Database(":memory:");
+    db.exec("PRAGMA journal_mode = WAL");
+    const log1 = new EventLog(db);
+
+    const bus1 = new EventBus(log1);
+    bus1.publish(sessionEvent());
+    bus1.publish(sessionEvent());
+    bus1.publish(sessionEvent());
+    expect(bus1.currentSeq).toBe(3);
+
+    // Simulate daemon restart — new EventLog + EventBus on same db
+    const log2 = new EventLog(db);
+    const bus2 = new EventBus(log2);
+    expect(bus2.currentSeq).toBe(3);
+
+    const e4 = bus2.publish(workItemEvent());
+    expect(e4.seq).toBe(4);
+  });
+
+  test("subscribers still receive events with EventLog", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publish(sessionEvent());
+    expect(received).toHaveLength(1);
+    expect(received[0].seq).toBe(1);
+  });
+
+  test("eventLog getter returns the log instance", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    expect(bus.eventLog).toBe(log);
+  });
+
+  test("eventLog getter returns null without log", () => {
+    const bus = new EventBus();
+    expect(bus.eventLog).toBeNull();
+  });
+
+  test("getSince round-trip: backfilled events have correct seq, not placeholder 0", () => {
+    const log = freshLog();
+    const bus = new EventBus(log);
+    bus.publish(sessionEvent("session.result"));
+    bus.publish(workItemEvent("pr.merged"));
+    bus.publish(sessionEvent("session.started"));
+
+    const backfilled = log.getSince(0);
+    expect(backfilled).toHaveLength(3);
+    expect(backfilled[0].seq).toBe(1);
+    expect(backfilled[1].seq).toBe(2);
+    expect(backfilled[2].seq).toBe(3);
+  });
+
+  test("append failure falls back to in-memory seq without throwing", () => {
+    const db = new Database(":memory:");
+    db.exec("PRAGMA journal_mode = WAL");
+    const log = new EventLog(db);
+    const bus = new EventBus(log);
+
+    // Close the DB to force append failures
+    db.close();
+
+    // publish must not throw; seq must still advance
+    const e1 = bus.publish(sessionEvent());
+    const e2 = bus.publish(sessionEvent());
+    expect(e1.seq).toBeGreaterThan(0);
+    expect(e2.seq).toBeGreaterThan(e1.seq);
   });
 });

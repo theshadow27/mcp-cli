@@ -1444,7 +1444,8 @@ export class IpcServer {
    *   Uses EventBus subscriptions with session.response suppression and responseTail opt-in.
    *
    * Fallback (no EventBus, direct push via pushEvent()):
-   *   Uses ring-buffer based delivery with connected/heartbeat envelope.
+   *   Uses ring-buffer based delivery with connected/heartbeat envelope,
+   *   plus durable log replay when since=<seq> is provided (#1513).
    *
    * Query params:
    *   subscribe=<categories>   Comma-separated category filter (session,work_item,mail)
@@ -1454,19 +1455,20 @@ export class IpcServer {
    *   type=<glob>              Event name filter (exact match; future: glob)
    *   src=<pattern>            Source attribution filter (exact match; future: glob)
    *   phase=<name>             Phase filter on work item phase
-   *   since=<seq>              Replay from this seq (not yet implemented; reserved)
+   *   since=<seq>              Replay events after this cursor from the durable log,
+   *                            then seamlessly switch to live delivery (#1513)
    *   responseTail=<sessionId> Include session.response chunks for this session only
    *
    * Each event is emitted as one JSON line followed by a newline character.
    * session.response events are excluded by default unless responseTail matches.
    */
   private handleEventsNDJSON(url: URL): Response {
+    const sinceParam = url.searchParams.get("since");
+    const sinceSeq = sinceParam !== null ? Number(sinceParam) : null;
+    const eventLog = this.eventBus?.eventLog ?? null;
+
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {
-      if (url.searchParams.has("since")) {
-        return new Response("since not yet supported", { status: 400 });
-      }
-
       const subscribeFilter = url.searchParams.get("subscribe");
       const sessionFilter = url.searchParams.get("session");
       const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
@@ -1497,10 +1499,19 @@ export class IpcServer {
           // Without this, headers are buffered until the first event arrives.
           controller.enqueue(encoder.encode("\n"));
 
+          // Buffer live events during backfill to avoid gaps or duplicates.
+          let liveBuffer: Array<string> | null = sinceSeq !== null && eventLog ? [] : null;
+          let highWaterMark = 0;
+
           subId = bus.subscribe(
             (event) => {
               try {
-                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+                const line = `${JSON.stringify(event)}\n`;
+                if (liveBuffer !== null) {
+                  liveBuffer.push(line);
+                } else {
+                  controller.enqueue(encoder.encode(line));
+                }
               } catch {
                 // Stream closed
                 if (subId !== null) bus.unsubscribe(subId);
@@ -1521,6 +1532,39 @@ export class IpcServer {
               return true;
             },
           );
+
+          // Backfill from durable log when client provides a valid cursor.
+          if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
+            let cursor = sinceSeq;
+            while (true) {
+              const batch = eventLog.getSince(cursor, 1000);
+              for (const event of batch) {
+                highWaterMark = event.seq;
+                try {
+                  controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+                } catch {
+                  if (subId !== null) bus.unsubscribe(subId);
+                  return;
+                }
+              }
+              if (batch.length < 1000) break;
+              cursor = batch[batch.length - 1]?.seq ?? cursor;
+            }
+            // Drain buffered live events; seq-based HWM drops overlaps.
+            const buffered = liveBuffer ?? [];
+            liveBuffer = null;
+            for (const line of buffered) {
+              try {
+                const parsed = JSON.parse(line) as Record<string, unknown>;
+                const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
+                if (seq !== undefined && seq <= highWaterMark) continue;
+                controller.enqueue(encoder.encode(line));
+              } catch {
+                if (subId !== null) bus.unsubscribe(subId);
+                return;
+              }
+            }
+          }
         },
         cancel: () => {
           if (subId !== null) bus.unsubscribe(subId);
@@ -1561,6 +1605,10 @@ export class IpcServer {
 
     const stream = new ReadableStream({
       start: (controller) => {
+        // Track the highest seq sent so live events can skip duplicates
+        // after backfill.
+        let highWaterMark = 0;
+
         const flush = () => {
           if (!pending) return;
           pending = false;
@@ -1579,7 +1627,9 @@ export class IpcServer {
           dropped = 0;
         };
 
-        const enqueue = (line: string) => {
+        const enqueue = (line: string, seq?: number) => {
+          if (seq !== undefined && seq <= highWaterMark) return;
+          if (seq !== undefined) highWaterMark = seq;
           if (writeIdx < capacity) {
             ring[writeIdx++] = line;
           } else {
@@ -1595,15 +1645,53 @@ export class IpcServer {
         controller.enqueue(encoder.encode(`${JSON.stringify({ t: "connected", seq: this.eventSeq })}\n`));
         lastWriteTime = Date.now();
 
+        // Subscribe to live events BEFORE backfilling so nothing is missed
+        // during the gap between query and subscription. Live events are
+        // buffered during backfill and drained after to preserve ordering.
+        let liveBuffer: Array<{ line: string; seq: number | undefined }> | null = null;
         const subscriber = (event: Record<string, unknown>) => {
           if (filter && !filter(event)) return;
-          enqueue(`${JSON.stringify(event)}\n`);
+          const line = `${JSON.stringify(event)}\n`;
+          const seq = typeof event.seq === "number" ? event.seq : undefined;
+          if (liveBuffer !== null) {
+            liveBuffer.push({ line, seq });
+          } else {
+            enqueue(line, seq);
+          }
         };
 
         this.eventSubscribers.add(subscriber);
         unsubscribe = () => {
           this.eventSubscribers.delete(subscriber);
         };
+
+        // Backfill from durable log when client provides a valid cursor
+        if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
+          liveBuffer = [];
+          let cursor = sinceSeq;
+          while (true) {
+            const batch = eventLog.getSince(cursor, 1000);
+            for (const event of batch) {
+              const line = `${JSON.stringify(event)}\n`;
+              try {
+                highWaterMark = event.seq;
+                controller.enqueue(encoder.encode(line));
+              } catch {
+                cleanup();
+                return;
+              }
+            }
+            if (batch.length < 1000) break;
+            cursor = batch[batch.length - 1]?.seq ?? cursor;
+          }
+          // Drain buffered live events; HWM dedup in enqueue() drops overlaps.
+          const buffered = liveBuffer;
+          liveBuffer = null;
+          for (const { line, seq } of buffered) {
+            enqueue(line, seq);
+          }
+          lastWriteTime = Date.now();
+        }
 
         heartbeatTimer = setInterval(() => {
           if (Date.now() - lastWriteTime >= IpcServer.HEARTBEAT_INTERVAL_MS) {
