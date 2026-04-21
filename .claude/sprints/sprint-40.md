@@ -1,6 +1,6 @@
 # Sprint 40
 
-> Planned 2026-04-20. Target: 20 PRs (1 decomposition spike + 5 anchor-derived + 6 sprint-39 tails + 2 OWA + 6 filler).
+> Planned 2026-04-20. Started 2026-04-20 11:21 local. Ended 2026-04-21 12:19 local (next day — ~25h wall, with quota-pause gaps). Target: 20 PRs; actual: 17 merged + 1 closed-dup = 18 resolved.
 
 ## Goal
 
@@ -151,3 +151,8 @@ With decomposition + 2 epic slices + 5 tails + 3 fillers, wall-time target
 is **~3 hours** — longer than sprint 39 because the epic slices are
 architectural, not mechanical. Expected opus count: 3–4 (up from sprint
 39's ~6 via self-repair).
+
+## Sprint 41 plan inputs (user-directed)
+
+- **P0**: #1506 — CI `pull_request` trigger gap on force-push. Blocked multiple QA rounds in sprint 40 (#1513, #1515). Workaround: `gh workflow run ci.yml --ref <branch>` via workflow_dispatch.
+- **P0**: #1588 — user-flagged (new customer issue).
