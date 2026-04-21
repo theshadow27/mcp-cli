@@ -198,7 +198,11 @@ export function openLogStream(params: {
 
 /**
  * Open an NDJSON stream to the daemon's GET /events endpoint.
- * Returns an async iterable of parsed event objects plus an abort function.
+ *
+ * Returns an async iterable of MonitorEvent objects plus an abort function.
+ * Each event is a complete JSON object on its own line.
+ *
+ * Part of #1486 (monitor epic), #1515 (projection layer).
  */
 export function openEventStream(params?: {
   since?: number;
@@ -216,7 +220,9 @@ export function openEventStream(params?: {
   src?: string;
   /** Filter to a specific phase */
   phase?: string;
-}): { events: AsyncIterable<Record<string, unknown>>; abort: () => void } {
+  /** Include session.response chunks for this session ID only */
+  responseTail?: string;
+}): { events: AsyncIterable<import("./monitor-event").MonitorEvent>; abort: () => void } {
   const qs = new URLSearchParams();
   if (params?.since !== undefined) qs.set("since", String(params.since));
   if (params?.subscribe) qs.set("subscribe", params.subscribe);
@@ -226,12 +232,13 @@ export function openEventStream(params?: {
   if (params?.type) qs.set("type", params.type);
   if (params?.src) qs.set("src", params.src);
   if (params?.phase) qs.set("phase", params.phase);
+  if (params?.responseTail) qs.set("responseTail", params.responseTail);
 
   const controller = new AbortController();
   const qsStr = qs.toString();
   const url = `http://localhost/events${qsStr ? `?${qsStr}` : ""}`;
 
-  async function* iterate(): AsyncGenerator<Record<string, unknown>> {
+  async function* iterate(): AsyncGenerator<import("./monitor-event").MonitorEvent> {
     const res = await fetch(url, {
       method: "GET",
       unix: options.SOCKET_PATH,
@@ -254,19 +261,20 @@ export function openEventStream(params?: {
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        if (!line) continue;
+        const trimmed = line.trim();
+        if (!trimmed) continue;
         try {
-          yield JSON.parse(line) as Record<string, unknown>;
+          yield JSON.parse(trimmed) as import("./monitor-event").MonitorEvent;
         } catch {
-          // Skip malformed NDJSON lines
+          // Skip malformed lines
         }
       }
     }
     // Flush any trailing bytes buffered by the streaming decoder
     const trailing = decoder.decode();
-    if (trailing) {
+    if (trailing.trim()) {
       try {
-        yield JSON.parse(trailing) as Record<string, unknown>;
+        yield JSON.parse(trailing.trim()) as import("./monitor-event").MonitorEvent;
       } catch {
         // Ignore incomplete trailing data
       }

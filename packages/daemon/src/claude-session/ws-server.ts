@@ -1677,9 +1677,8 @@ export class ClaudeWsServer {
     if ("errors" in event) input.errors = event.errors;
     if ("requestId" in event) input.requestId = event.requestId;
     if ("toolName" in event) input.toolName = event.toolName;
-    if ("request" in event && event.request) {
-      input.toolName = (event.request as { tool_name: string }).tool_name;
-    }
+    if (event.type === "session:permission_request") input.toolName = event.request.tool_name;
+    if ("model" in event) input.model = (event as { model: string }).model;
     if ("strikes" in event) input.strikes = event.strikes;
     if ("reason" in event) input.reason = event.reason;
 
