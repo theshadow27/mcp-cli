@@ -24,6 +24,7 @@ interface DbUpsert {
   type: "db:upsert";
   session: {
     sessionId: string;
+    name?: string;
     pid?: number;
     state?: string;
     model?: string;

@@ -23,7 +23,15 @@ export * from "./branch-guard";
 export * from "./manifest";
 export * from "./manifest-lock";
 export * from "./phase-transition";
-export * from "./worktree-config";
+export type { WorktreeHooksConfig } from "./worktree-config";
+export {
+  WORKTREE_CONFIG_FILENAME,
+  readWorktreeConfig,
+  resolveWorktreeBase,
+  resolveWorktreePath,
+  buildHookEnv,
+  hasWorktreeHooks,
+} from "./worktree-config";
 export * from "./worktree-shim";
 export * from "./plan";
 export * from "./claude-plan-adapter";

@@ -43,7 +43,7 @@ const defaultDeps: MonitorDeps = {
   writeStdout: (line) => process.stdout.write(line),
   writeStderr: (line) => process.stderr.write(line),
   exit: (code) => process.exit(code),
-  onSigint: (fn) => process.on("SIGINT", fn),
+  onSigint: (fn) => process.once("SIGINT", fn),
 };
 
 export function parseMonitorArgs(args: string[]): MonitorArgs {
@@ -226,18 +226,22 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     responseTail: parsed.responseTail,
   });
 
+  let done = false;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  if (parsed.timeout !== undefined) {
-    timeoutId = setTimeout(() => {
-      abort();
-    }, parsed.timeout * 1000);
-  }
 
-  d.onSigint(() => {
+  const finish = (code: number) => {
+    if (done) return;
+    done = true;
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     abort();
-    d.exit(0);
-  });
+    d.exit(code);
+  };
+
+  if (parsed.timeout !== undefined) {
+    timeoutId = setTimeout(() => finish(0), parsed.timeout * 1000);
+  }
+
+  d.onSigint(() => finish(0));
 
   let count = 0;
 
@@ -246,7 +250,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
       if (useJson) {
         d.writeStdout(`${JSON.stringify(event)}\n`);
       } else {
-        d.writeStdout(`${formatMonitorEvent(event)}\n`);
+        d.writeStdout(`${formatMonitorEvent(event as MonitorEvent)}\n`);
       }
 
       count++;
@@ -255,11 +259,12 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
         break;
       }
 
-      if (parsed.until !== undefined && event.event === parsed.until) {
+      if (parsed.until !== undefined && (event as MonitorEvent).event === parsed.until) {
         break;
       }
     }
   } catch (err) {
+    if (done) return; // already exiting cleanly
     if (err instanceof DOMException && err.name === "AbortError") {
       // Clean exit via timeout or SIGINT
     } else {

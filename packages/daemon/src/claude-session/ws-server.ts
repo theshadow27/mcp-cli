@@ -33,6 +33,7 @@ import {
   SESSION_CLEARED,
   SESSION_CONTAINMENT_DENIED,
   SESSION_CONTAINMENT_ESCALATED,
+  SESSION_CONTAINMENT_RESET,
   SESSION_CONTAINMENT_WARNING,
   SESSION_DISCONNECTED,
   SESSION_ENDED,
@@ -1654,6 +1655,7 @@ export class ClaudeWsServer {
     "session:containment_warning": SESSION_CONTAINMENT_WARNING,
     "session:containment_denied": SESSION_CONTAINMENT_DENIED,
     "session:containment_escalated": SESSION_CONTAINMENT_ESCALATED,
+    "session:containment_reset": SESSION_CONTAINMENT_RESET,
   };
 
   private publishSessionMonitorEvent(sessionId: string, event: SessionEvent): void {
@@ -1674,6 +1676,7 @@ export class ClaudeWsServer {
     if ("result" in event) input.result = event.result;
     if ("errors" in event) input.errors = event.errors;
     if ("requestId" in event) input.requestId = event.requestId;
+    if ("toolName" in event) input.toolName = event.toolName;
     if (event.type === "session:permission_request") input.toolName = event.request.tool_name;
     if ("model" in event) input.model = (event as { model: string }).model;
     if ("strikes" in event) input.strikes = event.strikes;

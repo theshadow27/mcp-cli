@@ -204,30 +204,39 @@ export function openLogStream(params: {
  *
  * Part of #1486 (monitor epic), #1515 (projection layer).
  */
-export function openEventStream(params: {
-  subscribe?: string;
-  session?: string;
-  pr?: number;
-  workItem?: string;
-  type?: string;
-  src?: string;
-  phase?: string;
+export function openEventStream(params?: {
   since?: number;
+  /** Comma-separated event categories (e.g. "session,work_item") */
+  subscribe?: string;
+  /** Filter to a specific session ID */
+  session?: string;
+  /** Filter to a specific PR number */
+  pr?: number;
+  /** Filter to a specific work item ID */
+  workItem?: string;
+  /** Comma-separated event type globs (e.g. "pr.*,session.idle") */
+  type?: string;
+  /** Source attribution pattern */
+  src?: string;
+  /** Filter to a specific phase */
+  phase?: string;
+  /** Include session.response chunks for this session ID only */
   responseTail?: string;
 }): { events: AsyncIterable<import("./monitor-event").MonitorEvent>; abort: () => void } {
   const qs = new URLSearchParams();
-  if (params.subscribe) qs.set("subscribe", params.subscribe);
-  if (params.session) qs.set("session", params.session);
-  if (params.pr !== undefined) qs.set("pr", String(params.pr));
-  if (params.workItem) qs.set("workItem", params.workItem);
-  if (params.type) qs.set("type", params.type);
-  if (params.src) qs.set("src", params.src);
-  if (params.phase) qs.set("phase", params.phase);
-  if (params.since !== undefined) qs.set("since", String(params.since));
-  if (params.responseTail) qs.set("responseTail", params.responseTail);
+  if (params?.since !== undefined) qs.set("since", String(params.since));
+  if (params?.subscribe) qs.set("subscribe", params.subscribe);
+  if (params?.session) qs.set("session", params.session);
+  if (params?.pr !== undefined) qs.set("pr", String(params.pr));
+  if (params?.workItem) qs.set("workItem", params.workItem);
+  if (params?.type) qs.set("type", params.type);
+  if (params?.src) qs.set("src", params.src);
+  if (params?.phase) qs.set("phase", params.phase);
+  if (params?.responseTail) qs.set("responseTail", params.responseTail);
 
   const controller = new AbortController();
-  const url = `http://localhost/events?${qs.toString()}`;
+  const qsStr = qs.toString();
+  const url = `http://localhost/events${qsStr ? `?${qsStr}` : ""}`;
 
   async function* iterate(): AsyncGenerator<import("./monitor-event").MonitorEvent> {
     const res = await fetch(url, {
@@ -259,6 +268,15 @@ export function openEventStream(params: {
         } catch {
           // Skip malformed lines
         }
+      }
+    }
+    // Flush any trailing bytes buffered by the streaming decoder
+    const trailing = decoder.decode();
+    if (trailing.trim()) {
+      try {
+        yield JSON.parse(trailing.trim()) as import("./monitor-event").MonitorEvent;
+      } catch {
+        // Ignore incomplete trailing data
       }
     }
   }

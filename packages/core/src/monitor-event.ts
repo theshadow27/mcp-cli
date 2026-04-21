@@ -27,6 +27,7 @@ export const SESSION_RATE_LIMITED = "session.rate_limited" as const;
 export const SESSION_CONTAINMENT_WARNING = "session.containment_warning" as const;
 export const SESSION_CONTAINMENT_DENIED = "session.containment_denied" as const;
 export const SESSION_CONTAINMENT_ESCALATED = "session.containment_escalated" as const;
+export const SESSION_CONTAINMENT_RESET = "session.containment_reset" as const;
 
 // ── Work item event names ──
 

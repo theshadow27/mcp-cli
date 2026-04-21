@@ -942,6 +942,7 @@ Utility:
   mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx monitor [flags]                 Stream unified daemon events
   mcx logs <server> [-f]              View server stderr
+  mcx monitor [flags]                 Stream daemon events as NDJSON (| jq friendly)
   mcx mail <subcommand>               Inter-session messaging
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server

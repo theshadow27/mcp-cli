@@ -5,6 +5,7 @@
  */
 
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type {
   IpcError,
   IpcMethod,
@@ -95,6 +96,64 @@ export interface RequestContext {
 
 type RequestHandler = (params: unknown, ctx: RequestContext) => Promise<unknown>;
 
+/**
+ * Convert a glob pattern (supporting * and ?) to a RegExp.
+ * Used for --type and --src filter matching.
+ */
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Build a server-side predicate from GET /events query params.
+ * Returns null if no filters are specified (pass-through).
+ */
+export function buildEventFilter(params: URLSearchParams): ((event: Record<string, unknown>) => boolean) | null {
+  const subscribeRaw = params.get("subscribe");
+  const session = params.get("session");
+  const prRaw = params.get("pr");
+  const workItem = params.get("workItem");
+  const typeRaw = params.get("type");
+  const srcRaw = params.get("src");
+  const phase = params.get("phase");
+
+  if (!subscribeRaw && !session && !prRaw && !workItem && !typeRaw && !srcRaw && !phase) {
+    return null;
+  }
+
+  const categories = subscribeRaw ? new Set(subscribeRaw.split(",").map((s) => s.trim())) : null;
+  const prNumber = prRaw !== null ? Number(prRaw) : null;
+  const typePatterns = typeRaw
+    ? typeRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map(globToRegex)
+    : null;
+  const srcPattern = srcRaw ? globToRegex(srcRaw) : null;
+
+  return (event: Record<string, unknown>): boolean => {
+    if (categories && !categories.has(event.category as string)) return false;
+    if (session && event.sessionId !== session) return false;
+    if (prNumber !== null && event.prNumber !== prNumber) return false;
+    if (workItem && event.workItemId !== workItem) return false;
+    if (typePatterns) {
+      if (typeof event.event !== "string") return false;
+      if (!typePatterns.some((re) => re.test(event.event as string))) return false;
+    }
+    if (srcPattern) {
+      if (typeof event.src !== "string") return false;
+      if (!srcPattern.test(event.src)) return false;
+    }
+    if (phase && event.phase !== phase) return false;
+    return true;
+  };
+}
+
 export class IpcServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private socketPath = options.SOCKET_PATH;
@@ -120,6 +179,10 @@ export class IpcServer {
   private daemonId: string;
   private startedAt: number;
   private logger: Logger;
+
+  /** Event stream infrastructure */
+  private eventSeq = 0;
+  private eventSubscribers = new Set<(event: Record<string, unknown>) => void>();
 
   constructor(
     private pool: ServerPool,
@@ -1217,25 +1280,29 @@ export class IpcServer {
     // -- Alias state (per-work-item / per-alias scratchpad) --
 
     this.handlers.set("aliasStateGet", async (params, _ctx) => {
-      const { repoRoot, namespace, key } = AliasStateGetParamsSchema.parse(params);
-      return { value: this.db.getAliasState(repoRoot, namespace, key) };
+      const parsed = AliasStateGetParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key) };
     });
 
     this.handlers.set("aliasStateSet", async (params, _ctx) => {
-      const { repoRoot, namespace, key, value } = AliasStateSetParamsSchema.parse(params);
-      this.db.setAliasState(repoRoot, namespace, key, value);
+      const parsed = AliasStateSetParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value);
       return { ok: true as const };
     });
 
     this.handlers.set("aliasStateDelete", async (params, _ctx) => {
-      const { repoRoot, namespace, key } = AliasStateDeleteParamsSchema.parse(params);
-      const deleted = this.db.deleteAliasState(repoRoot, namespace, key);
+      const parsed = AliasStateDeleteParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key);
       return { ok: true as const, deleted };
     });
 
     this.handlers.set("aliasStateAll", async (params, _ctx) => {
-      const { repoRoot, namespace } = AliasStateAllParamsSchema.parse(params);
-      return { entries: this.db.listAliasState(repoRoot, namespace) };
+      const parsed = AliasStateAllParamsSchema.parse(params);
+      const repoRoot = resolve(parsed.repoRoot);
+      return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {
@@ -1257,6 +1324,40 @@ export class IpcServer {
       return { ok: true };
     });
   }
+
+  /**
+   * Push an event to all connected NDJSON event stream subscribers.
+   * Each event is assigned a monotonically increasing sequence number.
+   * The envelope shape is `{ t: string, seq: number, ...payload }` —
+   * callers supply the full object including `t`.
+   */
+  pushEvent(event: Record<string, unknown>): void {
+    const seq = ++this.eventSeq;
+    const envelope = { ...event, seq };
+    const failed: ((event: Record<string, unknown>) => void)[] = [];
+    for (const cb of this.eventSubscribers) {
+      try {
+        cb(envelope);
+      } catch (err) {
+        this.logger.warn(`[events] subscriber threw, dropping: ${err}`);
+        failed.push(cb);
+      }
+    }
+    for (const cb of failed) this.eventSubscribers.delete(cb);
+  }
+
+  /** Current event sequence number (for testing / status). */
+  get currentEventSeq(): number {
+    return this.eventSeq;
+  }
+
+  /** Number of active event stream subscribers (for testing). */
+  get eventSubscriberCount(): number {
+    return this.eventSubscribers.size;
+  }
+
+  private static readonly EVENT_RING_CAPACITY = 256;
+  private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1337,7 +1438,13 @@ export class IpcServer {
   }
 
   /**
-   * Handle GET /events — NDJSON stream from the unified monitor event bus.
+   * Handle GET /events — NDJSON stream for real-time event delivery.
+   *
+   * When an EventBus is configured (unified monitor architecture, #1512):
+   *   Uses EventBus subscriptions with session.response suppression and responseTail opt-in.
+   *
+   * Fallback (no EventBus, direct push via pushEvent()):
+   *   Uses ring-buffer based delivery with connected/heartbeat envelope.
    *
    * Query params:
    *   subscribe=<categories>   Comma-separated category filter (session,work_item,mail)
@@ -1354,77 +1461,170 @@ export class IpcServer {
    * session.response events are excluded by default unless responseTail matches.
    */
   private handleEventsNDJSON(url: URL): Response {
-    if (!this.eventBus) {
-      return new Response("Event bus not available", { status: 503 });
+    // ── EventBus path (unified monitor architecture, #1512/#1515) ──
+    if (this.eventBus) {
+      if (url.searchParams.has("since")) {
+        return new Response("since not yet supported", { status: 400 });
+      }
+
+      const subscribeFilter = url.searchParams.get("subscribe");
+      const sessionFilter = url.searchParams.get("session");
+      const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
+      const workItemFilter = url.searchParams.get("workItem");
+      const typeFilter = url.searchParams.get("type");
+      const srcFilter = url.searchParams.get("src");
+      const responseTail = url.searchParams.get("responseTail");
+
+      const categoryList = subscribeFilter
+        ? subscribeFilter
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+        : null;
+      if (categoryList !== null && categoryList.length === 0) {
+        return new Response("subscribe must not be empty", { status: 400 });
+      }
+      const categories = categoryList ? new Set(categoryList) : null;
+
+      const bus = this.eventBus;
+      let subId: number | null = null;
+
+      const encoder = new TextEncoder();
+
+      const stream = new ReadableStream({
+        start: (controller) => {
+          // Flush an initial newline so Bun sends response headers immediately.
+          // Without this, headers are buffered until the first event arrives.
+          controller.enqueue(encoder.encode("\n"));
+
+          subId = bus.subscribe(
+            (event) => {
+              try {
+                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+              } catch {
+                // Stream closed
+                if (subId !== null) bus.unsubscribe(subId);
+              }
+            },
+            (event) => {
+              // session.response: excluded by default; opt-in only when responseTail matches.
+              // All other filters still apply first, even for session.response.
+              if (categories !== null && !categories.has(event.category)) return false;
+              if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
+              if (prFilter !== undefined && event.prNumber !== prFilter) return false;
+              if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
+              if (typeFilter !== null && event.event !== typeFilter) return false;
+              if (srcFilter !== null && event.src !== srcFilter) return false;
+              if (event.event === "session.response") {
+                return responseTail !== null && event.sessionId === responseTail;
+              }
+              return true;
+            },
+          );
+        },
+        cancel: () => {
+          if (subId !== null) bus.unsubscribe(subId);
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "content-type": "application/x-ndjson",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        },
+      });
     }
 
-    if (url.searchParams.has("since")) {
-      return new Response("since not yet supported", { status: 400 });
-    }
-
-    const subscribeFilter = url.searchParams.get("subscribe");
-    const sessionFilter = url.searchParams.get("session");
-    const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
-    const workItemFilter = url.searchParams.get("workItem");
-    const typeFilter = url.searchParams.get("type");
-    const srcFilter = url.searchParams.get("src");
-    const responseTail = url.searchParams.get("responseTail");
-
-    const categoryList = subscribeFilter
-      ? subscribeFilter
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
-      : null;
-    if (categoryList !== null && categoryList.length === 0) {
-      return new Response("subscribe must not be empty", { status: 400 });
-    }
-    const categories = categoryList ? new Set(categoryList) : null;
-
-    const bus = this.eventBus;
-    let subId: number | null = null;
+    // ── Ring-buffer fallback path (direct pushEvent(), no EventBus) ──
+    const filter = buildEventFilter(url.searchParams);
+    const capacity = IpcServer.EVENT_RING_CAPACITY;
+    const ring: string[] = new Array(capacity);
+    let writeIdx = 0;
+    let dropped = 0;
+    let pending = false;
+    let unsubscribe: (() => void) | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let lastWriteTime = Date.now();
 
     const encoder = new TextEncoder();
 
+    // Hoisted so both start and cancel can share it
+    const cleanup = () => {
+      unsubscribe?.();
+      unsubscribe = undefined;
+      if (heartbeatTimer !== undefined) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+    };
+
     const stream = new ReadableStream({
       start: (controller) => {
-        // Flush an initial newline so Bun sends response headers immediately.
-        // Without this, headers are buffered until the first event arrives.
-        controller.enqueue(encoder.encode("\n"));
-
-        subId = bus.subscribe(
-          (event) => {
+        const flush = () => {
+          if (!pending) return;
+          pending = false;
+          const count = dropped > 0 ? capacity : writeIdx;
+          const start = dropped > 0 ? dropped % capacity : 0;
+          for (let i = 0; i < count; i++) {
+            const line = ring[(start + i) % capacity] as string;
             try {
-              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+              controller.enqueue(encoder.encode(line));
             } catch {
-              // Stream closed
-              if (subId !== null) bus.unsubscribe(subId);
+              cleanup();
+              return;
             }
-          },
-          (event) => {
-            // session.response: excluded by default; opt-in only when responseTail matches.
-            // All other filters still apply first, even for session.response.
-            if (categories !== null && !categories.has(event.category)) return false;
-            if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
-            if (prFilter !== undefined && event.prNumber !== prFilter) return false;
-            if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
-            if (typeFilter !== null && event.event !== typeFilter) return false;
-            if (srcFilter !== null && event.src !== srcFilter) return false;
-            if (event.event === "session.response") {
-              return responseTail !== null && event.sessionId === responseTail;
+          }
+          writeIdx = 0;
+          dropped = 0;
+        };
+
+        const enqueue = (line: string) => {
+          if (writeIdx < capacity) {
+            ring[writeIdx++] = line;
+          } else {
+            ring[dropped % capacity] = line;
+            dropped++;
+          }
+          pending = true;
+          lastWriteTime = Date.now();
+          queueMicrotask(flush);
+        };
+
+        // Flush a "connected" line to force response headers out immediately
+        controller.enqueue(encoder.encode(`${JSON.stringify({ t: "connected", seq: this.eventSeq })}\n`));
+        lastWriteTime = Date.now();
+
+        const subscriber = (event: Record<string, unknown>) => {
+          if (filter && !filter(event)) return;
+          enqueue(`${JSON.stringify(event)}\n`);
+        };
+
+        this.eventSubscribers.add(subscriber);
+        unsubscribe = () => {
+          this.eventSubscribers.delete(subscriber);
+        };
+
+        heartbeatTimer = setInterval(() => {
+          if (Date.now() - lastWriteTime >= IpcServer.HEARTBEAT_INTERVAL_MS) {
+            const hb = `${JSON.stringify({ t: "heartbeat", seq: this.eventSeq })}\n`;
+            try {
+              controller.enqueue(encoder.encode(hb));
+              lastWriteTime = Date.now();
+            } catch {
+              cleanup();
             }
-            return true;
-          },
-        );
+          }
+        }, IpcServer.HEARTBEAT_INTERVAL_MS);
+        heartbeatTimer.unref();
       },
-      cancel: () => {
-        if (subId !== null) bus.unsubscribe(subId);
-      },
+      cancel: cleanup,
     });
 
     return new Response(stream, {
       headers: {
         "content-type": "application/x-ndjson",
+        "transfer-encoding": "chunked",
         "cache-control": "no-cache",
         connection: "keep-alive",
       },

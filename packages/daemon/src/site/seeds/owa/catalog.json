@@ -1,0 +1,93 @@
+{
+  "inbox": {
+    "name": "inbox",
+    "url": "https://outlook.cloud.microsoft/owa/service.svc?action=FindConversation&app=Mail",
+    "method": "POST",
+    "description": "List inbox conversations, newest first.",
+    "paramDocs": {
+      "count": "optional — max conversations, default 20",
+      "offset": "optional — pagination offset, default 0"
+    },
+    "headers": {
+      "x-owa-canary": "",
+      "x-req-source": "Mail"
+    },
+    "audHints": ["outlook.cloud.microsoft"],
+    "fetchFilter": "owa-urlpostdata",
+    "jq_input": ".params as $p | { Header: { RequestServerVersion: \"V2018_01_08\", TimeZoneContext: { TimeZoneDefinition: { Id: \"UTC\" } } }, Body: { SortOrder: [{ Order: \"Descending\", Path: { FieldURI: \"DateTimeReceived\", __type: \"PropertyUri:#Exchange\" }, __type: \"SortResults:#Exchange\" }], ParentFolderId: { BaseFolderId: { __type: \"DistinguishedFolderId:#Exchange\", Id: \"inbox\" } }, MailboxScope: \"PrimaryOnly\", ConversationShape: { BaseShape: \"IdOnly\", AdditionalProperties: [{ FieldURI: \"ConversationTopic\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationLastDeliveryTime\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationUniqueSenders\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationPreview\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationHasAttachments\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationFlagStatus\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationUnreadCount\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"ConversationMessageCount\", __type: \"PropertyUri:#Exchange\" }] }, Paging: { __type: \"IndexedPageView:#Exchange\", BasePoint: \"Beginning\", Offset: ($p.offset // 0), MaxEntriesReturned: ($p.count // 20) } } }",
+    "jq_output": "{ total: .Body.TotalConversationsInView, conversations: [.Body.Conversations[]? | { id: .ConversationId.Id, topic: .ConversationTopic, from: ([.UniqueSenders[]?] | join(\", \")), preview: .Preview, received: .LastDeliveryTime, unread: .UnreadCount, messages: .MessageCount, hasAttachments: .HasAttachments, flagged: (.FlagStatus == \"Flagged\") }] }"
+  },
+  "read_mail": {
+    "name": "read_mail",
+    "url": "https://outlook.cloud.microsoft/owa/service.svc?action=GetConversationItems&app=Mail",
+    "method": "POST",
+    "description": "Fetch all items in a conversation thread.",
+    "paramDocs": {
+      "conversationId": "required — ConversationId from inbox results"
+    },
+    "headers": {
+      "x-owa-canary": "",
+      "x-req-source": "Mail"
+    },
+    "audHints": ["outlook.cloud.microsoft"],
+    "fetchFilter": "owa-urlpostdata",
+    "jq_input": ".params as $p | { Header: { RequestServerVersion: \"V2018_01_08\", TimeZoneContext: { TimeZoneDefinition: { Id: \"UTC\" } } }, Body: { Conversations: [{ ConversationId: { Id: $p.conversationId } }], ItemShape: { BaseShape: \"IdOnly\", AdditionalProperties: [{ FieldURI: \"ItemBody\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"From\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"Sender\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"Subject\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"DateTimeReceived\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"DateTimeSent\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"HasAttachments\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"Importance\", __type: \"PropertyUri:#Exchange\" }, { FieldURI: \"IsRead\", __type: \"PropertyUri:#Exchange\" }], BodyType: \"Text\" }, MaxItemsToReturn: 50, SortOrder: \"DateOrderAscending\" } }",
+    "jq_output": "{ conversation: [.Body.Conversations[0]?.ConversationNodes[]?.Items[]? | { id: .ItemId.Id, subject: .Subject, from: .From.Mailbox.Name, email: .From.Mailbox.EmailAddress, sent: .DateTimeSent, body: .Body.Value, importance: .Importance, read: .IsRead, hasAttachments: .HasAttachments }] }"
+  },
+  "react_to_mail": {
+    "name": "react_to_mail",
+    "url": "https://outlook.cloud.microsoft/owa/service.svc?action=PerformReactionOperation&app=Mail",
+    "method": "POST",
+    "description": "React to a mail item (like, love, celebrate, laugh, sad, angry).",
+    "paramDocs": {
+      "itemId": "required — ItemId of the message",
+      "reaction": "required — one of: like, heart, celebrate, laugh, sad, angry",
+      "action": "optional — 'add' (default) or 'remove'"
+    },
+    "headers": {
+      "x-owa-canary": "",
+      "x-req-source": "Mail"
+    },
+    "audHints": ["outlook.cloud.microsoft"],
+    "fetchFilter": "owa-urlpostdata",
+    "jq_input": ".params as $p | { Header: { RequestServerVersion: \"V2018_01_08\" }, Body: { ItemId: { Id: $p.itemId }, ReactionType: $p.reaction, Action: ($p.action // \"add\") } }",
+    "jq_output": "{ success: (.Body.ResponseClass == \"Success\") }"
+  },
+  "respond_meeting": {
+    "name": "respond_meeting",
+    "url": "https://outlook.cloud.microsoft/owa/service.svc?action=RespondToCalendarEvent&app=Mail",
+    "method": "POST",
+    "description": "Accept, tentatively accept, or decline a meeting invitation.",
+    "paramDocs": {
+      "itemId": "required — ItemId of the meeting request",
+      "response": "required — one of: Accept, TentativelyAccept, Decline",
+      "message": "optional — response message body"
+    },
+    "headers": {
+      "x-owa-canary": "",
+      "x-req-source": "Mail"
+    },
+    "audHints": ["outlook.cloud.microsoft"],
+    "fetchFilter": "owa-urlpostdata",
+    "jq_input": ".params as $p | { Header: { RequestServerVersion: \"V2018_01_08\" }, Body: { EventId: { Id: $p.itemId }, Response: $p.response, SendResponse: true, Body: (if $p.message then { Value: $p.message, BodyType: \"Text\" } else null end) } }",
+    "jq_output": "{ success: (.Body.ResponseClass == \"Success\") }"
+  },
+  "trash_conversation": {
+    "name": "trash_conversation",
+    "url": "https://outlook.cloud.microsoft/owa/service.svc?action=ApplyConversationAction&app=Mail",
+    "method": "POST",
+    "description": "Move a conversation to trash, mark as read, or flag it.",
+    "paramDocs": {
+      "conversationId": "required — ConversationId from inbox results",
+      "action": "optional — 'delete' (default), 'read', or 'flag'"
+    },
+    "headers": {
+      "x-owa-canary": "",
+      "x-req-source": "Mail"
+    },
+    "audHints": ["outlook.cloud.microsoft"],
+    "fetchFilter": "owa-urlpostdata",
+    "jq_input": ".params as $p | { Header: { RequestServerVersion: \"V2018_01_08\" }, Body: { ConversationActions: [{ Action: (if $p.action == \"read\" then \"AlwaysMove\" elif $p.action == \"flag\" then \"Flag\" else \"Move\" end), ConversationId: { Id: $p.conversationId }, DestinationFolderId: (if ($p.action // \"delete\") == \"delete\" then { BaseFolderId: { __type: \"DistinguishedFolderId:#Exchange\", Id: \"deleteditems\" } } else null end), IsRead: (if $p.action == \"read\" then true else null end), Flag: (if $p.action == \"flag\" then { FlagStatus: \"Flagged\", __type: \"FlagType:#Exchange\" } else null end) }] } }",
+    "jq_output": "{ success: (.Body.ResponseClass == \"Success\") }"
+  }
+}
