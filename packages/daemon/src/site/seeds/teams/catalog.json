@@ -302,8 +302,8 @@
         "EnableSuggestion": true,
         "SupportedRecourseDisplayTypes": ["Suggestion", "ServiceSideRecourseLink"]
       },
-      "cvid": "dc970193-3c8a-47d0-b0e5-2a65fdb8ff20",
-      "logicalId": "462b56ad-86e6-4ba3-877c-3e11f0143f51",
+      "cvid": "00000000-0000-0000-0000-000000000000",
+      "logicalId": "00000000-0000-0000-0000-000000000001",
       "scenario": {
         "Dimensions": [
           {
@@ -334,7 +334,7 @@
           {
             "@odata.type": "Microsoft.OutlookServices.Message",
             "Id": "",
-            "ClientThreadId": "19:a2dae14c-c008-4117-88d7-49a13d0e235a_d0938f3c-ef54-45ab-a2c4-9095a7fcc5c1@unq.gbl.spaces"
+            "ClientThreadId": "19:00000000-0000-0000-0000-000000000001_00000000-0000-0000-0000-000000000002@unq.gbl.spaces"
           }
         ]
       }
@@ -351,5 +351,60 @@
     },
     "jq_input": "{ EntityRequests: [{ entityType: \"File\", contentSources: [\"OneDriveBusiness\",\"Exchange\"], fields: [\"FileName\",\"FileType\",\"HitHighlightedSummary\",\"LastModifiedTime\",\"LinkingUrl\",\"ModifiedBy\",\"Path\",\"Title\",\"SpWebUrl\",\"FileExtension\"], query: { queryString: .q, displayQueryString: .q }, size: (.size // 15), from: 0 }] }",
     "jq_output": "{ total: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Results // [] | map(.Source | { title: .Title, fileName: .FileName, fileType: .FileType, summary: .HitHighlightedSummary, modified: .LastModifiedTime, modifiedBy: (.ModifiedBy // {}).DisplayName, url: .LinkingUrl })) }"
+  },
+  "send_message": {
+    "name": "send_message",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
+    "method": "POST",
+    "description": "Send a message to a chat thread. Returns 201 with OriginalArrivalTime on success.",
+    "paramDocs": {
+      "threadId": "required — 48:notes (self-chat), 19:abc@thread.v2 (channel/group), 19:abc@unq.gbl.spaces (1:1)",
+      "content": "required — message body, HTML wrapped in <p> tags, e.g. '<p>hello</p>'",
+      "messagetype": "required — 'RichText/Html' for HTML content, or 'Text' for plain text",
+      "contenttype": "required — 'text'"
+    },
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
+  },
+  "calendar_view": {
+    "name": "calendar_view",
+    "url": "https://teams.cloud.microsoft/api/mt/emea/v2.0/me/calendars/default/calendarView?StartDate=:startDate&EndDate=:endDate&shouldDecryptData=true",
+    "method": "GET",
+    "description": "Calendar events for a date range. Returns subject, start/end, organizer, location, online-meeting flag.",
+    "paramDocs": {
+      "startDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-16T00:00:00.000Z",
+      "endDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-17T00:00:00.000Z"
+    },
+    "jq_output": "[.value[] | {subject, start: .startTime, end: .endTime, organizer: .organizerName, location, online: .isOnlineMeeting, showAs, response: .myResponseType}]"
+  },
+  "org_chart": {
+    "name": "org_chart",
+    "url": "https://nam.loki.delve.office.com/api/v1/organization?smtp=:email&personaType=User",
+    "method": "GET",
+    "description": "Org chart for a person: management chain up to CEO plus direct reports. Each entry includes displayName, jobTitle, department, smtp, aadObjectId.",
+    "headers": {
+      "X-ClientType": "Teams",
+      "X-ClientFeature": "LivePersonaCard",
+      "X-ClientScenario": "ManagersAndDirects",
+      "Accept": "application/json"
+    },
+    "paramDocs": {
+      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
+    },
+    "audHints": ["loki.delve.office.com"]
+  },
+  "person_profile": {
+    "name": "person_profile",
+    "url": "https://nam.loki.delve.office.com/api/v2/person?smtp=:email&personaType=User&locale=en-us",
+    "method": "GET",
+    "description": "Detailed profile for a person: full name, phone numbers, email, department, job title, office location, company.",
+    "headers": {
+      "X-ClientType": "Teams",
+      "X-ClientFeature": "LivePersonaCard",
+      "Accept": "application/json"
+    },
+    "paramDocs": {
+      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
+    },
+    "audHints": ["loki.delve.office.com"]
   }
 }

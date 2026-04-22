@@ -54,7 +54,10 @@ export function resolve(
   let body: string | undefined;
   if (rawBody !== undefined) {
     body = rawBody;
-  } else if (isBodyMethod && residualEntries.length > 0) {
+  } else if (isBodyMethod && residualEntries.length > 0 && !call.jq_input) {
+    // When the call declares jq_input, the body comes from the jq template
+    // in transforms.ts (applyJqInput) — don't short-circuit with a naive
+    // residual dump, since applyJqInput skips if a body is already set.
     body = JSON.stringify(Object.fromEntries(residualEntries));
   } else if (!isBodyMethod && residualEntries.length > 0) {
     const qs = new URLSearchParams();

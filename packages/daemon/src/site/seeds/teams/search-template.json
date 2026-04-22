@@ -136,8 +136,8 @@
     "EnableSuggestion": true,
     "SupportedRecourseDisplayTypes": ["Suggestion", "ServiceSideRecourseLink"]
   },
-  "cvid": "dc970193-3c8a-47d0-b0e5-2a65fdb8ff20",
-  "logicalId": "462b56ad-86e6-4ba3-877c-3e11f0143f51",
+  "cvid": "00000000-0000-0000-0000-000000000000",
+  "logicalId": "00000000-0000-0000-0000-000000000001",
   "scenario": {
     "Dimensions": [
       { "DimensionName": "QueryType", "DimensionValue": "All" },
@@ -157,7 +157,7 @@
       {
         "@odata.type": "Microsoft.OutlookServices.Message",
         "Id": "",
-        "ClientThreadId": "19:a2dae14c-c008-4117-88d7-49a13d0e235a_d0938f3c-ef54-45ab-a2c4-9095a7fcc5c1@unq.gbl.spaces"
+        "ClientThreadId": "19:00000000-0000-0000-0000-000000000001_00000000-0000-0000-0000-000000000002@unq.gbl.spaces"
       }
     ]
   }
