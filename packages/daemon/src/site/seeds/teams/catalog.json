@@ -356,13 +356,19 @@
     "name": "send_message",
     "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
     "method": "POST",
-    "description": "Send a message to a chat thread. Returns 201 with OriginalArrivalTime on success.",
+    "description": "Send a message to a chat thread. Returns 201 with OriginalArrivalTime on success. clientmessageid is auto-generated from nanosecond epoch; repeat sends with the same id should be dedup'd by Teams (observed inconsistent for 48:notes self-chat; matches real-client behavior for group threads).",
     "paramDocs": {
       "threadId": "required — 48:notes (self-chat), 19:abc@thread.v2 (channel/group), 19:abc@unq.gbl.spaces (1:1)",
       "content": "required — message body, HTML wrapped in <p> tags, e.g. '<p>hello</p>'",
-      "messagetype": "required — 'RichText/Html' for HTML content, or 'Text' for plain text",
-      "contenttype": "required — 'text'"
+      "messagetype": "optional — default 'RichText/Html'. Use 'Text' for plain text.",
+      "contenttype": "optional — default 'text'",
+      "clientmessageid": "optional — override the auto-generated idempotency key (useful for explicit retries)"
     },
+    "body_default": {
+      "messagetype": "RichText/Html",
+      "contenttype": "text"
+    },
+    "jq_input": ".body_default + (.params | del(.threadId)) + {clientmessageid: (.params.clientmessageid // ((now * 1000000000) | floor | tostring))}",
     "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
   },
   "calendar_view": {
