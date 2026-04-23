@@ -339,6 +339,7 @@ function makeStreamDeps(events: MonitorEvent[], overrides: Partial<MonitorDeps> 
       throw new Error(`exit(${code})`);
     },
     onSigint: () => {},
+    onStdoutError: () => {},
     ...overrides,
   };
 }
@@ -429,6 +430,7 @@ describe("cmdMonitor", () => {
         throw new Error(`exit:${code}`);
       },
       onSigint: () => {},
+      onStdoutError: () => {},
     };
     // Should not throw — AbortError is treated as clean exit
     await expect(cmdMonitor([], deps)).resolves.toBeUndefined();
@@ -452,6 +454,7 @@ describe("cmdMonitor", () => {
         throw new Error(`exit:${code}`);
       },
       onSigint: () => {},
+      onStdoutError: () => {},
     };
     await expect(cmdMonitor([], deps)).rejects.toThrow("exit:1");
     expect(stderr.join("")).toContain("connection refused");
@@ -476,9 +479,68 @@ describe("cmdMonitor", () => {
         throw new Error(`exit:${code}`);
       },
       onSigint: () => {},
+      onStdoutError: () => {},
     };
     // timeout=0 fires immediately; stream may already be exhausted — no crash is the assertion
     await cmdMonitor(["--timeout", "0"], deps);
     expect(typeof abortCalled).toBe("boolean");
+  });
+
+  test("EPIPE on stdout calls finish(0) via onStdoutError handler", async () => {
+    let capturedErrHandler: ((err: Error) => void) | undefined;
+    const exitCalls: number[] = [];
+
+    async function* emptyGen(): AsyncGenerator<MonitorEvent> {}
+
+    const deps: MonitorDeps = {
+      openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: (fn) => {
+        capturedErrHandler = fn;
+      },
+    };
+
+    await cmdMonitor([], deps);
+
+    expect(capturedErrHandler).toBeDefined();
+    const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    capturedErrHandler?.(epipe);
+    expect(exitCalls).toEqual([0]);
+  });
+
+  test("non-EPIPE stdout errors do not trigger finish", async () => {
+    let capturedErrHandler: ((err: Error) => void) | undefined;
+    const exitCalls: number[] = [];
+
+    async function* emptyGen(): AsyncGenerator<MonitorEvent> {}
+
+    const deps: MonitorDeps = {
+      openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: (fn) => {
+        capturedErrHandler = fn;
+      },
+    };
+
+    await cmdMonitor([], deps);
+
+    expect(capturedErrHandler).toBeDefined();
+    const otherErr = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    capturedErrHandler?.(otherErr);
+    expect(exitCalls).toHaveLength(0);
   });
 });
