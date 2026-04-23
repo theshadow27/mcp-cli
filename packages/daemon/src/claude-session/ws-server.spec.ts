@@ -3836,6 +3836,131 @@ describe("monitor event mapping", () => {
         priv(server).publishSessionMonitorEvent("s6", { type: "session:ended" });
       }).not.toThrow();
     });
+
+    test("session:error maps to session.error with errors and cost", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s7", {
+        type: "session:error",
+        errors: ["timeout", "parse error"],
+        cost: 0.01,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.error");
+      expect(events[0].category).toBe("session");
+      expect(events[0].errors).toEqual(["timeout", "parse error"]);
+      expect(events[0].cost).toBe(0.01);
+    });
+
+    test("session:cleared maps to session.cleared with no extra fields", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s8", { type: "session:cleared" });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.cleared");
+      expect(events[0].cost).toBeUndefined();
+      expect(events[0].errors).toBeUndefined();
+    });
+
+    test("session:model_changed maps to session.model_changed with model field", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s9", {
+        type: "session:model_changed",
+        model: "claude-opus-4-7",
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.model_changed");
+      expect(events[0].model).toBe("claude-opus-4-7");
+    });
+
+    test("session:rate_limited maps to session.rate_limited", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s10", {
+        type: "session:rate_limited",
+        sessionId: "s10",
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.rate_limited");
+      expect(events[0].sessionId).toBe("s10");
+    });
+
+    test("session:disconnected maps to session.disconnected with reason", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s11", {
+        type: "session:disconnected",
+        reason: "network error",
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.disconnected");
+      expect(events[0].reason).toBe("network error");
+    });
+
+    test("session:containment_denied maps with strikes and reason", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s12", {
+        type: "session:containment_denied",
+        toolName: "bash",
+        reason: "blocked",
+        strikes: 3,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.containment_denied");
+      expect(events[0].category).toBe("session");
+      expect(events[0].strikes).toBe(3);
+      expect(events[0].reason).toBe("blocked");
+    });
+
+    test("session:containment_escalated maps with strikes and reason", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s13", {
+        type: "session:containment_escalated",
+        toolName: "bash",
+        reason: "escalated",
+        strikes: 5,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.containment_escalated");
+      expect(events[0].category).toBe("session");
+      expect(events[0].strikes).toBe(5);
+      expect(events[0].reason).toBe("escalated");
+    });
+
+    test("session:containment_reset maps with strikes and reason", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s14", {
+        type: "session:containment_reset",
+        toolName: "bash",
+        reason: "operator reset",
+        strikes: 0,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.containment_reset");
+      expect(events[0].category).toBe("session");
+      expect(events[0].strikes).toBe(0);
+      expect(events[0].reason).toBe("operator reset");
+    });
   });
 
   describe("publishWorkItemMonitorEvent", () => {
@@ -3901,6 +4026,75 @@ describe("monitor event mapping", () => {
       expect(() => {
         priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 1 });
       }).not.toThrow();
+    });
+
+    test("pr:merged maps to pr.merged with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 55 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.merged");
+      expect(events[0].category).toBe("work_item");
+      expect(events[0].prNumber).toBe(55);
+    });
+
+    test("pr:closed maps to pr.closed with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "pr:closed", prNumber: 77 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.closed");
+      expect(events[0].prNumber).toBe(77);
+    });
+
+    test("checks:started maps to checks.started with prNumber and runId", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 12, runId: 9876 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(12);
+      expect(events[0].runId).toBe(9876);
+    });
+
+    test("checks:started without runId emits no runId field", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 13 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(13);
+      expect(events[0].runId).toBeUndefined();
+    });
+
+    test("checks:passed maps to checks.passed with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:passed", prNumber: 33 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.passed");
+      expect(events[0].prNumber).toBe(33);
+    });
+
+    test("review:approved maps to review.approved with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "review:approved", prNumber: 44 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("review.approved");
+      expect(events[0].prNumber).toBe(44);
     });
   });
 });
