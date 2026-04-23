@@ -9,7 +9,7 @@
  * Follows the same pattern as AliasServer (alias-server.ts).
  */
 
-import type { JsonSchema, LiveSpan, Logger, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
+import type { JsonSchema, LiveSpan, Logger, MonitorEventInput, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
 import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger, startSpan } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -95,7 +95,21 @@ interface ReadyMessage {
   port: number;
 }
 
-type WorkerEvent = DbUpsert | DbState | DbCost | DbDisconnected | DbEnd | DbMetric | DbHistogram | ReadyMessage;
+interface MonitorEventMessage {
+  type: "monitor:event";
+  input: MonitorEventInput;
+}
+
+type WorkerEvent =
+  | DbUpsert
+  | DbState
+  | DbCost
+  | DbDisconnected
+  | DbEnd
+  | DbMetric
+  | DbHistogram
+  | ReadyMessage
+  | MonitorEventMessage;
 
 /** Compile-time exhaustiveness: TS errors if a WorkerEvent["type"] member is missing. */
 const WORKER_EVENT_TYPE_MAP: Record<WorkerEvent["type"], true> = {
@@ -107,6 +121,7 @@ const WORKER_EVENT_TYPE_MAP: Record<WorkerEvent["type"], true> = {
   "db:end": true,
   "metrics:inc": true,
   "metrics:observe": true,
+  "monitor:event": true,
 };
 
 /** Explicit set of known worker event types — prevents ambiguous routing with MCP messages. */
@@ -159,6 +174,9 @@ export class ClaudeServer {
 
   /** Called on worker activity (session events) — lets the daemon reset its idle timer. */
   onActivity?: () => void;
+
+  /** Called when the worker publishes a monitor event — bridges to the daemon's EventBus (#1567). */
+  onMonitorEvent?: (input: MonitorEventInput) => void;
 
   constructor(
     db: StateDb,
@@ -728,6 +746,9 @@ export class ClaudeServer {
         break;
       case "metrics:observe":
         this.metrics.histogram(event.name, event.labels).observe(event.value);
+        break;
+      case "monitor:event":
+        this.onMonitorEvent?.(event.input);
         break;
     }
   }

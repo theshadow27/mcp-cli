@@ -46,7 +46,6 @@ import {
   generateSessionName,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
-import type { EventBus } from "../event-bus";
 import { killPid } from "../process-util";
 import { ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
@@ -383,8 +382,8 @@ export class ClaudeWsServer {
   /** Called when session events occur (for DB updates). */
   onSessionEvent: ((sessionId: string, event: SessionEvent) => void) | null = null;
 
-  /** Optional event bus for unified monitor event stream (#1512). */
-  eventBus: EventBus | null = null;
+  /** Called to forward monitor events to the main thread's EventBus (#1567). */
+  onMonitorEvent: ((input: MonitorEventInput) => void) | null = null;
 
   constructor(deps?: {
     spawn?: SpawnFn;
@@ -1659,7 +1658,7 @@ export class ClaudeWsServer {
   };
 
   private publishSessionMonitorEvent(sessionId: string, event: SessionEvent): void {
-    if (!this.eventBus) return;
+    if (!this.onMonitorEvent) return;
     const mapped = ClaudeWsServer.SESSION_EVENT_MAP[event.type];
     if (!mapped) return;
 
@@ -1682,7 +1681,7 @@ export class ClaudeWsServer {
     if ("strikes" in event) input.strikes = event.strikes;
     if ("reason" in event) input.reason = event.reason;
 
-    this.eventBus.publish(input);
+    this.onMonitorEvent(input);
   }
 
   private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {
@@ -1698,7 +1697,7 @@ export class ClaudeWsServer {
   };
 
   private publishWorkItemMonitorEvent(event: WorkItemEvent): void {
-    if (!this.eventBus) return;
+    if (!this.onMonitorEvent) return;
     const mapped = ClaudeWsServer.WORK_ITEM_EVENT_MAP[event.type];
     if (!mapped) return;
 
@@ -1716,7 +1715,7 @@ export class ClaudeWsServer {
     if ("to" in event) input.to = event.to;
     if ("runId" in event) input.runId = event.runId;
 
-    this.eventBus.publish(input);
+    this.onMonitorEvent(input);
   }
 
   private async handlePermissionRequest(

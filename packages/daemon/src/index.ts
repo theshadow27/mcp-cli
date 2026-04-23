@@ -616,6 +616,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
+  claudeServer.onMonitorEvent = (input) => mailEventBus.publish(input);
   if (codexServer) {
     codexServer.onActivity = () => resetIdleTimer();
   }
