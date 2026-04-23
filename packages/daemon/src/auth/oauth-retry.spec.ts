@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MetricsSnapshot } from "@mcp-cli/core";
 import { StateDb } from "../db/state";
 import { metrics } from "../metrics";
 import type { CallbackServer } from "./callback-server";

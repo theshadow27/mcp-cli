@@ -233,9 +233,8 @@ describe("McpOAuthProvider", () => {
       });
       const info = await provider.clientInformation();
 
-      // Keychain was NOT consulted for client_id — returns undefined so SDK does fresh DCR
+      // skipKeychainClientId short-circuits before loadKeychain() is reached
       expect(info).toBeUndefined();
-      // Keychain is still accessible for token lookup (not globally suppressed)
       expect(mockReadKeychain).not.toHaveBeenCalled();
       db.close();
     });
