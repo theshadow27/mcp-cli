@@ -1411,6 +1411,92 @@ describe("session persistence", () => {
 // ── monitor:event bridge integration (#1567) ──
 // Verifies the full round-trip: worker postMessage → handleWorkerEvent → onMonitorEvent → EventBus → subscriber
 
+describe("monitor event bridge: worker.onmessage demuxer via MessageChannel (#1616)", () => {
+  test("structured-clone round-trip: all MonitorEventInput fields survive postMessage boundary", async () => {
+    using opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    const sv = new ClaudeServer(db, undefined, undefined, silentLogger);
+    let channel: MessageChannel | undefined;
+
+    try {
+      await sv.start();
+
+      const bus = new EventBus();
+      sv.onMonitorEvent = (input) => bus.publish(input);
+
+      const received: MonitorEvent[] = [];
+      bus.subscribe((e) => received.push(e));
+
+      // Access the actual worker.onmessage demuxer wired by ClaudeServer.start()
+      const worker = (sv as unknown as { worker: Worker | null }).worker;
+      if (!worker?.onmessage) throw new Error("worker.onmessage not set after start()");
+      const demuxer = worker.onmessage;
+
+      // MessageChannel performs the structured-clone algorithm on postMessage data,
+      // exactly as Bun does when a worker calls self.postMessage({type:"monitor:event",input}).
+      // This exercises isWorkerEvent on the deserialized clone and the full demuxer path.
+      channel = new MessageChannel();
+      channel.port2.onmessage = (event: MessageEvent) => demuxer.call(worker, event);
+      channel.port1.postMessage({
+        type: "monitor:event",
+        input: {
+          src: "daemon.claude-server",
+          event: "session.result",
+          category: "session",
+          sessionId: "msg-channel-test",
+          cost: 9.99,
+          numTurns: 7,
+        },
+      });
+
+      // Poll until event arrives (no fixed delays — see test/CLAUDE.md)
+      const deadline = Date.now() + 2_000;
+      while (received.length === 0 && Date.now() < deadline) {
+        await Bun.sleep(10);
+      }
+
+      expect(received).toHaveLength(1);
+      expect(received[0].event).toBe("session.result");
+      expect(received[0].src).toBe("daemon.claude-server");
+      expect(received[0].sessionId).toBe("msg-channel-test");
+      expect(received[0].cost).toBe(9.99);
+      expect(received[0].numTurns).toBe(7);
+      expect(typeof received[0].ts).toBe("string");
+      expect(received[0].seq).toBeGreaterThan(0);
+    } finally {
+      channel?.port1.close();
+      channel?.port2.close();
+      await sv.stop();
+      db.close();
+    }
+  });
+
+  test("isWorkerEvent accepts exact monitor:event shape emitted by real worker self.postMessage", async () => {
+    // Verifies that the shape the worker actually sends matches what isWorkerEvent recognises
+    // after structured clone. This mirrors the worker's:
+    //   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
+    const channel = new MessageChannel();
+    let clonedData: unknown;
+    channel.port2.onmessage = (e: MessageEvent) => {
+      clonedData = e.data;
+    };
+    channel.port1.postMessage({
+      type: "monitor:event",
+      input: { src: "daemon.claude-server", event: "session.result", category: "session" },
+    });
+
+    const deadline = Date.now() + 1_000;
+    while (clonedData === undefined && Date.now() < deadline) {
+      await Bun.sleep(10);
+    }
+
+    channel.port1.close();
+    channel.port2.close();
+
+    expect(isWorkerEvent(clonedData)).toBe(true);
+  });
+});
+
 describe("monitor event bridge integration", () => {
   test("worker monitor:event reaches EventBus subscribers with correct seq", () => {
     using opts = testOptions();
