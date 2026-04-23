@@ -80,7 +80,7 @@ async function doResolve(opts?: {
   // No candidate found — auto-install to vendor dir.
   console.error("[site] playwright not found locally — installing to vendor dir…");
 
-  const doInstall = opts?.install ?? defaultInstall;
+  const doInstall = opts?.install ?? _defaultInstall;
   const result = await doInstall(VENDOR_DIR);
 
   if (result.exitCode !== 0) {
@@ -106,7 +106,50 @@ async function doResolve(opts?: {
   return mod.chromium as BrowserType;
 }
 
-async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; stderr: string }> {
+/**
+ * Locate the bun CLI binary. Tries (in order):
+ *   1. PATH lookup via Bun.which
+ *   2. $BUN_INSTALL/bin/bun
+ *   3. ~/.bun/bin/bun (default bun install location)
+ *
+ * process.execPath is intentionally NOT used — in compiled binaries it points
+ * to the mcpd binary itself, not the bun package manager CLI.
+ *
+ * Exported for testing only (injectable deps keep it unit-testable without
+ * mock.module()).
+ */
+export function _resolveBunBinary(
+  vendorDir: string,
+  opts?: {
+    which?: (name: string) => string | null;
+    bunInstallEnv?: string | undefined;
+    homeDir?: string;
+  },
+): string {
+  const which = opts?.which ?? Bun.which.bind(Bun);
+  // Use "in" check so callers can pass `bunInstallEnv: undefined` to suppress
+  // the process.env.BUN_INSTALL fallback (needed for testing).
+  const bunInstall = opts && "bunInstallEnv" in opts ? opts.bunInstallEnv : process.env.BUN_INSTALL;
+  const home = opts?.homeDir ?? homedir();
+
+  const fromPath = which("bun");
+  if (fromPath) return fromPath;
+
+  if (bunInstall) {
+    const candidate = join(bunInstall, "bin", "bun");
+    if (existsSync(candidate)) return candidate;
+  }
+
+  const homeDefault = join(home, ".bun", "bin", "bun");
+  if (existsSync(homeDefault)) return homeDefault;
+
+  throw new Error(`Install bun (https://bun.sh) and run: cd ${vendorDir} && bun add playwright`);
+}
+
+export async function _defaultInstall(
+  vendorDir: string,
+  bunBin?: string,
+): Promise<{ exitCode: number; stderr: string }> {
   mkdirSync(vendorDir, { recursive: true });
 
   // Anchor bun so it doesn't walk up to an unrelated package.json.
@@ -115,16 +158,29 @@ async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; st
     writeFileSync(pkgJson, '{"name":"mcx-playwright-vendor","private":true}\n');
   }
 
-  const proc = Bun.spawn(["bun", "add", `playwright@${PLAYWRIGHT_VERSION}`], {
-    cwd: vendorDir,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await proc.exited;
-  return {
-    exitCode: proc.exitCode ?? 1,
-    stderr: await new Response(proc.stderr).text(),
-  };
+  const bin = bunBin ?? _resolveBunBinary(vendorDir);
+
+  // Bun.spawn() throws (ENOENT/EACCES) rather than returning a failed process
+  // when the binary doesn't exist. Catch and wrap so callers always see the
+  // actionable "Install manually" message instead of a raw spawn error.
+  try {
+    const proc = Bun.spawn([bin, "add", `playwright@${PLAYWRIGHT_VERSION}`], {
+      cwd: vendorDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await proc.exited;
+    return {
+      exitCode: proc.exitCode ?? 1,
+      stderr: await new Response(proc.stderr).text(),
+    };
+  } catch (err) {
+    throw new Error(
+      `Failed to spawn bun to install playwright: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Install manually: cd ${vendorDir} && bun add playwright`,
+      { cause: err },
+    );
+  }
 }
 
 /** Reset cached resolution — for testing only. */
