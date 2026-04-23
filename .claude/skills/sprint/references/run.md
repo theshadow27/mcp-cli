@@ -183,12 +183,18 @@ while issues remain:
 
   for each tracked item:
     # Tick the current phase. The phase script decides: spawn / wait / goto.
-    result = mcx phase run <item.phase> --dry-run --work-item <item.id>
+    # Note: do NOT pass --dry-run here. Real execution writes the transition
+    # log entry and persists state (provider/model/labels/session_id sentinel
+    # via impl.ts:117). --dry-run skips both, which breaks subsequent
+    # transitions with "(initial) → triage" rejections (#1522).
+    result = mcx phase run <item.phase> --work-item <item.id>
     case result.action:
-      "spawn": execute result.command (quota permitting)
-      "wait":  continue — no action this tick
-      "goto":  mcx phase run <result.target> --work-item <item.id>
-               then update work_item.phase = result.target
+      "spawn":     execute result.command (quota permitting), then
+                   phase_state_set session_id=<real-id> (replaces "pending:*")
+      "in-flight": session already running — no action this tick
+      "wait":      continue — no action this tick
+      "goto":      mcx phase run <result.target> --work-item <item.id>
+                   then update work_item.phase = result.target
 
   for each active session:
     if permission_request: check log, send answer

@@ -1,6 +1,6 @@
 # Sprint 41
 
-> Planned 2026-04-21 12:40 local. Target: 19 PRs (5 P0 anchors + 6 Phase 1 closeout + 2 OAuth + 6 filler). #1601 added 2026-04-23.
+> Planned 2026-04-21 12:40 local. Started 2026-04-23 15:56 local. Ended 2026-04-23 19:16 local (3h20m). Target: 19 PRs. Merged: 18 PRs + 2 closed without code (#1569 stale, #1571 bundled into #1564). #1601 added 2026-04-23.
 
 ## Goal
 
@@ -90,3 +90,19 @@ CI trigger workaround valid until #1506 fix:
 ```
 gh workflow run ci.yml --ref <branch-name>
 ```
+
+## Results
+
+- **Released**: v1.7.1 (https://github.com/theshadow27/mcp-cli/releases/tag/v1.7.1)
+- **PRs merged**: 18 (from sprint) + 3 pre-sprint (#1591, #1593, #1596) merged between plan and run
+- **Issues closed without code**: 2 — #1569 (already fixed prior), #1571 (bundled into #1564)
+- **Issues deferred**: 1 — #1250 (cross-repo rebuild, meta-touching)
+- **New issues filed during sprint** (follow-ups from QA/review): #1616, #1617, #1618, #1621, #1623, #1624, #1625, #1626, #1632, #1633, #1634, #1635, #1636, #1637, #1639, #1645, #1646, #1647, #1648, #1649, #1650 — 3 implemented this sprint (#1616, #1617, #1625), rest deferred to sprint 42
+
+## Planned vs actual
+
+- Batch 1 (P0 anchors): 5/5 merged (#1506, #1567, #1570, #1398, #1601 — #1588 was already closed)
+- Batch 2 (OAuth + monitor Phase 1): 6/6 merged (#1517, #1548, #1570, #1556, #1557, #1539)
+- Batch 3 (fillers): 5 merged (#1522, #1530, #1559, #1566, #1564+#1571 bundled); #1569 closed no-code; #1250 deferred
+- Follow-ups implemented: 3 (#1616, #1617, #1625)
+
