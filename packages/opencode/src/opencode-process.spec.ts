@@ -177,7 +177,7 @@ describe("OpenCodeProcess", () => {
     });
 
     await proc.spawn();
-    // Flush microtasks so the exited .then() handler fires and calls onExit
+    // Yield to the event loop so the exited promise reaction chain settles before asserting.
     await Bun.sleep(0);
     expect(exitCode).toBe(0);
     expect(proc.exited).toBe(true);
@@ -216,7 +216,7 @@ describe("OpenCodeProcess", () => {
 
     // Trigger exit
     resolveExited(0);
-    // Flush microtasks so the .then() handler fires and calls onExit
+    // Yield to the event loop so the exited promise reaction chain settles before asserting.
     await Bun.sleep(0);
     // Promise only resolves once, so verify the guard works
     expect(callCount).toBe(1);

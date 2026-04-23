@@ -6,8 +6,18 @@
  * waiting, always poll with deadlines instead of fixed delays."  This script
  * enforces that rule at commit time.
  *
- * Pattern flagged: setTimeout(<anything>, <number-literal>)
+ * Patterns flagged:
+ *   setTimeout(r, 50)
+ *   setTimeout(() => r(null), 50)     ← arrow-function callback
+ *   await new Promise((r) => setTimeout(r, 100))
+ *
  * Safe alternative: poll with a deadline helper (e.g. pollUntil / expect.poll)
+ * or use Bun.sleep() for the documented exceptions (negative assertions, retry
+ * backoff) described in test/CLAUDE.md.
+ *
+ * Detection uses parenthesis-depth tracking so nested parens in callbacks do
+ * not cause false negatives.  Multi-line setTimeout calls (args split across
+ * lines) are not detected — in practice all banned patterns appear on one line.
  *
  * Usage:  bun scripts/check-test-timeouts.ts
  *
@@ -23,14 +33,52 @@ const SCRIPTS_DIR = new URL("../scripts/", import.meta.url).pathname;
 const TEST_DIR = new URL("../test/", import.meta.url).pathname;
 
 /**
- * Matches setTimeout calls where the delay argument contains a numeric literal,
- * e.g. setTimeout(r, 50) or await new Promise((r) => setTimeout(r, 100)).
+ * Returns true if the line contains a setTimeout call whose last argument is a
+ * plain numeric literal (e.g. 50, 1_000), catching fixed-delay usages.
  *
- * Does NOT match:
- *   setTimeout(r, TIMEOUT_CONST)   — named constant, not a bare number
- *   clearTimeout(handle)           — clearTimeout is not flagged
+ * Uses paren-depth tracking to extract the full argument list so that nested
+ * parens in arrow-function callbacks (like `setTimeout(() => r(null), 50)`)
+ * are handled correctly.
  */
-const VIOLATION_PATTERN = /\bsetTimeout\s*\([^)]*[0-9]+[^)]*\)/;
+export function hasFixedDelay(line: string): boolean {
+  const re = /\bsetTimeout\s*\(/g;
+  let match = re.exec(line);
+  while (match !== null) {
+    const parenOpen = match.index + match[0].length - 1; // index of '('
+
+    // Walk forward tracking depth to find the matching closing paren.
+    let depth = 1;
+    let i = parenOpen + 1;
+    while (i < line.length && depth > 0) {
+      if (line[i] === "(") depth++;
+      else if (line[i] === ")") depth--;
+      i++;
+    }
+
+    if (depth === 0) {
+      const args = line.slice(parenOpen + 1, i - 1);
+
+      // Find the last top-level comma to isolate the delay argument.
+      let argDepth = 0;
+      let lastComma = -1;
+      for (let j = 0; j < args.length; j++) {
+        const c = args[j];
+        if (c === "(" || c === "[" || c === "{") argDepth++;
+        else if (c === ")" || c === "]" || c === "}") argDepth--;
+        else if (c === "," && argDepth === 0) lastComma = j;
+      }
+
+      if (lastComma !== -1) {
+        const lastArg = args.slice(lastComma + 1).trim();
+        // Match pure numeric literals (digits and underscores, must start with digit).
+        if (/^[0-9][0-9_]*$/.test(lastArg)) return true;
+      }
+    }
+
+    match = re.exec(line);
+  }
+  return false;
+}
 
 interface Violation {
   file: string;
@@ -51,7 +99,7 @@ async function scanDir(dir: string): Promise<Violation[]> {
     const lines = content.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
-      if (VIOLATION_PATTERN.test(lines[i])) {
+      if (hasFixedDelay(lines[i])) {
         violations.push({ file: absPath, line: i + 1, text: lines[i].trim() });
       }
     }
@@ -76,7 +124,7 @@ async function main(): Promise<void> {
 
   process.stderr.write(`\n  setTimeout with fixed delay: ${allViolations.length} violation(s) found\n\n`);
   process.stderr.write("  Fixed-delay setTimeout in tests creates flaky, environment-dependent waits.\n");
-  process.stderr.write("  Use a poll-with-deadline helper instead.\n\n");
+  process.stderr.write("  Use a poll-with-deadline helper instead, or Bun.sleep() for negative assertions.\n\n");
 
   for (const v of allViolations) {
     process.stderr.write(`  ${v.file}:${v.line}\n`);
@@ -89,4 +137,6 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-main();
+if (import.meta.main) {
+  main();
+}

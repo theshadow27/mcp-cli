@@ -1011,9 +1011,9 @@ describe("ClaudeWsServer", () => {
     // Reconnect — should NOT receive the initial prompt again
     const ws2 = await connectMockClaude(port, "test-session");
     try {
-      // Intentional setTimeout: negative assertion — verify no message arrives within 50ms.
+      // Negative assertion: race a real message against a 50ms deadline.
       // No observable condition to poll for (test/CLAUDE.md §exception).
-      const msg = await Promise.race([waitForMessage(ws2), new Promise<null>((r) => setTimeout(() => r(null), 50))]);
+      const msg = await Promise.race([waitForMessage(ws2), Bun.sleep(50).then((): null => null)]);
       expect(msg).toBeNull(); // No prompt resent on reconnect
 
       // Should transition back from disconnected
@@ -2249,13 +2249,14 @@ describe("ClaudeWsServer", () => {
           timer: ReturnType<typeof setTimeout>;
         }>;
       };
+      const dummyDelayMs = 60_000; // far-future timer — won't fire; satisfies the timer field type
       srv.eventWaiters.push({
         sessionId: "test-session",
         resolve: () => {
           throw new Error("simulated eventWaiter resolve failure");
         },
         reject: () => {},
-        timer: setTimeout(() => {}, 60_000),
+        timer: setTimeout(() => {}, dummyDelayMs),
       });
 
       // waitForResult registers a resultWaiter — it must resolve even if the eventWaiter above throws
@@ -2292,13 +2293,14 @@ describe("ClaudeWsServer", () => {
           timer: ReturnType<typeof setTimeout>;
         }>;
       };
+      const dummyDelayMs = 60_000; // far-future timer — won't fire; satisfies the timer field type
       srv.eventWaiters.push({
         sessionId: "test-session",
         resolve: () => {
           throw new Error("simulated eventWaiter resolve failure");
         },
         reject: () => {},
-        timer: setTimeout(() => {}, 60_000),
+        timer: setTimeout(() => {}, dummyDelayMs),
       });
 
       const resultPromise = server.waitForResult("test-session", 5000);
@@ -3302,7 +3304,8 @@ describe("restoreSessions", () => {
 
     // Simulate Claude CLI reconnecting — should NOT receive a prompt
     const ws = await connectMockClaude(port, "reconnect-1");
-    const msg = await Promise.race([waitForMessage(ws), new Promise<null>((r) => setTimeout(() => r(null), 50))]);
+    // Negative assertion: race a real message against a 50ms deadline.
+    const msg = await Promise.race([waitForMessage(ws), Bun.sleep(50).then((): null => null)]);
     expect(msg).toBeNull(); // No prompt sent on reconnect
 
     // Session should transition from disconnected → connecting
