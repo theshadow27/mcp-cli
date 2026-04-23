@@ -120,12 +120,15 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
   const srcRaw = params.get("src");
   const phase = params.get("phase");
 
-  if (!subscribeRaw && !session && !prRaw && !workItem && !typeRaw && !srcRaw && !phase) {
+  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase) {
     return null;
   }
 
   const categories = subscribeRaw ? new Set(subscribeRaw.split(",").map((s) => s.trim())) : null;
   const prNumber = prRaw !== null ? Number(prRaw) : null;
+  if (prNumber !== null && !(Number.isInteger(prNumber) && prNumber >= 1)) {
+    return () => false;
+  }
   const typePatterns = typeRaw
     ? typeRaw
         .split(",")
@@ -1460,6 +1463,11 @@ export class IpcServer {
     const sinceParam = url.searchParams.get("since");
     const sinceSeq = sinceParam !== null ? Number(sinceParam) : null;
     const eventLog = this.eventBus?.eventLog ?? null;
+
+    const prRaw = url.searchParams.get("pr");
+    if (prRaw !== null && !(Number.isInteger(Number(prRaw)) && Number(prRaw) >= 1)) {
+      return new Response("pr must be a positive integer", { status: 400 });
+    }
 
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {
