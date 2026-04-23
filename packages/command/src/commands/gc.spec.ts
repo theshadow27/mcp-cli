@@ -301,6 +301,25 @@ describe("runGc worktrees", () => {
     expect(d.errors.some((e) => e.includes("not found"))).toBe(false);
   });
 
+  test("does NOT skip provider when IpcCallError is 'Method not found' from a healthy server", async () => {
+    const responses = makeWorktreeResponses();
+    const d = makeDeps({
+      execResponses: responses,
+      callTool: async (tool) => {
+        if (tool === "claude_session_list") return [];
+        throw new IpcCallError({
+          code: IPC_ERROR.METHOD_NOT_FOUND,
+          message: "Method not found",
+          data: undefined,
+        });
+      },
+    });
+
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    expect(d.errors.some((e) => e.includes("Method not found"))).toBe(true);
+  });
+
   test("live mode fails closed when session list throws", async () => {
     const responses = makeWorktreeResponses();
     const d = makeDeps({

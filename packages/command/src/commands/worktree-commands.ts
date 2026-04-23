@@ -53,7 +53,7 @@ export async function getAllActiveSessionWorktrees(
         if (e.code === IPC_ERROR.SERVER_NOT_FOUND) continue;
         const msg = e.message.toLowerCase();
         if (
-          msg.includes("not found") ||
+          (msg.includes("server") && msg.includes("not found")) ||
           msg.includes("not connected") ||
           msg.includes("disconnected") ||
           msg.includes("not reachable") ||
