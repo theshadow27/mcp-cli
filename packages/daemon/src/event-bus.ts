@@ -82,23 +82,34 @@ export class EventBus {
   subscribe(callback: EventCallback, filter?: EventFilter): number {
     const id = ++this.nextSubId;
     this.subscribers.set(id, { id, filter: filter ?? null, callback, lastActivityAt: Date.now() });
-    metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
+    metrics.gauge("mcpd_event_bus_subscribers").set(this.subscribers.size);
     return id;
   }
 
   unsubscribe(id: number): boolean {
     const deleted = this.subscribers.delete(id);
-    if (deleted) metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
+    if (deleted) metrics.gauge("mcpd_event_bus_subscribers").set(this.subscribers.size);
     return deleted;
+  }
+
+  /**
+   * Bump lastActivityAt for a subscriber to now.
+   * Call this after any successful write to the peer (e.g., heartbeat) so that
+   * quiet-but-live streams are not evicted by pruneStale. (#1649)
+   */
+  touch(id: number): boolean {
+    const sub = this.subscribers.get(id);
+    if (!sub) return false;
+    sub.lastActivityAt = Date.now();
+    return true;
   }
 
   /**
    * Remove subscribers whose lastActivityAt is older than maxIdleMs.
    * Returns the number of subscribers pruned.
    *
-   * This is a secondary defense against leaked subscribers when TCP RST
-   * does not fire ReadableStream.cancel() and no event has been published
-   * to trigger the try/catch path. (#1557)
+   * Secondary defense against leaked subscribers when TCP RST does not fire
+   * ReadableStream.cancel() and no write has happened to trigger the try/catch. (#1557)
    */
   pruneStale(maxIdleMs: number): number {
     const cutoff = Date.now() - maxIdleMs;
@@ -110,7 +121,7 @@ export class EventBus {
       }
     }
     if (pruned > 0) {
-      metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
+      metrics.gauge("mcpd_event_bus_subscribers").set(this.subscribers.size);
       console.warn(`[EventBus] pruned ${pruned} stale subscriber(s)`);
     }
     return pruned;

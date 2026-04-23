@@ -1636,6 +1636,7 @@ export class IpcServer {
             }
 
             // Periodic heartbeat newline to detect dead peers (#1557).
+            // On success, touch the subscriber so quiet-but-live streams aren't pruned (#1649).
             // On write failure, cleanup unsubscribes and stops the timer.
             // Also prunes stale EventBus subscribers on each tick as a secondary defense.
             heartbeatTimer = setInterval(() => {
@@ -1645,6 +1646,7 @@ export class IpcServer {
                 cleanup();
                 return;
               }
+              if (subId !== null) bus.touch(subId);
               bus.pruneStale(IpcServer.EVENTBUS_SUB_TTL_MS);
             }, IpcServer.EVENTBUS_HEARTBEAT_MS);
             heartbeatTimer.unref();

@@ -265,15 +265,16 @@ describe("EventBus", () => {
     expect(bus.pruneStale(1_000)).toBe(0);
   });
 
-  test("lastActivityAt is updated when event is delivered to subscriber", () => {
+  test("lastActivityAt is updated when event is delivered to subscriber", async () => {
     const bus = new EventBus();
     const id = bus.subscribe(() => {});
     const before = bus.getLastActivityAt(id) ?? 0;
 
-    // Small delay to ensure timestamp advances.
-    const t = Date.now();
-    while (Date.now() === t) {
-      /* spin */
+    // Poll until the clock advances past `before` so the publish timestamp is strictly greater.
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= before) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
     }
 
     bus.publish(sessionEvent());
@@ -295,6 +296,44 @@ describe("EventBus", () => {
   test("getLastActivityAt returns null for unknown subscriber", () => {
     const bus = new EventBus();
     expect(bus.getLastActivityAt(999)).toBeNull();
+  });
+
+  test("touch updates lastActivityAt for a live subscriber", async () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= before) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
+    }
+
+    expect(bus.touch(id)).toBe(true);
+    expect(bus.getLastActivityAt(id)).toBeGreaterThan(before);
+  });
+
+  test("touch returns false for unknown subscriber", () => {
+    const bus = new EventBus();
+    expect(bus.touch(999)).toBe(false);
+  });
+
+  test("touch prevents pruneStale from removing a quiet-but-live subscriber", async () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+
+    // Wait until the subscriber would normally appear stale to a TTL=0 pruner.
+    const created = bus.getLastActivityAt(id) ?? 0;
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= created) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
+    }
+
+    // Touch refreshes lastActivityAt — subscriber should survive pruneStale.
+    bus.touch(id);
+    expect(bus.pruneStale(0)).toBe(0);
+    expect(bus.subscriberCount).toBe(1);
   });
 });
 
