@@ -1000,6 +1000,27 @@ export async function executePhase(
     d.exit(1);
   }
 
+  // Fetch work item early — needed for resolvedFrom fallback (#1522).
+  // We do NOT auto-resolve the current branch to a work item — if the
+  // orchestrator doesn't pass --work-item, phases self-enforce by throwing
+  // from their own assertions (e.g. `if (!ctx.workItem) throw`).
+  let workItem: AliasWorkItemInfo | null = null;
+  if (parsed.workItemId !== null) {
+    try {
+      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      if (!wi) {
+        d.logError(`work item "${parsed.workItemId}" not found`);
+        d.exit(1);
+      }
+      workItem = toAliasWorkItem(wi);
+    } catch (err) {
+      d.logError(
+        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      d.exit(1);
+    }
+  }
+
   // Pre-validate the transition with committed-only history so bogus
   // moves (unknown from, disallowed, un-forced regression) fail BEFORE
   // we spend cycles running the handler. The final commit below repeats
@@ -1008,8 +1029,19 @@ export async function executePhase(
   const logPath = transitionLogPath(cwd);
   const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
   const priorTargets = historyTargets(prior);
+  // When --from is not given and transition history is empty, fall back to
+  // work_items.phase as the implicit "from" so manually-spawned impl sessions
+  // don't cause a spurious "(initial) → triage" rejection (#1522).
+  // Exception: when running the initial phase itself (first launch), keep
+  // from=null so Rule 4 (initial phase enforcement) still applies.
   const resolvedFrom =
-    parsed.from !== null ? parsed.from : priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
+    parsed.from !== null
+      ? parsed.from
+      : priorTargets.length > 0
+        ? priorTargets[priorTargets.length - 1]
+        : parsed.target !== loaded.manifest.initial
+          ? (workItem?.phase ?? null)
+          : null;
   validateTransition({
     manifest: loaded.manifest,
     from: resolvedFrom,
@@ -1065,27 +1097,6 @@ export async function executePhase(
   const structured = isDefineAlias(srcText);
   const { js } = await d.bundleAlias(resolved);
 
-  // Fetch work item from the daemon if caller supplied one. We do NOT
-  // auto-resolve the current branch to a work item — if the orchestrator
-  // doesn't pass --work-item, phases self-enforce by throwing from their
-  // own assertions (e.g. `if (!ctx.workItem) throw`).
-  let workItem: AliasWorkItemInfo | null = null;
-  if (parsed.workItemId !== null) {
-    try {
-      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
-      if (!wi) {
-        d.logError(`work item "${parsed.workItemId}" not found`);
-        d.exit(1);
-      }
-      workItem = toAliasWorkItem(wi);
-    } catch (err) {
-      d.logError(
-        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
-      );
-      d.exit(1);
-    }
-  }
-
   const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
   // State is namespaced by work-item id so every phase touching the same
   // item sees the same scratchpad (see sprint state declarations in
@@ -1137,7 +1148,7 @@ export async function executePhase(
   const txResult = phaseRun(
     {
       target: parsed.target,
-      from: parsed.from,
+      from: resolvedFrom,
       workItemId: parsed.workItemId,
       forceMessage: parsed.forceMessage,
     },

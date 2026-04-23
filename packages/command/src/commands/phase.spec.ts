@@ -1718,6 +1718,78 @@ defineAlias(({ z }) => ({
     expect(entries.filter((e) => e.status === "committed").length).toBe(2);
     expect(entries.filter((e) => e.status === "attempted").length).toBe(2);
   }, 30_000);
+
+  test("falls back to work_items.phase when transition log is empty (#1522)", async () => {
+    // Manifest with impl → triage flow (mirrors real sprint graph)
+    const manifest = `
+runsOn: main
+initial: impl
+phases:
+  impl:
+    source: ./impl.ts
+    next: [triage]
+  triage:
+    source: ./triage.ts
+    next: [done]
+  done:
+    source: ./impl.ts
+    next: []
+`.trim();
+    const triageAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "triage",
+  description: "triage",
+  input: z.object({}).default({}),
+  output: z.object({ action: z.string() }),
+  fn: async () => ({ action: "done" }),
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    writeFileSync(join(dir, "triage.ts"), triageAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // work_items.phase = "impl" but transition log is empty (impl was manually spawned)
+    const ex = makeExecDeps({
+      workItem: {
+        id: "#1504",
+        issueNumber: 1504,
+        prNumber: null,
+        branch: "feat/1504",
+        prState: null,
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "pending",
+        phase: "impl",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await executePhase(
+      ["triage", "--work-item", "#1504"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          exitCode = c;
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    ).catch(() => {});
+
+    // Must succeed: work_items.phase="impl" provides the implicit --from
+    expect(exitCode).toBeUndefined();
+    expect(errs.some((e) => e.includes("approved") && e.includes("impl") && e.includes("triage"))).toBe(true);
+    expect(errs.some((e) => e.includes("(initial)"))).toBe(false);
+  }, 30_000);
 });
 
 describe("spawnExec (#1408)", () => {
