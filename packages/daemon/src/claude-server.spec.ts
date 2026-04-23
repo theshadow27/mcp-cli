@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CLAUDE_SERVER_NAME, capturingLogger, silentLogger } from "@mcp-cli/core";
+import type { MonitorEvent } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer, WORKER_EVENT_TYPES, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
 import { StateDb } from "./db/state";
+import { EventBus } from "./event-bus";
 import { MetricsCollector } from "./metrics";
 
 // ── WORKER_EVENT_TYPES exhaustiveness ──
@@ -23,6 +25,7 @@ describe("WORKER_EVENT_TYPES", () => {
       "db:end",
       "metrics:inc",
       "metrics:observe",
+      "monitor:event",
     ];
     expect(WORKER_EVENT_TYPES.size).toBe(expected.length);
     for (const t of expected) {
@@ -42,10 +45,16 @@ describe("isWorkerEvent", () => {
     expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
   });
 
-  test("matches metrics and ready event types", () => {
+  test("matches metrics, ready, and monitor event types", () => {
     expect(isWorkerEvent({ type: "metrics:inc", name: "foo" })).toBe(true);
     expect(isWorkerEvent({ type: "metrics:observe", name: "foo", value: 1 })).toBe(true);
     expect(isWorkerEvent({ type: "ready", port: 3000 })).toBe(true);
+    expect(
+      isWorkerEvent({
+        type: "monitor:event",
+        input: { src: "daemon.claude-server", event: "session.result", category: "session" },
+      }),
+    ).toBe(true);
   });
 
   test("rejects JSON-RPC messages (even though they have no matching type)", () => {
@@ -821,6 +830,68 @@ describe("ClaudeServer", () => {
     expect(activityCount).toBe(3);
   });
 
+  // ── monitor:event bridge (#1567) ──
+
+  test("monitor:event forwards input to onMonitorEvent callback", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const received: Array<{ src: string; event: string; category: string }> = [];
+    server.onMonitorEvent = (input) => received.push(input);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "monitor:event",
+      input: { src: "daemon.claude-server", event: "session.result", category: "session", sessionId: "s1" },
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("session.result");
+    expect(received[0].src).toBe("daemon.claude-server");
+  });
+
+  test("monitor:event is safe when onMonitorEvent is not set", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    expect(() => {
+      handle({
+        type: "monitor:event",
+        input: { src: "daemon.claude-server", event: "session.ended", category: "session" },
+      });
+    }).not.toThrow();
+  });
+
+  test("monitor:event preserves extra fields (cost, tokens, prNumber)", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(db, undefined, undefined, silentLogger);
+
+    const received: Array<Record<string, unknown>> = [];
+    server.onMonitorEvent = (input) => received.push(input);
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    handle({
+      type: "monitor:event",
+      input: {
+        src: "daemon.claude-server",
+        event: "session.result",
+        category: "session",
+        sessionId: "s1",
+        cost: 0.05,
+        tokens: 1234,
+        numTurns: 3,
+      },
+    });
+
+    expect(received[0].cost).toBe(0.05);
+    expect(received[0].tokens).toBe(1234);
+    expect(received[0].numTurns).toBe(3);
+  });
+
   // ── Worker crash + idle timeout interaction ──
 
   test("orphaned sessions are cleaned up after worker crash+restart", async () => {
@@ -1334,5 +1405,86 @@ describe("session persistence", () => {
 
     expect(activityCount).toBe(0);
     expect(server.hasActiveSessions()).toBe(false);
+  });
+});
+
+// ── monitor:event bridge integration (#1567) ──
+// Verifies the full round-trip: worker postMessage → handleWorkerEvent → onMonitorEvent → EventBus → subscriber
+
+describe("monitor event bridge integration", () => {
+  test("worker monitor:event reaches EventBus subscribers with correct seq", () => {
+    using opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    const server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    const bus = new EventBus();
+
+    server.onMonitorEvent = (input) => bus.publish(input);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+
+    handle({
+      type: "monitor:event",
+      input: {
+        src: "daemon.claude-server",
+        event: "session.result",
+        category: "session",
+        sessionId: "s1",
+        cost: 0.42,
+      },
+    });
+    handle({
+      type: "monitor:event",
+      input: {
+        src: "daemon.work-item-poller",
+        event: "pr.merged",
+        category: "work_item",
+        prNumber: 99,
+      },
+    });
+
+    expect(received).toHaveLength(2);
+    expect(received[0].seq).toBe(1);
+    expect(received[0].event).toBe("session.result");
+    expect(received[0].cost).toBe(0.42);
+    expect(received[0].sessionId).toBe("s1");
+    expect(received[1].seq).toBe(2);
+    expect(received[1].event).toBe("pr.merged");
+    expect(received[1].prNumber).toBe(99);
+    expect(typeof received[0].ts).toBe("string");
+
+    db.close();
+  });
+
+  test("seq is monotonic across session and work-item events from worker", () => {
+    using opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    const server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    const bus = new EventBus();
+
+    server.onMonitorEvent = (input) => bus.publish(input);
+
+    const seqs: number[] = [];
+    bus.subscribe((e) => seqs.push(e.seq));
+
+    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+
+    for (let i = 0; i < 5; i++) {
+      handle({
+        type: "monitor:event",
+        input: {
+          src: "daemon.claude-server",
+          event: i % 2 === 0 ? "session.result" : "session.ended",
+          category: "session",
+          sessionId: `s${i}`,
+        },
+      });
+    }
+
+    expect(seqs).toEqual([1, 2, 3, 4, 5]);
+
+    db.close();
   });
 });

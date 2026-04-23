@@ -35,7 +35,6 @@ import {
   type WorkItemWaitEvent,
   compactifyEntry,
 } from "./claude-session/ws-server";
-import { EventBus } from "./event-bus";
 import { aggregatePlans } from "./plan-aggregator";
 import { getProcessStartTime } from "./process-identity";
 import { createIsControlMessage } from "./worker-control-message";
@@ -659,9 +658,9 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // Start WebSocket server
   wsServer = new ClaudeWsServer({ logger: quiet ? silentLogger : undefined });
-  const port = await wsServer.start(wsPort);
   wsServer.onSessionEvent = forwardSessionEvent;
-  wsServer.eventBus = new EventBus();
+  wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
+  const port = await wsServer.start(wsPort);
 
   // Start MCP Server
   mcpServer = new Server({ name: CLAUDE_SERVER_NAME, version: "0.1.0" }, { capabilities: { tools: {} } });

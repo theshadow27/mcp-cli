@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
 import { silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
@@ -3721,6 +3722,183 @@ describe("restoreSessions", () => {
       const result = await promise;
       expect(result.workItemEvent.type).toBe("checks:passed");
       expect("prNumber" in result.workItemEvent && result.workItemEvent.prNumber).toBe(42);
+    });
+  });
+});
+
+// ── publishSessionMonitorEvent / publishWorkItemMonitorEvent mapping (#1567) ──
+
+describe("monitor event mapping", () => {
+  type WsServerPrivate = {
+    publishSessionMonitorEvent: (sessionId: string, event: SessionEvent) => void;
+    publishWorkItemMonitorEvent: (event: WorkItemEvent) => void;
+  };
+
+  function makeServer(): ClaudeWsServer {
+    return new ClaudeWsServer({ logger: silentLogger });
+  }
+
+  function collect(server: ClaudeWsServer): MonitorEventInput[] {
+    const events: MonitorEventInput[] = [];
+    server.onMonitorEvent = (input) => events.push(input);
+    return events;
+  }
+
+  function priv(server: ClaudeWsServer): WsServerPrivate {
+    return server as unknown as WsServerPrivate;
+  }
+
+  describe("publishSessionMonitorEvent", () => {
+    test("session:result maps to session.result with cost/tokens/numTurns", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s1", {
+        type: "session:result",
+        cost: 0.42,
+        tokens: 1234,
+        numTurns: 3,
+        result: "done",
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].src).toBe("daemon.claude-server");
+      expect(events[0].event).toBe("session.result");
+      expect(events[0].category).toBe("session");
+      expect(events[0].sessionId).toBe("s1");
+      expect(events[0].cost).toBe(0.42);
+      expect(events[0].tokens).toBe(1234);
+      expect(events[0].numTurns).toBe(3);
+      expect(events[0].result).toBe("done");
+    });
+
+    test("session:ended maps to session.ended with no extra fields", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s2", { type: "session:ended" });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("session.ended");
+      expect(events[0].cost).toBeUndefined();
+      expect(events[0].tokens).toBeUndefined();
+    });
+
+    test("session:containment_warning maps with strikes and reason", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s3", {
+        type: "session:containment_warning",
+        toolName: "bash",
+        reason: "not allowed",
+        strikes: 2,
+      });
+
+      expect(events[0].event).toBe("session.containment_warning");
+      expect(events[0].strikes).toBe(2);
+      expect(events[0].reason).toBe("not allowed");
+    });
+
+    test("session:permission_request extracts toolName from request.tool_name", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s4", {
+        type: "session:permission_request",
+        requestId: "req1",
+        request: { tool_name: "bash", input: {} } as never,
+      });
+
+      expect(events[0].event).toBe("session.permission_request");
+      expect(events[0].toolName).toBe("bash");
+    });
+
+    test("unmapped session event type is silently dropped", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s5", {
+        type: "session:response",
+        message: {} as never,
+      });
+
+      expect(events).toHaveLength(0);
+    });
+
+    test("null onMonitorEvent callback causes silent drop", () => {
+      const server = makeServer();
+      server.onMonitorEvent = null;
+
+      expect(() => {
+        priv(server).publishSessionMonitorEvent("s6", { type: "session:ended" });
+      }).not.toThrow();
+    });
+  });
+
+  describe("publishWorkItemMonitorEvent", () => {
+    test("pr:opened maps to pr.opened with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "pr:opened", prNumber: 42 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].src).toBe("daemon.work-item-poller");
+      expect(events[0].event).toBe("pr.opened");
+      expect(events[0].category).toBe("work_item");
+      expect(events[0].prNumber).toBe(42);
+    });
+
+    test("checks:failed maps to checks.failed with failedJob", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:failed", prNumber: 7, failedJob: "typecheck" });
+
+      expect(events[0].event).toBe("checks.failed");
+      expect(events[0].prNumber).toBe(7);
+      expect(events[0].failedJob).toBe("typecheck");
+    });
+
+    test("review:changes_requested maps with reviewer", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "review:changes_requested", prNumber: 99, reviewer: "alice" });
+
+      expect(events[0].event).toBe("review.changes_requested");
+      expect(events[0].reviewer).toBe("alice");
+    });
+
+    test("phase:changed maps itemId to workItemId with from/to", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "phase:changed", itemId: "wi-123", from: "impl", to: "review" });
+
+      expect(events[0].event).toBe("phase.changed");
+      expect(events[0].workItemId).toBe("wi-123");
+      expect(events[0].from).toBe("impl");
+      expect(events[0].to).toBe("review");
+    });
+
+    test("unmapped work-item event type is silently dropped", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "unknown:event" } as never);
+
+      expect(events).toHaveLength(0);
+    });
+
+    test("null onMonitorEvent callback causes silent drop", () => {
+      const server = makeServer();
+      server.onMonitorEvent = null;
+
+      expect(() => {
+        priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 1 });
+      }).not.toThrow();
     });
   });
 });

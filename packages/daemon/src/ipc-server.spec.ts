@@ -6,7 +6,9 @@ import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
+import { ClaudeServer } from "./claude-server";
 import { installDaemonLogCapture } from "./daemon-log";
+import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import { IpcServer } from "./ipc-server";
@@ -2426,6 +2428,74 @@ describe("IpcServer HTTP transport", () => {
       expect(lines.length).toBe(2);
       const seqs = lines.map((l) => (JSON.parse(l) as Record<string, unknown>).seq as number);
       expect(seqs[0]).toBeLessThan(seqs[1] as number);
+    });
+
+    test("worker monitor:event round-trips to GET /events subscriber (#1567)", async () => {
+      const bus = new EventBus();
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      // Simulate the bridge: ClaudeServer.onMonitorEvent publishes to the daemon bus
+      using bridgedOpts = testOptions();
+      const bridgedDb = new StateDb(bridgedOpts.DB_PATH);
+      const claudeServer = new ClaudeServer(bridgedDb, undefined, undefined, silentLogger);
+      claudeServer.onMonitorEvent = (input) => bus.publish(input);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      // Simulate worker posting a monitor:event message
+      const handle = (claudeServer as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(
+        claudeServer,
+      );
+      handle({
+        type: "monitor:event",
+        input: {
+          src: "daemon.claude-server",
+          event: "session.result",
+          category: "session",
+          sessionId: "bridge-test",
+          cost: 1.23,
+          numTurns: 5,
+        },
+      });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.result")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+      bridgedDb.close();
+
+      const line = buffer.trim().split("\n")[0];
+      const parsed = JSON.parse(line ?? "{}") as Record<string, unknown>;
+      expect(parsed.event).toBe("session.result");
+      expect(parsed.sessionId).toBe("bridge-test");
+      expect(parsed.cost).toBe(1.23);
+      expect(parsed.numTurns).toBe(5);
+      expect(parsed.seq).toBe(1);
+      expect(typeof parsed.ts).toBe("string");
     });
 
     test("responseTail does not bypass category filter", async () => {
