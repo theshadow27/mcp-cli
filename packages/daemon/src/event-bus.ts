@@ -57,6 +57,8 @@ export class EventBus {
 
     const event = { ...input, seq, ts } satisfies MonitorEvent;
 
+    if (this.subscribers.size === 0) return event;
+
     // Serialize once for all subscribers — O(1) instead of O(N_subscribers).
     const serialized = JSON.stringify(event);
 

@@ -201,19 +201,45 @@ describe("EventBus", () => {
     expect(pairs[1].serialized).toBe(JSON.stringify(pairs[1].event));
   });
 
-  test("serialized string is shared across all subscribers (same reference)", () => {
+  test("JSON.stringify is called once per publish regardless of subscriber count", () => {
     const bus = new EventBus();
-    const strings: string[] = [];
-    bus.subscribe((_e, s) => strings.push(s));
-    bus.subscribe((_e, s) => strings.push(s));
-    bus.subscribe((_e, s) => strings.push(s));
+    let calls = 0;
+    const orig = JSON.stringify;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls++;
+      return orig(...args);
+    }) as typeof JSON.stringify;
 
-    bus.publish(sessionEvent());
+    try {
+      bus.subscribe(() => {});
+      bus.subscribe(() => {});
+      bus.subscribe(() => {});
+      bus.publish(sessionEvent());
+      expect(calls).toBe(1);
 
-    expect(strings).toHaveLength(3);
-    // All three subscribers got the exact same string instance
-    expect(strings[0]).toBe(strings[1]);
-    expect(strings[1]).toBe(strings[2]);
+      calls = 0;
+      bus.publish(workItemEvent());
+      expect(calls).toBe(1);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
+
+  test("JSON.stringify is skipped when there are no subscribers", () => {
+    const bus = new EventBus();
+    let calls = 0;
+    const orig = JSON.stringify;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls++;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+
+    try {
+      bus.publish(sessionEvent());
+      expect(calls).toBe(0);
+    } finally {
+      JSON.stringify = orig;
+    }
   });
 });
 
