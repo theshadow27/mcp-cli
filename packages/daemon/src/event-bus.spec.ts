@@ -187,6 +187,60 @@ describe("EventBus", () => {
     expect(received).toHaveLength(1);
     expect(received[0].event).toBe("pr.merged");
   });
+
+  test("callback receives pre-serialized JSON string matching event", () => {
+    const bus = new EventBus();
+    const pairs: Array<{ event: MonitorEvent; serialized: string }> = [];
+    bus.subscribe((e, s) => pairs.push({ event: e, serialized: s }));
+
+    bus.publish(sessionEvent());
+    bus.publish(workItemEvent());
+
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0].serialized).toBe(JSON.stringify(pairs[0].event));
+    expect(pairs[1].serialized).toBe(JSON.stringify(pairs[1].event));
+  });
+
+  test("JSON.stringify is called once per publish regardless of subscriber count", () => {
+    const bus = new EventBus();
+    let calls = 0;
+    const orig = JSON.stringify;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls++;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+
+    try {
+      bus.subscribe(() => {});
+      bus.subscribe(() => {});
+      bus.subscribe(() => {});
+      bus.publish(sessionEvent());
+      expect(calls).toBe(1);
+
+      calls = 0;
+      bus.publish(workItemEvent());
+      expect(calls).toBe(1);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
+
+  test("JSON.stringify is skipped when there are no subscribers", () => {
+    const bus = new EventBus();
+    let calls = 0;
+    const orig = JSON.stringify;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls++;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+
+    try {
+      bus.publish(sessionEvent());
+      expect(calls).toBe(0);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
 });
 
 function freshLog(): EventLog {

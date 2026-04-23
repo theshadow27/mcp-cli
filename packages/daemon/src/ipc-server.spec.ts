@@ -2655,6 +2655,60 @@ describe("IpcServer HTTP transport", () => {
       expect(events[1]?.seq).toBe(2);
       expect(events[2]?.seq).toBe(3);
     });
+
+    test("returns 503 when subscriber limit is reached", async () => {
+      const { bus } = startServerWithBus();
+
+      // Fill the bus directly to avoid 64 HTTP round-trips
+      const limit = IpcServer.MAX_EVENT_BUS_SUBSCRIBERS;
+      const ids: number[] = [];
+      for (let i = 0; i < limit; i++) {
+        ids.push(bus.subscribe(() => {}));
+      }
+
+      const overflow = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+      } as RequestInit);
+      expect(overflow.status).toBe(503);
+
+      for (const id of ids) bus.unsubscribe(id);
+    });
+
+    test("mcpd_event_bus_subscribers gauge increments with each HTTP subscription", async () => {
+      metrics.reset();
+      const { bus: _bus } = startServerWithBus();
+      const gauge = metrics.gauge("mcpd_event_bus_subscribers");
+
+      expect(gauge.value()).toBe(0);
+
+      // Read one chunk per connection to ensure the start() callback has run
+      // (subscriberGauge.inc() is called inside start(), so reading confirms it fired).
+      const c1 = new AbortController();
+      const res1 = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: c1.signal,
+      } as RequestInit);
+      const reader1 = res1.body?.getReader();
+      await reader1?.read();
+      expect(gauge.value()).toBe(1);
+
+      const c2 = new AbortController();
+      const res2 = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: c2.signal,
+      } as RequestInit);
+      const reader2 = res2.body?.getReader();
+      await reader2?.read();
+      expect(gauge.value()).toBe(2);
+
+      c1.abort();
+      reader1?.releaseLock();
+      c2.abort();
+      reader2?.releaseLock();
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
