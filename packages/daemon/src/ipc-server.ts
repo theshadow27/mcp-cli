@@ -74,11 +74,10 @@ import {
   startSpan,
   validateFreeformTsc,
 } from "@mcp-cli/core";
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
-import { startCallbackServer } from "./auth/callback-server";
-import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider } from "./auth/oauth-provider";
+import { McpOAuthProvider } from "./auth/oauth-provider";
+import { runOAuthFlowWithDcrRetry } from "./auth/oauth-retry";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
@@ -656,47 +655,19 @@ export class IpcServer {
       const serverConfig = this.pool.getServerConfig(server);
       const { clientId, clientSecret, callbackPort, scope } = serverConfig ?? {};
 
-      // Start callback server for OAuth redirect (use configured port if available)
-      const callback = startCallbackServer(callbackPort);
-      try {
-        // Create provider with callback URL and config-level OAuth credentials
-        const provider = new McpOAuthProvider(server, serverUrl, poolDb, {
-          clientId,
-          clientSecret,
-          callbackPort,
-          scope,
-        });
-        provider.setRedirectUrl(callback.url);
+      const flowResult = await runOAuthFlowWithDcrRetry(server, serverUrl, poolDb, {
+        clientId,
+        clientSecret,
+        callbackPort,
+        scope,
+      });
 
-        // Pass configured scope to auth(), or DEFAULT_OAUTH_SCOPE as fallback.
-        // The SDK's cascade (resourceMetadata.scopes_supported → clientMetadata.scope)
-        // runs between these; DEFAULT_OAUTH_SCOPE kicks in when none of those exist
-        // (e.g. Atlassian, which requires scope=openid email profile but publishes
-        // no scopes_supported in its protected resource metadata).
-        const authScope = provider.getEffectiveScope() ?? DEFAULT_OAUTH_SCOPE;
+      await this.pool.restart(server);
 
-        // Run the SDK auth orchestrator
-        const result = await auth(provider, { serverUrl, scope: authScope });
-
-        if (result === "AUTHORIZED") {
-          // Already authorized (tokens were valid) — restart server to reconnect
-          await this.pool.restart(server);
-          return { ok: true, message: "Already authorized" };
-        }
-
-        // result === "REDIRECT" — browser was opened, wait for callback
-        const code = await callback.waitForCode;
-
-        // Exchange code for tokens (scope not passed — SDK reads from clientMetadata for token exchange)
-        await auth(provider, { serverUrl, authorizationCode: code });
-
-        // Reconnect with new tokens
-        await this.pool.restart(server);
-
-        return { ok: true, message: "Authenticated successfully" };
-      } finally {
-        callback.stop();
+      if (flowResult === "already_authorized") {
+        return { ok: true, message: "Already authorized" };
       }
+      return { ok: true, message: "Authenticated successfully" };
     });
 
     this.handlers.set("authStatus", async (params, _ctx) => {
