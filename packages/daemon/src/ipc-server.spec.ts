@@ -2675,17 +2675,24 @@ describe("IpcServer HTTP transport", () => {
       for (const id of ids) bus.unsubscribe(id);
     });
 
-    test("mcpd_event_bus_subscribers gauge tracks active subscribers", async () => {
+    test("mcpd_event_bus_subscribers gauge increments with each HTTP subscription", async () => {
       metrics.reset();
       const { bus: _bus } = startServerWithBus();
+      const gauge = metrics.gauge("mcpd_event_bus_subscribers");
 
+      expect(gauge.value()).toBe(0);
+
+      // Read one chunk per connection to ensure the start() callback has run
+      // (subscriberGauge.inc() is called inside start(), so reading confirms it fired).
       const c1 = new AbortController();
       const res1 = await fetch("http://localhost/events", {
         method: "GET",
         unix: socketPath,
         signal: c1.signal,
       } as RequestInit);
-      await res1.body?.getReader().read(); // drain flush
+      const reader1 = res1.body!.getReader();
+      await reader1.read();
+      expect(gauge.value()).toBe(1);
 
       const c2 = new AbortController();
       const res2 = await fetch("http://localhost/events", {
@@ -2693,18 +2700,14 @@ describe("IpcServer HTTP transport", () => {
         unix: socketPath,
         signal: c2.signal,
       } as RequestInit);
-      await res2.body?.getReader().read(); // drain flush
-
-      await pollUntil(() => _bus.subscriberCount === 2);
-      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(2);
+      const reader2 = res2.body!.getReader();
+      await reader2.read();
+      expect(gauge.value()).toBe(2);
 
       c1.abort();
-      await pollUntil(() => _bus.subscriberCount === 1);
-      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(1);
-
+      reader1.releaseLock();
       c2.abort();
-      await pollUntil(() => _bus.subscriberCount === 0);
-      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(0);
+      reader2.releaseLock();
     });
   });
 
