@@ -187,6 +187,34 @@ describe("EventBus", () => {
     expect(received).toHaveLength(1);
     expect(received[0].event).toBe("pr.merged");
   });
+
+  test("callback receives pre-serialized JSON string matching event", () => {
+    const bus = new EventBus();
+    const pairs: Array<{ event: MonitorEvent; serialized: string }> = [];
+    bus.subscribe((e, s) => pairs.push({ event: e, serialized: s }));
+
+    bus.publish(sessionEvent());
+    bus.publish(workItemEvent());
+
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0].serialized).toBe(JSON.stringify(pairs[0].event));
+    expect(pairs[1].serialized).toBe(JSON.stringify(pairs[1].event));
+  });
+
+  test("serialized string is shared across all subscribers (same reference)", () => {
+    const bus = new EventBus();
+    const strings: string[] = [];
+    bus.subscribe((_e, s) => strings.push(s));
+    bus.subscribe((_e, s) => strings.push(s));
+    bus.subscribe((_e, s) => strings.push(s));
+
+    bus.publish(sessionEvent());
+
+    expect(strings).toHaveLength(3);
+    // All three subscribers got the exact same string instance
+    expect(strings[0]).toBe(strings[1]);
+    expect(strings[1]).toBe(strings[2]);
+  });
 });
 
 function freshLog(): EventLog {

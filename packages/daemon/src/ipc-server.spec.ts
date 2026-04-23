@@ -2655,6 +2655,57 @@ describe("IpcServer HTTP transport", () => {
       expect(events[1]?.seq).toBe(2);
       expect(events[2]?.seq).toBe(3);
     });
+
+    test("returns 503 when subscriber limit is reached", async () => {
+      const { bus } = startServerWithBus();
+
+      // Fill the bus directly to avoid 64 HTTP round-trips
+      const limit = IpcServer.MAX_EVENT_BUS_SUBSCRIBERS;
+      const ids: number[] = [];
+      for (let i = 0; i < limit; i++) {
+        ids.push(bus.subscribe(() => {}));
+      }
+
+      const overflow = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+      } as RequestInit);
+      expect(overflow.status).toBe(503);
+
+      for (const id of ids) bus.unsubscribe(id);
+    });
+
+    test("mcpd_event_bus_subscribers gauge tracks active subscribers", async () => {
+      metrics.reset();
+      const { bus: _bus } = startServerWithBus();
+
+      const c1 = new AbortController();
+      const res1 = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: c1.signal,
+      } as RequestInit);
+      await res1.body?.getReader().read(); // drain flush
+
+      const c2 = new AbortController();
+      const res2 = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: c2.signal,
+      } as RequestInit);
+      await res2.body?.getReader().read(); // drain flush
+
+      await pollUntil(() => _bus.subscriberCount === 2);
+      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(2);
+
+      c1.abort();
+      await pollUntil(() => _bus.subscriberCount === 1);
+      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(1);
+
+      c2.abort();
+      await pollUntil(() => _bus.subscriberCount === 0);
+      expect(metrics.gauge("mcpd_event_bus_subscribers").value()).toBe(0);
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --

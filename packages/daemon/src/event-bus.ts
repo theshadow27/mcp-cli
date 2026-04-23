@@ -16,10 +16,13 @@ import type { EventLog } from "./event-log";
 
 export type EventFilter = (event: MonitorEvent) => boolean;
 
+/** Subscriber callback receives the event and its pre-serialized JSON string (serialized once per publish, not once per subscriber). */
+export type EventCallback = (event: MonitorEvent, serialized: string) => void;
+
 export interface Subscription {
   id: number;
   filter: EventFilter | null;
-  callback: (event: MonitorEvent) => void;
+  callback: EventCallback;
 }
 
 export class EventBus {
@@ -54,11 +57,14 @@ export class EventBus {
 
     const event = { ...input, seq, ts } satisfies MonitorEvent;
 
+    // Serialize once for all subscribers — O(1) instead of O(N_subscribers).
+    const serialized = JSON.stringify(event);
+
     // Snapshot before iterating so unsubscribe during callback doesn't skip subs.
     for (const sub of Array.from(this.subscribers.values())) {
       if (sub.filter === null || sub.filter(event)) {
         try {
-          sub.callback(event);
+          sub.callback(event, serialized);
         } catch (err) {
           console.error(`[EventBus] subscriber ${sub.id} threw:`, err);
         }
@@ -67,7 +73,7 @@ export class EventBus {
     return event;
   }
 
-  subscribe(callback: (event: MonitorEvent) => void, filter?: EventFilter): number {
+  subscribe(callback: EventCallback, filter?: EventFilter): number {
     const id = ++this.nextSubId;
     this.subscribers.set(id, { id, filter: filter ?? null, callback });
     return id;

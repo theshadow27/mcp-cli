@@ -1351,6 +1351,7 @@ export class IpcServer {
 
   private static readonly EVENT_RING_CAPACITY = 256;
   private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
+  static readonly MAX_EVENT_BUS_SUBSCRIBERS = 64;
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1482,9 +1483,26 @@ export class IpcServer {
       const categories = categoryList ? new Set(categoryList) : null;
 
       const bus = this.eventBus;
+
+      if (bus.subscriberCount >= IpcServer.MAX_EVENT_BUS_SUBSCRIBERS) {
+        this.logger.warn(
+          `[events] subscriber limit reached (${IpcServer.MAX_EVENT_BUS_SUBSCRIBERS}), rejecting connection`,
+        );
+        return new Response("too many event stream subscribers", { status: 503 });
+      }
+
       let subId: number | null = null;
 
       const encoder = new TextEncoder();
+      const subscriberGauge = metrics.gauge("mcpd_event_bus_subscribers");
+
+      const unsubscribe = () => {
+        if (subId !== null) {
+          bus.unsubscribe(subId);
+          subId = null;
+          subscriberGauge.dec();
+        }
+      };
 
       const stream = new ReadableStream({
         start: (controller) => {
@@ -1497,9 +1515,22 @@ export class IpcServer {
           let highWaterMark = 0;
 
           subId = bus.subscribe(
-            (event) => {
+            (_event, serialized) => {
+              // Backpressure guard: if the stream's internal queue is full, the
+              // consumer is too slow. Disconnect rather than buffer unboundedly.
+              if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                this.logger.warn("[events] slow consumer detected, dropping subscriber");
+                metrics.counter("mcpd_event_bus_slow_drops_total").inc();
+                unsubscribe();
+                try {
+                  controller.error(new Error("slow consumer"));
+                } catch {
+                  // already closed
+                }
+                return;
+              }
               try {
-                const line = `${JSON.stringify(event)}\n`;
+                const line = `${serialized}\n`;
                 if (liveBuffer !== null) {
                   liveBuffer.push(line);
                 } else {
@@ -1507,7 +1538,7 @@ export class IpcServer {
                 }
               } catch {
                 // Stream closed
-                if (subId !== null) bus.unsubscribe(subId);
+                unsubscribe();
               }
             },
             (event) => {
@@ -1525,6 +1556,7 @@ export class IpcServer {
               return true;
             },
           );
+          subscriberGauge.inc();
 
           // Backfill from durable log when client provides a valid cursor.
           if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
@@ -1533,10 +1565,21 @@ export class IpcServer {
               const batch = eventLog.getSince(cursor, 1000);
               for (const event of batch) {
                 highWaterMark = event.seq;
+                if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                  this.logger.warn("[events] slow consumer during backfill, dropping subscriber");
+                  metrics.counter("mcpd_event_bus_slow_drops_total").inc();
+                  unsubscribe();
+                  try {
+                    controller.error(new Error("slow consumer"));
+                  } catch {
+                    // already closed
+                  }
+                  return;
+                }
                 try {
                   controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
                 } catch {
-                  if (subId !== null) bus.unsubscribe(subId);
+                  unsubscribe();
                   return;
                 }
               }
@@ -1547,22 +1590,38 @@ export class IpcServer {
             const buffered = liveBuffer ?? [];
             liveBuffer = null;
             for (const line of buffered) {
+              if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                this.logger.warn("[events] slow consumer during backfill drain, dropping subscriber");
+                metrics.counter("mcpd_event_bus_slow_drops_total").inc();
+                unsubscribe();
+                try {
+                  controller.error(new Error("slow consumer"));
+                } catch {
+                  // already closed
+                }
+                return;
+              }
               try {
                 const parsed = JSON.parse(line) as Record<string, unknown>;
                 const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
                 if (seq !== undefined && seq <= highWaterMark) continue;
                 controller.enqueue(encoder.encode(line));
               } catch {
-                if (subId !== null) bus.unsubscribe(subId);
+                unsubscribe();
                 return;
               }
             }
           }
         },
         cancel: () => {
-          if (subId !== null) bus.unsubscribe(subId);
+          unsubscribe();
         },
-      });
+      },
+      // Use byte-based backpressure so desiredSize reflects buffered bytes, not chunk count.
+      // 1 MB high-water mark: desiredSize stays positive for normal traffic, goes ≤ 0 only
+      // when the consumer falls more than 1 MB behind (live or backfill).
+      new ByteLengthQueuingStrategy({ highWaterMark: 1024 * 1024 }),
+      );
 
       return new Response(stream, {
         headers: {
