@@ -1,10 +1,10 @@
 # Sprint 41
 
-> Planned 2026-04-21 12:40 local. Target: 18 PRs (4 P0 anchors + 6 Phase 1 closeout + 2 OAuth + 6 filler).
+> Planned 2026-04-21 12:40 local. Target: 19 PRs (5 P0 anchors + 6 Phase 1 closeout + 2 OAuth + 6 filler). #1601 added 2026-04-23.
 
 ## Goal
 
-**Close out monitor Phase 1 + kill the infra blockers.** Land the cross-thread EventBus bridge (#1567) so Phase 2+ is unblocked, fix the CI trigger gap (#1506) that stalled sprint 40 twice, fix the browser blank-tab P0 (#1588), and end the 3-sprint `mcx gc` recurrence (#1398). Fill remaining capacity with the Phase 1 bug bundle and OAuth repair.
+**Close out monitor Phase 1 + kill the infra blockers.** Land the cross-thread EventBus bridge (#1567) so Phase 2+ is unblocked, fix the CI trigger gap (#1506) that stalled sprint 40 twice, fix the browser blank-tab P0 (#1588), end the 3-sprint `mcx gc` recurrence (#1398), and unbreak sites from the compiled binary (#1601 — playwright unresolvable from `$bunfs`). Fill remaining capacity with the Phase 1 bug bundle and OAuth repair.
 
 ## Issues
 
@@ -14,6 +14,7 @@
 | **1567** | cross-thread EventBus bridging (worker→main) | high | 1 | opus | P0 monitor |
 | **1588** | sites: browser opens blank tab — no auto-navigate | medium | 1 | opus | P0 sites |
 | **1398** | mcx gc `_acp` daemon-unreachable recurrence | high | 1 | opus | P0 recurring |
+| **1601** | sites: `_site` worker fails — playwright unresolvable from `$bunfs` | medium | 1 | opus | P0 sites |
 | **1517** | OAuth DCR no-port redirect_uri breaks interactive auth | high | 2 | opus | OAuth |
 | **1548** | auto-retry authorize 500 with forced DCR refresh | medium | 2 | sonnet | OAuth |
 | **1570** | wire EventBus to IPC live stream + fix seq incompat | medium | 2 | opus | monitor Phase 1 |
@@ -32,9 +33,9 @@
 ## Batch Plan
 
 ### Batch 1 — P0 anchors (immediate)
-#1506, #1567, #1588, #1398
+#1506, #1567, #1588, #1398, #1601
 
-All four are opus. #1506 is investigate-heavy (may close without code if GitHub-side). #1567 is the gatekeeper for all Phase 2+. #1588 has root cause + fix laid out in the issue body. #1398 needs a regression test before the fix.
+All five are opus. #1506 is investigate-heavy (may close without code if GitHub-side). #1567 is the gatekeeper for all Phase 2+. #1588 has root cause + fix laid out in the issue body. #1398 needs a regression test before the fix. #1601 is a vendor-on-first-use install flow + runtime resolve in `site/browser/playwright.ts`; scope is bounded but adds an install code path (~/.mcp-cli/vendor/) that needs tests for the miss/hit/failure cases.
 
 ### Batch 2 — OAuth + monitor Phase 1 closeout (backfill)
 #1517, #1548, #1570, #1556, #1557, #1539
@@ -54,6 +55,7 @@ All low-scrutiny sonnet picks. #1564 and #1571 are the same bug class at two cal
 #1506 (CI trigger) — no code deps; unblocks QA reliability
 #1517 → #1548 loosely (DCR fix first, then retry logic)
 #1564 / #1571 — same bug class, can bundle or parallel
+#1601 (playwright resolve) — independent; touches site-worker.ts + site/browser/playwright.ts only
 All fillers: independent
 ```
 
