@@ -3340,9 +3340,8 @@ describe("restoreSessions", () => {
     ]);
 
     const ws = await connectMockClaude(port, "log-level-1");
-    // Intentional setTimeout: negative-style assertion — we need handleOpen to finish
-    // before checking log output. No observable condition to poll for (test/CLAUDE.md §exception).
-    await new Promise((r) => setTimeout(r, 50));
+    // Negative assertion: no observable condition to poll for — wait for handleOpen to finish.
+    await Bun.sleep(50);
 
     // Reconnect should be logged at info, not error
     expect(infos.some((m) => m.includes("reconnected"))).toBe(true);

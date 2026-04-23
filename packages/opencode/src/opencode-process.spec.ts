@@ -177,8 +177,8 @@ describe("OpenCodeProcess", () => {
     });
 
     await proc.spawn();
-    // Wait for the microtask that resolves exited
-    await new Promise((r) => setTimeout(r, 10));
+    // Flush microtasks so the exited .then() handler fires and calls onExit
+    await Bun.sleep(0);
     expect(exitCode).toBe(0);
     expect(proc.exited).toBe(true);
     expect(proc.alive).toBe(false);
@@ -216,7 +216,8 @@ describe("OpenCodeProcess", () => {
 
     // Trigger exit
     resolveExited(0);
-    await new Promise((r) => setTimeout(r, 10));
+    // Flush microtasks so the .then() handler fires and calls onExit
+    await Bun.sleep(0);
     // Promise only resolves once, so verify the guard works
     expect(callCount).toBe(1);
   });
