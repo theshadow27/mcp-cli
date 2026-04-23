@@ -18,14 +18,17 @@ import type { BrowserType } from "playwright";
 const VENDOR_DIR = join(homedir(), ".mcp-cli", "vendor", "playwright");
 const VENDOR_PKG = join(VENDOR_DIR, "node_modules", "playwright");
 
+// Keep in sync with devDependencies in package.json.
+const PLAYWRIGHT_VERSION = "1.59.1";
+
 /**
  * Ordered list of on-disk paths where playwright might be installed.
- * The first one that exists wins.
+ * The first one that exists wins. process.cwd() is intentionally omitted —
+ * the daemon is long-lived and its cwd at startup is caller-dependent, so
+ * using it would poison the cache with whatever project the user was in.
  */
 export function playwrightCandidates(): string[] {
   const candidates = [VENDOR_PKG];
-
-  candidates.push(join(process.cwd(), "node_modules", "playwright"));
 
   if (process.env.BUN_INSTALL) {
     candidates.push(join(process.env.BUN_INSTALL, "install", "global", "node_modules", "playwright"));
@@ -34,81 +37,97 @@ export function playwrightCandidates(): string[] {
   return candidates;
 }
 
-let cached: BrowserType | null = null;
+// Promise deduplication: all concurrent callers share one in-flight resolution.
+// On failure the promise is cleared so the next call can retry.
+let pending: Promise<BrowserType> | null = null;
 
 /**
  * Resolve the playwright `chromium` browser type from a real on-disk path.
  * Auto-installs to `~/.mcp-cli/vendor/playwright/` on first use if no
  * candidate path has playwright installed.
  */
-export async function resolvePlaywright(opts?: {
+export function resolvePlaywright(opts?: {
   candidates?: string[];
-  install?: (vendorDir: string) => { exitCode: number; stderr: string };
+  install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
 }): Promise<BrowserType> {
-  if (cached) return cached;
+  if (!pending) {
+    pending = doResolve(opts).catch((err) => {
+      pending = null;
+      throw err;
+    });
+  }
+  return pending;
+}
 
+async function doResolve(opts?: {
+  candidates?: string[];
+  install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
+}): Promise<BrowserType> {
   const candidates = opts?.candidates ?? playwrightCandidates();
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
       try {
         const mod = await import(candidate);
-        cached = mod.chromium as BrowserType;
-        return cached;
+        if (mod.chromium) return mod.chromium as BrowserType;
+        // exists and loads but no chromium export — try next candidate
       } catch {
-        // Path exists but import failed — try next candidate.
+        // import failed — try next candidate
       }
     }
   }
 
   // No candidate found — auto-install to vendor dir.
-  console.log("[site] playwright not found locally — installing to vendor dir…");
+  console.error("[site] playwright not found locally — installing to vendor dir…");
 
   const doInstall = opts?.install ?? defaultInstall;
-  const result = doInstall(VENDOR_DIR);
+  const result = await doInstall(VENDOR_DIR);
 
   if (result.exitCode !== 0) {
     throw new Error(
       `Failed to auto-install playwright (exit ${result.exitCode}): ${result.stderr.trim() || "(no output)"}. ` +
-        `Install manually: bun add playwright --cwd ${VENDOR_DIR}`,
+        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
     );
   }
 
   if (!existsSync(VENDOR_PKG)) {
     throw new Error(
       `playwright install succeeded but package not found at ${VENDOR_PKG}. ` +
-        `Install manually: bun add playwright --cwd ${VENDOR_DIR}`,
+        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
     );
   }
 
-  console.log("[site] playwright installed successfully");
+  console.error("[site] playwright installed successfully");
 
   const mod = await import(VENDOR_PKG);
-  cached = mod.chromium as BrowserType;
-  return cached;
+  if (!mod.chromium) {
+    throw new Error(`playwright installed but chromium export is missing at ${VENDOR_PKG}`);
+  }
+  return mod.chromium as BrowserType;
 }
 
-function defaultInstall(vendorDir: string): { exitCode: number; stderr: string } {
+async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; stderr: string }> {
   mkdirSync(vendorDir, { recursive: true });
 
   // Anchor bun so it doesn't walk up to an unrelated package.json.
   const pkgJson = join(vendorDir, "package.json");
   if (!existsSync(pkgJson)) {
-    writeFileSync(pkgJson, '{"private":true}\n');
+    writeFileSync(pkgJson, '{"name":"mcx-playwright-vendor","private":true}\n');
   }
 
-  const proc = Bun.spawnSync(["bun", "add", "playwright"], {
+  const proc = Bun.spawn(["bun", "add", `playwright@${PLAYWRIGHT_VERSION}`], {
     cwd: vendorDir,
     stdout: "pipe",
     stderr: "pipe",
   });
+  await proc.exited;
   return {
-    exitCode: proc.exitCode,
-    stderr: proc.stderr.toString(),
+    exitCode: proc.exitCode ?? 1,
+    stderr: await new Response(proc.stderr).text(),
   };
 }
 
-/** Reset cached module — for testing only. */
+/** Reset cached resolution — for testing only. */
 export function _resetCache(): void {
-  cached = null;
+  pending = null;
 }

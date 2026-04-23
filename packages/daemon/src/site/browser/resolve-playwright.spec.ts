@@ -14,9 +14,9 @@ describe("playwrightCandidates", () => {
     expect(candidates[0]).toBe(join(homedir(), ".mcp-cli", "vendor", "playwright", "node_modules", "playwright"));
   });
 
-  test("includes cwd/node_modules/playwright", () => {
+  test("does not include cwd/node_modules/playwright", () => {
     const candidates = playwrightCandidates();
-    expect(candidates).toContain(join(process.cwd(), "node_modules", "playwright"));
+    expect(candidates.some((c) => c === join(process.cwd(), "node_modules", "playwright"))).toBe(false);
   });
 
   test("includes BUN_INSTALL path when env var is set", () => {
@@ -44,14 +44,14 @@ describe("playwrightCandidates", () => {
 });
 
 describe("resolvePlaywright", () => {
-  test("resolves from cwd node_modules in dev environment", async () => {
+  test("resolves from an explicit on-disk candidate in dev environment", async () => {
     const cwdPkg = join(process.cwd(), "node_modules", "playwright");
     if (!existsSync(cwdPkg)) {
-      console.log("skipping — playwright not installed locally");
+      console.error("skipping — playwright not installed locally");
       return;
     }
 
-    const chromium = await resolvePlaywright();
+    const chromium = await resolvePlaywright({ candidates: [cwdPkg] });
     expect(chromium).toBeDefined();
     expect(typeof chromium.launchPersistentContext).toBe("function");
   });
@@ -59,13 +59,45 @@ describe("resolvePlaywright", () => {
   test("caches result across calls", async () => {
     const cwdPkg = join(process.cwd(), "node_modules", "playwright");
     if (!existsSync(cwdPkg)) {
-      console.log("skipping — playwright not installed locally");
+      console.error("skipping — playwright not installed locally");
       return;
     }
 
-    const first = await resolvePlaywright();
-    const second = await resolvePlaywright();
+    const first = await resolvePlaywright({ candidates: [cwdPkg] });
+    const second = await resolvePlaywright({ candidates: [cwdPkg] });
     expect(first).toBe(second);
+  });
+
+  test("concurrent calls share a single in-flight resolution", async () => {
+    let installCount = 0;
+    const opts = {
+      candidates: ["/nonexistent/path/playwright"],
+      install: () => {
+        installCount++;
+        return { exitCode: 1, stderr: "fail" };
+      },
+    };
+
+    const [a, b] = await Promise.allSettled([resolvePlaywright(opts), resolvePlaywright(opts)]);
+    expect(installCount).toBe(1);
+    expect(a.status).toBe("rejected");
+    expect(b.status).toBe("rejected");
+  });
+
+  test("clears pending on failure so next call can retry", async () => {
+    let calls = 0;
+    const opts = {
+      candidates: ["/nonexistent/path/playwright"],
+      install: () => {
+        calls++;
+        return { exitCode: 1, stderr: "fail" };
+      },
+    };
+
+    await resolvePlaywright(opts).catch(() => {});
+    _resetCache();
+    await resolvePlaywright(opts).catch(() => {});
+    expect(calls).toBe(2);
   });
 
   test("surfaces useful error when no candidates exist and install fails", async () => {
