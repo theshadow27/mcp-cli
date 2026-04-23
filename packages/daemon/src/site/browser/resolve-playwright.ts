@@ -80,7 +80,7 @@ async function doResolve(opts?: {
   // No candidate found — auto-install to vendor dir.
   console.error("[site] playwright not found locally — installing to vendor dir…");
 
-  const doInstall = opts?.install ?? defaultInstall;
+  const doInstall = opts?.install ?? _defaultInstall;
   const result = await doInstall(VENDOR_DIR);
 
   if (result.exitCode !== 0) {
@@ -106,7 +106,10 @@ async function doResolve(opts?: {
   return mod.chromium as BrowserType;
 }
 
-async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; stderr: string }> {
+export async function _defaultInstall(
+  vendorDir: string,
+  bunBin: string = process.execPath,
+): Promise<{ exitCode: number; stderr: string }> {
   mkdirSync(vendorDir, { recursive: true });
 
   // Anchor bun so it doesn't walk up to an unrelated package.json.
@@ -115,16 +118,30 @@ async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; st
     writeFileSync(pkgJson, '{"name":"mcx-playwright-vendor","private":true}\n');
   }
 
-  const proc = Bun.spawn(["bun", "add", `playwright@${PLAYWRIGHT_VERSION}`], {
-    cwd: vendorDir,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await proc.exited;
-  return {
-    exitCode: proc.exitCode ?? 1,
-    stderr: await new Response(proc.stderr).text(),
-  };
+  // Use the current Bun executable (process.execPath) rather than a bare "bun"
+  // PATH lookup — compiled binaries may not have bun in PATH at all, and using
+  // execPath guarantees version consistency with the running daemon.
+  //
+  // Bun.spawn() throws (ENOENT/EACCES) rather than returning a failed process
+  // when the binary doesn't exist. Catch and wrap so callers always see the
+  // actionable "Install manually" message instead of a raw spawn error.
+  try {
+    const proc = Bun.spawn([bunBin, "add", `playwright@${PLAYWRIGHT_VERSION}`], {
+      cwd: vendorDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await proc.exited;
+    return {
+      exitCode: proc.exitCode ?? 1,
+      stderr: await new Response(proc.stderr).text(),
+    };
+  } catch (err) {
+    throw new Error(
+      `Failed to spawn bun to install playwright: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Install manually: cd ${vendorDir} && bun add playwright`,
+    );
+  }
 }
 
 /** Reset cached resolution — for testing only. */
