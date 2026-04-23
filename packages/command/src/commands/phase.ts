@@ -940,16 +940,20 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
  *
  * Two-phase transition log (PR #1407 adversarial-review fix):
  *   1. Parse flags (transition + execution inputs)
- *   2. Pre-validate the transition against committed history so bogus
+ *   2. Fetch the work item from the daemon (if `--work-item` given).
+ *      Done early so `work_items.phase` can seed `resolvedFrom` when
+ *      the transition log is empty (#1522). Early-exit on missing id.
+ *   3. Pre-validate the transition against committed history so bogus
  *      moves fail fast before we bundle or dispatch anything.
- *   3. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *   4. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
  *      captures attempt evidence from ANY branch, including cases that
  *      branch-guard rejects or handlers crash. Attempted entries are
- *      ignored by graph-walk / regression checks (#1407).
- *   4. Branch guard: refuse to dispatch outside the manifest's `runsOn`
+ *      ignored by graph-walk / regression checks (#1407). Note: early
+ *      exits before this point (unknown work-item id, unknown phase,
+ *      disallowed transition) are not captured in the audit log.
+ *   5. Branch guard: refuse to dispatch outside the manifest's `runsOn`
  *      branch. Attempt is already logged for audit.
- *   5. Bundle the phase source
- *   6. Fetch the work item from the daemon (if `--work-item` given)
+ *   6. Bundle the phase source
  *   7. Build a live AliasContext: real MCP proxy + daemon-backed state
  *      (namespaced by the work-item id)
  *   8. Execute the handler
@@ -1000,6 +1004,27 @@ export async function executePhase(
     d.exit(1);
   }
 
+  // Fetch work item early — needed for resolvedFrom fallback (#1522).
+  // We do NOT auto-resolve the current branch to a work item — if the
+  // orchestrator doesn't pass --work-item, phases self-enforce by throwing
+  // from their own assertions (e.g. `if (!ctx.workItem) throw`).
+  let workItem: AliasWorkItemInfo | null = null;
+  if (parsed.workItemId !== null) {
+    try {
+      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      if (!wi) {
+        d.logError(`work item "${parsed.workItemId}" not found`);
+        d.exit(1);
+      }
+      workItem = toAliasWorkItem(wi);
+    } catch (err) {
+      d.logError(
+        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      d.exit(1);
+    }
+  }
+
   // Pre-validate the transition with committed-only history so bogus
   // moves (unknown from, disallowed, un-forced regression) fail BEFORE
   // we spend cycles running the handler. The final commit below repeats
@@ -1008,8 +1033,25 @@ export async function executePhase(
   const logPath = transitionLogPath(cwd);
   const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
   const priorTargets = historyTargets(prior);
+  // When --from is not given and transition history is empty, fall back to
+  // work_items.phase as the implicit "from" so manually-spawned impl sessions
+  // don't cause a spurious "(initial) → triage" rejection (#1522).
+  // Exceptions:
+  //   - target === manifest.initial: first launch of the initial phase; keep
+  //     from=null so Rule 4 (initial phase enforcement) still applies.
+  //   - workItem.phase not in manifest.phases: stale/mismatched phase name
+  //     (e.g. daemon stores "impl" but manifest declares "implement"); fall
+  //     back to null to preserve the original Rule 4 error path (#1636).
   const resolvedFrom =
-    parsed.from !== null ? parsed.from : priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
+    parsed.from !== null
+      ? parsed.from
+      : priorTargets.length > 0
+        ? priorTargets[priorTargets.length - 1]
+        : parsed.target !== loaded.manifest.initial &&
+            workItem?.phase != null &&
+            workItem.phase in loaded.manifest.phases
+          ? workItem.phase
+          : null;
   validateTransition({
     manifest: loaded.manifest,
     from: resolvedFrom,
@@ -1021,9 +1063,10 @@ export async function executePhase(
   });
 
   // Two-phase log — append an "attempted" entry before branch-guard or
-  // handler dispatch so every invocation leaves an audit trail, even
-  // when branch-guard rejects or the handler crashes. Attempted entries
-  // are ignored by regression / graph-walk checks (#1407).
+  // handler dispatch. Captures audit evidence even when branch-guard
+  // rejects or the handler crashes. Does NOT cover early exits above
+  // (unknown work-item id, unknown/disallowed transition). Attempted
+  // entries are ignored by regression / graph-walk checks (#1407).
   appendAttempt(logPath, {
     workItemId: parsed.workItemId,
     from: resolvedFrom,
@@ -1064,27 +1107,6 @@ export async function executePhase(
   }
   const structured = isDefineAlias(srcText);
   const { js } = await d.bundleAlias(resolved);
-
-  // Fetch work item from the daemon if caller supplied one. We do NOT
-  // auto-resolve the current branch to a work item — if the orchestrator
-  // doesn't pass --work-item, phases self-enforce by throwing from their
-  // own assertions (e.g. `if (!ctx.workItem) throw`).
-  let workItem: AliasWorkItemInfo | null = null;
-  if (parsed.workItemId !== null) {
-    try {
-      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
-      if (!wi) {
-        d.logError(`work item "${parsed.workItemId}" not found`);
-        d.exit(1);
-      }
-      workItem = toAliasWorkItem(wi);
-    } catch (err) {
-      d.logError(
-        `failed to fetch work item "${parsed.workItemId}": ${err instanceof Error ? err.message : String(err)}`,
-      );
-      d.exit(1);
-    }
-  }
 
   const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
   // State is namespaced by work-item id so every phase touching the same
@@ -1137,7 +1159,7 @@ export async function executePhase(
   const txResult = phaseRun(
     {
       target: parsed.target,
-      from: parsed.from,
+      from: resolvedFrom,
       workItemId: parsed.workItemId,
       forceMessage: parsed.forceMessage,
     },
