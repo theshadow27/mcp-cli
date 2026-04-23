@@ -6,7 +6,8 @@
  * 2. macOS Keychain (Claude Code's tokens — read-only)
  * 3. undefined → triggers SDK auth flow
  *
- * Writes always go to SQLite (never touch Keychain).
+ * DCR client info is staged in memory until token exchange succeeds,
+ * then persisted to SQLite atomically with tokens. Keychain is read-only.
  */
 
 import type { OAuthClientProvider, OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -52,6 +53,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   private _redirectUrl: string | undefined;
   private keychainCache: KeychainTokens | null | undefined; // undefined = not loaded
   private opts: OAuthProviderOpts;
+  private pendingClientInfo: OAuthClientInformationMixed | undefined;
 
   constructor(serverName: string, serverUrl: string, db: StateDb, opts?: OAuthProviderOpts) {
     this.serverName = serverName;
@@ -123,22 +125,28 @@ export class McpOAuthProvider implements OAuthClientProvider {
       return info;
     }
 
-    // 1. Check SQLite
+    // 1. Check in-memory staging (DCR result not yet confirmed by token exchange)
+    if (this.pendingClientInfo) return this.pendingClientInfo;
+
+    // 2. Check SQLite (confirmed client from a previous successful flow)
     const dbInfo = this.db.getClientInfo(this.serverName);
     if (dbInfo) return dbInfo;
 
-    // 2. Check Keychain (Claude Code may have registered a client)
+    // 3. Check Keychain (Claude Code may have registered a client)
     const kc = await this.loadKeychain();
     if (kc) {
       return { client_id: kc.clientId };
     }
 
-    // 3. No client info → SDK will attempt dynamic registration
+    // 4. No client info → SDK will attempt dynamic registration
     return undefined;
   }
 
   saveClientInformation(info: OAuthClientInformationMixed): void {
-    this.db.saveClientInfo(this.serverName, info);
+    // Stage in memory — only persist to SQLite once saveTokens() confirms
+    // the client can complete a flow. Prevents zombie client_ids from
+    // poisoning future auth attempts when the flow is abandoned mid-way.
+    this.pendingClientInfo = info;
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
@@ -166,7 +174,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
-    this.db.saveTokens(this.serverName, tokens);
+    if (this.pendingClientInfo) {
+      this.db.saveClientInfoAndTokens(this.serverName, this.pendingClientInfo, tokens);
+      this.pendingClientInfo = undefined;
+    } else {
+      this.db.saveTokens(this.serverName, tokens);
+    }
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -232,7 +245,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     switch (scope) {
       case "all":
         this.db.deleteTokens(this.serverName);
-        // Also clear keychain cache so we re-read
+        this.pendingClientInfo = undefined;
         this.keychainCache = undefined;
         break;
       case "tokens":
@@ -240,7 +253,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
         this.keychainCache = undefined;
         break;
       case "client":
-        // Could clear client info but usually not needed
+        this.pendingClientInfo = undefined;
         break;
       case "verifier":
         // Verifier is ephemeral, no need to explicitly clear

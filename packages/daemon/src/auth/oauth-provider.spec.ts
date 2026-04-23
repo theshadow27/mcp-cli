@@ -327,6 +327,18 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
+    test("invalidateCredentials('client') clears pending client info", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client" });
+      provider.invalidateCredentials("client");
+
+      const info = await provider.clientInformation();
+      expect(info).toBeUndefined();
+      db.close();
+    });
+
     test("invalidateCredentials('client') does not affect tokens or verifier", () => {
       const db = createDb();
       const provider = createProvider(db);
@@ -338,6 +350,18 @@ describe("McpOAuthProvider", () => {
 
       expect(db.getTokens("srv")?.access_token).toBe("tok");
       expect(db.getVerifier("srv")).toBe("pkce-123");
+      db.close();
+    });
+
+    test("invalidateCredentials('all') clears pending client info", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client" });
+      provider.invalidateCredentials("all");
+
+      const info = await provider.clientInformation();
+      expect(info).toBeUndefined();
       db.close();
     });
 
@@ -403,15 +427,79 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("saveClientInformation persists to SQLite", () => {
+    test("saveClientInformation stages in memory, not SQLite", () => {
       const db = createDb();
       const provider = createProvider(db);
 
-      provider.saveClientInformation({ client_id: "saved-client" });
+      provider.saveClientInformation({ client_id: "staged-client" });
+
+      expect(db.getClientInfo("srv")).toBeUndefined();
+      db.close();
+    });
+
+    test("saveTokens flushes pending client info to SQLite", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client", client_secret: "secret" });
+      expect(db.getClientInfo("srv")).toBeUndefined();
+
+      provider.saveTokens({ access_token: "tok", token_type: "Bearer" });
 
       const stored = db.getClientInfo("srv");
       expect(stored).toBeDefined();
-      expect(stored?.client_id).toBe("saved-client");
+      expect(stored?.client_id).toBe("staged-client");
+      expect(stored?.client_secret).toBe("secret");
+      db.close();
+    });
+
+    test("abandoned flow does not persist client info to new provider", async () => {
+      const db = createDb();
+      const provider1 = createProvider(db);
+
+      provider1.saveClientInformation({ client_id: "abandoned-client" });
+      // Flow abandoned — saveTokens never called
+
+      // New provider instance (simulates next auth attempt)
+      const provider2 = createProvider(db);
+      const info = await provider2.clientInformation();
+
+      // Should not find the abandoned client — falls through to undefined
+      expect(info).toBeUndefined();
+      db.close();
+    });
+
+    test("clientInformation returns staged info during same provider instance", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "in-flight-client" });
+      const info = await provider.clientInformation();
+
+      expect(info).toBeDefined();
+      expect(info?.client_id).toBe("in-flight-client");
+      db.close();
+    });
+
+    test("saveTokens with pending client info is atomic (both or neither persist)", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "atomic-client" });
+
+      const origMethod = db.saveClientInfoAndTokens.bind(db);
+      db.saveClientInfoAndTokens = () => {
+        throw new Error("simulated transactional save failure");
+      };
+
+      expect(() => {
+        provider.saveTokens({ access_token: "tok", token_type: "Bearer" });
+      }).toThrow("simulated transactional save failure");
+
+      expect(db.getClientInfo("srv")).toBeUndefined();
+      expect(db.getTokens("srv")).toBeUndefined();
+
+      db.saveClientInfoAndTokens = origMethod;
       db.close();
     });
 

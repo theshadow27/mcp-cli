@@ -565,6 +565,13 @@ export class StateDb {
     this.db.run("DELETE FROM auth_tokens WHERE server_name = ?", [serverName]);
   }
 
+  saveClientInfoAndTokens(serverName: string, info: OAuthClientInformationMixed, tokens: OAuthTokens): void {
+    this.db.transaction(() => {
+      this.saveClientInfo(serverName, info);
+      this.saveTokens(serverName, tokens);
+    })();
+  }
+
   // -- OAuth client registration --
 
   getClientInfo(serverName: string): OAuthClientInformationMixed | undefined {
