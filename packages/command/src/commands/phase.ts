@@ -940,16 +940,20 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
  *
  * Two-phase transition log (PR #1407 adversarial-review fix):
  *   1. Parse flags (transition + execution inputs)
- *   2. Pre-validate the transition against committed history so bogus
+ *   2. Fetch the work item from the daemon (if `--work-item` given).
+ *      Done early so `work_items.phase` can seed `resolvedFrom` when
+ *      the transition log is empty (#1522). Early-exit on missing id.
+ *   3. Pre-validate the transition against committed history so bogus
  *      moves fail fast before we bundle or dispatch anything.
- *   3. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *   4. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
  *      captures attempt evidence from ANY branch, including cases that
  *      branch-guard rejects or handlers crash. Attempted entries are
- *      ignored by graph-walk / regression checks (#1407).
- *   4. Branch guard: refuse to dispatch outside the manifest's `runsOn`
+ *      ignored by graph-walk / regression checks (#1407). Note: early
+ *      exits before this point (unknown work-item id, unknown phase,
+ *      disallowed transition) are not captured in the audit log.
+ *   5. Branch guard: refuse to dispatch outside the manifest's `runsOn`
  *      branch. Attempt is already logged for audit.
- *   5. Bundle the phase source
- *   6. Fetch the work item from the daemon (if `--work-item` given)
+ *   6. Bundle the phase source
  *   7. Build a live AliasContext: real MCP proxy + daemon-backed state
  *      (namespaced by the work-item id)
  *   8. Execute the handler
@@ -1032,15 +1036,21 @@ export async function executePhase(
   // When --from is not given and transition history is empty, fall back to
   // work_items.phase as the implicit "from" so manually-spawned impl sessions
   // don't cause a spurious "(initial) → triage" rejection (#1522).
-  // Exception: when running the initial phase itself (first launch), keep
-  // from=null so Rule 4 (initial phase enforcement) still applies.
+  // Exceptions:
+  //   - target === manifest.initial: first launch of the initial phase; keep
+  //     from=null so Rule 4 (initial phase enforcement) still applies.
+  //   - workItem.phase not in manifest.phases: stale/mismatched phase name
+  //     (e.g. daemon stores "impl" but manifest declares "implement"); fall
+  //     back to null to preserve the original Rule 4 error path (#1636).
   const resolvedFrom =
     parsed.from !== null
       ? parsed.from
       : priorTargets.length > 0
         ? priorTargets[priorTargets.length - 1]
-        : parsed.target !== loaded.manifest.initial
-          ? (workItem?.phase ?? null)
+        : parsed.target !== loaded.manifest.initial &&
+            workItem?.phase != null &&
+            workItem.phase in loaded.manifest.phases
+          ? workItem.phase
           : null;
   validateTransition({
     manifest: loaded.manifest,
@@ -1053,9 +1063,10 @@ export async function executePhase(
   });
 
   // Two-phase log — append an "attempted" entry before branch-guard or
-  // handler dispatch so every invocation leaves an audit trail, even
-  // when branch-guard rejects or the handler crashes. Attempted entries
-  // are ignored by regression / graph-walk checks (#1407).
+  // handler dispatch. Captures audit evidence even when branch-guard
+  // rejects or the handler crashes. Does NOT cover early exits above
+  // (unknown work-item id, unknown/disallowed transition). Attempted
+  // entries are ignored by regression / graph-walk checks (#1407).
   appendAttempt(logPath, {
     workItemId: parsed.workItemId,
     from: resolvedFrom,
