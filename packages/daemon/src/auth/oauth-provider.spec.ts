@@ -327,6 +327,18 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
+    test("invalidateCredentials('client') clears pending client info", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client" });
+      provider.invalidateCredentials("client");
+
+      const info = await provider.clientInformation();
+      expect(info).toBeUndefined();
+      db.close();
+    });
+
     test("invalidateCredentials('client') does not affect tokens or verifier", () => {
       const db = createDb();
       const provider = createProvider(db);
@@ -338,6 +350,18 @@ describe("McpOAuthProvider", () => {
 
       expect(db.getTokens("srv")?.access_token).toBe("tok");
       expect(db.getVerifier("srv")).toBe("pkce-123");
+      db.close();
+    });
+
+    test("invalidateCredentials('all') clears pending client info", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client" });
+      provider.invalidateCredentials("all");
+
+      const info = await provider.clientInformation();
+      expect(info).toBeUndefined();
       db.close();
     });
 
@@ -454,6 +478,28 @@ describe("McpOAuthProvider", () => {
 
       expect(info).toBeDefined();
       expect(info?.client_id).toBe("in-flight-client");
+      db.close();
+    });
+
+    test("saveTokens with pending client info is atomic (both or neither persist)", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "atomic-client" });
+
+      const origMethod = db.saveClientInfoAndTokens.bind(db);
+      db.saveClientInfoAndTokens = () => {
+        throw new Error("simulated transactional save failure");
+      };
+
+      expect(() => {
+        provider.saveTokens({ access_token: "tok", token_type: "Bearer" });
+      }).toThrow("simulated transactional save failure");
+
+      expect(db.getClientInfo("srv")).toBeUndefined();
+      expect(db.getTokens("srv")).toBeUndefined();
+
+      db.saveClientInfoAndTokens = origMethod;
       db.close();
     });
 

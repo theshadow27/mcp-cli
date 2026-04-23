@@ -826,6 +826,38 @@ describe("StateDb", () => {
     });
   });
 
+  describe("saveClientInfoAndTokens", () => {
+    test("persists both client info and tokens atomically", () => {
+      const db = createDb();
+      db.saveClientInfoAndTokens(
+        "srv",
+        { client_id: "cid", client_secret: "sec" },
+        { access_token: "tok", token_type: "Bearer" },
+      );
+
+      expect(db.getClientInfo("srv")?.client_id).toBe("cid");
+      expect(db.getTokens("srv")?.access_token).toBe("tok");
+      db.close();
+    });
+
+    test("rolls back client info if token INSERT fails", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const rawDb = db["db"];
+      rawDb.run("DROP TABLE auth_tokens");
+      rawDb.run(
+        "CREATE TABLE auth_tokens (server_name TEXT PRIMARY KEY, access_token TEXT NOT NULL CHECK(length(access_token) > 1000))",
+      );
+
+      expect(() => {
+        db.saveClientInfoAndTokens("srv", { client_id: "cid" }, { access_token: "tok", token_type: "Bearer" });
+      }).toThrow();
+
+      expect(db.getClientInfo("srv")).toBeUndefined();
+      db.close();
+    });
+  });
+
   describe("oauth_verifiers", () => {
     test("saveVerifier and getVerifier round-trip", () => {
       const db = createDb();

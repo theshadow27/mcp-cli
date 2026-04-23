@@ -174,10 +174,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
   saveTokens(tokens: OAuthTokens): void {
     if (this.pendingClientInfo) {
-      this.db.saveClientInfo(this.serverName, this.pendingClientInfo);
+      this.db.saveClientInfoAndTokens(this.serverName, this.pendingClientInfo, tokens);
       this.pendingClientInfo = undefined;
+    } else {
+      this.db.saveTokens(this.serverName, tokens);
     }
-    this.db.saveTokens(this.serverName, tokens);
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -243,7 +244,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     switch (scope) {
       case "all":
         this.db.deleteTokens(this.serverName);
-        // Also clear keychain cache so we re-read
+        this.pendingClientInfo = undefined;
         this.keychainCache = undefined;
         break;
       case "tokens":
@@ -251,7 +252,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
         this.keychainCache = undefined;
         break;
       case "client":
-        // Could clear client info but usually not needed
+        this.pendingClientInfo = undefined;
         break;
       case "verifier":
         // Verifier is ephemeral, no need to explicitly clear
