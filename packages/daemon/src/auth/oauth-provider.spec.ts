@@ -403,15 +403,57 @@ describe("McpOAuthProvider", () => {
       db.close();
     });
 
-    test("saveClientInformation persists to SQLite", () => {
+    test("saveClientInformation stages in memory, not SQLite", () => {
       const db = createDb();
       const provider = createProvider(db);
 
-      provider.saveClientInformation({ client_id: "saved-client" });
+      provider.saveClientInformation({ client_id: "staged-client" });
+
+      expect(db.getClientInfo("srv")).toBeUndefined();
+      db.close();
+    });
+
+    test("saveTokens flushes pending client info to SQLite", () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "staged-client", client_secret: "secret" });
+      expect(db.getClientInfo("srv")).toBeUndefined();
+
+      provider.saveTokens({ access_token: "tok", token_type: "Bearer" });
 
       const stored = db.getClientInfo("srv");
       expect(stored).toBeDefined();
-      expect(stored?.client_id).toBe("saved-client");
+      expect(stored?.client_id).toBe("staged-client");
+      expect(stored?.client_secret).toBe("secret");
+      db.close();
+    });
+
+    test("abandoned flow does not persist client info to new provider", async () => {
+      const db = createDb();
+      const provider1 = createProvider(db);
+
+      provider1.saveClientInformation({ client_id: "abandoned-client" });
+      // Flow abandoned — saveTokens never called
+
+      // New provider instance (simulates next auth attempt)
+      const provider2 = createProvider(db);
+      const info = await provider2.clientInformation();
+
+      // Should not find the abandoned client — falls through to undefined
+      expect(info).toBeUndefined();
+      db.close();
+    });
+
+    test("clientInformation returns staged info during same provider instance", async () => {
+      const db = createDb();
+      const provider = createProvider(db);
+
+      provider.saveClientInformation({ client_id: "in-flight-client" });
+      const info = await provider.clientInformation();
+
+      expect(info).toBeDefined();
+      expect(info?.client_id).toBe("in-flight-client");
       db.close();
     });
 

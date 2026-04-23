@@ -52,6 +52,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   private _redirectUrl: string | undefined;
   private keychainCache: KeychainTokens | null | undefined; // undefined = not loaded
   private opts: OAuthProviderOpts;
+  private pendingClientInfo: OAuthClientInformationMixed | undefined;
 
   constructor(serverName: string, serverUrl: string, db: StateDb, opts?: OAuthProviderOpts) {
     this.serverName = serverName;
@@ -123,22 +124,28 @@ export class McpOAuthProvider implements OAuthClientProvider {
       return info;
     }
 
-    // 1. Check SQLite
+    // 1. Check in-memory staging (DCR result not yet confirmed by token exchange)
+    if (this.pendingClientInfo) return this.pendingClientInfo;
+
+    // 2. Check SQLite (confirmed client from a previous successful flow)
     const dbInfo = this.db.getClientInfo(this.serverName);
     if (dbInfo) return dbInfo;
 
-    // 2. Check Keychain (Claude Code may have registered a client)
+    // 3. Check Keychain (Claude Code may have registered a client)
     const kc = await this.loadKeychain();
     if (kc) {
       return { client_id: kc.clientId };
     }
 
-    // 3. No client info → SDK will attempt dynamic registration
+    // 4. No client info → SDK will attempt dynamic registration
     return undefined;
   }
 
   saveClientInformation(info: OAuthClientInformationMixed): void {
-    this.db.saveClientInfo(this.serverName, info);
+    // Stage in memory — only persist to SQLite once saveTokens() confirms
+    // the client can complete a flow. Prevents zombie client_ids from
+    // poisoning future auth attempts when the flow is abandoned mid-way.
+    this.pendingClientInfo = info;
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
@@ -166,6 +173,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
+    if (this.pendingClientInfo) {
+      this.db.saveClientInfo(this.serverName, this.pendingClientInfo);
+      this.pendingClientInfo = undefined;
+    }
     this.db.saveTokens(this.serverName, tokens);
   }
 
