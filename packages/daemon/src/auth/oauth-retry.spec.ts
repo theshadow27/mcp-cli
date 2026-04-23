@@ -3,7 +3,6 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MetricsSnapshot } from "@mcp-cli/core";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StateDb } from "../db/state";
 import { metrics } from "../metrics";
 import type { CallbackServer } from "./callback-server";
@@ -135,7 +134,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
         startCallbackServer: () => {
           callbackNum++;
           if (callbackNum === 1) {
-            // First attempt: callback times out (authorize endpoint returned 5xx)
+            // First attempt: no callback received within the timeout window
             return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
           }
           // Second attempt: user completes consent
@@ -303,7 +302,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
       ),
     ).rejects.toThrow("OAuth error: access_denied");
 
-    // Only one attempt — access_denied is not a 5xx
+    // Only one attempt — access_denied is not a timeout, no retry
     expect(callbackNum).toBe(1);
     db.close();
   });
