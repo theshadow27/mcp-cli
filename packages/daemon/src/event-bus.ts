@@ -82,14 +82,11 @@ export class EventBus {
   subscribe(callback: EventCallback, filter?: EventFilter): number {
     const id = ++this.nextSubId;
     this.subscribers.set(id, { id, filter: filter ?? null, callback, lastActivityAt: Date.now() });
-    metrics.gauge("mcpd_event_bus_subscribers").set(this.subscribers.size);
     return id;
   }
 
   unsubscribe(id: number): boolean {
-    const deleted = this.subscribers.delete(id);
-    if (deleted) metrics.gauge("mcpd_event_bus_subscribers").set(this.subscribers.size);
-    return deleted;
+    return this.subscribers.delete(id);
   }
 
   /**
