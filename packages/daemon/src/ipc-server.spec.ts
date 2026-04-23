@@ -2690,8 +2690,8 @@ describe("IpcServer HTTP transport", () => {
         unix: socketPath,
         signal: c1.signal,
       } as RequestInit);
-      const reader1 = res1.body!.getReader();
-      await reader1.read();
+      const reader1 = res1.body?.getReader();
+      await reader1?.read();
       expect(gauge.value()).toBe(1);
 
       const c2 = new AbortController();
@@ -2700,14 +2700,14 @@ describe("IpcServer HTTP transport", () => {
         unix: socketPath,
         signal: c2.signal,
       } as RequestInit);
-      const reader2 = res2.body!.getReader();
-      await reader2.read();
+      const reader2 = res2.body?.getReader();
+      await reader2?.read();
       expect(gauge.value()).toBe(2);
 
       c1.abort();
-      reader1.releaseLock();
+      reader1?.releaseLock();
       c2.abort();
-      reader2.releaseLock();
+      reader2?.releaseLock();
     });
   });
 
