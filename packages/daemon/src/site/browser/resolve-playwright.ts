@@ -1,0 +1,133 @@
+/**
+ * Runtime resolver for the `playwright` npm package.
+ *
+ * In compiled binaries (`bun build --compile`), the site-worker runs from
+ * `/$bunfs/root/` — a read-only virtual FS with no `node_modules`. The
+ * `--external playwright` flag defers resolution to runtime, but the bunfs
+ * resolver can't find the package. This module resolves playwright from
+ * real on-disk paths and auto-installs to a vendor directory on first use.
+ *
+ * See #1601 for the full backstory.
+ */
+
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { BrowserType } from "playwright";
+
+const VENDOR_DIR = join(homedir(), ".mcp-cli", "vendor", "playwright");
+const VENDOR_PKG = join(VENDOR_DIR, "node_modules", "playwright");
+
+// Keep in sync with devDependencies in package.json.
+const PLAYWRIGHT_VERSION = "1.59.1";
+
+/**
+ * Ordered list of on-disk paths where playwright might be installed.
+ * The first one that exists wins. process.cwd() is intentionally omitted —
+ * the daemon is long-lived and its cwd at startup is caller-dependent, so
+ * using it would poison the cache with whatever project the user was in.
+ */
+export function playwrightCandidates(): string[] {
+  const candidates = [VENDOR_PKG];
+
+  if (process.env.BUN_INSTALL) {
+    candidates.push(join(process.env.BUN_INSTALL, "install", "global", "node_modules", "playwright"));
+  }
+
+  return candidates;
+}
+
+// Promise deduplication: all concurrent callers share one in-flight resolution.
+// On failure the promise is cleared so the next call can retry.
+let pending: Promise<BrowserType> | null = null;
+
+/**
+ * Resolve the playwright `chromium` browser type from a real on-disk path.
+ * Auto-installs to `~/.mcp-cli/vendor/playwright/` on first use if no
+ * candidate path has playwright installed.
+ */
+export function resolvePlaywright(opts?: {
+  candidates?: string[];
+  install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
+}): Promise<BrowserType> {
+  if (!pending) {
+    pending = doResolve(opts).catch((err) => {
+      pending = null;
+      throw err;
+    });
+  }
+  return pending;
+}
+
+async function doResolve(opts?: {
+  candidates?: string[];
+  install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
+}): Promise<BrowserType> {
+  const candidates = opts?.candidates ?? playwrightCandidates();
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      try {
+        const mod = await import(candidate);
+        if (mod.chromium) return mod.chromium as BrowserType;
+        // exists and loads but no chromium export — try next candidate
+      } catch {
+        // import failed — try next candidate
+      }
+    }
+  }
+
+  // No candidate found — auto-install to vendor dir.
+  console.error("[site] playwright not found locally — installing to vendor dir…");
+
+  const doInstall = opts?.install ?? defaultInstall;
+  const result = await doInstall(VENDOR_DIR);
+
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to auto-install playwright (exit ${result.exitCode}): ${result.stderr.trim() || "(no output)"}. ` +
+        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
+    );
+  }
+
+  if (!existsSync(VENDOR_PKG)) {
+    throw new Error(
+      `playwright install succeeded but package not found at ${VENDOR_PKG}. ` +
+        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
+    );
+  }
+
+  console.error("[site] playwright installed successfully");
+
+  const mod = await import(VENDOR_PKG);
+  if (!mod.chromium) {
+    throw new Error(`playwright installed but chromium export is missing at ${VENDOR_PKG}`);
+  }
+  return mod.chromium as BrowserType;
+}
+
+async function defaultInstall(vendorDir: string): Promise<{ exitCode: number; stderr: string }> {
+  mkdirSync(vendorDir, { recursive: true });
+
+  // Anchor bun so it doesn't walk up to an unrelated package.json.
+  const pkgJson = join(vendorDir, "package.json");
+  if (!existsSync(pkgJson)) {
+    writeFileSync(pkgJson, '{"name":"mcx-playwright-vendor","private":true}\n');
+  }
+
+  const proc = Bun.spawn(["bun", "add", `playwright@${PLAYWRIGHT_VERSION}`], {
+    cwd: vendorDir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await proc.exited;
+  return {
+    exitCode: proc.exitCode ?? 1,
+    stderr: await new Response(proc.stderr).text(),
+  };
+}
+
+/** Reset cached resolution — for testing only. */
+export function _resetCache(): void {
+  pending = null;
+}

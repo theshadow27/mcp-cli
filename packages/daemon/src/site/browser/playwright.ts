@@ -18,7 +18,6 @@ import type {
   Response as PwResponse,
   WebSocket as PwWebSocket,
 } from "playwright";
-import { chromium } from "playwright";
 import type {
   BrowserEngine,
   BrowserEvents,
@@ -28,6 +27,7 @@ import type {
   SiteSpec,
   StartSiteResult,
 } from "./engine";
+import { resolvePlaywright } from "./resolve-playwright";
 
 function isTextual(contentType: string): boolean {
   if (!contentType) return true;
@@ -124,6 +124,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     const profileDir = profileDirs[0];
     mkdirSync(profileDir, { recursive: true });
 
+    const chromium = await resolvePlaywright();
     const ctx = await chromium.launchPersistentContext(profileDir, {
       channel: "chrome",
       headless: false,
