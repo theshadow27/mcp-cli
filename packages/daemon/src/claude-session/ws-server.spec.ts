@@ -3919,7 +3919,9 @@ describe("monitor event mapping", () => {
         strikes: 3,
       });
 
+      expect(events).toHaveLength(1);
       expect(events[0].event).toBe("session.containment_denied");
+      expect(events[0].category).toBe("session");
       expect(events[0].strikes).toBe(3);
       expect(events[0].reason).toBe("blocked");
     });
@@ -3935,7 +3937,9 @@ describe("monitor event mapping", () => {
         strikes: 5,
       });
 
+      expect(events).toHaveLength(1);
       expect(events[0].event).toBe("session.containment_escalated");
+      expect(events[0].category).toBe("session");
       expect(events[0].strikes).toBe(5);
       expect(events[0].reason).toBe("escalated");
     });
@@ -3951,7 +3955,9 @@ describe("monitor event mapping", () => {
         strikes: 0,
       });
 
+      expect(events).toHaveLength(1);
       expect(events[0].event).toBe("session.containment_reset");
+      expect(events[0].category).toBe("session");
       expect(events[0].strikes).toBe(0);
       expect(events[0].reason).toBe("operator reset");
     });
@@ -4063,7 +4069,9 @@ describe("monitor event mapping", () => {
 
       priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 13 });
 
+      expect(events).toHaveLength(1);
       expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(13);
       expect(events[0].runId).toBeUndefined();
     });
 
