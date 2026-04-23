@@ -44,6 +44,12 @@ export interface OAuthProviderOpts {
   /** OAuth scope from per-server config (highest priority in scope resolution). */
   scope?: string;
   readKeychain?: (url: string) => Promise<KeychainTokens | null>;
+  /**
+   * When true, skip the macOS Keychain fallback in clientInformation().
+   * Used by the DCR-retry path so a burned keychain client_id is not
+   * restored after deleteClientInfo() clears the SQLite row.
+   */
+  skipKeychainClientId?: boolean;
 }
 
 export class McpOAuthProvider implements OAuthClientProvider {
@@ -133,9 +139,13 @@ export class McpOAuthProvider implements OAuthClientProvider {
     if (dbInfo) return dbInfo;
 
     // 3. Check Keychain (Claude Code may have registered a client)
-    const kc = await this.loadKeychain();
-    if (kc) {
-      return { client_id: kc.clientId };
+    //    Skipped when skipKeychainClientId is set (DCR retry path — the
+    //    keychain entry may hold a burned client_id we just invalidated).
+    if (!this.opts.skipKeychainClientId) {
+      const kc = await this.loadKeychain();
+      if (kc) {
+        return { client_id: kc.clientId };
+      }
     }
 
     // 4. No client info → SDK will attempt dynamic registration

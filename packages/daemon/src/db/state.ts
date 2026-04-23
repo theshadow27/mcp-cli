@@ -608,6 +608,10 @@ export class StateDb {
     );
   }
 
+  deleteClientInfo(serverName: string): void {
+    this.db.run("DELETE FROM oauth_clients WHERE server_name = ?", [serverName]);
+  }
+
   // -- PKCE code verifier --
 
   getVerifier(serverName: string): string | undefined {
