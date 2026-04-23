@@ -35,6 +35,7 @@ export interface MonitorDeps {
   writeStderr: (line: string) => void;
   exit: (code: number) => never;
   onSigint: (fn: () => void) => void;
+  onStdoutError: (fn: (err: Error) => void) => void;
 }
 
 const defaultDeps: MonitorDeps = {
@@ -44,6 +45,7 @@ const defaultDeps: MonitorDeps = {
   writeStderr: (line) => process.stderr.write(line),
   exit: (code) => process.exit(code),
   onSigint: (fn) => process.once("SIGINT", fn),
+  onStdoutError: (fn) => process.stdout.on("error", fn),
 };
 
 export function parseMonitorArgs(args: string[]): MonitorArgs {
@@ -242,6 +244,9 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
   }
 
   d.onSigint(() => finish(0));
+  d.onStdoutError((err) => {
+    if ((err as Error & { code?: string }).code === "EPIPE") finish(0);
+  });
 
   let count = 0;
 
