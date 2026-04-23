@@ -6,7 +6,8 @@
  * 2. macOS Keychain (Claude Code's tokens — read-only)
  * 3. undefined → triggers SDK auth flow
  *
- * Writes always go to SQLite (never touch Keychain).
+ * DCR client info is staged in memory until token exchange succeeds,
+ * then persisted to SQLite atomically with tokens. Keychain is read-only.
  */
 
 import type { OAuthClientProvider, OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
