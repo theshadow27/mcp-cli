@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { IpcCallError } from "@mcp-cli/core";
+import { IPC_ERROR, IpcCallError } from "@mcp-cli/core";
 import type { GcDeps } from "./gc";
 import { cmdGc, defaultGcDeps, parseDuration, parseGcArgs, runGc } from "./gc";
 
@@ -273,6 +273,32 @@ describe("runGc worktrees", () => {
     expect(claudeCallCount).toBeGreaterThan(0);
     // Must not emit the fatal "Cannot reach daemon" error
     expect(d.errors.some((e) => e.includes("Cannot reach daemon"))).toBe(false);
+  });
+
+  test("skips provider when IpcCallError has SERVER_NOT_FOUND code (#1398)", async () => {
+    const responses = makeWorktreeResponses();
+    let claudeCallCount = 0;
+    const d = makeDeps({
+      execResponses: responses,
+      callTool: async (tool) => {
+        if (tool === "claude_session_list") {
+          claudeCallCount++;
+          return [];
+        }
+        throw new IpcCallError({
+          code: IPC_ERROR.SERVER_NOT_FOUND,
+          message: 'Server "_acp" not found',
+          data: undefined,
+        });
+      },
+    });
+
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    expect(d.logs.length + d.errors.length).toBeGreaterThan(0);
+    expect(claudeCallCount).toBeGreaterThan(0);
+    expect(d.errors.some((e) => e.includes("Cannot reach daemon"))).toBe(false);
+    expect(d.errors.some((e) => e.includes("not found"))).toBe(false);
   });
 
   test("live mode fails closed when session list throws", async () => {

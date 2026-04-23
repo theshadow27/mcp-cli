@@ -23,7 +23,7 @@ import type {
   ServerStatus,
   ToolInfo,
 } from "@mcp-cli/core";
-import { consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import { IPC_ERROR, consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import {
   CONNECT_INITIAL_DELAY_MS,
   CONNECT_MAX_DELAY_MS,
@@ -271,7 +271,7 @@ export class ServerPool {
     if (pending) await pending;
 
     const conn = this.connections.get(name);
-    if (!conn) throw new Error(`Server "${name}" not found`);
+    if (!conn) throw Object.assign(new Error(`Server "${name}" not found`), { code: IPC_ERROR.SERVER_NOT_FOUND });
 
     // Virtual servers cannot be reconnected via config — they must be
     // re-registered by the daemon code that manages them (e.g., ClaudeServer, AliasServer).
@@ -518,7 +518,8 @@ export class ServerPool {
       if (pending) await pending;
 
       const conn = this.connections.get(serverName);
-      if (!conn) throw new Error(`Server "${serverName}" not found`);
+      if (!conn)
+        throw Object.assign(new Error(`Server "${serverName}" not found`), { code: IPC_ERROR.SERVER_NOT_FOUND });
 
       // Return cached tools if we have any (from connect or SQLite)
       if (conn.tools.size > 0) return [...conn.tools.values()];

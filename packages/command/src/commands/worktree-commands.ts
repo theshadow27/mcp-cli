@@ -5,7 +5,7 @@
  * that any provider can add to its command dispatch.
  */
 
-import { IpcCallError, WorktreeError, listMcxWorktrees, pruneWorktrees } from "@mcp-cli/core";
+import { IPC_ERROR, IpcCallError, WorktreeError, listMcxWorktrees, pruneWorktrees } from "@mcp-cli/core";
 import type { WorktreeShimDeps } from "@mcp-cli/core";
 import { c, formatToolResult } from "../output";
 
@@ -43,12 +43,17 @@ export async function getAllActiveSessionWorktrees(
       }
     } catch (e) {
       if (e instanceof IpcCallError) {
-        // Only skip when the error indicates the provider server is disconnected
-        // or unreachable — a disconnected server has no active sessions, so it
-        // is safe to skip. Re-throw for logic errors (invalid-params, internal, etc.)
-        // that indicate a real problem with the call itself.
+        // Skip when the provider server is absent or disconnected — it can't
+        // have active sessions, so skipping is safe.  Re-throw for logic
+        // errors (invalid-params, internal, etc.) that indicate a real
+        // problem with the call itself.
+        //
+        // Primary: structured error code from the daemon (SERVER_NOT_FOUND).
+        // Fallback: substring match for older daemons that don't set the code.
+        if (e.code === IPC_ERROR.SERVER_NOT_FOUND) continue;
         const msg = e.message.toLowerCase();
         if (
+          msg.includes("not found") ||
           msg.includes("not connected") ||
           msg.includes("disconnected") ||
           msg.includes("not reachable") ||
