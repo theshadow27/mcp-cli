@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MetricsSnapshot } from "@mcp-cli/core";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StateDb } from "../db/state";
+import { metrics } from "../metrics";
 import type { CallbackServer } from "./callback-server";
+import type { KeychainTokens } from "./keychain";
 import { runOAuthFlowWithDcrRetry } from "./oauth-retry";
 
 function tmpDb(): string {
@@ -121,9 +124,9 @@ describe("runOAuthFlowWithDcrRetry", () => {
       db,
       {},
       {
-        authFn: async (_provider, opts) => {
+        authFn: async (_provider, authOpts) => {
           authCallCount++;
-          if (opts.authorizationCode) return "AUTHORIZED";
+          if (authOpts.authorizationCode) return "AUTHORIZED";
           // Capture db state at each REDIRECT call
           const info = db.getClientInfo(SERVER);
           if (info) deletedClientsBetweenAttempts.push(info.client_id);
@@ -148,6 +151,110 @@ describe("runOAuthFlowWithDcrRetry", () => {
     expect(deletedClientsBetweenAttempts).toEqual(["burned-client-A"]);
     // After retry the old client info is gone (new one would be saved by real SDK)
     expect(db.getClientInfo(SERVER)).toBeUndefined();
+    db.close();
+  });
+
+  test("skips keychain client_id on retry so burned keychain entry does not restore zombie", async () => {
+    const db = createDb();
+    // No SQLite entry — keychain holds the only (burned) client_id
+    const keychainClientId = "burned-keychain-client";
+    const seenClientIds: Array<string | undefined> = [];
+
+    let callbackNum = 0;
+    await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {
+        readKeychain: async (): Promise<KeychainTokens | null> =>
+          Promise.resolve({ accessToken: "tok", expiresAt: Date.now() + 3600_000, clientId: keychainClientId }),
+      },
+      {
+        authFn: async (provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          // Capture what clientInformation() returns for this attempt
+          const info = await (
+            provider as { clientInformation(): Promise<{ client_id?: string } | undefined> }
+          ).clientInformation();
+          seenClientIds.push(info?.client_id);
+          return "REDIRECT";
+        },
+        startCallbackServer: () => {
+          callbackNum++;
+          if (callbackNum === 1) {
+            return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+          }
+          return makeCallback(Promise.resolve("code-fresh"));
+        },
+      },
+    );
+
+    // First attempt sees keychain client_id; second attempt skips it → undefined → fresh DCR
+    expect(seenClientIds[0]).toBe(keychainClientId);
+    expect(seenClientIds[1]).toBeUndefined();
+    db.close();
+  });
+
+  test("increments oauth_dcr_retry_total{outcome=success} metric on successful retry", async () => {
+    const db = createDb();
+    let callbackNum = 0;
+
+    const beforeSnap = metrics.toJSON();
+    const before =
+      beforeSnap.counters.find((c) => c.name === "oauth_dcr_retry_total" && c.labels?.outcome === "success")?.value ??
+      0;
+
+    await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          return "REDIRECT";
+        },
+        startCallbackServer: () => {
+          callbackNum++;
+          if (callbackNum === 1) return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+          return makeCallback(Promise.resolve("code-x"));
+        },
+      },
+    );
+
+    const afterSnap = metrics.toJSON();
+    const after =
+      afterSnap.counters.find((c) => c.name === "oauth_dcr_retry_total" && c.labels?.outcome === "success")?.value ?? 0;
+    expect(after - before).toBe(1);
+    db.close();
+  });
+
+  test("increments oauth_dcr_retry_total{outcome=double_timeout} metric on double failure", async () => {
+    const db = createDb();
+
+    const beforeSnap = metrics.toJSON();
+    const before =
+      beforeSnap.counters.find((c) => c.name === "oauth_dcr_retry_total" && c.labels?.outcome === "double_timeout")
+        ?.value ?? 0;
+
+    await expect(
+      runOAuthFlowWithDcrRetry(
+        SERVER,
+        SERVER_URL,
+        db,
+        {},
+        {
+          authFn: async () => "REDIRECT",
+          startCallbackServer: () => makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)"))),
+        },
+      ),
+    ).rejects.toThrow();
+
+    const afterSnap = metrics.toJSON();
+    const after =
+      afterSnap.counters.find((c) => c.name === "oauth_dcr_retry_total" && c.labels?.outcome === "double_timeout")
+        ?.value ?? 0;
+    expect(after - before).toBe(1);
     db.close();
   });
 

@@ -219,6 +219,44 @@ describe("McpOAuthProvider", () => {
       expect(provider.callbackPort).toBeUndefined();
       db.close();
     });
+
+    test("skipKeychainClientId bypasses keychain fallback, returning undefined for fresh DCR", async () => {
+      const db = createDb();
+      // No SQLite entry; keychain holds a (potentially burned) client_id
+      mockReadKeychain.mockImplementation(() =>
+        Promise.resolve({ accessToken: "tok", expiresAt: Date.now() + 3600_000, clientId: "burned-kc-client" }),
+      );
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        skipKeychainClientId: true,
+        readKeychain: mockReadKeychain,
+      });
+      const info = await provider.clientInformation();
+
+      // Keychain was NOT consulted for client_id — returns undefined so SDK does fresh DCR
+      expect(info).toBeUndefined();
+      // Keychain is still accessible for token lookup (not globally suppressed)
+      expect(mockReadKeychain).not.toHaveBeenCalled();
+      db.close();
+    });
+
+    test("skipKeychainClientId does not affect SQLite client info (SQLite still wins)", async () => {
+      const db = createDb();
+      db.saveClientInfo("srv", { client_id: "sqlite-client" });
+      mockReadKeychain.mockImplementation(() =>
+        Promise.resolve({ accessToken: "tok", expiresAt: Date.now() + 3600_000, clientId: "kc-client" }),
+      );
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        skipKeychainClientId: true,
+        readKeychain: mockReadKeychain,
+      });
+      const info = await provider.clientInformation();
+
+      // SQLite row is still returned (only the keychain fallback is bypassed)
+      expect(info?.client_id).toBe("sqlite-client");
+      db.close();
+    });
   });
 
   // -- discoveryState() --
