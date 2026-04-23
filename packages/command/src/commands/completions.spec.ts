@@ -28,6 +28,7 @@ describe("SUBCOMMANDS", () => {
     "alias",
     "run",
     "logs",
+    "monitor",
     "typegen",
     "restart",
     "shutdown",
