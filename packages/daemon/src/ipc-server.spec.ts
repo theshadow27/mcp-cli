@@ -2197,15 +2197,17 @@ describe("IpcServer HTTP transport", () => {
       expect(res.headers.get("content-type")).toBe("application/x-ndjson");
     });
 
-    test("GET /events?pr=abc returns 400", async () => {
-      startServerWithBus();
-      const res = await fetch("http://localhost/events?pr=abc", {
-        method: "GET",
-        unix: socketPath,
-      } as RequestInit);
-      expect(res.status).toBe(400);
-      const text = await res.text();
-      expect(text).toContain("pr must be a valid integer");
+    test("GET /events with invalid pr returns 400", async () => {
+      for (const bad of ["abc", "1.5", "-1", "0", ""]) {
+        startServerWithBus();
+        const res = await fetch(`http://localhost/events?pr=${encodeURIComponent(bad)}`, {
+          method: "GET",
+          unix: socketPath,
+        } as RequestInit);
+        expect(res.status, `pr="${bad}"`).toBe(400);
+        const text = await res.text();
+        expect(text, `pr="${bad}"`).toContain("pr must be a positive integer");
+      }
     });
 
     test("streams published events as NDJSON lines", async () => {
@@ -2670,15 +2672,17 @@ describe("IpcServer HTTP transport", () => {
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
 
-  test("GET /events?pr=abc returns 400 on ring-buffer path", async () => {
-    startServer();
-    const res = await fetch("http://localhost/events?pr=abc", {
-      method: "GET",
-      unix: socketPath,
-    } as RequestInit);
-    expect(res.status).toBe(400);
-    const text = await res.text();
-    expect(text).toContain("pr must be a valid integer");
+  test("GET /events with invalid pr returns 400 on ring-buffer path", async () => {
+    for (const bad of ["abc", "1.5", "-1", "0", ""]) {
+      startServer();
+      const res = await fetch(`http://localhost/events?pr=${encodeURIComponent(bad)}`, {
+        method: "GET",
+        unix: socketPath,
+      } as RequestInit);
+      expect(res.status, `pr="${bad}"`).toBe(400);
+      const text = await res.text();
+      expect(text, `pr="${bad}"`).toContain("pr must be a positive integer");
+    }
   });
 
   test("GET /events returns NDJSON content-type", async () => {
@@ -3035,11 +3039,12 @@ describe("buildEventFilter", () => {
     expect(filter?.({ category: "work_item", prNumber: 99, event: "pr.merged" })).toBe(false);
   });
 
-  test("pr=abc (NaN) returns a reject-all filter", () => {
-    const filter = buildEventFilter(params({ pr: "abc" }));
-    expect(filter).not.toBeNull();
-    expect(filter?.({ category: "work_item", prNumber: 42, event: "pr.merged" })).toBe(false);
-    expect(filter?.({ category: "work_item", prNumber: 99, event: "pr.merged" })).toBe(false);
+  test("pr with invalid value returns a reject-all filter", () => {
+    for (const bad of ["abc", "1.5", "-1", "0", ""]) {
+      const filter = buildEventFilter(params({ pr: bad, subscribe: "work_item" }));
+      expect(filter, `pr="${bad}"`).not.toBeNull();
+      expect(filter?.({ category: "work_item", prNumber: 42, event: "pr.merged" }), `pr="${bad}"`).toBe(false);
+    }
   });
 
   test("workItem filter matches workItemId", () => {
