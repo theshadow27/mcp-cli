@@ -2440,7 +2440,8 @@ describe("IpcServer HTTP transport", () => {
       server.start(socketPath);
 
       // Simulate the bridge: ClaudeServer.onMonitorEvent publishes to the daemon bus
-      const bridgedDb = new StateDb(testOptions().DB_PATH);
+      using bridgedOpts = testOptions();
+      const bridgedDb = new StateDb(bridgedOpts.DB_PATH);
       const claudeServer = new ClaudeServer(bridgedDb, undefined, undefined, silentLogger);
       claudeServer.onMonitorEvent = (input) => bus.publish(input);
 
