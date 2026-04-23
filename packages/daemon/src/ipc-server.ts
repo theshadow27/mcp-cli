@@ -126,6 +126,9 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
 
   const categories = subscribeRaw ? new Set(subscribeRaw.split(",").map((s) => s.trim())) : null;
   const prNumber = prRaw !== null ? Number(prRaw) : null;
+  if (prNumber !== null && Number.isNaN(prNumber)) {
+    return () => false;
+  }
   const typePatterns = typeRaw
     ? typeRaw
         .split(",")
@@ -1459,6 +1462,11 @@ export class IpcServer {
     const sinceParam = url.searchParams.get("since");
     const sinceSeq = sinceParam !== null ? Number(sinceParam) : null;
     const eventLog = this.eventBus?.eventLog ?? null;
+
+    const prRaw = url.searchParams.get("pr");
+    if (prRaw !== null && Number.isNaN(Number(prRaw))) {
+      return new Response("pr must be a valid integer", { status: 400 });
+    }
 
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {

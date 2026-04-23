@@ -2197,6 +2197,17 @@ describe("IpcServer HTTP transport", () => {
       expect(res.headers.get("content-type")).toBe("application/x-ndjson");
     });
 
+    test("GET /events?pr=abc returns 400", async () => {
+      startServerWithBus();
+      const res = await fetch("http://localhost/events?pr=abc", {
+        method: "GET",
+        unix: socketPath,
+      } as RequestInit);
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toContain("pr must be a valid integer");
+    });
+
     test("streams published events as NDJSON lines", async () => {
       const { bus } = startServerWithBus();
 
@@ -2659,6 +2670,17 @@ describe("IpcServer HTTP transport", () => {
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
 
+  test("GET /events?pr=abc returns 400 on ring-buffer path", async () => {
+    startServer();
+    const res = await fetch("http://localhost/events?pr=abc", {
+      method: "GET",
+      unix: socketPath,
+    } as RequestInit);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).toContain("pr must be a valid integer");
+  });
+
   test("GET /events returns NDJSON content-type", async () => {
     startServer();
 
@@ -3010,6 +3032,13 @@ describe("buildEventFilter", () => {
   test("pr filter matches prNumber", () => {
     const filter = buildEventFilter(params({ pr: "42" }));
     expect(filter?.({ category: "work_item", prNumber: 42, event: "pr.merged" })).toBe(true);
+    expect(filter?.({ category: "work_item", prNumber: 99, event: "pr.merged" })).toBe(false);
+  });
+
+  test("pr=abc (NaN) returns a reject-all filter", () => {
+    const filter = buildEventFilter(params({ pr: "abc" }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ category: "work_item", prNumber: 42, event: "pr.merged" })).toBe(false);
     expect(filter?.({ category: "work_item", prNumber: 99, event: "pr.merged" })).toBe(false);
   });
 
