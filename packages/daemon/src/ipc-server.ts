@@ -1355,6 +1355,10 @@ export class IpcServer {
   private static readonly EVENT_RING_CAPACITY = 256;
   private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
   static readonly MAX_EVENT_BUS_SUBSCRIBERS = 64;
+  /** Heartbeat interval for the EventBus NDJSON path — shorter to detect dead peers faster (#1557). */
+  private static readonly EVENTBUS_HEARTBEAT_MS = 15_000;
+  /** Prune EventBus subscribers that haven't delivered an event in this window (#1557). */
+  private static readonly EVENTBUS_SUB_TTL_MS = 10 * 60_000;
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1500,15 +1504,21 @@ export class IpcServer {
       }
 
       let subId: number | null = null;
+      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
       const encoder = new TextEncoder();
       const subscriberGauge = metrics.gauge("mcpd_event_bus_subscribers");
 
-      const unsubscribe = () => {
+      // Shared cleanup: unsubscribe from EventBus, update gauge, and clear heartbeat timer.
+      const cleanup = () => {
         if (subId !== null) {
           bus.unsubscribe(subId);
           subId = null;
           subscriberGauge.dec();
+        }
+        if (heartbeatTimer !== undefined) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
         }
       };
 
@@ -1533,7 +1543,7 @@ export class IpcServer {
                 if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                   this.logger.warn("[events] slow consumer detected, dropping subscriber");
                   metrics.counter("mcpd_event_bus_slow_drops_total").inc();
-                  unsubscribe();
+                  cleanup();
                   try {
                     controller.error(new Error("slow consumer"));
                   } catch {
@@ -1550,7 +1560,7 @@ export class IpcServer {
                   }
                 } catch {
                   // Stream closed
-                  unsubscribe();
+                  cleanup();
                 }
               },
               (event) => {
@@ -1580,7 +1590,7 @@ export class IpcServer {
                   if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                     this.logger.warn("[events] slow consumer during backfill, dropping subscriber");
                     metrics.counter("mcpd_event_bus_slow_drops_total").inc();
-                    unsubscribe();
+                    cleanup();
                     try {
                       controller.error(new Error("slow consumer"));
                     } catch {
@@ -1591,7 +1601,7 @@ export class IpcServer {
                   try {
                     controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
                   } catch {
-                    unsubscribe();
+                    cleanup();
                     return;
                   }
                 }
@@ -1605,7 +1615,7 @@ export class IpcServer {
                 if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                   this.logger.warn("[events] slow consumer during backfill drain, dropping subscriber");
                   metrics.counter("mcpd_event_bus_slow_drops_total").inc();
-                  unsubscribe();
+                  cleanup();
                   try {
                     controller.error(new Error("slow consumer"));
                   } catch {
@@ -1619,15 +1629,27 @@ export class IpcServer {
                   if (seq !== undefined && seq <= highWaterMark) continue;
                   controller.enqueue(encoder.encode(line));
                 } catch {
-                  unsubscribe();
+                  cleanup();
                   return;
                 }
               }
             }
+
+            // Periodic heartbeat newline to detect dead peers (#1557).
+            // On write failure, cleanup unsubscribes and stops the timer.
+            // Also prunes stale EventBus subscribers on each tick as a secondary defense.
+            heartbeatTimer = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode("\n"));
+              } catch {
+                cleanup();
+                return;
+              }
+              bus.pruneStale(IpcServer.EVENTBUS_SUB_TTL_MS);
+            }, IpcServer.EVENTBUS_HEARTBEAT_MS);
+            heartbeatTimer.unref();
           },
-          cancel: () => {
-            unsubscribe();
-          },
+          cancel: cleanup,
         },
         new ByteLengthQueuingStrategy({ highWaterMark: 1024 * 1024 }),
       );

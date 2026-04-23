@@ -241,6 +241,61 @@ describe("EventBus", () => {
       JSON.stringify = orig;
     }
   });
+
+  test("pruneStale removes all subscribers when maxIdleMs is negative (all appear stale)", () => {
+    const bus = new EventBus();
+    bus.subscribe(() => {});
+    bus.subscribe(() => {});
+
+    // Negative maxIdleMs makes cutoff = Date.now() + |maxIdleMs|, so all subscribers are stale.
+    expect(bus.pruneStale(-1)).toBe(2);
+    expect(bus.subscriberCount).toBe(0);
+  });
+
+  test("pruneStale keeps subscribers active within maxIdleMs", () => {
+    const bus = new EventBus();
+    bus.subscribe(() => {});
+
+    expect(bus.pruneStale(30_000)).toBe(0);
+    expect(bus.subscriberCount).toBe(1);
+  });
+
+  test("pruneStale returns 0 when no subscribers", () => {
+    const bus = new EventBus();
+    expect(bus.pruneStale(1_000)).toBe(0);
+  });
+
+  test("lastActivityAt is updated when event is delivered to subscriber", () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    // Small delay to ensure timestamp advances.
+    const t = Date.now();
+    while (Date.now() === t) {
+      /* spin */
+    }
+
+    bus.publish(sessionEvent());
+    expect(bus.getLastActivityAt(id)).toBeGreaterThan(before);
+  });
+
+  test("lastActivityAt is not updated when filter excludes event", () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(
+      () => {},
+      (e) => e.category === "mail", // only mail
+    );
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    bus.publish(sessionEvent()); // filtered out
+    expect(bus.getLastActivityAt(id)).toBe(before);
+  });
+
+  test("getLastActivityAt returns null for unknown subscriber", () => {
+    const bus = new EventBus();
+    expect(bus.getLastActivityAt(999)).toBeNull();
+  });
 });
 
 function freshLog(): EventLog {

@@ -8,11 +8,12 @@
  * When an EventLog is provided, events are durably persisted and seq is
  * assigned by SQLite AUTOINCREMENT — surviving daemon restarts. (#1513)
  *
- * #1512
+ * #1512 #1557
  */
 
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import type { EventLog } from "./event-log";
+import { metrics } from "./metrics";
 
 export type EventFilter = (event: MonitorEvent) => boolean;
 
@@ -23,6 +24,8 @@ export interface Subscription {
   id: number;
   filter: EventFilter | null;
   callback: EventCallback;
+  /** Epoch ms of last event delivery; used for stale-subscriber pruning (#1557). */
+  lastActivityAt: number;
 }
 
 export class EventBus {
@@ -67,6 +70,7 @@ export class EventBus {
       if (sub.filter === null || sub.filter(event)) {
         try {
           sub.callback(event, serialized);
+          sub.lastActivityAt = Date.now();
         } catch (err) {
           console.error(`[EventBus] subscriber ${sub.id} threw:`, err);
         }
@@ -77,12 +81,39 @@ export class EventBus {
 
   subscribe(callback: EventCallback, filter?: EventFilter): number {
     const id = ++this.nextSubId;
-    this.subscribers.set(id, { id, filter: filter ?? null, callback });
+    this.subscribers.set(id, { id, filter: filter ?? null, callback, lastActivityAt: Date.now() });
+    metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
     return id;
   }
 
   unsubscribe(id: number): boolean {
-    return this.subscribers.delete(id);
+    const deleted = this.subscribers.delete(id);
+    if (deleted) metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
+    return deleted;
+  }
+
+  /**
+   * Remove subscribers whose lastActivityAt is older than maxIdleMs.
+   * Returns the number of subscribers pruned.
+   *
+   * This is a secondary defense against leaked subscribers when TCP RST
+   * does not fire ReadableStream.cancel() and no event has been published
+   * to trigger the try/catch path. (#1557)
+   */
+  pruneStale(maxIdleMs: number): number {
+    const cutoff = Date.now() - maxIdleMs;
+    let pruned = 0;
+    for (const [id, sub] of this.subscribers) {
+      if (sub.lastActivityAt < cutoff) {
+        this.subscribers.delete(id);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      metrics.gauge("event_bus_subscribers").set(this.subscribers.size);
+      console.warn(`[EventBus] pruned ${pruned} stale subscriber(s)`);
+    }
+    return pruned;
   }
 
   get subscriberCount(): number {
@@ -95,5 +126,10 @@ export class EventBus {
 
   get currentSeq(): number {
     return this.seq;
+  }
+
+  /** Returns lastActivityAt for a subscriber by ID, or null if not found. Used in tests. */
+  getLastActivityAt(id: number): number | null {
+    return this.subscribers.get(id)?.lastActivityAt ?? null;
   }
 }
