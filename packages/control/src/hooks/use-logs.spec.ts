@@ -184,7 +184,7 @@ describe("useLogs", () => {
     const ipcCallFn = async () => {
       concurrency++;
       maxConcurrency = Math.max(maxConcurrency, concurrency);
-      await new Promise((r) => setTimeout(r, 30));
+      await Bun.sleep(30);
       concurrency--;
       return { lines: [logEntry("log", Date.now())] };
     };
