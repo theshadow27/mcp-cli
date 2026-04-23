@@ -183,6 +183,7 @@ export class IpcServer {
   /** Event stream infrastructure */
   private eventSeq = 0;
   private eventSubscribers = new Set<(event: Record<string, unknown>) => void>();
+  private eventBusSubId: number | null = null;
 
   constructor(
     private pool: ServerPool,
@@ -225,6 +226,23 @@ export class IpcServer {
     this.loadManifestFn = options.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null);
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
     this.eventBus = options.eventBus ?? null;
+    if (this.eventBus) {
+      this.eventSeq = this.eventBus.currentSeq;
+      this.eventBusSubId = this.eventBus.subscribe((event) => {
+        this.eventSeq = event.seq;
+        const envelope = event as unknown as Record<string, unknown>;
+        const failed: ((e: Record<string, unknown>) => void)[] = [];
+        for (const cb of this.eventSubscribers) {
+          try {
+            cb(envelope);
+          } catch (err) {
+            this.logger.warn(`[events] subscriber threw, dropping: ${err}`);
+            failed.push(cb);
+          }
+        }
+        for (const cb of failed) this.eventSubscribers.delete(cb);
+      });
+    }
     this.workItemDb = new WorkItemDb(this.db.getDatabase());
     this.registerHandlers();
     // Prune expired ephemeral aliases on startup
@@ -338,6 +356,10 @@ export class IpcServer {
     if (this.drainTimer) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
+    }
+    if (this.eventBusSubId !== null && this.eventBus) {
+      this.eventBus.unsubscribe(this.eventBusSubId);
+      this.eventBusSubId = null;
     }
     this.server?.stop(true);
     try {

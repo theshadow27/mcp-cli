@@ -2463,6 +2463,128 @@ describe("IpcServer HTTP transport", () => {
       expect(buffer).not.toContain("session.response");
       expect(buffer).toContain("mail.received");
     });
+
+    test("backfill→live handoff: no gap or duplicates when since=<seq> with pre-populated log", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+
+      // Pre-populate 5 events before constructing the server
+      for (let i = 0; i < 5; i++) {
+        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
+      }
+
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=2", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Read until backfill arrives (it's enqueued synchronously with the flush newline)
+      let buffer = "";
+      const deadline1 = Date.now() + 2_000;
+      while (Date.now() < deadline1) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Backfill has 3 events (seq 3,4,5) — wait for all of them
+        if (buffer.split("\n").filter((l) => l.startsWith("{")).length >= 3) break;
+      }
+
+      // Now publish a live event after backfill is consumed
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 99 });
+
+      const deadline2 = Date.now() + 2_000;
+      while (Date.now() < deadline2) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      const lines = buffer.split("\n").filter((l) => l.startsWith("{"));
+      const events = lines.map((l) => JSON.parse(l) as { seq: number; event: string });
+
+      // Backfill (seq 3,4,5) + live (seq 6)
+      expect(events.length).toBe(4);
+      expect(events[0]?.seq).toBe(3);
+      expect(events[1]?.seq).toBe(4);
+      expect(events[2]?.seq).toBe(5);
+      expect(events[3]?.seq).toBe(6);
+      expect(events[3]?.event).toBe("pr.merged");
+
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i]?.seq).toBe((events[i - 1]?.seq as number) + 1);
+      }
+    });
+
+    test("fresh EventLog, no backfill: live events arrive with monotonic seq starting at 1", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Drain initial flush newline
+      await reader.read();
+
+      // Publish 3 live events
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 1 });
+      bus.publish({ src: "test", event: "mail.received", category: "mail", mailId: 1, sender: "a", recipient: "b" });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("mail.received")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      const lines = buffer.split("\n").filter((l) => l.startsWith("{"));
+      const events = lines.map((l) => JSON.parse(l) as { seq: number; event: string });
+
+      expect(events.length).toBe(3);
+      expect(events[0]?.seq).toBe(1);
+      expect(events[1]?.seq).toBe(2);
+      expect(events[2]?.seq).toBe(3);
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
