@@ -241,6 +241,100 @@ describe("EventBus", () => {
       JSON.stringify = orig;
     }
   });
+
+  test("pruneStale removes all subscribers when maxIdleMs is negative (all appear stale)", () => {
+    const bus = new EventBus();
+    bus.subscribe(() => {});
+    bus.subscribe(() => {});
+
+    // Negative maxIdleMs makes cutoff = Date.now() + |maxIdleMs|, so all subscribers are stale.
+    expect(bus.pruneStale(-1)).toBe(2);
+    expect(bus.subscriberCount).toBe(0);
+  });
+
+  test("pruneStale keeps subscribers active within maxIdleMs", () => {
+    const bus = new EventBus();
+    bus.subscribe(() => {});
+
+    expect(bus.pruneStale(30_000)).toBe(0);
+    expect(bus.subscriberCount).toBe(1);
+  });
+
+  test("pruneStale returns 0 when no subscribers", () => {
+    const bus = new EventBus();
+    expect(bus.pruneStale(1_000)).toBe(0);
+  });
+
+  test("lastActivityAt is updated when event is delivered to subscriber", async () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    // Poll until the clock advances past `before` so the publish timestamp is strictly greater.
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= before) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
+    }
+
+    bus.publish(sessionEvent());
+    expect(bus.getLastActivityAt(id)).toBeGreaterThan(before);
+  });
+
+  test("lastActivityAt is not updated when filter excludes event", () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(
+      () => {},
+      (e) => e.category === "mail", // only mail
+    );
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    bus.publish(sessionEvent()); // filtered out
+    expect(bus.getLastActivityAt(id)).toBe(before);
+  });
+
+  test("getLastActivityAt returns null for unknown subscriber", () => {
+    const bus = new EventBus();
+    expect(bus.getLastActivityAt(999)).toBeNull();
+  });
+
+  test("touch updates lastActivityAt for a live subscriber", async () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+    const before = bus.getLastActivityAt(id) ?? 0;
+
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= before) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
+    }
+
+    expect(bus.touch(id)).toBe(true);
+    expect(bus.getLastActivityAt(id)).toBeGreaterThan(before);
+  });
+
+  test("touch returns false for unknown subscriber", () => {
+    const bus = new EventBus();
+    expect(bus.touch(999)).toBe(false);
+  });
+
+  test("touch prevents pruneStale from removing a quiet-but-live subscriber", async () => {
+    const bus = new EventBus();
+    const id = bus.subscribe(() => {});
+
+    // Wait until the subscriber would normally appear stale to a TTL=0 pruner.
+    const created = bus.getLastActivityAt(id) ?? 0;
+    const deadline = Date.now() + 1_000;
+    while (Date.now() <= created) {
+      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
+      await Bun.sleep(1);
+    }
+
+    // Touch refreshes lastActivityAt — subscriber should survive pruneStale.
+    bus.touch(id);
+    expect(bus.pruneStale(0)).toBe(0);
+    expect(bus.subscriberCount).toBe(1);
+  });
 });
 
 function freshLog(): EventLog {
