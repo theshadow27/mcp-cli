@@ -14,7 +14,7 @@
 import { defineAlias, z } from "mcp-cli";
 
 type MergeResult =
-  | { ok: true; prNumber: number }
+  | { ok: true; prNumber: number; localCleanup?: string }
   | {
       ok: false;
       reason:
@@ -89,6 +89,22 @@ function mergePr(prNumber: number): MergeResult {
   });
   if (mergeProc.exitCode !== 0) {
     const stderr = new TextDecoder().decode(mergeProc.stderr);
+    // Local branch delete fails when an impl worktree holds the branch open.
+    // The GitHub merge may have already succeeded — check before reporting failure.
+    if (/used by worktree|cannot delete branch.*checked out/i.test(stderr)) {
+      const viewProc = Bun.spawnSync({
+        cmd: ["gh", "pr", "view", String(prNumber), "--json", "state", "-q", ".state"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (new TextDecoder().decode(viewProc.stdout).trim() === "MERGED") {
+        return {
+          ok: true,
+          prNumber,
+          localCleanup: "skipped: worktree holds branch (bye impl session to prune)",
+        };
+      }
+    }
     if (/not mergeable|conflict/i.test(stderr)) {
       return {
         ok: false,
@@ -123,6 +139,7 @@ defineAlias({
     merged: z.boolean(),
     prNumber: z.number(),
     issueNumber: z.number(),
+    localCleanup: z.string().optional(),
     error: z
       .object({
         reason: z.string(),
@@ -184,6 +201,11 @@ defineAlias({
     Bun.spawnSync({ cmd: ["git", "config", "core.bare", "false"] });
     Bun.spawnSync({ cmd: ["git", "pull"] });
 
-    return { merged: true, prNumber: work.prNumber, issueNumber: work.issueNumber };
+    return {
+      merged: true,
+      prNumber: work.prNumber,
+      issueNumber: work.issueNumber,
+      ...(result.localCleanup ? { localCleanup: result.localCleanup } : {}),
+    };
   },
 });
