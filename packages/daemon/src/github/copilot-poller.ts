@@ -283,7 +283,7 @@ export class CopilotPoller {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
-      if (msg.includes("auth/scope")) return { isRateLimit: false, authError: msg };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
       return { isRateLimit: false };
     }
 
@@ -356,7 +356,7 @@ export class CopilotPoller {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch reviews for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
-      if (msg.includes("auth/scope")) return { isRateLimit: false, authError: msg };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
       return { isRateLimit: false };
     }
 
@@ -446,7 +446,7 @@ export class CopilotPoller {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch PR comments for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
-      if (msg.includes("auth/scope")) return { isRateLimit: false, authError: msg };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
       return { isRateLimit: false };
     }
 
@@ -490,7 +490,7 @@ export class CopilotPoller {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch issue comments for #${issueNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
-      if (msg.includes("auth/scope")) return { isRateLimit: false, authError: msg };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
       return { isRateLimit: false };
     }
 
@@ -595,7 +595,11 @@ async function fetchPaginated<T>(startUrl: string, token: string): Promise<Fetch
       }
       const retryAfter = response.headers.get("retry-after");
       if (retryAfter !== null) {
-        throw new Error(`GitHub API secondary rate limit (403): retry after ${retryAfter}s`);
+        const retryAfterSeconds = Number.parseInt(retryAfter, 10);
+        if (Number.isNaN(retryAfterSeconds)) {
+          throw new Error(`GitHub API secondary rate limit (403): retry after ${retryAfter}`);
+        }
+        throw new Error(`GitHub API secondary rate limit (403): retry after ${retryAfterSeconds}s`);
       }
       throw new Error(`GitHub API auth/scope error (403): ${response.statusText}`);
     }

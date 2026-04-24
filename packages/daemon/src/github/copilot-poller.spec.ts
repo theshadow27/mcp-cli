@@ -420,7 +420,7 @@ describe("CopilotPoller", () => {
       expect(poller.lastError).toBeNull();
     });
 
-    test("primary rate-limit error (remaining==0) triggers backoff, no lastError", async () => {
+    test("primary rate-limit error (remaining==0) does not set lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchComments: async () => {
@@ -433,7 +433,7 @@ describe("CopilotPoller", () => {
       expect(poller.lastError).toBeNull();
     });
 
-    test("secondary rate-limit error (retry-after) triggers backoff, no lastError", async () => {
+    test("secondary rate-limit error (retry-after) does not set lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchComments: async () => {
@@ -470,6 +470,19 @@ describe("CopilotPoller", () => {
       await poller.poll();
 
       expect(poller.lastError).toContain("auth/scope");
+    });
+
+    test("401 auth failure sets lastError without backoff", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("GitHub API auth failed (401) — token cache cleared");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("auth failed");
     });
 
     test("auth/scope error clears after next successful poll", async () => {
