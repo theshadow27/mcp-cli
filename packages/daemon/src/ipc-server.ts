@@ -1473,6 +1473,14 @@ export class IpcServer {
       return new Response("pr must be a positive integer", { status: 400 });
     }
 
+    // Return 400 rather than silently delivering a live-only stream when the client
+    // provides a valid since cursor but the durable event log is unavailable (#1558).
+    if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && !eventLog) {
+      return new Response("since parameter requires the durable event log; replay is not available on this daemon", {
+        status: 400,
+      });
+    }
+
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {
       const subscribeFilter = url.searchParams.get("subscribe");

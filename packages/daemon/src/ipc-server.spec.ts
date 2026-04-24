@@ -2210,6 +2210,20 @@ describe("IpcServer HTTP transport", () => {
       }
     });
 
+    test("GET /events with since= returns 400 when event log is unavailable (#1558)", async () => {
+      // startServerWithBus() creates EventBus *without* an EventLog — replay not supported.
+      for (const cursor of [0, 1, 42]) {
+        startServerWithBus();
+        const res = await fetch(`http://localhost/events?since=${cursor}`, {
+          method: "GET",
+          unix: socketPath,
+        } as RequestInit);
+        expect(res.status, `since=${cursor}`).toBe(400);
+        const text = await res.text();
+        expect(text, `since=${cursor}`).toContain("since");
+      }
+    });
+
     test("streams published events as NDJSON lines", async () => {
       const { bus } = startServerWithBus();
 
