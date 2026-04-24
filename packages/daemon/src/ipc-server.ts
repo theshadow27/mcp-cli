@@ -126,7 +126,12 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
 
   const spec: EventFilterSpec = {
     ...(subscribeRaw
-      ? { subscribe: subscribeRaw.split(",").map((s) => s.trim()) as EventFilterSpec["subscribe"] }
+      ? {
+          subscribe: subscribeRaw
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean) as EventFilterSpec["subscribe"],
+        }
       : {}),
     ...(session ? { session } : {}),
     ...(prNumber !== null ? { pr: prNumber } : {}),
