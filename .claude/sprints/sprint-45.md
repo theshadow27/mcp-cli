@@ -26,7 +26,7 @@ After this sprint: `ctx.waitForEvent` should be ready for sprint 46 to validate 
 | 1635 | phase: --no-execute path ignores work_items.phase fallback for empty transition log | low | 1 | sonnet | orchestrator papercut |
 | 1767 | fix(phase): phase-missing row reads circularly — "phase X in lockfile but missing from lockfile" | low | 2 | sonnet | orchestrator — **deps: #1635 (phase.ts)** |
 | 1771 | help(dispatcher): alias subcommands don't resolve help (list→ls, quit→bye, wt→worktrees) | low | 1 | sonnet | DX follow-up to #1518 |
-| 1754 | test(alias-bundle): add timeout path coverage for evalBundledJs | low | 1 | sonnet | test-coverage filler |
+| 1775 | feature: allow overriding `runsOn` for local POC/testing of phase-graph changes | low | 1 | sonnet | external-user unblock — bootstrap-sprint POC |
 
 **Model mix:** 6 opus + 9 sonnet (same shape as sprint 44, which landed 15/15).
 **Scrutiny mix:** 2 high (review+QA), 6 medium (QA), 7 low (QA) — matches template.
@@ -36,7 +36,7 @@ After this sprint: `ctx.waitForEvent` should be ready for sprint 46 to validate 
 Per `run.md` Input → "Task list setup": create **one TaskCreate per issue** with the `addBlockedBy` edges listed below.
 
 ### Batch 1 — 9 unblocked picks (start immediately, stagger opus anchors)
-#1728, #1727, #1589, #1735, #1719, #1693, #1635, #1771, #1754
+#1728, #1727, #1589, #1735, #1719, #1693, #1635, #1771, #1775
 
 4 opus + 5 sonnet. #1728 is the critical-path anchor — it makes `defineMonitor` actually run. #1727 and #1589 are Phase 5 correctness/perf; launch early so #1720 (integration test behind #1727) and #1660 (test behind #1589) can start as soon as they merge. #1735 is the first `copilot-poller.ts` touch — #1738 and #1742 serialize behind it.
 
@@ -58,7 +58,7 @@ Each has one explicit `blockedBy` edge to a Batch 1 pick. They start as soon as 
 
 - `packages/daemon/src/github/copilot-poller.ts` — #1735, #1738, #1742. Serialized via the edges above. **#1737 (rename copilot.inline_posted) deferred to sprint 46** pending a rename-vs-filter design call.
 - `packages/core/src/event-filter.ts` — #1727, #1720, #1719. Serialized; #1719 is docs-only so it won't conflict, but broadcast a rebase directive if #1727 lands first.
-- `packages/command/src/commands/phase.ts` — #1635, #1767. Serialized. **#1746 (auto-detect --from) deferred** pending user-supplied repro of the exact error; workaround (`--from` flag) is fine today.
+- `packages/command/src/commands/phase.ts` — #1635, #1767, and #1775's runtime branch-override consumer all touch this file. #1635 / #1767 serialized via dependency edge; #1775's call site is a separate region (runsOn check inside `executePhase`/`phaseRun` early gate) and rebases cleanly. Bulk of #1775 lands in `cli-config.ts`. **#1746 (auto-detect --from) deferred** pending user-supplied repro of the exact error; workaround (`--from` flag) is fine today.
 - `packages/daemon/src/ipc-server.ts` — #1589, #1660, and #1728's `saveAlias` edit all touch this file. #1589 and #1660 serialized by the edge above. #1728's edit is in a different region (saveAlias handler) — should rebase cleanly, but the orchestrator should broadcast a rebase directive after each `ipc-server.ts` merge.
 - `packages/command/src/help.ts` — #1771 solo this sprint. **#1772 (column alignment for long flags) deferred** as cosmetic.
 
@@ -69,6 +69,7 @@ Flag the following in the impl prompt notes before spawning — the worker shoul
 - **#1589 (backfill memory safety)**: buffer cap size not specified; yield strategy (`setImmediate` vs `setTimeout(0)`) not specified. Default ask: cap at **10,000 events / 10 MB whichever hits first**; yield via **`setImmediate`** between 100-event batches. Worker can propose alternatives but must justify.
 - **#1735 (CopilotPoller _lastError)**: accumulate all per-PR errors into `_lastError` vs. preserve whatever was most recently set. Default ask: **preserve most-recent, log the others**. Worker may propose `errors[]` array if the schema supports it.
 - **#1738 (per-repo /pulls/comments?since=)**: GitHub API contract — verify that `?since=<iso8601>` on `/repos/{owner}/{repo}/pulls/comments` returns comments strictly after the timestamp (exclusive) vs. inclusive. Worker should confirm against the API before cutover. Also: verify `pull_request_url` is the stable grouping key.
+- **#1775 (runsOn override)**: scope is **NOT** the full 4-option menu in the issue body. Per [issue comment](https://github.com/theshadow27/mcp-cli/issues/1775#issuecomment-4316688818), implement only **option 2-variant**: read `~/.mcp-cli/config.json` (or `.mcx.json` in repo) for `phase.allowBranchOverride: string[]`; if current branch matches an entry, `runsOn` check passes with a one-line `WARNING: phases running from branch "<X>", not "main" — install-security boundary not enforced` to stderr. Refuse to enable on `main` itself (anti-foot-gun: must be a non-main branch). No CLI flag, no env var, no `.mcx.yaml` schema change. The `runsOn: string[]` list-form (#1773 prerequisite) is **explicitly out of scope** and waits for the orchestrator-worktree design.
 
 ## Excluded (with reasons)
 
@@ -79,7 +80,9 @@ Flag the following in the impl prompt notes before spawning — the worker shoul
 - **#1746 (mcx phase run auto-detect --from)** — needs user repro of the exact error; workaround exists. Defer.
 - **#1772 (help formatter column alignment)** — cosmetic; pulled to filler slot for #1771 only.
 - **#1759 (test: backfill path coverage for session.response/responseTail)** — overlaps scope with #1660 on `ipc-server.spec.ts`; pull in sprint 46 once #1660 lands.
-- **#1773+, #1770, #1689, #1743, #1687 (flaky containment symlink tests)** — the same test has been filed 4 times across 3 sprints. Batch with a future "test infra stabilization" mini-sprint; any one-off fix now just produces another dup.
+- **#1754 (test(alias-bundle): timeout coverage)** — swapped out for #1775 to unblock external bootstrap-sprint user. Both are filler-tier; #1775 has a real consumer waiting on it. Pull #1754 in sprint 46.
+- **#1773 (orchestrator-worktree restructuring)** — needs design spike + meta-file changes that don't fit a worker pick. Sprint 46 retro candidate. #1775's `.mcx.json` primitive does NOT prejudge #1773's eventual `runsOn: string[]` list-form — they're complementary primitives for different consumers (per-dev vs. orchestrator).
+- **#1770, #1689, #1743, #1687 (flaky containment symlink tests)** — the same test has been filed 4 times across 3 sprints. Batch with a future "test infra stabilization" mini-sprint; any one-off fix now just produces another dup.
 - **#1610 (rich session metrics on by default)** — Phase 6 follow-up; same `monitor-event.ts` contention as the Phase 6 deferred trio (#1586, #1587). Sprint 46 or 47 as a dedicated Phase 6 wave.
 - **#1586, #1587 (Phase 6 events — daemon lifecycle + budget)** — deferred since sprint 44; pull in a dedicated Phase 6 sprint once this sprint's `session.stuck` plumbing validates in production.
 - **VFS/clone arc (#1209, #1262, #1263, #1277, #1279, #1280, #1281, #1311, #1312, #1323)** — stalled 6+ sprints; needs a dedicated sprint or arc-level rethink.
