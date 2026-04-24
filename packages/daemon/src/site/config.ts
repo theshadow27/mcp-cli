@@ -29,6 +29,12 @@ export interface BrowserConfig {
   engine?: "playwright" | "webview";
   /** Profile directory name under sites/<name>/chromium/. Defaults to "default". */
   chromeProfile?: string;
+  /**
+   * Absolute path (or ~/…-relative) to a shared Chrome user-data-dir.
+   * When set, overrides the per-site chromium/<chromeProfile> directory so
+   * multiple sites can share one Chrome profile without path-traversal hacks.
+   */
+  profileDir?: string;
 }
 
 export interface CaptureFilters {
@@ -88,6 +94,7 @@ function mergeConfig(name: string, seed: PartialSiteConfig, user: PartialSiteCon
     browser: {
       engine: merged.browser?.engine ?? "playwright",
       chromeProfile: merged.browser?.chromeProfile ?? "default",
+      ...(merged.browser?.profileDir !== undefined ? { profileDir: merged.browser.profileDir } : {}),
     },
   };
 }
@@ -100,7 +107,7 @@ export function listSites(): SiteConfig[] {
   const sitesRoot = sitesDir();
   if (existsSync(sitesRoot)) {
     for (const entry of readdirSync(sitesRoot, { withFileTypes: true })) {
-      if (entry.isDirectory()) names.add(entry.name);
+      if (entry.isDirectory() && existsSync(siteConfigPath(entry.name))) names.add(entry.name);
     }
   }
 
