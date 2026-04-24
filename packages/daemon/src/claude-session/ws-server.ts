@@ -27,6 +27,7 @@ import {
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
+  PR_MERGE_STATE_CHANGED,
   PR_OPENED,
   PR_PUSHED,
   REVIEW_APPROVED,
@@ -1713,6 +1714,7 @@ export class ClaudeWsServer {
     "review:approved": REVIEW_APPROVED,
     "review:changes_requested": REVIEW_CHANGES_REQUESTED,
     "phase:changed": PHASE_CHANGED,
+    "pr:merge_state_changed": PR_MERGE_STATE_CHANGED,
   };
 
   private publishWorkItemMonitorEvent(event: WorkItemEvent): void {
@@ -1739,6 +1741,7 @@ export class ClaudeWsServer {
     if ("srcChurn" in event) input.srcChurn = event.srcChurn;
     if ("mergeSha" in event) input.mergeSha = event.mergeSha;
     if ("filesTruncated" in event) input.filesTruncated = event.filesTruncated;
+    if ("cascadeHead" in event) input.cascadeHead = event.cascadeHead;
 
     this.onMonitorEvent(input);
   }
