@@ -1,8 +1,32 @@
-import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { DAEMON_BINARY_NAME, DAEMON_DEV_SCRIPT, options } from "./constants";
 import type { Logger } from "./logger";
 import { consoleLogger } from "./logger";
+
+/**
+ * Resolve symlinks in filePath. For non-existent paths, walks up the directory
+ * chain until realpathSync succeeds, then re-joins the missing tail — same
+ * iterative approach used in ContainmentGuard (#1481).
+ */
+export function resolveRealpath(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    const missingSegments: string[] = [];
+    let current = resolve(filePath);
+    while (true) {
+      const parent = dirname(current);
+      if (parent === current) return resolve(filePath);
+      missingSegments.unshift(basename(current));
+      try {
+        return join(realpathSync(parent), ...missingSegments);
+      } catch {
+        current = parent;
+      }
+    }
+  }
+}
 
 /** Ensure ~/.mcp-cli/ exists with owner-only permissions (0700) */
 export function ensureStateDir(): void {

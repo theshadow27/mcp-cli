@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
@@ -195,6 +195,33 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
     const entries = (allResp.result as { entries: Record<string, unknown> }).entries;
     expect(entries.a).toBe(1);
     expect(entries.b).toBe(2);
+  });
+
+  test("symlink repoRoot is canonicalized — symlink and real path resolve to same row", async () => {
+    const { rpc } = start();
+    const base = mkdtempSync(join(tmpdir(), "mcp-alias-state-symlink-"));
+    const real = join(base, "real-repo");
+    const link = join(base, "link-repo");
+    mkdirSync(real);
+    symlinkSync(real, link);
+
+    try {
+      await rpc({
+        id: "sym-set",
+        method: "aliasStateSet",
+        params: { repoRoot: link, namespace: "sym-ns", key: "k", value: "symval" },
+      });
+
+      const getResp = await rpc({
+        id: "sym-get",
+        method: "aliasStateGet",
+        params: { repoRoot: real, namespace: "sym-ns", key: "k" },
+      });
+      expect(getResp.error).toBeUndefined();
+      expect((getResp.result as { value: unknown }).value).toBe("symval");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   test("empty repoRoot is rejected by Zod schema — returns IPC error", async () => {

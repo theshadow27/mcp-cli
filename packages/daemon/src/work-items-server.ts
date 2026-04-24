@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
-import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger } from "@mcp-cli/core";
+import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -398,9 +398,9 @@ export class WorkItemsServer {
 
             const force = a.force === true;
             const forceReason = a.forceReason !== undefined ? String(a.forceReason) : undefined;
-            // Canonicalize to remove trailing slashes — validate non-empty before resolve to avoid cwd fallback
+            // Canonicalize to remove trailing slashes and resolve symlinks (#1526) — validate non-empty before resolve to avoid cwd fallback
             const rawRepoRootUpdate = a.repoRoot !== undefined ? String(a.repoRoot).trim() : undefined;
-            const repoRoot = rawRepoRootUpdate ? resolve(rawRepoRootUpdate) : undefined;
+            const repoRoot = rawRepoRootUpdate ? resolveRealpath(resolve(rawRepoRootUpdate)) : undefined;
 
             // Validate phase if a new phase is being set
             if (a.phase !== undefined) {
@@ -492,7 +492,7 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            const repoRoot = rawRepoRoot ? resolve(rawRepoRoot) : "";
+            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
               return {
@@ -520,7 +520,7 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            const repoRoot = rawRepoRoot ? resolve(rawRepoRoot) : "";
+            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
               return {
@@ -554,7 +554,7 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            const repoRoot = rawRepoRoot ? resolve(rawRepoRoot) : "";
+            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
               return {
@@ -582,7 +582,7 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            const repoRoot = rawRepoRoot ? resolve(rawRepoRoot) : "";
+            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             if (!workItemId || !repoRoot) {
               return {
                 content: [{ type: "text" as const, text: "workItemId and repoRoot are required" }],

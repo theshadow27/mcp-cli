@@ -1,30 +1,7 @@
 // Worktree containment enforcement — see #1441 for design.
 
-import { realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-
-// Resolve symlinks; for non-existent paths, walk up the directory chain until
-// realpathSync succeeds, then re-join the missing tail. A single dirname fallback
-// is insufficient: if `escape` is a symlink and `newdir` doesn't exist inside
-// the target, dirname of the full path still throws (#1481).
-function resolveRealpath(filePath: string): string {
-  try {
-    return realpathSync(filePath);
-  } catch {
-    const missingSegments: string[] = [];
-    let current = resolve(filePath);
-    while (true) {
-      const parent = dirname(current);
-      if (parent === current) return resolve(filePath);
-      missingSegments.unshift(basename(current));
-      try {
-        return join(realpathSync(parent), ...missingSegments);
-      } catch {
-        current = parent;
-      }
-    }
-  }
-}
+import { resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 
 // ── Types ──
 
