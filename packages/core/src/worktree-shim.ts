@@ -207,7 +207,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
       deps.printError(
         `Warning: git status failed in worktree (exit ${statusExit}), attempting removal: ${worktreePath}`,
       );
-      removeWorktreeWithVerification(effectiveRoot, worktreePath, deps);
+      removeWorktreeWithVerification(effectiveRoot, worktreePath, deps, false);
     }
     return;
   }
@@ -257,7 +257,12 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
  * and retry with --force if needed. Only prints success after verification.
  * Returns true if the directory was verified removed.
  */
-function removeWorktreeWithVerification(repoRoot: string, worktreePath: string, deps: WorktreeShimDeps): boolean {
+function removeWorktreeWithVerification(
+  repoRoot: string,
+  worktreePath: string,
+  deps: WorktreeShimDeps,
+  allowForce = true,
+): boolean {
   const bareBeforeCleanup = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
   const { exitCode: removeExit, stderr: removeStderr } = deps.exec([
     "git",
@@ -283,8 +288,29 @@ function removeWorktreeWithVerification(repoRoot: string, worktreePath: string, 
     return true;
   }
 
+  if (!allowForce) {
+    deps.printError(
+      `Warning: worktree still exists after non-force removal; skipping --force because cleanliness could not be verified: ${worktreePath}`,
+    );
+    return false;
+  }
+
   // Directory persists despite exit 0, or initial remove failed — retry with --force
-  const { stderr: forceStderr } = deps.exec(["git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath]);
+  const bareBeforeForce = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
+  const { exitCode: forceExit, stderr: forceStderr } = deps.exec([
+    "git",
+    "-C",
+    repoRoot,
+    "worktree",
+    "remove",
+    "--force",
+    worktreePath,
+  ]);
+  if (forceExit === 0 && !bareBeforeForce && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError(
+      `[shim] core.bare flipped to true by: git worktree remove --force ${worktreePath} (repo=${repoRoot}) — see #1330`,
+    );
+  }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
     deps.printError("Fixed core.bare=true after worktree removal");
   }
@@ -295,8 +321,14 @@ function removeWorktreeWithVerification(repoRoot: string, worktreePath: string, 
   }
 
   // Both attempts failed — report with diagnostics
-  const stderr = forceStderr || removeStderr;
-  deps.printError(`Failed to remove worktree: ${worktreePath}${stderr ? ` (${stderr})` : ""}`);
+  const rawStderr = forceStderr || removeStderr;
+  const stderrSummary = rawStderr
+    ? ` (${rawStderr
+        .trim()
+        .replace(/\s*\n\s*/g, "; ")
+        .slice(0, 200)})`
+    : "";
+  deps.printError(`Failed to remove worktree: ${worktreePath}${stderrSummary}`);
   return false;
 }
 

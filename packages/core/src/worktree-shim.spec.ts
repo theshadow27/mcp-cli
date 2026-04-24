@@ -427,6 +427,34 @@ describe("cleanupWorktree", () => {
     expect(msgs.some((m) => m.includes("Removed worktree"))).toBe(true);
   });
 
+  test("corrupted worktree: skips --force when non-force removal fails", () => {
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "corrupt-stuck-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    let forceAttempted = false;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain"))
+        return { stdout: "", stderr: "fatal: not a git repository", exitCode: 128 };
+      if (cmd.includes("remove") && cmd.includes("--force")) {
+        forceAttempted = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 1 }; // non-force fails; dir stays
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("corrupt-stuck-wt", worktreePath, { exec, printError }, tmpDir);
+
+    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(forceAttempted).toBe(false);
+    expect(msgs.some((m) => m.includes("skipping --force because cleanliness could not be verified"))).toBe(true);
+    expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
+  });
+
   test("branch delete reports success only after rev-parse verification", () => {
     const exec = mock((cmd: string[]) => {
       if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
