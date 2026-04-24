@@ -51,17 +51,22 @@ Flags:
   --help, -h       Show this help
 `;
 
+function kebabToCamel(s: string): string {
+  return s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
 function parseKv(args: string[]): { kv: Record<string, unknown>; rest: string[] } {
   const kv: Record<string, unknown> = {};
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
-      const key = a.slice(2);
-      if (key.includes("=")) {
-        const [k, v] = key.split("=", 2);
-        kv[k] = coerce(v);
+      const raw = a.slice(2);
+      if (raw.includes("=")) {
+        const [k, v] = raw.split("=", 2);
+        kv[kebabToCamel(k)] = coerce(v);
       } else {
+        const key = kebabToCamel(raw);
         const next = args[i + 1];
         if (next === undefined || next.startsWith("--")) {
           kv[key] = true;

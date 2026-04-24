@@ -61,7 +61,7 @@ export interface ColdStartResult {
 export interface StartSiteResult {
   site: string;
   url: string;
-  status: "navigated" | "failed" | "already-running";
+  status: "navigated" | "failed" | "already-running" | "profile-mismatch";
   error?: string;
 }
 

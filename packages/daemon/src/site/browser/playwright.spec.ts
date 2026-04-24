@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SiteSpec } from "./engine";
-import { type OpenPageLike, openSitesInContext } from "./playwright";
+import { type OpenPageLike, openSitesInContext, partitionSitesForRunningBrowser } from "./playwright";
 
 function fakePage(opts: { failGoto?: string } = {}): OpenPageLike & {
   gotoCalls: string[];
@@ -102,5 +102,60 @@ describe("openSitesInContext — #1588 regression", () => {
     });
 
     expect(order).toEqual(["attach:teams", "goto:https://teams.test/home"]);
+  });
+});
+
+describe("partitionSitesForRunningBrowser — #1594", () => {
+  const profile = "/tmp/profile/default";
+
+  test("already-open sites go to alreadyRunning", () => {
+    const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set(["teams"]), [
+      spec("teams", { profileDir: profile }),
+    ]);
+    expect(alreadyRunning.map((s) => s.name)).toEqual(["teams"]);
+    expect(toOpen).toHaveLength(0);
+    expect(profileMismatch).toHaveLength(0);
+  });
+
+  test("new site with matching profile goes to toOpen", () => {
+    const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set(["teams"]), [
+      spec("teams", { profileDir: profile }),
+      spec("owa", { profileDir: profile }),
+    ]);
+    expect(alreadyRunning.map((s) => s.name)).toEqual(["teams"]);
+    expect(toOpen.map((s) => s.name)).toEqual(["owa"]);
+    expect(profileMismatch).toHaveLength(0);
+  });
+
+  test("new site with different profile goes to profileMismatch", () => {
+    const otherProfile = "/tmp/other/default";
+    const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set(["teams"]), [
+      spec("atlassian", { profileDir: otherProfile }),
+    ]);
+    expect(alreadyRunning).toHaveLength(0);
+    expect(toOpen).toHaveLength(0);
+    expect(profileMismatch.map((s) => s.name)).toEqual(["atlassian"]);
+  });
+
+  test("mixed batch: already-running + new-same-profile + mismatch", () => {
+    const otherProfile = "/tmp/other/default";
+    const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set(["teams"]), [
+      spec("teams", { profileDir: profile }),
+      spec("owa", { profileDir: profile }),
+      spec("atlassian", { profileDir: otherProfile }),
+    ]);
+    expect(alreadyRunning.map((s) => s.name)).toEqual(["teams"]);
+    expect(toOpen.map((s) => s.name)).toEqual(["owa"]);
+    expect(profileMismatch.map((s) => s.name)).toEqual(["atlassian"]);
+  });
+
+  test("all-new same-profile sites go to toOpen", () => {
+    const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set<string>(), [
+      spec("teams", { profileDir: profile }),
+      spec("owa", { profileDir: profile }),
+    ]);
+    expect(alreadyRunning).toHaveLength(0);
+    expect(toOpen.map((s) => s.name)).toEqual(["teams", "owa"]);
+    expect(profileMismatch).toHaveLength(0);
   });
 });
