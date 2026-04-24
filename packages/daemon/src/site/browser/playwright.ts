@@ -148,7 +148,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
           site: s.name,
           url: s.url,
           status: "profile-mismatch" as const,
-          error: `Browser is running with profileDir=${runningProfile}; this site uses ${s.profileDir}. Run site_disconnect first.`,
+          error: `Browser is running with profileDir=${runningProfile}; this site uses ${s.profileDir}. Run \`mcx site disconnect\` first.`,
         })),
       ];
 
