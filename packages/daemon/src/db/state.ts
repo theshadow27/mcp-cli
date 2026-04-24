@@ -389,25 +389,18 @@ export class StateDb {
     `);
 
     // -- Additional comment surfaces (#1579) --
-    try {
-      this.db.exec("ALTER TABLE copilot_comment_state ADD COLUMN seen_review_ids TEXT NOT NULL DEFAULT '[]'");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE copilot_comment_state ADD COLUMN seen_pr_comment_ids TEXT NOT NULL DEFAULT '[]'");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE copilot_comment_state ADD COLUMN seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]'");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE copilot_comment_state ADD COLUMN last_sticky_body_hash TEXT");
-    } catch {
-      /* column already exists */
+    for (const col of [
+      "seen_review_ids TEXT NOT NULL DEFAULT '[]'",
+      "seen_pr_comment_ids TEXT NOT NULL DEFAULT '[]'",
+      "seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]'",
+      "last_sticky_body_hash TEXT",
+    ]) {
+      try {
+        this.db.exec(`ALTER TABLE copilot_comment_state ADD COLUMN ${col}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
     }
   }
 

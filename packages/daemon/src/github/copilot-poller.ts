@@ -13,9 +13,10 @@ import type { Logger } from "@mcp-cli/core";
 import {
   COPILOT_INLINE_POSTED,
   ISSUE_COMMENT,
+  PR_COMMENT,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
-  REVIEW_COMMENT,
+  REVIEW_COMMENTED,
   REVIEW_STICKY_UPDATED,
 } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
@@ -60,7 +61,7 @@ export interface CopilotInlineEvent {
 
 export interface GitHubReview {
   id: number;
-  user: { login: string } | null;
+  user: { login: string; type?: string } | null;
   state: string;
   body: string;
   submitted_at: string;
@@ -266,7 +267,7 @@ export class CopilotPoller {
       result = await this.fetchCommentsFn(repo, prNumber, token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isRateLimit = msg.includes("rate limit") || msg.includes("403");
+      const isRateLimit = msg.includes("rate limit");
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
       return isRateLimit;
     }
@@ -339,7 +340,7 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch reviews for PR #${prNumber}: ${msg}`);
-      return msg.includes("rate limit") || msg.includes("403");
+      return msg.includes("rate limit");
     }
 
     if (result.rateLimitLow) {
@@ -366,7 +367,7 @@ export class CopilotPoller {
           eventName = REVIEW_CHANGES_REQUESTED;
           break;
         default:
-          eventName = REVIEW_COMMENT;
+          eventName = REVIEW_COMMENTED;
           break;
       }
 
@@ -389,7 +390,7 @@ export class CopilotPoller {
     // review is already handled as a new review event above.
     let stickyCandidate: GitHubReview | null = null;
     for (const r of reviews) {
-      if (r.user?.login?.includes("[bot]") && r.body) {
+      if (r.user?.type === "Bot" && r.body) {
         if (!stickyCandidate || r.id > stickyCandidate.id) stickyCandidate = r;
       }
     }
@@ -411,8 +412,10 @@ export class CopilotPoller {
       this.stateDb.updateStickyBodyHash(prNumber, bodyHash);
     }
 
-    const unionIds = [...new Set([...seenIds, ...currentIds])];
-    this.stateDb.updateSeenReviewIds(prNumber, unionIds);
+    if (currentIds.length > 0) {
+      const unionIds = [...new Set([...seenIds, ...currentIds])];
+      this.stateDb.updateSeenReviewIds(prNumber, unionIds);
+    }
     return result.rateLimitLow;
   }
 
@@ -425,7 +428,7 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch PR comments for PR #${prNumber}: ${msg}`);
-      return msg.includes("rate limit") || msg.includes("403");
+      return msg.includes("rate limit");
     }
 
     if (result.rateLimitLow) {
@@ -442,7 +445,7 @@ export class CopilotPoller {
     for (const comment of newComments) {
       this.onEvent({
         src: "daemon.copilot-poller",
-        event: REVIEW_COMMENT,
+        event: PR_COMMENT,
         category: "review",
         workItemId: item.id,
         prNumber,
@@ -467,7 +470,7 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch issue comments for #${issueNumber}: ${msg}`);
-      return msg.includes("rate limit") || msg.includes("403");
+      return msg.includes("rate limit");
     }
 
     if (result.rateLimitLow) {
@@ -507,9 +510,11 @@ export class CopilotPoller {
       return;
     }
 
-    const hasActive = tracked.some(
-      (item) => item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
-    );
+    const hasActive = tracked.some((item) => {
+      if (item.phase === "done") return false;
+      if (item.prNumber !== null) return item.prState !== "merged" && item.prState !== "closed";
+      return true;
+    });
 
     const target = hasActive ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
 
@@ -582,8 +587,11 @@ async function fetchPaginated<T>(startUrl: string, token: string): Promise<Fetch
       }
     }
 
-    const pageItems = (await response.json()) as T[];
-    allItems.push(...pageItems);
+    const pageItems = await response.json();
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`fetchPaginated: expected array, got ${typeof pageItems}`);
+    }
+    allItems.push(...(pageItems as T[]));
 
     url = parseNextUrl(response.headers.get("link"));
   }

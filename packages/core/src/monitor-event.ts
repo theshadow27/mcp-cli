@@ -56,7 +56,8 @@ export const COPILOT_INLINE_POSTED = "copilot.inline_posted" as const;
 
 // ── Review event names (#1579) ──
 
-export const REVIEW_COMMENT = "review.comment" as const;
+export const REVIEW_COMMENTED = "review.commented" as const;
+export const PR_COMMENT = "pr.comment" as const;
 export const REVIEW_STICKY_UPDATED = "review.sticky_updated" as const;
 
 // ── Issue event names (#1579) ──
@@ -268,7 +269,12 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), pr(e), author, count, first);
   },
 
-  [REVIEW_COMMENT]: (e) => {
+  [REVIEW_COMMENTED]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    return join(wi(e), pr(e), author);
+  },
+
+  [PR_COMMENT]: (e) => {
     const author = typeof e.author === "string" ? e.author : "";
     return join(wi(e), pr(e), author);
   },

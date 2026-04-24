@@ -4,9 +4,10 @@ import type { MonitorEventInput } from "@mcp-cli/core";
 import {
   COPILOT_INLINE_POSTED,
   ISSUE_COMMENT,
+  PR_COMMENT,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
-  REVIEW_COMMENT,
+  REVIEW_COMMENTED,
   REVIEW_STICKY_UPDATED,
 } from "@mcp-cli/core";
 import { WorkItemDb } from "../db/work-items";
@@ -51,7 +52,7 @@ function okIssueCommentResult(comments: IssueComment[]): FetchIssueCommentsResul
 
 function makeReview(overrides: Partial<GitHubReview> & { id: number }): GitHubReview {
   return {
-    user: { login: "github-copilot[bot]" },
+    user: { login: "github-copilot[bot]", type: "Bot" },
     state: "COMMENTED",
     body: "Review body.",
     submitted_at: "2024-01-01T00:00:00Z",
@@ -602,7 +603,7 @@ describe("CopilotPoller", () => {
       expect(reviewEvents[0].body).toBe("Fix these issues");
     });
 
-    test("new review emits review.comment for COMMENTED state", async () => {
+    test("new review emits review.commented for COMMENTED state", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 5003, state: "COMMENTED" })]),
@@ -610,7 +611,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const reviewEvents = events.filter((e) => e.event === REVIEW_COMMENT);
+      const reviewEvents = events.filter((e) => e.event === REVIEW_COMMENTED);
       expect(reviewEvents).toHaveLength(1);
       expect(reviewEvents[0].reviewId).toBe(5003);
     });
@@ -624,7 +625,7 @@ describe("CopilotPoller", () => {
       await poller.poll();
 
       const reviewEvents = events.filter(
-        (e) => e.event === REVIEW_APPROVED || e.event === REVIEW_CHANGES_REQUESTED || e.event === REVIEW_COMMENT,
+        (e) => e.event === REVIEW_APPROVED || e.event === REVIEW_CHANGES_REQUESTED || e.event === REVIEW_COMMENTED,
       );
       expect(reviewEvents).toHaveLength(0);
     });
@@ -750,7 +751,7 @@ describe("CopilotPoller", () => {
   // ── Top-level PR comments (#1579) ──
 
   describe("top-level PR comments", () => {
-    test("new PR comment emits review.comment", async () => {
+    test("new PR comment emits pr.comment", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchIssueComments: async () =>
@@ -759,7 +760,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const commentEvents = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      const commentEvents = events.filter((e) => e.event === PR_COMMENT && e.commentId !== undefined);
       expect(commentEvents).toHaveLength(1);
       expect(commentEvents[0].commentId).toBe(7001);
       expect(commentEvents[0].author).toBe("reviewer");
@@ -776,7 +777,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const commentEvents = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      const commentEvents = events.filter((e) => e.event === PR_COMMENT && e.commentId !== undefined);
       expect(commentEvents).toHaveLength(0);
     });
 
@@ -794,13 +795,13 @@ describe("CopilotPoller", () => {
       });
 
       await poller.poll();
-      const firstComments = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      const firstComments = events.filter((e) => e.event === PR_COMMENT && e.commentId !== undefined);
       expect(firstComments).toHaveLength(1);
       expect(firstComments[0].commentId).toBe(7001);
 
       await poller.poll();
       const secondComments = events.filter(
-        (e) => e.event === REVIEW_COMMENT && e.commentId !== undefined && e.commentId === 7002,
+        (e) => e.event === PR_COMMENT && e.commentId !== undefined && e.commentId === 7002,
       );
       expect(secondComments).toHaveLength(1);
     });
