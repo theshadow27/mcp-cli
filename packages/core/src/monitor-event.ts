@@ -29,6 +29,7 @@ export const SESSION_CONTAINMENT_DENIED = "session.containment_denied" as const;
 export const SESSION_CONTAINMENT_ESCALATED = "session.containment_escalated" as const;
 export const SESSION_CONTAINMENT_RESET = "session.containment_reset" as const;
 export const SESSION_IDLE = "session.idle" as const;
+export const SESSION_STUCK = "session.stuck" as const;
 
 // ── Work item event names ──
 
@@ -182,6 +183,14 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [SESSION_CONTAINMENT_WARNING]: (e) => {
     const reason = typeof e.reason === "string" ? cap(e.reason, 60) : "";
     return join(wi(e), sid(e), `strikes:${e.strikes ?? "?"}`, reason);
+  },
+
+  [SESSION_STUCK]: (e) => {
+    const tier = typeof e.tier === "number" ? `tier:${e.tier}` : "";
+    const since = typeof e.sinceMs === "number" ? `${Math.round(e.sinceMs / 1000)}s` : "";
+    const tool = typeof e.lastTool === "string" ? e.lastTool : "";
+    const err = typeof e.lastToolError === "string" ? cap(e.lastToolError, 40) : "";
+    return join(wi(e), sid(e), tier, since, tool, err);
   },
 
   [SESSION_CONTAINMENT_DENIED]: (e) => {

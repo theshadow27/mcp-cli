@@ -81,6 +81,7 @@ export class SessionState {
   numTurns = 0;
   rateLimited = false;
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
+  lastToolCall: { name: string; errorMessage?: string; at: number } | null = null;
   private readonly genRequestId: RequestIdGenerator;
 
   /**
@@ -147,7 +148,11 @@ export class SessionState {
     if (allow) {
       return permissionAllow(requestId, request.input);
     }
-    return permissionDeny(requestId, message ?? "Denied by session controller");
+    const denyMessage = message ?? "Denied by session controller";
+    if (this.lastToolCall) {
+      this.lastToolCall.errorMessage = denyMessage;
+    }
+    return permissionDeny(requestId, denyMessage);
   }
 
   /** Build an interrupt control request. */
@@ -249,6 +254,7 @@ export class SessionState {
       this.state = "active";
       const usage = strict.data.message.usage;
       this.tokens += usage.input_tokens + usage.output_tokens;
+      this.extractLastToolCall(strict.data.message.content);
       const events: SessionEvent[] = [{ type: "session:response", message: strict.data }];
       if (strict.data.error === "rate_limit") {
         this.rateLimited = true;
@@ -266,6 +272,7 @@ export class SessionState {
       if (usage) {
         this.tokens += usage.input_tokens + usage.output_tokens;
       }
+      this.extractLastToolCallRaw(msg);
       const assistant = buildFallbackAssistant(msg, loose.data);
       const events: SessionEvent[] = [{ type: "session:response", message: assistant }];
       if (assistant.error === "rate_limit") {
@@ -343,6 +350,24 @@ export class SessionState {
 
     // unreachable: ResultFallback only requires type:"result", already confirmed by dispatch
     return [];
+  }
+
+  private extractLastToolCall(content: Record<string, unknown>[]): void {
+    for (let i = content.length - 1; i >= 0; i--) {
+      const block = content[i];
+      if (block.type === "tool_use" && typeof block.name === "string") {
+        this.lastToolCall = { name: block.name, at: Date.now() };
+        return;
+      }
+    }
+  }
+
+  private extractLastToolCallRaw(msg: NdjsonMessage): void {
+    const rawMsg = (msg as Record<string, unknown>).message as Record<string, unknown> | undefined;
+    if (!rawMsg) return;
+    const content = rawMsg.content;
+    if (!Array.isArray(content)) return;
+    this.extractLastToolCall(content as Record<string, unknown>[]);
   }
 
   private handleControlRequest(msg: NdjsonMessage): SessionEvent[] {

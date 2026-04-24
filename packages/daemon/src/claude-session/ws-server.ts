@@ -45,6 +45,7 @@ import {
   SESSION_PERMISSION_REQUEST,
   SESSION_RATE_LIMITED,
   SESSION_RESULT,
+  SESSION_STUCK,
   consoleLogger,
   generateSessionName,
 } from "@mcp-cli/core";
@@ -57,6 +58,7 @@ import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./pe
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
 import { IGNORED_TYPES, SessionState } from "./session-state";
+import { DEFAULT_STUCK_CONFIG, StuckDetector, type StuckDetectorConfig, type StuckEvent } from "./stuck-detector";
 
 // ── Constants ──
 
@@ -318,6 +320,8 @@ interface WsSession {
   createdAt: number;
   /** W3C traceparent used for the last spawn — reused on respawn after clear. */
   traceparent: string | null;
+  /** Per-session idle watchdog — detects stalled sessions (#1585). */
+  stuckDetector: StuckDetector | null;
   /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
@@ -377,6 +381,7 @@ export class ClaudeWsServer {
   private readonly portRetryDelayMs: number;
   private readonly reclaimIntervalMs: number;
   private readonly connectTimeoutMs: number;
+  private readonly stuckConfig: StuckDetectorConfig;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -396,6 +401,7 @@ export class ClaudeWsServer {
     portRetryDelayMs?: number;
     reclaimIntervalMs?: number;
     connectTimeoutMs?: number;
+    stuckConfig?: StuckDetectorConfig;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -404,6 +410,7 @@ export class ClaudeWsServer {
     this.portRetryDelayMs = deps?.portRetryDelayMs ?? 500;
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
     this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+    this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -592,6 +599,7 @@ export class ClaudeWsServer {
         pendingImmediate: false, // Restored sessions have no new events
         workCompleted: false,
         traceparent: null,
+        stuckDetector: null,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -642,6 +650,7 @@ export class ClaudeWsServer {
       pendingImmediate: false,
       workCompleted: false,
       traceparent: null,
+      stuckDetector: null,
     });
     return name;
   }
@@ -843,6 +852,7 @@ export class ClaudeWsServer {
     const outbound = session.state.queuePrompt(message);
     this.sendToWs(session, outbound);
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: message } });
+    this.recordSessionProgress(sessionId, session);
   }
 
   /** Respond to a pending permission request. */
@@ -850,6 +860,7 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const outbound = session.state.respondToPermission(requestId, allow, message);
     this.sendToWs(session, outbound);
+    this.recordSessionProgress(sessionId, session);
   }
 
   /** Interrupt the current turn. */
@@ -1507,9 +1518,14 @@ export class ClaudeWsServer {
       case "session:init":
         // Capture Claude Code's own session ID for JSONL file lookup
         session.claudeSessionId = event.sessionId;
+        this.recordSessionProgress(sessionId, session);
+        break;
+      case "session:response":
+        this.recordSessionProgress(sessionId, session);
         break;
       case "session:permission_request":
         session.pendingImmediate = true;
+        this.recordSessionProgress(sessionId, session);
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1529,6 +1545,7 @@ export class ClaudeWsServer {
       case "session:result":
         session.pendingImmediate = true;
         session.workCompleted = true;
+        this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1557,6 +1574,7 @@ export class ClaudeWsServer {
       case "session:error":
         session.pendingImmediate = true;
         session.workCompleted = true;
+        this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1581,6 +1599,7 @@ export class ClaudeWsServer {
         }
         break;
       case "session:cleared":
+        this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1612,6 +1631,7 @@ export class ClaudeWsServer {
         }
         break;
       case "session:disconnected":
+        this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
             sessionId,
@@ -1785,6 +1805,61 @@ export class ClaudeWsServer {
 
     session.state.respondToPermission(requestId, decision.allow, decision.message);
     this.sendToWs(session, outbound);
+  }
+
+  // ── Stuck detection (#1585) ──
+
+  private ensureStuckDetector(sessionId: string, session: WsSession): StuckDetector {
+    if (!session.stuckDetector || session.stuckDetector.isDisposed) {
+      session.stuckDetector = new StuckDetector(
+        sessionId,
+        this.stuckConfig,
+        () => ({
+          state: session.state.state,
+          tokens: session.state.tokens,
+          lastToolCall: session.state.lastToolCall,
+          pendingPermissionCount: session.state.pendingPermissions.size,
+        }),
+        (event) => this.handleStuckEvent(sessionId, session, event),
+      );
+    }
+    return session.stuckDetector;
+  }
+
+  private recordSessionProgress(sessionId: string, session: WsSession): void {
+    const detector = this.ensureStuckDetector(sessionId, session);
+    detector.recordProgress(session.state.tokens);
+  }
+
+  private disposeStuckDetector(session: WsSession): void {
+    if (session.stuckDetector) {
+      session.stuckDetector.dispose();
+      session.stuckDetector = null;
+    }
+  }
+
+  private handleStuckEvent(sessionId: string, session: WsSession, event: StuckEvent): void {
+    const workItemId = session.config.worktree ?? undefined;
+
+    this.resolveEventWaiters(sessionId, {
+      sessionId,
+      event: "session:stuck",
+    });
+
+    if (this.onMonitorEvent) {
+      this.onMonitorEvent({
+        src: "daemon.claude-server",
+        event: SESSION_STUCK,
+        category: "session",
+        sessionId,
+        workItemId,
+        tier: event.tier,
+        sinceMs: event.sinceMs,
+        tokenDelta: event.tokenDelta,
+        lastTool: event.lastTool,
+        lastToolError: event.lastToolError,
+      });
+    }
   }
 
   // ── Helpers ──
@@ -2021,6 +2096,9 @@ export class ClaudeWsServer {
    * close WS, kill process, remove from sessions map.
    */
   private async terminateSession(sessionId: string, session: WsSession, errorMessage: string): Promise<void> {
+    // Dispose stuck detector before ending
+    this.disposeStuckDetector(session);
+
     // End state machine (idempotent — returns [] if already ended)
     const events = session.state.end();
     for (const event of events) {

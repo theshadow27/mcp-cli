@@ -4220,3 +4220,148 @@ describe("monitor event mapping", () => {
     });
   });
 });
+
+// ── Stuck detector integration (#1585) ──
+
+describe("stuck detector integration", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(() => {
+    server?.stop();
+    server = undefined;
+  });
+
+  test("session.stuck fires after stall threshold", async () => {
+    const spawnState = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: spawnState.spawn,
+      logger: silentLogger,
+      stuckConfig: { thresholdsMs: [100, 200, 300], repeatMs: 300 },
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+
+    const port = await server.start();
+    const sessionId = "stuck-test-1";
+    server.prepareSession(sessionId, { prompt: "test", permissionStrategy: "auto" });
+    server.spawnClaude(sessionId);
+
+    // Connect and drive to active state
+    const ws = await connectMockClaude(port, sessionId);
+    await waitForMessage(ws);
+    ws.send(systemInitMessage(sessionId));
+    ws.send(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    // Now session is active — wait for stuck event
+    await pollUntil(() => monitorEvents.some((e) => e.event === "session.stuck"), 2000);
+
+    const stuckEvt = monitorEvents.find((e) => e.event === "session.stuck");
+    expect(stuckEvt).toBeDefined();
+    expect(stuckEvt?.tier).toBe(1);
+    expect(stuckEvt?.sessionId).toBe(sessionId);
+    expect(typeof stuckEvt?.sinceMs).toBe("number");
+
+    ws.close();
+  });
+
+  test("no timer leak after session:result", async () => {
+    const spawnState = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: spawnState.spawn,
+      logger: silentLogger,
+      stuckConfig: { thresholdsMs: [100, 200, 300], repeatMs: 300 },
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+
+    const port = await server.start();
+    const sessionId = "stuck-leak-test";
+    server.prepareSession(sessionId, { prompt: "test", permissionStrategy: "auto" });
+    server.spawnClaude(sessionId);
+
+    const ws = await connectMockClaude(port, sessionId);
+    await waitForMessage(ws);
+    ws.send(systemInitMessage(sessionId));
+    ws.send(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    // Send result — session goes idle, stuck detector should be disposed
+    ws.send(resultMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "idle"));
+
+    const stuckBefore = monitorEvents.filter((e) => e.event === "session.stuck").length;
+
+    // Wait past all thresholds — no stuck events should fire
+    await Bun.sleep(400);
+    const stuckAfter = monitorEvents.filter((e) => e.event === "session.stuck").length;
+    expect(stuckAfter).toBe(stuckBefore);
+
+    ws.close();
+  });
+
+  test("no timer leak after session:ended via bye", async () => {
+    const spawnState = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: spawnState.spawn,
+      logger: silentLogger,
+      stuckConfig: { thresholdsMs: [150, 300, 450], repeatMs: 450 },
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+
+    const port = await server.start();
+    const sessionId = "stuck-bye-test";
+    server.prepareSession(sessionId, { prompt: "test", permissionStrategy: "auto" });
+    server.spawnClaude(sessionId);
+
+    const ws = await connectMockClaude(port, sessionId);
+    await waitForMessage(ws);
+    ws.send(systemInitMessage(sessionId));
+    ws.send(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    // End session via bye — terminateSession disposes detector
+    await server.bye(sessionId);
+
+    const stuckBefore = monitorEvents.filter((e) => e.event === "session.stuck").length;
+    await Bun.sleep(400);
+    const stuckAfter = monitorEvents.filter((e) => e.event === "session.stuck").length;
+    expect(stuckAfter).toBe(stuckBefore);
+
+    ws.close();
+  });
+
+  test("stuck event includes workItemId from session config", async () => {
+    const spawnState = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: spawnState.spawn,
+      logger: silentLogger,
+      stuckConfig: { thresholdsMs: [80, 160, 240], repeatMs: 240 },
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+
+    const port = await server.start();
+    const sessionId = "stuck-wi-test";
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      permissionStrategy: "auto",
+      worktree: "/tmp/wt-1585",
+    });
+    server.spawnClaude(sessionId);
+
+    const ws = await connectMockClaude(port, sessionId);
+    await waitForMessage(ws);
+    ws.send(systemInitMessage(sessionId));
+    ws.send(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    await pollUntil(() => monitorEvents.some((e) => e.event === "session.stuck"), 2000);
+
+    const stuckEvt = monitorEvents.find((e) => e.event === "session.stuck");
+    expect(stuckEvt?.workItemId).toBe("/tmp/wt-1585");
+
+    ws.close();
+  });
+});
