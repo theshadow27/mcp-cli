@@ -21,7 +21,7 @@ import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createBrowserLock, withDeadline } from "./site/browser-lock";
-import type { BrowserEngine, BrowserEngineName, SiteSpec } from "./site/browser/engine";
+import type { BrowserEngine, BrowserEngineName, SiteSpec, StartSiteResult } from "./site/browser/engine";
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
   type SiteConfig,
@@ -96,9 +96,7 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
   if (engine === "playwright") {
     try {
       const mod = await import("./site/browser/playwright");
-      browser = new mod.PlaywrightBrowserEngine();
-      browserEngineName = "playwright";
-      return browser;
+      return new mod.PlaywrightBrowserEngine();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Module not found/.test(msg)) {
@@ -334,7 +332,19 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 
     const eng = await loadBrowser(engine);
     const specs = sites.map(siteSpecFor);
-    const startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
+    let startResults: StartSiteResult[];
+    try {
+      startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
+    } catch (err) {
+      // eng.start() timed out or threw — stop the partially-launched process so
+      // it doesn't leak, then re-throw so browser stays null.
+      await withDeadline(5_000, "browser stop on failed start", eng.stop()).catch(() => {});
+      throw err;
+    }
+    // Assign globals only after start() succeeds so a failed/timed-out start
+    // never leaves browser pointing at an unstarted engine.
+    browser = eng;
+    browserEngineName = engine;
     for (const s of sites) sitesOpenInBrowser.add(s.name);
 
     return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });

@@ -58,10 +58,10 @@ describe("createBrowserLock", () => {
     expect(result).toBe("ok");
   });
 
-  test("models the reset-during-start race: observer cannot clear browser while start holds the lock", async () => {
+  test("models the assign-after-start pattern: browser ref is null until start() resolves", async () => {
     const withLock = createBrowserLock();
 
-    // Simulate module-level state.
+    // Simulate module-level state (fixed pattern from #1705).
     let isRunning = false;
     class FakeEngine {}
     const fakeEngine = new FakeEngine();
@@ -73,7 +73,8 @@ describe("createBrowserLock", () => {
       }
     }
 
-    // Simulate handleBrowserStart holding the lock across the async start.
+    // Simulate handleBrowserStart: eng is created by loadBrowser (local only),
+    // browserRef is assigned only after eng.start() resolves.
     let resolveStart!: () => void;
     const startDone = new Promise<void>((r) => {
       resolveStart = r;
@@ -81,9 +82,10 @@ describe("createBrowserLock", () => {
 
     const startTask = withLock(async () => {
       resetIfDied();
-      browserRef = fakeEngine; // loadBrowser assigns the ref
-      await startDone; // eng.start() — async gap where observer would race
+      const eng = fakeEngine; // loadBrowser returns engine without setting browserRef
+      await startDone; // eng.start()
       isRunning = true;
+      browserRef = eng; // assign only after start succeeds
     });
 
     // Yield so startTask acquires the lock.
@@ -95,20 +97,51 @@ describe("createBrowserLock", () => {
       return browserRef;
     });
 
-    // At this point startTask holds the lock; observerTask is queued.
-    // browserRef is truthy but isRunning is still false —
-    // without the lock the observer would clear browserRef here.
-    expect(browserRef === fakeEngine).toBe(true);
+    // startTask holds the lock; browserRef is still null during start().
+    expect(browserRef).toBeNull();
     expect(isRunning).toBe(false);
 
-    // Finish the start.
     resolveStart();
     await startTask;
 
     const observerSaw = await observerTask;
 
-    // isRunning=true by the time observer runs → reset does NOT fire.
+    // Observer runs after start completes; browserRef is set and isRunning=true.
     expect(observerSaw === fakeEngine).toBe(true);
     expect(browserRef === fakeEngine).toBe(true);
+  });
+
+  test("models start() failure: browser ref stays null when start throws", async () => {
+    const withLock = createBrowserLock();
+
+    class FakeEngine {}
+    const fakeEngine = new FakeEngine();
+    let browserRef: FakeEngine | null = null;
+
+    // Success path: confirm browserRef can be assigned (models a prior successful start).
+    await withLock(async () => {
+      browserRef = fakeEngine;
+    });
+    expect(browserRef === fakeEngine).toBe(true);
+
+    // Reset to null to model a fresh browser-start attempt after a disconnect.
+    browserRef = null;
+
+    // Simulate handleBrowserStart where eng.start() throws before assignment.
+    await expect(
+      withLock(async () => {
+        const eng = fakeEngine; // loadBrowser returns engine without setting browserRef
+        void eng; // would call eng.start() here
+        throw new Error("start timed out");
+        // browserRef is never assigned — production code only assigns after start() resolves
+      }),
+    ).rejects.toThrow("start timed out");
+
+    // Failed start leaves browserRef null — the core invariant of #1705.
+    expect(browserRef).toBeNull();
+
+    // Lock is released; next caller can proceed.
+    const result = await withLock(async () => browserRef);
+    expect(result).toBeNull();
   });
 });
