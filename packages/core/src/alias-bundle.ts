@@ -11,7 +11,14 @@
  */
 
 import { z } from "zod/v4";
-import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition, MonitorDefinition } from "./alias";
+import type {
+  AliasContext,
+  AliasDefinition,
+  AliasMonitorEventInput,
+  McpProxy,
+  MonitorAliasDefinition,
+  MonitorDefinition,
+} from "./alias";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
