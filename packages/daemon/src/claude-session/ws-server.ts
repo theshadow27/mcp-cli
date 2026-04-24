@@ -253,6 +253,12 @@ export interface SessionWaitEvent {
   requestId?: string;
   toolName?: string;
   strikes?: number;
+  /** Stuck-event fields (present when event === "session:stuck"). */
+  tier?: number;
+  sinceMs?: number;
+  tokenDelta?: number;
+  lastTool?: string | null;
+  lastToolError?: string | null;
   /** Full session snapshot at the time of the event (same fields as claude_session_list). */
   session?: SessionInfo;
 }
@@ -1844,6 +1850,11 @@ export class ClaudeWsServer {
     this.resolveEventWaiters(sessionId, {
       sessionId,
       event: "session:stuck",
+      tier: event.tier,
+      sinceMs: event.sinceMs,
+      tokenDelta: event.tokenDelta,
+      lastTool: event.lastTool,
+      lastToolError: event.lastToolError,
     });
 
     if (this.onMonitorEvent) {

@@ -4364,4 +4364,32 @@ describe("stuck detector integration", () => {
 
     ws.close();
   });
+
+  test("waitForEvent resolves with stuck diagnostic fields", async () => {
+    const spawnState = mockSpawn();
+    server = new ClaudeWsServer({
+      spawn: spawnState.spawn,
+      logger: silentLogger,
+      stuckConfig: { thresholdsMs: [80, 160, 240], repeatMs: 240 },
+    });
+
+    const port = await server.start();
+    const sessionId = "stuck-waiter-test";
+    server.prepareSession(sessionId, { prompt: "test", permissionStrategy: "auto" });
+    server.spawnClaude(sessionId);
+
+    const ws = await connectMockClaude(port, sessionId);
+    await waitForMessage(ws);
+    ws.send(systemInitMessage(sessionId));
+    ws.send(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active"));
+
+    const waitedEvent = await server.waitForEvent(sessionId, 2000);
+    expect(waitedEvent.event).toBe("session:stuck");
+    expect(typeof waitedEvent.tier).toBe("number");
+    expect(typeof waitedEvent.sinceMs).toBe("number");
+    expect(typeof waitedEvent.tokenDelta).toBe("number");
+
+    ws.close();
+  });
 });

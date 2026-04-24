@@ -222,4 +222,21 @@ describe("StuckDetector", () => {
     await pollUntil(() => events.length >= 2, 2000);
     expect(events[1].tier).toBe(2);
   });
+
+  test("constructor throws on empty thresholdsMs", () => {
+    expect(
+      () =>
+        new StuckDetector(
+          "test-session",
+          { thresholdsMs: [], repeatMs: 300 },
+          () => ({
+            state: "active" as SessionStateEnum,
+            tokens: 0,
+            lastToolCall: null,
+            pendingPermissionCount: 0,
+          }),
+          () => {},
+        ),
+    ).toThrow("thresholdsMs must be non-empty");
+  });
 });

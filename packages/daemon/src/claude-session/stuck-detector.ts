@@ -43,6 +43,9 @@ export class StuckDetector {
     getSnapshot: () => SessionSnapshot,
     onStuck: (event: StuckEvent) => void,
   ) {
+    if (config.thresholdsMs.length === 0) {
+      throw new Error("StuckDetectorConfig.thresholdsMs must be non-empty");
+    }
     this.sessionId = sessionId;
     this.config = config;
     this.getSnapshot = getSnapshot;
@@ -59,7 +62,7 @@ export class StuckDetector {
 
   recordProgress(tokens: number): void {
     if (this.disposed) return;
-    this.lastProgressAt = Date.now();
+    this.lastProgressAt = performance.now();
     this.emissionCount = 0;
     this.tokenSnapshot = tokens;
     this.scheduleNext();
@@ -100,7 +103,7 @@ export class StuckDetector {
       return;
     }
 
-    const elapsed = Date.now() - this.lastProgressAt;
+    const elapsed = performance.now() - this.lastProgressAt;
     const nextTier = this.tierForEmission(this.emissionCount);
 
     const tokenDelta = snapshot.tokens - this.tokenSnapshot;
@@ -116,6 +119,7 @@ export class StuckDetector {
       lastToolError: snapshot.lastToolCall?.errorMessage ?? null,
     });
 
+    if (this.disposed) return;
     this.scheduleNext();
   }
 
