@@ -28,48 +28,66 @@ import {
 import type { z } from "zod/v4";
 
 export async function runAlias(aliasPath: string, cliArgs: Record<string, string>, jsonInput?: string): Promise<void> {
-  const mcpProxy = createMcpProxy({ cwd: () => process.cwd() });
-
-  // Defense-in-depth: verify the alias path is inside the aliases directory
-  const resolved = resolve(aliasPath);
-  if (!resolved.startsWith(`${options.ALIASES_DIR}/`)) {
-    throw new Error(`Refusing to execute alias outside aliases directory: ${resolved}`);
-  }
-
-  // Read the source to determine alias type
-  const source = await Bun.file(aliasPath).text();
-  const isStructured = isDefineAlias(source);
-
-  // Bundle the alias
-  const { js } = await bundleAlias(aliasPath);
-
-  // Derive alias name from filename (e.g. "my-alias.ts" → "my-alias")
-  const aliasName = basename(aliasPath, ".ts");
-
-  const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
-  const ctx: AliasContext = {
-    mcp: mcpProxy,
-    args: cliArgs,
-    file: (path: string) => Bun.file(path).text(),
-    json: async (path: string) => JSON.parse(await Bun.file(path).text()),
-    cache: createAliasCache(aliasName),
-    state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
-    globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
-    workItem: null,
-    waitForEvent: createWaitForEvent(),
+  const controller = new AbortController();
+  const onSignal = (sig: NodeJS.Signals) => {
+    controller.abort();
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
+    process.kill(process.pid, sig);
   };
+  const onInt = () => onSignal("SIGINT");
+  const onTerm = () => onSignal("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
 
-  if (isStructured) {
-    // Parse input for defineAlias handler
-    const input = parseAliasInput(undefined, jsonInput, cliArgs);
-    const output = await executeAliasBundled(js, input, ctx, true);
-    const formatted = formatAliasOutput(output);
-    if (formatted !== undefined) {
-      console.log(formatted);
+  try {
+    const mcpProxy = createMcpProxy({ cwd: () => process.cwd() });
+
+    // Defense-in-depth: verify the alias path is inside the aliases directory
+    const resolved = resolve(aliasPath);
+    if (!resolved.startsWith(`${options.ALIASES_DIR}/`)) {
+      throw new Error(`Refusing to execute alias outside aliases directory: ${resolved}`);
     }
-  } else {
-    // Freeform: side effects execute during eval
-    await executeAliasBundled(js, undefined, ctx, false);
+
+    // Read the source to determine alias type
+    const source = await Bun.file(aliasPath).text();
+    const isStructured = isDefineAlias(source);
+
+    // Bundle the alias
+    const { js } = await bundleAlias(aliasPath);
+
+    // Derive alias name from filename (e.g. "my-alias.ts" → "my-alias")
+    const aliasName = basename(aliasPath, ".ts");
+
+    const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
+    const ctx: AliasContext = {
+      mcp: mcpProxy,
+      args: cliArgs,
+      file: (path: string) => Bun.file(path).text(),
+      json: async (path: string) => JSON.parse(await Bun.file(path).text()),
+      cache: createAliasCache(aliasName),
+      state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
+      globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
+      workItem: null,
+      signal: controller.signal,
+      waitForEvent: createWaitForEvent({ signal: controller.signal }),
+    };
+
+    if (isStructured) {
+      // Parse input for defineAlias handler
+      const input = parseAliasInput(undefined, jsonInput, cliArgs);
+      const output = await executeAliasBundled(js, input, ctx, true);
+      const formatted = formatAliasOutput(output);
+      if (formatted !== undefined) {
+        console.log(formatted);
+      }
+    } else {
+      // Freeform: side effects execute during eval
+      await executeAliasBundled(js, undefined, ctx, false);
+    }
+  } finally {
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 

@@ -287,6 +287,7 @@ describe("bundleAlias", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
         },
@@ -411,6 +412,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
         },
@@ -450,6 +452,7 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
           },
@@ -491,6 +494,7 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
           },
@@ -533,6 +537,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
         },
@@ -572,6 +577,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
         },
@@ -600,6 +606,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
         },

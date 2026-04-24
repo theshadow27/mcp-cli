@@ -820,6 +820,18 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
 
   const { js } = await d.bundleAlias(resolved);
 
+  const controller = new AbortController();
+  const onSignal = (sig: NodeJS.Signals) => {
+    controller.abort();
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
+    process.kill(process.pid, sig);
+  };
+  const onInt = () => onSignal("SIGINT");
+  const onTerm = () => onSignal("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+
   const baseCtx: AliasContext = {
     mcp: {},
     args: extraArgs,
@@ -832,7 +844,8 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     state: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     workItem: null,
-    waitForEvent: createWaitForEvent(),
+    signal: controller.signal,
+    waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
   const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
 
@@ -841,6 +854,9 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   } catch (err) {
     d.logError(`phase "${name}" threw: ${err instanceof Error ? err.message : String(err)}`);
     d.exit(1);
+  } finally {
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 
@@ -1118,6 +1134,18 @@ export async function executePhase(
   const state = workItem
     ? createAliasState({ repoRoot, namespace: `workitem:${workItem.id}`, call: ex.ipcCall })
     : createEphemeralState();
+  const phaseController = new AbortController();
+  const onPhaseSignal = (sig: NodeJS.Signals) => {
+    phaseController.abort();
+    process.off("SIGINT", onPhaseInt);
+    process.off("SIGTERM", onPhaseTerm);
+    process.kill(process.pid, sig);
+  };
+  const onPhaseInt = () => onPhaseSignal("SIGINT");
+  const onPhaseTerm = () => onPhaseSignal("SIGTERM");
+  process.once("SIGINT", onPhaseInt);
+  process.once("SIGTERM", onPhaseTerm);
+
   const ctx: AliasContext = {
     mcp: createMcpProxy({ call: ex.ipcCall, cwd }),
     args: parsed.args,
@@ -1127,7 +1155,8 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
-    waitForEvent: createWaitForEvent(),
+    signal: phaseController.signal,
+    waitForEvent: createWaitForEvent({ signal: phaseController.signal }),
   };
 
   let input: unknown;
@@ -1152,6 +1181,9 @@ export async function executePhase(
     // retry is not gated by this failure (#1407).
     d.logError(`phase "${parsed.target}" failed: ${err instanceof Error ? err.message : String(err)}`);
     d.exit(1);
+  } finally {
+    process.off("SIGINT", onPhaseInt);
+    process.off("SIGTERM", onPhaseTerm);
   }
 
   // Handler succeeded — commit the transition. Idempotent self-loop
