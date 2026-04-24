@@ -65,6 +65,9 @@ describe("wrapDryRunContext", () => {
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
+      waitForEvent: async () => {
+        throw new Error("not in test");
+      },
     };
     const ctx = wrapDryRunContext(base, (l) => lines.push(l));
 
@@ -92,6 +95,9 @@ describe("wrapDryRunContext", () => {
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
+      waitForEvent: async () => {
+        throw new Error("not in test");
+      },
     };
     const ctx = wrapDryRunContext(base, (l) => lines.push(l));
 

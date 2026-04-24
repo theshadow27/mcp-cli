@@ -3,6 +3,8 @@
  */
 
 import type { z } from "zod/v4";
+import type { EventFilterSpec } from "./event-filter";
+import type { MonitorEvent } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
 
 /** Options for the cache() helper in alias context */
@@ -80,6 +82,18 @@ export interface AliasContext {
    * `null` when the current repo/branch does not map to a tracked work item.
    */
   workItem: AliasWorkItemInfo | null;
+  /**
+   * Wait for the first monitor event that matches `filter`.
+   *
+   * Resolves with the matching event. Rejects with `WaitTimeoutError` if
+   * `opts.timeoutMs` elapses, or with an `Error` if the underlying event
+   * stream ends or errors before a matching event is observed. The
+   * underlying event stream subscription is always cleaned up on
+   * resolve/reject — no leaked subscribers.
+   *
+   * Cancellation via AbortSignal is not yet supported — see #1714.
+   */
+  waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
 }
 
 /**

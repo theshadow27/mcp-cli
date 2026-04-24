@@ -24,6 +24,7 @@ import {
   aliasUserNamespace,
   createAliasCache,
   createAliasState,
+  createWaitForEvent,
   executeAliasBundled,
   extractContent,
   findGitRoot,
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
+    waitForEvent: createWaitForEvent(),
   };
 
   const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);

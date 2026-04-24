@@ -286,6 +286,9 @@ describe("bundleAlias", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        waitForEvent: async () => {
+          throw new Error("not in test");
+        },
       },
       true,
     );
@@ -407,6 +410,9 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        waitForEvent: async () => {
+          throw new Error("not in test");
+        },
       },
       true,
     );
@@ -443,6 +449,9 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          waitForEvent: async () => {
+            throw new Error("not in test");
+          },
         },
         true,
       ),
@@ -481,6 +490,9 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          waitForEvent: async () => {
+            throw new Error("not in test");
+          },
         },
         true,
       );
@@ -520,6 +532,9 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        waitForEvent: async () => {
+          throw new Error("not in test");
+        },
       },
       true,
     );
@@ -556,6 +571,9 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        waitForEvent: async () => {
+          throw new Error("not in test");
+        },
       },
       true,
     );
@@ -581,6 +599,9 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        waitForEvent: async () => {
+          throw new Error("not in test");
+        },
       },
       false,
     );
