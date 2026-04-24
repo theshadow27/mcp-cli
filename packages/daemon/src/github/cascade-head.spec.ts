@@ -93,4 +93,14 @@ describe("computeCascadeHead", () => {
     const prs = [pr(1, "UNSTABLE", true, "2024-01-01T00:00:00Z"), pr(2, "BEHIND", true, "2024-01-01T00:01:00Z")];
     expect(computeCascadeHead(prs)).toBe(2);
   });
+
+  test("PR with current-time sentinel updatedAt loses FIFO to legitimately older PRs", () => {
+    // Simulates a PR whose updatedAt was missing and got the now() fallback.
+    const nowSentinel = new Date(Date.now()).toISOString();
+    const prs = [
+      pr(1, "BEHIND", true, "2024-01-01T00:00:00Z"), // oldest — should win
+      pr(2, "BEHIND", true, nowSentinel), // missing updatedAt fallback — should lose
+    ];
+    expect(computeCascadeHead(prs)).toBe(1);
+  });
 });
