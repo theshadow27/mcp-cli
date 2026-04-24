@@ -218,7 +218,7 @@ async function evalBundledJs(
     await Promise.race([
       fn(injected, coreBarrel),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("extractMetadata timed out")), timeoutMs);
+        timer = setTimeout(() => reject(new Error("Alias eval timed out")), timeoutMs);
       }),
     ]).finally(() => clearTimeout(timer));
   } else {
