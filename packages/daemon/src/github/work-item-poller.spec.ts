@@ -662,7 +662,10 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     const dirtyEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 50);
-    expect(dirtyEvt?.type === "pr:merge_state_changed" && dirtyEvt.cascadeHead).toBeNull();
+    expect(dirtyEvt).toBeDefined();
+    if (!dirtyEvt || dirtyEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 50");
+    expect(dirtyEvt.cascadeHead).toBeNull();
   });
 
   test("cascadeHead is null on null→UNKNOWN transition", async () => {
@@ -685,7 +688,10 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     const unknownEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 52);
-    expect(unknownEvt?.type === "pr:merge_state_changed" && unknownEvt.cascadeHead).toBeNull();
+    expect(unknownEvt).toBeDefined();
+    if (!unknownEvt || unknownEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 52");
+    expect(unknownEvt.cascadeHead).toBeNull();
   });
 
   test("cascadeHead is null on HAS_HOOKS transition", async () => {
@@ -707,7 +713,10 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     const hooksEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 54);
-    expect(hooksEvt?.type === "pr:merge_state_changed" && hooksEvt.cascadeHead).toBeNull();
+    expect(hooksEvt).toBeDefined();
+    if (!hooksEvt || hooksEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 54");
+    expect(hooksEvt.cascadeHead).toBeNull();
   });
 
   test("cascadeHead is null on UNSTABLE transition", async () => {
@@ -725,7 +734,10 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     const unstableEvt = events.find((e) => e.type === "pr:merge_state_changed");
-    expect(unstableEvt?.type === "pr:merge_state_changed" && unstableEvt.cascadeHead).toBeNull();
+    expect(unstableEvt).toBeDefined();
+    if (!unstableEvt || unstableEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 56");
+    expect(unstableEvt.cascadeHead).toBeNull();
   });
 
   test("cascadeHead is non-null when PR transitions to BEHIND with auto-merge", async () => {
@@ -743,7 +755,10 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     const behindEvt = events.find((e) => e.type === "pr:merge_state_changed");
-    expect(behindEvt?.type === "pr:merge_state_changed" && behindEvt.cascadeHead).toBe(57);
+    expect(behindEvt).toBeDefined();
+    if (!behindEvt || behindEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 57");
+    expect(behindEvt.cascadeHead).toBe(57);
   });
 
   // ── Phase 2 enrichment (#1576) ──
