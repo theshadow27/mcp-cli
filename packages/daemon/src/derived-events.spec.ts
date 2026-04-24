@@ -440,6 +440,144 @@ describe("DerivedEventPublisher", () => {
     expect(received.filter((e) => e.event === PHASE_CHANGED)).toHaveLength(1);
   });
 
+  // ── Cursor + reconciliation tests ──
+
+  test("cursor advances as events are processed", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const bus = new EventBus(eventLog);
+    const workItemDb = new WorkItemDb(db);
+
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+
+    bus.publish(prMergedInput(99));
+    const lastSeq = bus.currentSeq;
+    pub.dispose();
+
+    const row = db.query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor").get();
+    expect(row?.last_seq).toBe(lastSeq);
+  });
+
+  test("reconcile replays missed pr.merged and transitions QA work item to done", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const workItemDb = new WorkItemDb(db);
+
+    // Simulate prior daemon run: pr.merged landed in the event log but no derived publisher processed it.
+    const bus1 = new EventBus(eventLog);
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+    bus1.publish(prMergedInput(42));
+    const mergedSeq = bus1.currentSeq;
+
+    // Work item is still in qa — the derived publisher never ran.
+    expect(workItemDb.getWorkItemByPr(42)?.phase).toBe("qa");
+
+    // New daemon run: fresh bus + publisher with eventLog for reconciliation.
+    const bus2 = new EventBus(eventLog);
+    const received: MonitorEvent[] = [];
+    bus2.subscribe((e) => received.push(e));
+
+    const pub = new DerivedEventPublisher({ bus: bus2, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    const replayed = pub.reconcile();
+    pub.dispose();
+
+    expect(replayed).toBe(1);
+    expect(workItemDb.getWorkItemByPr(42)?.phase).toBe("done");
+
+    // The reconciliation should have published a phase.changed event.
+    const phaseChanged = received.find((e) => e.event === PHASE_CHANGED);
+    if (!phaseChanged) throw new Error("expected phase.changed event");
+    expect(phaseChanged.prNumber).toBe(42);
+    expect(phaseChanged.from).toBe("qa");
+    expect(phaseChanged.to).toBe("done");
+    expect(phaseChanged.causedBy).toEqual([mergedSeq]);
+  });
+
+  test("reconcile is a no-op when cursor is caught up", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const bus = new EventBus(eventLog);
+    const workItemDb = new WorkItemDb(db);
+
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+
+    // First publisher processes the event normally.
+    const pub1 = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    bus.publish(prMergedInput(42));
+    pub1.dispose();
+
+    expect(workItemDb.getWorkItemByPr(42)?.phase).toBe("done");
+
+    // Second publisher reconciles — cursor is already past the event.
+    const bus2 = new EventBus(eventLog);
+    const received: MonitorEvent[] = [];
+    bus2.subscribe((e) => received.push(e));
+
+    const pub2 = new DerivedEventPublisher({ bus: bus2, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    const replayed = pub2.reconcile();
+    pub2.dispose();
+
+    expect(replayed).toBe(0);
+    expect(received).toHaveLength(0);
+  });
+
+  test("reconcile handles multiple missed events", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const workItemDb = new WorkItemDb(db);
+
+    // Simulate two PRs merging while daemon was down.
+    const bus1 = new EventBus(eventLog);
+    workItemDb.createWorkItem({ prNumber: 10, phase: "qa" });
+    workItemDb.createWorkItem({ prNumber: 20, phase: "qa" });
+    bus1.publish(prMergedInput(10));
+    bus1.publish(prMergedInput(20));
+
+    // New daemon: reconcile.
+    const bus2 = new EventBus(eventLog);
+    const pub = new DerivedEventPublisher({ bus: bus2, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    const replayed = pub.reconcile();
+    pub.dispose();
+
+    expect(replayed).toBe(2);
+    expect(workItemDb.getWorkItemByPr(10)?.phase).toBe("done");
+    expect(workItemDb.getWorkItemByPr(20)?.phase).toBe("done");
+  });
+
+  test("reconcile without eventLog returns 0", () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    expect(pub.reconcile()).toBe(0);
+    pub.dispose();
+  });
+
+  test("cursor persists across publisher instances", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const workItemDb = new WorkItemDb(db);
+
+    // First publisher processes one event.
+    const bus1 = new EventBus(eventLog);
+    const pub1 = new DerivedEventPublisher({ bus: bus1, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    bus1.publish({ src: "test", event: "something", category: "work_item" });
+    const seq1 = bus1.currentSeq;
+    pub1.dispose();
+
+    // Add another event after first publisher is gone.
+    bus1.publish({ src: "test", event: "another", category: "work_item" });
+
+    // Second publisher should only see the event added after pub1 disposed.
+    const bus2 = new EventBus(eventLog);
+    const pub2 = new DerivedEventPublisher({ bus: bus2, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    const replayed = pub2.reconcile();
+    pub2.dispose();
+
+    expect(replayed).toBe(1);
+  });
+
   test("publisher stamps src:daemon.derived regardless of rule return value", () => {
     const db = freshDb();
     const bus = new EventBus();
@@ -546,5 +684,102 @@ describe("DerivedEventPublisher", () => {
     expect(retryCount).toBe(4);
     // Only the original event — no derived events
     expect(received).toHaveLength(1);
+  });
+
+  // ── Copilot review fixes ──
+
+  test("reconcile: cursor does not leap past unreplayed events when derived events have higher seq", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const workItemDb = new WorkItemDb(db);
+
+    // Simulate two events in the log from a prior daemon run.
+    const bus1 = new EventBus(eventLog);
+    workItemDb.createWorkItem({ prNumber: 10, phase: "qa" });
+    workItemDb.createWorkItem({ prNumber: 20, phase: "qa" });
+    bus1.publish(prMergedInput(10));
+    bus1.publish(prMergedInput(20));
+    const targetSeq = bus1.currentSeq;
+
+    // New daemon: reconcile. Processing pr.merged(10) produces a derived phase.changed
+    // with a higher seq, but cursor must not leap past pr.merged(20).
+    const bus2 = new EventBus(eventLog);
+    const pub = new DerivedEventPublisher({ bus: bus2, rules: DEFAULT_RULES, workItemDb, db, eventLog });
+    pub.reconcile();
+    pub.dispose();
+
+    // Both work items should be transitioned — none skipped.
+    expect(workItemDb.getWorkItemByPr(10)?.phase).toBe("done");
+    expect(workItemDb.getWorkItemByPr(20)?.phase).toBe("done");
+
+    // Cursor should be at targetSeq, not beyond (derived events got higher seqs).
+    const row = db.query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor").get();
+    expect(row?.last_seq).toBe(targetSeq);
+  });
+
+  test("reconcile: depth-capped events still advance the cursor", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const workItemDb = new WorkItemDb(db);
+
+    // Publish an event with causedBy at max depth — it will hit the depth cap.
+    const bus1 = new EventBus(eventLog);
+    bus1.publish({ src: "test", event: "deep", category: "work_item", causedBy: [1, 2, 3, 4] });
+    const deepSeq = bus1.currentSeq;
+
+    // New daemon: reconcile should replay the depth-capped event and advance cursor.
+    const bus2 = new EventBus(eventLog);
+    const neverFire: DerivedRule = {
+      name: "never",
+      match: () => true,
+      apply: () => {
+        throw new Error("should not be called for depth-capped events");
+      },
+    };
+
+    const pub = new DerivedEventPublisher({ bus: bus2, rules: [neverFire], workItemDb, db, eventLog });
+    const replayed = pub.reconcile();
+    pub.dispose();
+
+    expect(replayed).toBe(1);
+    const row = db.query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor").get();
+    expect(row?.last_seq).toBe(deepSeq);
+
+    // Second reconcile should be a no-op — cursor already past it.
+    const bus3 = new EventBus(eventLog);
+    const pub2 = new DerivedEventPublisher({ bus: bus3, rules: [neverFire], workItemDb, db, eventLog });
+    expect(pub2.reconcile()).toBe(0);
+    pub2.dispose();
+  });
+
+  test("constructor: throws on mismatched eventLog and bus.eventLog", () => {
+    const db1 = freshDb();
+    const db2 = freshDb();
+    const eventLog1 = new EventLog(db1);
+    const eventLog2 = new EventLog(db2);
+    const bus = new EventBus(eventLog1);
+    const workItemDb = new WorkItemDb(db1);
+
+    expect(() => {
+      new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db: db1, eventLog: eventLog2 });
+    }).toThrow("mismatched eventLog");
+  });
+
+  test("constructor: defaults eventLog from bus.eventLog when not explicitly provided", () => {
+    const db = freshDb();
+    const eventLog = new EventLog(db);
+    const bus = new EventBus(eventLog);
+    const workItemDb = new WorkItemDb(db);
+
+    // Publish an event before the publisher exists.
+    bus.publish({ src: "test", event: "before", category: "work_item" });
+
+    // Publisher created WITHOUT explicit eventLog — should default from bus.
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const replayed = pub.reconcile();
+    pub.dispose();
+
+    // Should have reconciled the missed event via bus's eventLog.
+    expect(replayed).toBe(1);
   });
 });

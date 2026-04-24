@@ -942,7 +942,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             rules: DEFAULT_RULES,
             workItemDb,
             db: db.database,
+            eventLog,
           });
+          const reconciled = derivedPublisher.reconcile();
+          if (reconciled > 0) {
+            logger.info(`[mcpd] Derived event reconciliation replayed ${reconciled} event(s)`);
+          }
           logger.info("[mcpd] Derived event publisher started");
         } catch (err) {
           logger.error(`[mcpd] Failed to start work items server: ${err}`);
