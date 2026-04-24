@@ -102,7 +102,7 @@ function siteSpecFor(cfg: SiteConfig): SiteSpec {
   const profile = cfg.browser?.chromeProfile ?? "default";
   const seedName = cfg.seed ?? cfg.name;
   const wiggleRel = cfg.wiggle;
-  const wigglePath = wiggleRel ? resolveSiteAsset(cfg.name, seedName, wiggleRel) : null;
+  const wigglePath = wiggleRel ? resolveSiteAsset(cfg.name, wiggleRel) : null;
   return {
     name: cfg.name,
     url: cfg.url,

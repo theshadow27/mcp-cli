@@ -355,18 +355,21 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
         // Non-CJS resolvers may not populate require.cache — that's fine.
       }
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const wiggleFn = require(wigglePath) as (page: Page) => Promise<string[]>;
-      return this.withPage(site, (page) => wiggleFn(page));
+      const exported: unknown = require(wigglePath);
+      const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
+      if (typeof wiggleFn !== "function") throw new Error(`wiggle module at '${wigglePath}' must export a function`);
+      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
     }
 
     if (spec?.wiggleSrc) {
       // Embedded seed script — evaluate CJS source from compiled binary.
       // Constraint: require(), __dirname, and __filename are NOT injected — wiggle scripts must be self-contained.
       const mod = { exports: {} as Record<string, unknown> };
-      const wrapper = new Function("module", "exports", "process", spec.wiggleSrc);
-      wrapper(mod, mod.exports, process);
-      const wiggleFn = mod.exports as unknown as (page: Page) => Promise<string[]>;
-      return this.withPage(site, (page) => wiggleFn(page));
+      new Function("module", "exports", "process", spec.wiggleSrc)(mod, mod.exports, process);
+      const exported: unknown = mod.exports;
+      const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
+      if (typeof wiggleFn !== "function") throw new Error(`embedded wiggle for '${siteName}' must export a function`);
+      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
     }
 
     return ["no-wiggle-configured"];

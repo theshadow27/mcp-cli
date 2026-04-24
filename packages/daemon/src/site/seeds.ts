@@ -16,7 +16,6 @@ import owaConfig from "./seeds/owa/config.json";
 
 import teamsCatalog from "./seeds/teams/catalog.json";
 import teamsConfig from "./seeds/teams/config.json";
-import teamsSearchTemplate from "./seeds/teams/search-template.json";
 
 // ── Wiggle scripts (bundled as text so they survive compilation) ──
 
@@ -43,7 +42,6 @@ export const BUILTIN_SEEDS: Record<string, SeedData> = {
   teams: {
     config: teamsConfig as PartialSiteConfig,
     catalog: teamsCatalog as unknown as Catalog,
-    searchTemplate: teamsSearchTemplate as Record<string, unknown>,
     wiggleSrc: teamsWiggleSrc as string,
   },
   owa: {

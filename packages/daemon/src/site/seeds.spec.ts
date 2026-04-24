@@ -82,11 +82,10 @@ describe("embedded seed data (compiled-binary support)", () => {
     expect(Object.keys(BUILTIN_SEEDS).sort()).toEqual(["owa", "teams"]);
   });
 
-  test("teams seed has config, catalog, searchTemplate, and wiggleSrc", () => {
+  test("teams seed has config, catalog, and wiggleSrc", () => {
     const teams = BUILTIN_SEEDS.teams;
     expect(teams.config.url).toBe("https://teams.cloud.microsoft/v2/");
     expect(Object.keys(teams.catalog).length).toBeGreaterThan(0);
-    expect(teams.searchTemplate).toBeDefined();
     expect(teams.wiggleSrc).toContain("AUTOSUGGEST_INPUT");
   });
 
@@ -106,7 +105,7 @@ describe("embedded seed data (compiled-binary support)", () => {
     expect(getBuiltinWiggleSource("nonexistent")).toBeNull();
   });
 
-  test("search_teams body_default is inlined from searchTemplate", () => {
+  test("search_teams body_default is embedded directly in catalog JSON", () => {
     const catalog = loadCatalog("teams", "teams");
     const searchTeams = catalog.search_teams;
     expect(searchTeams.body_default).toBeTruthy();

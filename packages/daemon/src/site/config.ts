@@ -148,8 +148,8 @@ export function getSiteForDomain(hostname: string): string | null {
   return null;
 }
 
-/** Resolve a seed-relative file path (e.g. wiggle script) from the user's site dir. */
-export function resolveSiteAsset(site: string, _seedName: string, relPath: string): string | null {
+/** Resolve a site asset path (e.g. wiggle script) from the user's site dir. */
+export function resolveSiteAsset(site: string, relPath: string): string | null {
   const userPath = join(sitePath(site), relPath);
   if (existsSync(userPath)) return userPath;
   return null;
