@@ -13,6 +13,7 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
+import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
 const ACTIVE_INTERVAL_MS = 30_000;
@@ -29,6 +30,10 @@ export interface WorkItemPollerOptions {
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   /** Called on each work item event. */
   onEvent?: (event: WorkItemEvent) => void;
+  /** Called on each CI run event (ci.started / ci.running / ci.finished). */
+  onCiEvent?: (event: CiEvent) => void;
+  /** Injected for testing — override Date.now(). */
+  now?: () => number;
 }
 
 export class WorkItemPoller {
@@ -46,6 +51,9 @@ export class WorkItemPoller {
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
+  private onCiEvent: (event: CiEvent) => void;
+  private nowFn: () => number;
+  private readonly ciRunStates = new Map<number, CiRunState>();
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -55,6 +63,8 @@ export class WorkItemPoller {
     this.fetchPRs = opts.fetchPRs ?? fetchTrackedPRs;
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
     this.onEvent = opts.onEvent ?? (() => {});
+    this.onCiEvent = opts.onCiEvent ?? (() => {});
+    this.nowFn = opts.now ?? (() => Date.now());
   }
 
   get lastError(): string | null {
@@ -214,6 +224,24 @@ export class WorkItemPoller {
     if (changed) {
       this.db.updateWorkItem(item.id, patch);
       this.logger.info(`[mcpd] Work item ${item.id} (PR #${prNumber}) updated: ${JSON.stringify(patch)}`);
+    }
+
+    // CI run events — separate from the coarse checks:started/passed/failed above
+    if (status.ciChecks.length > 0) {
+      const prev = this.ciRunStates.get(prNumber) ?? null;
+      const { events: ciEvents, state: ciState } = computeCiTransitions(
+        prNumber,
+        item.id,
+        prev,
+        status.ciChecks,
+        this.nowFn(),
+      );
+      if (ciState) {
+        this.ciRunStates.set(prNumber, ciState);
+      }
+      for (const ev of ciEvents) {
+        this.onCiEvent(ev);
+      }
     }
   }
 

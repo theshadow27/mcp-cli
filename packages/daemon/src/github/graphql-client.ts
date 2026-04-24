@@ -21,6 +21,7 @@ export interface CiCheck {
   name: string;
   status: string;
   conclusion: string | null;
+  checkSuiteId: number | null;
 }
 
 export interface Review {
@@ -63,6 +64,7 @@ export function buildQuery(prNumbers: readonly number[]): string {
                     name
                     conclusion
                     status
+                    checkSuite { databaseId }
                   }
                 }
               }
@@ -92,6 +94,7 @@ interface RawCheckRun {
   name?: string;
   conclusion?: string | null;
   status?: string;
+  checkSuite?: { databaseId?: number | null } | null;
 }
 
 interface RawReview {
@@ -127,6 +130,7 @@ function parsePR(raw: RawPR): PRStatus {
       name: n.name,
       status: n.status ?? "QUEUED",
       conclusion: n.conclusion ?? null,
+      checkSuiteId: n.checkSuite?.databaseId ?? null,
     }));
 
   const reviews: Review[] = (raw.reviews?.nodes ?? [])

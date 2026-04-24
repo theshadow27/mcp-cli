@@ -11,7 +11,7 @@
 
 // ── Event categories ──
 
-export type MonitorCategory = "session" | "work_item" | "mail" | "heartbeat";
+export type MonitorCategory = "session" | "work_item" | "ci" | "mail" | "heartbeat";
 
 // ── Session event names ──
 
@@ -40,6 +40,12 @@ export const CHECKS_FAILED = "checks.failed" as const;
 export const REVIEW_APPROVED = "review.approved" as const;
 export const REVIEW_CHANGES_REQUESTED = "review.changes_requested" as const;
 export const PHASE_CHANGED = "phase.changed" as const;
+
+// ── CI run event names (#1577) ──
+
+export const CI_STARTED = "ci.started" as const;
+export const CI_RUNNING = "ci.running" as const;
+export const CI_FINISHED = "ci.finished" as const;
 
 // ── Mail event names ──
 
@@ -183,6 +189,22 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const from = typeof e.from === "string" ? e.from : "";
     const to = typeof e.to === "string" ? e.to : "";
     return join(wi(e), from && to ? `${from} → ${to}` : from || to);
+  },
+
+  [CI_STARTED]: (e) => {
+    const checks = Array.isArray(e.checks) ? (e.checks as string[]).join(", ") : "";
+    return join(wi(e), pr(e), checks);
+  },
+
+  [CI_RUNNING]: (e) => {
+    const inProgress = Array.isArray(e.inProgress) ? (e.inProgress as string[]).join(", ") : "";
+    return join(wi(e), pr(e), inProgress && `running: ${inProgress}`);
+  },
+
+  [CI_FINISHED]: (e) => {
+    const green = e.allGreen === true ? "✓ all green" : "✗ failed";
+    const dur = typeof e.durationMs === "number" ? `${Math.round((e.durationMs as number) / 1000)}s` : "";
+    return join(wi(e), pr(e), green, dur);
   },
 
   [MAIL_RECEIVED]: (e) => {
