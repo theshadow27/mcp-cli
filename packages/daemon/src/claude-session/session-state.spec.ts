@@ -959,4 +959,150 @@ describe("SessionState", () => {
       expect(session.parseMismatch).toBe(false);
     });
   });
+
+  // ── lastToolCall tracking (#1585) ──
+
+  describe("lastToolCall", () => {
+    test("starts null", () => {
+      const session = new SessionState("sess-1");
+      expect(session.lastToolCall).toBeNull();
+    });
+
+    test("extracts tool name from assistant message with tool_use block", () => {
+      const session = initSession();
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [
+            { type: "text", text: "Let me run that." },
+            { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "echo hi" } },
+          ],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t1",
+        session_id: "sess-1",
+      });
+
+      expect(session.lastToolCall).not.toBeNull();
+      expect(session.lastToolCall?.name).toBe("Bash");
+      expect(session.lastToolCall?.at).toBeGreaterThan(0);
+    });
+
+    test("tracks the last tool_use block when multiple are present", () => {
+      const session = initSession();
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t2",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [
+            { type: "tool_use", id: "tu-1", name: "Read", input: { file: "a.ts" } },
+            { type: "tool_use", id: "tu-2", name: "Write", input: { file: "b.ts", content: "" } },
+          ],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t2",
+        session_id: "sess-1",
+      });
+
+      expect(session.lastToolCall?.name).toBe("Write");
+    });
+
+    test("no tool_use blocks leaves lastToolCall unchanged", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.lastToolCall).toBeNull();
+    });
+
+    test("permission denial sets errorMessage on lastToolCall", () => {
+      const session = initSession();
+
+      // Simulate tool use followed by permission request
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t3",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu-1", name: "Bash", input: { command: "rm -rf /" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t3",
+        session_id: "sess-1",
+      });
+      expect(session.lastToolCall?.name).toBe("Bash");
+      expect(session.lastToolCall?.errorMessage).toBeUndefined();
+
+      session.handleMessage(CAN_USE_TOOL);
+      session.respondToPermission("req-1", false, "No matching rule for tool: Bash");
+
+      expect(session.lastToolCall?.errorMessage).toBe("No matching rule for tool: Bash");
+    });
+
+    test("permission denial does not set errorMessage when tool_name mismatches lastToolCall", () => {
+      const session = initSession();
+
+      // lastToolCall is "Bash", but the permission request is for "Write" (mismatch)
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t3b",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu-1", name: "Bash", input: { command: "ls" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t3b",
+        session_id: "sess-1",
+      });
+      expect(session.lastToolCall?.name).toBe("Bash");
+
+      session.handleMessage(CAN_USE_TOOL_2);
+      session.respondToPermission("req-2", false, "Not allowed");
+
+      expect(session.lastToolCall?.name).toBe("Bash");
+      expect(session.lastToolCall?.errorMessage).toBeUndefined();
+    });
+
+    test("permission approval does not set errorMessage", () => {
+      const session = initSession();
+
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t4",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu-1", name: "Read", input: { file: "a.ts" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t4",
+        session_id: "sess-1",
+      });
+
+      session.handleMessage(CAN_USE_TOOL);
+      session.respondToPermission("req-1", true);
+
+      expect(session.lastToolCall?.errorMessage).toBeUndefined();
+    });
+  });
 });
