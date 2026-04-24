@@ -11,7 +11,7 @@
 
 // ── Event categories ──
 
-export type MonitorCategory = "session" | "work_item" | "ci" | "mail" | "heartbeat";
+export type MonitorCategory = "session" | "work_item" | "ci" | "copilot" | "mail" | "heartbeat";
 
 // ── Session event names ──
 
@@ -49,6 +49,10 @@ export const PR_MERGE_STATE_CHANGED = "pr.merge_state_changed" as const;
 export const CI_STARTED = "ci.started" as const;
 export const CI_RUNNING = "ci.running" as const;
 export const CI_FINISHED = "ci.finished" as const;
+
+// ── Copilot event names (#1578) ──
+
+export const COPILOT_INLINE_POSTED = "copilot.inline_posted" as const;
 
 // ── Mail event names ──
 
@@ -246,6 +250,13 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const to = typeof e.to === "string" ? e.to : "?";
     const head = typeof e.cascadeHead === "number" ? `cascade:#${e.cascadeHead}` : "";
     return join(wi(e), pr(e), `${from} → ${to}`, head);
+  },
+
+  [COPILOT_INLINE_POSTED]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    const count = typeof e.newCount === "number" ? `${e.newCount} comment${e.newCount === 1 ? "" : "s"}` : "";
+    const first = typeof e.firstLine === "string" ? e.firstLine : "";
+    return join(wi(e), pr(e), author, count, first);
   },
 
   [MAIL_RECEIVED]: (e) => {

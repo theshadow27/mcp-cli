@@ -378,6 +378,15 @@ export class StateDb {
         })();
       }
     }
+
+    // -- Copilot comment state (#1578) --
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS copilot_comment_state (
+        pr_number        INTEGER PRIMARY KEY,
+        seen_comment_ids TEXT NOT NULL DEFAULT '[]',
+        last_poll_ts     TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
   }
 
   // -- Tool cache --
@@ -1521,6 +1530,29 @@ export class StateDb {
       if (parsed !== undefined) out[row.key] = parsed;
     }
     return out;
+  }
+
+  // -- Copilot comment state (#1578) --
+
+  getSeenCommentIds(prNumber: number): number[] {
+    const row = this.db
+      .query<{ seen_comment_ids: string }, [number]>(
+        "SELECT seen_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
+      )
+      .get(prNumber);
+    return row ? safeJsonParse<number[]>(row.seen_comment_ids, []) : [];
+  }
+
+  updateSeenCommentIds(prNumber: number, ids: number[]): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, seen_comment_ids, last_poll_ts)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(pr_number) DO UPDATE SET
+           seen_comment_ids = excluded.seen_comment_ids,
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(prNumber, JSON.stringify(ids));
   }
 
   close(): void {

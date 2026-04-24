@@ -71,6 +71,7 @@ import { DEFAULT_RULES } from "./derived-rules";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
+import { CopilotPoller } from "./github/copilot-poller";
 import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
 import { resolveBranchFromPr } from "./github/resolve-branch";
 import { WorkItemPoller } from "./github/work-item-poller";
@@ -455,6 +456,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
   let workItemsServer: WorkItemsServer | null = null;
   let workItemPoller: WorkItemPoller | null = null;
+  let copilotPoller: CopilotPoller | null = null;
   let derivedPublisher: DerivedEventPublisher | null = null;
 
   // Register uptime and server metrics
@@ -933,6 +935,27 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           workItemPoller.start();
           logger.info("[mcpd] Work item poller started");
 
+          copilotPoller = new CopilotPoller({
+            workItemDb,
+            stateDb: db,
+            logger,
+            onEvent: (event) => {
+              const key = `copilot:${event.prNumber}:${event.author}`;
+              mailEventBus.publishCoalesced(event, key, {
+                mode: "merge",
+                merge: (a, b) => {
+                  const ids = [
+                    ...new Set([...((a.commentIds as number[]) ?? []), ...((b.commentIds as number[]) ?? [])]),
+                  ];
+                  return { ...a, newCount: ids.length, commentIds: ids };
+                },
+                windowMs: 500,
+              });
+            },
+          });
+          copilotPoller.start();
+          logger.info("[mcpd] Copilot poller started");
+
           // Derived event publisher: subscribes to the bus AFTER poller is up,
           // runs rules on each event, re-publishes derived events with causedBy chain.
           // Subscribe order: subscribers registered before this (SSE streams) see
@@ -1002,6 +1025,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       eventLog.stopPruning();
       quotaPoller.stop();
       workItemPoller?.stop();
+      copilotPoller?.stop();
       derivedPublisher?.dispose();
       mailEventBus.disposeCoalescer();
       try {
