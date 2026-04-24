@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import { COPILOT_INLINE_POSTED } from "@mcp-cli/core";
 import { WorkItemDb } from "../db/work-items";
-import { CopilotPoller, type CopilotPollerOptions, type PRComment } from "./copilot-poller";
+import { CopilotPoller, type CopilotPollerOptions, type FetchCommentsResult, type PRComment } from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const TEST_REPO: RepoInfo = { owner: "test", repo: "repo" };
+
+function okResult(comments: PRComment[]): FetchCommentsResult {
+  return { comments, rateLimitLow: false, rateLimitRemaining: 5000 };
+}
 
 function makeComment(overrides: Partial<PRComment> & { id: number }): PRComment {
   return {
@@ -73,7 +77,7 @@ describe("CopilotPoller", () => {
       logger: SILENT_LOGGER,
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",
-      fetchComments: async () => [],
+      fetchComments: async () => okResult([]),
       onEvent: (e) => events.push(e),
       ...overrides,
     });
@@ -86,7 +90,7 @@ describe("CopilotPoller", () => {
     test("empty: no comments yields no events", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => [],
+        fetchComments: async () => okResult([]),
       });
 
       await poller.poll();
@@ -102,7 +106,7 @@ describe("CopilotPoller", () => {
         makeComment({ id: 1002, path: "src/b.ts", line: 10 }),
       ];
       const { poller, events } = makePoller({
-        fetchComments: async () => comments,
+        fetchComments: async () => okResult(comments),
       });
 
       await poller.poll();
@@ -122,11 +126,12 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller, events } = makePoller({
-        fetchComments: async () => [
-          makeComment({ id: 1001, path: "src/a.ts", line: 5 }),
-          makeComment({ id: 1002, path: "src/b.ts", line: 20 }),
-          makeComment({ id: 1003, path: "src/c.ts", line: 30 }),
-        ],
+        fetchComments: async () =>
+          okResult([
+            makeComment({ id: 1001, path: "src/a.ts", line: 5 }),
+            makeComment({ id: 1002, path: "src/b.ts", line: 20 }),
+            makeComment({ id: 1003, path: "src/c.ts", line: 30 }),
+          ]),
       });
 
       await poller.poll();
@@ -142,7 +147,7 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001, 1002]);
 
       const { poller, events } = makePoller({
-        fetchComments: async () => [makeComment({ id: 1001 }), makeComment({ id: 1002 })],
+        fetchComments: async () => okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 })]),
       });
 
       await poller.poll();
@@ -157,11 +162,12 @@ describe("CopilotPoller", () => {
     test("emits separate events per author", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => [
-          makeComment({ id: 1001, user: { login: "github-copilot[bot]" }, path: "src/a.ts", line: 1 }),
-          makeComment({ id: 1002, user: { login: "human-reviewer" }, path: "src/b.ts", line: 2 }),
-          makeComment({ id: 1003, user: { login: "github-copilot[bot]" }, path: "src/c.ts", line: 3 }),
-        ],
+        fetchComments: async () =>
+          okResult([
+            makeComment({ id: 1001, user: { login: "github-copilot[bot]" }, path: "src/a.ts", line: 1 }),
+            makeComment({ id: 1002, user: { login: "human-reviewer" }, path: "src/b.ts", line: 2 }),
+            makeComment({ id: 1003, user: { login: "github-copilot[bot]" }, path: "src/c.ts", line: 3 }),
+          ]),
       });
 
       await poller.poll();
@@ -190,9 +196,9 @@ describe("CopilotPoller", () => {
         fetchComments: async () => {
           callCount++;
           if (callCount === 1) {
-            return [makeComment({ id: 1001 })];
+            return okResult([makeComment({ id: 1001 })]);
           }
-          return [makeComment({ id: 1001 }), makeComment({ id: 1002, path: "src/new.ts", line: 99 })];
+          return okResult([makeComment({ id: 1001 }), makeComment({ id: 1002, path: "src/new.ts", line: 99 })]);
         },
       });
 
@@ -211,7 +217,8 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller } = makePoller({
-        fetchComments: async () => [makeComment({ id: 1001 }), makeComment({ id: 1002 }), makeComment({ id: 1003 })],
+        fetchComments: async () =>
+          okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 }), makeComment({ id: 1003 })]),
       });
 
       await poller.poll();
@@ -229,7 +236,8 @@ describe("CopilotPoller", () => {
     test("uses path basename and line number", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => [makeComment({ id: 1001, path: "packages/daemon/src/poller.ts", line: 143 })],
+        fetchComments: async () =>
+          okResult([makeComment({ id: 1001, path: "packages/daemon/src/poller.ts", line: 143 })]),
       });
 
       await poller.poll();
@@ -240,7 +248,8 @@ describe("CopilotPoller", () => {
     test("falls back to original_line when line is null", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => [makeComment({ id: 1001, path: "src/foo.ts", line: null, original_line: 50 })],
+        fetchComments: async () =>
+          okResult([makeComment({ id: 1001, path: "src/foo.ts", line: null, original_line: 50 })]),
       });
 
       await poller.poll();
@@ -265,7 +274,7 @@ describe("CopilotPoller", () => {
     test("stop prevents further polls", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => [makeComment({ id: 1001 })],
+        fetchComments: async () => okResult([makeComment({ id: 1001 })]),
       });
 
       poller.stop();
@@ -299,7 +308,7 @@ describe("CopilotPoller", () => {
       const { poller, events } = makePoller({
         fetchComments: async (_repo, prNumber) => {
           if (prNumber === 42) throw new Error("network error");
-          return [makeComment({ id: 2001, path: "src/x.ts", line: 1 })];
+          return okResult([makeComment({ id: 2001, path: "src/x.ts", line: 1 })]);
         },
       });
 
@@ -310,6 +319,32 @@ describe("CopilotPoller", () => {
     });
   });
 
+  // ── Rate limit backoff ──
+
+  describe("rate limit", () => {
+    test("rateLimitLow sets backoff, successful poll clears it", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { comments: [], rateLimitLow: true, rateLimitRemaining: 100 };
+          }
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+      // After rate-limit-low poll, backoff should be active (no events to check, but no error)
+      expect(poller.lastError).toBeNull();
+
+      await poller.poll();
+      // After successful poll, backoff should be cleared
+      expect(poller.lastError).toBeNull();
+    });
+  });
+
   // ── Coalesced event integration (mocked) ──
 
   describe("coalesced burst", () => {
@@ -317,10 +352,11 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller, events } = makePoller({
-        fetchComments: async () => [
-          makeComment({ id: 1001, path: "src/a.ts", line: 1 }),
-          makeComment({ id: 1002, path: "src/b.ts", line: 2 }),
-        ],
+        fetchComments: async () =>
+          okResult([
+            makeComment({ id: 1001, path: "src/a.ts", line: 1 }),
+            makeComment({ id: 1002, path: "src/b.ts", line: 2 }),
+          ]),
       });
 
       await poller.poll();

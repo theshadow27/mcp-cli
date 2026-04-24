@@ -1540,7 +1540,7 @@ export class StateDb {
         "SELECT seen_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
       )
       .get(prNumber);
-    return row ? (JSON.parse(row.seen_comment_ids) as number[]) : [];
+    return row ? safeJsonParse<number[]>(row.seen_comment_ids, []) : [];
   }
 
   updateSeenCommentIds(prNumber: number, ids: number[]): void {

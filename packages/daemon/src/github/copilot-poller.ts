@@ -5,7 +5,7 @@
  * tracks which comment IDs have been seen (persisted to SQLite), and emits
  * `copilot.inline_posted` events with only the diff (new comments).
  *
- * Adaptive cadence: 10s when PR has open threads, 60s idle, 300s after merge.
+ * Adaptive cadence: 10s when active work items exist, 60s idle, 300s after merge.
  * Respects GitHub API rate limits: backs off to 300s when remaining < 500.
  */
 
@@ -17,7 +17,7 @@ import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
 import type { WorkItemDb } from "../db/work-items";
 import type { RepoInfo } from "./graphql-client";
-import { detectRepo, getGhToken } from "./graphql-client";
+import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
 
 // ── Cadence constants ──
 
@@ -50,16 +50,21 @@ export interface CopilotInlineEvent {
   author: string;
 }
 
+export interface FetchCommentsResult {
+  comments: PRComment[];
+  rateLimitLow: boolean;
+  rateLimitRemaining: number | null;
+}
+
 export interface CopilotPollerOptions {
   workItemDb: WorkItemDb;
   stateDb: StateDb;
   logger?: Logger;
   intervalMs?: number;
-  fetchComments?: (repo: RepoInfo, prNumber: number, token: string) => Promise<PRComment[]>;
+  fetchComments?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchCommentsResult>;
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   getToken?: () => Promise<string>;
   onEvent?: (event: MonitorEventInput) => void;
-  now?: () => number;
 }
 
 // ── Poller ──
@@ -77,13 +82,11 @@ export class CopilotPoller {
   private polling = false;
   private stopped = false;
   private repoDetectFailures = 0;
-  private lastRateLimitWarnMs = 0;
   private rateLimitBackoff = false;
   private fetchCommentsFn: NonNullable<CopilotPollerOptions["fetchComments"]>;
   private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
   private getTokenFn: NonNullable<CopilotPollerOptions["getToken"]>;
   private onEvent: (event: MonitorEventInput) => void;
-  private nowFn: () => number;
 
   constructor(opts: CopilotPollerOptions) {
     this.workItemDb = opts.workItemDb;
@@ -95,7 +98,6 @@ export class CopilotPoller {
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
     this.getTokenFn = opts.getToken ?? getGhToken;
     this.onEvent = opts.onEvent ?? (() => {});
-    this.nowFn = opts.now ?? (() => Date.now());
   }
 
   get lastError(): string | null {
@@ -203,9 +205,9 @@ export class CopilotPoller {
   private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<void> {
     const prNumber = item.prNumber as number;
 
-    let comments: PRComment[];
+    let result: FetchCommentsResult;
     try {
-      comments = await this.fetchCommentsFn(repo, prNumber, token);
+      result = await this.fetchCommentsFn(repo, prNumber, token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("rate limit") || msg.includes("403")) {
@@ -214,6 +216,15 @@ export class CopilotPoller {
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
       return;
     }
+
+    if (result.rateLimitLow) {
+      this.rateLimitBackoff = true;
+      this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+    } else {
+      this.rateLimitBackoff = false;
+    }
+
+    const comments = result.comments;
 
     if (this.stopped) return;
 
@@ -297,32 +308,68 @@ export class CopilotPoller {
 
 // ── GitHub REST API ──
 
-async function fetchPRComments(repo: RepoInfo, prNumber: number, token: string): Promise<PRComment[]> {
-  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/comments?per_page=100`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "mcp-cli/1.0",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+const MAX_PAGES = 10;
 
-  const remaining = response.headers.get("x-ratelimit-remaining");
-  if (remaining !== null && Number.parseInt(remaining, 10) < RATE_LIMIT_WARN_THRESHOLD) {
-    const reset = response.headers.get("x-ratelimit-reset");
-    const resetAt = reset ? new Date(Number.parseInt(reset, 10) * 1000).toISOString() : "unknown";
-    throw new Error(`GitHub API rate limit low: ${remaining} remaining, resets at ${resetAt}`);
+function makeHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "mcp-cli/1.0",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+function parseNextUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  return match?.[1] ?? null;
+}
+
+async function fetchPRComments(repo: RepoInfo, prNumber: number, token: string): Promise<FetchCommentsResult> {
+  const allComments: PRComment[] = [];
+  let rateLimitLow = false;
+  let rateLimitRemaining: number | null = null;
+  let url: string | null =
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/comments?per_page=100`;
+
+  for (let page = 0; url && page < MAX_PAGES; page++) {
+    const response = await fetch(url, {
+      headers: makeHeaders(token),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    // 401: clear token cache so next poll retries with fresh token
+    if (response.status === 401) {
+      clearTokenCache();
+      throw new Error("GitHub API auth failed (401) — token cache cleared");
+    }
+
+    // 403: check if rate-limit exhaustion vs auth/scope issue
+    if (response.status === 403) {
+      const remaining = response.headers.get("x-ratelimit-remaining");
+      if (remaining !== null && Number.parseInt(remaining, 10) === 0) {
+        throw new Error("GitHub API rate limit exhausted (403)");
+      }
+      throw new Error(`GitHub API forbidden (403): ${response.statusText}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+    }
+
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    if (remaining !== null) {
+      rateLimitRemaining = Number.parseInt(remaining, 10);
+      if (rateLimitRemaining < RATE_LIMIT_WARN_THRESHOLD) {
+        rateLimitLow = true;
+      }
+    }
+
+    const pageComments = (await response.json()) as PRComment[];
+    allComments.push(...pageComments);
+
+    url = parseNextUrl(response.headers.get("link"));
   }
 
-  if (response.status === 403) {
-    throw new Error("GitHub API rate limit exceeded (403)");
-  }
-
-  if (!response.ok) {
-    throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
-  }
-
-  return (await response.json()) as PRComment[];
+  return { comments: allComments, rateLimitLow, rateLimitRemaining };
 }

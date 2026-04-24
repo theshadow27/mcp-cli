@@ -942,11 +942,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               const key = `copilot:${event.prNumber}:${event.author}`;
               mailEventBus.publishCoalesced(event, key, {
                 mode: "merge",
-                merge: (a, b) => ({
-                  ...a,
-                  newCount: ((a.newCount as number) ?? 0) + ((b.newCount as number) ?? 0),
-                  commentIds: [...((a.commentIds as number[]) ?? []), ...((b.commentIds as number[]) ?? [])],
-                }),
+                merge: (a, b) => {
+                  const ids = [
+                    ...new Set([...((a.commentIds as number[]) ?? []), ...((b.commentIds as number[]) ?? [])]),
+                  ];
+                  return { ...a, newCount: ids.length, commentIds: ids };
+                },
                 windowMs: 500,
               });
             },
