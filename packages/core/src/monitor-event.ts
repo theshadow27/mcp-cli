@@ -52,6 +52,7 @@ export const HEARTBEAT = "heartbeat" as const;
 
 // ── Envelope ──
 
+/** Common fields for all monitor events. */
 export interface MonitorEventBase {
   src: string;
   event: string;
@@ -59,6 +60,8 @@ export interface MonitorEventBase {
   workItemId?: string;
   sessionId?: string;
   prNumber?: number;
+  /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
+  causedBy?: number[];
   [key: string]: unknown;
 }
 
