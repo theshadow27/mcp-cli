@@ -3823,7 +3823,7 @@ describe("monitor event mapping", () => {
       expect(events[1].resultPreview).toBe("line one line two line three");
     });
 
-    test("session:result with empty result omits resultPreview from session.idle", () => {
+    test("session:result with empty result preserves empty resultPreview on both events", () => {
       const server = makeServer();
       const events = collect(server);
 

@@ -118,8 +118,8 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
         ? e.resultPreview
         : typeof e.result === "string"
           ? e.result.replace(/\n/g, " ")
-          : "";
-    const preview = raw ? `  "${cap(raw, 60)}"` : "";
+          : undefined;
+    const preview = typeof raw === "string" ? `  "${cap(raw, 60)}"` : "";
     return join(wi(e), sid(e), cost(e), turns(e)) + preview;
   },
 
