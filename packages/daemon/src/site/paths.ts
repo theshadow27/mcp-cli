@@ -33,6 +33,15 @@ export function siteCapturesDir(site: string): string {
   return join(sitePath(site), "captures");
 }
 
+function validateChromeProfileName(profile: string): void {
+  if (/[/\\]/.test(profile) || profile === "..") {
+    throw new Error(
+      `Invalid chromeProfile: must be a simple name (no path separators or '..' segments); got: ${profile}`,
+    );
+  }
+}
+
 export function siteBrowserProfileDir(site: string, profile: string): string {
+  validateChromeProfileName(profile);
   return join(sitePath(site), "chromium", profile);
 }
