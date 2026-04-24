@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { SITE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SiteServer, buildSiteToolCache, isWorkerEvent } from "./site-server";
 import { SITE_TOOLS } from "./site/tools";
 
@@ -59,6 +60,8 @@ function makeFakeWorker(behavior: { replyReady?: boolean; replyErrorMessage?: st
       }
     }),
     terminate: mock(() => {}),
+    addEventListener: mock(() => {}),
+    removeEventListener: mock(() => {}),
     get onmessage() {
       return listeners.get("message") ?? null;
     },
@@ -74,6 +77,16 @@ function makeFakeWorker(behavior: { replyReady?: boolean; replyErrorMessage?: st
   };
   return worker as unknown as Worker;
 }
+
+function mockWorkerFactory() {
+  return (_scriptPath: string): Worker => makeFakeWorker();
+}
+
+const instantClient = () =>
+  ({
+    connect: async () => {},
+    close: async () => {},
+  }) as unknown as Client;
 
 describe("SiteServer", () => {
   let server: SiteServer | undefined;
@@ -93,5 +106,95 @@ describe("SiteServer", () => {
     const workerFactory = (_path: string): Worker => makeFakeWorker({ replyReady: false });
     server = new SiteServer(undefined, undefined, workerFactory, silentLogger, 250);
     await expect(server.start()).rejects.toThrow(/timeout/);
+  });
+});
+
+describe("SiteServer crash recovery", () => {
+  let server: SiteServer | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+  });
+
+  test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
+    server = new SiteServer(undefined, instantClient, mockWorkerFactory(), silentLogger);
+    await server.start();
+
+    let restartedClient: unknown;
+    let restartedTransport: unknown;
+    server.onRestarted = (c, t) => {
+      restartedClient = c;
+      restartedTransport = t;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("test crash");
+
+    expect(restartedClient).not.toBeNull();
+    expect(restartedTransport).not.toBeNull();
+  });
+
+  test("handleWorkerCrash queues second crash during restart and retries", async () => {
+    server = new SiteServer(undefined, instantClient, mockWorkerFactory(), silentLogger);
+    await server.start();
+
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    await Promise.all([crash("crash A"), crash("crash B")]);
+
+    expect(restartCount).toBe(2);
+  });
+
+  test("handleWorkerCrash gives up after too many crashes", async () => {
+    server = new SiteServer(undefined, instantClient, mockWorkerFactory(), silentLogger);
+    await server.start();
+
+    let restartCount = 0;
+    server.onRestarted = () => {
+      restartCount++;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+
+    // Crash MAX_CRASHES times (3) — all should succeed
+    for (let i = 0; i < 3; i++) {
+      await crash(`crash ${i}`);
+    }
+    expect(restartCount).toBe(3);
+
+    // 4th crash — rate-limited, no more restarts
+    await crash("crash 3");
+    expect(restartCount).toBe(3);
+  });
+
+  test("stop() prevents auto-restart on subsequent crash", async () => {
+    server = new SiteServer(undefined, instantClient, mockWorkerFactory(), silentLogger);
+    await server.start();
+    await server.stop();
+
+    let restartedCalled = false;
+    server.onRestarted = () => {
+      restartedCalled = true;
+    };
+
+    const crash = (
+      server as unknown as { handleWorkerCrash: (reason: string) => Promise<void> }
+    ).handleWorkerCrash.bind(server);
+    await crash("post-stop crash");
+
+    expect(restartedCalled).toBe(false);
+    server = undefined;
   });
 });

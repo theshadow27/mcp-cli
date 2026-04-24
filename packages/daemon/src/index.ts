@@ -772,6 +772,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         } catch (err) {
           logger.error(`[mcpd] Failed to start site server: ${err}`);
         }
+
+        siteServer.onRestarted = (client, transport) => {
+          const siteTools = buildSiteToolCache();
+          pool.registerVirtualServer(SITE_SERVER_NAME, client, transport, siteTools);
+          logger.info("[mcpd] Site server re-registered after crash recovery");
+        };
       })(),
     );
 

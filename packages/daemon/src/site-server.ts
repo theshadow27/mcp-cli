@@ -11,6 +11,13 @@ import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
 import { SITE_SERVER_NAME, consoleLogger, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
+import {
+  DEFAULT_RESTART_POLICY,
+  type RestartPolicy,
+  getBackoffDelay,
+  maxAttempts,
+  shouldRestart,
+} from "./restart-policy";
 import { SITE_TOOLS } from "./site/tools";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -46,6 +53,15 @@ export class SiteServer {
   private readonly clientFactory: ClientFactory;
   private readonly workerFactory: WorkerFactory;
   private readonly logger: Logger;
+  private readonly restartPolicy: RestartPolicy;
+  private readonly crashTimestamps: number[] = [];
+  private crashErrorHandler: ((event: ErrorEvent | Event) => void) | null = null;
+  private restartInProgress = false;
+  private pendingCrashReason: string | null = null;
+  private stopped = false;
+
+  /** Called after a successful auto-restart with the new client and transport. */
+  onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
 
   /** Called on worker activity — lets the daemon reset its idle timer. */
   onActivity?: () => void;
@@ -56,10 +72,12 @@ export class SiteServer {
     workerFactory?: WorkerFactory,
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
+    restartPolicy?: RestartPolicy,
   ) {
     this.clientFactory = clientFactory ?? (() => new Client({ name: `mcp-cli/${SITE_SERVER_NAME}`, version: "0.1.0" }));
     this.workerFactory = workerFactory ?? ((scriptPath: string) => new Worker(scriptPath));
     this.logger = logger ?? consoleLogger;
+    this.restartPolicy = restartPolicy ?? DEFAULT_RESTART_POLICY;
   }
 
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
@@ -135,6 +153,7 @@ export class SiteServer {
       };
 
       worker.onerror = null;
+      this.attachCrashDetection(worker);
     } catch (err) {
       try {
         await this.client?.close();
@@ -156,15 +175,107 @@ export class SiteServer {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
+    this.onRestarted = undefined;
     await closeClientWithTimeout(this.client);
     if (this.worker) {
-      this.worker.onmessage = null;
-      this.worker.onerror = null;
+      this.cleanupWorkerHandlers(this.worker);
       this.worker.terminate();
     }
     this.worker = null;
     this.transport = null;
     this.client = null;
+    this.crashTimestamps.length = 0;
+  }
+
+  // ── Crash detection ──
+
+  private cleanupWorkerHandlers(worker: Worker): void {
+    if (this.crashErrorHandler) {
+      worker.removeEventListener("error", this.crashErrorHandler);
+      this.crashErrorHandler = null;
+    }
+    worker.onmessage = null;
+    worker.onerror = null;
+  }
+
+  private attachCrashDetection(worker: Worker): void {
+    const handler = (event: ErrorEvent | Event) => {
+      if (this.worker !== worker) return;
+      const msg = event instanceof ErrorEvent ? event.message : "unknown error";
+      this.handleWorkerCrash(`worker error: ${msg}`);
+    };
+    this.crashErrorHandler = handler;
+    worker.addEventListener("error", handler);
+  }
+
+  private async handleWorkerCrash(reason: string): Promise<void> {
+    if (this.stopped) return;
+    if (this.restartInProgress) {
+      this.pendingCrashReason = reason;
+      return;
+    }
+    this.restartInProgress = true;
+
+    this.logger.error(`[site-server] Worker crash detected: ${reason}`);
+
+    await closeClientWithTimeout(this.client);
+
+    if (this.worker) {
+      this.cleanupWorkerHandlers(this.worker);
+      this.worker.terminate();
+    }
+    this.worker = null;
+    this.transport = null;
+    this.client = null;
+
+    if (!shouldRestart(this.crashTimestamps, this.restartPolicy)) {
+      this.logger.error(
+        `[site-server] ${this.crashTimestamps.length} crashes in ${this.restartPolicy.crashWindowMs / 1000}s — giving up auto-restart`,
+      );
+      this.stopped = true;
+      this.restartInProgress = false;
+      return;
+    }
+
+    const totalAttempts = maxAttempts(this.restartPolicy);
+    let lastErr: unknown;
+
+    try {
+      for (let attempt = 0; attempt < totalAttempts; attempt++) {
+        if (attempt > 0) {
+          const delay = getBackoffDelay(attempt, this.restartPolicy.backoffDelaysMs);
+          this.logger.warn(`[site-server] Retry ${attempt}/${totalAttempts - 1} after ${delay}ms...`);
+          await Bun.sleep(delay);
+        }
+
+        if (this.stopped) {
+          this.logger.info("[site-server] Server stopped during restart backoff — aborting");
+          return;
+        }
+
+        try {
+          this.logger.info("[site-server] Restarting worker...");
+          const { client, transport } = await this.start();
+          this.logger.info("[site-server] Worker restarted successfully");
+          this.onRestarted?.(client, transport);
+          return;
+        } catch (err) {
+          lastErr = err;
+          this.logger.error(`[site-server] Restart attempt ${attempt + 1} failed: ${err}`);
+        }
+      }
+
+      this.logger.error(`[site-server] All ${totalAttempts} restart attempts failed (last: ${lastErr}) — giving up`);
+      this.stopped = true;
+    } finally {
+      this.restartInProgress = false;
+      if (this.pendingCrashReason !== null && !this.stopped) {
+        const pending = this.pendingCrashReason;
+        this.pendingCrashReason = null;
+        await this.handleWorkerCrash(pending);
+      }
+    }
   }
 
   private handleWorkerEvent(event: WorkerEvent): void {
