@@ -57,7 +57,7 @@ export class WorkItemPoller {
   private lastRateLimitWarnMs = 0;
   private onCiEvent: (event: CiEvent) => void;
   private nowFn: () => number;
-  private readonly ciRunStates = new Map<number, CiRunState>();
+  private readonly ciRunStates: Map<number, CiRunState>;
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -69,6 +69,7 @@ export class WorkItemPoller {
     this.onEvent = opts.onEvent ?? (() => {});
     this.onCiEvent = opts.onCiEvent ?? (() => {});
     this.nowFn = opts.now ?? (() => Date.now());
+    this.ciRunStates = this.db.loadCiRunStates();
   }
 
   get lastError(): string | null {
@@ -204,7 +205,10 @@ export class WorkItemPoller {
       // Prune ciRunStates for PR numbers no longer tracked (e.g., work item untracked via prNumber clear)
       const trackedPrNums = new Set(prNumbers);
       for (const pr of this.ciRunStates.keys()) {
-        if (!trackedPrNums.has(pr)) this.ciRunStates.delete(pr);
+        if (!trackedPrNums.has(pr)) {
+          this.ciRunStates.delete(pr);
+          this.db.deleteCiRunState(pr);
+        }
       }
 
       this._lastError = null;
@@ -305,6 +309,7 @@ export class WorkItemPoller {
       );
       if (ciState) {
         this.ciRunStates.set(prNumber, ciState);
+        this.db.upsertCiRunState(prNumber, ciState);
       }
       for (const ev of ciEvents) {
         this.onCiEvent(ev);
@@ -314,6 +319,7 @@ export class WorkItemPoller {
     // Clean up CI state when PR is no longer active
     if (newPrState === "merged" || newPrState === "closed") {
       this.ciRunStates.delete(prNumber);
+      this.db.deleteCiRunState(prNumber);
     }
   }
 

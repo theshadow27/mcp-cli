@@ -9,6 +9,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
 import type { CiStatus, MergeStateStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import type { CiRunState } from "../github/ci-events";
 
 /** A phase transition record from the append-only transition log. */
 export interface WorkItemTransition {
@@ -196,6 +197,19 @@ export class WorkItemDb {
       this.setSchemaVersion(CONSUMER, 4);
       version = 4;
     }
+    if (version < 5) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ci_run_states (
+          pr_number        INTEGER PRIMARY KEY,
+          suite_id         INTEGER NOT NULL,
+          started_at       INTEGER NOT NULL,
+          emitted_started  INTEGER NOT NULL DEFAULT 0,
+          emitted_finished INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      this.setSchemaVersion(CONSUMER, 5);
+      version = 5;
+    }
   }
 
   private setSchemaVersion(name: string, version: number): void {
@@ -371,6 +385,45 @@ export class WorkItemDb {
   /** Persist the HEAD commit OID for a PR so the push detector survives daemon restarts. */
   setLastSeenHeadOid(prNumber: number, oid: string): void {
     this.db.prepare("UPDATE work_items SET last_seen_head_oid = ? WHERE pr_number = ?").run(oid, prNumber);
+  }
+
+  // -- CI run states --
+
+  loadCiRunStates(): Map<number, CiRunState> {
+    const rows = this.db
+      .query<
+        { pr_number: number; suite_id: number; started_at: number; emitted_started: number; emitted_finished: number },
+        []
+      >("SELECT pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states")
+      .all();
+    const map = new Map<number, CiRunState>();
+    for (const row of rows) {
+      map.set(row.pr_number, {
+        suiteId: row.suite_id,
+        startedAt: row.started_at,
+        emittedStarted: row.emitted_started !== 0,
+        emittedFinished: row.emitted_finished !== 0,
+      });
+    }
+    return map;
+  }
+
+  upsertCiRunState(prNumber: number, state: CiRunState): void {
+    this.db
+      .prepare(
+        `INSERT INTO ci_run_states (pr_number, suite_id, started_at, emitted_started, emitted_finished)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(pr_number) DO UPDATE SET
+           suite_id = excluded.suite_id,
+           started_at = excluded.started_at,
+           emitted_started = excluded.emitted_started,
+           emitted_finished = excluded.emitted_finished`,
+      )
+      .run(prNumber, state.suiteId, state.startedAt, state.emittedStarted ? 1 : 0, state.emittedFinished ? 1 : 0);
+  }
+
+  deleteCiRunState(prNumber: number): void {
+    this.db.prepare("DELETE FROM ci_run_states WHERE pr_number = ?").run(prNumber);
   }
 
   /**

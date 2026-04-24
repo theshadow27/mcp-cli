@@ -963,6 +963,62 @@ describe("WorkItemPoller", () => {
     expect(secondStarted).toHaveLength(1);
   });
 
+  test("CI state survives poller restart — no duplicate ci.started, correct observedDurationMs", async () => {
+    db.createWorkItem({ id: "#20", prNumber: 20, prState: "open", ciStatus: "running" });
+
+    const T0 = 1_000_000;
+    const ciEvents1: CiEvent[] = [];
+
+    // First poller instance: sees ci.started
+    const poller1 = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 20,
+          ciState: "PENDING",
+          ciChecks: [ciCheck("check", "IN_PROGRESS", null, 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents1.push(e),
+      now: () => T0,
+    });
+
+    await poller1.poll();
+    expect(ciEvents1.filter((e) => e.type === "ci.started")).toHaveLength(1);
+    poller1.stop();
+
+    // Simulate daemon restart: new poller instance, same DB
+    const ciEvents2: CiEvent[] = [];
+    const poller2 = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 20,
+          ciState: "SUCCESS",
+          ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS", 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents2.push(e),
+      now: () => T0 + 120_000,
+    });
+
+    await poller2.poll();
+
+    // No duplicate ci.started — state was loaded from DB
+    expect(ciEvents2.filter((e) => e.type === "ci.started")).toHaveLength(0);
+
+    // ci.finished should have observedDurationMs reflecting original startedAt
+    const finished = ciEvents2.find((e) => e.type === "ci.finished") as Extract<CiEvent, { type: "ci.finished" }>;
+    expect(finished).toBeDefined();
+    expect(finished.observedDurationMs).toBe(120_000);
+    expect(finished.allGreen).toBe(true);
+    poller2.stop();
+  });
+
   test("CI state cleaned up on PR merge", async () => {
     db.createWorkItem({ id: "#14", prNumber: 14, prState: "open", ciStatus: "none" });
 
