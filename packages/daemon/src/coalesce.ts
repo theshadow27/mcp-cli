@@ -3,20 +3,30 @@ export type SubmitOptions<T> =
   | { mode: "merge"; merge: (a: T, b: T) => T; windowMs?: number }
   | { mode: "never" };
 
+export interface Clock {
+  setTimeout(fn: () => void, ms: number): Timer;
+  clearTimeout(timer: Timer): void;
+}
+
 interface PendingEntry<T> {
   event: T;
   timer: Timer;
+  windowMs: number;
 }
 
 const DEFAULT_WINDOW_MS = 500;
 
+const systemClock: Clock = { setTimeout, clearTimeout };
+
 export class CoalescingPublisher<T> {
   private readonly pending = new Map<string, PendingEntry<T>>();
   private readonly emit: (event: T) => void;
+  private readonly clock: Clock;
   private disposed = false;
 
-  constructor(emit: (event: T) => void) {
+  constructor(emit: (event: T) => void, clock: Clock = systemClock) {
     this.emit = emit;
+    this.clock = clock;
   }
 
   submit(key: string, event: T, opts: SubmitOptions<T>): void {
@@ -33,16 +43,29 @@ export class CoalescingPublisher<T> {
     let value = event;
 
     if (existing) {
-      clearTimeout(existing.timer);
+      this.clock.clearTimeout(existing.timer);
       if (opts.mode === "merge") {
-        value = opts.merge(existing.event, event);
+        try {
+          value = opts.merge(existing.event, event);
+        } catch (err) {
+          // Don't leave a zombie entry with a cleared timer.
+          this.pending.delete(key);
+          throw err;
+        }
       }
     }
 
-    const timer = setTimeout(() => {
-      this.flushKey(key);
-    }, windowMs);
-    this.pending.set(key, { event: value, timer });
+    // Lock window duration on first submission; re-submissions don't change it.
+    const effectiveWindowMs = existing?.windowMs ?? windowMs;
+
+    const timer = this.clock.setTimeout(() => {
+      try {
+        this.flushKey(key);
+      } catch (err) {
+        console.error("[CoalescingPublisher] emit error for key", key, ":", err);
+      }
+    }, effectiveWindowMs);
+    this.pending.set(key, { event: value, timer, windowMs: effectiveWindowMs });
   }
 
   flush(key?: string): void {
@@ -58,7 +81,7 @@ export class CoalescingPublisher<T> {
   dispose(): void {
     this.disposed = true;
     for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer);
+      this.clock.clearTimeout(entry.timer);
     }
     this.pending.clear();
   }
@@ -70,7 +93,7 @@ export class CoalescingPublisher<T> {
   private flushKey(key: string): void {
     const entry = this.pending.get(key);
     if (!entry) return;
-    clearTimeout(entry.timer);
+    this.clock.clearTimeout(entry.timer);
     this.pending.delete(key);
     this.emit(entry.event);
   }
