@@ -13,17 +13,28 @@ This package extracts the permission matching logic that was previously embedded
 Rules use the `Tool(pattern)` format from Claude Code's settings:
 
 ```
-"Read"                  → exact tool match (all Read calls)
-"Bash(git:*)"           → wildcard: command starts with "git "
-"Bash(bun test)"        → exact: command is literally "bun test"
-"Bash(ls /foo/*)"       → exact: the * is a bash glob, NOT a wildcard
-"Read(src/**/*.ts)"     → file glob: matches TypeScript files in src/
-"mcp__echo__echo"       → MCP tool name (exact match)
+"Read"                       → exact tool match (all Read calls)
+"Bash(git:*)"                → wildcard: command starts with "git "
+"Bash(bun test)"             → exact: command is literally "bun test"
+"Bash(ls /foo/*)"            → exact: the * is a bash glob, NOT a wildcard
+"Read(src/**/*.ts)"          → file glob: matches TypeScript files in src/
+"mcp__echo__echo"            → MCP tool name (exact match)
+"mcp__atlassian__*"          → MCP tool wildcard: all tools from atlassian server
+"mcp__*"                     → MCP tool wildcard: all tools from any MCP server
 ```
 
-### Wildcard Marker
+### Wildcard Markers
 
-**Only `:*` is a wildcard.** Bare `*` is a valid bash character (like `ls /foo/*`) and is treated as literal. The `:*` suffix is Claude Code's native format meaning "this prefix with any arguments".
+**`:*` is the argument wildcard.** Bare `*` in a Bash argument pattern is a valid bash glob character (like `ls /foo/*`) and is treated as literal. The `:*` suffix is Claude Code's native format meaning "this prefix with any arguments".
+
+**`__*` is the tool-name wildcard.** Appending `__*` to an MCP tool prefix matches all tools whose name starts with that prefix. This maps to MCP's `mcp__server__tool` naming convention:
+
+- `mcp__atlassian__*` → allows every tool from the `atlassian` MCP server
+- `mcp__*` → allows every MCP tool from any server
+
+Only the `__*` suffix triggers prefix matching on tool names. A bare `*` at any other position (e.g., `Read*`) is not a wildcard and will only match the literal tool name `"Read*"` (which no real tool is named).
+
+Deny rules with `__*` wildcards work symmetrically — a server-level deny (`mcp__atlassian__*`) combined with a broader allow (`mcp__*`) will block all atlassian tools via the standard first-deny-wins logic.
 
 ### Evaluation Semantics
 

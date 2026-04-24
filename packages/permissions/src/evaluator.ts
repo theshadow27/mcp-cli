@@ -10,7 +10,14 @@
 
 import { matchBashCommand } from "./bash-matcher";
 import { matchFilePath } from "./file-matcher";
-import { type PermissionRule, isWildcardPattern, parsePattern, toArgPrefix } from "./rule";
+import {
+  type PermissionRule,
+  isToolWildcard,
+  isWildcardPattern,
+  parsePattern,
+  toArgPrefix,
+  toToolPrefix,
+} from "./rule";
 
 export interface PermissionRequest {
   toolName: string;
@@ -49,7 +56,12 @@ function extractFilePath(input: Record<string, unknown>): string | null {
 function matchesRule(rule: PermissionRule, request: PermissionRequest): boolean {
   const { tool, argPattern } = parsePattern(rule.tool);
 
-  if (tool !== request.toolName) return false;
+  // Tool name matching: exact or tool-wildcard (__*)
+  if (isToolWildcard(tool)) {
+    if (!request.toolName.startsWith(toToolPrefix(tool))) return false;
+  } else {
+    if (tool !== request.toolName) return false;
+  }
   if (argPattern === null) return true;
 
   // For Bash-like tools, match against the command

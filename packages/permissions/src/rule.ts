@@ -39,6 +39,33 @@ export function isWildcardPattern(argPattern: string): boolean {
 }
 
 /**
+ * Check if a tool name is a tool-level wildcard (prefix match on the tool name itself).
+ *
+ * Only `__*` suffix is treated as a tool wildcard, matching MCP tool naming
+ * conventions (mcp__server__tool). A bare `*` in a tool name is never a wildcard.
+ *
+ * Examples:
+ * - "mcp__atlassian__*" → true (matches all atlassian MCP tools)
+ * - "mcp__*"            → true (matches every MCP tool from any server)
+ * - "mcp__echo__echo"   → false (exact tool name)
+ */
+export function isToolWildcard(tool: string): boolean {
+  return tool.endsWith("__*");
+}
+
+/**
+ * Convert a tool wildcard pattern to the prefix for `startsWith` matching.
+ * Only call this when `isToolWildcard()` returns true.
+ *
+ * Examples:
+ * - "mcp__atlassian__*" → "mcp__atlassian__"
+ * - "mcp__*"            → "mcp__"
+ */
+export function toToolPrefix(tool: string): string {
+  return tool.slice(0, -1); // remove trailing *
+}
+
+/**
  * Convert a wildcard argument pattern (ending in `:*`) to a prefix for matching.
  *
  * The `:*` suffix is Claude Code's native format meaning "this command prefix
