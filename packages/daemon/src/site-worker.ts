@@ -21,6 +21,7 @@ import { isAbsolute } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { createBrowserLock } from "./site/browser-lock";
 import type { BrowserEngine, BrowserEngineName, SiteSpec } from "./site/browser/engine";
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
@@ -70,6 +71,11 @@ const sniffer = new Sniffer(vault);
 let browser: BrowserEngine | null = null;
 let browserEngineName: BrowserEngineName | null = null;
 const sitesOpenInBrowser = new Set<string>();
+
+// Serialises all operations that read-modify-write the `browser` module global,
+// preventing a concurrent observer handler from clearing the ref during start-up
+// (when browser is truthy but isRunning() is still false). See #1597.
+const withBrowserLock = createBrowserLock();
 
 // ── Lazy browser load ──
 
@@ -224,7 +230,10 @@ function handleDescribe(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
-  resetIfBrowserDied();
+  const browserSnapshot = await withBrowserLock(async () => {
+    resetIfBrowserDied();
+    return browser;
+  });
   const site = requireSite(args.site as string);
   const callName = args.call as string;
   const catalog = loadCatalog(site.name, site.seed ?? site.name);
@@ -248,7 +257,7 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
       site: site.name,
       resolved,
       audHints: call.audHints,
-      onWiggle: browser ? async () => void (await browser?.wiggle(site.name)) : undefined,
+      onWiggle: browserSnapshot ? async () => void (await browserSnapshot.wiggle(site.name)) : undefined,
     });
     result = await applyJqOutput(call, result);
     return ok(result);
@@ -295,42 +304,46 @@ function resetIfBrowserDied(): void {
 }
 
 async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
-  resetIfBrowserDied();
-  const siteNames =
-    (args.sites as string[] | undefined) ??
-    listSites()
-      .filter((s) => s.enabled)
-      .map((s) => s.name);
-  const sites = siteNames.map((n) => requireSite(n));
-  if (sites.length === 0) return error("No sites configured");
+  return withBrowserLock(async () => {
+    resetIfBrowserDied();
+    const siteNames =
+      (args.sites as string[] | undefined) ??
+      listSites()
+        .filter((s) => s.enabled)
+        .map((s) => s.name);
+    const sites = siteNames.map((n) => requireSite(n));
+    if (sites.length === 0) return error("No sites configured");
 
-  const engine = (sites[0].browser?.engine ?? "playwright") as BrowserEngineName;
-  // Per-site engine mixing isn't supported in one context. Flag it clearly.
-  for (const s of sites) {
-    if ((s.browser?.engine ?? "playwright") !== engine) {
-      return error(
-        `All sites opened in one browser must use the same engine. Mixed: ${engine} vs ${s.browser?.engine}`,
-      );
+    const engine = (sites[0].browser?.engine ?? "playwright") as BrowserEngineName;
+    // Per-site engine mixing isn't supported in one context. Flag it clearly.
+    for (const s of sites) {
+      if ((s.browser?.engine ?? "playwright") !== engine) {
+        return error(
+          `All sites opened in one browser must use the same engine. Mixed: ${engine} vs ${s.browser?.engine}`,
+        );
+      }
+      sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
     }
-    sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
-  }
 
-  const eng = await loadBrowser(engine);
-  const specs = sites.map(siteSpecFor);
-  const startResults = await eng.start(specs, sniffer.asEvents());
-  for (const s of sites) sitesOpenInBrowser.add(s.name);
+    const eng = await loadBrowser(engine);
+    const specs = sites.map(siteSpecFor);
+    const startResults = await eng.start(specs, sniffer.asEvents());
+    for (const s of sites) sitesOpenInBrowser.add(s.name);
 
-  return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
+    return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
+  });
 }
 
 async function handleDisconnect(): Promise<ToolResult> {
-  resetIfBrowserDied();
-  if (!browser) return ok({ ok: true, note: "browser was not running" });
-  await browser.stop();
-  browser = null;
-  browserEngineName = null;
-  sitesOpenInBrowser.clear();
-  return ok({ ok: true });
+  return withBrowserLock(async () => {
+    resetIfBrowserDied();
+    if (!browser) return ok({ ok: true, note: "browser was not running" });
+    await browser.stop();
+    browser = null;
+    browserEngineName = null;
+    sitesOpenInBrowser.clear();
+    return ok({ ok: true });
+  });
 }
 
 function handleSniff(args: Record<string, unknown>): ToolResult {
@@ -361,27 +374,36 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> {
-  resetIfBrowserDied();
-  if (!browser) return error("Browser is not running. Start it with site_browser_start.");
+  const snapshot = await withBrowserLock(async () => {
+    resetIfBrowserDied();
+    return browser;
+  });
+  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
-  const touched = await browser.wiggle(site);
+  const touched = await snapshot.wiggle(site);
   return ok({ ok: true, touched });
 }
 
 async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
-  resetIfBrowserDied();
-  if (!browser) return error("Browser is not running. Start it with site_browser_start.");
+  const snapshot = await withBrowserLock(async () => {
+    resetIfBrowserDied();
+    return browser;
+  });
+  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const code = args.code as string;
   if (!code) return error("Missing 'code'");
   const site = args.site as string | undefined;
-  return ok({ result: await browser.evalInPage(code, site) });
+  return ok({ result: await snapshot.evalInPage(code, site) });
 }
 
 async function handleColdStart(args: Record<string, unknown>): Promise<ToolResult> {
-  resetIfBrowserDied();
-  if (!browser) return error("Browser is not running. Start it with site_browser_start.");
+  const snapshot = await withBrowserLock(async () => {
+    resetIfBrowserDied();
+    return browser;
+  });
+  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
-  return ok(await browser.coldStart(site));
+  return ok(await snapshot.coldStart(site));
 }
 
 async function dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
