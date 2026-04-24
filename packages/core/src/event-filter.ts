@@ -42,29 +42,43 @@ export function globToRegex(pattern: string): RegExp {
 }
 
 /**
+ * Create a reusable monitor event matcher from an EventFilterSpec.
+ *
+ * Precompiles glob-based filters so repeated event checks do not allocate or
+ * recompile RegExp instances on the hot path.
+ */
+export function createEventMatcher(spec: EventFilterSpec): (event: MonitorEvent) => boolean {
+  const subscribeSet = spec.subscribe ? new Set<MonitorCategory>(spec.subscribe) : undefined;
+  const typePatterns =
+    spec.type !== undefined ? (Array.isArray(spec.type) ? spec.type : [spec.type]).map(globToRegex) : undefined;
+  const srcPattern = spec.src !== undefined ? globToRegex(spec.src) : undefined;
+
+  return (event: MonitorEvent): boolean => {
+    if (subscribeSet && !subscribeSet.has(event.category as MonitorCategory)) return false;
+    if (spec.session !== undefined && event.sessionId !== spec.session) return false;
+    if (spec.pr !== undefined && event.prNumber !== spec.pr) return false;
+    if (spec.workItem !== undefined && event.workItemId !== spec.workItem) return false;
+    if (typePatterns !== undefined) {
+      if (typeof event.event !== "string") return false;
+      if (!typePatterns.some((re) => re.test(event.event))) return false;
+    }
+    if (srcPattern !== undefined) {
+      if (typeof event.src !== "string") return false;
+      if (!srcPattern.test(event.src)) return false;
+    }
+    if (spec.phase !== undefined && event.phase !== spec.phase) return false;
+    return true;
+  };
+}
+
+/**
  * Test whether a monitor event matches an EventFilterSpec.
  *
  * Heartbeats are NOT auto-passed here — callers that need heartbeat passthrough
  * (e.g. the server-side ipc-server filter) must handle that separately.
  */
 export function matchFilter(event: MonitorEvent, spec: EventFilterSpec): boolean {
-  if (spec.subscribe && !spec.subscribe.includes(event.category as MonitorCategory)) return false;
-  if (spec.session !== undefined && event.sessionId !== spec.session) return false;
-  if (spec.pr !== undefined && event.prNumber !== spec.pr) return false;
-  if (spec.workItem !== undefined && event.workItemId !== spec.workItem) return false;
-  if (spec.type !== undefined) {
-    const types = Array.isArray(spec.type) ? spec.type : [spec.type];
-    const patterns = types.map(globToRegex);
-    if (typeof event.event !== "string") return false;
-    if (!patterns.some((re) => re.test(event.event))) return false;
-  }
-  if (spec.src !== undefined) {
-    const srcPattern = globToRegex(spec.src);
-    if (typeof event.src !== "string") return false;
-    if (!srcPattern.test(event.src)) return false;
-  }
-  if (spec.phase !== undefined && event.phase !== spec.phase) return false;
-  return true;
+  return createEventMatcher(spec)(event);
 }
 
 /** Convert an EventFilterSpec to openEventStream query params. */

@@ -86,8 +86,10 @@ export interface AliasContext {
    * Wait for the first monitor event that matches `filter`.
    *
    * Resolves with the matching event. Rejects with `WaitTimeoutError` if
-   * `opts.timeoutMs` elapses. The underlying event stream subscription is
-   * always cleaned up on resolve/reject — no leaked subscribers.
+   * `opts.timeoutMs` elapses, or with an `Error` if the underlying event
+   * stream ends or errors before a matching event is observed. The
+   * underlying event stream subscription is always cleaned up on
+   * resolve/reject — no leaked subscribers.
    *
    * Cancellation via AbortSignal is not yet supported — see #1714.
    */
