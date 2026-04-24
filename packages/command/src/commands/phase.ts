@@ -1173,6 +1173,24 @@ export async function executePhase(
   const trail = txResult.from ?? "(initial)";
   d.logError(`approved${tag}: ${trail} → ${parsed.target} (${source})`);
 
+  // Auto-persist work_items.phase so orchestrators don't need a separate
+  // force_update after every phase run (#1745). Re-fetch the work item to
+  // detect if the handler already updated phase (done/needs-attention).
+  if (workItem && parsed.workItemId) {
+    try {
+      const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      if (fresh && fresh.phase !== parsed.target) {
+        await ex.ipcCall("callTool", {
+          server: "_work_items",
+          tool: "work_items_update",
+          arguments: { id: parsed.workItemId, phase: parsed.target },
+        });
+      }
+    } catch {
+      // Non-fatal — orchestrator can still force_update as fallback.
+    }
+  }
+
   if (output !== undefined && output !== null) {
     if (typeof output === "string") {
       d.log(output);

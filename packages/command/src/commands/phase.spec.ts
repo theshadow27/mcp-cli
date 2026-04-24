@@ -1869,6 +1869,207 @@ phases:
   }, 30_000);
 });
 
+describe("executePhase auto-persists work_items.phase (#1745)", () => {
+  const triageAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "triage",
+  description: "triage",
+  input: z.object({}).default({}),
+  output: z.object({ action: z.string() }),
+  fn: async () => ({ action: "done" }),
+}));
+`.trim();
+
+  const triageUpdatesPhase = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "triage",
+  description: "triage",
+  input: z.object({}).default({}),
+  output: z.object({ action: z.string() }),
+  fn: async (_input, ctx) => {
+    await ctx.mcp._work_items.work_items_update({ id: ctx.workItem?.id ?? "", phase: "triage" });
+    return { action: "done" };
+  },
+}));
+`.trim();
+
+  const manifest = `
+runsOn: main
+initial: impl
+phases:
+  impl:
+    source: ./impl.ts
+    next: [triage]
+  triage:
+    source: ./triage.ts
+    next: [done]
+  done:
+    source: ./impl.ts
+    next: []
+`.trim();
+
+  const implAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "impl",
+  description: "impl",
+  input: z.object({}).default({}),
+  output: z.object({ action: z.string() }),
+  fn: async () => ({ action: "spawn" }),
+}));
+`.trim();
+
+  function makeTrackingDeps(opts: { workItemPhase: string; handlerUpdatesPhase?: boolean }) {
+    let currentPhase = opts.workItemPhase;
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const stateStore = new Map<string, unknown>();
+    const ipcCall = async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      switch (method) {
+        case "getWorkItem":
+          return {
+            id: "#77",
+            issueNumber: 77,
+            prNumber: null,
+            branch: "feat/77",
+            prState: null,
+            prUrl: null,
+            ciStatus: "none",
+            ciRunId: null,
+            ciSummary: null,
+            reviewStatus: "pending",
+            phase: currentPhase,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          };
+        case "aliasStateGet": {
+          const p = params as { namespace: string; key: string };
+          return { value: stateStore.get(`${p.namespace}:${p.key}`) };
+        }
+        case "aliasStateSet": {
+          const p = params as { namespace: string; key: string; value: unknown };
+          stateStore.set(`${p.namespace}:${p.key}`, p.value);
+          return { ok: true };
+        }
+        case "aliasStateDelete": {
+          const p = params as { namespace: string; key: string };
+          stateStore.delete(`${p.namespace}:${p.key}`);
+          return { ok: true };
+        }
+        case "aliasStateAll":
+          return { entries: {} };
+        case "callTool": {
+          const p = params as { server: string; tool: string; arguments: Record<string, unknown> };
+          if (p.server === "_work_items" && p.tool === "work_items_update" && p.arguments.phase) {
+            currentPhase = String(p.arguments.phase);
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ server: p.server, tool: p.tool }) }] };
+        }
+        default:
+          return null;
+      }
+    };
+    const exec = (cmd: string[]) => {
+      if (cmd.includes("rev-parse") && cmd.includes("--is-inside-work-tree")) {
+        return { stdout: "true", exitCode: 0 };
+      }
+      if (cmd.includes("symbolic-ref")) {
+        return { stdout: "main\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    };
+    return {
+      ipcCall: ipcCall as unknown as typeof import("@mcp-cli/core").ipcCall,
+      exec,
+      findGitRoot: () => dir,
+      now: () => new Date("2026-04-14T00:00:00Z"),
+      calls,
+      getCurrentPhase: () => currentPhase,
+    };
+  }
+
+  test("auto-updates work_items.phase when handler does not update it", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), implAlias);
+    writeFileSync(join(dir, "triage.ts"), triageAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Seed transition log so impl→triage is valid
+    appendTransitionLog(join(dir, ".mcx", "transitions.jsonl"), {
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      ts: "2026-04-14T00:00:00Z",
+      status: "committed",
+    });
+
+    const ex = makeTrackingDeps({ workItemPhase: "impl" });
+    await executePhase(
+      ["triage", "--work-item", "#77"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    );
+
+    // The auto-update should have called work_items_update with phase=triage
+    const updateCalls = ex.calls.filter(
+      (c) =>
+        c.method === "callTool" &&
+        (c.params as { tool: string }).tool === "work_items_update" &&
+        (c.params as { arguments: { phase: string } }).arguments.phase === "triage",
+    );
+    expect(updateCalls.length).toBe(1);
+    expect(ex.getCurrentPhase()).toBe("triage");
+  }, 30_000);
+
+  test("skips auto-update when handler already set phase to target", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), implAlias);
+    writeFileSync(join(dir, "triage.ts"), triageUpdatesPhase);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    appendTransitionLog(join(dir, ".mcx", "transitions.jsonl"), {
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      ts: "2026-04-14T00:00:00Z",
+      status: "committed",
+    });
+
+    const ex = makeTrackingDeps({ workItemPhase: "impl" });
+    await executePhase(
+      ["triage", "--work-item", "#77"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    );
+
+    // Handler itself called work_items_update → re-fetch sees phase=triage → no second update
+    const updateCalls = ex.calls.filter(
+      (c) => c.method === "callTool" && (c.params as { tool: string }).tool === "work_items_update",
+    );
+    // Only the handler's call, no auto-update
+    expect(updateCalls.length).toBe(1);
+    expect(ex.getCurrentPhase()).toBe("triage");
+  }, 30_000);
+});
+
 describe("spawnExec (#1408)", () => {
   test("returns exitCode=1 and message when binary does not exist", () => {
     const result = spawnExec(["/nonexistent/binary/that/cannot/be/found"]);
