@@ -395,6 +395,77 @@ describe("evaluate", () => {
     expect(evaluate(rules, req("mcp__echo__fail")).allow).toBe(false);
   });
 
+  // ── MCP tool wildcards (__*) ──
+
+  test("mcp__server__* matches all tools from that server", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__atlassian__*", action: "allow" }];
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__get_issue")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__create_issue")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+    expect(evaluate(rules, req("Read")).allow).toBe(false);
+  });
+
+  test("mcp__* matches every MCP tool from any server", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__*", action: "allow" }];
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__authenticate")).allow).toBe(true);
+    expect(evaluate(rules, req("Read")).allow).toBe(false);
+    expect(evaluate(rules, req("Bash", { command: "echo hi" })).allow).toBe(false);
+  });
+
+  test("deny wildcard overrides specific allow", () => {
+    const rules: PermissionRule[] = [
+      { tool: "mcp__atlassian__*", action: "allow" },
+      { tool: "mcp__atlassian__delete_issue", action: "deny" },
+    ];
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__create_issue")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__delete_issue")).allow).toBe(false);
+  });
+
+  test("specific deny overrides broader allow (first deny wins)", () => {
+    const rules: PermissionRule[] = [
+      { tool: "mcp__*", action: "allow" },
+      { tool: "mcp__atlassian__delete_issue", action: "deny" },
+    ];
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__delete_issue")).allow).toBe(false);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+  });
+
+  test("server wildcard deny blocks all tools from that server", () => {
+    const rules: PermissionRule[] = [
+      { tool: "mcp__*", action: "allow" },
+      { tool: "mcp__atlassian__*", action: "deny" },
+    ];
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(false);
+    expect(evaluate(rules, req("mcp__atlassian__get_issue")).allow).toBe(false);
+  });
+
+  test("mcp__server__* does not match adjacent server prefix", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__echo__*", action: "allow" }];
+    // "mcp__echoextra__tool" starts with "mcp__echo" but not "mcp__echo__"
+    expect(evaluate(rules, req("mcp__echoextra__tool")).allow).toBe(false);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+  });
+
+  test("server name containing multi-underscore works correctly", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__claude_ai_Google_Drive__*", action: "allow" }];
+    expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__authenticate")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__list_files")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+  });
+
+  test("bare * in tool name is not a wildcard (literal exact match)", () => {
+    const rules: PermissionRule[] = [{ tool: "Read*", action: "allow" }];
+    // "Read*" is literal — no tool is named "Read*"
+    expect(evaluate(rules, req("Read")).allow).toBe(false);
+    expect(evaluate(rules, req("ReadFile")).allow).toBe(false);
+  });
+
   // ── Read with glob pattern (from real settings) ──
 
   test("Read(//private/tmp/**) matches temp files", () => {
