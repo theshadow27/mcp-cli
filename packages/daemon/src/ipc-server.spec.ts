@@ -3455,6 +3455,111 @@ describe("IpcServer HTTP transport", () => {
     expect(events.every((e) => e.category === "session")).toBe(true);
     expect(events.find((e) => e.event === "mail.received")).toBeUndefined();
   });
+
+  test("ring-buffer: session.response excluded from live delivery without responseTail", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    server.pushEvent({ event: "session.result", category: "session", sessionId: "s1" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: session.response included in live delivery when responseTail matches", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?responseTail=s1", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+    server.pushEvent({ event: "session.result", category: "session", sessionId: "s1" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: session.response excluded when responseTail is different session", async () => {
+    startServer();
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?responseTail=other-session", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    if (!server) throw new Error("server not started");
+    server.pushEvent({ event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    server.pushEvent({ event: "session.result", category: "session", sessionId: "s1" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
 });
 
 // ── buildEventFilter unit tests ──
