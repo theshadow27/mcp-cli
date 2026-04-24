@@ -334,7 +334,15 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 
     const eng = await loadBrowser(engine);
     const specs = sites.map(siteSpecFor);
-    const startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
+    let startResults;
+    try {
+      startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
+    } catch (err) {
+      // eng.start() timed out or threw — stop the partially-launched process so
+      // it doesn't leak, then re-throw so browser stays null.
+      await eng.stop().catch(() => {});
+      throw err;
+    }
     // Assign globals only after start() succeeds so a failed/timed-out start
     // never leaves browser pointing at an unstarted engine.
     browser = eng;
