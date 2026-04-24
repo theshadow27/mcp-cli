@@ -15,6 +15,14 @@ import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
+/** Regex matching test/fixture file paths — mirrors the /estimate skill definition. */
+const TEST_PATH_RE = /\.spec\.|\.test\.|__tests__\/|(?:^|\/)tests\/|(?:^|\/)test\/fixtures\//;
+
+/** Sum additions+deletions for non-test files. */
+export function computeSrcChurn(files: PRStatus["files"]): number {
+  return files.filter((f) => !TEST_PATH_RE.test(f.path)).reduce((sum, f) => sum + f.additions + f.deletions, 0);
+}
+
 const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
 
@@ -46,6 +54,8 @@ export class WorkItemPoller {
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
+  /** In-memory commit count per PR — used to detect pushes between polls. */
+  private lastSeenCommitCount = new Map<number, number>();
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -149,7 +159,9 @@ export class WorkItemPoller {
 
       // Safe: we filtered for prNumber !== null above
       const prNumbers = tracked.map((item) => item.prNumber as number);
-      const statuses = await this.fetchPRs(this._repo, prNumbers);
+      const statuses = await this.fetchPRs(this._repo, prNumbers, {
+        warn: (msg) => this.logger.warn(msg),
+      });
 
       if (this.stopped) return; // bail before writing if stopped during fetch
 
@@ -186,6 +198,7 @@ export class WorkItemPoller {
     const newPrState = mapPrState(status);
     const newCiStatus = mapCiStatus(status);
     const newReviewStatus = mapReviewStatus(status);
+    const srcChurn = computeSrcChurn(status.files);
 
     const patch: Partial<WorkItem> = {};
     let changed = false;
@@ -194,8 +207,25 @@ export class WorkItemPoller {
     if (newPrState !== item.prState) {
       patch.prState = newPrState;
       changed = true;
-      this.emitPrEvent(prNumber, newPrState);
+      this.emitPrEvent(prNumber, newPrState, status, srcChurn);
     }
+
+    // Push detection: commit count increased on an open/draft PR (no state change)
+    if (newPrState === item.prState && (newPrState === "open" || newPrState === "draft")) {
+      const lastCount = this.lastSeenCommitCount.get(prNumber);
+      if (lastCount !== undefined && status.commitCount > lastCount) {
+        this.onEvent({
+          type: "pr:pushed",
+          prNumber,
+          branch: status.headRefName,
+          base: status.baseRefName,
+          commits: status.commitCount,
+          srcChurn,
+        });
+      }
+    }
+    // Always update last-seen commit count
+    this.lastSeenCommitCount.set(prNumber, status.commitCount);
 
     // CI status changes
     if (newCiStatus !== item.ciStatus) {
@@ -217,16 +247,23 @@ export class WorkItemPoller {
     }
   }
 
-  private emitPrEvent(prNumber: number, newState: PrState): void {
+  private emitPrEvent(prNumber: number, newState: PrState, status: PRStatus, srcChurn: number): void {
     switch (newState) {
       case "merged":
-        this.onEvent({ type: "pr:merged", prNumber });
+        this.onEvent({ type: "pr:merged", prNumber, mergeSha: status.mergeCommitOid });
         break;
       case "closed":
         this.onEvent({ type: "pr:closed", prNumber });
         break;
       case "open":
-        this.onEvent({ type: "pr:opened", prNumber });
+        this.onEvent({
+          type: "pr:opened",
+          prNumber,
+          branch: status.headRefName,
+          base: status.baseRefName,
+          commits: status.commitCount,
+          srcChurn,
+        });
         break;
     }
   }

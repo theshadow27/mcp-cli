@@ -16,6 +16,11 @@ function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStat
     ciState: null,
     ciChecks: [],
     reviews: [],
+    commitCount: 1,
+    headRefName: "feat/test",
+    baseRefName: "main",
+    mergeCommitOid: null,
+    files: [],
     ...overrides,
   };
 }
@@ -86,7 +91,7 @@ describe("WorkItemPoller", () => {
     const item = db.getWorkItem("pr:42");
     expect(item?.prState).toBe("merged");
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ type: "pr:merged", prNumber: 42 });
+    expect(events[0]).toEqual({ type: "pr:merged", prNumber: 42, mergeSha: null });
   });
 
   test("updates CI status and emits checks:passed", async () => {
@@ -308,7 +313,7 @@ describe("WorkItemPoller", () => {
 
     expect(db.getWorkItem("pr:1")?.prState).toBe("merged");
     expect(db.getWorkItem("pr:2")?.prState).toBe("closed");
-    expect(events).toContainEqual({ type: "pr:merged", prNumber: 1 });
+    expect(events).toContainEqual({ type: "pr:merged", prNumber: 1, mergeSha: null });
     expect(events).toContainEqual({ type: "pr:closed", prNumber: 2 });
   });
 
@@ -461,7 +466,7 @@ describe("WorkItemPoller", () => {
     await Bun.sleep(50);
 
     expect(poller.pollCount).toBe(2);
-    expect(events).toContainEqual({ type: "pr:merged", prNumber: 50 });
+    expect(events).toContainEqual({ type: "pr:merged", prNumber: 50, mergeSha: null });
     poller.stop();
   });
 
@@ -493,5 +498,160 @@ describe("WorkItemPoller", () => {
 
     const item = db.getWorkItem("pr:12");
     expect(item?.ciStatus).toBe("pending");
+  });
+
+  // ── Phase 2 enrichment (#1576) ──
+
+  test("pr:opened carries branch, base, commits, srcChurn", async () => {
+    db.createWorkItem({ id: "pr:60", prNumber: 60, prState: "draft" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 60,
+          state: "OPEN",
+          headRefName: "feat/my-feature",
+          baseRefName: "main",
+          commitCount: 3,
+          files: [
+            { path: "src/index.ts", additions: 50, deletions: 10 },
+            { path: "src/foo.spec.ts", additions: 20, deletions: 5 },
+          ],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const opened = events.find((e) => e.type === "pr:opened");
+    expect(opened).toBeDefined();
+    if (opened?.type === "pr:opened") {
+      expect(opened.prNumber).toBe(60);
+      expect(opened.branch).toBe("feat/my-feature");
+      expect(opened.base).toBe("main");
+      expect(opened.commits).toBe(3);
+      // 50+10=60 src churn; 20+5=25 test churn excluded
+      expect(opened.srcChurn).toBe(60);
+    }
+  });
+
+  test("pr:merged carries mergeSha", async () => {
+    db.createWorkItem({ id: "pr:61", prNumber: 61, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 61, state: "MERGED", mergeCommitOid: "deadbeef123" })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const merged = events.find((e) => e.type === "pr:merged");
+    expect(merged).toBeDefined();
+    if (merged?.type === "pr:merged") {
+      expect(merged.mergeSha).toBe("deadbeef123");
+    }
+  });
+
+  test("pr:pushed emits when commitCount increases on open PR", async () => {
+    db.createWorkItem({ id: "pr:62", prNumber: 62, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    let pollCount = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollCount++;
+        return [
+          makePRStatus({
+            number: 62,
+            state: "OPEN",
+            headRefName: "feat/push-test",
+            baseRefName: "main",
+            commitCount: pollCount === 1 ? 2 : 4,
+            files: [{ path: "src/app.ts", additions: 30, deletions: 5 }],
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    // First poll — establish baseline commit count, no push event
+    await poller.poll();
+    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+
+    // Second poll — commit count increased from 2 → 4
+    await poller.poll();
+    const pushed = events.find((e) => e.type === "pr:pushed");
+    expect(pushed).toBeDefined();
+    if (pushed?.type === "pr:pushed") {
+      expect(pushed.prNumber).toBe(62);
+      expect(pushed.branch).toBe("feat/push-test");
+      expect(pushed.commits).toBe(4);
+      expect(pushed.srcChurn).toBe(35);
+    }
+  });
+
+  test("pr:pushed not emitted when commit count stays the same", async () => {
+    db.createWorkItem({ id: "pr:63", prNumber: 63, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 63, state: "OPEN", commitCount: 3 })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+    await poller.poll();
+    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+  });
+});
+
+// ── computeSrcChurn unit tests (#1576) ──
+
+import { computeSrcChurn } from "./work-item-poller";
+
+describe("computeSrcChurn", () => {
+  test("counts only non-test files", () => {
+    const files = [
+      { path: "src/index.ts", additions: 100, deletions: 20 },
+      { path: "src/index.spec.ts", additions: 50, deletions: 10 },
+      { path: "src/__tests__/util.ts", additions: 30, deletions: 5 },
+      { path: "tests/e2e.ts", additions: 20, deletions: 3 },
+      { path: "test/fixtures/data.json", additions: 5, deletions: 1 },
+      { path: "src/util.test.ts", additions: 15, deletions: 2 },
+    ];
+
+    // Only src/index.ts (100+20=120) should count
+    expect(computeSrcChurn(files)).toBe(120);
+  });
+
+  test("returns 0 for all-test diff", () => {
+    expect(computeSrcChurn([{ path: "foo.spec.ts", additions: 99, deletions: 1 }])).toBe(0);
+  });
+
+  test("returns 0 for empty diff", () => {
+    expect(computeSrcChurn([])).toBe(0);
+  });
+
+  test("counts all lines for all-source diff", () => {
+    const files = [
+      { path: "src/a.ts", additions: 10, deletions: 5 },
+      { path: "src/b.ts", additions: 20, deletions: 3 },
+    ];
+    expect(computeSrcChurn(files)).toBe(38);
   });
 });

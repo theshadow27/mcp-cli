@@ -3674,7 +3674,7 @@ describe("restoreSessions", () => {
       server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 99 });
 
       // Dispatch event for correct PR — should resolve
-      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42, mergeSha: null });
 
       const result = await promise;
       expect(result.workItemEvent.type).toBe("pr:merged");
@@ -3690,7 +3690,7 @@ describe("restoreSessions", () => {
       const promise = server.waitForWorkItemEvent(null, true, 5000);
 
       // Dispatch non-checks event — should NOT resolve
-      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42, mergeSha: null });
 
       // Dispatch checks event — should resolve
       server.dispatchWorkItemEvent({ type: "checks:failed", prNumber: 42, failedJob: "test" });
@@ -3717,7 +3717,7 @@ describe("restoreSessions", () => {
       // Wrong PR, right type — no match
       server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 99 });
       // Right PR, wrong type — no match
-      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42 });
+      server.dispatchWorkItemEvent({ type: "pr:merged", prNumber: 42, mergeSha: null });
       // Right PR, right type — match
       server.dispatchWorkItemEvent({ type: "checks:passed", prNumber: 42 });
 
@@ -4031,6 +4031,191 @@ describe("monitor event mapping", () => {
       expect(events[0].category).toBe("session");
       expect(events[0].strikes).toBe(0);
       expect(events[0].reason).toBe("operator reset");
+    });
+  });
+
+  describe("publishWorkItemMonitorEvent", () => {
+    test("pr:opened maps to pr.opened with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({
+        type: "pr:opened",
+        prNumber: 42,
+        branch: "feat/test",
+        base: "main",
+        commits: 3,
+        srcChurn: 100,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].src).toBe("daemon.work-item-poller");
+      expect(events[0].event).toBe("pr.opened");
+      expect(events[0].category).toBe("work_item");
+      expect(events[0].prNumber).toBe(42);
+    });
+
+    test("checks:failed maps to checks.failed with failedJob", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:failed", prNumber: 7, failedJob: "typecheck" });
+
+      expect(events[0].event).toBe("checks.failed");
+      expect(events[0].prNumber).toBe(7);
+      expect(events[0].failedJob).toBe("typecheck");
+    });
+
+    test("review:changes_requested maps with reviewer", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "review:changes_requested", prNumber: 99, reviewer: "alice" });
+
+      expect(events[0].event).toBe("review.changes_requested");
+      expect(events[0].reviewer).toBe("alice");
+    });
+
+    test("phase:changed maps itemId to workItemId with from/to", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "phase:changed", itemId: "wi-123", from: "impl", to: "review" });
+
+      expect(events[0].event).toBe("phase.changed");
+      expect(events[0].workItemId).toBe("wi-123");
+      expect(events[0].from).toBe("impl");
+      expect(events[0].to).toBe("review");
+    });
+
+    test("unmapped work-item event type is silently dropped", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "unknown:event" } as never);
+
+      expect(events).toHaveLength(0);
+    });
+
+    test("null onMonitorEvent callback causes silent drop", () => {
+      const server = makeServer();
+      server.onMonitorEvent = null;
+
+      expect(() => {
+        priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 1, mergeSha: null });
+      }).not.toThrow();
+    });
+
+    test("pr:merged maps to pr.merged with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 55, mergeSha: "abc123" });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.merged");
+      expect(events[0].category).toBe("work_item");
+      expect(events[0].prNumber).toBe(55);
+      expect(events[0].mergeSha).toBe("abc123");
+    });
+
+    test("pr:opened forwards enriched fields", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({
+        type: "pr:opened",
+        prNumber: 42,
+        branch: "feat/my-feature",
+        base: "main",
+        commits: 3,
+        srcChurn: 120,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.opened");
+      expect(events[0].branch).toBe("feat/my-feature");
+      expect(events[0].base).toBe("main");
+      expect(events[0].commits).toBe(3);
+      expect(events[0].srcChurn).toBe(120);
+    });
+
+    test("pr:pushed maps to pr.pushed with enriched fields", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({
+        type: "pr:pushed",
+        prNumber: 42,
+        branch: "feat/my-feature",
+        base: "main",
+        commits: 5,
+        srcChurn: 200,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.pushed");
+      expect(events[0].prNumber).toBe(42);
+      expect(events[0].branch).toBe("feat/my-feature");
+      expect(events[0].commits).toBe(5);
+      expect(events[0].srcChurn).toBe(200);
+    });
+
+    test("pr:closed maps to pr.closed with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "pr:closed", prNumber: 77 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.closed");
+      expect(events[0].prNumber).toBe(77);
+    });
+
+    test("checks:started maps to checks.started with prNumber and runId", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 12, runId: 9876 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(12);
+      expect(events[0].runId).toBe(9876);
+    });
+
+    test("checks:started without runId emits no runId field", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 13 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(13);
+      expect(events[0].runId).toBeUndefined();
+    });
+
+    test("checks:passed maps to checks.passed with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "checks:passed", prNumber: 33 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("checks.passed");
+      expect(events[0].prNumber).toBe(33);
+    });
+
+    test("review:approved maps to review.approved with prNumber", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishWorkItemMonitorEvent({ type: "review:approved", prNumber: 44 });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("review.approved");
+      expect(events[0].prNumber).toBe(44);
     });
   });
 });
