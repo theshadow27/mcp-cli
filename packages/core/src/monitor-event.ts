@@ -235,7 +235,8 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
 
   [CI_FINISHED]: (e) => {
     const green = e.allGreen === true ? "✓ all green" : "✗ failed";
-    const dur = typeof e.durationMs === "number" ? `${Math.round((e.durationMs as number) / 1000)}s` : "";
+    const dur =
+      typeof e.observedDurationMs === "number" ? `${Math.round((e.observedDurationMs as number) / 1000)}s` : "";
     return join(wi(e), pr(e), green, dur);
   },
 
