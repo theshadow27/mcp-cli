@@ -76,6 +76,48 @@ for slots, and filler issues round out capacity.
 
 Target: **15 issues** (adjust based on user input).
 
+### Step 3a: Delegate candidate reconnaissance to an Explore agent
+
+Before classifying, spawn one `Explore` agent to do the issue-body + code +
+cross-reference reading in depth. The planner (you) is working under
+context pressure — triaging 20+ candidates by title or by a 30-second
+skim is how decisions land based on assumptions that the code + PR
+history would have refuted.
+
+The Explore agent reads everything for you and reports back a compact
+digest per candidate. Example prompt:
+
+```
+Explore these candidate issues for sprint N planning: #A, #B, #C, #D, …
+
+For each, report in 3–5 lines:
+- Goal summary (1 line from issue body)
+- Scope estimate: files likely touched, approximate LOC, any shared-file
+  serialization risk with other candidates in this list
+- Blockage check: is there an unresolved dependency, a recent comment
+  flagging new info, a linked issue/PR that changes the story, or a
+  `needs-clarification`/`waiting-for-reproduction` marker the title
+  doesn't show?
+- Already-done risk: grep the code for the proposed symbols/functions;
+  flag any that already exist (we've closed 2–3 as already-done per
+  sprint lately — better to catch these at plan time than after
+  spawning an impl session)
+- Recommended: include / defer / close-as-done / needs-clarification
+
+Do not read issues outside this list. Report under 100 words per issue.
+```
+
+The Explore agent has its own context window, so heavy reading doesn't
+cost the planner. It also does the cross-referencing (which candidate
+conflicts with which) more reliably than a quick skim.
+
+**When to skip Explore**: if the full candidate list is ≤5 issues AND the
+planner just ran the previous sprint (so the issue bodies are fresh in
+context), reading directly is fine. Otherwise use Explore — the overhead
+is small and the quality uplift is consistent.
+
+### Step 3b: Classify
+
 Classify each pick:
 
 | Category | Scrutiny | Review? | Target mix |
@@ -87,7 +129,8 @@ Classify each pick:
 Rules:
 1. Never pick issues labeled `needs-clarification`
 2. Prefer issues that unblock other issues (dependency roots first)
-3. Read each issue body before selecting — skip if unclear or underspecified
+3. Read each issue body (via the Explore digest) before selecting — skip
+   if unclear or underspecified
 4. Group related issues so they land in the same sprint (shared context)
 5. **Never pick issues that modify orchestration meta-files**: `.claude/skills/**`,
    `.claude/memory/**`, `CLAUDE.md`, `.gitignore`, or similar files the
