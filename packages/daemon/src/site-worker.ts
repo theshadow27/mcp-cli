@@ -77,6 +77,13 @@ const sitesOpenInBrowser = new Set<string>();
 // (when browser is truthy but isRunning() is still false). See #1597.
 const withBrowserLock = createBrowserLock();
 
+async function snapshotBrowser(): Promise<BrowserEngine | null> {
+  return withBrowserLock(async () => {
+    resetIfBrowserDied();
+    return browser;
+  });
+}
+
 // ── Lazy browser load ──
 
 async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
@@ -230,10 +237,7 @@ function handleDescribe(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
-  const browserSnapshot = await withBrowserLock(async () => {
-    resetIfBrowserDied();
-    return browser;
-  });
+  const browserSnapshot = await snapshotBrowser();
   const site = requireSite(args.site as string);
   const callName = args.call as string;
   const catalog = loadCatalog(site.name, site.seed ?? site.name);
@@ -257,7 +261,12 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
       site: site.name,
       resolved,
       audHints: call.audHints,
-      onWiggle: browserSnapshot ? async () => void (await browserSnapshot.wiggle(site.name)) : undefined,
+      onWiggle: browserSnapshot
+        ? async () => {
+            const current = await snapshotBrowser();
+            if (current) await current.wiggle(site.name);
+          }
+        : undefined,
     });
     result = await applyJqOutput(call, result);
     return ok(result);
@@ -374,10 +383,7 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await withBrowserLock(async () => {
-    resetIfBrowserDied();
-    return browser;
-  });
+  const snapshot = await snapshotBrowser();
   if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
   const touched = await snapshot.wiggle(site);
@@ -385,10 +391,7 @@ async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> 
 }
 
 async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await withBrowserLock(async () => {
-    resetIfBrowserDied();
-    return browser;
-  });
+  const snapshot = await snapshotBrowser();
   if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const code = args.code as string;
   if (!code) return error("Missing 'code'");
@@ -397,10 +400,7 @@ async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
 }
 
 async function handleColdStart(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await withBrowserLock(async () => {
-    resetIfBrowserDied();
-    return browser;
-  });
+  const snapshot = await snapshotBrowser();
   if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
   const site = args.site as string | undefined;
   return ok(await snapshot.coldStart(site));
