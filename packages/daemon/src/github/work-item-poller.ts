@@ -13,8 +13,8 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
-import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
+import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
 export { computeSrcChurn };
