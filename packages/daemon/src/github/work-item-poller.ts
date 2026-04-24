@@ -10,18 +10,12 @@
  */
 
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
-import { consoleLogger } from "@mcp-cli/core";
+import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
-/** Regex matching test/fixture file paths — mirrors the /estimate skill definition. */
-const TEST_PATH_RE = /\.spec\.|\.test\.|__tests__\/|(?:^|\/)tests\/|(?:^|\/)test\/fixtures\//;
-
-/** Sum additions+deletions for non-test files. */
-export function computeSrcChurn(files: PRStatus["files"]): number {
-  return files.filter((f) => !TEST_PATH_RE.test(f.path)).reduce((sum, f) => sum + f.additions + f.deletions, 0);
-}
+export { computeSrcChurn };
 
 const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
@@ -54,8 +48,7 @@ export class WorkItemPoller {
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
-  /** In-memory commit count per PR — used to detect pushes between polls. */
-  private lastSeenCommitCount = new Map<number, number>();
+  private lastRateLimitWarnMs = 0;
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -160,7 +153,13 @@ export class WorkItemPoller {
       // Safe: we filtered for prNumber !== null above
       const prNumbers = tracked.map((item) => item.prNumber as number);
       const statuses = await this.fetchPRs(this._repo, prNumbers, {
-        warn: (msg) => this.logger.warn(msg),
+        warn: (msg) => {
+          const now = Date.now();
+          if (now - this.lastRateLimitWarnMs >= 60_000) {
+            this.lastRateLimitWarnMs = now;
+            this.logger.warn(msg);
+          }
+        },
       });
 
       if (this.stopped) return; // bail before writing if stopped during fetch
@@ -210,10 +209,12 @@ export class WorkItemPoller {
       this.emitPrEvent(prNumber, newPrState, status, srcChurn);
     }
 
-    // Push detection: commit count increased on an open/draft PR (no state change)
+    // Push detection: HEAD OID changed on an open/draft PR (no state change).
+    // Uses headRefOid persisted to SQLite so detection survives daemon restarts
+    // and correctly handles force-pushes / rebases that don't change commit count.
     if (newPrState === item.prState && (newPrState === "open" || newPrState === "draft")) {
-      const lastCount = this.lastSeenCommitCount.get(prNumber);
-      if (lastCount !== undefined && status.commitCount > lastCount) {
+      const lastOid = this.db.getLastSeenHeadOid(prNumber);
+      if (lastOid !== null && status.headRefOid && status.headRefOid !== lastOid) {
         this.onEvent({
           type: "pr:pushed",
           prNumber,
@@ -221,11 +222,14 @@ export class WorkItemPoller {
           base: status.baseRefName,
           commits: status.commitCount,
           srcChurn,
+          ...(status.filesTruncated ? { filesTruncated: true } : {}),
         });
       }
     }
-    // Always update last-seen commit count
-    this.lastSeenCommitCount.set(prNumber, status.commitCount);
+    // Persist current HEAD OID so next poll can detect changes (and restarts don't lose baseline).
+    if (status.headRefOid) {
+      this.db.setLastSeenHeadOid(prNumber, status.headRefOid);
+    }
 
     // CI status changes
     if (newCiStatus !== item.ciStatus) {
@@ -263,6 +267,7 @@ export class WorkItemPoller {
           base: status.baseRefName,
           commits: status.commitCount,
           srcChurn,
+          ...(status.filesTruncated ? { filesTruncated: true } : {}),
         });
         break;
     }

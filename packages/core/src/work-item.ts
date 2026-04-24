@@ -40,8 +40,24 @@ export interface WorkItem {
 
 /** Discriminated union of work item lifecycle events. */
 export type WorkItemEvent =
-  | { type: "pr:opened"; prNumber: number; branch: string; base: string; commits: number; srcChurn: number }
-  | { type: "pr:pushed"; prNumber: number; branch: string; base: string; commits: number; srcChurn: number }
+  | {
+      type: "pr:opened";
+      prNumber: number;
+      branch: string;
+      base: string;
+      commits: number;
+      srcChurn: number;
+      filesTruncated?: boolean;
+    }
+  | {
+      type: "pr:pushed";
+      prNumber: number;
+      branch: string;
+      base: string;
+      commits: number;
+      srcChurn: number;
+      filesTruncated?: boolean;
+    }
   | { type: "pr:merged"; prNumber: number; mergeSha: string | null }
   | { type: "pr:closed"; prNumber: number }
   | { type: "checks:started"; prNumber: number; runId?: number }

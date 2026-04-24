@@ -19,8 +19,10 @@ function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStat
     commitCount: 1,
     headRefName: "feat/test",
     baseRefName: "main",
+    headRefOid: "sha-default",
     mergeCommitOid: null,
     files: [],
+    filesTruncated: false,
     ...overrides,
   };
 }
@@ -561,7 +563,7 @@ describe("WorkItemPoller", () => {
     }
   });
 
-  test("pr:pushed emits when commitCount increases on open PR", async () => {
+  test("pr:pushed emits when headRefOid changes on open PR", async () => {
     db.createWorkItem({ id: "pr:62", prNumber: 62, prState: "open" });
 
     const events: WorkItemEvent[] = [];
@@ -577,7 +579,8 @@ describe("WorkItemPoller", () => {
             state: "OPEN",
             headRefName: "feat/push-test",
             baseRefName: "main",
-            commitCount: pollCount === 1 ? 2 : 4,
+            headRefOid: pollCount === 1 ? "sha-v1" : "sha-v2",
+            commitCount: 4,
             files: [{ path: "src/app.ts", additions: 30, deletions: 5 }],
           }),
         ];
@@ -586,11 +589,11 @@ describe("WorkItemPoller", () => {
       onEvent: (e) => events.push(e),
     });
 
-    // First poll — establish baseline commit count, no push event
+    // First poll — establishes OID baseline, no push event
     await poller.poll();
     expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
 
-    // Second poll — commit count increased from 2 → 4
+    // Second poll — OID changed (sha-v1 → sha-v2), even with same commit count
     await poller.poll();
     const pushed = events.find((e) => e.type === "pr:pushed");
     expect(pushed).toBeDefined();
@@ -602,14 +605,44 @@ describe("WorkItemPoller", () => {
     }
   });
 
-  test("pr:pushed not emitted when commit count stays the same", async () => {
+  test("pr:pushed detects force-push when commitCount decreases but OID changes", async () => {
+    db.createWorkItem({ id: "pr:64", prNumber: 64, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    let pollCount = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollCount++;
+        return [
+          makePRStatus({
+            number: 64,
+            state: "OPEN",
+            headRefOid: pollCount === 1 ? "sha-before-squash" : "sha-after-squash",
+            commitCount: pollCount === 1 ? 5 : 1,
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+
+    await poller.poll();
+    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(1);
+  });
+
+  test("pr:pushed not emitted when OID stays the same", async () => {
     db.createWorkItem({ id: "pr:63", prNumber: 63, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
       db,
       logger: SILENT_LOGGER,
-      fetchPRs: async () => [makePRStatus({ number: 63, state: "OPEN", commitCount: 3 })],
+      fetchPRs: async () => [makePRStatus({ number: 63, state: "OPEN", headRefOid: "sha-stable", commitCount: 3 })],
       detectRepo: async () => TEST_REPO,
       onEvent: (e) => events.push(e),
     });
@@ -617,6 +650,36 @@ describe("WorkItemPoller", () => {
     await poller.poll();
     await poller.poll();
     expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+  });
+
+  test("pr:pushed sets filesTruncated when files list was truncated", async () => {
+    db.createWorkItem({ id: "pr:65", prNumber: 65, prState: "open" });
+
+    const events: WorkItemEvent[] = [];
+    let pollCount = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollCount++;
+        return [
+          makePRStatus({
+            number: 65,
+            state: "OPEN",
+            headRefOid: pollCount === 1 ? "sha-a" : "sha-b",
+            filesTruncated: true,
+            files: Array.from({ length: 100 }, (_, i) => ({ path: `src/f${i}.ts`, additions: 1, deletions: 0 })),
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+    await poller.poll();
+    const pushed = events.find((e) => e.type === "pr:pushed");
+    expect(pushed?.type === "pr:pushed" && pushed.filesTruncated).toBe(true);
   });
 });
 

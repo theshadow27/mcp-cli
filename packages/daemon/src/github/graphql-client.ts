@@ -45,8 +45,12 @@ export interface PRStatus {
   commitCount: number;
   headRefName: string;
   baseRefName: string;
+  /** SHA of the HEAD commit on the PR branch — use for push detection (survives force-push / rebase). */
+  headRefOid: string;
   mergeCommitOid: string | null;
   files: PRFile[];
+  /** True when the PR touches >100 files and the files list was truncated. srcChurn is understated. */
+  filesTruncated: boolean;
 }
 
 // ---------- GraphQL query builder ----------
@@ -65,6 +69,7 @@ export function buildQuery(prNumbers: readonly number[]): string {
       mergeable
       headRefName
       baseRefName
+      headRefOid
       commits(last: 1) {
         totalCount
         nodes {
@@ -91,6 +96,9 @@ export function buildQuery(prNumbers: readonly number[]): string {
         }
       }
       files(first: 100) {
+        pageInfo {
+          hasNextPage
+        }
         nodes {
           path
           additions
@@ -139,6 +147,7 @@ interface RawPR {
   mergeable?: string;
   headRefName?: string;
   baseRefName?: string;
+  headRefOid?: string;
   commits?: {
     totalCount?: number;
     nodes?: Array<{
@@ -151,7 +160,7 @@ interface RawPR {
     }>;
   };
   reviews?: { nodes?: RawReview[] };
-  files?: { nodes?: RawFile[] };
+  files?: { pageInfo?: { hasNextPage?: boolean }; nodes?: RawFile[] };
   mergeCommit?: { oid?: string } | null;
 }
 
@@ -193,8 +202,10 @@ function parsePR(raw: RawPR): PRStatus {
     commitCount: raw.commits?.totalCount ?? 0,
     headRefName: raw.headRefName ?? "",
     baseRefName: raw.baseRefName ?? "",
+    headRefOid: raw.headRefOid ?? "",
     mergeCommitOid: raw.mergeCommit?.oid ?? null,
     files,
+    filesTruncated: raw.files?.pageInfo?.hasNextPage ?? false,
   };
 }
 
@@ -340,7 +351,9 @@ export async function fetchTrackedPRs(
 
   const remaining = json.data?.rateLimit?.remaining;
   if (warn && typeof remaining === "number" && remaining < RATE_LIMIT_WARN_THRESHOLD) {
-    warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
+    try {
+      warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
+    } catch {}
   }
 
   const repoData = json.data?.repository;

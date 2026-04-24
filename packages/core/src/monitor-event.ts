@@ -174,14 +174,14 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const branch = typeof e.branch === "string" ? e.branch : "";
     const base = typeof e.base === "string" ? e.base : "";
     const commits = typeof e.commits === "number" ? `${e.commits}c` : "";
-    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}` : "";
+    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}${e.filesTruncated ? "+" : ""}` : "";
     return join(wi(e), pr(e), branch && base ? `${branch}→${base}` : branch || base, commits, churn);
   },
 
   [PR_PUSHED]: (e) => {
     const branch = typeof e.branch === "string" ? e.branch : "";
     const commits = typeof e.commits === "number" ? `${e.commits}c` : "";
-    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}` : "";
+    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}${e.filesTruncated ? "+" : ""}` : "";
     return join(wi(e), pr(e), branch, commits, churn);
   },
 

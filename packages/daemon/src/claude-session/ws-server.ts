@@ -1738,6 +1738,7 @@ export class ClaudeWsServer {
     if ("commits" in event) input.commits = event.commits;
     if ("srcChurn" in event) input.srcChurn = event.srcChurn;
     if ("mergeSha" in event) input.mergeSha = event.mergeSha;
+    if ("filesTruncated" in event) input.filesTruncated = event.filesTruncated;
 
     this.onMonitorEvent(input);
   }
