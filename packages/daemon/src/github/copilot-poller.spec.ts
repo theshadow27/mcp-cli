@@ -125,6 +125,10 @@ function createStateDb(db: Database) {
            last_poll_ts = excluded.last_poll_ts`,
       ).run(prNumber, hash);
     },
+    deleteCopilotCommentState(workItemNumber: number): boolean {
+      const result = db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [workItemNumber]);
+      return result.changes > 0;
+    },
   };
 }
 
@@ -968,6 +972,78 @@ describe("CopilotPoller", () => {
       await poller.poll();
 
       expect(fetched).not.toContain(99);
+    });
+  });
+
+  // ── State cleanup on terminal PRs (#1736) ──
+
+  describe("copilot state cleanup", () => {
+    test("merged PR state row is deleted on next poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "merged" });
+      stateDb.updateSeenCommentIds(42, [1001, 1002, 1003]);
+      stateDb.updateSeenReviewIds(42, [5001]);
+
+      const { poller } = makePoller();
+      await poller.poll();
+
+      expect(stateDb.getSeenCommentIds(42)).toEqual([]);
+      expect(stateDb.getSeenReviewIds(42)).toEqual([]);
+    });
+
+    test("closed PR state row is deleted on next poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:2", prNumber: 55, prState: "closed" });
+      stateDb.updateSeenCommentIds(55, [2001]);
+
+      const { poller } = makePoller();
+      await poller.poll();
+
+      expect(stateDb.getSeenCommentIds(55)).toEqual([]);
+    });
+
+    test("done-phase PR state row is deleted on next poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:done-pr", prNumber: 88, prState: "open", phase: "done" });
+      stateDb.updateSeenCommentIds(88, [4001]);
+
+      const { poller } = makePoller();
+      await poller.poll();
+
+      expect(stateDb.getSeenCommentIds(88)).toEqual([]);
+    });
+
+    test("open PR state is preserved (dedup still works)", async () => {
+      workItemDb.createWorkItem({ id: "wi:3", prNumber: 77, prState: "open" });
+      stateDb.updateSeenCommentIds(77, [3001]);
+
+      const { poller } = makePoller({
+        fetchComments: async () => okResult([makeComment({ id: 3001 }), makeComment({ id: 3002 })]),
+      });
+      await poller.poll();
+
+      const stored = stateDb.getSeenCommentIds(77);
+      expect(stored).toContain(3001);
+      expect(stored).toContain(3002);
+    });
+
+    test("done-phase issue state is deleted on next poll", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
+      stateDb.updateSeenIssueCommentIds(99, [8001, 8002]);
+
+      const { poller } = makePoller();
+      await poller.poll();
+
+      expect(stateDb.getSeenIssueCommentIds(99)).toEqual([]);
+    });
+
+    test("active issue state is preserved", async () => {
+      workItemDb.createWorkItem({ id: "#50", issueNumber: 50, prNumber: null, prState: null, phase: "impl" });
+      stateDb.updateSeenIssueCommentIds(50, [9001]);
+
+      const { poller } = makePoller({
+        fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 9001 })]),
+      });
+      await poller.poll();
+
+      expect(stateDb.getSeenIssueCommentIds(50)).toContain(9001);
     });
   });
 });
