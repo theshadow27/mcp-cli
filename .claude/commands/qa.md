@@ -94,34 +94,110 @@ bun test
 
 Run the full test suite. All tests — including any you just wrote — must pass. If any fail, fix them before proceeding.
 
-### Step 5b: Check All 4 PR Comment Surfaces
+### Step 5b: Gate on all 4 PR comment surfaces (hard stop before qa:pass)
 
-Before labeling, enumerate every open thread across all four GitHub comment
-surfaces. Copilot inline reviews arrive *after* the push and often *after*
-local tests pass — sprint 36 had QA label `qa:pass` while 2 valid Copilot
-comments sat unaddressed on PR #1427.
+Before **any** `qa:pass` label can be applied, every Copilot inline thread
+on the PR must have a reply from `theshadow27` (the repo owner) citing the
+fix or explicit dismissal. This is a programmatic gate, not a narrative
+check. Sprint 43 had 5+ PRs with false `qa:pass` because the QA agent
+enumerated comments but let the "is this minor?" judgment creep in and
+missed unreplied threads.
+
+**Step 5b.1 — Wait for Copilot to finish posting.**
+
+Copilot's code review runs asynchronously after every push. Typical lag is
+30–120 seconds. If QA starts inspecting comments within 60s of the
+repair/impl push, Copilot's comments won't be there yet — you'll get a
+false-clean read, post `qa:pass`, and then Copilot drops 3–8 inline
+comments and the cycle repeats.
+
+Wait until at least 90s have passed since the most recent PR push, or
+until at least one Copilot comment/review exists:
+
+```bash
+PR=<pr-number>
+# Time since the HEAD commit was pushed (not committed — pushed):
+PUSHED_AT=$(gh pr view $PR --json commits --jq '.commits[-1].committedDate')
+NOW_EPOCH=$(date -u +%s)
+PUSHED_EPOCH=$(date -u -f "%Y-%m-%dT%H:%M:%SZ" -j "$PUSHED_AT" +%s 2>/dev/null \
+  || date -u -d "$PUSHED_AT" +%s)   # macOS / Linux fallback
+AGE=$((NOW_EPOCH - PUSHED_EPOCH))
+
+if [ "$AGE" -lt 90 ]; then
+  echo "Push was ${AGE}s ago; Copilot may still be running. Sleeping $((90 - AGE))s."
+  # Use Bash run_in_background with an until-loop instead of a bare sleep
+  # (bare sleeps > 270s are blocked; even short sleeps are worth backgrounding
+  # so the transcript shows what we're waiting for).
+fi
+```
+
+**Step 5b.2 — Enumerate and gate.**
+
+The structured check that actually blocks `qa:pass`:
 
 ```bash
 PR=<pr-number>
 ISSUE=<issue-number>
 
-# Surface 1: PR body comments
-gh pr view $PR --comments
+# Hard gate: unreplied Copilot inline threads (group root + replies; owner
+# must have replied to each root).
+UNREPLIED=$(gh api repos/theshadow27/mcp-cli/pulls/$PR/comments --jq '
+  group_by(.in_reply_to_id // .id)
+  | map(select(.[0].user.login == "Copilot" or .[0].user.login == "copilot-pull-request-reviewer[bot]"))
+  | map({
+      id: .[0].id,
+      path: .[0].path,
+      line: .[0].line,
+      body: (.[0].body[0:150]),
+      has_owner_reply: (any(.[1:][]; .user.login == "theshadow27"))
+    })
+  | map(select(.has_owner_reply == false))
+')
 
-# Surface 2: Inline file:line comments (where Copilot code review lives)
-gh api repos/theshadow27/mcp-cli/pulls/$PR/comments \
-  --jq '[.[] | {id, path, line, user: .user.login, body: (.body[0:120])}]'
+UNREPLIED_COUNT=$(jq 'length' <<<"$UNREPLIED")
 
-# Surface 3: Review containers (APPROVED / CHANGES_REQUESTED / COMMENTED)
+if [ "$UNREPLIED_COUNT" -gt 0 ]; then
+  echo "BLOCKED: $UNREPLIED_COUNT unreplied Copilot thread(s). qa:pass is NOT permitted:"
+  echo "$UNREPLIED"
+  # Verdict MUST be qa:fail. Include the unreplied IDs in your PR comment.
+fi
+
+# Surface 2: Review containers — if any review has state=CHANGES_REQUESTED
+# and no subsequent dismissal, that's also a qa:fail blocker.
 gh api repos/theshadow27/mcp-cli/pulls/$PR/reviews \
-  --jq '[.[] | {state, user: .user.login, body: (.body[0:160])}]'
+  --jq '[.[] | select(.state == "CHANGES_REQUESTED") | {id, user: .user.login, submitted: .submitted_at}]'
 
-# Surface 4: Linked-issue comments
+# Surfaces 3 and 4 (PR body comments, linked-issue comments) — read for
+# awareness; they're qualitative. Unresolved threads on the issue or PR
+# body that raise new blockers also warrant qa:fail.
+gh pr view $PR --comments
 gh issue view $ISSUE --comments
 ```
 
-If any inline comment is unaddressed (no reply, no code fix), that's a
-`qa:fail` blocker — list the comment IDs and summaries in your verdict.
+**Rule**: if `UNREPLIED_COUNT > 0` **OR** any review is `CHANGES_REQUESTED`
+without a dismissal, the verdict is `qa:fail` — no exceptions. This isn't
+judgment, it's arithmetic. Include the unreplied thread IDs and line
+refs in the qa:fail body so the repairer knows exactly what to address.
+
+If you're tempted to post `qa:pass` with unreplied threads because "they're
+minor nits", **don't** — file a follow-up issue referencing the threads
+and dismiss them in replies first (see Step 5b.3). A thread with no reply
+is an unresolved claim; the tool can't distinguish "nit" from "real bug"
+without the owner saying so explicitly.
+
+**Step 5b.3 — Dismissing a nit-class Copilot finding.**
+
+If a Copilot finding is genuinely out-of-scope or a style nit that you
+don't want to fix in this PR, post a dismissing reply citing the reason
+or a follow-up issue. That counts as "replied" and unblocks `qa:pass`:
+
+```bash
+gh api repos/theshadow27/mcp-cli/pulls/$PR/comments/<thread-id>/replies \
+  -X POST -f body="Deferred — perf nit, not correctness. Filed as #<new-issue> for a future optimization pass."
+```
+
+Do NOT reply via `gh pr comment` (that's a top-level PR comment, not a
+thread reply — the check above won't see it).
 
 ### Step 5c: Check CI Status
 
@@ -252,7 +328,7 @@ File issues for:
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
 - **NEVER report READY FOR MERGE with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, report NOT READY.
-- **NEVER label `qa:pass` while open PR comment threads remain unaddressed.** All four surfaces (PR body, inline file:line, review containers, linked issue) must be clean. See Step 5b for enumeration commands.
+- **NEVER label `qa:pass` while unreplied Copilot inline threads or un-dismissed CHANGES_REQUESTED reviews exist.** The Step 5b gate is arithmetic — if `UNREPLIED_COUNT > 0`, `qa:fail` is the only permitted outcome. No "these are nits" exceptions; dismiss them in thread replies (Step 5b.3) before flipping the verdict.
 - **ALWAYS swap labels transactionally** — `gh pr edit <N> --add-label qa:pass --remove-label qa:fail` (or vice versa) in one command. Never `--add-label` without the matching `--remove-label`.
 - **NEVER move git branches.** No `git checkout main`, no `gh pr checkout`, no `gh pr merge`, no `git checkout <branch>`. Your worktree is already on the correct branch. Branch movement is the orchestrator's job.
 - Process ONE issue per invocation.
