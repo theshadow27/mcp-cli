@@ -565,7 +565,7 @@ describe("cmdClaude", () => {
     try {
       await cmdClaude(["spawn", "--help"]);
       const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
-      // cmdAgent's spawn help uses "mcx agent claude spawn" format
+      // Spawn uses provider-specific help via agentSpawn, not the generic registry
       expect(output).toContain("mcx agent claude spawn");
     } finally {
       console.log = origLog;
@@ -2413,6 +2413,25 @@ describe("claudeWait --mail-to", () => {
 // ── wait ──
 
 describe("mcx claude wait", () => {
+  test("--help prints usage and does not call tool", async () => {
+    const callTool = mock(async () => toolResult({ success: true }));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--help"], deps);
+      expect(callTool).not.toHaveBeenCalled();
+      const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
+      expect(output).toContain("mcx claude wait");
+      expect(output).toContain("--timeout");
+      expect(output).toContain("--all");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("calls claude_wait with no args (any session)", async () => {
     const callTool = mock(async () =>
       toolResult({

@@ -11,6 +11,8 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
+import { formatHelp, getHelp, hasHelpFlag } from "../help";
+import "../help-claude";
 import {
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
@@ -294,42 +296,51 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
     return;
   }
 
+  const subArgs = args.slice(2);
+  if (sub !== "spawn" && hasHelpFlag(subArgs)) {
+    const help = getHelp(`claude ${sub}`);
+    if (help) {
+      d.log(formatHelp(help));
+      return;
+    }
+  }
+
   switch (sub) {
     case "spawn":
-      await agentSpawn(args.slice(2), provider, agentOverride, d);
+      await agentSpawn(subArgs, provider, agentOverride, d);
       break;
     case "ls":
     case "list":
-      await agentList(args.slice(2), provider, agentOverride, d);
+      await agentList(subArgs, provider, agentOverride, d);
       break;
     case "send":
-      await agentSend(args.slice(2), provider, d);
+      await agentSend(subArgs, provider, d);
       break;
     case "bye":
     case "quit":
-      await agentBye(args.slice(2), provider, d);
+      await agentBye(subArgs, provider, d);
       break;
     case "interrupt":
-      await agentInterrupt(args.slice(2), provider, d);
+      await agentInterrupt(subArgs, provider, d);
       break;
     case "log":
-      await agentLog(args.slice(2), provider, d);
+      await agentLog(subArgs, provider, d);
       break;
     case "wait":
-      await agentWait(args.slice(2), provider, agentOverride, d);
+      await agentWait(subArgs, provider, agentOverride, d);
       break;
     case "resume":
-      await agentResume(args.slice(2), provider, agentOverride, d);
+      await agentResume(subArgs, provider, agentOverride, d);
       break;
     case "worktrees":
     case "wt":
-      await agentWorktrees(args.slice(2), provider, d);
+      await agentWorktrees(subArgs, provider, d);
       break;
     case "approve":
-      await agentApprove(args.slice(2), provider, d);
+      await agentApprove(subArgs, provider, d);
       break;
     case "deny":
-      await agentDeny(args.slice(2), provider, d);
+      await agentDeny(subArgs, provider, d);
       break;
     default:
       d.printError(
@@ -451,11 +462,10 @@ async function agentSpawn(
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
-  if (args.includes("--help") || args.includes("-h")) {
+  if (hasHelpFlag(args)) {
     printSpawnUsage(provider, agentOverride, d.log);
     return;
   }
-
   const parsed = parseAgentSpawnArgs(args, provider, agentOverride);
 
   if (parsed.error) {
