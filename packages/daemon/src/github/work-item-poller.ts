@@ -236,7 +236,10 @@ export class WorkItemPoller {
         status.ciChecks,
         this.nowFn(),
       );
-      if (ciState) {
+      if (ciState?.emittedFinished) {
+        // Run is complete — drop state to prevent unbounded map growth
+        this.ciRunStates.delete(prNumber);
+      } else if (ciState) {
         this.ciRunStates.set(prNumber, ciState);
       }
       for (const ev of ciEvents) {

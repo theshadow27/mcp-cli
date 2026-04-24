@@ -945,7 +945,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     } else {
       // ci.finished — flush pending ci.running, then publish immediately
       bus.publishCoalesced(
-        { ...base, checks: event.checks, allGreen: event.allGreen, durationMs: event.durationMs },
+        { ...base, checks: event.checks, allGreen: event.allGreen, observedDurationMs: event.observedDurationMs },
         coalesceKey,
         { mode: "never" },
       );

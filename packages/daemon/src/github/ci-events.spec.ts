@@ -60,7 +60,7 @@ describe("computeCiTransitions", () => {
         { name: "build", conclusion: "success" },
       ],
       allGreen: true,
-      durationMs: 0,
+      observedDurationMs: 0,
     });
     expect(state?.emittedFinished).toBe(true);
   });
@@ -84,7 +84,7 @@ describe("computeCiTransitions", () => {
         { name: "build", conclusion: "success" },
       ],
       allGreen: true,
-      durationMs: 60_000,
+      observedDurationMs: 60_000,
     });
   });
 
@@ -144,7 +144,8 @@ describe("computeCiTransitions", () => {
   });
 
   test("allGreen true when checks are success or skipped", () => {
-    const checks = [check("check", "COMPLETED", "SUCCESS"), check("optional", "SKIPPED", "SKIPPED")];
+    // GitHub returns status=COMPLETED + conclusion=SKIPPED for skipped checks
+    const checks = [check("check", "COMPLETED", "SUCCESS"), check("optional", "COMPLETED", "SKIPPED")];
     const { events } = computeCiTransitions(PR, WI, null, checks, T0);
 
     const finished = events.find((e) => e.type === "ci.finished");
@@ -179,7 +180,7 @@ describe("computeCiTransitions", () => {
     expect(r.completed).toEqual(["coverage"]);
   });
 
-  test("durationMs is computed from startedAt to finished poll", () => {
+  test("observedDurationMs is computed from startedAt to finished poll", () => {
     const running = [check("check", "IN_PROGRESS", null)];
     const r1 = computeCiTransitions(PR, WI, null, running, 10_000);
 
@@ -187,7 +188,28 @@ describe("computeCiTransitions", () => {
     const r2 = computeCiTransitions(PR, WI, r1.state, finished, 192_000);
 
     const ev = r2.events.find((e) => e.type === "ci.finished") as Extract<CiEvent, { type: "ci.finished" }>;
-    expect(ev.durationMs).toBe(182_000);
+    expect(ev.observedDurationMs).toBe(182_000);
+  });
+
+  test("picks highest suiteId from mixed-suite checks (multi-workflow repos)", () => {
+    // Coverage workflow (suiteId 999) + CI workflow (suiteId 1000) mixed in response
+    const checks = [check("coverage", "COMPLETED", "SUCCESS", 999), check("check", "IN_PROGRESS", null, 1000)];
+    const { state } = computeCiTransitions(PR, WI, null, checks, T0);
+    expect(state?.suiteId).toBe(1000); // max, not first
+  });
+
+  test("detects re-run when new suiteId appears mixed with old-suite checks", () => {
+    // First run finishes with suiteId 1000
+    const firstRun = [check("check", "COMPLETED", "SUCCESS", 1000)];
+    const r1 = computeCiTransitions(PR, WI, null, firstRun, T0);
+    expect(r1.state?.emittedFinished).toBe(true);
+
+    // Re-run: CI has new suite 2000, but coverage still reports old suite 999 first
+    const reRunMixed = [check("coverage", "COMPLETED", "SUCCESS", 999), check("check", "IN_PROGRESS", null, 2000)];
+    const r2 = computeCiTransitions(PR, WI, r1.state, reRunMixed, T0 + 60_000);
+
+    expect(r2.state?.suiteId).toBe(2000);
+    expect(r2.events.some((e) => e.type === "ci.started")).toBe(true);
   });
 
   test("null conclusion defaults to failure in ci.finished", () => {

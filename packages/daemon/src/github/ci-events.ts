@@ -16,7 +16,7 @@ export type CiEvent =
       workItemId: string;
       checks: CiCheckConclusion[];
       allGreen: boolean;
-      durationMs: number;
+      observedDurationMs: number;
     };
 
 // ── Per-PR run state ──
@@ -26,15 +26,14 @@ export interface CiRunState {
   startedAt: number;
   emittedStarted: boolean;
   emittedFinished: boolean;
-  lastChecks: Map<string, { status: string; conclusion: string | null }>;
 }
 
 // ── Terminal / green helpers ──
 
-const TERMINAL_STATUSES = new Set(["COMPLETED", "CANCELLED", "TIMED_OUT", "STALE", "SKIPPED"]);
-
+// GitHub CheckRun status enum only produces "COMPLETED" as a terminal state.
+// Conclusions (CANCELLED, TIMED_OUT, STALE, SKIPPED) are separate fields.
 function isTerminal(status: string): boolean {
-  return TERMINAL_STATUSES.has(status);
+  return status === "COMPLETED";
 }
 
 export function isGreenConclusion(conclusion: string): boolean {
@@ -59,13 +58,8 @@ export function computeCiTransitions(
   const events: CiEvent[] = [];
 
   const state: CiRunState = isNewRun
-    ? { suiteId, startedAt: now, emittedStarted: false, emittedFinished: false, lastChecks: new Map() }
-    : { ...prev, lastChecks: new Map(prev.lastChecks) };
-
-  // Update check snapshot
-  for (const c of checks) {
-    state.lastChecks.set(c.name, { status: c.status, conclusion: c.conclusion });
-  }
+    ? { suiteId, startedAt: now, emittedStarted: false, emittedFinished: false }
+    : { ...prev };
 
   const allTerminal = checks.every((c) => isTerminal(c.status));
   const checkNames = checks.map((c) => c.name);
@@ -83,8 +77,8 @@ export function computeCiTransitions(
       conclusion: (c.conclusion ?? "FAILURE").toLowerCase(),
     }));
     const allGreen = conclusions.every((c) => isGreenConclusion(c.conclusion));
-    const durationMs = now - state.startedAt;
-    events.push({ type: "ci.finished", prNumber, workItemId, checks: conclusions, allGreen, durationMs });
+    const observedDurationMs = now - state.startedAt;
+    events.push({ type: "ci.finished", prNumber, workItemId, checks: conclusions, allGreen, observedDurationMs });
     state.emittedFinished = true;
   } else if (!allTerminal && state.emittedStarted && !state.emittedFinished) {
     // ci.running — in between started and finished
@@ -96,9 +90,15 @@ export function computeCiTransitions(
   return { events, state };
 }
 
+// Pick the highest suiteId across all checks. GitHub databaseIds are monotonically
+// increasing, so the max correctly identifies the most-recent workflow run even when
+// checks from multiple suites (multiple workflow files) appear in the same response.
 function resolveSuiteId(checks: readonly CiCheck[]): number | null {
+  let max: number | null = null;
   for (const c of checks) {
-    if (c.checkSuiteId !== null) return c.checkSuiteId;
+    if (c.checkSuiteId !== null && (max === null || c.checkSuiteId > max)) {
+      max = c.checkSuiteId;
+    }
   }
-  return null;
+  return max;
 }
