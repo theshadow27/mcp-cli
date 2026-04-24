@@ -641,15 +641,17 @@ describe("cmdPhase dispatch", () => {
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
     const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--from", "impl"], { cwd: () => dir }));
     expect(code).toBe(1);
-    expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(err).toContain("out of date");
     expect(err).toContain("qa.ts");
+    expect(err).toContain("mcx phase install");
   });
 
   test("run --dry-run aborts on drift before dispatch", async () => {
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
     const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--dry-run"], { cwd: () => dir }));
     expect(code).toBe(1);
-    expect(err).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(err).toContain("out of date");
+    expect(err).toContain("mcx phase install");
   });
 
   test("unknown subcommand exits 1", async () => {
@@ -1082,7 +1084,7 @@ phases:
 });
 
 describe("formatDriftWarning", () => {
-  test("contains stern security-review language and the hashes", () => {
+  test("shows locked→current hashes and actionable recovery instruction", () => {
     const msg = formatDriftWarning([
       {
         kind: "manifest",
@@ -1097,13 +1099,25 @@ describe("formatDriftWarning", () => {
         actual: "d".repeat(64),
       },
     ]);
-    expect(msg).toContain("PHASE LOCKFILE DRIFT DETECTED");
-    expect(msg).toContain("HASH MISMATCH");
-    expect(msg).toContain("aaaaaa");
-    expect(msg).toContain("bbbbbb");
-    expect(msg).toContain("malicious PR");
+    expect(msg).toContain("out of date");
+    expect(msg).toContain("locked aaaaaa → bbbbbb");
+    expect(msg).toContain("locked cccccc → dddddd");
     expect(msg).toContain("mcx phase install");
-    expect(msg).not.toMatch(/run `mcx phase install` to fix/);
+    expect(msg).toContain("stage and commit .mcx.lock");
+  });
+
+  test("single phase-source change names the file and shows both hashes", () => {
+    const msg = formatDriftWarning([
+      {
+        kind: "phase-source",
+        path: ".claude/phases/qa.ts",
+        expected: "20c6ac88".padEnd(64, "0"),
+        actual: "4f5e12bc".padEnd(64, "0"),
+      },
+    ]);
+    expect(msg).toContain(".claude/phases/qa.ts");
+    expect(msg).toContain("locked 20c6ac → 4f5e12");
+    expect(msg).toContain("mcx phase install");
   });
 
   test("labels phase-missing as NOT INSTALLED", () => {
@@ -1298,8 +1312,9 @@ describe("cmdPhase check", () => {
     await cmdPhase(["check"], deps).catch(() => {});
     expect(getExitCode()).toBe(1);
     const joined = errs.join("\n");
-    expect(joined).toContain("PHASE LOCKFILE DRIFT DETECTED");
+    expect(joined).toContain("out of date");
     expect(joined).toContain("impl.ts");
+    expect(joined).toContain("mcx phase install");
   }, 20_000);
 
   test("exits zero with `lockfile ok` when clean", async () => {

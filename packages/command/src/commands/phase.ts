@@ -500,33 +500,42 @@ export function detectDrift(deps: DriftDeps): DriftResult {
 }
 
 /**
- * Render the stern drift warning. No "just run install" prompt — the user
- * must review the diff first, then regenerate the lockfile explicitly.
+ * Render an actionable drift warning that names each changed file, shows both
+ * hashes in "locked X → current Y" form, and tells the reader how to recover.
  */
 export function formatDriftWarning(entries: DriftEntry[]): string {
-  const header =
-    "PHASE LOCKFILE DRIFT DETECTED\n\nThe manifest or a phase source has changed since the last install:\n";
   const width = Math.max(20, ...entries.map((e) => e.path.length));
   const rows = entries
     .map((e) => {
-      const label = labelFor(e.kind);
-      const exp = shortHash(e.expected);
-      const act = shortHash(e.actual);
-      return `  ${e.path.padEnd(width)}  [${label}]  expected ${exp}, got ${act}`;
+      switch (e.kind) {
+        case "manifest":
+        case "phase-source": {
+          const exp = shortHash(e.expected);
+          const act = shortHash(e.actual);
+          return `  ${e.path.padEnd(width)}  locked ${exp} → ${act}`;
+        }
+        case "phase-missing":
+          return `  ${e.path.padEnd(width)}  [NOT INSTALLED] — phase in manifest but missing from lockfile`;
+        case "phase-extra":
+          return `  ${e.path.padEnd(width)}  [STALE LOCK ENTRY] — phase in lockfile but removed from manifest`;
+        case "corrupt-lockfile": {
+          const act = shortHash(e.actual);
+          return `  ${e.path.padEnd(width)}  [CORRUPT LOCKFILE] — ${act}`;
+        }
+      }
     })
     .join("\n");
-  const footer = `
-
-Phases will not execute until the lockfile is regenerated.
-
-Before regenerating:
-  - Review the diff. A malicious PR can inject phase source that runs at
-    orchestrator time with full shell/mcp access.
-  - Confirm the changes are intentional and reviewed.
-  - Understand that re-running install makes them executable.
-
-To regenerate after review:  mcx phase install`;
-  return `${header}\n${rows}${footer}`;
+  return [
+    "mcx phase: .mcx.lock is out of date",
+    "",
+    "Changes detected since last `mcx phase install`:",
+    "",
+    rows,
+    "",
+    "If this was intentional, run 'mcx phase install' to regenerate .mcx.lock,",
+    "then stage and commit .mcx.lock alongside the script change so future",
+    "orchestrators don't hit this error.",
+  ].join("\n");
 }
 
 /**
@@ -551,20 +560,6 @@ function assertNoDrift(d: PhaseInstallDeps): void {
       break;
   }
   d.exit(1);
-}
-
-function labelFor(kind: DriftKind): string {
-  switch (kind) {
-    case "manifest":
-    case "phase-source":
-      return "HASH MISMATCH";
-    case "phase-missing":
-      return "NOT INSTALLED";
-    case "phase-extra":
-      return "STALE LOCK ENTRY";
-    case "corrupt-lockfile":
-      return "CORRUPT LOCKFILE";
-  }
 }
 
 function shortHash(s: string): string {
