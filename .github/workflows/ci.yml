@@ -1,15 +1,15 @@
 name: CI
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
-# Deduplicate runs per branch: head_ref is set for pull_request (source branch),
-# ref_name for push. Both resolve to the same branch name, so a push + PR event
-# for the same commit share one group. Cancel stale runs on force-push, but let
-# every main merge complete.
+# Deduplicate runs per branch: cancel stale PR runs on force-push, but let every
+# main merge complete. Push triggers are restricted to main to avoid double-firing
+# (push + pull_request) on PR branches — the duplicate creates both CANCELLED and
+# SUCCESS check-runs on the same SHA, which blocks branch protection (#1621).
 concurrency:
   group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'main' }}
