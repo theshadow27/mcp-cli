@@ -17,6 +17,7 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -115,7 +116,8 @@ function resolveProfileDir(cfg: SiteConfig): string {
   const raw = cfg.browser?.profileDir;
   if (raw) {
     validateProfileDir(raw);
-    return raw.startsWith("~/") ? raw.replace("~", homedir()) : raw;
+    const expanded = raw.startsWith("~/") ? raw.replace("~", homedir()) : raw;
+    return resolvePath(expanded);
   }
   const profile = cfg.browser?.chromeProfile ?? "default";
   if (/[/\\]/.test(profile) || profile.split("/").some((seg) => seg === "..")) {
@@ -311,11 +313,11 @@ function resetIfBrowserDied(): void {
 async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
   return withBrowserLock(async () => {
     resetIfBrowserDied();
-    const siteNames =
-      (args.sites as string[] | undefined) ??
-      listSites()
-        .filter((s) => s.enabled)
-        .map((s) => s.name);
+    const siteNames = Array.isArray(args.sites)
+      ? (args.sites as string[])
+      : listSites()
+          .filter((s) => s.enabled)
+          .map((s) => s.name);
     const sites = siteNames.map((n) => requireSite(n));
     if (sites.length === 0) return error("No sites configured");
 

@@ -158,4 +158,15 @@ describe("partitionSitesForRunningBrowser — #1594", () => {
     expect(toOpen.map((s) => s.name)).toEqual(["teams", "owa"]);
     expect(profileMismatch).toHaveLength(0);
   });
+
+  test("trailing-slash profileDir is treated as matching the normalized running profile — #1671", () => {
+    // resolveProfileDir always runs normalize(), but guard against any string-format
+    // difference (trailing sep, doubled sep) sneaking through from external callers.
+    const profileWithSlash = `${profile}/`;
+    const { toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set<string>(), [
+      spec("owa", { profileDir: profileWithSlash }),
+    ]);
+    expect(toOpen.map((s) => s.name)).toEqual(["owa"]);
+    expect(profileMismatch).toHaveLength(0);
+  });
 });
