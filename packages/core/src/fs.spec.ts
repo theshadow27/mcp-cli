@@ -1,10 +1,65 @@
 import { describe, expect, mock, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
-import { auditRuntimePermissions, ensureStateDir, hardenFile } from "./fs";
+import { auditRuntimePermissions, ensureStateDir, hardenFile, resolveRealpath } from "./fs";
 import { capturingLogger } from "./logger";
+
+describe("resolveRealpath", () => {
+  test("returns real path for existing file", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const file = join(base, "real.txt");
+      writeFileSync(file, "x");
+      // realpathSync resolves any symlinks in tmpdir itself (e.g. /var → /private/var on macOS)
+      expect(resolveRealpath(file)).toBe(realpathSync(file));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves symlink to its real path", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const real = join(base, "real-dir");
+      mkdirSync(real);
+      const link = join(base, "link-dir");
+      symlinkSync(real, link);
+      expect(resolveRealpath(link)).toBe(realpathSync(real));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("handles non-existent path by walking to existing ancestor", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const realBase = realpathSync(base);
+      const missing = join(base, "does-not-exist", "nested");
+      const result = resolveRealpath(missing);
+      expect(result).toBe(join(realBase, "does-not-exist", "nested"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves symlink ancestor for non-existent tail", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const real = join(base, "real-dir");
+      mkdirSync(real);
+      const link = join(base, "link-dir");
+      symlinkSync(real, link);
+      const missing = join(link, "not-yet-created");
+      const result = resolveRealpath(missing);
+      expect(result).toBe(join(realpathSync(real), "not-yet-created"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("hardenFile", () => {
   test("sets file permissions to 0600", () => {

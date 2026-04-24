@@ -70,6 +70,7 @@ import {
   isDefineAlias,
   loadManifest,
   options,
+  resolveRealpath,
   safeAliasPath,
   startSpan,
   validateFreeformTsc,
@@ -1278,27 +1279,27 @@ export class IpcServer {
 
     this.handlers.set("aliasStateGet", async (params, _ctx) => {
       const parsed = AliasStateGetParamsSchema.parse(params);
-      const repoRoot = resolve(parsed.repoRoot);
+      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key) };
     });
 
     this.handlers.set("aliasStateSet", async (params, _ctx) => {
       const parsed = AliasStateSetParamsSchema.parse(params);
-      const repoRoot = resolve(parsed.repoRoot);
+      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value);
       return { ok: true as const };
     });
 
     this.handlers.set("aliasStateDelete", async (params, _ctx) => {
       const parsed = AliasStateDeleteParamsSchema.parse(params);
-      const repoRoot = resolve(parsed.repoRoot);
+      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key);
       return { ok: true as const, deleted };
     });
 
     this.handlers.set("aliasStateAll", async (params, _ctx) => {
       const parsed = AliasStateAllParamsSchema.parse(params);
-      const repoRoot = resolve(parsed.repoRoot);
+      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
     });
 
