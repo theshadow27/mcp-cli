@@ -236,16 +236,29 @@ describe("createWorktree", () => {
 // ── cleanupWorktree ──
 
 describe("cleanupWorktree", () => {
-  test("removes clean worktree and deletes merged branch", () => {
-    const execResults: Record<string, { stdout: string; stderr: string; exitCode: number }> = {};
-    const exec = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  // Helper: builds an exec mock that handles the standard git commands.
+  // worktreePath doesn't exist on disk, so existsSync returns false → verified removed.
+  function happyExec() {
+    return mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("--show-current")) return { stdout: "feat/my-branch", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      // rev-parse --verify: branch gone after -d → exit 1
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
+  }
+
+  test("removes clean worktree and deletes merged branch", () => {
+    const exec = happyExec();
     const printError = mock(() => {});
 
     cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
@@ -271,11 +284,12 @@ describe("cleanupWorktree", () => {
     expect(removeCalls.length).toBe(0);
   });
 
-  test("no-ops when worktree is already gone", () => {
+  test("no-ops when worktree is already gone and directory absent", () => {
     const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 128 }));
     const printError = mock(() => {});
 
     cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    // Path doesn't exist on disk → no removal attempted, no messages
     expect(printError).not.toHaveBeenCalled();
   });
 
@@ -289,11 +303,11 @@ describe("cleanupWorktree", () => {
 
   test("trims branch name before deleting", () => {
     const exec = mock((cmd: string[]) => {
-      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
-      // Simulate git returning branch with trailing newline
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("--show-current")) return { stdout: "feat/my-branch\n", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
@@ -307,17 +321,16 @@ describe("cleanupWorktree", () => {
     );
     expect(deleteCalls.length).toBe(1);
     expect(deleteCalls[0][0] as string[]).toContain("feat/my-branch");
-    // Should NOT contain trailing newline
     expect(deleteCalls[0][0] as string[]).not.toContain("feat/my-branch\n");
   });
 
   test("handles trailing newline in git status --porcelain for clean repo", () => {
     const exec = mock((cmd: string[]) => {
-      // Simulate git returning just a newline for clean repo
-      if (cmd.includes("status")) return { stdout: "\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "\n", stderr: "", exitCode: 0 };
       if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
@@ -325,8 +338,144 @@ describe("cleanupWorktree", () => {
 
     cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
 
-    // Should treat "\n" as clean and proceed to remove
     expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+  });
+
+  test("retries with --force when directory persists after exit-0 remove", () => {
+    // Create a real temp dir so existsSync returns true after the first remove
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "stubborn-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    let forceAttempted = false;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove") && cmd.includes("--force")) {
+        forceAttempted = true;
+        // Simulate --force succeeding: remove the dir so existsSync returns false
+        rmSync(worktreePath, { recursive: true });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 }; // exit 0 but dir stays
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("stubborn-wt", worktreePath, { exec, printError }, tmpDir);
+
+    expect(forceAttempted).toBe(true);
+    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree (--force)"));
+    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
+  });
+
+  test("reports failure with diagnostics when both remove attempts fail", () => {
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "stuck-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      // Both remove attempts fail (dir stays on disk)
+      if (cmd.includes("remove") && cmd.includes("--force"))
+        return { stdout: "", stderr: "fatal: cannot force remove", exitCode: 1 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "is dirty", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("stuck-wt", worktreePath, { exec, printError }, tmpDir);
+
+    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(msgs.some((m) => m.includes("Failed to remove worktree"))).toBe(true);
+    expect(msgs.some((m) => m.includes("fatal: cannot force remove"))).toBe(true);
+    // Should NOT have printed "Removed worktree" or "Deleted branch"
+    expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
+    expect(msgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
+  });
+
+  test("attempts removal when git status fails but directory exists (corrupted worktree)", () => {
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "corrupt-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    const exec = mock((cmd: string[]) => {
+      // git status fails (corrupted .git file)
+      if (cmd.includes("status") && cmd.includes("--porcelain"))
+        return { stdout: "", stderr: "fatal: not a git repository", exitCode: 128 };
+      if (cmd.includes("remove") && !cmd.includes("--force")) {
+        rmSync(worktreePath, { recursive: true });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("corrupt-wt", worktreePath, { exec, printError }, tmpDir);
+
+    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(msgs.some((m) => m.includes("git status failed in worktree"))).toBe(true);
+    expect(msgs.some((m) => m.includes("Removed worktree"))).toBe(true);
+  });
+
+  test("corrupted worktree: skips --force when non-force removal fails", () => {
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "corrupt-stuck-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    let forceAttempted = false;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain"))
+        return { stdout: "", stderr: "fatal: not a git repository", exitCode: 128 };
+      if (cmd.includes("remove") && cmd.includes("--force")) {
+        forceAttempted = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 1 }; // non-force fails; dir stays
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("corrupt-stuck-wt", worktreePath, { exec, printError }, tmpDir);
+
+    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(forceAttempted).toBe(false);
+    expect(msgs.some((m) => m.includes("skipping --force because cleanliness could not be verified"))).toBe(true);
+    expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
+  });
+
+  test("branch delete reports success only after rev-parse verification", () => {
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "zombie-branch", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      // Branch still exists after -d (rev-parse succeeds → branch NOT gone)
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "abc123", stderr: "", exitCode: 0 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+
+    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    // Worktree was removed (path doesn't exist on disk)
+    expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(true);
+    // Branch should NOT be claimed as deleted — verification failed
+    expect(msgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
+    expect(msgs.some((m) => m.includes("branch still exists"))).toBe(true);
   });
 });
 
@@ -425,6 +574,7 @@ describe("pruneWorktrees", () => {
       if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
@@ -538,6 +688,7 @@ describe("pruneWorktrees", () => {
         if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
         if (cmd.includes("worktree") && cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
         if (cmd.includes("branch") && cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+        if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
         // Simulate core.bare=true after all removals complete
         if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
           return { stdout: "true", stderr: "", exitCode: 0 };
