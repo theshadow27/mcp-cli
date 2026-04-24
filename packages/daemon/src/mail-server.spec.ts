@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { MAIL_SERVER_NAME } from "@mcp-cli/core";
+import { MAIL_RECEIVED, MAIL_SERVER_NAME, type MonitorEvent } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
+import { EventBus } from "./event-bus";
 import { MailServer, buildMailToolCache } from "./mail-server";
 
 describe("MAIL_SERVER_NAME", () => {
@@ -220,5 +221,90 @@ describe("MailServer", () => {
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0].text).toContain("Unknown tool");
+  });
+
+  test("_mail_send publishes monitor event when EventBus is set", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const bus = new EventBus();
+    server = new MailServer(db, bus);
+
+    const events: MonitorEvent[] = [];
+    bus.subscribe((e) => events.push(e));
+
+    const { client } = await server.start();
+    await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "alice", recipient: "bob", body: "hello" },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe(MAIL_RECEIVED);
+    expect(events[0].sender).toBe("alice");
+    expect(events[0].recipient).toBe("bob");
+  });
+
+  test("_mail_reply publishes monitor event when EventBus is set", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const bus = new EventBus();
+    server = new MailServer(db, bus);
+
+    const events: MonitorEvent[] = [];
+    bus.subscribe((e) => events.push(e));
+
+    const { client } = await server.start();
+
+    const sendResult = await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "alice", recipient: "bob", subject: "hi", body: "original" },
+    });
+    const sendContent = sendResult.content as Array<{ type: string; text: string }>;
+    const { id } = JSON.parse(sendContent[0].text) as { id: number };
+
+    events.length = 0; // reset after send
+
+    await client.callTool({
+      name: "_mail_reply",
+      arguments: { id, sender: "bob", body: "reply" },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe(MAIL_RECEIVED);
+    expect(events[0].sender).toBe("bob");
+    expect(events[0].recipient).toBe("alice");
+  });
+
+  test("_mail_send does not throw when no EventBus is set", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MailServer(db); // no EventBus
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "alice", recipient: "bob", body: "hello" },
+    });
+    expect(result.isError).toBeFalsy();
+  });
+
+  test("setEventBus wires events after construction", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MailServer(db);
+
+    const bus = new EventBus();
+    const events: MonitorEvent[] = [];
+    bus.subscribe((e) => events.push(e));
+    server.setEventBus(bus);
+
+    const { client } = await server.start();
+    await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "alice", recipient: "carol", body: "hi" },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe(MAIL_RECEIVED);
   });
 });

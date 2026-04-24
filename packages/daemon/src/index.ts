@@ -576,6 +576,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const eventLog = new EventLog(db.getDatabase());
   eventLog.startPruning();
   const mailEventBus = new EventBus(eventLog);
+  mailServer.setEventBus(mailEventBus);
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {

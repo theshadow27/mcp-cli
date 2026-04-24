@@ -13,6 +13,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
+import type { EventBus } from "./event-bus";
+import { publishMailReceived } from "./mail-events";
 
 const TOOLS = [
   {
@@ -76,7 +78,14 @@ export class MailServer {
   private clientTransport: Transport | null = null;
   private stopped = false;
 
-  constructor(private db: StateDb) {}
+  constructor(
+    private db: StateDb,
+    private eventBus: EventBus | null = null,
+  ) {}
+
+  setEventBus(eventBus: EventBus): void {
+    this.eventBus = eventBus;
+  }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
     if (this.server) {
@@ -113,6 +122,7 @@ export class MailServer {
             const body = a.body !== undefined ? String(a.body) : undefined;
             const replyTo = a.replyTo !== undefined ? Number(a.replyTo) : undefined;
             const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
+            publishMailReceived(this.eventBus, { mailId: id, sender, recipient });
             return { content: [{ type: "text" as const, text: JSON.stringify({ id }) }] };
           }
 
@@ -160,6 +170,7 @@ export class MailServer {
             const subject =
               a.subject !== undefined ? String(a.subject) : original.subject ? `Re: ${original.subject}` : undefined;
             const newId = this.db.insertMail(sender, original.sender, subject, body, id);
+            publishMailReceived(this.eventBus, { mailId: newId, sender, recipient: original.sender });
             return { content: [{ type: "text" as const, text: JSON.stringify({ id: newId }) }] };
           }
 
