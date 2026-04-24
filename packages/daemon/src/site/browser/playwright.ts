@@ -11,6 +11,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import type {
   BrowserContext,
   Page,
@@ -72,7 +73,7 @@ export function partitionSitesForRunningBrowser(
   for (const s of requested) {
     if (openedSiteNames.has(s.name)) {
       alreadyRunning.push(s);
-    } else if (s.profileDir !== runningProfile) {
+    } else if (resolvePath(s.profileDir) !== resolvePath(runningProfile)) {
       profileMismatch.push(s);
     } else {
       toOpen.push(s);
@@ -170,7 +171,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
     // A single persistent Playwright context has exactly one user-data directory.
     // Sites opened together must agree on profileDir; mixed profiles need separate start() calls.
-    const profileDirs = [...new Set(sites.map((s) => s.profileDir))];
+    const profileDirs = [...new Set(sites.map((s) => resolvePath(s.profileDir)))];
     if (profileDirs.length > 1) {
       throw new Error(
         `PlaywrightBrowserEngine.start: all sites opened together must share one profileDir. Got ${profileDirs.length}: ${profileDirs.join(", ")}`,
