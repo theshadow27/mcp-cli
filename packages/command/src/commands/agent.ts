@@ -298,11 +298,14 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 
   const subArgs = args.slice(2);
   if (sub !== "spawn" && hasHelpFlag(subArgs)) {
-    const help = getHelp(`claude ${sub}`);
+    const help = getHelp(`${providerName} ${sub}`);
     if (help) {
       d.log(formatHelp(help));
       return;
     }
+    d.log(`No detailed help available for "mcx agent ${providerName} ${sub}".`);
+    d.log(`Run "mcx agent ${providerName} --help" for available subcommands.`);
+    return;
   }
 
   switch (sub) {

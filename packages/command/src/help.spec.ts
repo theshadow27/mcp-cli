@@ -122,4 +122,26 @@ describe("claude subcommand help registry", () => {
       expect(help?.usage.length).toBeGreaterThan(0);
     }
   });
+
+  test("unregistered subcommand returns undefined (fallthrough)", async () => {
+    await import("./help-claude");
+    expect(getHelp("claude bogus")).toBeUndefined();
+    expect(getHelp("codex wait")).toBeUndefined();
+  });
+
+  test("spawn entry includes worktree auto-generate hint", async () => {
+    await import("./help-claude");
+    const help = getHelp("claude spawn");
+    if (!help) throw new Error("expected claude spawn help to be registered");
+    const formatted = formatHelp(help);
+    expect(formatted).toContain("auto-generates name if omitted");
+  });
+
+  test("spawn entry includes allow glob hint", async () => {
+    await import("./help-claude");
+    const help = getHelp("claude spawn");
+    if (!help) throw new Error("expected claude spawn help to be registered");
+    const formatted = formatHelp(help);
+    expect(formatted).toContain("mcp__grafana__*");
+  });
 });

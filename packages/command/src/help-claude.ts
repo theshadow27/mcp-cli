@@ -11,8 +11,11 @@ registerHelp("claude spawn", {
   ],
   options: [
     ["--task, -t <string>", "Task prompt for the session (required unless --resume)"],
-    ["--worktree, -w [name]", "Run in a git worktree for branch isolation"],
-    ["--allow <tools...>", "Space-separated tool patterns to auto-approve"],
+    ["--worktree, -w [name]", "Run in a git worktree for branch isolation (auto-generates name if omitted)"],
+    [
+      "--allow <tools...>",
+      "Space-separated tool patterns to auto-approve (e.g. Bash Read Write Edit Glob Grep Skill; supports globs: mcp__grafana__*)",
+    ],
     ["--headed", "Open in a visible terminal tab (via tty)"],
     ["--name, -n <name>", "Human-readable session name (auto-generated if omitted)"],
     ["--resume <id>", "Resume a previous session by ID"],

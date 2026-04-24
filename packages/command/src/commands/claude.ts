@@ -244,6 +244,9 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
       console.log(formatHelp(help));
       return;
     }
+    console.log(`No detailed help available for "mcx claude ${sub}".`);
+    console.log('Run "mcx claude --help" for available subcommands.');
+    return;
   }
 
   switch (sub) {
