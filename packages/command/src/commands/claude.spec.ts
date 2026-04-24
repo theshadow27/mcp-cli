@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from "@mcp-cli/core";
+import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, isCommitted, readTransitionHistory } from "@mcp-cli/core";
 import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
 import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
@@ -246,6 +246,27 @@ describe("parseSpawnArgs", () => {
   test("errors on missing --name value", () => {
     const result = parseSpawnArgs(["--name"]);
     expect(result.error).toBe("--name requires a value");
+  });
+
+  test("parses --work-item flag", () => {
+    const result = parseSpawnArgs(["--work-item", "#1570", "--task", "x"]);
+    expect(result.workItemId).toBe("#1570");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("parses --work-item= equals form", () => {
+    const result = parseSpawnArgs(["--work-item=#1570", "--task", "x"]);
+    expect(result.workItemId).toBe("#1570");
+  });
+
+  test("errors on missing --work-item value", () => {
+    const result = parseSpawnArgs(["--work-item"]);
+    expect(result.error).toBe("--work-item requires an id");
+  });
+
+  test("workItemId defaults to undefined", () => {
+    const result = parseSpawnArgs(["--task", "x"]);
+    expect(result.workItemId).toBeUndefined();
   });
 });
 
@@ -734,6 +755,89 @@ describe("mcx claude spawn", () => {
     await expect(cmdClaude(["spawn", "--task", "fix"], deps)).rejects.toThrow(ExitError);
     expect(callTool).not.toHaveBeenCalled();
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("different build"));
+  });
+
+  test("writes null→initial transition when --work-item provided (#1623)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "spawn-transition-"));
+    try {
+      // Minimal manifest so loadManifest can find the initial phase
+      writeFileSync(
+        join(dir, ".mcx.yaml"),
+        "version: 1\nrunsOn: main\ninitial: impl\nphases:\n  impl:\n    source: ./impl.ts\n    next: []\n",
+      );
+
+      const callTool = mock(async () => toolResult({ sessionId: "s1" }));
+      const origLog = console.log;
+      console.log = mock(() => {});
+      try {
+        await cmdClaude(
+          ["spawn", "--task", "implement 1570", "--work-item", "#1570"],
+          makeDeps({ callTool, getGitRoot: mock(() => dir) }),
+        );
+      } finally {
+        console.log = origLog;
+      }
+
+      const logPath = join(dir, ".mcx", "transitions.jsonl");
+      const committed = readTransitionHistory(logPath, "#1570").filter(isCommitted);
+      expect(committed).toHaveLength(1);
+      expect(committed[0].from).toBeNull();
+      expect(committed[0].to).toBe("impl");
+      expect(committed[0].workItemId).toBe("#1570");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("transition write is idempotent — second spawn does not corrupt log (#1623)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "spawn-transition-idem-"));
+    try {
+      writeFileSync(
+        join(dir, ".mcx.yaml"),
+        "version: 1\nrunsOn: main\ninitial: impl\nphases:\n  impl:\n    source: ./impl.ts\n    next: []\n",
+      );
+      mkdirSync(join(dir, ".mcx"), { recursive: true });
+
+      const callTool = mock(async () => toolResult({ sessionId: "s2" }));
+      const deps = makeDeps({ callTool, getGitRoot: mock(() => dir) });
+      const origLog = console.log;
+      console.log = mock(() => {});
+      try {
+        // First spawn
+        await cmdClaude(["spawn", "--task", "x", "--work-item", "#1570"], deps);
+        // Second spawn — must not throw or double-write a non-idempotent entry
+        await cmdClaude(["spawn", "--task", "x", "--work-item", "#1570"], deps);
+      } finally {
+        console.log = origLog;
+      }
+
+      const logPath = join(dir, ".mcx", "transitions.jsonl");
+      const committed = readTransitionHistory(logPath, "#1570").filter(isCommitted);
+      // Two committed entries: null→impl then impl→impl (idempotent self-loop)
+      expect(committed.length).toBeGreaterThanOrEqual(1);
+      // The first entry is always null→impl
+      expect(committed[0].from).toBeNull();
+      expect(committed[0].to).toBe("impl");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("spawn succeeds even when no .mcx.yaml exists (#1623)", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "s3" }));
+    const deps = makeDeps({
+      callTool,
+      getGitRoot: mock(() => "/nonexistent/repo/root"),
+    });
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      // Should not throw — missing manifest is silently ignored
+      await cmdClaude(["spawn", "--task", "x", "--work-item", "#1570"], deps);
+      expect(callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 
