@@ -2750,6 +2750,249 @@ describe("IpcServer HTTP transport", () => {
       c2.abort();
       reader2?.releaseLock();
     });
+
+    test("type glob filter matches event names with wildcards", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?type=pr.*", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
+      bus.publish({ src: "test", event: "pr.opened", category: "work_item", prNumber: 43 });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.opened")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.result");
+      expect(buffer).toContain("pr.merged");
+      expect(buffer).toContain("pr.opened");
+    });
+
+    test("type glob supports comma-separated OR patterns", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch(`http://localhost/events?type=${encodeURIComponent("pr.*,mail.received")}`, {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
+      bus.publish({
+        src: "test",
+        event: "mail.received",
+        category: "mail",
+        mailId: 1,
+        sender: "a",
+        recipient: "b",
+      });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("mail.received")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.result");
+      expect(buffer).toContain("pr.merged");
+      expect(buffer).toContain("mail.received");
+    });
+
+    test("src glob filter matches source attribution with wildcards", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch(`http://localhost/events?src=${encodeURIComponent("daemon.*")}`, {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      // Publish non-matching first, then matching — if filter works, only the match arrives
+      bus.publish({ src: "external.hook", event: "pr.opened", category: "work_item", prNumber: 43 });
+      bus.publish({ src: "daemon.poller", event: "pr.merged", category: "work_item", prNumber: 42 });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).toContain("pr.merged");
+      expect(buffer).not.toContain("pr.opened");
+    });
+
+    test("phase filter matches phase field on events", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?phase=review", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      bus.publish({
+        src: "test",
+        event: "phase.changed",
+        category: "work_item",
+        phase: "impl",
+        workItemId: "#1",
+      } as never);
+      bus.publish({
+        src: "test",
+        event: "phase.changed",
+        category: "work_item",
+        phase: "review",
+        workItemId: "#2",
+      } as never);
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("#2")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("#1");
+      expect(buffer).toContain("#2");
+    });
+
+    test("combined filters are conjunctive (AND across axes)", async () => {
+      const { bus } = startServerWithBus();
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?subscribe=work_item&pr=42", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      await reader.read(); // drain initial flush
+
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 99 });
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.opened", category: "work_item", prNumber: 42 });
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.opened")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("pr.merged");
+      expect(buffer).not.toContain("session.result");
+      expect(buffer).toContain("pr.opened");
+    });
+
+    test("backfill from durable log respects filters", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0&subscribe=work_item", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.result");
+      expect(buffer).toContain("pr.merged");
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
@@ -3179,5 +3422,12 @@ describe("buildEventFilter", () => {
     const filter = buildEventFilter(params({ type: "*" }));
     expect(filter?.({ category: "session" })).toBe(false);
     expect(filter?.({ event: "session.result", category: "session" })).toBe(true);
+  });
+
+  test("heartbeat events bypass all filters", () => {
+    const filter = buildEventFilter(params({ subscribe: "session", pr: "42", type: "session.*" }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ category: "heartbeat", event: "heartbeat" })).toBe(true);
+    expect(filter?.({ category: "heartbeat", event: "heartbeat", src: "daemon" })).toBe(true);
   });
 });
