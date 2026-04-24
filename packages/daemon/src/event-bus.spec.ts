@@ -337,6 +337,116 @@ describe("EventBus", () => {
   });
 });
 
+describe("EventBus coalesced publishing", () => {
+  test("publishCoalesced with mode:never publishes immediately to subscribers", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publishCoalesced(sessionEvent("ci.finished"), "pr42:ci", { mode: "never" });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("ci.finished");
+    expect(received[0].seq).toBe(1);
+  });
+
+  test("publishCoalesced with last-wins defers until flushCoalesced", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publishCoalesced(sessionEvent("ci.pending"), "pr42:ci", { mode: "last-wins", windowMs: 60_000 });
+    bus.publishCoalesced(sessionEvent("ci.running"), "pr42:ci", { mode: "last-wins", windowMs: 60_000 });
+
+    expect(received).toHaveLength(0);
+
+    bus.flushCoalesced("pr42:ci");
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("ci.running");
+  });
+
+  test("publishCoalesced with merge folds events and flushes correctly", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const merge = (a: MonitorEventInput, b: MonitorEventInput): MonitorEventInput => ({
+      ...b,
+      event: `${a.event}+${b.event}`,
+    });
+
+    bus.publishCoalesced(sessionEvent("ci.pending"), "pr42:ci", { mode: "merge", merge, windowMs: 60_000 });
+    bus.publishCoalesced(sessionEvent("ci.running"), "pr42:ci", { mode: "merge", merge, windowMs: 60_000 });
+
+    bus.flushCoalesced("pr42:ci");
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("ci.pending+ci.running");
+  });
+
+  test("flushCoalesced without key flushes all pending keys", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publishCoalesced(sessionEvent("ci.pending"), "pr42:ci", { mode: "last-wins", windowMs: 60_000 });
+    bus.publishCoalesced(workItemEvent("pr.updated"), "pr99:status", { mode: "last-wins", windowMs: 60_000 });
+
+    expect(received).toHaveLength(0);
+    bus.flushCoalesced();
+    expect(received).toHaveLength(2);
+  });
+
+  test("flushCoalesced is a no-op before any coalesced publish", () => {
+    const bus = new EventBus();
+    bus.flushCoalesced();
+    bus.flushCoalesced("nonexistent");
+  });
+
+  test("disposeCoalescer clears pending without emitting", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publishCoalesced(sessionEvent("ci.pending"), "pr42:ci", { mode: "last-wins", windowMs: 60_000 });
+    expect(received).toHaveLength(0);
+
+    bus.disposeCoalescer();
+
+    bus.flushCoalesced("pr42:ci");
+    expect(received).toHaveLength(0);
+  });
+
+  test("mode:never flushes pending windowed event for same key then publishes terminal", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publishCoalesced(sessionEvent("ci.pending"), "pr42:ci", { mode: "last-wins", windowMs: 60_000 });
+    expect(received).toHaveLength(0);
+
+    bus.publishCoalesced(sessionEvent("ci.finished"), "pr42:ci", { mode: "never" });
+    expect(received).toHaveLength(2);
+    expect(received[0].event).toBe("ci.pending");
+    expect(received[1].event).toBe("ci.finished");
+  });
+
+  test("coalesced events get sequential seq values", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    bus.publish(sessionEvent("direct.first"));
+    bus.publishCoalesced(sessionEvent("coalesced.a"), "k1", { mode: "last-wins", windowMs: 60_000 });
+    bus.publishCoalesced(sessionEvent("coalesced.b"), "k2", { mode: "last-wins", windowMs: 60_000 });
+
+    bus.flushCoalesced();
+    expect(received).toHaveLength(3);
+    expect(received[0].seq).toBe(1);
+    expect(received[1].seq).toBe(2);
+    expect(received[2].seq).toBe(3);
+  });
+});
+
 function freshLog(): EventLog {
   const db = new Database(":memory:");
   db.exec("PRAGMA journal_mode = WAL");
