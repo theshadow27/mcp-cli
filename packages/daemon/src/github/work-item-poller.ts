@@ -279,12 +279,16 @@ export class WorkItemPoller {
     if (newMergeState !== (item.mergeStateStatus ?? null)) {
       patch.mergeStateStatus = newMergeState;
       changed = true;
+      // Only propagate cascadeHead when the new state is actionable (CLEAN or BEHIND with
+      // auto-merge armed). Non-actionable transitions (DIRTY, UNKNOWN, HAS_HOOKS, UNSTABLE)
+      // must not carry a cascadeHead or orchestrators may issue spurious update-branch calls.
+      const isActionable = (newMergeState === "CLEAN" || newMergeState === "BEHIND") && status.autoMergeEnabled;
       this.onEvent({
         type: "pr:merge_state_changed",
         prNumber,
         from: item.mergeStateStatus ?? null,
         to: newMergeState,
-        cascadeHead,
+        cascadeHead: isActionable ? cascadeHead : null,
       });
     }
 
