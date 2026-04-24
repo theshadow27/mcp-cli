@@ -11,7 +11,7 @@
 
 // ── Event categories ──
 
-export type MonitorCategory = "session" | "work_item" | "ci" | "copilot" | "mail" | "heartbeat";
+export type MonitorCategory = "session" | "work_item" | "ci" | "copilot" | "review" | "issue" | "mail" | "heartbeat";
 
 // ── Session event names ──
 
@@ -53,6 +53,16 @@ export const CI_FINISHED = "ci.finished" as const;
 // ── Copilot event names (#1578) ──
 
 export const COPILOT_INLINE_POSTED = "copilot.inline_posted" as const;
+
+// ── Review event names (#1579) ──
+
+export const REVIEW_COMMENTED = "review.commented" as const;
+export const PR_COMMENT = "pr.comment" as const;
+export const REVIEW_STICKY_UPDATED = "review.sticky_updated" as const;
+
+// ── Issue event names (#1579) ──
+
+export const ISSUE_COMMENT = "issue.comment" as const;
 
 // ── Mail event names ──
 
@@ -257,6 +267,27 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const count = typeof e.newCount === "number" ? `${e.newCount} comment${e.newCount === 1 ? "" : "s"}` : "";
     const first = typeof e.firstLine === "string" ? e.firstLine : "";
     return join(wi(e), pr(e), author, count, first);
+  },
+
+  [REVIEW_COMMENTED]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    return join(wi(e), pr(e), author);
+  },
+
+  [PR_COMMENT]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    return join(wi(e), pr(e), author);
+  },
+
+  [REVIEW_STICKY_UPDATED]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    const hash = typeof e.bodyHash === "string" ? e.bodyHash.slice(0, 8) : "";
+    return join(wi(e), pr(e), author, hash);
+  },
+
+  [ISSUE_COMMENT]: (e) => {
+    const author = typeof e.author === "string" ? e.author : "";
+    return join(wi(e), author);
   },
 
   [MAIL_RECEIVED]: (e) => {

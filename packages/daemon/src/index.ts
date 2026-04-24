@@ -32,6 +32,7 @@ import {
   BUILD_VERSION,
   CLAUDE_SERVER_NAME,
   CODEX_SERVER_NAME,
+  COPILOT_INLINE_POSTED,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   DEFAULT_CLAUDE_WS_PORT,
@@ -960,17 +961,21 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             stateDb: db,
             logger,
             onEvent: (event) => {
-              const key = `copilot:${event.prNumber}:${event.author}`;
-              mailEventBus.publishCoalesced(event, key, {
-                mode: "merge",
-                merge: (a, b) => {
-                  const ids = [
-                    ...new Set([...((a.commentIds as number[]) ?? []), ...((b.commentIds as number[]) ?? [])]),
-                  ];
-                  return { ...a, newCount: ids.length, commentIds: ids };
-                },
-                windowMs: 500,
-              });
+              if (event.event === COPILOT_INLINE_POSTED) {
+                const key = `copilot:${event.prNumber}:${event.author}`;
+                mailEventBus.publishCoalesced(event, key, {
+                  mode: "merge",
+                  merge: (a, b) => {
+                    const ids = [
+                      ...new Set([...((a.commentIds as number[]) ?? []), ...((b.commentIds as number[]) ?? [])]),
+                    ];
+                    return { ...a, newCount: ids.length, commentIds: ids };
+                  },
+                  windowMs: 500,
+                });
+              } else {
+                mailEventBus.publish(event);
+              }
             },
           });
           copilotPoller.start();

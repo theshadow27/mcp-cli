@@ -387,6 +387,21 @@ export class StateDb {
         last_poll_ts     TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+
+    // -- Additional comment surfaces (#1579) --
+    for (const col of [
+      "seen_review_ids TEXT NOT NULL DEFAULT '[]'",
+      "seen_pr_comment_ids TEXT NOT NULL DEFAULT '[]'",
+      "seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]'",
+      "last_sticky_body_hash TEXT",
+    ]) {
+      try {
+        this.db.exec(`ALTER TABLE copilot_comment_state ADD COLUMN ${col}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
+    }
   }
 
   // -- Tool cache --
@@ -1553,6 +1568,98 @@ export class StateDb {
            last_poll_ts = excluded.last_poll_ts`,
       )
       .run(prNumber, JSON.stringify(ids));
+  }
+
+  // -- Review IDs (#1579) --
+
+  getSeenReviewIds(prNumber: number): number[] {
+    const row = this.db
+      .query<{ seen_review_ids: string }, [number]>(
+        "SELECT seen_review_ids FROM copilot_comment_state WHERE pr_number = ?",
+      )
+      .get(prNumber);
+    return row ? safeJsonParse<number[]>(row.seen_review_ids, []) : [];
+  }
+
+  updateSeenReviewIds(prNumber: number, ids: number[]): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, seen_review_ids, last_poll_ts)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(pr_number) DO UPDATE SET
+           seen_review_ids = excluded.seen_review_ids,
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(prNumber, JSON.stringify(ids));
+  }
+
+  // -- Top-level PR comment IDs (#1579) --
+
+  getSeenPRCommentIds(prNumber: number): number[] {
+    const row = this.db
+      .query<{ seen_pr_comment_ids: string }, [number]>(
+        "SELECT seen_pr_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
+      )
+      .get(prNumber);
+    return row ? safeJsonParse<number[]>(row.seen_pr_comment_ids, []) : [];
+  }
+
+  updateSeenPRCommentIds(prNumber: number, ids: number[]): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, seen_pr_comment_ids, last_poll_ts)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(pr_number) DO UPDATE SET
+           seen_pr_comment_ids = excluded.seen_pr_comment_ids,
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(prNumber, JSON.stringify(ids));
+  }
+
+  // -- Issue comment IDs (#1579) --
+
+  getSeenIssueCommentIds(issueNumber: number): number[] {
+    const row = this.db
+      .query<{ seen_issue_comment_ids: string }, [number]>(
+        "SELECT seen_issue_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
+      )
+      .get(issueNumber);
+    return row ? safeJsonParse<number[]>(row.seen_issue_comment_ids, []) : [];
+  }
+
+  updateSeenIssueCommentIds(issueNumber: number, ids: number[]): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, seen_issue_comment_ids, last_poll_ts)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(pr_number) DO UPDATE SET
+           seen_issue_comment_ids = excluded.seen_issue_comment_ids,
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(issueNumber, JSON.stringify(ids));
+  }
+
+  // -- Sticky body hash (#1579) --
+
+  getStickyBodyHash(prNumber: number): string | null {
+    const row = this.db
+      .query<{ last_sticky_body_hash: string | null }, [number]>(
+        "SELECT last_sticky_body_hash FROM copilot_comment_state WHERE pr_number = ?",
+      )
+      .get(prNumber);
+    return row?.last_sticky_body_hash ?? null;
+  }
+
+  updateStickyBodyHash(prNumber: number, hash: string | null): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, last_sticky_body_hash, last_poll_ts)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(pr_number) DO UPDATE SET
+           last_sticky_body_hash = excluded.last_sticky_body_hash,
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(prNumber, hash);
   }
 
   close(): void {

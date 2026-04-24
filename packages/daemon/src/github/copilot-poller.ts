@@ -10,7 +10,15 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
-import { COPILOT_INLINE_POSTED } from "@mcp-cli/core";
+import {
+  COPILOT_INLINE_POSTED,
+  ISSUE_COMMENT,
+  PR_COMMENT,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
+  REVIEW_COMMENTED,
+  REVIEW_STICKY_UPDATED,
+} from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
@@ -51,8 +59,34 @@ export interface CopilotInlineEvent {
   author: string;
 }
 
+export interface GitHubReview {
+  id: number;
+  user: { login: string; type?: string } | null;
+  state: string;
+  body: string;
+  submitted_at: string;
+}
+
+export interface IssueComment {
+  id: number;
+  user: { login: string } | null;
+  body: string;
+}
+
 export interface FetchCommentsResult {
   comments: PRComment[];
+  rateLimitLow: boolean;
+  rateLimitRemaining: number | null;
+}
+
+export interface FetchReviewsResult {
+  reviews: GitHubReview[];
+  rateLimitLow: boolean;
+  rateLimitRemaining: number | null;
+}
+
+export interface FetchIssueCommentsResult {
+  comments: IssueComment[];
   rateLimitLow: boolean;
   rateLimitRemaining: number | null;
 }
@@ -63,6 +97,8 @@ export interface CopilotPollerOptions {
   logger?: Logger;
   intervalMs?: number;
   fetchComments?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchCommentsResult>;
+  fetchReviews?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchReviewsResult>;
+  fetchIssueComments?: (repo: RepoInfo, number: number, token: string) => Promise<FetchIssueCommentsResult>;
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   getToken?: () => Promise<string>;
   onEvent?: (event: MonitorEventInput) => void;
@@ -85,6 +121,8 @@ export class CopilotPoller {
   private repoDetectFailures = 0;
   private rateLimitBackoff = false;
   private fetchCommentsFn: NonNullable<CopilotPollerOptions["fetchComments"]>;
+  private fetchReviewsFn: NonNullable<CopilotPollerOptions["fetchReviews"]>;
+  private fetchIssueCommentsFn: NonNullable<CopilotPollerOptions["fetchIssueComments"]>;
   private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
   private getTokenFn: NonNullable<CopilotPollerOptions["getToken"]>;
   private onEvent: (event: MonitorEventInput) => void;
@@ -95,7 +133,9 @@ export class CopilotPoller {
     this.logger = opts.logger ?? consoleLogger;
     this.fixedInterval = opts.intervalMs ?? null;
     this.currentIntervalMs = this.fixedInterval ?? IDLE_INTERVAL_MS;
-    this.fetchCommentsFn = opts.fetchComments ?? fetchPRComments;
+    this.fetchCommentsFn = opts.fetchComments ?? fetchPRInlineComments;
+    this.fetchReviewsFn = opts.fetchReviews ?? fetchPRReviews;
+    this.fetchIssueCommentsFn = opts.fetchIssueComments ?? fetchIssueEndpointComments;
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
     this.getTokenFn = opts.getToken ?? getGhToken;
     this.onEvent = opts.onEvent ?? (() => {});
@@ -169,8 +209,11 @@ export class CopilotPoller {
         (item) =>
           item.prNumber !== null && item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
       );
+      const trackedIssues = allItems.filter(
+        (item) => item.prNumber === null && item.issueNumber !== null && item.phase !== "done",
+      );
 
-      if (tracked.length === 0) {
+      if (tracked.length === 0 && trackedIssues.length === 0) {
         this._lastError = null;
         this._pollCount++;
         this.adjustInterval(tracked);
@@ -192,12 +235,20 @@ export class CopilotPoller {
       for (const item of tracked) {
         if (this.stopped) return;
         if (await this.pollPR(repo, item, token)) anyRateLimitLow = true;
+        if (this.stopped) return;
+        if (await this.pollReviews(repo, item, token)) anyRateLimitLow = true;
+        if (this.stopped) return;
+        if (await this.pollPRComments(repo, item, token)) anyRateLimitLow = true;
+      }
+      for (const item of trackedIssues) {
+        if (this.stopped) return;
+        if (await this.pollIssueComments(repo, item, token)) anyRateLimitLow = true;
       }
       this.rateLimitBackoff = anyRateLimitLow;
 
       this._lastError = null;
       this._pollCount++;
-      this.adjustInterval(tracked);
+      this.adjustInterval([...tracked, ...trackedIssues]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this._lastError = msg;
@@ -216,7 +267,7 @@ export class CopilotPoller {
       result = await this.fetchCommentsFn(repo, prNumber, token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isRateLimit = msg.includes("rate limit") || msg.includes("403");
+      const isRateLimit = msg.includes("rate limit");
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
       return isRateLimit;
     }
@@ -236,7 +287,8 @@ export class CopilotPoller {
 
     if (newComments.length === 0) {
       if (currentIds.length > 0) {
-        this.stateDb.updateSeenCommentIds(prNumber, currentIds);
+        const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
+        this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
       return result.rateLimitLow;
     }
@@ -279,6 +331,177 @@ export class CopilotPoller {
     return result.rateLimitLow;
   }
 
+  private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+    const prNumber = item.prNumber as number;
+
+    let result: FetchReviewsResult;
+    try {
+      result = await this.fetchReviewsFn(repo, prNumber, token);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[mcpd] CopilotPoller failed to fetch reviews for PR #${prNumber}: ${msg}`);
+      return msg.includes("rate limit");
+    }
+
+    if (result.rateLimitLow) {
+      this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+    }
+
+    const reviews = result.reviews;
+    if (this.stopped) return result.rateLimitLow;
+
+    const seenIds = new Set(this.stateDb.getSeenReviewIds(prNumber));
+    const currentIds = reviews.map((r) => r.id);
+    const newReviews = reviews.filter((r) => !seenIds.has(r.id));
+
+    for (const review of newReviews) {
+      if (review.state === "PENDING") continue;
+
+      const author = review.user?.login ?? "unknown";
+      let eventName: string;
+      switch (review.state) {
+        case "APPROVED":
+          eventName = REVIEW_APPROVED;
+          break;
+        case "CHANGES_REQUESTED":
+          eventName = REVIEW_CHANGES_REQUESTED;
+          break;
+        default:
+          eventName = REVIEW_COMMENTED;
+          break;
+      }
+
+      this.onEvent({
+        src: "daemon.copilot-poller",
+        event: eventName,
+        category: "review",
+        workItemId: item.id,
+        prNumber,
+        reviewId: review.id,
+        reviewer: author,
+        author,
+        ...(review.body ? { body: review.body } : {}),
+      });
+    }
+
+    // Sticky detection: find the latest bot review and track its body hash.
+    // Always store the hash (so it's ready for comparison next poll), but only
+    // emit sticky_updated when the review was previously seen — a brand-new bot
+    // review is already handled as a new review event above.
+    let stickyCandidate: GitHubReview | null = null;
+    for (const r of reviews) {
+      if (r.user?.type === "Bot" && r.body) {
+        if (!stickyCandidate || r.id > stickyCandidate.id) stickyCandidate = r;
+      }
+    }
+    if (stickyCandidate) {
+      const bodyHash = hashBody(stickyCandidate.body);
+      const lastHash = this.stateDb.getStickyBodyHash(prNumber);
+      if (seenIds.has(stickyCandidate.id) && lastHash !== null && lastHash !== bodyHash) {
+        this.onEvent({
+          src: "daemon.copilot-poller",
+          event: REVIEW_STICKY_UPDATED,
+          category: "review",
+          workItemId: item.id,
+          prNumber,
+          reviewId: stickyCandidate.id,
+          author: stickyCandidate.user?.login ?? "unknown",
+          bodyHash,
+        });
+      }
+      this.stateDb.updateStickyBodyHash(prNumber, bodyHash);
+    }
+
+    if (currentIds.length > 0) {
+      const unionIds = [...new Set([...seenIds, ...currentIds])];
+      this.stateDb.updateSeenReviewIds(prNumber, unionIds);
+    }
+    return result.rateLimitLow;
+  }
+
+  private async pollPRComments(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+    const prNumber = item.prNumber as number;
+
+    let result: FetchIssueCommentsResult;
+    try {
+      result = await this.fetchIssueCommentsFn(repo, prNumber, token);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[mcpd] CopilotPoller failed to fetch PR comments for PR #${prNumber}: ${msg}`);
+      return msg.includes("rate limit");
+    }
+
+    if (result.rateLimitLow) {
+      this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+    }
+
+    const comments = result.comments;
+    if (this.stopped) return result.rateLimitLow;
+
+    const seenIds = new Set(this.stateDb.getSeenPRCommentIds(prNumber));
+    const currentIds = comments.map((c) => c.id);
+    const newComments = comments.filter((c) => !seenIds.has(c.id));
+
+    for (const comment of newComments) {
+      this.onEvent({
+        src: "daemon.copilot-poller",
+        event: PR_COMMENT,
+        category: "review",
+        workItemId: item.id,
+        prNumber,
+        commentId: comment.id,
+        author: comment.user?.login ?? "unknown",
+      });
+    }
+
+    if (currentIds.length > 0) {
+      const unionIds = [...new Set([...seenIds, ...currentIds])];
+      this.stateDb.updateSeenPRCommentIds(prNumber, unionIds);
+    }
+    return result.rateLimitLow;
+  }
+
+  private async pollIssueComments(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+    const issueNumber = item.issueNumber as number;
+
+    let result: FetchIssueCommentsResult;
+    try {
+      result = await this.fetchIssueCommentsFn(repo, issueNumber, token);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[mcpd] CopilotPoller failed to fetch issue comments for #${issueNumber}: ${msg}`);
+      return msg.includes("rate limit");
+    }
+
+    if (result.rateLimitLow) {
+      this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+    }
+
+    const comments = result.comments;
+    if (this.stopped) return result.rateLimitLow;
+
+    const seenIds = new Set(this.stateDb.getSeenIssueCommentIds(issueNumber));
+    const currentIds = comments.map((c) => c.id);
+    const newComments = comments.filter((c) => !seenIds.has(c.id));
+
+    for (const comment of newComments) {
+      this.onEvent({
+        src: "daemon.copilot-poller",
+        event: ISSUE_COMMENT,
+        category: "issue",
+        workItemId: item.id,
+        commentId: comment.id,
+        author: comment.user?.login ?? "unknown",
+      });
+    }
+
+    if (currentIds.length > 0) {
+      const unionIds = [...new Set([...seenIds, ...currentIds])];
+      this.stateDb.updateSeenIssueCommentIds(issueNumber, unionIds);
+    }
+    return result.rateLimitLow;
+  }
+
   private adjustInterval(tracked: WorkItem[]): void {
     if (this.fixedInterval !== null) return;
 
@@ -287,9 +510,11 @@ export class CopilotPoller {
       return;
     }
 
-    const hasActive = tracked.some(
-      (item) => item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
-    );
+    const hasActive = tracked.some((item) => {
+      if (item.phase === "done") return false;
+      if (item.prNumber !== null) return item.prState !== "merged" && item.prState !== "closed";
+      return true;
+    });
 
     const target = hasActive ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
 
@@ -319,12 +544,17 @@ function parseNextUrl(linkHeader: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-async function fetchPRComments(repo: RepoInfo, prNumber: number, token: string): Promise<FetchCommentsResult> {
-  const allComments: PRComment[] = [];
+interface FetchPaginatedResult<T> {
+  items: T[];
+  rateLimitLow: boolean;
+  rateLimitRemaining: number | null;
+}
+
+async function fetchPaginated<T>(startUrl: string, token: string): Promise<FetchPaginatedResult<T>> {
+  const allItems: T[] = [];
   let rateLimitLow = false;
   let rateLimitRemaining: number | null = null;
-  let url: string | null =
-    `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/comments?per_page=100`;
+  let url: string | null = startUrl;
 
   for (let page = 0; url && page < MAX_PAGES; page++) {
     const response = await fetch(url, {
@@ -332,13 +562,11 @@ async function fetchPRComments(repo: RepoInfo, prNumber: number, token: string):
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
-    // 401: clear token cache so next poll retries with fresh token
     if (response.status === 401) {
       clearTokenCache();
       throw new Error("GitHub API auth failed (401) — token cache cleared");
     }
 
-    // 403: check if rate-limit exhaustion vs auth/scope issue
     if (response.status === 403) {
       const remaining = response.headers.get("x-ratelimit-remaining");
       if (remaining !== null && Number.parseInt(remaining, 10) === 0) {
@@ -359,11 +587,48 @@ async function fetchPRComments(repo: RepoInfo, prNumber: number, token: string):
       }
     }
 
-    const pageComments = (await response.json()) as PRComment[];
-    allComments.push(...pageComments);
+    const pageItems = await response.json();
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`fetchPaginated: expected array, got ${typeof pageItems}`);
+    }
+    allItems.push(...(pageItems as T[]));
 
     url = parseNextUrl(response.headers.get("link"));
   }
 
-  return { comments: allComments, rateLimitLow, rateLimitRemaining };
+  return { items: allItems, rateLimitLow, rateLimitRemaining };
+}
+
+async function fetchPRInlineComments(repo: RepoInfo, prNumber: number, token: string): Promise<FetchCommentsResult> {
+  const result = await fetchPaginated<PRComment>(
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/comments?per_page=100`,
+    token,
+  );
+  return { comments: result.items, rateLimitLow: result.rateLimitLow, rateLimitRemaining: result.rateLimitRemaining };
+}
+
+async function fetchPRReviews(repo: RepoInfo, prNumber: number, token: string): Promise<FetchReviewsResult> {
+  const result = await fetchPaginated<GitHubReview>(
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/reviews?per_page=100`,
+    token,
+  );
+  return { reviews: result.items, rateLimitLow: result.rateLimitLow, rateLimitRemaining: result.rateLimitRemaining };
+}
+
+async function fetchIssueEndpointComments(
+  repo: RepoInfo,
+  number: number,
+  token: string,
+): Promise<FetchIssueCommentsResult> {
+  const result = await fetchPaginated<IssueComment>(
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${number}/comments?per_page=100`,
+    token,
+  );
+  return { comments: result.items, rateLimitLow: result.rateLimitLow, rateLimitRemaining: result.rateLimitRemaining };
+}
+
+function hashBody(body: string): string {
+  const hasher = new Bun.CryptoHasher("sha1");
+  hasher.update(body);
+  return hasher.digest("hex").slice(0, 16);
 }
