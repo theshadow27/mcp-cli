@@ -419,6 +419,89 @@ describe("CopilotPoller", () => {
       // After successful poll, backoff should be cleared
       expect(poller.lastError).toBeNull();
     });
+
+    test("primary rate-limit error (remaining==0) does not set lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("GitHub API rate limit exhausted (403)");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toBeNull();
+    });
+
+    test("secondary rate-limit error (retry-after) does not set lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("GitHub API secondary rate limit (403): retry after 60s");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toBeNull();
+    });
+
+    test("auth/scope 403 does NOT trigger backoff and sets lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("GitHub API auth/scope error (403): Forbidden");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("auth/scope");
+    });
+
+    test("auth/scope error on reviews sets lastError without backoff", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchReviews: async () => {
+          throw new Error("GitHub API auth/scope error (403): Resource not accessible by personal access token");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("auth/scope");
+    });
+
+    test("401 auth failure sets lastError without backoff", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("GitHub API auth failed (401) — token cache cleared");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("auth failed");
+    });
+
+    test("auth/scope error clears after next successful poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          callCount++;
+          if (callCount === 1) throw new Error("GitHub API auth/scope error (403): Forbidden");
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+      expect(poller.lastError).toContain("auth/scope");
+
+      await poller.poll();
+      expect(poller.lastError).toBeNull();
+    });
   });
 
   // ── Coalesced event integration (mocked) ──
