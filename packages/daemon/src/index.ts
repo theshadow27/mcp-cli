@@ -70,6 +70,7 @@ import { DerivedEventPublisher } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
+import type { CiEvent } from "./github/ci-events";
 import { type RepoInfo, detectRepo, resolveNumber } from "./github/graphql-client";
 import { resolveBranchFromPr } from "./github/resolve-branch";
 import { WorkItemPoller } from "./github/work-item-poller";
@@ -846,6 +847,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             db: workItemDb,
             logger,
             onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
+            onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
           // Wire the alias executor's work-item resolver — resolves the caller
@@ -949,6 +951,33 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     );
   }
 
+  function publishCiEvent(bus: EventBus, event: CiEvent): void {
+    const base = {
+      src: "daemon.work-item-poller",
+      event: event.type,
+      category: "ci" as const,
+      prNumber: event.prNumber,
+      workItemId: event.workItemId,
+    };
+    const coalesceKey = `ci:${event.prNumber}`;
+
+    if (event.type === "ci.started") {
+      bus.publish({ ...base, checks: event.checks });
+    } else if (event.type === "ci.running") {
+      bus.publishCoalesced({ ...base, inProgress: event.inProgress, completed: event.completed }, coalesceKey, {
+        mode: "last-wins",
+        windowMs: 500,
+      });
+    } else {
+      // ci.finished — flush pending ci.running, then publish immediately
+      bus.publishCoalesced(
+        { ...base, checks: event.checks, allGreen: event.allGreen, observedDurationMs: event.observedDurationMs },
+        coalesceKey,
+        { mode: "never" },
+      );
+    }
+  }
+
   // Graceful shutdown — re-entrant safe
   let _isShuttingDown = false;
   let _resolveShutdown!: () => void;
@@ -968,6 +997,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       quotaPoller.stop();
       workItemPoller?.stop();
       derivedPublisher?.dispose();
+      mailEventBus.disposeCoalescer();
       try {
         watcher.stop();
       } catch (err) {

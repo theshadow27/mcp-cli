@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { WorkItemEvent } from "@mcp-cli/core";
 import { WorkItemDb } from "../db/work-items";
-import type { PRStatus, RepoInfo } from "./graphql-client";
+import type { CiEvent } from "./ci-events";
+import type { CiCheck, PRStatus, RepoInfo } from "./graphql-client";
 import { WorkItemPoller } from "./work-item-poller";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
@@ -151,8 +152,8 @@ describe("WorkItemPoller", () => {
           number: 7,
           ciState: "FAILURE",
           ciChecks: [
-            { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
-            { name: "test", status: "COMPLETED", conclusion: "FAILURE" },
+            { name: "lint", status: "COMPLETED", conclusion: "SUCCESS", checkSuiteId: 100 },
+            { name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuiteId: 100 },
           ],
         }),
       ],
@@ -680,6 +681,191 @@ describe("WorkItemPoller", () => {
     await poller.poll();
     const pushed = events.find((e) => e.type === "pr:pushed");
     expect(pushed?.type === "pr:pushed" && pushed.filesTruncated).toBe(true);
+  });
+
+  // ── CI run event integration tests ──
+
+  function ciCheck(name: string, status: string, conclusion: string | null, suiteId = 100): CiCheck {
+    return { name, status, conclusion, checkSuiteId: suiteId };
+  }
+
+  test("onCiEvent receives ci.started + ci.running on first poll with in-progress checks", async () => {
+    db.createWorkItem({ id: "#10", prNumber: 10, ciStatus: "none" });
+
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 10,
+          ciState: "PENDING",
+          ciChecks: [ciCheck("check", "IN_PROGRESS", null), ciCheck("build", "QUEUED", null)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+
+    expect(ciEvents).toHaveLength(2);
+    expect(ciEvents[0].type).toBe("ci.started");
+    expect(ciEvents[1].type).toBe("ci.running");
+  });
+
+  test("onCiEvent receives ci.finished when all checks become COMPLETED", async () => {
+    db.createWorkItem({ id: "#11", prNumber: 11, ciStatus: "none" });
+
+    let pollNum = 0;
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollNum++;
+        if (pollNum === 1) {
+          return [
+            makePRStatus({
+              number: 11,
+              ciState: "PENDING",
+              ciChecks: [ciCheck("check", "IN_PROGRESS", null)],
+            }),
+          ];
+        }
+        return [
+          makePRStatus({
+            number: 11,
+            ciState: "SUCCESS",
+            ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS")],
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+    await poller.poll();
+
+    const types = ciEvents.map((e) => e.type);
+    expect(types).toContain("ci.started");
+    expect(types).toContain("ci.finished");
+    const finished = ciEvents.find((e) => e.type === "ci.finished");
+    expect((finished as Extract<CiEvent, { type: "ci.finished" }>).allGreen).toBe(true);
+  });
+
+  test("re-polling finished checks does NOT re-emit ci.started", async () => {
+    db.createWorkItem({ id: "#12", prNumber: 12, ciStatus: "none" });
+
+    const completedChecks = [ciCheck("check", "COMPLETED", "SUCCESS")];
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 12, ciState: "SUCCESS", ciChecks: completedChecks })],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+    expect(ciEvents.filter((e) => e.type === "ci.started")).toHaveLength(1);
+    expect(ciEvents.filter((e) => e.type === "ci.finished")).toHaveLength(1);
+
+    ciEvents.length = 0;
+
+    // Second poll — same completed checks, should NOT re-emit
+    await poller.poll();
+    expect(ciEvents).toHaveLength(0);
+
+    // Third poll — still stable
+    await poller.poll();
+    expect(ciEvents).toHaveLength(0);
+  });
+
+  test("new suiteId triggers a new ci.started (re-run detection)", async () => {
+    db.createWorkItem({ id: "#13", prNumber: 13, ciStatus: "none" });
+
+    let pollNum = 0;
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollNum++;
+        if (pollNum === 1) {
+          return [
+            makePRStatus({
+              number: 13,
+              ciState: "SUCCESS",
+              ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS", 100)],
+            }),
+          ];
+        }
+        return [
+          makePRStatus({
+            number: 13,
+            ciState: "PENDING",
+            ciChecks: [ciCheck("check", "IN_PROGRESS", null, 200)],
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+    const firstStarted = ciEvents.filter((e) => e.type === "ci.started");
+    expect(firstStarted).toHaveLength(1);
+
+    ciEvents.length = 0;
+
+    await poller.poll();
+    const secondStarted = ciEvents.filter((e) => e.type === "ci.started");
+    expect(secondStarted).toHaveLength(1);
+  });
+
+  test("CI state cleaned up on PR merge", async () => {
+    db.createWorkItem({ id: "#14", prNumber: 14, prState: "open", ciStatus: "none" });
+
+    let pollNum = 0;
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => {
+        pollNum++;
+        if (pollNum === 1) {
+          return [
+            makePRStatus({
+              number: 14,
+              state: "OPEN",
+              ciState: "SUCCESS",
+              ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS")],
+            }),
+          ];
+        }
+        return [
+          makePRStatus({
+            number: 14,
+            state: "MERGED",
+            ciState: "SUCCESS",
+            ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS")],
+          }),
+        ];
+      },
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+    expect(ciEvents.filter((e) => e.type === "ci.finished")).toHaveLength(1);
+
+    ciEvents.length = 0;
+
+    // PR merged — CI state should be cleaned up, but no duplicate events
+    await poller.poll();
+    expect(ciEvents).toHaveLength(0);
   });
 });
 
