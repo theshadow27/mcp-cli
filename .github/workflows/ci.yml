@@ -75,7 +75,7 @@ jobs:
           fi
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bun-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/test_*.txt
@@ -137,7 +137,7 @@ jobs:
           fi
       - name: Upload coverage logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bun-coverage-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/coverage_*.txt
