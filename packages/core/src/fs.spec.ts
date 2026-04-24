@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
 import { auditRuntimePermissions, ensureStateDir, hardenFile, resolveRealpath } from "./fs";
