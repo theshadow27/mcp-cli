@@ -1496,6 +1496,14 @@ export class IpcServer {
       const responseTail = url.searchParams.get("responseTail");
       const eventFilter = buildEventFilter(url.searchParams);
 
+      const shouldDeliver = (event: { event: string; sessionId?: string }) => {
+        if (eventFilter !== null && !eventFilter(event as Record<string, unknown>)) return false;
+        if (event.event === "session.response") {
+          return responseTail !== null && event.sessionId === responseTail;
+        }
+        return true;
+      };
+
       const bus = this.eventBus;
 
       if (bus.subscriberCount >= IpcServer.MAX_EVENT_BUS_SUBSCRIBERS) {
@@ -1565,13 +1573,7 @@ export class IpcServer {
                   cleanup();
                 }
               },
-              (event) => {
-                if (eventFilter !== null && !eventFilter(event as Record<string, unknown>)) return false;
-                if (event.event === "session.response") {
-                  return responseTail !== null && event.sessionId === responseTail;
-                }
-                return true;
-              },
+              (event) => shouldDeliver(event),
             );
             subscriberGauge.inc();
 
@@ -1582,7 +1584,7 @@ export class IpcServer {
                 const batch = eventLog.getSince(cursor, 1000);
                 for (const event of batch) {
                   highWaterMark = event.seq;
-                  if (eventFilter !== null && !eventFilter(event as Record<string, unknown>)) continue;
+                  if (!shouldDeliver(event)) continue;
                   if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                     this.logger.warn("[events] slow consumer during backfill, dropping subscriber");
                     metrics.counter("mcpd_event_bus_slow_drops_total").inc();
