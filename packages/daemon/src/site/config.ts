@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { siteConfigPath, sitePath, sitesDir } from "./paths";
+import { BUILTIN_SEEDS } from "./seeds";
 
 const SITE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
@@ -54,20 +55,10 @@ export interface SiteConfig {
 
 export type PartialSiteConfig = Partial<SiteConfig>;
 
-const SEEDS_DIR = join(import.meta.dir, "seeds");
-
 function loadBuiltinSeeds(): Record<string, PartialSiteConfig> {
   const seeds: Record<string, PartialSiteConfig> = {};
-  if (!existsSync(SEEDS_DIR)) return seeds;
-  for (const entry of readdirSync(SEEDS_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const cfgPath = join(SEEDS_DIR, entry.name, "config.json");
-    if (!existsSync(cfgPath)) continue;
-    try {
-      seeds[entry.name] = JSON.parse(readFileSync(cfgPath, "utf-8")) as PartialSiteConfig;
-    } catch {
-      // Skip malformed seeds silently — they can't poison other sites.
-    }
+  for (const [name, data] of Object.entries(BUILTIN_SEEDS)) {
+    seeds[name] = data.config;
   }
   return seeds;
 }
@@ -157,11 +148,14 @@ export function getSiteForDomain(hostname: string): string | null {
   return null;
 }
 
-/** Resolve a seed-relative file path (e.g. wiggle script), checking user dir first then built-in seed. */
-export function resolveSiteAsset(site: string, seedName: string, relPath: string): string | null {
+/** Resolve a site asset path (e.g. wiggle script) from the user's site dir. */
+export function resolveSiteAsset(site: string, relPath: string): string | null {
   const userPath = join(sitePath(site), relPath);
   if (existsSync(userPath)) return userPath;
-  const seedPath = join(SEEDS_DIR, seedName, relPath);
-  if (existsSync(seedPath)) return seedPath;
   return null;
+}
+
+/** Return the embedded wiggle script source for a built-in seed, or null. */
+export function getBuiltinWiggleSource(seedName: string): string | null {
+  return BUILTIN_SEEDS[seedName]?.wiggleSrc ?? null;
 }

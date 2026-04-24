@@ -23,6 +23,7 @@ import type { BrowserEngine, BrowserEngineName, SiteSpec } from "./site/browser/
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
   type SiteConfig,
+  getBuiltinWiggleSource,
   getSite,
   getSiteForDomain,
   listSites,
@@ -99,14 +100,16 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
 
 function siteSpecFor(cfg: SiteConfig): SiteSpec {
   const profile = cfg.browser?.chromeProfile ?? "default";
+  const seedName = cfg.seed ?? cfg.name;
   const wiggleRel = cfg.wiggle;
-  const wigglePath = wiggleRel ? resolveSiteAsset(cfg.name, cfg.seed ?? cfg.name, wiggleRel) : null;
+  const wigglePath = wiggleRel ? resolveSiteAsset(cfg.name, wiggleRel) : null;
   return {
     name: cfg.name,
     url: cfg.url,
     blockProtocols: cfg.blockProtocols,
     profileDir: siteBrowserProfileDir(cfg.name, profile),
     wigglePath: wigglePath ?? undefined,
+    wiggleSrc: getBuiltinWiggleSource(seedName) ?? undefined,
   };
 }
 

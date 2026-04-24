@@ -7,8 +7,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { siteCatalogPath } from "./paths";
+import { BUILTIN_SEEDS } from "./seeds";
 
 export interface NamedCall {
   name: string;
@@ -35,30 +36,18 @@ export interface NamedCall {
 
 export type Catalog = Record<string, NamedCall>;
 
-const SEEDS_DIR = join(import.meta.dir, "seeds");
-
 function loadSeed(seedName: string): Catalog {
-  const catalogPath = join(SEEDS_DIR, seedName, "catalog.json");
-  if (!existsSync(catalogPath)) return {};
-  try {
-    const raw = JSON.parse(readFileSync(catalogPath, "utf-8")) as Catalog;
-    // Inline body_default from search-template.json when the seed defers it.
+  const seed = BUILTIN_SEEDS[seedName];
+  if (!seed) return {};
+  const raw = structuredClone(seed.catalog);
+  if (seed.searchTemplate) {
     for (const call of Object.values(raw)) {
       if (call.body_default === null) {
-        const templatePath = join(SEEDS_DIR, seedName, "search-template.json");
-        if (existsSync(templatePath)) {
-          try {
-            call.body_default = JSON.parse(readFileSync(templatePath, "utf-8"));
-          } catch {
-            // Leave body_default as null.
-          }
-        }
+        call.body_default = structuredClone(seed.searchTemplate);
       }
     }
-    return raw;
-  } catch {
-    return {};
   }
+  return raw;
 }
 
 export function loadCatalog(site: string, seedName?: string): Catalog {

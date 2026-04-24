@@ -11,8 +11,10 @@ export interface SiteSpec {
   name: string;
   url: string;
   blockProtocols?: string[];
-  /** Absolute path to a wiggle.js module (exports default `async (page) => string[]`). Optional. */
+  /** Absolute path to a wiggle.js module (`module.exports = async (page) => string[]`). Optional. */
   wigglePath?: string;
+  /** Embedded wiggle script source — fallback when wigglePath doesn't exist on disk (compiled binary). */
+  wiggleSrc?: string;
   /** Profile dir the adapter should use for this site's user data. */
   profileDir: string;
 }

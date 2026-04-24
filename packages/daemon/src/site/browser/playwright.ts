@@ -346,17 +346,33 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
     const spec = this.siteSpecs.get(siteName);
     const wigglePath = spec?.wigglePath;
-    if (!wigglePath || !existsSync(wigglePath)) return ["no-wiggle-configured"];
 
-    // Fresh-require so edits to wiggle.js take effect without restarting the worker.
-    try {
-      delete require.cache[require.resolve(wigglePath)];
-    } catch {
-      // Non-CJS resolvers may not populate require.cache — that's fine.
+    if (wigglePath && existsSync(wigglePath)) {
+      // User-override file on disk — fresh-require so edits take effect without restart.
+      try {
+        delete require.cache[require.resolve(wigglePath)];
+      } catch {
+        // Non-CJS resolvers may not populate require.cache — that's fine.
+      }
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const exported: unknown = require(wigglePath);
+      const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
+      if (typeof wiggleFn !== "function") throw new Error(`wiggle module at '${wigglePath}' must export a function`);
+      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const wiggleFn = require(wigglePath) as (page: Page) => Promise<string[]>;
-    return this.withPage(site, (page) => wiggleFn(page));
+
+    if (spec?.wiggleSrc) {
+      // Embedded seed script — evaluate CJS source from compiled binary.
+      // Constraint: require(), __dirname, and __filename are NOT injected — wiggle scripts must be self-contained.
+      const mod = { exports: {} as Record<string, unknown> };
+      new Function("module", "exports", "process", spec.wiggleSrc)(mod, mod.exports, process);
+      const exported: unknown = mod.exports;
+      const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
+      if (typeof wiggleFn !== "function") throw new Error(`embedded wiggle for '${siteName}' must export a function`);
+      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
+    }
+
+    return ["no-wiggle-configured"];
   }
 
   async evalInPage(code: string, site?: string): Promise<unknown> {
