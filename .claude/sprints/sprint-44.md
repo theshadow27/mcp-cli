@@ -1,6 +1,6 @@
 # Sprint 44
 
-> Planned 2026-04-24 12:14 EDT. Target: 15 PRs (6 orchestrator papercuts + 4 CopilotPoller hardening + 3 monitor follow-ups + 1 Phase 6 opener + 1 CLI DX).
+> Planned 2026-04-24 12:14 EDT. Started 2026-04-24 13:10 EDT. Ended 2026-04-24 13:20 EDT. Target: 15 PRs (6 orchestrator papercuts + 4 CopilotPoller hardening + 3 monitor follow-ups + 1 Phase 6 opener + 1 CLI DX). **Shipped: 15/15 (13 merged + 2 already-fixed close-outs).**
 
 ## Goal
 
@@ -99,3 +99,13 @@ New rules observed during sprint 43 orchestration:
 ## Context
 
 Sprint 43 shipped v1.7.3 — 16 PRs merged + 2 closed as already-done. The monitor epic is now ~25% of open issues (down from ~40%); Phase 3 (CopilotPoller + 4-surface polling) is landing in production. Three open meta follow-ups from sprint 43 wait here (#1745 P0, #1748, #1749) — this sprint pays them off. Phase 6 opens with its simplest event (#1585 session.stuck) so the next sprint has a validated plumbing base for the full 6-event set. CLI DX gets one targeted fix (#1518 --help) to demonstrate that non-monitor non-orchestration work still ships.
+
+## Results
+
+- **Released**: v1.7.4 (https://github.com/theshadow27/mcp-cli/releases/tag/v1.7.4)
+- **PRs merged**: 13 (#1751, #1752, #1753, #1755, #1756, #1757, #1758, #1760, #1761, #1762, #1763, #1764, #1766)
+- **Issues closed as already-done**: 2 (#1692 fixed in `430eec49`, #1697 fixed in PR #1694 cleanup pass)
+- **Issues dropped**: 0 — full sprint shipped
+- **New issues filed from QA/review**: #1754 (evalBundledJs timeout test gap), #1759 (missing `?since=<seq>` backfill test), #1770 (flaky ContainmentGuard symlink test)
+- **Repair rounds**: #1714 needed 4 QA rounds + rebase onto `main` for #1760's API-incompatible test; #1585 needed 2 repair rounds; #1518 needed opus repair + reviewer self-repair round 2. Reviewer self-repair saved ~2 opus cycles on #1714 initial review + #1585 initial review + #1518 round 2.
+- **All CI green at merge**: yes
