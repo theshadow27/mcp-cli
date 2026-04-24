@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod/v4";
-import type { AliasContext, AliasDefinition, McpProxy, MonitorAliasDefinition, MonitorDefinition } from "./alias";
+import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition, MonitorDefinition } from "./alias";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -198,7 +198,7 @@ async function evalBundledJs(
         aliasDef = defOrFactory;
       }
     },
-    defineMonitor: (def: MonitorAliasDefinition) => {
+    defineMonitor: (def: MonitorAliasDefinition<AliasMonitorEventInput>) => {
       monitorDefs.push(def);
       return def;
     },
@@ -474,7 +474,28 @@ declare module "mcp-cli" {
   export function file(path: string): Promise<string>;
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
-  export function defineMonitor(def: unknown): void;
+  export interface AliasMonitorEventInput {
+    event: string;
+    category?: string;
+    [key: string]: unknown;
+  }
+  export interface MonitorAliasLogger {
+    info(msg: string): void;
+    warn(msg: string): void;
+    error(msg: string): void;
+    debug(msg: string): void;
+  }
+  export interface MonitorAliasContext {
+    signal: AbortSignal;
+    bus: { publish(input: AliasMonitorEventInput): void };
+    logger: MonitorAliasLogger;
+  }
+  export interface MonitorAliasDefinition<E extends AliasMonitorEventInput = AliasMonitorEventInput> {
+    name: string;
+    description?: string;
+    subscribe: (ctx: MonitorAliasContext) => AsyncIterable<E>;
+  }
+  export function defineMonitor<E extends AliasMonitorEventInput = AliasMonitorEventInput>(def: MonitorAliasDefinition<E>): MonitorAliasDefinition<E>;
   export const z: typeof import("zod/v4").z;
 }
 `.trimStart();

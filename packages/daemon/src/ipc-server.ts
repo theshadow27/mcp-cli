@@ -68,7 +68,6 @@ import {
   WaitForMailParamsSchema,
   bundleAlias,
   consoleLogger,
-  extractMonitorMetadata,
   hardenFile,
   isDefineAlias,
   isDefineMonitor,
@@ -858,13 +857,17 @@ export class IpcServer {
             validation.monitorDefs ? JSON.stringify(validation.monitorDefs) : undefined,
           );
         } else {
-          // Freeform: extract monitor definitions if any defineMonitor() calls exist
+          // Freeform: extract monitor definitions in subprocess if sentinel detected
           let monitorDefsJson: string | undefined;
-          try {
-            const monitorDefs = await extractMonitorMetadata(js);
-            if (monitorDefs.length > 0) monitorDefsJson = JSON.stringify(monitorDefs);
-          } catch {
-            /* best-effort — non-fatal */
+          if (isDefineMonitor(finalScript) && this.aliasServer) {
+            try {
+              const monitorDefs = await this.aliasServer.extractMonitorsInSubprocess(js);
+              if (monitorDefs.length > 0) monitorDefsJson = JSON.stringify(monitorDefs);
+            } catch (err) {
+              this.logger.warn(
+                `[saveAlias] extractMonitorMetadata failed for "${name}": ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
           }
           this.db.saveAlias(
             name,
@@ -896,6 +899,8 @@ export class IpcServer {
           expiresAt,
           scope ?? null,
           scopeProvided,
+          undefined,
+          false,
         );
       }
 

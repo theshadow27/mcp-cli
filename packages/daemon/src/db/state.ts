@@ -236,8 +236,9 @@ export class StateDb {
     }
     try {
       this.db.exec("ALTER TABLE aliases ADD COLUMN monitor_definitions_json TEXT");
-    } catch {
-      /* column already exists */
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name: monitor_definitions_json/i.test(msg)) throw err;
     }
 
     // -- Trace context columns on usage_stats --
@@ -821,6 +822,7 @@ export class StateDb {
     scope?: string | null,
     scopeProvided = true,
     monitorDefinitionsJson?: string,
+    monitorDefsProvided = true,
   ): void {
     // If the caller is saving an ephemeral alias (expiresAt set), refuse to
     // overwrite an existing permanent alias (expires_at IS NULL). This prevents
@@ -848,7 +850,7 @@ export class StateDb {
          source_hash = excluded.source_hash,
          expires_at = excluded.expires_at,
          scope = CASE WHEN ?12 = 1 THEN excluded.scope ELSE aliases.scope END,
-         monitor_definitions_json = excluded.monitor_definitions_json,
+         monitor_definitions_json = CASE WHEN ?13 = 1 THEN excluded.monitor_definitions_json ELSE aliases.monitor_definitions_json END,
          updated_at = unixepoch()`,
       [
         name, // ?1
@@ -863,6 +865,7 @@ export class StateDb {
         scope ?? null, // ?10
         monitorDefinitionsJson ?? null, // ?11 — monitor_definitions_json value
         scopeProvided ? 1 : 0, // ?12 — scopeProvided flag for CASE WHEN
+        monitorDefsProvided ? 1 : 0, // ?13 — monitorDefsProvided flag for CASE WHEN
       ],
     );
   }

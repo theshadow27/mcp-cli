@@ -71,10 +71,10 @@ export interface MonitorAliasContext {
  * The runtime integration (cross-thread yielding) is delivered separately
  * in P5-alias-runtime. This type defines the contract only.
  */
-export interface MonitorAliasDefinition {
+export interface MonitorAliasDefinition<E extends AliasMonitorEventInput = AliasMonitorEventInput> {
   name: string;
   description?: string;
-  subscribe: (ctx: MonitorAliasContext) => AsyncIterable<AliasMonitorEventInput>;
+  subscribe: (ctx: MonitorAliasContext) => AsyncIterable<E>;
 }
 
 /**
@@ -82,7 +82,9 @@ export interface MonitorAliasDefinition {
  * Returns the definition unchanged; provides TypeScript type inference
  * at the call site without leaking bundler internals.
  */
-export function defineMonitor(def: MonitorAliasDefinition): MonitorAliasDefinition {
+export function defineMonitor<E extends AliasMonitorEventInput = AliasMonitorEventInput>(
+  def: MonitorAliasDefinition<E>,
+): MonitorAliasDefinition<E> {
   return def;
 }
 
