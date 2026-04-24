@@ -68,6 +68,7 @@ import {
   consoleLogger,
   hardenFile,
   isDefineAlias,
+  isDefineMonitor,
   loadManifest,
   options,
   resolveRealpath,
@@ -797,6 +798,7 @@ export class IpcServer {
         typeof params === "object" && params !== null && Object.prototype.hasOwnProperty.call(params, "scope");
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
+      const wasMonitor = this.db.getAlias(name)?.aliasType === "defineMonitor";
 
       // Guard: refuse to overwrite a permanent alias with an ephemeral one.
       // This check must happen BEFORE writeFileSync to protect the file on disk.
@@ -890,7 +892,7 @@ export class IpcServer {
 
       // Refresh virtual alias server so new tool is immediately visible
       await this.aliasServer?.refresh();
-      this.onAliasChanged?.(name);
+      if (isDefineMonitor(script) || wasMonitor) this.onAliasChanged?.(name);
       const result: { ok: true; filePath: string; warnings?: string[]; validationErrors?: string[] } = {
         ok: true,
         filePath,
@@ -913,7 +915,7 @@ export class IpcServer {
       }
       // Refresh virtual alias server so deleted tool is removed
       await this.aliasServer?.refresh();
-      this.onAliasChanged?.(name);
+      if (alias?.aliasType === "defineMonitor") this.onAliasChanged?.(name);
       return { ok: true };
     });
 

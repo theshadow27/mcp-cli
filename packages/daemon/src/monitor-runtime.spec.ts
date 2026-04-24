@@ -190,19 +190,90 @@ defineMonitor({
     expect(typeof (crashEvent as Record<string, unknown>).errorMessage).toBe("string");
   });
 
-  test("dispose cleans up subscription IDs", async () => {
+  test("crashed monitor includes stderr in stackTail", async () => {
+    using opts = testOptions();
     const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const scriptPath = writeMonitorScript(
+      opts.ALIASES_DIR,
+      "stderr-crasher",
+      `import { defineMonitor } from "mcp-cli";
+defineMonitor({
+  name: "stderr-crasher",
+  subscribe: async function*(ctx) {
+    console.error("line one");
+    console.error("line two");
+    console.error("line three");
+    throw new Error("kaboom");
+  },
+});`,
+    );
+
+    const aliases: MonitorAlias[] = [{ name: "stderr-crasher", filePath: scriptPath, aliasType: "defineMonitor" }];
 
     runtime = new MonitorRuntime({
       bus,
       logger: silentLogger,
-      listMonitors: () => [],
-      getAlias: () => undefined,
+      listMonitors: () => aliases,
+      getAlias: (n) => aliases.find((a) => a.name === n),
     });
 
-    expect(runtime.activeSubscriptionIds).toHaveLength(0);
-    runtime.dispose();
-    expect(runtime.activeSubscriptionIds).toHaveLength(0);
+    await runtime.startAll();
+    await pollUntil(() => received.some((e) => e.event === "alias.crashed"));
+
+    const crashEvent = received.find((e) => e.event === "alias.crashed") as Record<string, unknown>;
+    expect(crashEvent).toBeDefined();
+    const stackTail = crashEvent.stackTail as string;
+    expect(stackTail).toContain("line one");
+    expect(stackTail).toContain("line two");
+    expect(stackTail).toContain("line three");
+  });
+
+  test("restartMonitor fires abort signal on old generator", async () => {
+    using opts = testOptions();
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const scriptPath = writeMonitorScript(
+      opts.ALIASES_DIR,
+      "abort-test",
+      `import { defineMonitor } from "mcp-cli";
+defineMonitor({
+  name: "abort-test",
+  subscribe: async function*(ctx) {
+    yield { event: "started", category: "heartbeat" };
+    try {
+      while (!ctx.signal.aborted) {
+        await Bun.sleep(50);
+      }
+    } finally {
+      yield { event: "aborted", category: "heartbeat" };
+    }
+  },
+});`,
+    );
+
+    const aliases: MonitorAlias[] = [{ name: "abort-test", filePath: scriptPath, aliasType: "defineMonitor" }];
+
+    runtime = new MonitorRuntime({
+      bus,
+      logger: silentLogger,
+      listMonitors: () => aliases,
+      getAlias: (n) => aliases.find((a) => a.name === n),
+    });
+
+    await runtime.startAll();
+    await pollUntil(() => received.some((e) => e.event === "started"));
+
+    await runtime.restartMonitor("abort-test");
+    await pollUntil(() => received.some((e) => e.event === "aborted"));
+
+    const abortEvents = received.filter((e) => e.event === "aborted");
+    expect(abortEvents.length).toBeGreaterThanOrEqual(1);
+    expect(abortEvents[0].src).toBe("alias:abort-test");
   });
 
   test("restartMonitor replaces a running monitor", async () => {

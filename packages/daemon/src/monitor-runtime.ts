@@ -30,6 +30,10 @@ export interface MonitorAlias {
   aliasType: AliasType;
 }
 
+const STDERR_RING_SIZE = 5;
+const MAX_LINE_BUFFER = 1024 * 1024;
+const HEALTHY_UPTIME_MS = 60_000;
+
 interface RunningMonitor {
   name: string;
   proc: Subprocess;
@@ -37,6 +41,8 @@ interface RunningMonitor {
   attempt: number;
   restartTimer: ReturnType<typeof setTimeout> | null;
   stopped: boolean;
+  stderrRing: string[];
+  startedAt: number;
 }
 
 export interface MonitorRuntimeOptions {
@@ -48,12 +54,12 @@ export interface MonitorRuntimeOptions {
 
 export class MonitorRuntime {
   private readonly monitors = new Map<string, RunningMonitor>();
+  private readonly restartLocks = new Map<string, Promise<void>>();
   private readonly bus: EventBus;
   private readonly logger: Logger;
   private readonly listMonitors: () => MonitorAlias[];
   private readonly getAlias: (name: string) => MonitorAlias | undefined;
   private readonly executorPath: string;
-  private readonly subscriptionIds: number[] = [];
   private stopped = false;
 
   constructor(opts: MonitorRuntimeOptions) {
@@ -76,6 +82,19 @@ export class MonitorRuntime {
   }
 
   async restartMonitor(name: string): Promise<void> {
+    const prev = this.restartLocks.get(name) ?? Promise.resolve();
+    const current = prev.catch(() => {}).then(() => this.doRestartMonitor(name));
+    this.restartLocks.set(name, current);
+    try {
+      await current;
+    } finally {
+      if (this.restartLocks.get(name) === current) {
+        this.restartLocks.delete(name);
+      }
+    }
+  }
+
+  private async doRestartMonitor(name: string): Promise<void> {
     const existing = this.monitors.get(name);
     if (existing) {
       existing.stopped = true;
@@ -91,11 +110,6 @@ export class MonitorRuntime {
 
   async stopAll(): Promise<void> {
     this.stopped = true;
-    for (const id of this.subscriptionIds) {
-      this.bus.unsubscribe(id);
-    }
-    this.subscriptionIds.length = 0;
-
     const stopPromises: Promise<void>[] = [];
     for (const [, mon] of this.monitors) {
       mon.stopped = true;
@@ -106,19 +120,8 @@ export class MonitorRuntime {
     this.monitors.clear();
   }
 
-  dispose(): void {
-    for (const id of this.subscriptionIds) {
-      this.bus.unsubscribe(id);
-    }
-    this.subscriptionIds.length = 0;
-  }
-
   get runningCount(): number {
     return this.monitors.size;
-  }
-
-  get activeSubscriptionIds(): readonly number[] {
-    return this.subscriptionIds;
   }
 
   private async spawnMonitor(alias: MonitorAlias): Promise<void> {
@@ -150,6 +153,8 @@ export class MonitorRuntime {
       attempt: 0,
       restartTimer: null,
       stopped: false,
+      stderrRing: [],
+      startedAt: Date.now(),
     };
     this.monitors.set(alias.name, mon);
 
@@ -162,6 +167,7 @@ export class MonitorRuntime {
     const stdout = mon.proc.stdout;
     if (!stdout || typeof stdout === "number") return;
     const reader = stdout.getReader();
+    const decoder = new TextDecoder();
     let buffer = "";
 
     const pump = async () => {
@@ -170,7 +176,11 @@ export class MonitorRuntime {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += new TextDecoder().decode(value);
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > MAX_LINE_BUFFER) {
+            this.logger.warn(`[monitor-runtime] "${mon.name}" stdout buffer exceeded 1 MB, truncating`);
+            buffer = buffer.slice(-MAX_LINE_BUFFER);
+          }
 
           for (let newlineIdx = buffer.indexOf("\n"); newlineIdx !== -1; newlineIdx = buffer.indexOf("\n")) {
             const line = buffer.slice(0, newlineIdx).trim();
@@ -180,13 +190,12 @@ export class MonitorRuntime {
             try {
               const event = JSON.parse(line) as Record<string, unknown>;
               const input: MonitorEventInput = {
+                ...event,
                 src: `alias:${mon.name}`,
                 event: typeof event.event === "string" ? event.event : "unknown",
                 category:
                   typeof event.category === "string" ? (event.category as MonitorEventInput["category"]) : "heartbeat",
-                ...event,
               };
-              input.src = `alias:${mon.name}`;
               this.bus.publish(input);
             } catch {
               this.logger.warn(`[monitor-runtime] "${mon.name}" yielded non-JSON: ${line.slice(0, 100)}`);
@@ -205,6 +214,7 @@ export class MonitorRuntime {
     const stderr = mon.proc.stderr;
     if (!stderr || typeof stderr === "number") return;
     const reader = stderr.getReader();
+    const decoder = new TextDecoder();
     let buffer = "";
 
     const pump = async () => {
@@ -213,13 +223,20 @@ export class MonitorRuntime {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += new TextDecoder().decode(value);
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > MAX_LINE_BUFFER) {
+            buffer = buffer.slice(-MAX_LINE_BUFFER);
+          }
 
           for (let newlineIdx = buffer.indexOf("\n"); newlineIdx !== -1; newlineIdx = buffer.indexOf("\n")) {
             const line = buffer.slice(0, newlineIdx).trim();
             buffer = buffer.slice(newlineIdx + 1);
             if (line) {
               this.logger.warn(`[monitor:${mon.name}] ${line}`);
+              mon.stderrRing.push(line);
+              if (mon.stderrRing.length > STDERR_RING_SIZE) {
+                mon.stderrRing.shift();
+              }
             }
           }
         }
@@ -257,10 +274,10 @@ export class MonitorRuntime {
         category: "session",
         name: mon.name,
         errorMessage: `Monitor "${mon.name}" exited with code ${code}`,
-        stackTail: `exit code ${code}`,
+        stackTail: mon.stderrRing.length > 0 ? mon.stderrRing.join("\n") : `exit code ${code}`,
       });
 
-      if (mon.crashTimestamps.length > MONITOR_RESTART_POLICY.maxCrashes) {
+      if (mon.crashTimestamps.length >= MONITOR_RESTART_POLICY.maxCrashes) {
         this.logger.error(
           `[monitor-runtime] "${mon.name}" exceeded crash budget (${MONITOR_RESTART_POLICY.maxCrashes} in ${MONITOR_RESTART_POLICY.crashWindowMs / 1000}s) — giving up`,
         );
@@ -268,6 +285,9 @@ export class MonitorRuntime {
         return;
       }
 
+      if (Date.now() - mon.startedAt >= HEALTHY_UPTIME_MS) {
+        mon.attempt = 0;
+      }
       const delay = getMonitorBackoff(mon.attempt, MONITOR_RESTART_POLICY.backoffDelaysMs);
       mon.attempt++;
       this.logger.warn(
