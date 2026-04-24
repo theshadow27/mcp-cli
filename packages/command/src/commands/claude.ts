@@ -63,6 +63,7 @@ export interface SharedSessionDeps {
 }
 
 export interface ClaudeDeps extends SharedSessionDeps {
+  log: (...args: unknown[]) => void;
   getDiffStats: (worktreePath: string) => Promise<string | null>;
   getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
@@ -173,6 +174,7 @@ export const defaultDeps: ClaudeDeps = {
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
   },
+  log: console.log,
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
@@ -238,14 +240,14 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
   }
 
   const subArgs = args.slice(1);
-  if (hasHelpFlag(subArgs)) {
+  if (sub !== "spawn" && hasHelpFlag(subArgs)) {
     const help = getHelp(`claude ${sub}`);
     if (help) {
-      console.log(formatHelp(help));
+      d.log(formatHelp(help));
       return;
     }
-    console.log(`No detailed help available for "mcx claude ${sub}".`);
-    console.log('Run "mcx claude --help" for available subcommands.');
+    d.log(`No detailed help available for "mcx claude ${sub}".`);
+    d.log('Run "mcx claude --help" for available subcommands.');
     return;
   }
 
@@ -414,6 +416,17 @@ function tryWriteInitialTransition(workItemId: string, gitRoot: string): void {
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
+  if (hasHelpFlag(args)) {
+    const spawnHelp = getHelp("claude spawn");
+    if (spawnHelp) {
+      d.log(formatHelp(spawnHelp));
+    } else {
+      d.log('No detailed help available for "mcx claude spawn".');
+      d.log('Run "mcx claude --help" for available subcommands.');
+    }
+    return;
+  }
+
   const parsed = parseSpawnArgs(args);
 
   if (parsed.error) {
