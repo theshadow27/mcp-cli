@@ -5,7 +5,7 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
@@ -13,10 +13,12 @@ import {
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   cleanupWorktree,
+  commitTransition,
   createWorktree,
   detectScope,
   getDefaultBranch,
   listMcxWorktrees,
+  loadManifest,
   parseWorktreeList,
   readWorktreeConfig,
   resolveModelName,
@@ -289,6 +291,8 @@ export interface SpawnArgs extends SharedSpawnArgs {
   headed: boolean;
   /** Human-readable session name. Auto-generated if omitted. */
   name: string | undefined;
+  /** Work item ID for transition log bookkeeping. When set, spawn writes a null→initial entry. */
+  workItemId: string | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
@@ -296,6 +300,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let resume: string | undefined;
   let headed = false;
   let name: string | undefined;
+  let workItemId: string | undefined;
   let extraError: string | undefined;
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
@@ -323,11 +328,25 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       if (!name) extraError = "--name requires a value";
       return 1;
     }
+    if (arg === "--work-item") {
+      const next = allArgs[i + 1];
+      if (next && !next.startsWith("-")) {
+        workItemId = next;
+        return 1;
+      }
+      extraError = "--work-item requires an id";
+      return 0;
+    }
+    if (arg.startsWith("--work-item=")) {
+      workItemId = arg.slice("--work-item=".length);
+      if (!workItemId) extraError = "--work-item requires an id";
+      return 0;
+    }
     return undefined;
   });
 
   // shared.error wins: it reflects a bad shared flag; extraError covers provider-specific failures
-  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed, name };
+  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed, name, workItemId };
 }
 
 /**
@@ -354,6 +373,30 @@ export function buildHeadedCommand(parsed: SpawnArgs): string {
 function shellQuote(s: string): string {
   if (/^[a-zA-Z0-9._:/@=-]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Write a null → manifest.initial transition entry for the given work item.
+ * Called after a successful spawn so downstream phases can infer "from" from
+ * the log rather than relying on the Tier-3 work_items.phase fallback (#1623).
+ *
+ * Best-effort: silently swallows all errors so a missing/mismatched manifest
+ * or a race with a concurrent spawn never blocks the spawn itself.
+ */
+function tryWriteInitialTransition(workItemId: string, gitRoot: string): void {
+  try {
+    const loaded = loadManifest(gitRoot);
+    if (!loaded) return;
+    commitTransition(join(gitRoot, ".mcx", "transitions.jsonl"), {
+      manifest: loaded.manifest,
+      from: null,
+      target: loaded.manifest.initial,
+      workItemId,
+      manifestPath: loaded.path,
+    });
+  } catch {
+    // Non-fatal: spawn succeeded; the transition entry is best-effort.
+  }
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
@@ -433,6 +476,12 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.printError(String(e));
     d.exit(1);
   }
+
+  // Write null → initial transition so downstream phases can infer "from"
+  // from the log rather than the Tier-3 work_items.phase fallback (#1623).
+  if (parsed.workItemId) {
+    tryWriteInitialTransition(parsed.workItemId, d.getGitRoot() ?? process.cwd());
+  }
 }
 
 async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void> {
@@ -462,6 +511,11 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   const command = cwd ? `cd ${shellQuote(cwd)} && ${buildHeadedCommand(parsed)}` : buildHeadedCommand(parsed);
 
   await d.ttyOpen([command]);
+
+  // Write null → initial transition after the terminal opens (#1623).
+  if (parsed.workItemId) {
+    tryWriteInitialTransition(parsed.workItemId, d.getGitRoot() ?? process.cwd());
+  }
 }
 
 // ── Resume ──
@@ -1841,6 +1895,7 @@ Options:
   --cwd <path>               Working directory for the session
   --wait                     Block until Claude produces a result
   --timeout <ms>             Max wait time in ms (default: 270000, only with --wait)
+  --work-item <id>           Work item ID (#N); writes null→initial transition on spawn
 
 Examples:
   mcx claude spawn --task "run the test suite and fix failures"
