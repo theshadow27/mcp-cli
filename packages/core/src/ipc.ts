@@ -7,6 +7,7 @@
 
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
+import type { MonitorAliasMetadata } from "./alias-bundle";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
 import type { WorkItem } from "./work-item";
@@ -200,6 +201,8 @@ export interface AliasInfo {
    * Absolute path = cwd-restricted.
    */
   scope?: string | null;
+  /** defineMonitor() calls found in this alias file, if any. */
+  monitorDefinitions?: MonitorAliasMetadata[];
 }
 
 export interface AliasDetail extends AliasInfo {

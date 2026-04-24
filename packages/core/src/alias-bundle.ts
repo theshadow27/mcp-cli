@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod/v4";
-import type { AliasContext, AliasDefinition, McpProxy, MonitorDefinition } from "./alias";
+import type { AliasContext, AliasDefinition, McpProxy, MonitorAliasDefinition, MonitorDefinition } from "./alias";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -28,12 +28,23 @@ export const stubProxy: McpProxy = new Proxy({} as McpProxy, {
   },
 });
 
+/**
+ * Minimal metadata captured from a single defineMonitor() call in an alias file.
+ * filePath and sourceHash are stored at the alias row level, not per-monitor.
+ */
+export interface MonitorAliasMetadata {
+  name: string;
+  description?: string;
+}
+
 /** Metadata extracted from a defineAlias script at save-time. */
 export interface AliasMetadata {
   name: string;
   description: string;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  /** Any defineMonitor() calls found in the same file. */
+  monitorDefs?: MonitorAliasMetadata[];
 }
 
 /** Result of bundling an alias source file. */
@@ -146,17 +157,17 @@ export function stripModuleSyntax(bundledJs: string): string {
 /** @deprecated Use stripModuleSyntax — kept for backwards compatibility of test imports */
 export const stripMcpCliImport = stripModuleSyntax;
 
-/** Result of eval: either a defineAlias, defineMonitor, or null (freeform). */
-export interface EvalResult {
-  alias: AliasDefinition | null;
-  monitor: MonitorDefinition | null;
+/** Internal result from evalBundledJs — alias def plus any monitor definitions. */
+interface EvalResult {
+  aliasDef: AliasDefinition | null;
+  monitorDefs: MonitorAliasDefinition[];
 }
 
 /**
- * Eval bundled alias JS with injected context, capturing any defineAlias
- * or defineMonitor call.
+ * Eval bundled alias JS with injected context, capturing defineAlias and defineMonitor calls.
  *
- * Shared core for extractMetadata and executeAliasBundled.
+ * Shared core for extractMetadata, executeAliasBundled, validateAliasBundled, and evalMonitorBundled.
+ * defineMonitor calls are captured as an array (a file may declare multiple monitors).
  */
 async function evalBundledJs(
   bundledJs: string,
@@ -176,19 +187,20 @@ async function evalBundledJs(
   // are initialized.
   const coreBarrel = await import("./index");
 
-  let capturedAlias: AliasDefinition | null = null;
-  let capturedMonitor: MonitorDefinition | null = null;
+  let aliasDef: AliasDefinition | null = null;
+  const monitorDefs: MonitorAliasDefinition[] = [];
 
   const injected = {
     defineAlias: (defOrFactory: AliasDefinition | ((dctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
       if (typeof defOrFactory === "function") {
-        capturedAlias = defOrFactory({ mcp: ctx.mcp, z });
+        aliasDef = defOrFactory({ mcp: ctx.mcp, z });
       } else {
-        capturedAlias = defOrFactory;
+        aliasDef = defOrFactory;
       }
     },
-    defineMonitor: (def: MonitorDefinition) => {
-      capturedMonitor = def;
+    defineMonitor: (def: MonitorAliasDefinition) => {
+      monitorDefs.push(def);
+      return def;
     },
     z,
     mcp: ctx.mcp,
@@ -213,7 +225,7 @@ async function evalBundledJs(
     await fn(injected, coreBarrel);
   }
 
-  return { alias: capturedAlias, monitor: capturedMonitor };
+  return { aliasDef, monitorDefs };
 }
 
 /**
@@ -221,44 +233,59 @@ async function evalBundledJs(
  *
  * Evaluates the bundled code with a capture-only defineAlias function that
  * records the definition and extracts JSON Schemas from Zod types.
+ * Also captures any defineMonitor() calls in the same file.
  */
 export async function extractMetadata(bundledJs: string, timeoutMs = 5_000): Promise<AliasMetadata> {
-  const { alias: captured, monitor } = await evalBundledJs(
+  const { aliasDef, monitorDefs } = await evalBundledJs(
     bundledJs,
     { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
     timeoutMs,
   );
 
-  if (monitor) {
-    return { name: monitor.name, description: monitor.description ?? "" };
-  }
-
-  if (!captured) {
+  if (!aliasDef) {
     throw new Error("Script did not call defineAlias()");
   }
 
   const meta: AliasMetadata = {
-    name: captured.name,
-    description: captured.description ?? "",
+    name: aliasDef.name,
+    description: aliasDef.description ?? "",
   };
 
   try {
-    if (captured.input) {
-      meta.inputSchema = z.toJSONSchema(captured.input) as Record<string, unknown>;
+    if (aliasDef.input) {
+      meta.inputSchema = z.toJSONSchema(aliasDef.input) as Record<string, unknown>;
     }
   } catch {
     /* schema conversion failed — skip */
   }
 
   try {
-    if (captured.output) {
-      meta.outputSchema = z.toJSONSchema(captured.output) as Record<string, unknown>;
+    if (aliasDef.output) {
+      meta.outputSchema = z.toJSONSchema(aliasDef.output) as Record<string, unknown>;
     }
   } catch {
     /* schema conversion failed — skip */
   }
 
+  if (monitorDefs.length > 0) {
+    meta.monitorDefs = monitorDefs.map((m) => ({ name: m.name, description: m.description }));
+  }
+
   return meta;
+}
+
+/**
+ * Extract monitor metadata from a bundled alias file that may only contain
+ * defineMonitor() calls (no defineAlias). Returns an empty array for freeform
+ * scripts with no defineMonitor calls.
+ */
+export async function extractMonitorMetadata(bundledJs: string, timeoutMs = 5_000): Promise<MonitorAliasMetadata[]> {
+  const { monitorDefs } = await evalBundledJs(
+    bundledJs,
+    { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
+    timeoutMs,
+  );
+  return monitorDefs.map((m) => ({ name: m.name, description: m.description }));
 }
 
 /**
@@ -275,31 +302,31 @@ export async function executeAliasBundled(
   ctx: AliasContext,
   isDefineAlias: boolean,
 ): Promise<unknown> {
-  const { alias: captured } = await evalBundledJs(bundledJs, ctx);
+  const { aliasDef } = await evalBundledJs(bundledJs, ctx);
 
   if (!isDefineAlias) {
     return undefined;
   }
 
-  if (!captured) {
+  if (!aliasDef) {
     throw new Error("Script did not call defineAlias()");
   }
 
   // Validate input
   let parsedInput = input;
-  if (captured.input) {
-    const result = captured.input.safeParse(input);
+  if (aliasDef.input) {
+    const result = aliasDef.input.safeParse(input);
     if (!result.success) {
       throw new Error(`Invalid input: ${result.error.message}`);
     }
     parsedInput = result.data;
   }
 
-  const output = await captured.fn(parsedInput, ctx);
+  const output = await aliasDef.fn(parsedInput, ctx);
 
   // Validate output (warn, don't block — per #94)
-  if (captured.output) {
-    const result = captured.output.safeParse(output);
+  if (aliasDef.output) {
+    const result = aliasDef.output.safeParse(output);
     if (!result.success) {
       console.error(`⚠ Output validation warning: ${result.error.message}`);
     }
@@ -314,18 +341,20 @@ export async function executeAliasBundled(
  * Used by the monitor executor subprocess.
  */
 export async function evalMonitorBundled(bundledJs: string, mcp: McpProxy): Promise<MonitorDefinition> {
-  const { monitor } = await evalBundledJs(bundledJs, {
+  const { monitorDefs } = await evalBundledJs(bundledJs, {
     mcp,
     args: {},
     file: () => Promise.resolve(""),
     json: () => Promise.resolve(null),
   });
 
-  if (!monitor) {
+  if (monitorDefs.length === 0) {
     throw new Error("Script did not call defineMonitor()");
   }
 
-  return monitor;
+  // MonitorAliasDefinition (user-facing contract) and MonitorDefinition (runtime type) differ
+  // only in their subscribe ctx signature. The executor subprocess bridges this at runtime.
+  return monitorDefs[0] as unknown as MonitorDefinition;
 }
 
 /** Structured validation result for alias scripts. */
@@ -336,6 +365,8 @@ export interface AliasValidationResult {
   description?: string;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  /** Any defineMonitor() calls found in the same file. */
+  monitorDefs?: MonitorAliasMetadata[];
   errors: string[];
   warnings: string[];
 }
@@ -370,53 +401,41 @@ export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000)
     return result;
   }
 
-  if (evalResult.monitor) {
-    result.aliasType = "defineMonitor";
-    const mon = evalResult.monitor;
-    if (!mon.name || typeof mon.name !== "string") {
-      result.valid = false;
-      result.errors.push("name: Missing or not a string");
-    } else {
-      result.name = mon.name;
-    }
-    if (typeof mon.subscribe !== "function") {
-      result.valid = false;
-      result.errors.push("subscribe: Missing or not a function");
-    }
-    result.description = mon.description ?? "";
-    return result;
+  const { aliasDef, monitorDefs } = evalResult;
+
+  if (monitorDefs.length > 0) {
+    result.monitorDefs = monitorDefs.map((m) => ({ name: m.name, description: m.description }));
   }
 
-  const captured = evalResult.alias;
-  if (!captured) {
+  if (!aliasDef) {
     result.valid = false;
     result.errors.push("Script did not call defineAlias()");
     return result;
   }
 
   // Validate required fields
-  if (!captured.name || typeof captured.name !== "string") {
+  if (!aliasDef.name || typeof aliasDef.name !== "string") {
     result.valid = false;
     result.errors.push("name: Missing or not a string");
   } else {
-    result.name = captured.name;
+    result.name = aliasDef.name;
   }
 
-  if (typeof captured.fn !== "function") {
+  if (typeof aliasDef.fn !== "function") {
     result.valid = false;
     result.errors.push("fn: Missing or not a function");
   }
 
-  result.description = captured.description ?? "";
+  result.description = aliasDef.description ?? "";
 
   // Validate input schema
-  if (captured.input) {
-    if (typeof captured.input.safeParse !== "function") {
+  if (aliasDef.input) {
+    if (typeof aliasDef.input.safeParse !== "function") {
       result.valid = false;
-      result.errors.push(`input: Expected ZodType, got ${typeof captured.input}`);
+      result.errors.push(`input: Expected ZodType, got ${typeof aliasDef.input}`);
     } else {
       try {
-        result.inputSchema = z.toJSONSchema(captured.input) as Record<string, unknown>;
+        result.inputSchema = z.toJSONSchema(aliasDef.input) as Record<string, unknown>;
       } catch (err) {
         result.warnings.push(
           `input: Schema cannot convert to JSON Schema — ${err instanceof Error ? err.message : String(err)}`,
@@ -426,13 +445,13 @@ export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000)
   }
 
   // Validate output schema
-  if (captured.output) {
-    if (typeof captured.output.safeParse !== "function") {
+  if (aliasDef.output) {
+    if (typeof aliasDef.output.safeParse !== "function") {
       result.valid = false;
-      result.errors.push(`output: Expected ZodType, got ${typeof captured.output}`);
+      result.errors.push(`output: Expected ZodType, got ${typeof aliasDef.output}`);
     } else {
       try {
-        result.outputSchema = z.toJSONSchema(captured.output) as Record<string, unknown>;
+        result.outputSchema = z.toJSONSchema(aliasDef.output) as Record<string, unknown>;
       } catch (err) {
         result.warnings.push(
           `output: Schema cannot convert to JSON Schema — ${err instanceof Error ? err.message : String(err)}`,

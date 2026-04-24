@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import {
   type AliasType,
   type MailMessage,
+  type MonitorAliasMetadata,
   type Span,
   type SpanRow,
   type ToolInfo,
@@ -232,6 +233,11 @@ export class StateDb {
       // leaving the schema unmigrated.
       const msg = err instanceof Error ? err.message : String(err);
       if (!/duplicate column name: scope/i.test(msg)) throw err;
+    }
+    try {
+      this.db.exec("ALTER TABLE aliases ADD COLUMN monitor_definitions_json TEXT");
+    } catch {
+      /* column already exists */
     }
 
     // -- Trace context columns on usage_stats --
@@ -707,6 +713,7 @@ export class StateDb {
     runCount: number;
     lastRunAt: number | null;
     scope: string | null;
+    monitorDefinitions?: MonitorAliasMetadata[];
   }> {
     this.maybeRunAliasPrune();
     return this.db
@@ -723,10 +730,11 @@ export class StateDb {
           run_count: number;
           last_run_at: number | null;
           scope: string | null;
+          monitor_definitions_json: string | null;
         },
         [number]
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at, scope FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
       )
       .all(Date.now())
       .map((row) => ({
@@ -741,6 +749,9 @@ export class StateDb {
         runCount: row.run_count,
         lastRunAt: row.last_run_at,
         scope: row.scope,
+        ...(row.monitor_definitions_json
+          ? { monitorDefinitions: safeJsonParse(row.monitor_definitions_json, []) as MonitorAliasMetadata[] }
+          : {}),
       }));
   }
 
@@ -756,6 +767,7 @@ export class StateDb {
         runCount: number;
         lastRunAt: number | null;
         scope: string | null;
+        monitorDefinitions?: MonitorAliasMetadata[];
       }
     | undefined {
     const row = this.db
@@ -771,10 +783,11 @@ export class StateDb {
           run_count: number;
           last_run_at: number | null;
           scope: string | null;
+          monitor_definitions_json: string | null;
         },
         [string]
       >(
-        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at, scope FROM aliases WHERE name = ?",
+        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE name = ?",
       )
       .get(name);
     if (!row) return undefined;
@@ -789,6 +802,9 @@ export class StateDb {
       runCount: row.run_count,
       lastRunAt: row.last_run_at,
       scope: row.scope,
+      ...(row.monitor_definitions_json
+        ? { monitorDefinitions: safeJsonParse(row.monitor_definitions_json, []) as MonitorAliasMetadata[] }
+        : {}),
     };
   }
 
@@ -804,6 +820,7 @@ export class StateDb {
     expiresAt?: number,
     scope?: string | null,
     scopeProvided = true,
+    monitorDefinitionsJson?: string,
   ): void {
     // If the caller is saving an ephemeral alias (expiresAt set), refuse to
     // overwrite an existing permanent alias (expires_at IS NULL). This prevents
@@ -819,8 +836,8 @@ export class StateDb {
     }
 
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, scope, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, scope, monitor_definitions_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
        ON CONFLICT(name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
@@ -830,20 +847,22 @@ export class StateDb {
          bundled_js = excluded.bundled_js,
          source_hash = excluded.source_hash,
          expires_at = excluded.expires_at,
-         scope = CASE WHEN ?11 = 1 THEN excluded.scope ELSE aliases.scope END,
+         scope = CASE WHEN ?12 = 1 THEN excluded.scope ELSE aliases.scope END,
+         monitor_definitions_json = excluded.monitor_definitions_json,
          updated_at = unixepoch()`,
       [
-        name,
-        filePath,
-        description ?? null,
-        aliasType,
-        inputSchemaJson ?? null,
-        outputSchemaJson ?? null,
-        bundledJs ?? null,
-        sourceHash ?? null,
-        expiresAt ?? null,
-        scope ?? null,
-        scopeProvided ? 1 : 0,
+        name, // ?1
+        filePath, // ?2
+        description ?? null, // ?3
+        aliasType, // ?4
+        inputSchemaJson ?? null, // ?5
+        outputSchemaJson ?? null, // ?6
+        bundledJs ?? null, // ?7
+        sourceHash ?? null, // ?8
+        expiresAt ?? null, // ?9
+        scope ?? null, // ?10
+        monitorDefinitionsJson ?? null, // ?11 — monitor_definitions_json value
+        scopeProvided ? 1 : 0, // ?12 — scopeProvided flag for CASE WHEN
       ],
     );
   }

@@ -253,6 +253,14 @@ export function printAliasDebug(alias: AliasDetail): void {
     }
   }
 
+  if (alias.monitorDefinitions && alias.monitorDefinitions.length > 0) {
+    console.error(`  ${c.bold}monitors${c.reset}:`);
+    for (const m of alias.monitorDefinitions) {
+      const desc = m.description ? `  ${c.dim}${m.description}${c.reset}` : "";
+      console.error(`    ${c.cyan}${m.name}${c.reset}${desc}`);
+    }
+  }
+
   console.error(`  ${c.bold}source${c.reset}:      ${alias.filePath}`);
   console.error(`${c.dim}${"─".repeat(width)}${c.reset}`);
   console.error("");
