@@ -1695,6 +1695,14 @@ export class IpcServer {
 
     // ── Ring-buffer fallback path (direct pushEvent(), no EventBus) ──
     const filter = buildEventFilter(url.searchParams);
+    const fallbackResponseTail = url.searchParams.get("responseTail");
+    const shouldDeliverFallback = (event: Record<string, unknown>) => {
+      if (filter !== null && !filter(event)) return false;
+      if (event.event === "session.response") {
+        return fallbackResponseTail !== null && event.sessionId === fallbackResponseTail;
+      }
+      return true;
+    };
     const capacity = IpcServer.EVENT_RING_CAPACITY;
     const ring: string[] = new Array(capacity);
     let writeIdx = 0;
@@ -1763,7 +1771,7 @@ export class IpcServer {
         // buffered during backfill and drained after to preserve ordering.
         let liveBuffer: Array<{ line: string; seq: number | undefined }> | null = null;
         const subscriber = (event: Record<string, unknown>) => {
-          if (filter && !filter(event)) return;
+          if (!shouldDeliverFallback(event)) return;
           const line = `${JSON.stringify(event)}\n`;
           const seq = typeof event.seq === "number" ? event.seq : undefined;
           if (liveBuffer !== null) {
@@ -1785,9 +1793,10 @@ export class IpcServer {
           while (true) {
             const batch = eventLog.getSince(cursor, 1000);
             for (const event of batch) {
+              highWaterMark = event.seq;
+              if (!shouldDeliverFallback(event as Record<string, unknown>)) continue;
               const line = `${JSON.stringify(event)}\n`;
               try {
-                highWaterMark = event.seq;
                 controller.enqueue(encoder.encode(line));
               } catch {
                 cleanup();
