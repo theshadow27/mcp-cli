@@ -190,8 +190,7 @@ describe("createWaitForEvent", () => {
     const target = makeEvent({ event: "ci.finished", category: "ci" });
     const noise = makeEvent({ event: "pr.opened", category: "work_item" });
 
-    // Override openEventStream at module level via dependency injection
-    const waitFor = createWaitForEvent(undefined, () => fakeStream([noise, target]));
+    const waitFor = createWaitForEvent(() => fakeStream([noise, target]));
     const result = await waitFor({ type: "ci.finished" });
     expect(result).toEqual(target);
   });
@@ -200,7 +199,7 @@ describe("createWaitForEvent", () => {
     const e1 = makeEvent({ event: "pr.opened", category: "work_item", seq: 1 });
     const e2 = makeEvent({ event: "pr.merged", category: "work_item", seq: 2 });
 
-    const waitFor = createWaitForEvent(undefined, () => fakeStream([e1, e2]));
+    const waitFor = createWaitForEvent(() => fakeStream([e1, e2]));
     const result = await waitFor({ type: "pr.merged" });
     expect(result.seq).toBe(2);
   });
@@ -209,7 +208,16 @@ describe("createWaitForEvent", () => {
     const hb = makeEvent({ event: "heartbeat", category: "heartbeat", seq: 1 });
     const target = makeEvent({ event: "ci.finished", category: "ci", seq: 2 });
 
-    const waitFor = createWaitForEvent(undefined, () => fakeStream([hb, target]));
+    const waitFor = createWaitForEvent(() => fakeStream([hb, target]));
+    const result = await waitFor({ type: "ci.*" });
+    expect(result.seq).toBe(2);
+  });
+
+  test("skips ring-buffer heartbeat events ({t:'heartbeat'})", async () => {
+    const ringHb = { t: "heartbeat", seq: 99 } as unknown as MonitorEvent;
+    const target = makeEvent({ event: "ci.finished", category: "ci", seq: 2 });
+
+    const waitFor = createWaitForEvent(() => fakeStream([ringHb, target]));
     const result = await waitFor({ type: "ci.*" });
     expect(result.seq).toBe(2);
   });
@@ -228,40 +236,13 @@ describe("createWaitForEvent", () => {
       await blockPromise; // block so timeout fires
     }
 
-    const waitFor = createWaitForEvent(undefined, () => ({ events: infinite(), abort: resolveBlock }));
+    const waitFor = createWaitForEvent(() => ({ events: infinite(), abort: resolveBlock }));
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 20 })).rejects.toThrow(WaitTimeoutError);
-  });
-
-  test("rejects with AbortError when signal fires", async () => {
-    let unblock!: () => void;
-    const blockPromise = new Promise<void>((r) => {
-      unblock = r;
-    });
-
-    // Yield one heartbeat (which gets skipped) then block
-    async function* blocking(): AsyncGenerator<MonitorEvent> {
-      yield makeEvent({ event: "heartbeat", category: "heartbeat", seq: 0 });
-      await blockPromise;
-    }
-
-    const controller = new AbortController();
-    const waitFor = createWaitForEvent(controller.signal, () => ({ events: blocking(), abort: unblock }));
-
-    const p = waitFor({ type: "ci.finished" });
-    controller.abort();
-    await expect(p).rejects.toMatchObject({ name: "AbortError" });
-  });
-
-  test("rejects immediately if signal already aborted", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const waitFor = createWaitForEvent(controller.signal, () => fakeStream([]));
-    await expect(waitFor({ type: "ci.finished" })).rejects.toMatchObject({ name: "AbortError" });
   });
 
   test("rejects when stream ends without matching event", async () => {
     const e = makeEvent({ event: "pr.opened", category: "work_item" });
-    const waitFor = createWaitForEvent(undefined, () => fakeStream([e]));
+    const waitFor = createWaitForEvent(() => fakeStream([e]));
     await expect(waitFor({ type: "ci.finished" })).rejects.toThrow("ended without matching event");
   });
 });

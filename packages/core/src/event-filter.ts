@@ -91,18 +91,23 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
 type OpenStreamFn = typeof openEventStream;
 
 /**
- * Create a `waitForEvent` function bound to an optional AbortSignal.
+ * Create a `waitForEvent` function.
  *
  * Opens an event stream, waits for the first event matching `filter`, then
- * aborts the stream. Rejects with `WaitTimeoutError` if `timeoutMs` elapses,
- * or with the signal's abort reason if the signal fires.
+ * aborts the stream. Rejects with `WaitTimeoutError` if `timeoutMs` elapses.
  *
- * Stream is always torn down on resolve, reject, or abort — no leaked subscribers.
+ * Stream is always torn down on resolve or reject — no leaked subscribers.
+ *
+ * **Important:** callers should capture a `since` cursor *before* triggering
+ * the action they intend to await. Without `since`, there is a 10–100ms
+ * window between the call and the daemon's subscription where a matching
+ * event could be missed, causing the caller to block until timeout.
+ *
+ * Cancellation via AbortSignal is not yet supported — see #1714.
  *
  * `openStream` is injectable for testing (default: the real openEventStream).
  */
 export function createWaitForEvent(
-  signal?: AbortSignal,
   openStream: OpenStreamFn = openEventStream,
 ): (filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }) => Promise<MonitorEvent> {
   return (filter, opts) => {
@@ -138,25 +143,16 @@ export function createWaitForEvent(
         }, ms);
       }
 
-      if (signal?.aborted) {
-        settle(() => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError")));
-        return;
-      }
-
-      signal?.addEventListener(
-        "abort",
-        () => {
-          settle(() => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError")));
-        },
-        { once: true },
-      );
-
       (async () => {
         try {
           for await (const event of events) {
             if (settled) break;
-            // Skip heartbeats — they are keepalives, not data events
-            if (event.category === "heartbeat" || event.event === "heartbeat") continue;
+            if (
+              event.category === "heartbeat" ||
+              event.event === "heartbeat" ||
+              (event as Record<string, unknown>).t === "heartbeat"
+            )
+              continue;
             if (matchFilter(event, filter)) {
               settle(() => resolve(event));
               break;
@@ -167,13 +163,6 @@ export function createWaitForEvent(
           }
         } catch (err: unknown) {
           if (settled) return;
-          // AbortError from stream abort after we already settled — ignore
-          if (
-            err instanceof Error &&
-            (err.name === "AbortError" || (err as NodeJS.ErrnoException).code === "ABORT_ERR")
-          ) {
-            return;
-          }
           settle(() => reject(err));
         }
       })();
