@@ -1,6 +1,6 @@
 # Sprint 42
 
-> Planned 2026-04-23 20:31 local. Target: 20 PRs (7 Phase 2 monitor anchors + 5 sites stability + 4 infra/follow-ups + 4 phase-state polish).
+> Planned 2026-04-23 20:31 local. Started 2026-04-23 20:39 local. Ended 2026-04-23 23:18 local (~2h 39m orchestration). Result: 21 of 21 merged (20 planned + 1 bonus #1695, plus #1597 squeezed in after quota reset). Two full 5h quota blocks consumed.
 
 ## Goal
 
@@ -98,3 +98,14 @@ All others: independent
 ## Context
 
 Sprint 41 shipped v1.7.1 — 18 PRs in 3h20m, the entire monitor Phase 1 core + every sprint-40 infra P0. Phase 2 is now structurally unblocked (cross-thread bridge, seq unification, backpressure, subscriber cleanup all live). Sites work has accumulated a post-teams-port bug cluster that's affecting production stability (sleep/wake crashes, compiled-binary startup failures). Sprint 42 sits at the intersection of "finish what Phase 1 started" and "stabilize what shipped." Good moment to also land #1621 and stop relying on `--admin` for every merge.
+
+## Results
+
+- **Released**: v1.7.2
+- **PRs merged**: 21 (20 planned + bonus #1695 wildcard-permissions pulled in mid-sprint)
+- **Issues closed**: 21 (all 20 planned + #1695; #1568 closed as already-fixed duplicate of #1669)
+- **Issues dropped**: 0
+- **Admin-merge crutch**: ended mid-sprint when #1621 landed and CI concurrency-cancel stopped producing BLOCKED states
+- **New issues filed** (follow-ups from review/QA + one flaky-test report): #1656, #1659, #1661, #1662, #1666, #1667, #1673, #1684, #1690, #1691, #1697, #1707, #1708 — 13 filed, 0 resolved same-sprint (down from sprint 41's 21/3 because many of sprint 41's follow-ups were themselves sprint 42 picks)
+- **Reviewer self-repair**: used 6 times (saved ~6 opus-repair sessions vs sprint 41's pattern)
+- **QA rounds**: most PRs needed a second QA round after Copilot-thread resolution — same pattern as sprint 41, budget this next time
