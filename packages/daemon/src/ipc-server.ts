@@ -1465,12 +1465,28 @@ export class IpcServer {
    */
   private handleEventsNDJSON(url: URL): Response {
     const sinceParam = url.searchParams.get("since");
-    const sinceSeq = sinceParam !== null ? Number(sinceParam) : null;
+    let sinceSeq: number | null = null;
+    if (sinceParam !== null) {
+      const parsed = Number(sinceParam);
+      if (sinceParam.trim() === "" || !Number.isInteger(parsed) || parsed < 0) {
+        return new Response("since must be a non-negative integer", { status: 400 });
+      }
+      sinceSeq = parsed;
+    }
     const eventLog = this.eventBus?.eventLog ?? null;
 
     const prRaw = url.searchParams.get("pr");
     if (prRaw !== null && !(Number.isInteger(Number(prRaw)) && Number(prRaw) >= 1)) {
       return new Response("pr must be a positive integer", { status: 400 });
+    }
+
+    // Return 400 rather than silently delivering a live-only stream when the client
+    // provides a valid since cursor but the durable event log is unavailable (#1558).
+    // sinceSeq is guaranteed non-negative integer here (invalid values returned 400 above).
+    if (sinceSeq !== null && !eventLog) {
+      return new Response("since parameter requires the durable event log; replay is not available on this daemon", {
+        status: 400,
+      });
     }
 
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
