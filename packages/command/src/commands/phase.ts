@@ -1180,14 +1180,22 @@ export async function executePhase(
     try {
       const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
       if (fresh && fresh.phase !== parsed.target) {
-        await ex.ipcCall("callTool", {
+        const repoRoot = ex.findGitRoot(cwd) ?? cwd;
+        const updateResult = (await ex.ipcCall("callTool", {
           server: "_work_items",
           tool: "work_items_update",
-          arguments: { id: parsed.workItemId, phase: parsed.target },
-        });
+          arguments: { id: parsed.workItemId, phase: parsed.target, repoRoot },
+        })) as { isError?: boolean; content?: unknown } | null;
+        if (updateResult?.isError) {
+          d.logError(
+            `non-fatal: failed to persist work item ${parsed.workItemId} phase to ${parsed.target}: ${JSON.stringify(updateResult.content ?? updateResult)}`,
+          );
+        }
       }
-    } catch {
-      // Non-fatal — orchestrator can still force_update as fallback.
+    } catch (error) {
+      d.logError(
+        `non-fatal: failed to persist work item ${parsed.workItemId} phase to ${parsed.target}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 

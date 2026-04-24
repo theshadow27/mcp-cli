@@ -1921,7 +1921,7 @@ defineAlias(({ z }) => ({
 }));
 `.trim();
 
-  function makeTrackingDeps(opts: { workItemPhase: string; handlerUpdatesPhase?: boolean }) {
+  function makeTrackingDeps(opts: { workItemPhase: string }) {
     let currentPhase = opts.workItemPhase;
     const calls: Array<{ method: string; params: unknown }> = [];
     const stateStore = new Map<string, unknown>();
@@ -1961,9 +1961,33 @@ defineAlias(({ z }) => ({
         case "aliasStateAll":
           return { entries: {} };
         case "callTool": {
-          const p = params as { server: string; tool: string; arguments: Record<string, unknown> };
-          if (p.server === "_work_items" && p.tool === "work_items_update" && p.arguments.phase) {
-            currentPhase = String(p.arguments.phase);
+          const p = params as {
+            server: string;
+            tool: string;
+            arguments: Record<string, unknown>;
+            cwd?: string;
+          };
+          if (p.server === "_work_items" && p.tool === "work_items_update") {
+            const legacyPhases = new Set(["impl", "review", "repair", "qa", "done"]);
+            const nextPhase = String(p.arguments.phase ?? "");
+            const repoRoot =
+              (typeof p.arguments.repoRoot === "string" && p.arguments.repoRoot.length > 0
+                ? p.arguments.repoRoot
+                : null) ?? (typeof p.cwd === "string" && p.cwd.length > 0 ? p.cwd : null);
+            if (!legacyPhases.has(nextPhase) && repoRoot === null) {
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text: `work_items_update requires repoRoot when updating to non-legacy phase "${nextPhase}"`,
+                  },
+                ],
+              };
+            }
+            if (nextPhase) {
+              currentPhase = nextPhase;
+            }
           }
           return { content: [{ type: "text", text: JSON.stringify({ server: p.server, tool: p.tool }) }] };
         }
@@ -2020,7 +2044,7 @@ defineAlias(({ z }) => ({
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
     );
 
-    // The auto-update should have called work_items_update with phase=triage
+    // The auto-update should have called work_items_update with phase=triage and repoRoot
     const updateCalls = ex.calls.filter(
       (c) =>
         c.method === "callTool" &&
@@ -2028,6 +2052,9 @@ defineAlias(({ z }) => ({
         (c.params as { arguments: { phase: string } }).arguments.phase === "triage",
     );
     expect(updateCalls.length).toBe(1);
+    const updateArgs = (updateCalls[0].params as { arguments: Record<string, unknown> }).arguments;
+    expect(typeof updateArgs.repoRoot).toBe("string");
+    expect((updateArgs.repoRoot as string).length).toBeGreaterThan(0);
     expect(ex.getCurrentPhase()).toBe("triage");
   }, 30_000);
 
