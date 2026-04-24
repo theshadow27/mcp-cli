@@ -17,7 +17,6 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -31,6 +30,7 @@ import {
   getSiteForDomain,
   listSites,
   resolveSiteAsset,
+  validateProfileDir,
   validateSiteName,
   writeSiteConfig,
 } from "./site/config";
@@ -116,9 +116,7 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
 function resolveProfileDir(cfg: SiteConfig): string {
   const raw = cfg.browser?.profileDir;
   if (raw) {
-    if (!isAbsolute(raw) && !raw.startsWith("~/")) {
-      throw new Error(`browser.profileDir must be an absolute path or start with ~/; got: ${raw}`);
-    }
+    validateProfileDir(raw);
     return raw.startsWith("~/") ? raw.replace("~", homedir()) : raw;
   }
   const profile = cfg.browser?.chromeProfile ?? "default";

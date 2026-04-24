@@ -8,7 +8,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { siteConfigPath, sitePath, sitesDir } from "./paths";
 import { BUILTIN_SEEDS } from "./seeds";
 
@@ -21,6 +21,16 @@ export function validateSiteName(name: string): void {
     throw new Error(
       `Invalid site name '${name}'. Must be alphanumeric (plus -/_), 1–64 chars, and start with a letter or digit.`,
     );
+  }
+}
+
+/** Reject browser.profileDir values that are not absolute or ~/…-relative. */
+export function validateProfileDir(raw: string): void {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new Error(`browser.profileDir must be a non-empty string; got: ${typeof raw}`);
+  }
+  if (!isAbsolute(raw) && !raw.startsWith("~/")) {
+    throw new Error(`browser.profileDir must be an absolute path or start with ~/; got: ${raw}`);
   }
 }
 
@@ -129,6 +139,9 @@ export function getSite(name: string): SiteConfig | null {
 /** Write (or overwrite) a site's user config. Creates the directory if needed. */
 export function writeSiteConfig(name: string, config: PartialSiteConfig): void {
   validateSiteName(name);
+  if (config.browser?.profileDir !== undefined) {
+    validateProfileDir(config.browser.profileDir);
+  }
   const path = siteConfigPath(name);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(config, null, 2));

@@ -3,7 +3,15 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
-import { domainMatches, getSite, getSiteForDomain, listSites, validateSiteName, writeSiteConfig } from "./config";
+import {
+  domainMatches,
+  getSite,
+  getSiteForDomain,
+  listSites,
+  validateProfileDir,
+  validateSiteName,
+  writeSiteConfig,
+} from "./config";
 
 let tmp: string;
 
@@ -42,9 +50,60 @@ describe("validateSiteName", () => {
   });
 });
 
+describe("validateProfileDir", () => {
+  test("accepts absolute paths", () => {
+    expect(() => validateProfileDir("/tmp/shared-profile")).not.toThrow();
+    expect(() => validateProfileDir("/home/user/.chrome")).not.toThrow();
+  });
+
+  test("accepts tilde-prefixed paths", () => {
+    expect(() => validateProfileDir("~/shared-profile")).not.toThrow();
+    expect(() => validateProfileDir("~/.mcp-cli/chrome")).not.toThrow();
+  });
+
+  test("rejects relative paths", () => {
+    expect(() => validateProfileDir("shared-profile")).toThrow(/must be an absolute path or start with ~\//);
+    expect(() => validateProfileDir("../sibling")).toThrow(/must be an absolute path or start with ~\//);
+    expect(() => validateProfileDir("./local")).toThrow(/must be an absolute path or start with ~\//);
+  });
+
+  test("rejects non-string input with a clear Error (not TypeError)", () => {
+    expect(() => validateProfileDir(42 as unknown as string)).toThrow(/must be a non-empty string/);
+    expect(() => validateProfileDir(null as unknown as string)).toThrow(/must be a non-empty string/);
+    expect(() => validateProfileDir(undefined as unknown as string)).toThrow(/must be a non-empty string/);
+  });
+});
+
 describe("writeSiteConfig validates name", () => {
   test("rejects path-traversal names before touching disk", () => {
     expect(() => writeSiteConfig("../escape", { url: "https://x" })).toThrow(/Invalid site name/);
+  });
+
+  test("rejects relative browser.profileDir at write time", () => {
+    expect(() =>
+      writeSiteConfig("example", {
+        url: "https://example.com",
+        browser: { profileDir: "relative/path" },
+      }),
+    ).toThrow(/must be an absolute path or start with ~\//);
+  });
+
+  test("accepts absolute browser.profileDir at write time", () => {
+    expect(() =>
+      writeSiteConfig("example", {
+        url: "https://example.com",
+        browser: { profileDir: "/tmp/chrome-profile" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts tilde-prefixed browser.profileDir at write time", () => {
+    expect(() =>
+      writeSiteConfig("example2", {
+        url: "https://example2.com",
+        browser: { profileDir: "~/.mcp-cli/shared" },
+      }),
+    ).not.toThrow();
   });
 });
 
