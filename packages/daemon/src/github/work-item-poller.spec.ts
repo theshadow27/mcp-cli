@@ -963,6 +963,62 @@ describe("WorkItemPoller", () => {
     expect(secondStarted).toHaveLength(1);
   });
 
+  test("CI state survives poller restart — no duplicate ci.started, correct observedDurationMs", async () => {
+    db.createWorkItem({ id: "#20", prNumber: 20, prState: "open", ciStatus: "running" });
+
+    const T0 = 1_000_000;
+    const ciEvents1: CiEvent[] = [];
+
+    // First poller instance: sees ci.started
+    const poller1 = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 20,
+          ciState: "PENDING",
+          ciChecks: [ciCheck("check", "IN_PROGRESS", null, 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents1.push(e),
+      now: () => T0,
+    });
+
+    await poller1.poll();
+    expect(ciEvents1.filter((e) => e.type === "ci.started")).toHaveLength(1);
+    poller1.stop();
+
+    // Simulate daemon restart: new poller instance, same DB
+    const ciEvents2: CiEvent[] = [];
+    const poller2 = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 20,
+          ciState: "SUCCESS",
+          ciChecks: [ciCheck("check", "COMPLETED", "SUCCESS", 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents2.push(e),
+      now: () => T0 + 120_000,
+    });
+
+    await poller2.poll();
+
+    // No duplicate ci.started — state was loaded from DB
+    expect(ciEvents2.filter((e) => e.type === "ci.started")).toHaveLength(0);
+
+    // ci.finished should have observedDurationMs reflecting original startedAt
+    const finished = ciEvents2.find((e) => e.type === "ci.finished") as Extract<CiEvent, { type: "ci.finished" }>;
+    expect(finished).toBeDefined();
+    expect(finished.observedDurationMs).toBe(120_000);
+    expect(finished.allGreen).toBe(true);
+    poller2.stop();
+  });
+
   test("CI state cleaned up on PR merge", async () => {
     db.createWorkItem({ id: "#14", prNumber: 14, prState: "open", ciStatus: "none" });
 
@@ -1004,5 +1060,70 @@ describe("WorkItemPoller", () => {
     // PR merged — CI state should be cleaned up, but no duplicate events
     await poller.poll();
     expect(ciEvents).toHaveLength(0);
+  });
+
+  test("stale ciRunStates are purged when tracked items drops to zero", async () => {
+    const item = db.createWorkItem({ id: "#30", prNumber: 30, prState: "open", ciStatus: "running" });
+
+    let pollCount = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 30,
+          ciState: "PENDING",
+          ciChecks: [ciCheck("build", "IN_PROGRESS", null, 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: () => {},
+      now: () => 1000,
+    });
+
+    await poller.poll();
+    pollCount++;
+    expect(db.loadCiRunStates().size).toBe(1);
+
+    // Remove the work item so tracked becomes empty
+    db.deleteWorkItem(item.id);
+
+    await poller.poll();
+    pollCount++;
+    expect(db.loadCiRunStates().size).toBe(0);
+  });
+
+  test("upsertCiRunState is not called when CI state is unchanged across polls", async () => {
+    db.createWorkItem({ id: "#31", prNumber: 31, prState: "open", ciStatus: "none" });
+
+    let upsertCount = 0;
+    const origUpsert = db.upsertCiRunState.bind(db);
+    db.upsertCiRunState = (pr, state) => {
+      upsertCount++;
+      return origUpsert(pr, state);
+    };
+
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 31,
+          ciState: "SUCCESS",
+          ciChecks: [ciCheck("build", "COMPLETED", "SUCCESS", 600)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+      now: () => 2000,
+    });
+
+    await poller.poll();
+    expect(upsertCount).toBe(1);
+
+    // Second poll — same checks, same suiteId, state already emitted both flags
+    await poller.poll();
+    expect(upsertCount).toBe(1);
   });
 });

@@ -323,7 +323,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(4);
+      expect(row?.version).toBe(5);
     });
 
     test("does not touch PRAGMA user_version (leaves it free for other consumers)", () => {
@@ -347,7 +347,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(4);
+      expect(row?.version).toBe(5);
     });
 
     test("legacy v1 DB (work_items table, no transitions table) seeds at 1 then upgrades to 2", () => {
@@ -381,7 +381,7 @@ describe("WorkItemDb", () => {
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(seeded?.version).toBe(4);
+      expect(seeded?.version).toBe(5);
 
       // v2 transitions table now exists
       const hasTransitions = raw
@@ -415,11 +415,76 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(4);
+      expect(row?.version).toBe(5);
 
       // And the tables actually got created (regression for the PRAGMA-fallback bug)
       const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
       expect(item.id).toBeDefined();
+    });
+  });
+
+  describe("ci_run_states", () => {
+    test("loadCiRunStates returns empty map on fresh DB", () => {
+      const db = createDb();
+      const states = db.loadCiRunStates();
+      expect(states.size).toBe(0);
+    });
+
+    test("upsertCiRunState inserts and loadCiRunStates retrieves", () => {
+      const db = createDb();
+      db.upsertCiRunState(42, { suiteId: 1000, startedAt: 99999, emittedStarted: true, emittedFinished: false });
+      const states = db.loadCiRunStates();
+      expect(states.size).toBe(1);
+      const state = states.get(42);
+      expect(state).toEqual({ suiteId: 1000, startedAt: 99999, emittedStarted: true, emittedFinished: false });
+    });
+
+    test("upsertCiRunState overwrites on conflict", () => {
+      const db = createDb();
+      db.upsertCiRunState(42, { suiteId: 1000, startedAt: 10000, emittedStarted: true, emittedFinished: false });
+      db.upsertCiRunState(42, { suiteId: 2000, startedAt: 20000, emittedStarted: true, emittedFinished: true });
+      const states = db.loadCiRunStates();
+      expect(states.size).toBe(1);
+      expect(states.get(42)).toEqual({ suiteId: 2000, startedAt: 20000, emittedStarted: true, emittedFinished: true });
+    });
+
+    test("deleteCiRunState removes a row", () => {
+      const db = createDb();
+      db.upsertCiRunState(42, { suiteId: 1000, startedAt: 10000, emittedStarted: true, emittedFinished: false });
+      db.upsertCiRunState(43, { suiteId: 1001, startedAt: 10001, emittedStarted: false, emittedFinished: false });
+      db.deleteCiRunState(42);
+      const states = db.loadCiRunStates();
+      expect(states.size).toBe(1);
+      expect(states.has(42)).toBe(false);
+      expect(states.has(43)).toBe(true);
+    });
+
+    test("deleteCiRunState is a no-op for missing PR", () => {
+      const db = createDb();
+      expect(() => db.deleteCiRunState(999)).not.toThrow();
+    });
+
+    test("deleteWorkItem cascade-deletes associated ci_run_states", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
+      db.updateWorkItem(item.id, { prNumber: 42 });
+      db.upsertCiRunState(42, { suiteId: 1000, startedAt: 10000, emittedStarted: true, emittedFinished: false });
+      db.upsertCiRunState(43, { suiteId: 1001, startedAt: 10001, emittedStarted: false, emittedFinished: false });
+      db.deleteWorkItem(item.id);
+      const states = db.loadCiRunStates();
+      expect(states.has(42)).toBe(false);
+      expect(states.has(43)).toBe(true);
+    });
+
+    test("boolean fields round-trip correctly", () => {
+      const db = createDb();
+      db.upsertCiRunState(1, { suiteId: 100, startedAt: 5000, emittedStarted: false, emittedFinished: false });
+      db.upsertCiRunState(2, { suiteId: 200, startedAt: 6000, emittedStarted: true, emittedFinished: true });
+      const states = db.loadCiRunStates();
+      expect(states.get(1)?.emittedStarted).toBe(false);
+      expect(states.get(1)?.emittedFinished).toBe(false);
+      expect(states.get(2)?.emittedStarted).toBe(true);
+      expect(states.get(2)?.emittedFinished).toBe(true);
     });
   });
 
