@@ -3401,7 +3401,10 @@ describe("IpcServer HTTP transport", () => {
       const hbLine = lines.find((l) => l.includes('"heartbeat"'));
       expect(hbLine).toBeDefined();
       const hb = JSON.parse(hbLine as string) as Record<string, unknown>;
-      expect(hb.t).toBe("heartbeat");
+      expect(hb.category).toBe("heartbeat");
+      expect(hb.event).toBe("heartbeat");
+      expect(hb.src).toBe("daemon");
+      expect(typeof hb.ts).toBe("string");
       expect(typeof hb.seq).toBe("number");
     } finally {
       Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
