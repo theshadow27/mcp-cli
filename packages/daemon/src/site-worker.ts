@@ -96,9 +96,7 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
   if (engine === "playwright") {
     try {
       const mod = await import("./site/browser/playwright");
-      browser = new mod.PlaywrightBrowserEngine();
-      browserEngineName = "playwright";
-      return browser;
+      return new mod.PlaywrightBrowserEngine();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Module not found/.test(msg)) {
@@ -337,6 +335,10 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
     const eng = await loadBrowser(engine);
     const specs = sites.map(siteSpecFor);
     const startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
+    // Assign globals only after start() succeeds so a failed/timed-out start
+    // never leaves browser pointing at an unstarted engine.
+    browser = eng;
+    browserEngineName = engine;
     for (const s of sites) sitesOpenInBrowser.add(s.name);
 
     return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
