@@ -188,10 +188,12 @@ export class CopilotPoller {
       }
 
       const repo = this._repo;
+      let anyRateLimitLow = false;
       for (const item of tracked) {
         if (this.stopped) return;
-        await this.pollPR(repo, item, token);
+        if (await this.pollPR(repo, item, token)) anyRateLimitLow = true;
       }
+      this.rateLimitBackoff = anyRateLimitLow;
 
       this._lastError = null;
       this._pollCount++;
@@ -206,7 +208,7 @@ export class CopilotPoller {
     }
   }
 
-  private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<void> {
+  private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
     const prNumber = item.prNumber as number;
 
     let result: FetchCommentsResult;
@@ -214,24 +216,19 @@ export class CopilotPoller {
       result = await this.fetchCommentsFn(repo, prNumber, token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("rate limit") || msg.includes("403")) {
-        this.rateLimitBackoff = true;
-      }
+      const isRateLimit = msg.includes("rate limit") || msg.includes("403");
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
-      return;
+      return isRateLimit;
     }
 
     if (result.rateLimitLow) {
-      this.rateLimitBackoff = true;
       this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
-    } else {
-      this.rateLimitBackoff = false;
     }
 
     // Filter out threaded replies — only top-level review comments matter
     const comments = result.comments.filter((c) => c.in_reply_to_id == null);
 
-    if (this.stopped) return;
+    if (this.stopped) return result.rateLimitLow;
 
     const seenIds = new Set(this.stateDb.getSeenCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
@@ -241,7 +238,7 @@ export class CopilotPoller {
       if (currentIds.length > 0) {
         this.stateDb.updateSeenCommentIds(prNumber, currentIds);
       }
-      return;
+      return result.rateLimitLow;
     }
 
     // Group new comments by author
@@ -279,6 +276,7 @@ export class CopilotPoller {
     // Update seen IDs with full union
     const unionIds = [...new Set([...seenIds, ...currentIds])];
     this.stateDb.updateSeenCommentIds(prNumber, unionIds);
+    return result.rateLimitLow;
   }
 
   private adjustInterval(tracked: WorkItem[]): void {
@@ -292,17 +290,8 @@ export class CopilotPoller {
     const hasActive = tracked.some(
       (item) => item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
     );
-    const allMerged =
-      tracked.length > 0 && tracked.every((item) => item.prState === "merged" || item.prState === "closed");
 
-    let target: number;
-    if (allMerged) {
-      target = MERGED_INTERVAL_MS;
-    } else if (hasActive) {
-      target = ACTIVE_INTERVAL_MS;
-    } else {
-      target = IDLE_INTERVAL_MS;
-    }
+    const target = hasActive ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
 
     if (target !== this.currentIntervalMs) {
       this.currentIntervalMs = target;
