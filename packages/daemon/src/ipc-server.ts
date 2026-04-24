@@ -1808,7 +1808,7 @@ export class IpcServer {
 
         heartbeatTimer = setInterval(() => {
           if (Date.now() - lastWriteTime >= IpcServer.HEARTBEAT_INTERVAL_MS) {
-            const hb = `${JSON.stringify({ t: "heartbeat", seq: this.eventSeq })}\n`;
+            const hb = `${JSON.stringify({ category: "heartbeat", event: "heartbeat", seq: this.eventSeq, src: "daemon", ts: new Date().toISOString() })}\n`;
             try {
               controller.enqueue(encoder.encode(hb));
               lastWriteTime = Date.now();
