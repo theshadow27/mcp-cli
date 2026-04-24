@@ -151,6 +151,11 @@ export class WorkItemPoller {
       const tracked = allItems.filter((item) => item.prNumber !== null);
 
       if (tracked.length === 0) {
+        // Nothing tracked — purge all stale CI run states
+        for (const pr of this.ciRunStates.keys()) {
+          this.db.deleteCiRunState(pr);
+        }
+        this.ciRunStates.clear();
         this._lastError = null;
         this._pollCount++;
         this.adjustInterval(false);
@@ -307,9 +312,17 @@ export class WorkItemPoller {
         status.ciChecks,
         this.nowFn(),
       );
+      const ciStateChanged =
+        ciState !== null &&
+        (prev === null ||
+          ciState.suiteId !== prev.suiteId ||
+          ciState.emittedStarted !== prev.emittedStarted ||
+          ciState.emittedFinished !== prev.emittedFinished);
       if (ciState) {
         this.ciRunStates.set(prNumber, ciState);
-        this.db.upsertCiRunState(prNumber, ciState);
+        if (ciStateChanged) {
+          this.db.upsertCiRunState(prNumber, ciState);
+        }
       }
       for (const ev of ciEvents) {
         this.onCiEvent(ev);

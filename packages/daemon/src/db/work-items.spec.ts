@@ -464,6 +464,18 @@ describe("WorkItemDb", () => {
       expect(() => db.deleteCiRunState(999)).not.toThrow();
     });
 
+    test("deleteWorkItem cascade-deletes associated ci_run_states", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
+      db.updateWorkItem(item.id, { prNumber: 42 });
+      db.upsertCiRunState(42, { suiteId: 1000, startedAt: 10000, emittedStarted: true, emittedFinished: false });
+      db.upsertCiRunState(43, { suiteId: 1001, startedAt: 10001, emittedStarted: false, emittedFinished: false });
+      db.deleteWorkItem(item.id);
+      const states = db.loadCiRunStates();
+      expect(states.has(42)).toBe(false);
+      expect(states.has(43)).toBe(true);
+    });
+
     test("boolean fields round-trip correctly", () => {
       const db = createDb();
       db.upsertCiRunState(1, { suiteId: 100, startedAt: 5000, emittedStarted: false, emittedFinished: false });

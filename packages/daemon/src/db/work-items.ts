@@ -339,6 +339,12 @@ export class WorkItemDb {
 
   deleteWorkItem(id: string): boolean {
     return this.db.transaction(() => {
+      const row = this.db
+        .query<{ pr_number: number | null }, [string]>("SELECT pr_number FROM work_items WHERE id = ?")
+        .get(id);
+      if (row?.pr_number !== null && row?.pr_number !== undefined) {
+        this.db.query("DELETE FROM ci_run_states WHERE pr_number = ?").run(row.pr_number);
+      }
       this.db.query("DELETE FROM work_item_transitions WHERE work_item_id = ?").run(id);
       this.db.query("DELETE FROM work_items WHERE id = ?").run(id);
       return (this.db.query<{ c: number }, []>("SELECT changes() as c").get()?.c ?? 0) > 0;

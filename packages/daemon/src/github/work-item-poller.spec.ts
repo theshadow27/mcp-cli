@@ -1061,4 +1061,69 @@ describe("WorkItemPoller", () => {
     await poller.poll();
     expect(ciEvents).toHaveLength(0);
   });
+
+  test("stale ciRunStates are purged when tracked items drops to zero", async () => {
+    const item = db.createWorkItem({ id: "#30", prNumber: 30, prState: "open", ciStatus: "running" });
+
+    let pollCount = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 30,
+          ciState: "PENDING",
+          ciChecks: [ciCheck("build", "IN_PROGRESS", null, 500)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: () => {},
+      now: () => 1000,
+    });
+
+    await poller.poll();
+    pollCount++;
+    expect(db.loadCiRunStates().size).toBe(1);
+
+    // Remove the work item so tracked becomes empty
+    db.deleteWorkItem(item.id);
+
+    await poller.poll();
+    pollCount++;
+    expect(db.loadCiRunStates().size).toBe(0);
+  });
+
+  test("upsertCiRunState is not called when CI state is unchanged across polls", async () => {
+    db.createWorkItem({ id: "#31", prNumber: 31, prState: "open", ciStatus: "none" });
+
+    let upsertCount = 0;
+    const origUpsert = db.upsertCiRunState.bind(db);
+    db.upsertCiRunState = (pr, state) => {
+      upsertCount++;
+      return origUpsert(pr, state);
+    };
+
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 31,
+          ciState: "SUCCESS",
+          ciChecks: [ciCheck("build", "COMPLETED", "SUCCESS", 600)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+      now: () => 2000,
+    });
+
+    await poller.poll();
+    expect(upsertCount).toBe(1);
+
+    // Second poll — same checks, same suiteId, state already emitted both flags
+    await poller.poll();
+    expect(upsertCount).toBe(1);
+  });
 });
