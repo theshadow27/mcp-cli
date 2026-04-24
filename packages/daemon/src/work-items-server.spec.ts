@@ -951,6 +951,7 @@ describe("WorkItemsServer", () => {
     expect(content[0].text).toContain("qa_session_id");
     expect(content[0].text).toContain("session_id");
     expect(content[0].text).toContain("Phase-namespace state");
+    expect(content[0].text).toContain("phase_state_get/set/delete/list");
   });
 
   test("work_items_update rejects mix of known and unknown keys (#1445)", async () => {

@@ -389,7 +389,7 @@ export class WorkItemsServer {
                 content: [
                   {
                     type: "text" as const,
-                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts known keys (${accepted}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase_state_get/set/list tools to read/write it.`,
+                    text: `Unknown keys: ${unknownKeys.join(", ")}. work_items_update only accepts known keys (${accepted}). Phase-namespace state (session_id, qa_session_id, etc.) is stored separately — use phase_state_get/set/delete/list tools to read/write it.`,
                   },
                 ],
                 isError: true,
