@@ -641,6 +641,126 @@ describe("WorkItemPoller", () => {
     }
   });
 
+  test("cascadeHead is null on non-actionable DIRTY transition even when other PR is CLEAN/BEHIND", async () => {
+    // PR 50 starts BEHIND, transitions to DIRTY (non-actionable)
+    // PR 51 is CLEAN with auto-merge — would normally be the cascade head
+    db.createWorkItem({ id: "pr:50", prNumber: 50, mergeStateStatus: "BEHIND" });
+    db.createWorkItem({ id: "pr:51", prNumber: 51, mergeStateStatus: "UNKNOWN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({ number: 50, mergeStateStatus: "DIRTY", autoMergeEnabled: true }),
+        makePRStatus({ number: 51, mergeStateStatus: "CLEAN", autoMergeEnabled: true }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const dirtyEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 50);
+    expect(dirtyEvt).toBeDefined();
+    if (!dirtyEvt || dirtyEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 50");
+    expect(dirtyEvt.cascadeHead).toBeNull();
+  });
+
+  test("cascadeHead is null on null→UNKNOWN transition", async () => {
+    db.createWorkItem({ id: "pr:52", prNumber: 52 });
+    // Add a CLEAN armed PR to ensure cascadeHead would be non-null if not gated
+    db.createWorkItem({ id: "pr:53", prNumber: 53, mergeStateStatus: "BEHIND" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({ number: 52, mergeStateStatus: "UNKNOWN", autoMergeEnabled: false }),
+        makePRStatus({ number: 53, mergeStateStatus: "BEHIND", autoMergeEnabled: true }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const unknownEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 52);
+    expect(unknownEvt).toBeDefined();
+    if (!unknownEvt || unknownEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 52");
+    expect(unknownEvt.cascadeHead).toBeNull();
+  });
+
+  test("cascadeHead is null on HAS_HOOKS transition", async () => {
+    db.createWorkItem({ id: "pr:54", prNumber: 54, mergeStateStatus: "BEHIND" });
+    db.createWorkItem({ id: "pr:55", prNumber: 55, mergeStateStatus: "UNKNOWN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({ number: 54, mergeStateStatus: "HAS_HOOKS", autoMergeEnabled: true }),
+        makePRStatus({ number: 55, mergeStateStatus: "BEHIND", autoMergeEnabled: true }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const hooksEvt = events.find((e) => e.type === "pr:merge_state_changed" && e.prNumber === 54);
+    expect(hooksEvt).toBeDefined();
+    if (!hooksEvt || hooksEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 54");
+    expect(hooksEvt.cascadeHead).toBeNull();
+  });
+
+  test("cascadeHead is null on UNSTABLE transition", async () => {
+    db.createWorkItem({ id: "pr:56", prNumber: 56, mergeStateStatus: "CLEAN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 56, mergeStateStatus: "UNSTABLE", autoMergeEnabled: true })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const unstableEvt = events.find((e) => e.type === "pr:merge_state_changed");
+    expect(unstableEvt).toBeDefined();
+    if (!unstableEvt || unstableEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 56");
+    expect(unstableEvt.cascadeHead).toBeNull();
+  });
+
+  test("cascadeHead is non-null when PR transitions to BEHIND with auto-merge", async () => {
+    db.createWorkItem({ id: "pr:57", prNumber: 57, mergeStateStatus: "UNKNOWN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 57, mergeStateStatus: "BEHIND", autoMergeEnabled: true })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const behindEvt = events.find((e) => e.type === "pr:merge_state_changed");
+    expect(behindEvt).toBeDefined();
+    if (!behindEvt || behindEvt.type !== "pr:merge_state_changed")
+      throw new Error("Expected pr:merge_state_changed event for PR 57");
+    expect(behindEvt.cascadeHead).toBe(57);
+  });
+
   // ── Phase 2 enrichment (#1576) ──
 
   test("pr:opened carries branch, base, commits, srcChurn", async () => {
