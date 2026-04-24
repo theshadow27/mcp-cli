@@ -112,4 +112,34 @@ describe("embedded seed data (compiled-binary support)", () => {
     expect(searchTeams.body_default).toBeTruthy();
     expect(searchTeams.body_default).toHaveProperty("EntityRequests");
   });
+
+  test("embedded wiggle sources evaluate to callable async functions via new Function wrapper", async () => {
+    // Verifies the CJS eval path in playwright.ts actually produces a runnable wiggle function.
+    // Uses a zero-hit mock page so all locator branches are skipped and the function returns [].
+    const mockLocator: Record<string, unknown> = {
+      count: async () => 0,
+      click: async () => {},
+      fill: async () => {},
+      press: async () => {},
+      hover: async () => {},
+    };
+    mockLocator.first = () => mockLocator;
+    const mockPage = {
+      locator: () => mockLocator,
+      goto: async () => {
+        throw new Error("no browser");
+      },
+      waitForTimeout: async () => {},
+    };
+
+    for (const [seedName, seed] of Object.entries(BUILTIN_SEEDS)) {
+      if (!seed.wiggleSrc) continue;
+      const mod = { exports: {} as Record<string, unknown> };
+      new Function("module", "exports", "process", seed.wiggleSrc)(mod, mod.exports, process);
+      expect(typeof mod.exports).toBe("function"); // fails if module.exports was never assigned
+      const result = await (mod.exports as unknown as (page: unknown) => Promise<string[]>)(mockPage);
+      expect(Array.isArray(result)).toBe(true); // fails if wiggle throws or returns wrong type
+      void seedName; // referenced in test name only
+    }
+  });
 });

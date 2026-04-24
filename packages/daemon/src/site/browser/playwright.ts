@@ -361,6 +361,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
     if (spec?.wiggleSrc) {
       // Embedded seed script — evaluate CJS source from compiled binary.
+      // Constraint: require(), __dirname, and __filename are NOT injected — wiggle scripts must be self-contained.
       const mod = { exports: {} as Record<string, unknown> };
       const wrapper = new Function("module", "exports", "process", spec.wiggleSrc);
       wrapper(mod, mod.exports, process);

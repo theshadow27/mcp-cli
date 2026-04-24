@@ -25,6 +25,11 @@ import owaWiggleSrc from "./seeds/owa/wiggle.js" with { type: "text" };
 // @ts-expect-error — Bun import attribute; tsc doesn't resolve { type: "text" }
 import teamsWiggleSrc from "./seeds/teams/wiggle.js" with { type: "text" };
 
+// Fail at startup (not at wiggle time) if Bun's text loader didn't apply.
+if (typeof teamsWiggleSrc !== "string" || typeof owaWiggleSrc !== "string") {
+  throw new Error("seed wiggle sources are not strings — check Bun { type: 'text' } loader");
+}
+
 // ── Exported seed table ──
 
 export interface SeedData {
