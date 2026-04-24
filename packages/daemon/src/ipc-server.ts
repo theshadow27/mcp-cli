@@ -1476,16 +1476,6 @@ export class IpcServer {
 
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {
-      const subscribeFilter = url.searchParams.get("subscribe");
-      if (
-        subscribeFilter !== null &&
-        subscribeFilter
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean).length === 0
-      ) {
-        return new Response("subscribe must not be empty", { status: 400 });
-      }
       const responseTail = url.searchParams.get("responseTail");
       const eventFilter = buildEventFilter(url.searchParams);
 
