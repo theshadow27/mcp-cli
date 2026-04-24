@@ -813,10 +813,11 @@ export class IpcServer {
       // UPDATE branch preserves the existing row's scope atomically (no TOCTOU).
       const scope: string | null = scopeProvided ? (parsed.scope ?? null) : null;
 
-      const isStructured = isDefineAlias(script);
+      const isMonitor = isDefineMonitor(script);
+      const isStructured = !isMonitor && isDefineAlias(script);
 
       let finalScript: string;
-      if (isStructured) {
+      if (isStructured || isMonitor) {
         // defineAlias scripts get everything via the virtual module — no auto-import
         finalScript = script;
       } else {
@@ -827,7 +828,7 @@ export class IpcServer {
 
       writeFileSync(filePath, finalScript, "utf-8");
 
-      const aliasType = isStructured ? "defineAlias" : "freeform";
+      const aliasType = isMonitor ? "defineMonitor" : isStructured ? "defineAlias" : "freeform";
       const warnings: string[] = [];
       const validationErrors: string[] = [];
 

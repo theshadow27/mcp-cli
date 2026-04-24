@@ -104,8 +104,12 @@ export class MonitorRuntime {
     }
     const alias = this.getAlias(name);
     if (!alias || alias.aliasType !== "defineMonitor") return;
-    await this.spawnMonitor(alias);
-    this.logger.info(`[monitor-runtime] Restarted monitor "${name}"`);
+    const ok = await this.spawnMonitor(alias);
+    if (ok) {
+      this.logger.info(`[monitor-runtime] Restarted monitor "${name}"`);
+    } else {
+      this.logger.warn(`[monitor-runtime] Failed to restart monitor "${name}"`);
+    }
   }
 
   async stopAll(): Promise<void> {
@@ -124,7 +128,7 @@ export class MonitorRuntime {
     return this.monitors.size;
   }
 
-  private async spawnMonitor(alias: MonitorAlias): Promise<void> {
+  private async spawnMonitor(alias: MonitorAlias): Promise<boolean> {
     let bundledJs = alias.bundledJs;
     if (!bundledJs) {
       try {
@@ -132,7 +136,7 @@ export class MonitorRuntime {
         bundledJs = result.js;
       } catch (err) {
         this.logger.error(`[monitor-runtime] Failed to bundle "${alias.name}": ${err}`);
-        return;
+        return false;
       }
     }
 
@@ -161,6 +165,7 @@ export class MonitorRuntime {
     this.readStdout(mon);
     this.readStderr(mon);
     this.watchExit(mon);
+    return true;
   }
 
   private readStdout(mon: RunningMonitor): void {
