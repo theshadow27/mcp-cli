@@ -8,11 +8,23 @@ export interface DerivedCtx {
   bus: EventBus;
 }
 
+/** Signal that the rule cannot apply yet but should be retried (e.g. work item not yet created). */
+export interface DerivedPending {
+  pending: true;
+  reason: string;
+}
+
+export type DeriveResult = MonitorEventInput | DerivedPending | null;
+
+export function isDerivedPending(r: DeriveResult): r is DerivedPending {
+  return r !== null && "pending" in r && r.pending === true;
+}
+
 export interface DerivedRule {
   name: string;
   match: (event: MonitorEvent) => boolean;
-  /** Mutates DB state and returns the event to emit, or null to skip. Publisher stamps src and causedBy. */
-  apply: (event: MonitorEvent, ctx: DerivedCtx) => MonitorEventInput | null;
+  /** Mutates DB state and returns the event to emit, pending to retry, or null to skip. Publisher stamps src and causedBy. */
+  apply: (event: MonitorEvent, ctx: DerivedCtx) => DeriveResult;
 }
 
 export const prMergedToDone: DerivedRule = {
@@ -21,7 +33,8 @@ export const prMergedToDone: DerivedRule = {
   apply: (e, ctx) => {
     const prNumber = e.prNumber as number;
     const wi = ctx.workItemDb.getWorkItemByPr(prNumber);
-    if (!wi || wi.phase !== "qa") return null;
+    if (!wi) return { pending: true, reason: `no work item for PR #${prNumber}` };
+    if (wi.phase !== "qa") return null;
     ctx.workItemDb.updateWorkItem(wi.id, { phase: "done" });
     return {
       src: "daemon.derived",

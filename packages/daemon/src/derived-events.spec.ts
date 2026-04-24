@@ -4,7 +4,7 @@ import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { PHASE_CHANGED } from "@mcp-cli/core";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher } from "./derived-events";
-import { DEFAULT_RULES, prMergedToDone } from "./derived-rules";
+import { DEFAULT_RULES, isDerivedPending, prMergedToDone } from "./derived-rules";
 import type { DerivedCtx, DerivedRule } from "./derived-rules";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
@@ -49,7 +49,7 @@ describe("prMergedToDone rule", () => {
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     const result = prMergedToDone.apply(stampEvent(prMergedInput(), 5), ctx);
 
-    if (!result) throw new Error("expected non-null result");
+    if (!result || isDerivedPending(result)) throw new Error("expected non-null, non-pending result");
     expect(result.event).toBe(PHASE_CHANGED);
     expect(result.category).toBe("work_item");
     expect(result.workItemId).toBe(wi.id);
@@ -79,12 +79,14 @@ describe("prMergedToDone rule", () => {
     expect(prMergedToDone.apply(stampEvent(prMergedInput(), 5), ctx)).toBeNull();
   });
 
-  test("returns null when no work item for PR", () => {
+  test("returns pending when no work item for PR", () => {
     const db = freshDb();
     const workItemDb = new WorkItemDb(db);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
-    expect(prMergedToDone.apply(stampEvent(prMergedInput(999), 5), ctx)).toBeNull();
+    const result = prMergedToDone.apply(stampEvent(prMergedInput(999), 5), ctx);
+    if (!isDerivedPending(result)) throw new Error("expected pending result");
+    expect(result.reason).toContain("999");
   });
 
   test("second invocation is a no-op after phase transitions to done", () => {
@@ -143,19 +145,100 @@ describe("DerivedEventPublisher", () => {
     expect(received[0].event).toBe("pr.merged");
   });
 
-  test("does not publish when no work item exists", () => {
+  test("schedules retry when no work item exists (pending)", async () => {
     const db = freshDb();
     const bus = new EventBus();
     const workItemDb = new WorkItemDb(db);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 10 });
 
-    bus.publish(prMergedInput(999));
+    bus.publish(prMergedInput(42));
+
+    // Work item created after event fires — the retry should pick it up
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+
+    // Poll until the derived event appears (retry fires at ~10ms)
+    const deadline = Date.now() + 2000;
+    while (received.length < 2 && Date.now() < deadline) {
+      await Bun.sleep(5);
+    }
+
     pub.dispose();
 
+    expect(received).toHaveLength(2);
+    expect(received[0].event).toBe("pr.merged");
+    expect(received[1].event).toBe(PHASE_CHANGED);
+    expect(received[1].to).toBe("done");
+  });
+
+  test("retry succeeds and updates DB", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 10 });
+
+    bus.publish(prMergedInput(42));
+    const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+
+    const deadline = Date.now() + 2000;
+    while (workItemDb.getWorkItem(wi.id)?.phase !== "done" && Date.now() < deadline) {
+      await Bun.sleep(5);
+    }
+
+    pub.dispose();
+
+    expect(workItemDb.getWorkItem(wi.id)?.phase).toBe("done");
+  });
+
+  test("retry exhaustion: drops event after max retries", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 10 });
+
+    // Fire pr.merged with no work item — never create one
+    bus.publish(prMergedInput(999));
+
+    // Wait long enough for all 3 retries to exhaust (10 + 20 + 40 = 70ms, give margin)
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      await Bun.sleep(10);
+      // Break early once we're well past all retries
+      if (Date.now() > deadline - 1500) break;
+    }
+
+    pub.dispose();
+
+    // Only the original pr.merged event — no derived event produced
     expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("pr.merged");
+  });
+
+  test("dispose cancels pending retries", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+    // Use long retry delay so we can dispose before it fires
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 5000 });
+
+    bus.publish(prMergedInput(42));
+    pub.dispose();
+
+    // Create work item after dispose — retry should never fire
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+    await Bun.sleep(50);
+
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("pr.merged");
   });
 
   test("updates work item phase in DB", () => {
@@ -378,5 +461,60 @@ describe("DerivedEventPublisher", () => {
 
     const derived = received.find((e) => e.event === "test.derived");
     expect(derived?.src).toBe("daemon.derived");
+  });
+
+  // ── Retry-specific integration tests ──
+
+  test("retry does not re-derive if work item created with non-QA phase", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 10 });
+
+    bus.publish(prMergedInput(42));
+
+    // Create work item in "done" phase — retry should find it but skip (null, not pending)
+    workItemDb.createWorkItem({ prNumber: 42, phase: "done" });
+
+    await Bun.sleep(100);
+    pub.dispose();
+
+    // Only the original pr.merged — no derived event
+    expect(received).toHaveLength(1);
+  });
+
+  test("pending rule does not cause infinite loop via depth cap on retried events", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    let retryCount = 0;
+    const alwaysPending: DerivedRule = {
+      name: "always-pending",
+      match: (e) => e.event === "pr.merged",
+      apply: () => {
+        retryCount++;
+        return { pending: true, reason: "always pending" };
+      },
+    };
+
+    const pub = new DerivedEventPublisher({ bus, rules: [alwaysPending], workItemDb, db, retryBaseMs: 10 });
+
+    bus.publish(prMergedInput(42));
+
+    // Wait for all retries to exhaust
+    await Bun.sleep(200);
+    pub.dispose();
+
+    // 1 initial + 3 retries = 4 total apply calls
+    expect(retryCount).toBe(4);
+    // Only the original event — no derived events
+    expect(received).toHaveLength(1);
   });
 });
