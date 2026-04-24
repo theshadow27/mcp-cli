@@ -222,6 +222,17 @@ describe("createWaitForEvent", () => {
     expect(result.seq).toBe(2);
   });
 
+  test("empty-spec waitForEvent({}) skips normalized heartbeats, resolves with next real event", async () => {
+    // Regression for #1718: standard-shape heartbeats must not resolve empty-spec waitForEvent.
+    const hb = makeEvent({ event: "heartbeat", category: "heartbeat", seq: 1, src: "daemon" });
+    const target = makeEvent({ event: "pr.opened", category: "work_item", seq: 2 });
+
+    const waitFor = createWaitForEvent(() => fakeStream([hb, target]));
+    const result = await waitFor({});
+    expect(result.seq).toBe(2);
+    expect(result.event).toBe("pr.opened");
+  });
+
   test("rejects with WaitTimeoutError after timeoutMs", async () => {
     // Infinite stream that yields nothing matching
     const noise = makeEvent({ event: "pr.opened", category: "work_item" });
