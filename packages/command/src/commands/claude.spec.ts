@@ -1856,7 +1856,7 @@ describe("mcx claude bye", () => {
     }
   });
 
-  test("reports failure when git worktree remove fails", async () => {
+  test("reports success when directory is absent even if git remove fails", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-locked", cwd: "/repo" });
@@ -1874,7 +1874,8 @@ describe("mcx claude bye", () => {
     try {
       await cmdClaude(["bye", "def"], deps);
       const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
-      expect(errOutput).toContain("Failed to remove worktree:");
+      // Directory doesn't exist on disk → verified removed regardless of exit code
+      expect(errOutput).toContain("Removed worktree:");
     } finally {
       console.log = origLog;
     }
@@ -3187,6 +3188,7 @@ describe("mcx claude bye branch cleanup", () => {
       if (cmd.includes("--show-current")) return { stdout: "feat/issue-42", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
@@ -3344,6 +3346,7 @@ describe("mcx claude worktrees", () => {
       if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
@@ -3527,6 +3530,7 @@ describe("mcx claude worktrees", () => {
       if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
       if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});

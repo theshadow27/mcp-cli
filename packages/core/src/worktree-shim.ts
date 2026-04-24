@@ -200,7 +200,17 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
 
   // Check for uncommitted changes (trim to handle trailing newline from some git versions)
   const { stdout: rawStatus, exitCode: statusExit } = deps.exec(["git", "-C", worktreePath, "status", "--porcelain"]);
-  if (statusExit !== 0) return;
+  if (statusExit !== 0) {
+    // git status failed — worktree may be corrupted or partially removed.
+    // Attempt removal anyway rather than silently leaving it registered.
+    if (existsSync(worktreePath)) {
+      deps.printError(
+        `Warning: git status failed in worktree (exit ${statusExit}), attempting removal: ${worktreePath}`,
+      );
+      removeWorktreeWithVerification(effectiveRoot, worktreePath, deps);
+    }
+    return;
+  }
   const status = rawStatus.trim();
 
   if (status === "") {
@@ -211,28 +221,17 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
-      if (hookExit === 0) {
+      if (hookExit === 0 && !existsSync(worktreePath)) {
         deps.printError(`Removed worktree via hook: ${worktreePath}`);
         deleteIfSafeToDelete(branch, effectiveRoot, deps);
+      } else if (hookExit === 0) {
+        deps.printError(`Worktree teardown hook returned success but directory still exists: ${worktreePath}`);
       } else {
         deps.printError(`Worktree teardown hook failed for: ${worktreePath}: ${hookStderr}`);
       }
     } else {
-      const bareBeforeCleanup = isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd));
-      const { exitCode: removeExit } = deps.exec(["git", "-C", effectiveRoot, "worktree", "remove", worktreePath]);
-      if (removeExit === 0) {
-        if (!bareBeforeCleanup && isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd))) {
-          deps.printError(
-            `[shim] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${effectiveRoot}) — see #1330`,
-          );
-        }
-        if (fixCoreBare(effectiveRoot, (cmd) => deps.exec(cmd))) {
-          deps.printError("Fixed core.bare=true after worktree removal");
-        }
-        deps.printError(`Removed worktree: ${worktreePath}`);
+      if (removeWorktreeWithVerification(effectiveRoot, worktreePath, deps)) {
         deleteIfSafeToDelete(branch, effectiveRoot, deps);
-      } else {
-        deps.printError(`Failed to remove worktree: ${worktreePath}`);
       }
     }
   } else {
@@ -253,6 +252,54 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
   }
 }
 
+/**
+ * Attempt `git worktree remove`, verify the directory is actually gone,
+ * and retry with --force if needed. Only prints success after verification.
+ * Returns true if the directory was verified removed.
+ */
+function removeWorktreeWithVerification(repoRoot: string, worktreePath: string, deps: WorktreeShimDeps): boolean {
+  const bareBeforeCleanup = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
+  const { exitCode: removeExit, stderr: removeStderr } = deps.exec([
+    "git",
+    "-C",
+    repoRoot,
+    "worktree",
+    "remove",
+    worktreePath,
+  ]);
+
+  if (removeExit === 0 && !bareBeforeCleanup && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError(
+      `[shim] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
+    );
+  }
+  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError("Fixed core.bare=true after worktree removal");
+  }
+
+  // Verify: directory must actually be gone
+  if (!existsSync(worktreePath)) {
+    deps.printError(`Removed worktree: ${worktreePath}`);
+    return true;
+  }
+
+  // Directory persists despite exit 0, or initial remove failed — retry with --force
+  const { stderr: forceStderr } = deps.exec(["git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath]);
+  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printError("Fixed core.bare=true after worktree removal");
+  }
+
+  if (!existsSync(worktreePath)) {
+    deps.printError(`Removed worktree (--force): ${worktreePath}`);
+    return true;
+  }
+
+  // Both attempts failed — report with diagnostics
+  const stderr = forceStderr || removeStderr;
+  deps.printError(`Failed to remove worktree: ${worktreePath}${stderr ? ` (${stderr})` : ""}`);
+  return false;
+}
+
 /** Delete a branch if git branch -d considers it safe (merged into HEAD or upstream). */
 function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
   if (!branch) return false;
@@ -262,8 +309,21 @@ function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeSh
     if (!bareBeforeDelete && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
       deps.printError(`[shim] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`);
     }
-    deps.printError(`Deleted branch: ${branch} (safe)`);
-    return true;
+    // Verify the branch is actually gone
+    const { exitCode: verifyExit } = deps.exec([
+      "git",
+      "-C",
+      repoRoot,
+      "rev-parse",
+      "--verify",
+      `refs/heads/${branch}`,
+    ]);
+    if (verifyExit !== 0) {
+      deps.printError(`Deleted branch: ${branch} (safe)`);
+      return true;
+    }
+    deps.printError(`Warning: git branch -d returned success but branch still exists: ${branch}`);
+    return false;
   }
   return false;
 }
@@ -415,28 +475,19 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd: repoRoot });
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
-      if (hookExit === 0) {
+      if (hookExit === 0 && !existsSync(wt.path)) {
         deps.printError(`Removed worktree via hook: ${wt.path}`);
         pruned++;
         if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
         }
+      } else if (hookExit === 0) {
+        deps.printError(`Worktree teardown hook returned success but directory still exists: ${wt.path}`);
       } else {
         deps.printError(`Worktree teardown hook failed for: ${wt.path}: ${hookStderr}`);
       }
     } else {
-      const bareBeforePrune = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
-      const { exitCode: removeExit } = deps.exec(["git", "-C", repoRoot, "worktree", "remove", wt.path]);
-      if (removeExit === 0) {
-        if (!bareBeforePrune && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
-          deps.printError(
-            `[shim] core.bare flipped to true by: git worktree remove ${wt.path} (repo=${repoRoot}) — see #1330`,
-          );
-        }
-        if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-          deps.printError("Fixed core.bare=true after worktree removal");
-        }
-        deps.printError(`Removed worktree: ${wt.path}`);
+      if (removeWorktreeWithVerification(repoRoot, wt.path, deps)) {
         pruned++;
         if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
