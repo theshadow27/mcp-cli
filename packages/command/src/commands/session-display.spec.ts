@@ -237,6 +237,7 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     ciRunId: null,
     ciSummary: null,
     reviewStatus: "none",
+    mergeStateStatus: null,
     phase: "impl",
     createdAt: "2026-04-10T00:00:00Z",
     updatedAt: "2026-04-10T00:00:00Z",

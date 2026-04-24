@@ -17,6 +17,9 @@ export type CiStatus = "none" | "pending" | "running" | "passed" | "failed";
 /** Pull request state. */
 export type PrState = "draft" | "open" | "merged" | "closed";
 
+/** GitHub merge state status for a pull request. */
+export type MergeStateStatus = "CLEAN" | "BEHIND" | "DIRTY" | "BLOCKED" | "HAS_HOOKS" | "UNSTABLE" | "UNKNOWN";
+
 /** Code review status. */
 export type ReviewStatus = "none" | "pending" | "approved" | "changes_requested";
 
@@ -33,6 +36,7 @@ export interface WorkItem {
   ciRunId: number | null;
   ciSummary: string | null;
   reviewStatus: ReviewStatus;
+  mergeStateStatus: MergeStateStatus | null;
   phase: WorkItemPhase;
   createdAt: string;
   updatedAt: string;
@@ -65,7 +69,14 @@ export type WorkItemEvent =
   | { type: "checks:failed"; prNumber: number; failedJob: string }
   | { type: "review:approved"; prNumber: number }
   | { type: "review:changes_requested"; prNumber: number; reviewer: string }
-  | { type: "phase:changed"; itemId: string; from: WorkItemPhase; to: WorkItemPhase };
+  | { type: "phase:changed"; itemId: string; from: WorkItemPhase; to: WorkItemPhase }
+  | {
+      type: "pr:merge_state_changed";
+      prNumber: number;
+      from: MergeStateStatus | null;
+      to: MergeStateStatus;
+      cascadeHead: number | null;
+    };
 
 /**
  * Valid phase transitions. Each key maps to the set of phases reachable from it.
@@ -108,6 +119,7 @@ export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
     ciRunId: null,
     ciSummary: null,
     reviewStatus: "none",
+    mergeStateStatus: null,
     phase: phase ?? "impl",
     createdAt: now,
     updatedAt: now,
