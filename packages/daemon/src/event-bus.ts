@@ -154,8 +154,8 @@ export class EventBus {
     return this.coalescer;
   }
 
-  publishCoalesced(input: MonitorEventInput, key: string, policy: SubmitOptions<MonitorEventInput>): void {
-    this.getCoalescer().submit(key, input, policy);
+  publishCoalesced(input: MonitorEventInput, key: string, options: SubmitOptions<MonitorEventInput>): void {
+    this.getCoalescer().submit(key, input, options);
   }
 
   flushCoalesced(key?: string): void {
