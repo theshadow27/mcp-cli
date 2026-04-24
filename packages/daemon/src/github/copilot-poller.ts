@@ -218,6 +218,17 @@ export class CopilotPoller {
         (item) => item.prNumber === null && item.issueNumber !== null && item.phase !== "done",
       );
 
+      for (const item of allItems) {
+        if (
+          item.prNumber !== null &&
+          (item.prState === "merged" || item.prState === "closed" || item.phase === "done")
+        ) {
+          this.stateDb.deleteCopilotCommentState(item.prNumber);
+        } else if (item.prNumber === null && item.issueNumber !== null && item.phase === "done") {
+          this.stateDb.deleteCopilotCommentState(item.issueNumber);
+        }
+      }
+
       if (tracked.length === 0 && trackedIssues.length === 0) {
         this._lastError = null;
         this._pollCount++;
