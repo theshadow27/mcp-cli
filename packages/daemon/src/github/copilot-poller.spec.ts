@@ -1,9 +1,25 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MonitorEventInput } from "@mcp-cli/core";
-import { COPILOT_INLINE_POSTED } from "@mcp-cli/core";
+import {
+  COPILOT_INLINE_POSTED,
+  ISSUE_COMMENT,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
+  REVIEW_COMMENT,
+  REVIEW_STICKY_UPDATED,
+} from "@mcp-cli/core";
 import { WorkItemDb } from "../db/work-items";
-import { CopilotPoller, type CopilotPollerOptions, type FetchCommentsResult, type PRComment } from "./copilot-poller";
+import {
+  CopilotPoller,
+  type CopilotPollerOptions,
+  type FetchCommentsResult,
+  type FetchIssueCommentsResult,
+  type FetchReviewsResult,
+  type GitHubReview,
+  type IssueComment,
+  type PRComment,
+} from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
@@ -25,32 +41,88 @@ function makeComment(overrides: Partial<PRComment> & { id: number }): PRComment 
   };
 }
 
+function okReviewResult(reviews: GitHubReview[]): FetchReviewsResult {
+  return { reviews, rateLimitLow: false, rateLimitRemaining: 5000 };
+}
+
+function okIssueCommentResult(comments: IssueComment[]): FetchIssueCommentsResult {
+  return { comments, rateLimitLow: false, rateLimitRemaining: 5000 };
+}
+
+function makeReview(overrides: Partial<GitHubReview> & { id: number }): GitHubReview {
+  return {
+    user: { login: "github-copilot[bot]" },
+    state: "COMMENTED",
+    body: "Review body.",
+    submitted_at: "2024-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeIssueComment(overrides: Partial<IssueComment> & { id: number }): IssueComment {
+  return {
+    user: { login: "theshadow27" },
+    body: "Some comment.",
+    ...overrides,
+  };
+}
+
 /** Minimal StateDb-like wrapper around an in-memory SQLite database. */
 function createStateDb(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS copilot_comment_state (
-      pr_number        INTEGER PRIMARY KEY,
-      seen_comment_ids TEXT NOT NULL DEFAULT '[]',
-      last_poll_ts     TEXT NOT NULL DEFAULT (datetime('now'))
+      pr_number              INTEGER PRIMARY KEY,
+      seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
+      seen_review_ids        TEXT NOT NULL DEFAULT '[]',
+      seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
+      seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
+      last_sticky_body_hash  TEXT,
+      last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  function getJsonCol(col: string, key: number): number[] {
+    const row = db
+      .query<Record<string, string>, [number]>(`SELECT ${col} FROM copilot_comment_state WHERE pr_number = ?`)
+      .get(key);
+    return row ? (JSON.parse(row[col]) as number[]) : [];
+  }
+
+  function upsertJsonCol(col: string, key: number, ids: number[]): void {
+    db.query(
+      `INSERT INTO copilot_comment_state (pr_number, ${col}, last_poll_ts)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(pr_number) DO UPDATE SET
+         ${col} = excluded.${col},
+         last_poll_ts = excluded.last_poll_ts`,
+    ).run(key, JSON.stringify(ids));
+  }
+
   return {
-    getSeenCommentIds(prNumber: number): number[] {
+    getSeenCommentIds: (n: number) => getJsonCol("seen_comment_ids", n),
+    updateSeenCommentIds: (n: number, ids: number[]) => upsertJsonCol("seen_comment_ids", n, ids),
+    getSeenReviewIds: (n: number) => getJsonCol("seen_review_ids", n),
+    updateSeenReviewIds: (n: number, ids: number[]) => upsertJsonCol("seen_review_ids", n, ids),
+    getSeenPRCommentIds: (n: number) => getJsonCol("seen_pr_comment_ids", n),
+    updateSeenPRCommentIds: (n: number, ids: number[]) => upsertJsonCol("seen_pr_comment_ids", n, ids),
+    getSeenIssueCommentIds: (n: number) => getJsonCol("seen_issue_comment_ids", n),
+    updateSeenIssueCommentIds: (n: number, ids: number[]) => upsertJsonCol("seen_issue_comment_ids", n, ids),
+    getStickyBodyHash(prNumber: number): string | null {
       const row = db
-        .query<{ seen_comment_ids: string }, [number]>(
-          "SELECT seen_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
+        .query<{ last_sticky_body_hash: string | null }, [number]>(
+          "SELECT last_sticky_body_hash FROM copilot_comment_state WHERE pr_number = ?",
         )
         .get(prNumber);
-      return row ? (JSON.parse(row.seen_comment_ids) as number[]) : [];
+      return row?.last_sticky_body_hash ?? null;
     },
-    updateSeenCommentIds(prNumber: number, ids: number[]): void {
+    updateStickyBodyHash(prNumber: number, hash: string | null): void {
       db.query(
-        `INSERT INTO copilot_comment_state (pr_number, seen_comment_ids, last_poll_ts)
+        `INSERT INTO copilot_comment_state (pr_number, last_sticky_body_hash, last_poll_ts)
          VALUES (?, ?, datetime('now'))
          ON CONFLICT(pr_number) DO UPDATE SET
-           seen_comment_ids = excluded.seen_comment_ids,
+           last_sticky_body_hash = excluded.last_sticky_body_hash,
            last_poll_ts = excluded.last_poll_ts`,
-      ).run(prNumber, JSON.stringify(ids));
+      ).run(prNumber, hash);
     },
   };
 }
@@ -79,6 +151,8 @@ describe("CopilotPoller", () => {
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",
       fetchComments: async () => okResult([]),
+      fetchReviews: async () => okReviewResult([]),
+      fetchIssueComments: async () => okIssueCommentResult([]),
       onEvent: (e) => events.push(e),
       ...overrides,
     });
@@ -490,6 +564,322 @@ describe("CopilotPoller", () => {
       expect(events[0].prNumber).toBe(43);
       // lastError is null because the overall poll succeeded (per-PR errors are logged but don't set _lastError)
       expect(poller.lastError).toBeNull();
+    });
+  });
+
+  // ── PR reviews (#1579) ──
+
+  describe("PR reviews", () => {
+    test("new review emits review.approved for APPROVED state", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () =>
+          okReviewResult([makeReview({ id: 5001, state: "APPROVED", user: { login: "reviewer1" } })]),
+      });
+
+      await poller.poll();
+
+      const reviewEvents = events.filter((e) => e.event === REVIEW_APPROVED);
+      expect(reviewEvents).toHaveLength(1);
+      expect(reviewEvents[0].reviewId).toBe(5001);
+      expect(reviewEvents[0].author).toBe("reviewer1");
+      expect(reviewEvents[0].category).toBe("review");
+    });
+
+    test("new review emits review.changes_requested for CHANGES_REQUESTED state", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () =>
+          okReviewResult([makeReview({ id: 5002, state: "CHANGES_REQUESTED", body: "Fix these issues" })]),
+      });
+
+      await poller.poll();
+
+      const reviewEvents = events.filter((e) => e.event === REVIEW_CHANGES_REQUESTED);
+      expect(reviewEvents).toHaveLength(1);
+      expect(reviewEvents[0].reviewId).toBe(5002);
+      expect(reviewEvents[0].body).toBe("Fix these issues");
+    });
+
+    test("new review emits review.comment for COMMENTED state", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () => okReviewResult([makeReview({ id: 5003, state: "COMMENTED" })]),
+      });
+
+      await poller.poll();
+
+      const reviewEvents = events.filter((e) => e.event === REVIEW_COMMENT);
+      expect(reviewEvents).toHaveLength(1);
+      expect(reviewEvents[0].reviewId).toBe(5003);
+    });
+
+    test("PENDING reviews are skipped", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () => okReviewResult([makeReview({ id: 5004, state: "PENDING" })]),
+      });
+
+      await poller.poll();
+
+      const reviewEvents = events.filter(
+        (e) => e.event === REVIEW_APPROVED || e.event === REVIEW_CHANGES_REQUESTED || e.event === REVIEW_COMMENT,
+      );
+      expect(reviewEvents).toHaveLength(0);
+    });
+
+    test("already-seen reviews are not re-emitted", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      stateDb.updateSeenReviewIds(42, [5001]);
+      const { poller, events } = makePoller({
+        fetchReviews: async () => okReviewResult([makeReview({ id: 5001, state: "APPROVED" })]),
+      });
+
+      await poller.poll();
+
+      const reviewEvents = events.filter((e) => e.event === REVIEW_APPROVED);
+      expect(reviewEvents).toHaveLength(0);
+    });
+
+    test("review state transitions: first APPROVED, then CHANGES_REQUESTED", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller, events } = makePoller({
+        fetchReviews: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return okReviewResult([makeReview({ id: 5001, state: "APPROVED", user: { login: "reviewer" } })]);
+          }
+          return okReviewResult([
+            makeReview({ id: 5001, state: "APPROVED", user: { login: "reviewer" } }),
+            makeReview({ id: 5002, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }),
+          ]);
+        },
+      });
+
+      await poller.poll();
+      expect(events.filter((e) => e.event === REVIEW_APPROVED)).toHaveLength(1);
+
+      await poller.poll();
+      const reqChanges = events.filter((e) => e.event === REVIEW_CHANGES_REQUESTED);
+      expect(reqChanges).toHaveLength(1);
+      expect(reqChanges[0].reviewId).toBe(5002);
+    });
+  });
+
+  // ── Sticky-comment detection (#1579) ──
+
+  describe("sticky-comment detection", () => {
+    test("identical body on subsequent poll does not emit sticky_updated", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const review = makeReview({ id: 6001, body: "Summary: all good" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () => okReviewResult([review]),
+      });
+
+      await poller.poll();
+      await poller.poll();
+
+      const stickyEvents = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
+      expect(stickyEvents).toHaveLength(0);
+    });
+
+    test("changed body emits review.sticky_updated with new hash", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller, events } = makePoller({
+        fetchReviews: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return okReviewResult([makeReview({ id: 6001, body: "Summary: 3 issues" })]);
+          }
+          return okReviewResult([makeReview({ id: 6001, body: "Summary: 0 issues — all resolved" })]);
+        },
+      });
+
+      await poller.poll();
+      const stickyAfterFirst = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
+      expect(stickyAfterFirst).toHaveLength(0);
+
+      await poller.poll();
+      const stickyAfterSecond = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
+      expect(stickyAfterSecond).toHaveLength(1);
+      expect(stickyAfterSecond[0].reviewId).toBe(6001);
+      expect(stickyAfterSecond[0].author).toBe("github-copilot[bot]");
+      expect(typeof stickyAfterSecond[0].bodyHash).toBe("string");
+    });
+
+    test("non-bot reviews do not trigger sticky detection", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller, events } = makePoller({
+        fetchReviews: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return okReviewResult([makeReview({ id: 6002, user: { login: "human" }, body: "LGTM" })]);
+          }
+          return okReviewResult([makeReview({ id: 6002, user: { login: "human" }, body: "Actually, wait..." })]);
+        },
+      });
+
+      await poller.poll();
+      await poller.poll();
+
+      const stickyEvents = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
+      expect(stickyEvents).toHaveLength(0);
+    });
+
+    test("review with empty body does not trigger sticky detection", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchReviews: async () => okReviewResult([makeReview({ id: 6003, body: "" })]),
+      });
+
+      await poller.poll();
+      await poller.poll();
+
+      const stickyEvents = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
+      expect(stickyEvents).toHaveLength(0);
+    });
+  });
+
+  // ── Top-level PR comments (#1579) ──
+
+  describe("top-level PR comments", () => {
+    test("new PR comment emits review.comment", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchIssueComments: async () =>
+          okIssueCommentResult([makeIssueComment({ id: 7001, user: { login: "reviewer" } })]),
+      });
+
+      await poller.poll();
+
+      const commentEvents = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      expect(commentEvents).toHaveLength(1);
+      expect(commentEvents[0].commentId).toBe(7001);
+      expect(commentEvents[0].author).toBe("reviewer");
+      expect(commentEvents[0].prNumber).toBe(42);
+      expect(commentEvents[0].category).toBe("review");
+    });
+
+    test("already-seen PR comments are not re-emitted", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      stateDb.updateSeenPRCommentIds(42, [7001]);
+      const { poller, events } = makePoller({
+        fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 7001 })]),
+      });
+
+      await poller.poll();
+
+      const commentEvents = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      expect(commentEvents).toHaveLength(0);
+    });
+
+    test("PR comment IDs survive across polls", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller, events } = makePoller({
+        fetchIssueComments: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return okIssueCommentResult([makeIssueComment({ id: 7001 })]);
+          }
+          return okIssueCommentResult([makeIssueComment({ id: 7001 }), makeIssueComment({ id: 7002 })]);
+        },
+      });
+
+      await poller.poll();
+      const firstComments = events.filter((e) => e.event === REVIEW_COMMENT && e.commentId !== undefined);
+      expect(firstComments).toHaveLength(1);
+      expect(firstComments[0].commentId).toBe(7001);
+
+      await poller.poll();
+      const secondComments = events.filter(
+        (e) => e.event === REVIEW_COMMENT && e.commentId !== undefined && e.commentId === 7002,
+      );
+      expect(secondComments).toHaveLength(1);
+    });
+  });
+
+  // ── Issue comments (#1579) ──
+
+  describe("issue comments", () => {
+    test("new issue comment emits issue.comment", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      const { poller, events } = makePoller({
+        fetchIssueComments: async () =>
+          okIssueCommentResult([makeIssueComment({ id: 8001, user: { login: "contributor" } })]),
+      });
+
+      await poller.poll();
+
+      const issueEvents = events.filter((e) => e.event === ISSUE_COMMENT);
+      expect(issueEvents).toHaveLength(1);
+      expect(issueEvents[0].commentId).toBe(8001);
+      expect(issueEvents[0].author).toBe("contributor");
+      expect(issueEvents[0].category).toBe("issue");
+      expect(issueEvents[0].workItemId).toBe("#99");
+    });
+
+    test("issue-only items are polled (no prNumber)", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      const fetched: number[] = [];
+      const { poller } = makePoller({
+        fetchIssueComments: async (_repo, num) => {
+          fetched.push(num);
+          return okIssueCommentResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).toContain(99);
+    });
+
+    test("already-seen issue comments are not re-emitted", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      stateDb.updateSeenIssueCommentIds(99, [8001]);
+      const { poller, events } = makePoller({
+        fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 8001 })]),
+      });
+
+      await poller.poll();
+
+      expect(events.filter((e) => e.event === ISSUE_COMMENT)).toHaveLength(0);
+    });
+
+    test("issue comments are not polled for PR-based work items", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open", issueNumber: 99 });
+      const fetchedIssueNums: number[] = [];
+      const { poller } = makePoller({
+        fetchIssueComments: async (_repo, num) => {
+          fetchedIssueNums.push(num);
+          return okIssueCommentResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      // PR-based items use fetchIssueComments for PR top-level comments (prNumber=42),
+      // NOT for issue comments. Issue-only polling only happens for items with no PR.
+      expect(fetchedIssueNums).not.toContain(99);
+      expect(fetchedIssueNums).toContain(42);
+    });
+
+    test("done-phase issue items are not polled", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
+      const fetched: number[] = [];
+      const { poller } = makePoller({
+        fetchIssueComments: async (_repo, num) => {
+          fetched.push(num);
+          return okIssueCommentResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).not.toContain(99);
     });
   });
 });
