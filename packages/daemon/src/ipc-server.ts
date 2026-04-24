@@ -70,6 +70,7 @@ import {
   consoleLogger,
   hardenFile,
   isDefineAlias,
+  isDefineMonitor,
   loadManifest,
   matchFilter,
   options,
@@ -177,6 +178,7 @@ export class IpcServer {
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null = null;
   private aliasServer: AliasServer | null = null;
   private eventBus: EventBus | null = null;
+  private onAliasChanged: ((name: string) => void) | null = null;
   private daemonId: string;
   private startedAt: number;
   private logger: Logger;
@@ -211,6 +213,8 @@ export class IpcServer {
       loadManifest?: (repoRoot: string) => Manifest | null;
       /** Event bus for unified monitor stream; mail events are published here. */
       eventBus?: EventBus;
+      /** Called after an alias is saved/deleted so monitor aliases can be restarted. */
+      onAliasChanged?: (name: string) => void;
     },
   ) {
     this.daemonId = options.daemonId;
@@ -226,6 +230,7 @@ export class IpcServer {
     this.resolveIssuePr = options.resolveIssuePr ?? null;
     this.loadManifestFn = options.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null);
     this.drainTimeoutMs = options.drainTimeoutMs ?? 5_000;
+    this.onAliasChanged = options.onAliasChanged ?? null;
     this.eventBus = options.eventBus ?? null;
     if (this.eventBus) {
       this.eventSeq = this.eventBus.currentSeq;
@@ -790,6 +795,7 @@ export class IpcServer {
         typeof params === "object" && params !== null && Object.prototype.hasOwnProperty.call(params, "scope");
       const filePath = safeAliasPath(name);
       mkdirSync(options.ALIASES_DIR, { recursive: true });
+      const wasMonitor = this.db.getAlias(name)?.aliasType === "defineMonitor";
 
       // Guard: refuse to overwrite a permanent alias with an ephemeral one.
       // This check must happen BEFORE writeFileSync to protect the file on disk.
@@ -804,11 +810,12 @@ export class IpcServer {
       // UPDATE branch preserves the existing row's scope atomically (no TOCTOU).
       const scope: string | null = scopeProvided ? (parsed.scope ?? null) : null;
 
-      const isStructured = isDefineAlias(script);
+      const isMonitor = isDefineMonitor(script);
+      const isStructured = !isMonitor && isDefineAlias(script);
 
       let finalScript: string;
-      if (isStructured) {
-        // defineAlias scripts get everything via the virtual module — no auto-import
+      if (isStructured || isMonitor) {
+        // defineAlias and defineMonitor scripts get everything via the virtual module — no auto-import
         finalScript = script;
       } else {
         // Freeform: auto-prepend import if not present (existing behavior)
@@ -818,7 +825,7 @@ export class IpcServer {
 
       writeFileSync(filePath, finalScript, "utf-8");
 
-      const aliasType = isStructured ? "defineAlias" : "freeform";
+      const aliasType = isMonitor ? "defineMonitor" : isStructured ? "defineAlias" : "freeform";
       const warnings: string[] = [];
       const validationErrors: string[] = [];
 
@@ -883,6 +890,7 @@ export class IpcServer {
 
       // Refresh virtual alias server so new tool is immediately visible
       await this.aliasServer?.refresh();
+      if (isMonitor || wasMonitor) this.onAliasChanged?.(name);
       const result: { ok: true; filePath: string; warnings?: string[]; validationErrors?: string[] } = {
         ok: true,
         filePath,
@@ -905,6 +913,7 @@ export class IpcServer {
       }
       // Refresh virtual alias server so deleted tool is removed
       await this.aliasServer?.refresh();
+      if (alias?.aliasType === "defineMonitor") this.onAliasChanged?.(name);
       return { ok: true };
     });
 

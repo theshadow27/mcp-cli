@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod/v4";
-import type { AliasContext, AliasDefinition, McpProxy } from "./alias";
+import type { AliasContext, AliasDefinition, McpProxy, MonitorDefinition } from "./alias";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -146,11 +146,17 @@ export function stripModuleSyntax(bundledJs: string): string {
 /** @deprecated Use stripModuleSyntax — kept for backwards compatibility of test imports */
 export const stripMcpCliImport = stripModuleSyntax;
 
+/** Result of eval: either a defineAlias, defineMonitor, or null (freeform). */
+export interface EvalResult {
+  alias: AliasDefinition | null;
+  monitor: MonitorDefinition | null;
+}
+
 /**
- * Eval bundled alias JS with injected context, capturing any defineAlias call.
+ * Eval bundled alias JS with injected context, capturing any defineAlias
+ * or defineMonitor call.
  *
  * Shared core for extractMetadata and executeAliasBundled.
- * Returns the captured AliasDefinition, or null for freeform scripts.
  */
 async function evalBundledJs(
   bundledJs: string,
@@ -161,7 +167,7 @@ async function evalBundledJs(
     json: (p: string) => Promise<unknown>;
   },
   timeoutMs?: number,
-): Promise<AliasDefinition | null> {
+): Promise<EvalResult> {
   const stripped = stripModuleSyntax(bundledJs);
 
   // Lazy-load the @mcp-cli/core barrel at eval time. alias-bundle.ts is part
@@ -170,15 +176,19 @@ async function evalBundledJs(
   // are initialized.
   const coreBarrel = await import("./index");
 
-  let captured: AliasDefinition | null = null;
+  let capturedAlias: AliasDefinition | null = null;
+  let capturedMonitor: MonitorDefinition | null = null;
 
   const injected = {
     defineAlias: (defOrFactory: AliasDefinition | ((dctx: { mcp: McpProxy; z: typeof z }) => AliasDefinition)) => {
       if (typeof defOrFactory === "function") {
-        captured = defOrFactory({ mcp: ctx.mcp, z });
+        capturedAlias = defOrFactory({ mcp: ctx.mcp, z });
       } else {
-        captured = defOrFactory;
+        capturedAlias = defOrFactory;
       }
+    },
+    defineMonitor: (def: MonitorDefinition) => {
+      capturedMonitor = def;
     },
     z,
     mcp: ctx.mcp,
@@ -188,7 +198,7 @@ async function evalBundledJs(
     parsePythonRepr,
   };
 
-  const code = `const { defineAlias, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
+  const code = `const { defineAlias, defineMonitor, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
   const fn = new AsyncFunction("__mcp_inject__", "__mcp_core__", code);
 
   if (timeoutMs !== undefined) {
@@ -203,7 +213,7 @@ async function evalBundledJs(
     await fn(injected, coreBarrel);
   }
 
-  return captured;
+  return { alias: capturedAlias, monitor: capturedMonitor };
 }
 
 /**
@@ -213,11 +223,15 @@ async function evalBundledJs(
  * records the definition and extracts JSON Schemas from Zod types.
  */
 export async function extractMetadata(bundledJs: string, timeoutMs = 5_000): Promise<AliasMetadata> {
-  const captured = await evalBundledJs(
+  const { alias: captured, monitor } = await evalBundledJs(
     bundledJs,
     { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
     timeoutMs,
   );
+
+  if (monitor) {
+    return { name: monitor.name, description: monitor.description ?? "" };
+  }
 
   if (!captured) {
     throw new Error("Script did not call defineAlias()");
@@ -261,10 +275,9 @@ export async function executeAliasBundled(
   ctx: AliasContext,
   isDefineAlias: boolean,
 ): Promise<unknown> {
-  const captured = await evalBundledJs(bundledJs, ctx);
+  const { alias: captured } = await evalBundledJs(bundledJs, ctx);
 
   if (!isDefineAlias) {
-    // Freeform: side effects already executed during eval
     return undefined;
   }
 
@@ -290,17 +303,35 @@ export async function executeAliasBundled(
     if (!result.success) {
       console.error(`⚠ Output validation warning: ${result.error.message}`);
     }
-    // Always return consistently: coerced data on success, raw output on failure
     return result.success ? result.data : output;
   }
 
   return output;
 }
 
+/**
+ * Eval bundled defineMonitor JS, returning the captured MonitorDefinition.
+ * Used by the monitor executor subprocess.
+ */
+export async function evalMonitorBundled(bundledJs: string, mcp: McpProxy): Promise<MonitorDefinition> {
+  const { monitor } = await evalBundledJs(bundledJs, {
+    mcp,
+    args: {},
+    file: () => Promise.resolve(""),
+    json: () => Promise.resolve(null),
+  });
+
+  if (!monitor) {
+    throw new Error("Script did not call defineMonitor()");
+  }
+
+  return monitor;
+}
+
 /** Structured validation result for alias scripts. */
 export interface AliasValidationResult {
   valid: boolean;
-  aliasType: "defineAlias" | "freeform";
+  aliasType: "defineAlias" | "defineMonitor" | "freeform";
   name?: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
@@ -313,8 +344,8 @@ export interface AliasValidationResult {
  * Validate a bundled defineAlias script, returning structured results.
  *
  * Checks:
- * - Script calls defineAlias()
- * - name and fn are present
+ * - Script calls defineAlias() or defineMonitor()
+ * - name and fn/subscribe are present
  * - input/output are valid Zod schemas (can safeParse)
  * - input/output convert to JSON Schema
  */
@@ -326,9 +357,9 @@ export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000)
     warnings: [],
   };
 
-  let captured: AliasDefinition | null;
+  let evalResult: EvalResult;
   try {
-    captured = await evalBundledJs(
+    evalResult = await evalBundledJs(
       bundledJs,
       { mcp: stubProxy, args: {}, file: () => Promise.resolve(""), json: () => Promise.resolve(null) },
       timeoutMs,
@@ -339,6 +370,24 @@ export async function validateAliasBundled(bundledJs: string, timeoutMs = 5_000)
     return result;
   }
 
+  if (evalResult.monitor) {
+    result.aliasType = "defineMonitor";
+    const mon = evalResult.monitor;
+    if (!mon.name || typeof mon.name !== "string") {
+      result.valid = false;
+      result.errors.push("name: Missing or not a string");
+    } else {
+      result.name = mon.name;
+    }
+    if (typeof mon.subscribe !== "function") {
+      result.valid = false;
+      result.errors.push("subscribe: Missing or not a function");
+    }
+    result.description = mon.description ?? "";
+    return result;
+  }
+
+  const captured = evalResult.alias;
   if (!captured) {
     result.valid = false;
     result.errors.push("Script did not call defineAlias()");
@@ -406,6 +455,7 @@ declare module "mcp-cli" {
   export function file(path: string): Promise<string>;
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
+  export function defineMonitor(def: unknown): void;
   export const z: typeof import("zod/v4").z;
 }
 `.trimStart();

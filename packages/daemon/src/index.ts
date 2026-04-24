@@ -80,6 +80,7 @@ import { MailServer, buildMailToolCache } from "./mail-server";
 import { metrics } from "./metrics";
 import { MetricsServer } from "./metrics-server";
 import { MockServer, buildMockToolCache } from "./mock-server";
+import { MonitorRuntime } from "./monitor-runtime";
 import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
@@ -458,6 +459,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   let workItemPoller: WorkItemPoller | null = null;
   let copilotPoller: CopilotPoller | null = null;
   let derivedPublisher: DerivedEventPublisher | null = null;
+  let monitorRuntime: MonitorRuntime | null = null;
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -618,6 +620,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       return { prNumber: resolved.prNumber };
     },
     eventBus: mailEventBus,
+    onAliasChanged: (name) => {
+      monitorRuntime?.restartMonitor(name).catch((err) => {
+        logger.error(`[mcpd] Monitor restart for "${name}" failed: ${err}`);
+      });
+    },
   });
   ipcServer.start();
 
@@ -661,6 +668,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           const cachedTools = buildAliasToolCache(db);
           pool.registerVirtualServer(ALIAS_SERVER_NAME, client, transport, cachedTools);
           logger.info(`[mcpd] Alias server started (${cachedTools.size} tools)`);
+
+          // Start monitor runtime for defineMonitor aliases
+          monitorRuntime = new MonitorRuntime({
+            bus: mailEventBus,
+            logger,
+            listMonitors: () => db.listAliases().filter((a) => a.aliasType === "defineMonitor"),
+            getAlias: (name) => {
+              const a = db.getAlias(name);
+              if (!a) return undefined;
+              return { ...a, aliasType: a.aliasType };
+            },
+          });
+          await monitorRuntime.startAll();
         } catch (err) {
           logger.error(`[mcpd] Failed to start alias server: ${err}`);
         }
@@ -1027,6 +1047,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       workItemPoller?.stop();
       copilotPoller?.stop();
       derivedPublisher?.dispose();
+      if (monitorRuntime) {
+        const monPhase = performance.now();
+        await withPhaseTimeout(monitorRuntime.stopAll(), SHUTDOWN_PHASE_TIMEOUT_MS, "monitorRuntime.stopAll", logger);
+        logger.info(`[mcpd] Shutdown: monitorRuntime.stopAll took ${Math.round(performance.now() - monPhase)}ms`);
+      }
       mailEventBus.disposeCoalescer();
       try {
         watcher.stop();

@@ -116,7 +116,38 @@ export interface AliasDefinition<I = unknown, O = unknown> {
 }
 
 /** Alias type discriminant for DB and IPC */
-export type AliasType = "freeform" | "defineAlias";
+export type AliasType = "freeform" | "defineAlias" | "defineMonitor";
+
+/** Sentinel string to detect defineMonitor scripts without executing them */
+export const DEFINE_MONITOR_SENTINEL = "defineMonitor(";
+
+/** Check if source code uses defineMonitor() (static text analysis, no execution) */
+export function isDefineMonitor(source: string): boolean {
+  return source.includes(DEFINE_MONITOR_SENTINEL);
+}
+
+/** Context passed to a defineMonitor subscribe function */
+export interface MonitorContext {
+  signal: AbortSignal;
+  mcp: McpProxy;
+}
+
+/**
+ * Structured monitor definition with an async generator that yields events.
+ *
+ * At the defineMonitor call site:
+ *   defineMonitor({
+ *     name: "my-monitor",
+ *     subscribe: async function*(ctx) {
+ *       yield { event: "tick", category: "heartbeat" };
+ *     },
+ *   })
+ */
+export interface MonitorDefinition {
+  name: string;
+  description?: string;
+  subscribe: (ctx: MonitorContext) => AsyncGenerator<Record<string, unknown>>;
+}
 
 /**
  * Unwrap MCP tool call result content for ergonomic alias authoring.
