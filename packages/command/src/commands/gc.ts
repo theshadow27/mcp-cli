@@ -94,6 +94,8 @@ export interface GcDeps extends WorktreeShimDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Returns mtime (ms since epoch) for the given path, or null if it can't be stat'd. */
   getMtime: (path: string) => number | null;
+  /** Returns branch names that have a merged PR on GitHub, or null if the API is unavailable. */
+  queryMergedPrBranches: (cwd: string) => Set<string> | null;
   log: (msg: string) => void;
   logError: (msg: string) => void;
 }
@@ -132,6 +134,19 @@ export function defaultGcDeps(): GcDeps {
       // works here (worktree paths are directories).
       try {
         return statSync(path).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+    queryMergedPrBranches: (cwd) => {
+      const result = Bun.spawnSync(
+        ["gh", "pr", "list", "--state", "merged", "--json", "headRefName", "--limit", "500"],
+        { stdout: "pipe", stderr: "pipe", cwd },
+      );
+      if (result.exitCode !== 0) return null;
+      try {
+        const prs = JSON.parse(result.stdout.toString()) as Array<{ headRefName: string }>;
+        return new Set(prs.map((pr) => pr.headRefName));
       } catch {
         return null;
       }
@@ -285,6 +300,13 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       (b) => b !== defaultBranch && b !== current && !checkedOut.has(b) && !worktreeDeletedBranches.has(b),
     );
 
+    // Query GitHub for branches with merged PRs — enables force-delete for
+    // squash/rebase-merged branches where `git branch -d` fails.
+    const mergedPrBranches = candidates.length > 0 ? deps.queryMergedPrBranches(cwd) : null;
+    if (candidates.length > 0 && !mergedPrBranches) {
+      deps.logError("gc: GitHub API unavailable — squash-merged branches may not be cleaned");
+    }
+
     if (opts.dryRun) {
       deps.log(`${prefix}branches: would delete ${candidates.length} merged`);
       for (const b of candidates) deps.log(`  ${c.red}-${c.reset} ${b}`);
@@ -292,7 +314,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       let deleted = 0;
       const failed: string[] = [];
       for (const b of candidates) {
-        const { exitCode, stderr } = deps.exec(["git", "-C", cwd, "branch", "-d", b]);
+        const prConfirmed = mergedPrBranches?.has(b) ?? false;
+        const flag = prConfirmed ? "-D" : "-d";
+        const { exitCode, stderr } = deps.exec(["git", "-C", cwd, "branch", flag, b]);
         if (exitCode === 0) {
           deleted++;
         } else {
