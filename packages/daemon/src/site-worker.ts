@@ -16,6 +16,7 @@
  */
 
 import { existsSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -98,8 +99,15 @@ async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
   throw new Error(`Browser engine '${engine}' is not yet implemented. Use 'playwright'.`);
 }
 
+function resolveProfileDir(cfg: SiteConfig): string {
+  const raw = cfg.browser?.profileDir;
+  if (raw) {
+    return raw.startsWith("~/") ? raw.replace("~", homedir()) : raw;
+  }
+  return siteBrowserProfileDir(cfg.name, cfg.browser?.chromeProfile ?? "default");
+}
+
 function siteSpecFor(cfg: SiteConfig): SiteSpec {
-  const profile = cfg.browser?.chromeProfile ?? "default";
   const seedName = cfg.seed ?? cfg.name;
   const wiggleRel = cfg.wiggle;
   const wigglePath = wiggleRel ? resolveSiteAsset(cfg.name, wiggleRel) : null;
@@ -107,7 +115,7 @@ function siteSpecFor(cfg: SiteConfig): SiteSpec {
     name: cfg.name,
     url: cfg.url,
     blockProtocols: cfg.blockProtocols,
-    profileDir: siteBrowserProfileDir(cfg.name, profile),
+    profileDir: resolveProfileDir(cfg),
     wigglePath: wigglePath ?? undefined,
     wiggleSrc: getBuiltinWiggleSource(seedName) ?? undefined,
   };
@@ -164,11 +172,12 @@ function handleAdd(args: Record<string, unknown>): ToolResult {
     ...(args.wiggle !== undefined ? { wiggle: args.wiggle } : {}),
     ...(args.seed !== undefined ? { seed: args.seed } : {}),
   };
-  if (args.browserEngine !== undefined || args.chromeProfile !== undefined) {
+  if (args.browserEngine !== undefined || args.chromeProfile !== undefined || args.profileDir !== undefined) {
     merged.browser = {
       ...(existing?.browser ?? {}),
       ...(args.browserEngine !== undefined ? { engine: args.browserEngine } : {}),
       ...(args.chromeProfile !== undefined ? { chromeProfile: args.chromeProfile } : {}),
+      ...(args.profileDir !== undefined ? { profileDir: args.profileDir } : {}),
     };
   }
   writeSiteConfig(name, merged);

@@ -62,6 +62,11 @@ export const SITE_TOOLS: SiteToolDef[] = [
           description: "Browser engine. Only 'playwright' is implemented today; 'webview' is tracked in #1453.",
         },
         chromeProfile: { type: "string", description: "Profile directory name. Defaults to 'default'." },
+        profileDir: {
+          type: "string",
+          description:
+            "Absolute path (or ~/…) to a shared Chrome user-data-dir. Overrides the per-site chromium/<chromeProfile> directory so multiple sites can share one profile without path-traversal hacks.",
+        },
         wiggle: { type: "string", description: "Path (relative to site dir) to a wiggle.js keep-alive module" },
         seed: { type: "string", description: "Built-in seed name to inherit from" },
       },

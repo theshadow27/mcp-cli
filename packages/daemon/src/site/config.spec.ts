@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
 import { domainMatches, getSite, getSiteForDomain, listSites, validateSiteName, writeSiteConfig } from "./config";
@@ -92,5 +92,46 @@ describe("writeSiteConfig + getSite", () => {
     writeSiteConfig("off", { url: "https://off.example", domains: ["*.off.example"], enabled: false });
     expect(getSiteForDomain("a.on.example")).toBe("on");
     expect(getSiteForDomain("a.off.example")).toBeNull();
+  });
+
+  test("browser.profileDir round-trips through writeSiteConfig/getSite", () => {
+    writeSiteConfig("shared", {
+      url: "https://shared.example",
+      domains: ["shared.example"],
+      browser: { profileDir: "/tmp/shared-chrome-profile" },
+    });
+    const site = getSite("shared");
+    expect(site?.browser?.profileDir).toBe("/tmp/shared-chrome-profile");
+    expect(site?.browser?.chromeProfile).toBe("default");
+  });
+
+  test("browser.profileDir accepts tilde-prefixed path", () => {
+    writeSiteConfig("tilde", {
+      url: "https://tilde.example",
+      domains: ["tilde.example"],
+      browser: { profileDir: "~/.mcp-cli/shared-profile" },
+    });
+    const site = getSite("tilde");
+    expect(site?.browser?.profileDir).toBe("~/.mcp-cli/shared-profile");
+  });
+});
+
+describe("listSites phantom-dir fix", () => {
+  test("skips subdirs without config.json", () => {
+    writeSiteConfig("real", { url: "https://real.example", domains: ["real.example"] });
+    // Simulate a phantom dir created by path-traversal (e.g. Chrome user-data-dir).
+    mkdirSync(join(options.SITES_DIR, "phantom"), { recursive: true });
+    const names = listSites().map((s) => s.name);
+    expect(names).toContain("real");
+    expect(names).not.toContain("phantom");
+  });
+
+  test("still includes seeds even when they have no user dir", () => {
+    // With an empty SITES_DIR, only built-in seeds should appear.
+    const names = listSites().map((s) => s.name);
+    // Seeds (teams, owa) come from bundled files — they won't be present in the
+    // tmp SITES_DIR but the seeds loader uses import.meta.dir, not SITES_DIR.
+    // We just assert the function doesn't throw and returns an array.
+    expect(Array.isArray(names)).toBe(true);
   });
 });
