@@ -21,15 +21,6 @@ import type {
   WorkItemEvent,
 } from "@mcp-cli/core";
 import {
-  CHECKS_FAILED,
-  CHECKS_PASSED,
-  CHECKS_STARTED,
-  PHASE_CHANGED,
-  PR_CLOSED,
-  PR_MERGED,
-  PR_OPENED,
-  REVIEW_APPROVED,
-  REVIEW_CHANGES_REQUESTED,
   SESSION_CLEARED,
   SESSION_CONTAINMENT_DENIED,
   SESSION_CONTAINMENT_ESCALATED,
@@ -1286,8 +1277,6 @@ export class ClaudeWsServer {
     // Buffer the event so waiters registered after dispatch can still see it
     this.workItemBuffer.push({ event: waitEvent, ts: Date.now() });
     this.trimWorkItemBuffer();
-
-    this.publishWorkItemMonitorEvent(event);
   }
 
   /** Find and consume a buffered work item event matching the given filters. */
@@ -1701,40 +1690,6 @@ export class ClaudeWsServer {
       if (input.resultPreview !== undefined) idleInput.resultPreview = input.resultPreview;
       this.onMonitorEvent(idleInput);
     }
-  }
-
-  private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {
-    "pr:opened": PR_OPENED,
-    "pr:merged": PR_MERGED,
-    "pr:closed": PR_CLOSED,
-    "checks:started": CHECKS_STARTED,
-    "checks:passed": CHECKS_PASSED,
-    "checks:failed": CHECKS_FAILED,
-    "review:approved": REVIEW_APPROVED,
-    "review:changes_requested": REVIEW_CHANGES_REQUESTED,
-    "phase:changed": PHASE_CHANGED,
-  };
-
-  private publishWorkItemMonitorEvent(event: WorkItemEvent): void {
-    if (!this.onMonitorEvent) return;
-    const mapped = ClaudeWsServer.WORK_ITEM_EVENT_MAP[event.type];
-    if (!mapped) return;
-
-    const input: MonitorEventInput = {
-      src: "daemon.work-item-poller",
-      event: mapped,
-      category: "work_item",
-    };
-
-    if ("prNumber" in event) input.prNumber = event.prNumber;
-    if ("failedJob" in event) input.failedJob = event.failedJob;
-    if ("reviewer" in event) input.reviewer = event.reviewer;
-    if ("itemId" in event) input.workItemId = event.itemId;
-    if ("from" in event) input.from = event.from;
-    if ("to" in event) input.to = event.to;
-    if ("runId" in event) input.runId = event.runId;
-
-    this.onMonitorEvent(input);
   }
 
   private async handlePermissionRequest(

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CLAUDE_SERVER_NAME, capturingLogger, silentLogger } from "@mcp-cli/core";
-import type { MonitorEvent } from "@mcp-cli/core";
+import type { MonitorEvent, MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
@@ -1572,5 +1572,204 @@ describe("monitor event bridge integration", () => {
     expect(seqs).toEqual([1, 2, 3, 4, 5]);
 
     db.close();
+  });
+});
+
+// ── forwardWorkItemEvent direct main-thread publish (#1618) ──
+
+describe("forwardWorkItemEvent", () => {
+  function makeServer(): { server: ClaudeServer; db: StateDb; dispose: () => void } {
+    const opts = testOptions();
+    const db = new StateDb(opts.DB_PATH);
+    const server = new ClaudeServer(db, undefined, undefined, silentLogger);
+    return {
+      server,
+      db,
+      dispose: () => {
+        db.close();
+        opts[Symbol.dispose]();
+      },
+    };
+  }
+
+  function collect(server: ClaudeServer): MonitorEventInput[] {
+    const events: MonitorEventInput[] = [];
+    server.onMonitorEvent = (input) => events.push(input);
+    return events;
+  }
+
+  test("pr:opened publishes directly without starting worker", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "pr:opened", prNumber: 42 });
+      expect(events).toHaveLength(1);
+      expect(events[0].src).toBe("daemon.work-item-poller");
+      expect(events[0].event).toBe("pr.opened");
+      expect(events[0].category).toBe("work_item");
+      expect(events[0].prNumber).toBe(42);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("pr:merged maps to pr.merged with prNumber", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 55 });
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.merged");
+      expect(events[0].prNumber).toBe(55);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("pr:closed maps to pr.closed", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "pr:closed", prNumber: 77 });
+      expect(events[0].event).toBe("pr.closed");
+      expect(events[0].prNumber).toBe(77);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("checks:failed maps failedJob field", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "checks:failed", prNumber: 7, failedJob: "typecheck" });
+      expect(events[0].event).toBe("checks.failed");
+      expect(events[0].prNumber).toBe(7);
+      expect(events[0].failedJob).toBe("typecheck");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("checks:started maps runId field", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "checks:started", prNumber: 12, runId: 9876 });
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].runId).toBe(9876);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("checks:started without runId omits runId from monitor event", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "checks:started", prNumber: 13 });
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(13);
+      expect(events[0].runId).toBeUndefined();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("checks:passed maps to checks.passed", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "checks:passed", prNumber: 33 });
+      expect(events[0].event).toBe("checks.passed");
+      expect(events[0].prNumber).toBe(33);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("review:approved maps to review.approved with prNumber", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "review:approved", prNumber: 44 });
+      expect(events[0].event).toBe("review.approved");
+      expect(events[0].prNumber).toBe(44);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("review:changes_requested maps reviewer field", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "review:changes_requested", prNumber: 99, reviewer: "alice" });
+      expect(events[0].event).toBe("review.changes_requested");
+      expect(events[0].reviewer).toBe("alice");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("phase:changed maps itemId to workItemId with from/to", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "phase:changed", itemId: "wi-123", from: "impl", to: "review" });
+      expect(events[0].event).toBe("phase.changed");
+      expect(events[0].workItemId).toBe("wi-123");
+      expect(events[0].from).toBe("impl");
+      expect(events[0].to).toBe("review");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("unmapped event type is silently dropped", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "unknown:event" } as unknown as WorkItemEvent);
+      expect(events).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("undefined onMonitorEvent — does not throw", () => {
+    const { server, dispose } = makeServer();
+    try {
+      expect(() => {
+        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
+      }).not.toThrow();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("null onMonitorEvent at runtime — does not throw", () => {
+    const { server, dispose } = makeServer();
+    try {
+      (server as unknown as { onMonitorEvent: null }).onMonitorEvent = null;
+      expect(() => {
+        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
+      }).not.toThrow();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("worker null during crash — monitor event still fires", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      // worker is null because start() was never called
+      server.forwardWorkItemEvent({ type: "pr:opened", prNumber: 5 });
+      expect(events).toHaveLength(1);
+      expect(events[0].event).toBe("pr.opened");
+    } finally {
+      dispose();
+    }
   });
 });
