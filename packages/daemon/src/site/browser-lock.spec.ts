@@ -116,7 +116,7 @@ describe("createBrowserLock", () => {
 
     class FakeEngine {}
     const fakeEngine = new FakeEngine();
-    let browserRef: FakeEngine | null = null;
+    const browserRef: FakeEngine | null = null;
 
     // Simulate handleBrowserStart where eng.start() throws.
     await expect(

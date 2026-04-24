@@ -22,7 +22,7 @@ import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createBrowserLock, withDeadline } from "./site/browser-lock";
-import type { BrowserEngine, BrowserEngineName, SiteSpec } from "./site/browser/engine";
+import type { BrowserEngine, BrowserEngineName, SiteSpec, StartSiteResult } from "./site/browser/engine";
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
   type SiteConfig,
@@ -334,7 +334,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 
     const eng = await loadBrowser(engine);
     const specs = sites.map(siteSpecFor);
-    let startResults;
+    let startResults: StartSiteResult[];
     try {
       startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
     } catch (err) {
