@@ -142,14 +142,16 @@ async function main(): Promise<void> {
   // Wire cancellation: SIGINT from the terminal or SIGTERM from the daemon
   // killing this subprocess both abort waitForEvent calls.
   const controller = new AbortController();
-  const onSignal = (sig: string) => {
+  const onSignal = (sig: NodeJS.Signals) => {
     controller.abort();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
     process.kill(process.pid, sig);
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  const onInt = () => onSignal("SIGINT");
+  const onTerm = () => onSignal("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
 
   // Scope state to the caller's repo — NOT the daemon's cwd. Without an
   // explicit cwd from the caller, every alias invocation via the MCP server
@@ -175,8 +177,8 @@ async function main(): Promise<void> {
     const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);
     process.stdout.write(JSON.stringify({ result: result ?? null }));
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 

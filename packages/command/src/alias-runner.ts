@@ -29,14 +29,16 @@ import type { z } from "zod/v4";
 
 export async function runAlias(aliasPath: string, cliArgs: Record<string, string>, jsonInput?: string): Promise<void> {
   const controller = new AbortController();
-  const onSignal = (sig: string) => {
+  const onSignal = (sig: NodeJS.Signals) => {
     controller.abort();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
     process.kill(process.pid, sig);
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  const onInt = () => onSignal("SIGINT");
+  const onTerm = () => onSignal("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
 
   try {
     const mcpProxy = createMcpProxy({ cwd: () => process.cwd() });
@@ -84,8 +86,8 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       await executeAliasBundled(js, undefined, ctx, false);
     }
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 

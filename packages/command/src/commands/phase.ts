@@ -821,14 +821,16 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   const { js } = await d.bundleAlias(resolved);
 
   const controller = new AbortController();
-  const onSignal = (sig: string) => {
+  const onSignal = (sig: NodeJS.Signals) => {
     controller.abort();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
     process.kill(process.pid, sig);
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  const onInt = () => onSignal("SIGINT");
+  const onTerm = () => onSignal("SIGTERM");
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
 
   const baseCtx: AliasContext = {
     mcp: {},
@@ -853,8 +855,8 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     d.logError(`phase "${name}" threw: ${err instanceof Error ? err.message : String(err)}`);
     d.exit(1);
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 
@@ -1133,14 +1135,16 @@ export async function executePhase(
     ? createAliasState({ repoRoot, namespace: `workitem:${workItem.id}`, call: ex.ipcCall })
     : createEphemeralState();
   const phaseController = new AbortController();
-  const onPhaseSignal = (sig: string) => {
+  const onPhaseSignal = (sig: NodeJS.Signals) => {
     phaseController.abort();
-    process.off("SIGINT", onPhaseSignal);
-    process.off("SIGTERM", onPhaseSignal);
+    process.off("SIGINT", onPhaseInt);
+    process.off("SIGTERM", onPhaseTerm);
     process.kill(process.pid, sig);
   };
-  process.once("SIGINT", onPhaseSignal);
-  process.once("SIGTERM", onPhaseSignal);
+  const onPhaseInt = () => onPhaseSignal("SIGINT");
+  const onPhaseTerm = () => onPhaseSignal("SIGTERM");
+  process.once("SIGINT", onPhaseInt);
+  process.once("SIGTERM", onPhaseTerm);
 
   const ctx: AliasContext = {
     mcp: createMcpProxy({ call: ex.ipcCall, cwd }),
@@ -1178,8 +1182,8 @@ export async function executePhase(
     d.logError(`phase "${parsed.target}" failed: ${err instanceof Error ? err.message : String(err)}`);
     d.exit(1);
   } finally {
-    process.off("SIGINT", onPhaseSignal);
-    process.off("SIGTERM", onPhaseSignal);
+    process.off("SIGINT", onPhaseInt);
+    process.off("SIGTERM", onPhaseTerm);
   }
 
   // Handler succeeded — commit the transition. Idempotent self-loop
