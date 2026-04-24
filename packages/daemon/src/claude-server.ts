@@ -10,7 +10,22 @@
  */
 
 import type { JsonSchema, LiveSpan, Logger, MonitorEventInput, ToolInfo, WorkItemEvent } from "@mcp-cli/core";
-import { CLAUDE_SERVER_NAME, consoleLogger, formatToolSignature, silentLogger, startSpan } from "@mcp-cli/core";
+import {
+  CHECKS_FAILED,
+  CHECKS_PASSED,
+  CHECKS_STARTED,
+  CLAUDE_SERVER_NAME,
+  PHASE_CHANGED,
+  PR_CLOSED,
+  PR_MERGED,
+  PR_OPENED,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
+  consoleLogger,
+  formatToolSignature,
+  silentLogger,
+  startSpan,
+} from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import { closeClientWithTimeout } from "./close-timeout";
@@ -429,8 +444,42 @@ export class ClaudeServer {
     this.crashTimestamps.length = 0;
   }
 
-  /** Forward a work item event from the poller to the session worker. */
+  private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {
+    "pr:opened": PR_OPENED,
+    "pr:merged": PR_MERGED,
+    "pr:closed": PR_CLOSED,
+    "checks:started": CHECKS_STARTED,
+    "checks:passed": CHECKS_PASSED,
+    "checks:failed": CHECKS_FAILED,
+    "review:approved": REVIEW_APPROVED,
+    "review:changes_requested": REVIEW_CHANGES_REQUESTED,
+    "phase:changed": PHASE_CHANGED,
+  };
+
+  /**
+   * Forward a work item event from the poller.
+   *
+   * Publishes the monitor event directly on the main thread (no worker round-trip),
+   * then forwards to the worker so active sessions can resolve work-item waiters.
+   * Direct publish prevents silent drops when the worker is null during crash/restart.
+   */
   forwardWorkItemEvent(event: WorkItemEvent): void {
+    const mapped = ClaudeServer.WORK_ITEM_EVENT_MAP[event.type];
+    if (mapped && this.onMonitorEvent) {
+      const input: MonitorEventInput = {
+        src: "daemon.work-item-poller",
+        event: mapped,
+        category: "work_item",
+      };
+      if ("prNumber" in event) input.prNumber = event.prNumber;
+      if ("failedJob" in event) input.failedJob = event.failedJob;
+      if ("reviewer" in event) input.reviewer = event.reviewer;
+      if ("itemId" in event) input.workItemId = event.itemId;
+      if ("from" in event) input.from = event.from;
+      if ("to" in event) input.to = event.to;
+      if ("runId" in event) input.runId = event.runId;
+      this.onMonitorEvent(input);
+    }
     this.worker?.postMessage({ type: "work_item_event", event });
   }
 

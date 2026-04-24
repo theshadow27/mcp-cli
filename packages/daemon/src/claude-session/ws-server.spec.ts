@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
+import type { MonitorEventInput } from "@mcp-cli/core";
 import { silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
@@ -3728,12 +3728,11 @@ describe("restoreSessions", () => {
   });
 });
 
-// ── publishSessionMonitorEvent / publishWorkItemMonitorEvent mapping (#1567) ──
+// ── publishSessionMonitorEvent mapping (#1567) ──
 
 describe("monitor event mapping", () => {
   type WsServerPrivate = {
     publishSessionMonitorEvent: (sessionId: string, event: SessionEvent) => void;
-    publishWorkItemMonitorEvent: (event: WorkItemEvent) => void;
   };
 
   function makeServer(): ClaudeWsServer {
@@ -3960,141 +3959,6 @@ describe("monitor event mapping", () => {
       expect(events[0].category).toBe("session");
       expect(events[0].strikes).toBe(0);
       expect(events[0].reason).toBe("operator reset");
-    });
-  });
-
-  describe("publishWorkItemMonitorEvent", () => {
-    test("pr:opened maps to pr.opened with prNumber", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "pr:opened", prNumber: 42 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].src).toBe("daemon.work-item-poller");
-      expect(events[0].event).toBe("pr.opened");
-      expect(events[0].category).toBe("work_item");
-      expect(events[0].prNumber).toBe(42);
-    });
-
-    test("checks:failed maps to checks.failed with failedJob", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "checks:failed", prNumber: 7, failedJob: "typecheck" });
-
-      expect(events[0].event).toBe("checks.failed");
-      expect(events[0].prNumber).toBe(7);
-      expect(events[0].failedJob).toBe("typecheck");
-    });
-
-    test("review:changes_requested maps with reviewer", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "review:changes_requested", prNumber: 99, reviewer: "alice" });
-
-      expect(events[0].event).toBe("review.changes_requested");
-      expect(events[0].reviewer).toBe("alice");
-    });
-
-    test("phase:changed maps itemId to workItemId with from/to", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "phase:changed", itemId: "wi-123", from: "impl", to: "review" });
-
-      expect(events[0].event).toBe("phase.changed");
-      expect(events[0].workItemId).toBe("wi-123");
-      expect(events[0].from).toBe("impl");
-      expect(events[0].to).toBe("review");
-    });
-
-    test("unmapped work-item event type is silently dropped", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "unknown:event" } as never);
-
-      expect(events).toHaveLength(0);
-    });
-
-    test("null onMonitorEvent callback causes silent drop", () => {
-      const server = makeServer();
-      server.onMonitorEvent = null;
-
-      expect(() => {
-        priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 1 });
-      }).not.toThrow();
-    });
-
-    test("pr:merged maps to pr.merged with prNumber", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "pr:merged", prNumber: 55 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("pr.merged");
-      expect(events[0].category).toBe("work_item");
-      expect(events[0].prNumber).toBe(55);
-    });
-
-    test("pr:closed maps to pr.closed with prNumber", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "pr:closed", prNumber: 77 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("pr.closed");
-      expect(events[0].prNumber).toBe(77);
-    });
-
-    test("checks:started maps to checks.started with prNumber and runId", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 12, runId: 9876 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("checks.started");
-      expect(events[0].prNumber).toBe(12);
-      expect(events[0].runId).toBe(9876);
-    });
-
-    test("checks:started without runId emits no runId field", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "checks:started", prNumber: 13 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("checks.started");
-      expect(events[0].prNumber).toBe(13);
-      expect(events[0].runId).toBeUndefined();
-    });
-
-    test("checks:passed maps to checks.passed with prNumber", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "checks:passed", prNumber: 33 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("checks.passed");
-      expect(events[0].prNumber).toBe(33);
-    });
-
-    test("review:approved maps to review.approved with prNumber", () => {
-      const server = makeServer();
-      const events = collect(server);
-
-      priv(server).publishWorkItemMonitorEvent({ type: "review:approved", prNumber: 44 });
-
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("review.approved");
-      expect(events[0].prNumber).toBe(44);
     });
   });
 });
