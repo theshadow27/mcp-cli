@@ -51,6 +51,14 @@ export const HEARTBEAT = "heartbeat" as const;
 
 // ── Envelope ──
 
+/**
+ * Common fields for all monitor events.
+ *
+ * Extension fields (via index signature):
+ *  - `causedBy?: number[]` — causal chain of seq IDs that led to this event.
+ *    Present on events published by `DerivedEventPublisher` (src: "daemon.derived").
+ *    Length encodes derivation depth; the publisher caps processing at depth 4.
+ */
 export interface MonitorEventBase {
   src: string;
   event: string;
