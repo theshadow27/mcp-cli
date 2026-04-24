@@ -1602,7 +1602,14 @@ describe("forwardWorkItemEvent", () => {
     const { server, dispose } = makeServer();
     try {
       const events = collect(server);
-      server.forwardWorkItemEvent({ type: "pr:opened", prNumber: 42 });
+      server.forwardWorkItemEvent({
+        type: "pr:opened",
+        prNumber: 42,
+        branch: "feat/test",
+        base: "main",
+        commits: 1,
+        srcChurn: 0,
+      });
       expect(events).toHaveLength(1);
       expect(events[0].src).toBe("daemon.work-item-poller");
       expect(events[0].event).toBe("pr.opened");
@@ -1617,7 +1624,7 @@ describe("forwardWorkItemEvent", () => {
     const { server, dispose } = makeServer();
     try {
       const events = collect(server);
-      server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 55 });
+      server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 55, mergeSha: null });
       expect(events).toHaveLength(1);
       expect(events[0].event).toBe("pr.merged");
       expect(events[0].prNumber).toBe(55);
@@ -1741,7 +1748,7 @@ describe("forwardWorkItemEvent", () => {
     const { server, dispose } = makeServer();
     try {
       expect(() => {
-        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
+        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1, mergeSha: null });
       }).not.toThrow();
     } finally {
       dispose();
@@ -1753,7 +1760,7 @@ describe("forwardWorkItemEvent", () => {
     try {
       (server as unknown as { onMonitorEvent: null }).onMonitorEvent = null;
       expect(() => {
-        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
+        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1, mergeSha: null });
       }).not.toThrow();
     } finally {
       dispose();
@@ -1765,7 +1772,14 @@ describe("forwardWorkItemEvent", () => {
     try {
       const events = collect(server);
       // worker is null because start() was never called
-      server.forwardWorkItemEvent({ type: "pr:opened", prNumber: 5 });
+      server.forwardWorkItemEvent({
+        type: "pr:opened",
+        prNumber: 5,
+        branch: "",
+        base: "main",
+        commits: 0,
+        srcChurn: 0,
+      });
       expect(events).toHaveLength(1);
       expect(events[0].event).toBe("pr.opened");
     } finally {

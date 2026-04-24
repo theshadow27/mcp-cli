@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { MonitorEventInput } from "@mcp-cli/core";
+import type { MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
 import { silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
@@ -3733,6 +3733,7 @@ describe("restoreSessions", () => {
 describe("monitor event mapping", () => {
   type WsServerPrivate = {
     publishSessionMonitorEvent: (sessionId: string, event: SessionEvent) => void;
+    publishWorkItemMonitorEvent: (event: WorkItemEvent) => void;
   };
 
   function makeServer(): ClaudeWsServer {
