@@ -103,13 +103,35 @@ Split picks into:
 - **Filler issues** (3-5): independent quick wins, tech debt, test coverage.
   These fill slots when goal issues are in review/QA. Explicitly mark as filler.
 
-## Step 4: Assign batches
+## Step 4: Assign batches (launch order only — NOT the orchestrator's task structure)
 
 Group the 15 issues into 3 batches of 5. Batch 1 launches immediately;
 batches 2-3 backfill as slots free. Within each batch:
 - No two issues should modify the same files
 - Mix quick and medium — don't put all heavies in one batch
 - Put dependency roots in batch 1
+
+**Batches are a planning mental-model for launch order; they are NOT
+TaskCreate groupings.** The run phase will create one Task per issue with
+`addBlockedBy` edges for each cross-issue dependency — that way idle slots
+automatically pull the next unblocked issue instead of waiting for a batch
+tail. Sprint 41 burned multi-minute stretches with one active session while
+the other slots waited for "Batch 2 to finish" before starting Batch 3;
+sprint 42 fixed it by creating 20 issue-scoped Tasks; sprint 43 regressed
+to 3 Batch-level Tasks and re-introduced the cascade. See `run.md` Input
+section — "Task list setup" — for the exact pattern.
+
+Document the dependency edges explicitly in the plan so the run phase can
+translate them to `addBlockedBy` without re-derivation. Format each edge as
+"#child blockedBy #parent" in a bullet list under the Batch Plan section:
+
+```
+- #1579 blockedBy #1578 (CopilotPoller must land first)
+- #1582 blockedBy #1583 (defineMonitor contract consumes the runtime)
+```
+
+Hot-shared file serializations also become blockedBy edges — the second PR
+to a shared file is blocked on the first's merge, regardless of batch.
 
 **Watch for logical merge conflicts on shared dispatch files.** If two
 picks both add entries to the same dispatch table (e.g., a `case "..."`:

@@ -66,6 +66,43 @@ that escape their worktree fail loudly instead of landing phantom commits
 on main (see #1425). `/sprint retro` removes it. Orchestrator commits
 (sprint-plan updates, release, retro) must set `SPRINT_OVERRIDE=1`.
 
+### Task list setup — one Task per issue, NOT per batch
+
+**Create one `TaskCreate` per tracked issue, with `addBlockedBy` edges for
+every dependency.** Do NOT create 3 Batch-level tasks that block each other
+(1→2→3). The batch column in the sprint plan is the planner's launch-order
+model; the orchestrator's task list is issue-granular so idle slots
+auto-pull the next unblocked issue.
+
+Why this matters: sprint 41 lost multi-minute stretches with 1 active
+session while other slots waited for "Batch 2 to finish before Batch 3 can
+start." Sprint 42 adopted per-issue tasks with blockedBy edges and peaked
+at 17 concurrent sessions without lulls. Sprint 43 reverted to 3 Batch
+tasks (Batch 1 blocks Batch 2, Batch 1 blocks Batch 3) and re-introduced
+the cascade. This rule stays in `run.md` — not a per-sprint retro rule —
+because every sprint forgets it otherwise.
+
+Concrete pattern:
+
+```
+for each issue in sprint plan:
+  TaskCreate  subject=#<n> <title>  activeForm="Running #<n>"
+  mcx track <n>
+for each "blockedBy" edge in the plan's Batch Plan section (e.g. "#1579 blockedBy #1578"):
+  TaskUpdate  taskId=<child>  addBlockedBy=[<parent>]
+```
+
+("for each" here means separate tool calls, not a shell `for` loop —
+see `.claude/memory/feedback_sprint_bulk_and_cascade.md`.)
+
+Hot-shared file serializations from the plan's "Hot-shared file watch"
+section are also blockedBy edges (second PR blocked on first's merge).
+
+Launch policy: spawn an impl session for every task that is `pending` and
+has no unresolved `blockedBy` entries. When a PR merges, `TaskUpdate` the
+issue's task to `completed` — that unblocks its dependents and a new slot
+opens.
+
 ## Pre-flight
 
 Before spawning any sessions, ensure the daemon is running the latest build.
