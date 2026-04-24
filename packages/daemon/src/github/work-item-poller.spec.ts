@@ -151,8 +151,8 @@ describe("WorkItemPoller", () => {
           number: 7,
           ciState: "FAILURE",
           ciChecks: [
-            { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
-            { name: "test", status: "COMPLETED", conclusion: "FAILURE" },
+            { name: "lint", status: "COMPLETED", conclusion: "SUCCESS", checkSuiteId: 100 },
+            { name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuiteId: 100 },
           ],
         }),
       ],
