@@ -3751,7 +3751,7 @@ describe("monitor event mapping", () => {
   }
 
   describe("publishSessionMonitorEvent", () => {
-    test("session:result maps to session.result with cost/tokens/numTurns", () => {
+    test("session:result emits session.result + session.idle with cost/tokens/numTurns/resultPreview", () => {
       const server = makeServer();
       const events = collect(server);
 
@@ -3763,15 +3763,87 @@ describe("monitor event mapping", () => {
         result: "done",
       });
 
-      expect(events).toHaveLength(1);
-      expect(events[0].src).toBe("daemon.claude-server");
-      expect(events[0].event).toBe("session.result");
-      expect(events[0].category).toBe("session");
-      expect(events[0].sessionId).toBe("s1");
-      expect(events[0].cost).toBe(0.42);
-      expect(events[0].tokens).toBe(1234);
-      expect(events[0].numTurns).toBe(3);
-      expect(events[0].result).toBe("done");
+      expect(events).toHaveLength(2);
+
+      const resultEvt = events[0];
+      expect(resultEvt.src).toBe("daemon.claude-server");
+      expect(resultEvt.event).toBe("session.result");
+      expect(resultEvt.category).toBe("session");
+      expect(resultEvt.sessionId).toBe("s1");
+      expect(resultEvt.cost).toBe(0.42);
+      expect(resultEvt.tokens).toBe(1234);
+      expect(resultEvt.numTurns).toBe(3);
+      expect(resultEvt.result).toBe("done");
+      expect(resultEvt.resultPreview).toBe("done");
+
+      const idleEvt = events[1];
+      expect(idleEvt.src).toBe("daemon.claude-server");
+      expect(idleEvt.event).toBe("session.idle");
+      expect(idleEvt.category).toBe("session");
+      expect(idleEvt.sessionId).toBe("s1");
+      expect(idleEvt.cost).toBe(0.42);
+      expect(idleEvt.tokens).toBe(1234);
+      expect(idleEvt.numTurns).toBe(3);
+      expect(idleEvt.resultPreview).toBe("done");
+      expect(idleEvt.result).toBeUndefined();
+    });
+
+    test("resultPreview truncates long result to ≤200 chars with ellipsis", () => {
+      const server = makeServer();
+      const events = collect(server);
+      const longResult = "a".repeat(300);
+
+      priv(server).publishSessionMonitorEvent("s1a", {
+        type: "session:result",
+        cost: 0,
+        tokens: 0,
+        numTurns: 1,
+        result: longResult,
+      });
+
+      const preview = events[0].resultPreview as string;
+      expect(preview.length).toBe(200);
+      expect(preview.endsWith("…")).toBe(true);
+      expect(preview.slice(0, 199)).toBe("a".repeat(199));
+    });
+
+    test("resultPreview collapses newlines to spaces", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s1b", {
+        type: "session:result",
+        cost: 0,
+        tokens: 0,
+        numTurns: 1,
+        result: "line one\nline two\nline three",
+      });
+
+      expect(events[0].resultPreview).toBe("line one line two line three");
+      expect(events[1].resultPreview).toBe("line one line two line three");
+    });
+
+    test("session:result with empty result preserves empty resultPreview on both events", () => {
+      const server = makeServer();
+      const events = collect(server);
+
+      priv(server).publishSessionMonitorEvent("s1c", {
+        type: "session:result",
+        cost: 1.0,
+        tokens: 500,
+        numTurns: 5,
+        result: "",
+      });
+
+      expect(events).toHaveLength(2);
+      // empty string is falsy but still a string — resultPreview is ""
+      expect(events[0].resultPreview).toBe("");
+      expect(events[1].resultPreview).toBe("");
+      // cost/tokens/numTurns present on idle
+      expect(events[1].cost).toBe(1.0);
+      expect(events[1].tokens).toBe(500);
+      expect(events[1].numTurns).toBe(5);
+      expect(events[1].result).toBeUndefined();
     });
 
     test("session:ended maps to session.ended with no extra fields", () => {

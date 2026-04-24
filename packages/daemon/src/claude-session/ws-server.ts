@@ -38,6 +38,7 @@ import {
   SESSION_DISCONNECTED,
   SESSION_ENDED,
   SESSION_ERROR,
+  SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RATE_LIMITED,
@@ -1673,6 +1674,10 @@ export class ClaudeWsServer {
     if ("tokens" in event) input.tokens = event.tokens;
     if ("numTurns" in event) input.numTurns = event.numTurns;
     if ("result" in event) input.result = event.result;
+    if ("result" in event && typeof event.result === "string") {
+      const flat = event.result.replace(/\n/g, " ");
+      input.resultPreview = flat.length > 200 ? `${flat.slice(0, 199)}…` : flat;
+    }
     if ("errors" in event) input.errors = event.errors;
     if ("requestId" in event) input.requestId = event.requestId;
     if ("toolName" in event) input.toolName = event.toolName;
@@ -1682,6 +1687,20 @@ export class ClaudeWsServer {
     if ("reason" in event) input.reason = event.reason;
 
     this.onMonitorEvent(input);
+
+    if (event.type === "session:result") {
+      const idleInput: MonitorEventInput = {
+        src: "daemon.claude-server",
+        event: SESSION_IDLE,
+        category: "session",
+        sessionId,
+      };
+      if ("cost" in event) idleInput.cost = event.cost;
+      if ("tokens" in event) idleInput.tokens = event.tokens;
+      if ("numTurns" in event) idleInput.numTurns = event.numTurns;
+      if (input.resultPreview !== undefined) idleInput.resultPreview = input.resultPreview;
+      this.onMonitorEvent(idleInput);
+    }
   }
 
   private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {

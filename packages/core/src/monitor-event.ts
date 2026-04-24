@@ -28,6 +28,7 @@ export const SESSION_CONTAINMENT_WARNING = "session.containment_warning" as cons
 export const SESSION_CONTAINMENT_DENIED = "session.containment_denied" as const;
 export const SESSION_CONTAINMENT_ESCALATED = "session.containment_escalated" as const;
 export const SESSION_CONTAINMENT_RESET = "session.containment_reset" as const;
+export const SESSION_IDLE = "session.idle" as const;
 
 // ── Work item event names ──
 
@@ -112,7 +113,18 @@ type Formatter = (e: MonitorEvent) => string;
 
 const FORMATTERS: Partial<Record<string, Formatter>> = {
   [SESSION_RESULT]: (e) => {
-    const preview = typeof e.result === "string" ? `  "${cap(e.result.replace(/\n/g, " "), 60)}"` : "";
+    const raw =
+      typeof e.resultPreview === "string"
+        ? e.resultPreview
+        : typeof e.result === "string"
+          ? e.result.replace(/\n/g, " ")
+          : undefined;
+    const preview = typeof raw === "string" ? `  "${cap(raw, 60)}"` : "";
+    return join(wi(e), sid(e), cost(e), turns(e)) + preview;
+  },
+
+  [SESSION_IDLE]: (e) => {
+    const preview = typeof e.resultPreview === "string" ? `  "${cap(e.resultPreview, 60)}"` : "";
     return join(wi(e), sid(e), cost(e), turns(e)) + preview;
   },
 
