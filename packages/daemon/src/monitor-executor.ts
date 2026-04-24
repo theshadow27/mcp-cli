@@ -39,7 +39,18 @@ async function main(): Promise<void> {
     ac.abort();
   });
 
-  const gen = monitor.subscribe({ signal: ac.signal, mcp: stubProxy });
+  const gen = monitor.subscribe({
+    signal: ac.signal,
+    bus: {
+      publish: (event) => process.stdout.write(`${JSON.stringify(event)}\n`),
+    },
+    logger: {
+      info: (msg) => process.stderr.write(`[monitor:${aliasName}] info: ${msg}\n`),
+      warn: (msg) => process.stderr.write(`[monitor:${aliasName}] warn: ${msg}\n`),
+      error: (msg) => process.stderr.write(`[monitor:${aliasName}] error: ${msg}\n`),
+      debug: (msg) => process.stderr.write(`[monitor:${aliasName}] debug: ${msg}\n`),
+    },
+  });
 
   try {
     for await (const event of gen) {

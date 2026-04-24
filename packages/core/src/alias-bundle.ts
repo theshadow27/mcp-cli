@@ -11,14 +11,7 @@
  */
 
 import { z } from "zod/v4";
-import type {
-  AliasContext,
-  AliasDefinition,
-  AliasMonitorEventInput,
-  McpProxy,
-  MonitorAliasDefinition,
-  MonitorDefinition,
-} from "./alias";
+import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -344,10 +337,10 @@ export async function executeAliasBundled(
 }
 
 /**
- * Eval bundled defineMonitor JS, returning the captured MonitorDefinition.
+ * Eval bundled defineMonitor JS, returning the captured MonitorAliasDefinition.
  * Used by the monitor executor subprocess.
  */
-export async function evalMonitorBundled(bundledJs: string, mcp: McpProxy): Promise<MonitorDefinition> {
+export async function evalMonitorBundled(bundledJs: string, mcp: McpProxy): Promise<MonitorAliasDefinition> {
   const { monitorDefs } = await evalBundledJs(bundledJs, {
     mcp,
     args: {},
@@ -359,9 +352,13 @@ export async function evalMonitorBundled(bundledJs: string, mcp: McpProxy): Prom
     throw new Error("Script did not call defineMonitor()");
   }
 
-  // MonitorAliasDefinition (user-facing contract) and MonitorDefinition (runtime type) differ
-  // only in their subscribe ctx signature. The executor subprocess bridges this at runtime.
-  return monitorDefs[0] as unknown as MonitorDefinition;
+  if (monitorDefs.length > 1) {
+    throw new Error(
+      `Script called defineMonitor() ${monitorDefs.length} times. Only one defineMonitor() call per file is supported.`,
+    );
+  }
+
+  return monitorDefs[0];
 }
 
 /** Structured validation result for alias scripts. */
