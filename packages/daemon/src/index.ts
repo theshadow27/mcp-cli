@@ -32,6 +32,7 @@ import {
   BUILD_VERSION,
   CLAUDE_SERVER_NAME,
   CODEX_SERVER_NAME,
+  COPILOT_INLINE_POSTED,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
   DEFAULT_CLAUDE_WS_PORT,
@@ -960,7 +961,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             stateDb: db,
             logger,
             onEvent: (event) => {
-              if (event.event === "copilot.inline_posted") {
+              if (event.event === COPILOT_INLINE_POSTED) {
                 const key = `copilot:${event.prNumber}:${event.author}`;
                 mailEventBus.publishCoalesced(event, key, {
                   mode: "merge",

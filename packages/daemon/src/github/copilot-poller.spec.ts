@@ -582,6 +582,7 @@ describe("CopilotPoller", () => {
       const reviewEvents = events.filter((e) => e.event === REVIEW_APPROVED);
       expect(reviewEvents).toHaveLength(1);
       expect(reviewEvents[0].reviewId).toBe(5001);
+      expect(reviewEvents[0].reviewer).toBe("reviewer1");
       expect(reviewEvents[0].author).toBe("reviewer1");
       expect(reviewEvents[0].category).toBe("review");
     });
@@ -693,14 +694,17 @@ describe("CopilotPoller", () => {
           if (callCount === 1) {
             return okReviewResult([makeReview({ id: 6001, body: "Summary: 3 issues" })]);
           }
+          // Same review ID, different body — simulates Copilot editing its pinned summary
           return okReviewResult([makeReview({ id: 6001, body: "Summary: 0 issues — all resolved" })]);
         },
       });
 
+      // First poll: review 6001 is new → emitted as review.comment, stored in seenIds + sticky hash
       await poller.poll();
       const stickyAfterFirst = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
       expect(stickyAfterFirst).toHaveLength(0);
 
+      // Second poll: review 6001 already seen, body changed → sticky_updated
       await poller.poll();
       const stickyAfterSecond = events.filter((e) => e.event === REVIEW_STICKY_UPDATED);
       expect(stickyAfterSecond).toHaveLength(1);

@@ -286,7 +286,8 @@ export class CopilotPoller {
 
     if (newComments.length === 0) {
       if (currentIds.length > 0) {
-        this.stateDb.updateSeenCommentIds(prNumber, currentIds);
+        const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
+        this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
       return result.rateLimitLow;
     }
@@ -376,30 +377,34 @@ export class CopilotPoller {
         workItemId: item.id,
         prNumber,
         reviewId: review.id,
+        reviewer: author,
         author,
         ...(review.body ? { body: review.body } : {}),
       });
     }
 
-    // Sticky detection: find the latest bot review and check for body edits
-    let stickyReview: GitHubReview | null = null;
+    // Sticky detection: find the latest bot review and track its body hash.
+    // Always store the hash (so it's ready for comparison next poll), but only
+    // emit sticky_updated when the review was previously seen — a brand-new bot
+    // review is already handled as a new review event above.
+    let stickyCandidate: GitHubReview | null = null;
     for (const r of reviews) {
       if (r.user?.login?.includes("[bot]") && r.body) {
-        if (!stickyReview || r.id > stickyReview.id) stickyReview = r;
+        if (!stickyCandidate || r.id > stickyCandidate.id) stickyCandidate = r;
       }
     }
-    if (stickyReview) {
-      const bodyHash = hashBody(stickyReview.body);
+    if (stickyCandidate) {
+      const bodyHash = hashBody(stickyCandidate.body);
       const lastHash = this.stateDb.getStickyBodyHash(prNumber);
-      if (lastHash !== null && lastHash !== bodyHash) {
+      if (seenIds.has(stickyCandidate.id) && lastHash !== null && lastHash !== bodyHash) {
         this.onEvent({
           src: "daemon.copilot-poller",
           event: REVIEW_STICKY_UPDATED,
           category: "review",
           workItemId: item.id,
           prNumber,
-          reviewId: stickyReview.id,
-          author: stickyReview.user?.login ?? "unknown",
+          reviewId: stickyCandidate.id,
+          author: stickyCandidate.user?.login ?? "unknown",
           bodyHash,
         });
       }
