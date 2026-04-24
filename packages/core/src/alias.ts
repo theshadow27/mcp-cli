@@ -159,8 +159,8 @@ export interface AliasContext {
    * Wait for the first monitor event that matches `filter`.
    *
    * Resolves with the matching event. Rejects with `WaitTimeoutError` if
-   * `opts.timeoutMs` elapses, or with a `DOMException("AbortError")` if
-   * `ctx.signal` fires, or with an `Error` if the underlying event stream
+   * `opts.timeoutMs` elapses, or with a `DOMException` with name `"AbortError"`
+   * if `ctx.signal` fires, or with an `Error` if the underlying event stream
    * ends or errors before a matching event is observed. The underlying event
    * stream subscription is always cleaned up on resolve/reject — no leaked
    * subscribers.

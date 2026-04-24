@@ -128,10 +128,6 @@ export function createWaitForEvent(opts?: {
   const { openStream = openEventStream, signal } = opts ?? {};
 
   return (filter, opts) => {
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
-    }
-
     return new Promise<MonitorEvent>((resolve, reject) => {
       const { events, abort: abortStream } = openStream({
         since: opts?.since,
@@ -142,7 +138,7 @@ export function createWaitForEvent(opts?: {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
       function onAbort() {
-        settle(() => reject(signal!.reason ?? new DOMException("The operation was aborted", "AbortError")));
+        settle(() => reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError")));
       }
 
       const cleanup = () => {
@@ -162,7 +158,15 @@ export function createWaitForEvent(opts?: {
         }
       };
 
+      // Register listener BEFORE checking aborted state — a signal that
+      // fires between the check and registration is caught by the listener,
+      // and a pre-aborted signal is caught by the post-registration check.
       signal?.addEventListener("abort", onAbort);
+
+      if (signal?.aborted) {
+        settle(() => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError")));
+        return;
+      }
 
       if (opts?.timeoutMs !== undefined) {
         const ms = opts.timeoutMs;

@@ -280,7 +280,10 @@ describe("createWaitForEvent", () => {
       yield makeEvent({ event: "never-reached" }); // abort fires before blockPromise resolves
     }
 
-    const waitFor = createWaitForEvent({ openStream: () => ({ events: blocking(), abort: resolveBlock }), signal: controller.signal });
+    const waitFor = createWaitForEvent({
+      openStream: () => ({ events: blocking(), abort: resolveBlock }),
+      signal: controller.signal,
+    });
     const waitPromise = waitFor({ type: "ci.finished" });
 
     controller.abort();
@@ -330,9 +333,38 @@ describe("createWaitForEvent", () => {
       await blockPromise;
     }
 
-    const waitFor = createWaitForEvent({ openStream: () => ({ events: infinite(), abort: resolveBlock }), signal: mockSignal });
+    const waitFor = createWaitForEvent({
+      openStream: () => ({ events: infinite(), abort: resolveBlock }),
+      signal: mockSignal,
+    });
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 20 })).rejects.toThrow(WaitTimeoutError);
     expect(listeners).toHaveLength(0);
+  });
+
+  test("signal aborted between listener registration and check — no missed abort", async () => {
+    const abortReason = new DOMException("The operation was aborted", "AbortError");
+    let listener: (() => void) | undefined;
+    let aborted = false;
+    const racySignal = {
+      get aborted() {
+        return aborted;
+      },
+      reason: abortReason,
+      addEventListener(_event: string, fn: () => void) {
+        listener = fn;
+        aborted = true;
+      },
+      removeEventListener(_event: string, _fn: () => void) {
+        listener = undefined;
+      },
+    } as unknown as AbortSignal;
+
+    const target = makeEvent({ event: "ci.finished", category: "ci" });
+    const waitFor = createWaitForEvent({
+      openStream: () => fakeStream([target]),
+      signal: racySignal,
+    });
+    await expect(waitFor({ type: "ci.finished" })).rejects.toMatchObject({ name: "AbortError" });
   });
 
   test("abort after resolve — settled flag prevents second rejection", async () => {
@@ -353,11 +385,15 @@ describe("createWaitForEvent", () => {
       resolveBlock = r;
     });
 
-    async function* infinite(): AsyncGenerator<MonitorEvent> {
+    async function* hanging(): AsyncGenerator<MonitorEvent> {
+      yield makeEvent({ event: "noise" });
       await blockPromise;
     }
 
-    const waitFor = createWaitForEvent({ openStream: () => ({ events: infinite(), abort: resolveBlock }), signal: controller.signal });
+    const waitFor = createWaitForEvent({
+      openStream: () => ({ events: hanging(), abort: resolveBlock }),
+      signal: controller.signal,
+    });
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 10 })).rejects.toThrow(WaitTimeoutError);
     // Aborting after timeout resolution must be a no-op
     controller.abort();
