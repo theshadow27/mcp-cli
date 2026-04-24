@@ -19,3 +19,20 @@ export function createBrowserLock() {
     }
   };
 }
+
+/**
+ * Races `work` against a deadline. Rejects with a descriptive error if `ms`
+ * elapses first, ensuring the lock is released by the caller's `finally`.
+ * The timeout handle is always cleared to avoid keeping the event loop alive.
+ */
+export async function withDeadline<T>(ms: number, label: string, work: Promise<T>): Promise<T> {
+  let id: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    id = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(id);
+  }
+}

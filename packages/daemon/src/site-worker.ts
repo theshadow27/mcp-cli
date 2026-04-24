@@ -21,7 +21,7 @@ import { isAbsolute } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createBrowserLock } from "./site/browser-lock";
+import { createBrowserLock, withDeadline } from "./site/browser-lock";
 import type { BrowserEngine, BrowserEngineName, SiteSpec } from "./site/browser/engine";
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
@@ -327,7 +327,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
 
     const eng = await loadBrowser(engine);
     const specs = sites.map(siteSpecFor);
-    const startResults = await eng.start(specs, sniffer.asEvents());
+    const startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
     for (const s of sites) sitesOpenInBrowser.add(s.name);
 
     return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
@@ -338,7 +338,7 @@ async function handleDisconnect(): Promise<ToolResult> {
   return withBrowserLock(async () => {
     resetIfBrowserDied();
     if (!browser) return ok({ ok: true, note: "browser was not running" });
-    await browser.stop();
+    await withDeadline(30_000, "browser stop", browser.stop());
     browser = null;
     browserEngineName = null;
     sitesOpenInBrowser.clear();
