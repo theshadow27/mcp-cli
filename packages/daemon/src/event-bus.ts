@@ -12,6 +12,8 @@
  */
 
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
+import type { SubmitOptions } from "./coalesce";
+import { CoalescingPublisher } from "./coalesce";
 import type { EventLog } from "./event-log";
 import { metrics } from "./metrics";
 
@@ -139,5 +141,29 @@ export class EventBus {
   /** Returns lastActivityAt for a subscriber by ID, or null if not found. Used in tests. */
   getLastActivityAt(id: number): number | null {
     return this.subscribers.get(id)?.lastActivityAt ?? null;
+  }
+
+  // --- Coalesced publishing (#1574) ---
+
+  private coalescer: CoalescingPublisher<MonitorEventInput> | null = null;
+
+  private getCoalescer(): CoalescingPublisher<MonitorEventInput> {
+    if (!this.coalescer) {
+      this.coalescer = new CoalescingPublisher((input) => this.publish(input));
+    }
+    return this.coalescer;
+  }
+
+  publishCoalesced(input: MonitorEventInput, key: string, policy: SubmitOptions<MonitorEventInput>): void {
+    this.getCoalescer().submit(key, input, policy);
+  }
+
+  flushCoalesced(key?: string): void {
+    this.coalescer?.flush(key);
+  }
+
+  disposeCoalescer(): void {
+    this.coalescer?.dispose();
+    this.coalescer = null;
   }
 }
