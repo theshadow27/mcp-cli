@@ -1052,6 +1052,34 @@ describe("SessionState", () => {
       expect(session.lastToolCall?.errorMessage).toBe("No matching rule for tool: Bash");
     });
 
+    test("permission denial does not set errorMessage when tool_name mismatches lastToolCall", () => {
+      const session = initSession();
+
+      // lastToolCall is "Bash", but the permission request is for "Write" (mismatch)
+      session.handleMessage({
+        type: "assistant",
+        message: {
+          id: "msg-t3b",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "tool_use", id: "tu-1", name: "Bash", input: { command: "ls" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 30 },
+        },
+        parent_tool_use_id: null,
+        uuid: "uuid-t3b",
+        session_id: "sess-1",
+      });
+      expect(session.lastToolCall?.name).toBe("Bash");
+
+      session.handleMessage(CAN_USE_TOOL_2);
+      session.respondToPermission("req-2", false, "Not allowed");
+
+      expect(session.lastToolCall?.name).toBe("Bash");
+      expect(session.lastToolCall?.errorMessage).toBeUndefined();
+    });
+
     test("permission approval does not set errorMessage", () => {
       const session = initSession();
 

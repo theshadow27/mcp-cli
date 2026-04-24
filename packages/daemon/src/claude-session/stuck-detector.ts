@@ -46,6 +46,13 @@ export class StuckDetector {
     if (config.thresholdsMs.length === 0) {
       throw new Error("StuckDetectorConfig.thresholdsMs must be non-empty");
     }
+    for (let i = 0; i < config.thresholdsMs.length; i++) {
+      if (!Number.isFinite(config.thresholdsMs[i]) || config.thresholdsMs[i] <= 0) {
+        throw new Error(
+          `StuckDetectorConfig.thresholdsMs[${i}] must be a positive finite number (got ${config.thresholdsMs[i]})`,
+        );
+      }
+    }
     for (let i = 1; i < config.thresholdsMs.length; i++) {
       if (config.thresholdsMs[i] <= config.thresholdsMs[i - 1]) {
         throw new Error(

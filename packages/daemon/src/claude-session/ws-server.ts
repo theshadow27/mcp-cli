@@ -1468,6 +1468,13 @@ export class ClaudeWsServer {
         );
       }
 
+      // tool_progress and stream_event are ignored by the state machine but
+      // represent active execution — treat them as progress to prevent false
+      // stuck-detector fires during long-running tools or streaming responses.
+      if (msg.type === "tool_progress" || msg.type === "stream_event") {
+        this.recordSessionProgress(sessionId, session);
+      }
+
       // Log unrecognized message types (not in IGNORED_TYPES, not a known handler).
       // This helps detect new CLI message types that the daemon should handle.
       if (events.length === 0 && !session.state.parseMismatch && !KNOWN_MSG_TYPES.has(msg.type)) {
@@ -1851,29 +1858,35 @@ export class ClaudeWsServer {
   private handleStuckEvent(sessionId: string, session: WsSession, event: StuckEvent): void {
     const workItemId = session.config.worktree ?? undefined;
 
-    this.resolveEventWaiters(sessionId, {
-      sessionId,
-      event: "session:stuck",
-      tier: event.tier,
-      sinceMs: event.sinceMs,
-      tokenDelta: event.tokenDelta,
-      lastTool: event.lastTool,
-      lastToolError: event.lastToolError,
-    });
-
-    if (this.onMonitorEvent) {
-      this.onMonitorEvent({
-        src: "daemon.claude-server",
-        event: SESSION_STUCK,
-        category: "session",
+    try {
+      this.resolveEventWaiters(sessionId, {
         sessionId,
-        workItemId,
+        event: "session:stuck",
         tier: event.tier,
         sinceMs: event.sinceMs,
         tokenDelta: event.tokenDelta,
         lastTool: event.lastTool,
         lastToolError: event.lastToolError,
       });
+
+      if (this.onMonitorEvent) {
+        this.onMonitorEvent({
+          src: "daemon.claude-server",
+          event: SESSION_STUCK,
+          category: "session",
+          sessionId,
+          workItemId,
+          tier: event.tier,
+          sinceMs: event.sinceMs,
+          tokenDelta: event.tokenDelta,
+          lastTool: event.lastTool,
+          lastToolError: event.lastToolError,
+        });
+      }
+    } catch (err) {
+      this.logger.error(
+        `[_claude] Failed to handle stuck session event for ${sessionId}: ${err instanceof Error ? err.stack : err}`,
+      );
     }
   }
 

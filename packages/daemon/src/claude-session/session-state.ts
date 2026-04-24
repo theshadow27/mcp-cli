@@ -149,7 +149,7 @@ export class SessionState {
       return permissionAllow(requestId, request.input);
     }
     const denyMessage = message ?? "Denied by session controller";
-    if (this.lastToolCall) {
+    if (this.lastToolCall && request.tool_name === this.lastToolCall.name) {
       // errorMessage only captures permission denials. MCP tool execution errors
       // (e.g. tool throws, non-zero exit) are not visible at the NDJSON layer —
       // they flow through the MCP transport in server-pool and would need separate

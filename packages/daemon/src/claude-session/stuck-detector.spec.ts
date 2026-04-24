@@ -255,6 +255,27 @@ describe("StuckDetector", () => {
     );
   });
 
+  test("constructor throws on non-positive thresholdsMs values", () => {
+    const makeSnapshot = () => ({
+      state: "active" as SessionStateEnum,
+      tokens: 0,
+      lastToolCall: null,
+      pendingPermissionCount: 0,
+    });
+    expect(() => new StuckDetector("s", { thresholdsMs: [0], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
+      "positive finite number",
+    );
+    expect(() => new StuckDetector("s", { thresholdsMs: [-100], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
+      "positive finite number",
+    );
+    expect(
+      () => new StuckDetector("s", { thresholdsMs: [Number.POSITIVE_INFINITY], repeatMs: 300 }, makeSnapshot, () => {}),
+    ).toThrow("positive finite number");
+    expect(
+      () => new StuckDetector("s", { thresholdsMs: [100, 0, 300], repeatMs: 300 }, makeSnapshot, () => {}),
+    ).toThrow("positive finite number");
+  });
+
   test("constructor throws on non-positive repeatMs", () => {
     const makeSnapshot = () => ({
       state: "active" as SessionStateEnum,
