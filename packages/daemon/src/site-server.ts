@@ -63,6 +63,9 @@ export class SiteServer {
   /** Called after a successful auto-restart with the new client and transport. */
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
 
+  /** Called when the crash-restart loop exhausts its budget and gives up permanently. */
+  onPermanentlyFailed?: () => void;
+
   /** Called on worker activity — lets the daemon reset its idle timer. */
   onActivity?: () => void;
 
@@ -229,19 +232,22 @@ export class SiteServer {
     this.transport = null;
     this.client = null;
 
-    if (!shouldRestart(this.crashTimestamps, this.restartPolicy)) {
-      this.logger.error(
-        `[site-server] ${this.crashTimestamps.length} crashes in ${this.restartPolicy.crashWindowMs / 1000}s — giving up auto-restart`,
-      );
-      this.stopped = true;
-      this.restartInProgress = false;
-      return;
-    }
-
-    const totalAttempts = maxAttempts(this.restartPolicy);
-    let lastErr: unknown;
-
+    // Outer try/finally owns restartInProgress = false for ALL exit paths, including
+    // the shouldRestart early-return below (previously that path reset it manually,
+    // making the code fragile against future changes).
     try {
+      if (!shouldRestart(this.crashTimestamps, this.restartPolicy)) {
+        this.logger.error(
+          `[site-server] ${this.crashTimestamps.length} crashes in ${this.restartPolicy.crashWindowMs / 1000}s — giving up auto-restart`,
+        );
+        this.stopped = true;
+        this.onPermanentlyFailed?.();
+        return;
+      }
+
+      const totalAttempts = maxAttempts(this.restartPolicy);
+      let lastErr: unknown;
+
       for (let attempt = 0; attempt < totalAttempts; attempt++) {
         if (attempt > 0) {
           const delay = getBackoffDelay(attempt, this.restartPolicy.backoffDelaysMs);
@@ -254,20 +260,35 @@ export class SiteServer {
           return;
         }
 
+        // Separate start() from onRestarted so that a throw in the callback
+        // does NOT look like a failed start() and trigger a spurious retry
+        // against an already-running worker (which would leak the worker).
+        let startResult: { client: Client; transport: WorkerClientTransport } | undefined;
         try {
           this.logger.info("[site-server] Restarting worker...");
-          const { client, transport } = await this.start();
-          this.logger.info("[site-server] Worker restarted successfully");
-          this.onRestarted?.(client, transport);
-          return;
+          startResult = await this.start();
         } catch (err) {
           lastErr = err;
           this.logger.error(`[site-server] Restart attempt ${attempt + 1} failed: ${err}`);
+        }
+
+        if (startResult) {
+          this.logger.info("[site-server] Worker restarted successfully");
+          try {
+            this.onRestarted?.(startResult.client, startResult.transport);
+          } catch (err) {
+            // Registration callback failed — the worker is running but unregistered.
+            // Tear it down via stop() rather than leaving it as an orphan.
+            this.logger.error(`[site-server] onRestarted callback threw: ${err} — stopping server`);
+            await this.stop();
+          }
+          return;
         }
       }
 
       this.logger.error(`[site-server] All ${totalAttempts} restart attempts failed (last: ${lastErr}) — giving up`);
       this.stopped = true;
+      this.onPermanentlyFailed?.();
     } finally {
       this.restartInProgress = false;
       if (this.pendingCrashReason !== null && !this.stopped) {

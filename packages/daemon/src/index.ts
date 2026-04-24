@@ -778,6 +778,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           pool.registerVirtualServer(SITE_SERVER_NAME, client, transport, siteTools);
           logger.info("[mcpd] Site server re-registered after crash recovery");
         };
+        siteServer.onPermanentlyFailed = () => {
+          pool.unregisterVirtualServer(SITE_SERVER_NAME);
+          logger.error("[mcpd] Site server permanently failed — removed from pool; restart daemon to recover");
+        };
       })(),
     );
 
