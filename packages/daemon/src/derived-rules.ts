@@ -11,13 +11,14 @@ export interface DerivedCtx {
 export interface DerivedRule {
   name: string;
   match: (event: MonitorEvent) => boolean;
-  derive: (event: MonitorEvent, ctx: DerivedCtx) => MonitorEventInput | null;
+  /** Mutates DB state and returns the event to emit, or null to skip. Publisher stamps src and causedBy. */
+  apply: (event: MonitorEvent, ctx: DerivedCtx) => MonitorEventInput | null;
 }
 
 export const prMergedToDone: DerivedRule = {
   name: "pr-merged-to-done",
   match: (e) => e.event === "pr.merged" && typeof e.prNumber === "number",
-  derive: (e, ctx) => {
+  apply: (e, ctx) => {
     const prNumber = e.prNumber as number;
     const wi = ctx.workItemDb.getWorkItemByPr(prNumber);
     if (!wi || wi.phase !== "qa") return null;

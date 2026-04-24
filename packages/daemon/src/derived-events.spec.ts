@@ -40,17 +40,16 @@ describe("prMergedToDone rule", () => {
     expect(prMergedToDone.match(stampEvent(input))).toBe(false);
   });
 
-  test("derives phase.changed for QA work item", () => {
+  test("applies phase.changed for QA work item", () => {
     const db = freshDb();
     const workItemDb = new WorkItemDb(db);
     const bus = new EventBus();
     const ctx: DerivedCtx = { workItemDb, bus };
 
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
-    const result = prMergedToDone.derive(stampEvent(prMergedInput(), 5), ctx);
+    const result = prMergedToDone.apply(stampEvent(prMergedInput(), 5), ctx);
 
     if (!result) throw new Error("expected non-null result");
-    expect(result.src).toBe("daemon.derived");
     expect(result.event).toBe(PHASE_CHANGED);
     expect(result.category).toBe("work_item");
     expect(result.workItemId).toBe(wi.id);
@@ -66,7 +65,7 @@ describe("prMergedToDone rule", () => {
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
-    prMergedToDone.derive(stampEvent(prMergedInput(), 5), ctx);
+    prMergedToDone.apply(stampEvent(prMergedInput(), 5), ctx);
 
     expect(workItemDb.getWorkItem(wi.id)?.phase).toBe("done");
   });
@@ -77,7 +76,7 @@ describe("prMergedToDone rule", () => {
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "impl" });
-    expect(prMergedToDone.derive(stampEvent(prMergedInput(), 5), ctx)).toBeNull();
+    expect(prMergedToDone.apply(stampEvent(prMergedInput(), 5), ctx)).toBeNull();
   });
 
   test("returns null when no work item for PR", () => {
@@ -85,7 +84,7 @@ describe("prMergedToDone rule", () => {
     const workItemDb = new WorkItemDb(db);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
-    expect(prMergedToDone.derive(stampEvent(prMergedInput(999), 5), ctx)).toBeNull();
+    expect(prMergedToDone.apply(stampEvent(prMergedInput(999), 5), ctx)).toBeNull();
   });
 
   test("second invocation is a no-op after phase transitions to done", () => {
@@ -96,8 +95,8 @@ describe("prMergedToDone rule", () => {
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     const event = stampEvent(prMergedInput(), 5);
 
-    expect(prMergedToDone.derive(event, ctx)).not.toBeNull();
-    expect(prMergedToDone.derive(event, ctx)).toBeNull();
+    expect(prMergedToDone.apply(event, ctx)).not.toBeNull();
+    expect(prMergedToDone.apply(event, ctx)).toBeNull();
   });
 });
 
@@ -112,10 +111,11 @@ describe("DerivedEventPublisher", () => {
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     expect(received).toHaveLength(2);
     expect(received[0].event).toBe("pr.merged");
@@ -133,10 +133,11 @@ describe("DerivedEventPublisher", () => {
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "impl" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     expect(received).toHaveLength(1);
     expect(received[0].event).toBe("pr.merged");
@@ -149,9 +150,10 @@ describe("DerivedEventPublisher", () => {
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     bus.publish(prMergedInput(999));
+    pub.dispose();
 
     expect(received).toHaveLength(1);
   });
@@ -161,10 +163,11 @@ describe("DerivedEventPublisher", () => {
     const bus = new EventBus();
     const workItemDb = new WorkItemDb(db);
 
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     expect(workItemDb.getWorkItem(wi.id)?.phase).toBe("done");
   });
@@ -176,10 +179,11 @@ describe("DerivedEventPublisher", () => {
     const workItemDb = new WorkItemDb(db);
 
     bus.subscribe(() => {});
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     const events = eventLog.getSince(0);
     expect(events).toHaveLength(2);
@@ -188,16 +192,17 @@ describe("DerivedEventPublisher", () => {
     expect(events[1].causedBy).toEqual([events[0].seq]);
   });
 
-  test("DB update + event persist are atomic (transaction)", () => {
+  test("DB update and derived event are both persisted", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
     const workItemDb = new WorkItemDb(db);
 
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     const updated = workItemDb.getWorkItem(wi.id);
     const events = eventLog.getSince(0);
@@ -213,10 +218,11 @@ describe("DerivedEventPublisher", () => {
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
     bus.publish(prMergedInput(42));
+    pub.dispose();
 
     expect(received).toHaveLength(2);
     expect(received[0].event).toBe("pr.merged");
@@ -228,21 +234,22 @@ describe("DerivedEventPublisher", () => {
     const bus = new EventBus();
     const workItemDb = new WorkItemDb(db);
 
-    let deriveCalled = false;
+    let applyCalled = false;
     const alwaysMatch: DerivedRule = {
       name: "always",
       match: () => true,
-      derive: () => {
-        deriveCalled = true;
+      apply: () => {
+        applyCalled = true;
         return { src: "daemon.derived", event: "test.derived", category: "work_item" };
       },
     };
 
-    new DerivedEventPublisher({ bus, rules: [alwaysMatch], workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: [alwaysMatch], workItemDb, db });
 
     bus.publish({ src: "test", event: "deep", category: "work_item", causedBy: [1, 2, 3, 4] });
+    pub.dispose();
 
-    expect(deriveCalled).toBe(false);
+    expect(applyCalled).toBe(false);
   });
 
   test("causedBy chain grows with derivation depth", () => {
@@ -257,22 +264,23 @@ describe("DerivedEventPublisher", () => {
     const chainingRule: DerivedRule = {
       name: "chain",
       match: (e) => e.event === "chain.start" || e.event === "chain.step",
-      derive: () => {
+      apply: () => {
         if (++calls > 10) return null;
         return { src: "daemon.derived", event: "chain.step", category: "work_item" };
       },
     };
 
-    new DerivedEventPublisher({ bus, rules: [chainingRule], workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: [chainingRule], workItemDb, db });
 
     bus.publish({ src: "test", event: "chain.start", category: "work_item" });
+    pub.dispose();
 
     // chain.start(seq=1) → 4 derived chain.step events, then depth cap stops
     expect(received).toHaveLength(5);
-    expect(received[1].causedBy as number[]).toHaveLength(1);
-    expect(received[2].causedBy as number[]).toHaveLength(2);
-    expect(received[3].causedBy as number[]).toHaveLength(3);
-    expect(received[4].causedBy as number[]).toHaveLength(4);
+    expect(received[1].causedBy).toHaveLength(1);
+    expect(received[2].causedBy).toHaveLength(2);
+    expect(received[3].causedBy).toHaveLength(3);
+    expect(received[4].causedBy).toHaveLength(4);
   });
 
   test("rules run in registration order", () => {
@@ -285,7 +293,7 @@ describe("DerivedEventPublisher", () => {
     const ruleA: DerivedRule = {
       name: "a",
       match: (e) => e.event === "test.order",
-      derive: () => {
+      apply: () => {
         order.push("a");
         return null;
       },
@@ -294,16 +302,81 @@ describe("DerivedEventPublisher", () => {
     const ruleB: DerivedRule = {
       name: "b",
       match: (e) => e.event === "test.order",
-      derive: () => {
+      apply: () => {
         order.push("b");
         return null;
       },
     };
 
-    new DerivedEventPublisher({ bus, rules: [ruleA, ruleB], workItemDb, db });
+    const pub = new DerivedEventPublisher({ bus, rules: [ruleA, ruleB], workItemDb, db });
 
     bus.publish({ src: "test", event: "test.order", category: "work_item" });
+    pub.dispose();
 
     expect(order).toEqual(["a", "b"]);
+  });
+
+  test("dispose unsubscribes: rule does not fire after dispose", () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+    pub.dispose();
+
+    bus.publish(prMergedInput(42));
+
+    // Only the pr.merged event — publisher is no longer subscribed
+    expect(received).toHaveLength(1);
+    expect(received[0].event).toBe("pr.merged");
+  });
+
+  test("two publishers on same bus fire rule exactly once each", () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const pubA = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+    const pubB = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
+
+    workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
+    bus.publish(prMergedInput(42));
+
+    pubA.dispose();
+    pubB.dispose();
+
+    // pubA fires → phase.changed (wi now done); pubB fires on same pr.merged → wi already done → no-op
+    // Result: pr.merged + one phase.changed, not two
+    expect(received.filter((e) => e.event === PHASE_CHANGED)).toHaveLength(1);
+  });
+
+  test("publisher stamps src:daemon.derived regardless of rule return value", () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const spoofRule: DerivedRule = {
+      name: "spoof",
+      match: (e) => e.event === "trigger",
+      apply: () => ({ src: "attacker.src", event: "test.derived", category: "work_item" }),
+    };
+
+    const pub = new DerivedEventPublisher({ bus, rules: [spoofRule], workItemDb, db });
+
+    bus.publish({ src: "test", event: "trigger", category: "work_item" });
+    pub.dispose();
+
+    const derived = received.find((e) => e.event === "test.derived");
+    expect(derived?.src).toBe("daemon.derived");
   });
 });

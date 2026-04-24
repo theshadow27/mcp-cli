@@ -454,6 +454,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // to keep migration errors from crashing the daemon (matches _metrics/_mail pattern).
   let workItemsServer: WorkItemsServer | null = null;
   let workItemPoller: WorkItemPoller | null = null;
+  let derivedPublisher: DerivedEventPublisher | null = null;
 
   // Register uptime and server metrics
   const uptimeGauge = metrics.gauge("mcpd_uptime_seconds");
@@ -924,7 +925,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           // Subscribe order: subscribers registered before this (SSE streams) see
           // trigger events before derived events; subscribers registered after see
           // derived events first (both carry seq for canonical ordering).
-          new DerivedEventPublisher({
+          derivedPublisher = new DerivedEventPublisher({
             bus: mailEventBus,
             rules: DEFAULT_RULES,
             workItemDb,
@@ -956,6 +957,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       eventLog.stopPruning();
       quotaPoller.stop();
       workItemPoller?.stop();
+      derivedPublisher?.dispose();
       try {
         watcher.stop();
       } catch (err) {
