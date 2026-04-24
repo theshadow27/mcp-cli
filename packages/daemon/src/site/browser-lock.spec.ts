@@ -116,18 +116,28 @@ describe("createBrowserLock", () => {
 
     class FakeEngine {}
     const fakeEngine = new FakeEngine();
-    const browserRef: FakeEngine | null = null;
+    let browserRef: FakeEngine | null = null;
 
-    // Simulate handleBrowserStart where eng.start() throws.
+    // Success path: confirm browserRef can be assigned (models a prior successful start).
+    await withLock(async () => {
+      browserRef = fakeEngine;
+    });
+    expect(browserRef === fakeEngine).toBe(true);
+
+    // Reset to null to model a fresh browser-start attempt after a disconnect.
+    browserRef = null;
+
+    // Simulate handleBrowserStart where eng.start() throws before assignment.
     await expect(
       withLock(async () => {
         const eng = fakeEngine; // loadBrowser returns engine without setting browserRef
         void eng; // would call eng.start() here
         throw new Error("start timed out");
-        // browserRef is never assigned
+        // browserRef is never assigned — production code only assigns after start() resolves
       }),
     ).rejects.toThrow("start timed out");
 
+    // Failed start leaves browserRef null — the core invariant of #1705.
     expect(browserRef).toBeNull();
 
     // Lock is released; next caller can proceed.

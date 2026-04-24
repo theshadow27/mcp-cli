@@ -340,7 +340,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
     } catch (err) {
       // eng.start() timed out or threw — stop the partially-launched process so
       // it doesn't leak, then re-throw so browser stays null.
-      await eng.stop().catch(() => {});
+      await withDeadline(5_000, "browser stop on failed start", eng.stop()).catch(() => {});
       throw err;
     }
     // Assign globals only after start() succeeds so a failed/timed-out start
