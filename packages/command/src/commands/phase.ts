@@ -501,7 +501,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
 
 /**
  * Render an actionable drift warning that names each changed file, shows both
- * hashes in "locked X → current Y" form, and tells the reader how to recover.
+ * hashes in "locked X → Y" form, and tells the reader how to recover.
  */
 export function formatDriftWarning(entries: DriftEntry[]): string {
   const width = Math.max(20, ...entries.map((e) => e.path.length));
@@ -514,10 +514,14 @@ export function formatDriftWarning(entries: DriftEntry[]): string {
           const act = shortHash(e.actual);
           return `  ${e.path.padEnd(width)}  locked ${exp} → ${act}`;
         }
-        case "phase-missing":
-          return `  ${e.path.padEnd(width)}  [NOT INSTALLED] — phase in manifest but missing from lockfile`;
-        case "phase-extra":
-          return `  ${e.path.padEnd(width)}  [STALE LOCK ENTRY] — phase in lockfile but removed from manifest`;
+        case "phase-missing": {
+          const detail = e.expected || "phase in manifest";
+          return `  ${e.path.padEnd(width)}  [NOT INSTALLED] — ${detail} but missing from lockfile`;
+        }
+        case "phase-extra": {
+          const detail = e.actual || "phase in lockfile";
+          return `  ${e.path.padEnd(width)}  [STALE LOCK ENTRY] — ${detail} but removed from manifest`;
+        }
         case "corrupt-lockfile": {
           const act = shortHash(e.actual);
           return `  ${e.path.padEnd(width)}  [CORRUPT LOCKFILE] — ${act}`;
@@ -526,14 +530,14 @@ export function formatDriftWarning(entries: DriftEntry[]): string {
     })
     .join("\n");
   return [
-    "mcx phase: .mcx.lock is out of date",
+    `mcx phase: ${LOCKFILE_NAME} is out of date`,
     "",
     "Changes detected since last `mcx phase install`:",
     "",
     rows,
     "",
-    "If this was intentional, run 'mcx phase install' to regenerate .mcx.lock,",
-    "then stage and commit .mcx.lock alongside the script change so future",
+    `If this was intentional, run \`mcx phase install\` to regenerate ${LOCKFILE_NAME},`,
+    `then stage and commit ${LOCKFILE_NAME} alongside the script change so future`,
     "orchestrators don't hit this error.",
   ].join("\n");
 }
