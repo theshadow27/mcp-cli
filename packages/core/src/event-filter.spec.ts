@@ -227,7 +227,7 @@ describe("createWaitForEvent", () => {
     const hb = makeEvent({ event: "heartbeat", category: "heartbeat", seq: 1, src: "daemon" });
     const target = makeEvent({ event: "pr.opened", category: "work_item", seq: 2 });
 
-    const waitFor = createWaitForEvent(() => fakeStream([hb, target]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([hb, target]) });
     const result = await waitFor({});
     expect(result.seq).toBe(2);
     expect(result.event).toBe("pr.opened");
