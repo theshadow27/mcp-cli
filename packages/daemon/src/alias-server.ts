@@ -5,7 +5,13 @@
  * Alias execution happens in a subprocess via Bun.spawn for fault isolation.
  */
 
-import type { AliasValidationResult, AliasWorkItemInfo, JsonSchema, ToolInfo } from "@mcp-cli/core";
+import type {
+  AliasValidationResult,
+  AliasWorkItemInfo,
+  JsonSchema,
+  MonitorAliasMetadata,
+  ToolInfo,
+} from "@mcp-cli/core";
 import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -264,6 +270,11 @@ export class AliasServer {
           aliasDef.outputSchema ? JSON.stringify(aliasDef.outputSchema) : undefined,
           bundledJs,
           result.sourceHash,
+          undefined,
+          null,
+          false,
+          undefined,
+          false,
         );
       } catch {
         // Non-fatal: DB persist failed, bundle still usable in-memory
@@ -306,6 +317,18 @@ export class AliasServer {
     });
 
     return this.spawnExecutor(payload, 10_000) as Promise<AliasValidationResult>;
+  }
+
+  /** Extract monitor metadata in a subprocess for fault isolation. */
+  async extractMonitorsInSubprocess(bundledJs: string): Promise<MonitorAliasMetadata[]> {
+    const payload = JSON.stringify({
+      bundledJs,
+      input: null,
+      isDefineAlias: false,
+      mode: "extractMonitors",
+    });
+
+    return this.spawnExecutor(payload, 10_000) as Promise<MonitorAliasMetadata[]>;
   }
 
   /** Spawn executor subprocess with semaphore-limited concurrency. */

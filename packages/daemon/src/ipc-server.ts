@@ -854,8 +854,29 @@ export class IpcServer {
             expiresAt,
             scope ?? null,
             scopeProvided,
+            validation.monitorDefs ? JSON.stringify(validation.monitorDefs) : undefined,
           );
         } else {
+          // Mixed scripts (defineAlias + defineMonitor in the same file) are not supported.
+          // The file was classified as defineMonitor (isMonitor=true), so defineAlias content
+          // would be silently ignored. Reject early with a clear validation error instead.
+          if (isMonitor && isDefineAlias(finalScript)) {
+            validationErrors.push(
+              "Script contains both defineAlias() and defineMonitor(). Mixed scripts are not supported — use one pattern per file.",
+            );
+          }
+          // Freeform: extract monitor definitions in subprocess if sentinel detected
+          let monitorDefsJson: string | undefined;
+          if (isDefineMonitor(finalScript) && this.aliasServer) {
+            try {
+              const monitorDefs = await this.aliasServer.extractMonitorsInSubprocess(js);
+              if (monitorDefs.length > 0) monitorDefsJson = JSON.stringify(monitorDefs);
+            } catch (err) {
+              this.logger.warn(
+                `[saveAlias] extractMonitorMetadata failed for "${name}": ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
           this.db.saveAlias(
             name,
             filePath,
@@ -868,6 +889,7 @@ export class IpcServer {
             expiresAt,
             scope ?? null,
             scopeProvided,
+            monitorDefsJson,
           );
         }
       } catch (err) {
@@ -885,6 +907,8 @@ export class IpcServer {
           expiresAt,
           scope ?? null,
           scopeProvided,
+          undefined,
+          false,
         );
       }
 

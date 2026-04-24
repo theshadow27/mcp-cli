@@ -23,6 +23,71 @@ export function isDefineAlias(source: string): boolean {
   return source.includes(DEFINE_ALIAS_SENTINEL);
 }
 
+/** Sentinel string to detect defineMonitor scripts without executing them */
+export const DEFINE_MONITOR_SENTINEL = "defineMonitor(";
+
+/** Check if source code uses defineMonitor() (static text analysis, no execution) */
+export function isDefineMonitor(source: string): boolean {
+  return source.includes(DEFINE_MONITOR_SENTINEL);
+}
+
+/**
+ * Minimal event shape for monitor alias outputs.
+ *
+ * Alias generators yield this shape; the runtime adds `src: "alias:<name>"`
+ * and maps the result into the daemon's full `MonitorEvent` envelope.
+ * `src` is intentionally absent here — the runtime injects it.
+ */
+export interface AliasMonitorEventInput {
+  event: string;
+  category?: string;
+  [key: string]: unknown;
+}
+
+/** Logger passed into a monitor alias subscribe function */
+export interface MonitorAliasLogger {
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+  debug(msg: string): void;
+}
+
+/** Context available inside a defineMonitor subscribe generator */
+export interface MonitorAliasContext {
+  /** Fired when the alias is disabled or the daemon is shutting down */
+  signal: AbortSignal;
+  /** For fire-and-forget side events that shouldn't interrupt the generator */
+  bus: { publish(input: AliasMonitorEventInput): void };
+  logger: MonitorAliasLogger;
+}
+
+/**
+ * Structured monitor source definition.
+ *
+ * An alias that exports a `defineMonitor` is registered at alias-server
+ * startup and its async generator yields events that flow into the main
+ * monitor bus with `src: "alias:<name>"`.
+ *
+ * The runtime integration (cross-thread yielding) is delivered separately
+ * in P5-alias-runtime. This type defines the contract only.
+ */
+export interface MonitorAliasDefinition<E extends AliasMonitorEventInput = AliasMonitorEventInput> {
+  name: string;
+  description?: string;
+  subscribe: (ctx: MonitorAliasContext) => AsyncIterable<E>;
+}
+
+/**
+ * Identity factory for defineMonitor — mirrors the defineAlias pattern.
+ * Returns the definition unchanged; provides TypeScript type inference
+ * at the call site without leaking bundler internals.
+ */
+export function defineMonitor<E extends AliasMonitorEventInput = AliasMonitorEventInput>(
+  def: MonitorAliasDefinition<E>,
+): MonitorAliasDefinition<E> {
+  return def;
+}
+
 /** Proxy type for calling MCP tools: mcp.server.tool(args) */
 export type McpProxy = Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
 
@@ -117,14 +182,6 @@ export interface AliasDefinition<I = unknown, O = unknown> {
 
 /** Alias type discriminant for DB and IPC */
 export type AliasType = "freeform" | "defineAlias" | "defineMonitor";
-
-/** Sentinel string to detect defineMonitor scripts without executing them */
-export const DEFINE_MONITOR_SENTINEL = "defineMonitor(";
-
-/** Check if source code uses defineMonitor() (static text analysis, no execution) */
-export function isDefineMonitor(source: string): boolean {
-  return source.includes(DEFINE_MONITOR_SENTINEL);
-}
 
 /** Context passed to a defineMonitor subscribe function */
 export interface MonitorContext {

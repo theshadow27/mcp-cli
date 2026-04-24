@@ -27,6 +27,7 @@ import {
   createWaitForEvent,
   executeAliasBundled,
   extractContent,
+  extractMonitorMetadata,
   findGitRoot,
   ipcCall,
   validateAliasBundled,
@@ -55,7 +56,7 @@ interface ExecutorInput {
   bundledJs: string;
   input: unknown;
   isDefineAlias: boolean;
-  mode?: "execute" | "validate";
+  mode?: "execute" | "validate" | "extractMonitors";
   aliasName?: string;
   /** Chain of alias names that led to this execution, for cycle detection. */
   callChain?: string[];
@@ -113,6 +114,12 @@ async function main(): Promise<void> {
   if (mode === "validate") {
     const validation = await validateAliasBundled(bundledJs);
     process.stdout.write(JSON.stringify({ result: validation }));
+    return;
+  }
+
+  if (mode === "extractMonitors") {
+    const monitors = await extractMonitorMetadata(bundledJs);
+    process.stdout.write(JSON.stringify({ result: monitors }));
     return;
   }
 

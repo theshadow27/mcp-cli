@@ -7,6 +7,7 @@ import {
   computeSourceHash,
   executeAliasBundled,
   extractMetadata,
+  extractMonitorMetadata,
   stripMcpCliImport,
   stripModuleSyntax,
   stubProxy,
@@ -697,5 +698,118 @@ describe("validateAliasBundled", () => {
 
     expect(result.valid).toBe(true);
     expect(result.name).toBe("minimal");
+  });
+});
+
+describe("defineMonitor metadata extraction", () => {
+  test("extractMonitorMetadata returns monitor defs from a monitor-only alias", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "monitor-only.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineMonitor } from "mcp-cli";',
+        "export default defineMonitor({",
+        '  name: "flaky-watcher",',
+        '  description: "Emits events when tests are flaky.",',
+        "  async *subscribe(ctx) { yield { event: 'flaky.detected' }; },",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const defs = await extractMonitorMetadata(js);
+
+    expect(defs).toHaveLength(1);
+    expect(defs[0].name).toBe("flaky-watcher");
+    expect(defs[0].description).toBe("Emits events when tests are flaky.");
+  });
+
+  test("extractMonitorMetadata returns empty array for freeform alias with no defineMonitor", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "freeform.ts");
+    writeFileSync(scriptPath, "const x = 1;");
+
+    const { js } = await bundleAlias(scriptPath);
+    const defs = await extractMonitorMetadata(js);
+
+    expect(defs).toHaveLength(0);
+  });
+
+  test("extractMetadata captures monitorDefs from a mixed file", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "mixed.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, defineMonitor, z } from "mcp-cli";',
+        "export const monitor = defineMonitor({",
+        '  name: "ci-watcher",',
+        '  description: "Watches CI.",',
+        "  async *subscribe(ctx) { yield { event: 'ci.failed' }; },",
+        "});",
+        "export default defineAlias({",
+        '  name: "trigger-ci",',
+        "  fn: () => 'triggered',",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const meta = await extractMetadata(js);
+
+    expect(meta.name).toBe("trigger-ci");
+    expect(meta.monitorDefs).toHaveLength(1);
+    expect(meta.monitorDefs?.[0].name).toBe("ci-watcher");
+  });
+
+  test("validateAliasBundled includes monitorDefs in result for mixed file", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "mixed-validate.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, defineMonitor } from "mcp-cli";',
+        "export const monitor = defineMonitor({",
+        '  name: "pr-watcher",',
+        "  async *subscribe(ctx) { yield { event: 'pr.opened' }; },",
+        "});",
+        "defineAlias({",
+        '  name: "list-prs",',
+        "  fn: () => [],",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    expect(result.valid).toBe(true);
+    expect(result.monitorDefs).toHaveLength(1);
+    expect(result.monitorDefs?.[0].name).toBe("pr-watcher");
+  });
+
+  test("validateAliasBundled captures monitorDefs even when defineAlias is absent", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "monitor-validate.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineMonitor } from "mcp-cli";',
+        "export default defineMonitor({",
+        '  name: "deploy-watcher",',
+        "  async *subscribe(ctx) { yield { event: 'deploy.started' }; },",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const result = await validateAliasBundled(js);
+
+    // No defineAlias → invalid as an alias, but monitorDefs still captured
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("Script did not call defineAlias()");
+    expect(result.monitorDefs).toHaveLength(1);
+    expect(result.monitorDefs?.[0].name).toBe("deploy-watcher");
   });
 });
