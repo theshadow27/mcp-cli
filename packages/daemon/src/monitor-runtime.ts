@@ -10,7 +10,7 @@
  * #1583
  */
 
-import type { AliasType, Logger, MonitorEventInput } from "@mcp-cli/core";
+import type { AliasType, Logger, MonitorCategory, MonitorEventInput } from "@mcp-cli/core";
 import { bundleAlias } from "@mcp-cli/core";
 import type { Subprocess } from "bun";
 import type { EventBus } from "./event-bus";
@@ -33,6 +33,13 @@ export interface MonitorAlias {
 const STDERR_RING_SIZE = 5;
 const MAX_LINE_BUFFER = 1024 * 1024;
 const HEALTHY_UPTIME_MS = 60_000;
+const VALID_CATEGORIES: ReadonlySet<string> = new Set<MonitorCategory>([
+  "session",
+  "work_item",
+  "ci",
+  "mail",
+  "heartbeat",
+]);
 
 interface RunningMonitor {
   name: string;
@@ -76,7 +83,7 @@ export class MonitorRuntime {
       if (mon.aliasType !== "defineMonitor") continue;
       await this.spawnMonitor(mon);
     }
-    if (monitors.length > 0) {
+    if (this.monitors.size > 0) {
       this.logger.info(`[monitor-runtime] Started ${this.monitors.size} monitor(s)`);
     }
   }
@@ -199,12 +206,34 @@ export class MonitorRuntime {
                 src: `alias:${mon.name}`,
                 event: typeof event.event === "string" ? event.event : "unknown",
                 category:
-                  typeof event.category === "string" ? (event.category as MonitorEventInput["category"]) : "heartbeat",
+                  typeof event.category === "string" && VALID_CATEGORIES.has(event.category)
+                    ? (event.category as MonitorCategory)
+                    : "heartbeat",
               };
               this.bus.publish(input);
             } catch {
               this.logger.warn(`[monitor-runtime] "${mon.name}" yielded non-JSON: ${line.slice(0, 100)}`);
             }
+          }
+        }
+
+        buffer += decoder.decode();
+        const remaining = buffer.trim();
+        if (remaining) {
+          try {
+            const event = JSON.parse(remaining) as Record<string, unknown>;
+            const input: MonitorEventInput = {
+              ...event,
+              src: `alias:${mon.name}`,
+              event: typeof event.event === "string" ? event.event : "unknown",
+              category:
+                typeof event.category === "string" && VALID_CATEGORIES.has(event.category)
+                  ? (event.category as MonitorCategory)
+                  : "heartbeat",
+            };
+            this.bus.publish(input);
+          } catch {
+            this.logger.warn(`[monitor-runtime] "${mon.name}" yielded non-JSON: ${remaining.slice(0, 100)}`);
           }
         }
       } catch {
@@ -243,6 +272,16 @@ export class MonitorRuntime {
                 mon.stderrRing.shift();
               }
             }
+          }
+        }
+
+        buffer += decoder.decode();
+        const remaining = buffer.trim();
+        if (remaining) {
+          this.logger.warn(`[monitor:${mon.name}] ${remaining}`);
+          mon.stderrRing.push(remaining);
+          if (mon.stderrRing.length > STDERR_RING_SIZE) {
+            mon.stderrRing.shift();
           }
         }
       } catch {
@@ -301,11 +340,23 @@ export class MonitorRuntime {
 
       mon.restartTimer = setTimeout(async () => {
         if (mon.stopped || this.stopped) return;
+
+        const preservedAttempt = mon.attempt;
+        const preservedCrashTimestamps = [...mon.crashTimestamps];
+        const preservedStderrRing = [...mon.stderrRing];
+
         this.monitors.delete(mon.name);
 
         const alias = this.getAlias(mon.name);
         if (!alias || alias.aliasType !== "defineMonitor") return;
         await this.spawnMonitor(alias);
+
+        const respawned = this.monitors.get(mon.name);
+        if (respawned) {
+          respawned.attempt = preservedAttempt;
+          respawned.crashTimestamps = preservedCrashTimestamps;
+          respawned.stderrRing = preservedStderrRing;
+        }
       }, delay);
     });
   }

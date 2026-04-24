@@ -818,7 +818,7 @@ export class IpcServer {
 
       let finalScript: string;
       if (isStructured || isMonitor) {
-        // defineAlias scripts get everything via the virtual module — no auto-import
+        // defineAlias and defineMonitor scripts get everything via the virtual module — no auto-import
         finalScript = script;
       } else {
         // Freeform: auto-prepend import if not present (existing behavior)
@@ -893,7 +893,7 @@ export class IpcServer {
 
       // Refresh virtual alias server so new tool is immediately visible
       await this.aliasServer?.refresh();
-      if (isDefineMonitor(script) || wasMonitor) this.onAliasChanged?.(name);
+      if (isMonitor || wasMonitor) this.onAliasChanged?.(name);
       const result: { ok: true; filePath: string; warnings?: string[]; validationErrors?: string[] } = {
         ok: true,
         filePath,

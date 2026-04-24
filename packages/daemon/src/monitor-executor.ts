@@ -21,15 +21,15 @@ interface ExecutorInput {
 }
 
 async function main(): Promise<void> {
-  const stderrWrite = (data: string) => process.stderr.write(`${data}\n`);
+  const stdinText = await Bun.stdin.text();
+  const { bundledJs, aliasName } = JSON.parse(stdinText) as ExecutorInput;
+
+  const stderrWrite = (data: string) => process.stderr.write(`[monitor:${aliasName}] ${data}\n`);
   console.log = stderrWrite;
   console.warn = stderrWrite;
   console.error = stderrWrite;
   console.info = stderrWrite;
   console.debug = stderrWrite;
-
-  const stdinText = await Bun.stdin.text();
-  const { bundledJs, aliasName } = JSON.parse(stdinText) as ExecutorInput;
 
   const monitor = await evalMonitorBundled(bundledJs, stubProxy);
 
@@ -53,6 +53,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[monitor-executor] fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(`[monitor-executor] fatal: ${String(err)}\n`);
   process.exit(1);
 });
