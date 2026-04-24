@@ -1,6 +1,6 @@
 # Sprint 43
 
-> Planned 2026-04-23 23:45 local. Target: 18 PRs (6 Phase 2 hardening + 5 Phase 3 kickoff + 4 sites polish + 3 phase-5 foundations).
+> Planned 2026-04-23 23:45 local. Started 2026-04-24 02:48 EDT. Ended 2026-04-24 06:08 EDT. Target: 18 PRs (6 Phase 2 hardening + 5 Phase 3 kickoff + 4 sites polish + 3 phase-5 foundations). Result: 16 merged + 2 closed-as-already-done = 18/18.
 
 ## Goal
 
@@ -100,3 +100,34 @@ All P0 anchors: independent of each other (can run in parallel)
 ## Context
 
 Sprint 42 shipped v1.7.2 — 21 PRs, the entire monitor Phase 2 core + sites stability cluster + CI concurrency unblock. Phase 2 generated 13 follow-ups (9 sites or monitor-adjacent) and the Phase 3 CopilotPoller remains the next big piece. Sprint 43 sits at the intersection of "harden what Phase 2 shipped" and "open Phase 3 + unblock Phase 5." If the sprint hits 18 PRs, the monitor epic drops from ~40% of open issues to ~30% — meaningful progress toward wrapping the epic in sprints 44-45.
+
+## Results
+
+- **Released**: v1.7.3
+- **PRs merged**: 16 (all planned picks landed)
+- **Issues closed**: 18 (16 via PR + 2 closed as already-done: #1672, #1700)
+- **Issues dropped**: 0
+- **New issues filed**: 4 (#1716 meta/QA-Copilot-surface, #1727 matchFilter memoization, #1728 saveAlias bug → fixed in #1713 repair, #1729 doRestartMonitor log masks spawn fail)
+
+**Batch 1 P0 anchors** — all 6 landed:
+- #1710 (#1666): pr.merged derive retry when work item not yet created
+- #1711 (#1691): ciRunStates persistence to SQLite
+- #1712 (#1667): startup reconciliation via derived cursor replay
+- #1713 (#1583): cross-thread defineMonitor runtime + #1728 critical fix
+- #1717 (#1578): CopilotPoller for inline review comments
+- #1709 (#1584): waitForEvent(filter, opts) helper
+
+**Batch 2** — all 7 (well, 5 PRs + 2 already-done):
+- #1721 (#1688): backfill gating for session.response/responseTail
+- #1722 (#1544): MailServer wired into EventBus for in-process sends
+- #1723 (#1696): null cascadeHead on non-actionable transitions
+- #1731 (#1698): current-time sentinel for missing updatedAt
+- #1740 (#1579): poll PR reviews, top-level comments, issue comments
+- #1741 (#1582): defineMonitor contract + metadata extraction + DB persistence
+- Closed already-done: #1672 (via #1652), #1700 (via #1711)
+
+**Batch 3** — all 4 landed (+ #1672 already done):
+- #1730 (#1656): actions/upload-artifact v4 → v7
+- #1732 (#1678): validate browser.profileDir absolute or ~/
+- #1733 (#1705): assign browser only after eng.start() succeeds
+- #1739 (#1677): validate chromeProfile (reject separators + `..`)
