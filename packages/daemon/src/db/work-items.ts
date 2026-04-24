@@ -58,6 +58,7 @@ interface WorkItemRow {
   phase: string;
   created_at: string;
   updated_at: string;
+  last_seen_head_oid: string | null;
 }
 
 function rowToWorkItem(row: WorkItemRow): WorkItem {
@@ -182,6 +183,11 @@ export class WorkItemDb {
       `);
       this.setSchemaVersion(CONSUMER, 2);
       version = 2;
+    }
+    if (version < 3) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN last_seen_head_oid TEXT");
+      this.setSchemaVersion(CONSUMER, 3);
+      version = 3;
     }
   }
 
@@ -341,6 +347,21 @@ export class WorkItemDb {
   getWorkItemByBranch(branch: string): WorkItem | null {
     const row = this.db.query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ?").get(branch);
     return row ? rowToWorkItem(row) : null;
+  }
+
+  /** Get the last-seen HEAD commit OID for a PR, used by the push detector. Returns null if not yet seen. */
+  getLastSeenHeadOid(prNumber: number): string | null {
+    const row = this.db
+      .query<{ last_seen_head_oid: string | null }, [number]>(
+        "SELECT last_seen_head_oid FROM work_items WHERE pr_number = ?",
+      )
+      .get(prNumber);
+    return row?.last_seen_head_oid ?? null;
+  }
+
+  /** Persist the HEAD commit OID for a PR so the push detector survives daemon restarts. */
+  setLastSeenHeadOid(prNumber: number, oid: string): void {
+    this.db.prepare("UPDATE work_items SET last_seen_head_oid = ? WHERE pr_number = ?").run(oid, prNumber);
   }
 
   /**

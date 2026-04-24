@@ -28,6 +28,12 @@ export interface Review {
   author: string;
 }
 
+export interface PRFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface PRStatus {
   number: number;
   state: "OPEN" | "CLOSED" | "MERGED";
@@ -36,6 +42,15 @@ export interface PRStatus {
   ciState: string | null;
   ciChecks: CiCheck[];
   reviews: Review[];
+  commitCount: number;
+  headRefName: string;
+  baseRefName: string;
+  /** SHA of the HEAD commit on the PR branch — use for push detection (survives force-push / rebase). */
+  headRefOid: string;
+  mergeCommitOid: string | null;
+  files: PRFile[];
+  /** True when the PR touches >100 files and the files list was truncated. srcChurn is understated. */
+  filesTruncated: boolean;
 }
 
 // ---------- GraphQL query builder ----------
@@ -52,7 +67,11 @@ export function buildQuery(prNumbers: readonly number[]): string {
       state
       isDraft
       mergeable
+      headRefName
+      baseRefName
+      headRefOid
       commits(last: 1) {
+        totalCount
         nodes {
           commit {
             statusCheckRollup {
@@ -76,10 +95,26 @@ export function buildQuery(prNumbers: readonly number[]): string {
           author { login }
         }
       }
+      files(first: 100) {
+        pageInfo {
+          hasNextPage
+        }
+        nodes {
+          path
+          additions
+          deletions
+        }
+      }
+      mergeCommit {
+        oid
+      }
     }`,
   );
 
   return `query TrackedPRs($owner: String!, $repo: String!) {
+  rateLimit {
+    remaining
+  }
   repository(owner: $owner, name: $repo) {
     ${fragments.join("\n    ")}
   }
@@ -99,12 +134,22 @@ interface RawReview {
   author?: { login?: string } | null;
 }
 
+interface RawFile {
+  path?: string;
+  additions?: number;
+  deletions?: number;
+}
+
 interface RawPR {
   number?: number;
   state?: string;
   isDraft?: boolean;
   mergeable?: string;
+  headRefName?: string;
+  baseRefName?: string;
+  headRefOid?: string;
   commits?: {
+    totalCount?: number;
     nodes?: Array<{
       commit?: {
         statusCheckRollup?: {
@@ -115,6 +160,8 @@ interface RawPR {
     }>;
   };
   reviews?: { nodes?: RawReview[] };
+  files?: { pageInfo?: { hasNextPage?: boolean }; nodes?: RawFile[] };
+  mergeCommit?: { oid?: string } | null;
 }
 
 function parsePR(raw: RawPR): PRStatus {
@@ -136,6 +183,14 @@ function parsePR(raw: RawPR): PRStatus {
       author: r.author?.login ?? "unknown",
     }));
 
+  const files: PRFile[] = (raw.files?.nodes ?? [])
+    .filter((f): f is RawFile & { path: string } => !!f.path)
+    .map((f) => ({
+      path: f.path,
+      additions: f.additions ?? 0,
+      deletions: f.deletions ?? 0,
+    }));
+
   return {
     number: raw.number ?? 0,
     state: (raw.state as PRStatus["state"]) ?? "OPEN",
@@ -144,6 +199,13 @@ function parsePR(raw: RawPR): PRStatus {
     ciState: rollup?.state ?? null,
     ciChecks,
     reviews,
+    commitCount: raw.commits?.totalCount ?? 0,
+    headRefName: raw.headRefName ?? "",
+    baseRefName: raw.baseRefName ?? "",
+    headRefOid: raw.headRefOid ?? "",
+    mergeCommitOid: raw.mergeCommit?.oid ?? null,
+    files,
+    filesTruncated: raw.files?.pageInfo?.hasNextPage ?? false,
   };
 }
 
@@ -225,7 +287,11 @@ type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Re
 export interface FetchPRsOptions {
   getToken?: () => Promise<string>;
   fetch?: FetchFn;
+  /** Called to log warnings (e.g. low rate-limit). */
+  warn?: (msg: string) => void;
 }
+
+const RATE_LIMIT_WARN_THRESHOLD = 500;
 
 /**
  * Fetch status for tracked PRs in a single GraphQL request.
@@ -240,6 +306,7 @@ export async function fetchTrackedPRs(
 
   const getToken = opts?.getToken ?? getGhToken;
   const doFetch: FetchFn = opts?.fetch ?? globalThis.fetch;
+  const warn = opts?.warn;
 
   const query = buildQuery(prNumbers);
   const variables = { owner: repo.owner, repo: repo.repo };
@@ -273,11 +340,20 @@ export async function fetchTrackedPRs(
     throw new Error(`GitHub GraphQL API returned ${resp.status}: ${body}`);
   }
 
-  const json: { data?: { repository?: Record<string, RawPR> }; errors?: Array<{ message: string }> } =
-    await resp.json();
+  const json: {
+    data?: { rateLimit?: { remaining?: number }; repository?: Record<string, RawPR> };
+    errors?: Array<{ message: string }>;
+  } = await resp.json();
 
   if (json.errors?.length) {
     throw new Error(`GitHub GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`);
+  }
+
+  const remaining = json.data?.rateLimit?.remaining;
+  if (warn && typeof remaining === "number" && remaining < RATE_LIMIT_WARN_THRESHOLD) {
+    try {
+      warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
+    } catch {}
   }
 
   const repoData = json.data?.repository;

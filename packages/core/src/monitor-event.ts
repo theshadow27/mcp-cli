@@ -33,6 +33,7 @@ export const SESSION_IDLE = "session.idle" as const;
 // ── Work item event names ──
 
 export const PR_OPENED = "pr.opened" as const;
+export const PR_PUSHED = "pr.pushed" as const;
 export const PR_MERGED = "pr.merged" as const;
 export const PR_CLOSED = "pr.closed" as const;
 export const CHECKS_STARTED = "checks.started" as const;
@@ -169,9 +170,25 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
 
   [SESSION_CONTAINMENT_ESCALATED]: (e) => join(wi(e), sid(e)),
 
-  [PR_OPENED]: (e) => join(wi(e), pr(e)),
+  [PR_OPENED]: (e) => {
+    const branch = typeof e.branch === "string" ? e.branch : "";
+    const base = typeof e.base === "string" ? e.base : "";
+    const commits = typeof e.commits === "number" ? `${e.commits}c` : "";
+    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}${e.filesTruncated ? "+" : ""}` : "";
+    return join(wi(e), pr(e), branch && base ? `${branch}→${base}` : branch || base, commits, churn);
+  },
 
-  [PR_MERGED]: (e) => join(wi(e), pr(e)),
+  [PR_PUSHED]: (e) => {
+    const branch = typeof e.branch === "string" ? e.branch : "";
+    const commits = typeof e.commits === "number" ? `${e.commits}c` : "";
+    const churn = typeof e.srcChurn === "number" ? `churn:${e.srcChurn}${e.filesTruncated ? "+" : ""}` : "";
+    return join(wi(e), pr(e), branch, commits, churn);
+  },
+
+  [PR_MERGED]: (e) => {
+    const sha = typeof e.mergeSha === "string" ? e.mergeSha.slice(0, 8) : "";
+    return join(wi(e), pr(e), sha);
+  },
 
   [PR_CLOSED]: (e) => join(wi(e), pr(e)),
 

@@ -10,10 +10,12 @@
  */
 
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
-import { consoleLogger } from "@mcp-cli/core";
+import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
+
+export { computeSrcChurn };
 
 const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
@@ -46,6 +48,7 @@ export class WorkItemPoller {
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
+  private lastRateLimitWarnMs = 0;
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -149,7 +152,15 @@ export class WorkItemPoller {
 
       // Safe: we filtered for prNumber !== null above
       const prNumbers = tracked.map((item) => item.prNumber as number);
-      const statuses = await this.fetchPRs(this._repo, prNumbers);
+      const statuses = await this.fetchPRs(this._repo, prNumbers, {
+        warn: (msg) => {
+          const now = Date.now();
+          if (now - this.lastRateLimitWarnMs >= 60_000) {
+            this.lastRateLimitWarnMs = now;
+            this.logger.warn(msg);
+          }
+        },
+      });
 
       if (this.stopped) return; // bail before writing if stopped during fetch
 
@@ -186,6 +197,7 @@ export class WorkItemPoller {
     const newPrState = mapPrState(status);
     const newCiStatus = mapCiStatus(status);
     const newReviewStatus = mapReviewStatus(status);
+    const srcChurn = computeSrcChurn(status.files);
 
     const patch: Partial<WorkItem> = {};
     let changed = false;
@@ -194,7 +206,29 @@ export class WorkItemPoller {
     if (newPrState !== item.prState) {
       patch.prState = newPrState;
       changed = true;
-      this.emitPrEvent(prNumber, newPrState);
+      this.emitPrEvent(prNumber, newPrState, status, srcChurn);
+    }
+
+    // Push detection: HEAD OID changed on an open/draft PR (no state change).
+    // Uses headRefOid persisted to SQLite so detection survives daemon restarts
+    // and correctly handles force-pushes / rebases that don't change commit count.
+    if (newPrState === item.prState && (newPrState === "open" || newPrState === "draft")) {
+      const lastOid = this.db.getLastSeenHeadOid(prNumber);
+      if (lastOid !== null && status.headRefOid && status.headRefOid !== lastOid) {
+        this.onEvent({
+          type: "pr:pushed",
+          prNumber,
+          branch: status.headRefName,
+          base: status.baseRefName,
+          commits: status.commitCount,
+          srcChurn,
+          ...(status.filesTruncated ? { filesTruncated: true } : {}),
+        });
+      }
+    }
+    // Persist current HEAD OID so next poll can detect changes (and restarts don't lose baseline).
+    if (status.headRefOid) {
+      this.db.setLastSeenHeadOid(prNumber, status.headRefOid);
     }
 
     // CI status changes
@@ -217,16 +251,24 @@ export class WorkItemPoller {
     }
   }
 
-  private emitPrEvent(prNumber: number, newState: PrState): void {
+  private emitPrEvent(prNumber: number, newState: PrState, status: PRStatus, srcChurn: number): void {
     switch (newState) {
       case "merged":
-        this.onEvent({ type: "pr:merged", prNumber });
+        this.onEvent({ type: "pr:merged", prNumber, mergeSha: status.mergeCommitOid });
         break;
       case "closed":
         this.onEvent({ type: "pr:closed", prNumber });
         break;
       case "open":
-        this.onEvent({ type: "pr:opened", prNumber });
+        this.onEvent({
+          type: "pr:opened",
+          prNumber,
+          branch: status.headRefName,
+          base: status.baseRefName,
+          commits: status.commitCount,
+          srcChurn,
+          ...(status.filesTruncated ? { filesTruncated: true } : {}),
+        });
         break;
     }
   }

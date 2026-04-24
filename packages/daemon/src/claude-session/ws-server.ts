@@ -21,6 +21,16 @@ import type {
   WorkItemEvent,
 } from "@mcp-cli/core";
 import {
+  CHECKS_FAILED,
+  CHECKS_PASSED,
+  CHECKS_STARTED,
+  PHASE_CHANGED,
+  PR_CLOSED,
+  PR_MERGED,
+  PR_OPENED,
+  PR_PUSHED,
+  REVIEW_APPROVED,
+  REVIEW_CHANGES_REQUESTED,
   SESSION_CLEARED,
   SESSION_CONTAINMENT_DENIED,
   SESSION_CONTAINMENT_ESCALATED,
@@ -1690,6 +1700,47 @@ export class ClaudeWsServer {
       if (input.resultPreview !== undefined) idleInput.resultPreview = input.resultPreview;
       this.onMonitorEvent(idleInput);
     }
+  }
+
+  private static readonly WORK_ITEM_EVENT_MAP: Record<string, string> = {
+    "pr:opened": PR_OPENED,
+    "pr:pushed": PR_PUSHED,
+    "pr:merged": PR_MERGED,
+    "pr:closed": PR_CLOSED,
+    "checks:started": CHECKS_STARTED,
+    "checks:passed": CHECKS_PASSED,
+    "checks:failed": CHECKS_FAILED,
+    "review:approved": REVIEW_APPROVED,
+    "review:changes_requested": REVIEW_CHANGES_REQUESTED,
+    "phase:changed": PHASE_CHANGED,
+  };
+
+  private publishWorkItemMonitorEvent(event: WorkItemEvent): void {
+    if (!this.onMonitorEvent) return;
+    const mapped = ClaudeWsServer.WORK_ITEM_EVENT_MAP[event.type];
+    if (!mapped) return;
+
+    const input: MonitorEventInput = {
+      src: "daemon.work-item-poller",
+      event: mapped,
+      category: "work_item",
+    };
+
+    if ("prNumber" in event) input.prNumber = event.prNumber;
+    if ("failedJob" in event) input.failedJob = event.failedJob;
+    if ("reviewer" in event) input.reviewer = event.reviewer;
+    if ("itemId" in event) input.workItemId = event.itemId;
+    if ("from" in event) input.from = event.from;
+    if ("to" in event) input.to = event.to;
+    if ("runId" in event) input.runId = event.runId;
+    if ("branch" in event) input.branch = event.branch;
+    if ("base" in event) input.base = event.base;
+    if ("commits" in event) input.commits = event.commits;
+    if ("srcChurn" in event) input.srcChurn = event.srcChurn;
+    if ("mergeSha" in event) input.mergeSha = event.mergeSha;
+    if ("filesTruncated" in event) input.filesTruncated = event.filesTruncated;
+
+    this.onMonitorEvent(input);
   }
 
   private async handlePermissionRequest(

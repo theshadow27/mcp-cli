@@ -271,6 +271,136 @@ describe("fetchTrackedPRs", () => {
     expect(result[0].ciChecks).toEqual([]);
     expect(result[0].reviews).toEqual([]);
   });
+
+  test("parses enriched fields: commitCount, headRefName, baseRefName, headRefOid, mergeCommitOid, files", async () => {
+    const body = {
+      data: {
+        repository: {
+          pr77: {
+            number: 77,
+            state: "MERGED",
+            isDraft: false,
+            mergeable: "MERGEABLE",
+            headRefName: "feat/my-feature",
+            baseRefName: "main",
+            headRefOid: "deadbeef1234567890",
+            commits: {
+              totalCount: 5,
+              nodes: [],
+            },
+            reviews: { nodes: [] },
+            files: {
+              pageInfo: { hasNextPage: false },
+              nodes: [
+                { path: "src/a.ts", additions: 10, deletions: 3 },
+                { path: "src/a.spec.ts", additions: 5, deletions: 1 },
+              ],
+            },
+            mergeCommit: { oid: "abc123def456" },
+          },
+        },
+      },
+    };
+
+    const result = await fetchTrackedPRs(repo, [77], { getToken: mockGetToken, fetch: mockFetch(body) });
+
+    expect(result).toHaveLength(1);
+    const pr = result[0];
+    expect(pr.commitCount).toBe(5);
+    expect(pr.headRefName).toBe("feat/my-feature");
+    expect(pr.baseRefName).toBe("main");
+    expect(pr.headRefOid).toBe("deadbeef1234567890");
+    expect(pr.mergeCommitOid).toBe("abc123def456");
+    expect(pr.filesTruncated).toBe(false);
+    expect(pr.files).toHaveLength(2);
+    expect(pr.files[0]).toEqual({ path: "src/a.ts", additions: 10, deletions: 3 });
+    expect(pr.files[1]).toEqual({ path: "src/a.spec.ts", additions: 5, deletions: 1 });
+  });
+
+  test("sets filesTruncated when files pageInfo.hasNextPage is true", async () => {
+    const body = {
+      data: {
+        repository: {
+          pr78: {
+            number: 78,
+            state: "OPEN",
+            isDraft: false,
+            mergeable: "UNKNOWN",
+            headRefOid: "sha-large-pr",
+            commits: { totalCount: 1, nodes: [] },
+            reviews: { nodes: [] },
+            files: {
+              pageInfo: { hasNextPage: true },
+              nodes: Array.from({ length: 100 }, (_, i) => ({ path: `src/file${i}.ts`, additions: 1, deletions: 0 })),
+            },
+          },
+        },
+      },
+    };
+
+    const result = await fetchTrackedPRs(repo, [78], { getToken: mockGetToken, fetch: mockFetch(body) });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].filesTruncated).toBe(true);
+    expect(result[0].files).toHaveLength(100);
+  });
+
+  test("logs warning when rateLimit.remaining drops below 500", async () => {
+    const body = {
+      data: {
+        rateLimit: { remaining: 250 },
+        repository: {
+          pr1: {
+            number: 1,
+            state: "OPEN",
+            isDraft: false,
+            mergeable: "UNKNOWN",
+            commits: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const warnings: string[] = [];
+    const result = await fetchTrackedPRs(repo, [1], {
+      getToken: mockGetToken,
+      fetch: mockFetch(body),
+      warn: (msg) => warnings.push(msg),
+    });
+
+    expect(result).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("250");
+    expect(warnings[0]).toContain("rate limit");
+  });
+
+  test("does not warn when rateLimit.remaining is above threshold", async () => {
+    const body = {
+      data: {
+        rateLimit: { remaining: 4000 },
+        repository: {
+          pr1: {
+            number: 1,
+            state: "OPEN",
+            isDraft: false,
+            mergeable: "UNKNOWN",
+            commits: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const warnings: string[] = [];
+    await fetchTrackedPRs(repo, [1], {
+      getToken: mockGetToken,
+      fetch: mockFetch(body),
+      warn: (msg) => warnings.push(msg),
+    });
+
+    expect(warnings).toHaveLength(0);
+  });
 });
 
 // ---------- resolveNumber ----------
