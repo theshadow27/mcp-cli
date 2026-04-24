@@ -139,6 +139,7 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
   const srcPattern = srcRaw ? globToRegex(srcRaw) : null;
 
   return (event: Record<string, unknown>): boolean => {
+    if (event.category === "heartbeat" || event.event === "heartbeat") return true;
     if (categories && !categories.has(event.category as string)) return false;
     if (session && event.sessionId !== session) return false;
     if (prNumber !== null && event.prNumber !== prNumber) return false;
@@ -1453,8 +1454,8 @@ export class IpcServer {
    *   session=<id>             Filter to one session ID
    *   pr=<n>                   Filter to one PR number
    *   workItem=<id>            Filter to one work item ID
-   *   type=<glob>              Event name filter (exact match; future: glob)
-   *   src=<pattern>            Source attribution filter (exact match; future: glob)
+   *   type=<glob>              Event name glob filter (comma-separated OR, e.g. "pr.*,session.idle")
+   *   src=<pattern>            Source attribution glob filter (e.g. "daemon.*")
    *   phase=<name>             Phase filter on work item phase
    *   since=<seq>              Replay events after this cursor from the durable log,
    *                            then seamlessly switch to live delivery (#1513)
@@ -1476,23 +1477,17 @@ export class IpcServer {
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
     if (this.eventBus) {
       const subscribeFilter = url.searchParams.get("subscribe");
-      const sessionFilter = url.searchParams.get("session");
-      const prFilter = url.searchParams.has("pr") ? Number(url.searchParams.get("pr")) : undefined;
-      const workItemFilter = url.searchParams.get("workItem");
-      const typeFilter = url.searchParams.get("type");
-      const srcFilter = url.searchParams.get("src");
-      const responseTail = url.searchParams.get("responseTail");
-
-      const categoryList = subscribeFilter
-        ? subscribeFilter
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0)
-        : null;
-      if (categoryList !== null && categoryList.length === 0) {
+      if (
+        subscribeFilter !== null &&
+        subscribeFilter
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean).length === 0
+      ) {
         return new Response("subscribe must not be empty", { status: 400 });
       }
-      const categories = categoryList ? new Set(categoryList) : null;
+      const responseTail = url.searchParams.get("responseTail");
+      const eventFilter = buildEventFilter(url.searchParams);
 
       const bus = this.eventBus;
 
@@ -1564,14 +1559,7 @@ export class IpcServer {
                 }
               },
               (event) => {
-                // session.response: excluded by default; opt-in only when responseTail matches.
-                // All other filters still apply first, even for session.response.
-                if (categories !== null && !categories.has(event.category)) return false;
-                if (sessionFilter !== null && event.sessionId !== sessionFilter) return false;
-                if (prFilter !== undefined && event.prNumber !== prFilter) return false;
-                if (workItemFilter !== null && event.workItemId !== workItemFilter) return false;
-                if (typeFilter !== null && event.event !== typeFilter) return false;
-                if (srcFilter !== null && event.src !== srcFilter) return false;
+                if (eventFilter !== null && !eventFilter(event as Record<string, unknown>)) return false;
                 if (event.event === "session.response") {
                   return responseTail !== null && event.sessionId === responseTail;
                 }
@@ -1587,6 +1575,7 @@ export class IpcServer {
                 const batch = eventLog.getSince(cursor, 1000);
                 for (const event of batch) {
                   highWaterMark = event.seq;
+                  if (eventFilter !== null && !eventFilter(event as Record<string, unknown>)) continue;
                   if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                     this.logger.warn("[events] slow consumer during backfill, dropping subscriber");
                     metrics.counter("mcpd_event_bus_slow_drops_total").inc();
