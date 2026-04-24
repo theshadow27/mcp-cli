@@ -346,7 +346,7 @@ describe("fetchTrackedPRs", () => {
   });
 
   test("updatedAt missing falls back to current time, not epoch", async () => {
-    const before = new Date(Date.now() - 1000).toISOString();
+    const before = Date.now() - 1000;
     const body = {
       data: {
         repository: {
@@ -366,10 +366,11 @@ describe("fetchTrackedPRs", () => {
     const result = await fetchTrackedPRs(repo, [20], { getToken: mockGetToken, fetch: mockFetch(body) });
 
     expect(result).toHaveLength(1);
-    const after = new Date(Date.now() + 1000).toISOString();
-    expect(result[0].updatedAt > before).toBe(true);
-    expect(result[0].updatedAt < after).toBe(true);
-    expect(result[0].updatedAt).not.toBe(new Date(0).toISOString());
+    const after = Date.now() + 1000;
+    const updatedAtMs = Date.parse(result[0].updatedAt);
+    expect(updatedAtMs).toBeGreaterThan(before);
+    expect(updatedAtMs).toBeLessThan(after);
+    expect(updatedAtMs).not.toBe(0); // not epoch
   });
 
   test("logs warning when rateLimit.remaining drops below 500", async () => {
