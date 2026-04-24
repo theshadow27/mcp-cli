@@ -323,7 +323,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(2);
+      expect(row?.version).toBe(3);
     });
 
     test("does not touch PRAGMA user_version (leaves it free for other consumers)", () => {
@@ -347,7 +347,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(2);
+      expect(row?.version).toBe(3);
     });
 
     test("legacy v1 DB (work_items table, no transitions table) seeds at 1 then upgrades to 2", () => {
@@ -381,7 +381,7 @@ describe("WorkItemDb", () => {
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(seeded?.version).toBe(2);
+      expect(seeded?.version).toBe(3);
 
       // v2 transitions table now exists
       const hasTransitions = raw
@@ -415,7 +415,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(2);
+      expect(row?.version).toBe(3);
 
       // And the tables actually got created (regression for the PRAGMA-fallback bug)
       const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
