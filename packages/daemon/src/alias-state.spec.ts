@@ -224,6 +224,33 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
     }
   });
 
+  test("symlink repoRoot is canonicalized — real path and symlink resolve to same row (inverse)", async () => {
+    const { rpc } = start();
+    const base = mkdtempSync(join(tmpdir(), "mcp-alias-state-symlink-inv-"));
+    const real = join(base, "real-repo");
+    const link = join(base, "link-repo");
+    mkdirSync(real);
+    symlinkSync(real, link);
+
+    try {
+      await rpc({
+        id: "inv-set",
+        method: "aliasStateSet",
+        params: { repoRoot: real, namespace: "inv-ns", key: "k", value: "realval" },
+      });
+
+      const getResp = await rpc({
+        id: "inv-get",
+        method: "aliasStateGet",
+        params: { repoRoot: link, namespace: "inv-ns", key: "k" },
+      });
+      expect(getResp.error).toBeUndefined();
+      expect((getResp.result as { value: unknown }).value).toBe("realval");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("empty repoRoot is rejected by Zod schema — returns IPC error", async () => {
     const { rpc } = start();
 

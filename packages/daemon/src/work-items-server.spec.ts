@@ -1125,6 +1125,39 @@ describe("phase_state tools", () => {
     }
   });
 
+  test("repoRoot symlink is canonicalized — real path and symlink resolve to same row (inverse)", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-inv-"));
+    const real = join(base, "real-repo");
+    const link = join(base, "link-repo");
+    mkdirSync(real);
+    symlinkSync(real, link);
+
+    try {
+      await client.callTool({ name: "work_items_track", arguments: { issueNumber: 31 } });
+
+      await client.callTool({
+        name: "phase_state_set",
+        arguments: { workItemId: "issue:31", repoRoot: real, key: "inv-key", value: "inv-val" },
+      });
+
+      const result = await client.callTool({
+        name: "phase_state_get",
+        arguments: { workItemId: "issue:31", repoRoot: link, key: "inv-key" },
+      });
+      expect(result.isError).toBeFalsy();
+      const body = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(body.value).toBe("inv-val");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("empty repoRoot is rejected — does not fall back to process.cwd()", async () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;

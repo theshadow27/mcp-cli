@@ -9,6 +9,7 @@
 
 import { Database } from "bun:sqlite";
 import { unlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   type AliasType,
   type MailMessage,
@@ -18,6 +19,7 @@ import {
   type UsageStat,
   hardenFile,
   options,
+  resolveRealpath,
 } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -343,6 +345,39 @@ export class StateDb {
         WHERE repo_root LIKE '%/'
       `);
     })();
+
+    // -- Canonicalize alias_state rows written with symlink repo_root (#1526) --
+    // resolveRealpath() normalization was added after rows may have been written
+    // with symlink paths. Walk all distinct repo_root values and resolve each;
+    // update rows to canonical path, deleting conflicts where canonical already
+    // exists (same merge logic as the trailing-slash migration above).
+    {
+      const symRows = this.db.query<{ repo_root: string }, []>("SELECT DISTINCT repo_root FROM alias_state").all();
+      const toUpdate = symRows.filter(({ repo_root }) => {
+        try {
+          return resolveRealpath(resolve(repo_root)) !== repo_root;
+        } catch {
+          return false;
+        }
+      });
+      if (toUpdate.length > 0) {
+        this.db.transaction(() => {
+          for (const { repo_root } of toUpdate) {
+            const canonical = resolveRealpath(resolve(repo_root));
+            this.db.run(
+              `DELETE FROM alias_state
+               WHERE repo_root = ?
+                 AND EXISTS (
+                   SELECT 1 FROM alias_state AS c
+                   WHERE c.repo_root = ? AND c.namespace = alias_state.namespace AND c.key = alias_state.key
+                 )`,
+              [repo_root, canonical],
+            );
+            this.db.run("UPDATE alias_state SET repo_root = ? WHERE repo_root = ?", [canonical, repo_root]);
+          }
+        })();
+      }
+    }
   }
 
   // -- Tool cache --
