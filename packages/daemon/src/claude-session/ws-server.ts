@@ -1344,6 +1344,10 @@ export class ClaudeWsServer {
     const prevState = session.state.state;
     session.ws = null;
 
+    // Dispose immediately — handleSessionEvent is not invoked from this path,
+    // so the session:disconnected case there would never fire.
+    this.disposeStuckDetector(session);
+
     if (session.keepAliveTimer) {
       clearInterval(session.keepAliveTimer);
       session.keepAliveTimer = null;

@@ -239,4 +239,34 @@ describe("StuckDetector", () => {
         ),
     ).toThrow("thresholdsMs must be non-empty");
   });
+
+  test("constructor throws on non-ascending thresholdsMs", () => {
+    const makeSnapshot = () => ({
+      state: "active" as SessionStateEnum,
+      tokens: 0,
+      lastToolCall: null,
+      pendingPermissionCount: 0,
+    });
+    expect(() => new StuckDetector("s", { thresholdsMs: [100, 100], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
+      "strictly ascending",
+    );
+    expect(() => new StuckDetector("s", { thresholdsMs: [200, 100], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
+      "strictly ascending",
+    );
+  });
+
+  test("constructor throws on non-positive repeatMs", () => {
+    const makeSnapshot = () => ({
+      state: "active" as SessionStateEnum,
+      tokens: 0,
+      lastToolCall: null,
+      pendingPermissionCount: 0,
+    });
+    expect(() => new StuckDetector("s", { thresholdsMs: [100], repeatMs: 0 }, makeSnapshot, () => {})).toThrow(
+      "repeatMs must be positive",
+    );
+    expect(() => new StuckDetector("s", { thresholdsMs: [100], repeatMs: -1 }, makeSnapshot, () => {})).toThrow(
+      "repeatMs must be positive",
+    );
+  });
 });

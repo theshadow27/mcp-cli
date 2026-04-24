@@ -46,6 +46,16 @@ export class StuckDetector {
     if (config.thresholdsMs.length === 0) {
       throw new Error("StuckDetectorConfig.thresholdsMs must be non-empty");
     }
+    for (let i = 1; i < config.thresholdsMs.length; i++) {
+      if (config.thresholdsMs[i] <= config.thresholdsMs[i - 1]) {
+        throw new Error(
+          `StuckDetectorConfig.thresholdsMs must be strictly ascending (index ${i}: ${config.thresholdsMs[i]} <= ${config.thresholdsMs[i - 1]})`,
+        );
+      }
+    }
+    if (config.repeatMs <= 0) {
+      throw new Error(`StuckDetectorConfig.repeatMs must be positive (got ${config.repeatMs})`);
+    }
     this.sessionId = sessionId;
     this.config = config;
     this.getSnapshot = getSnapshot;
