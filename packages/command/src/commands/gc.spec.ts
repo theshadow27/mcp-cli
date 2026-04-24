@@ -64,6 +64,7 @@ function makeDeps(
     execFallback?: (cmd: string[]) => { stdout: string; stderr: string; exitCode: number };
     callTool?: GcDeps["callTool"];
     mtimes?: Map<string, number>;
+    mergedPrBranches?: Set<string> | null;
   } = {},
 ): GcDeps & { logs: string[]; errors: string[]; execCalls: string[][] } {
   const logs: string[] = [];
@@ -84,6 +85,7 @@ function makeDeps(
     callTool: overrides.callTool ?? (async () => "[]"),
     exec,
     getMtime: (p) => overrides.mtimes?.get(p) ?? null,
+    queryMergedPrBranches: () => (overrides.mergedPrBranches !== undefined ? overrides.mergedPrBranches : null),
     printError: (m) => errors.push(m),
     log: (m) => logs.push(m),
     logError: (m) => errors.push(m),
@@ -161,6 +163,63 @@ describe("runGc branches", () => {
     // Only "stale" — feat is checked out by /other
     expect(d.logs.some((l) => l.includes("would delete 1 merged"))).toBe(true);
     expect(d.logs.some((l) => l.includes("stale"))).toBe(true);
+  });
+
+  test("uses -D for branches with a merged PR (squash-merge support)", async () => {
+    const responses = new Map<string, { stdout: string; stderr?: string; exitCode?: number }>();
+    responses.set("git -C /repo worktree list --porcelain", { stdout: "" });
+    responses.set("git -C /repo symbolic-ref refs/remotes/origin/HEAD", { stdout: "refs/remotes/origin/main" });
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n  squashed\n  regular\n" });
+    responses.set("git -C /repo branch --show-current", { stdout: "main" });
+    responses.set("git -C /repo fetch --prune", { stdout: "" });
+    responses.set("git -C /repo branch -D squashed", { stdout: "Deleted branch squashed" });
+    responses.set("git -C /repo branch -d regular", { stdout: "Deleted branch regular" });
+
+    const d = makeDeps({
+      execResponses: responses,
+      mergedPrBranches: new Set(["squashed"]),
+    });
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: true, worktreesOnly: false }, d);
+
+    expect(d.execCalls.some((c) => c.join(" ") === "git -C /repo branch -D squashed")).toBe(true);
+    expect(d.execCalls.some((c) => c.join(" ") === "git -C /repo branch -d regular")).toBe(true);
+    expect(d.errors.some((l) => l.includes("branches: deleted 2"))).toBe(true);
+  });
+
+  test("falls back to -d with warning when GitHub API is unavailable", async () => {
+    const responses = new Map<string, { stdout: string; stderr?: string; exitCode?: number }>();
+    responses.set("git -C /repo worktree list --porcelain", { stdout: "" });
+    responses.set("git -C /repo symbolic-ref refs/remotes/origin/HEAD", { stdout: "refs/remotes/origin/main" });
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n  squashed\n" });
+    responses.set("git -C /repo branch --show-current", { stdout: "main" });
+    responses.set("git -C /repo fetch --prune", { stdout: "" });
+    responses.set("git -C /repo branch -d squashed", {
+      stdout: "",
+      stderr: "not fully merged",
+      exitCode: 1,
+    });
+
+    const d = makeDeps({ execResponses: responses, mergedPrBranches: null });
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: true, worktreesOnly: false }, d);
+
+    expect(d.errors.some((e) => e.includes("GitHub API unavailable"))).toBe(true);
+    // Falls back to -d (which fails for this squash-merged branch)
+    expect(d.execCalls.some((c) => c.join(" ") === "git -C /repo branch -d squashed")).toBe(true);
+    expect(d.execCalls.some((c) => c[4] === "-D")).toBe(false);
+    expect(d.errors.some((e) => e.includes("1 failed"))).toBe(true);
+  });
+
+  test("no API warning when there are no branch candidates", async () => {
+    const responses = new Map<string, { stdout: string }>();
+    responses.set("git -C /repo worktree list --porcelain", { stdout: "" });
+    responses.set("git -C /repo symbolic-ref refs/remotes/origin/HEAD", { stdout: "refs/remotes/origin/main" });
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n" });
+    responses.set("git -C /repo branch --show-current", { stdout: "main" });
+
+    const d = makeDeps({ execResponses: responses, mergedPrBranches: null });
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: true, worktreesOnly: false }, d);
+
+    expect(d.errors.some((e) => e.includes("GitHub API"))).toBe(false);
   });
 });
 
