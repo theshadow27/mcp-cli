@@ -152,9 +152,9 @@ export interface AliasContext {
    * or daemon shutdown. Aliases that do long-running work should check this
    * signal and abort gracefully. `waitForEvent` is wired to this signal
    * automatically — a fired signal causes an in-progress wait to reject
-   * immediately with `AbortError`.
+   * immediately with `signal.reason` (an AbortError by default).
    */
-  signal?: AbortSignal;
+  signal: AbortSignal;
   /**
    * Wait for the first monitor event that matches `filter`.
    *

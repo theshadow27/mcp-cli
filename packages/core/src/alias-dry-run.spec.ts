@@ -65,6 +65,7 @@ describe("wrapDryRunContext", () => {
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
+      signal: new AbortController().signal,
       waitForEvent: async () => {
         throw new Error("not in test");
       },
@@ -95,6 +96,7 @@ describe("wrapDryRunContext", () => {
       state: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
+      signal: new AbortController().signal,
       waitForEvent: async () => {
         throw new Error("not in test");
       },

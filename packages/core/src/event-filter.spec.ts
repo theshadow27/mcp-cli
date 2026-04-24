@@ -190,7 +190,7 @@ describe("createWaitForEvent", () => {
     const target = makeEvent({ event: "ci.finished", category: "ci" });
     const noise = makeEvent({ event: "pr.opened", category: "work_item" });
 
-    const waitFor = createWaitForEvent(() => fakeStream([noise, target]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([noise, target]) });
     const result = await waitFor({ type: "ci.finished" });
     expect(result).toEqual(target);
   });
@@ -199,7 +199,7 @@ describe("createWaitForEvent", () => {
     const e1 = makeEvent({ event: "pr.opened", category: "work_item", seq: 1 });
     const e2 = makeEvent({ event: "pr.merged", category: "work_item", seq: 2 });
 
-    const waitFor = createWaitForEvent(() => fakeStream([e1, e2]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([e1, e2]) });
     const result = await waitFor({ type: "pr.merged" });
     expect(result.seq).toBe(2);
   });
@@ -208,7 +208,7 @@ describe("createWaitForEvent", () => {
     const hb = makeEvent({ event: "heartbeat", category: "heartbeat", seq: 1 });
     const target = makeEvent({ event: "ci.finished", category: "ci", seq: 2 });
 
-    const waitFor = createWaitForEvent(() => fakeStream([hb, target]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([hb, target]) });
     const result = await waitFor({ type: "ci.*" });
     expect(result.seq).toBe(2);
   });
@@ -217,7 +217,7 @@ describe("createWaitForEvent", () => {
     const ringHb = { t: "heartbeat", seq: 99 } as unknown as MonitorEvent;
     const target = makeEvent({ event: "ci.finished", category: "ci", seq: 2 });
 
-    const waitFor = createWaitForEvent(() => fakeStream([ringHb, target]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([ringHb, target]) });
     const result = await waitFor({ type: "ci.*" });
     expect(result.seq).toBe(2);
   });
@@ -247,13 +247,13 @@ describe("createWaitForEvent", () => {
       await blockPromise; // block so timeout fires
     }
 
-    const waitFor = createWaitForEvent(() => ({ events: infinite(), abort: resolveBlock }));
+    const waitFor = createWaitForEvent({ openStream: () => ({ events: infinite(), abort: resolveBlock }) });
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 20 })).rejects.toThrow(WaitTimeoutError);
   });
 
   test("rejects when stream ends without matching event", async () => {
     const e = makeEvent({ event: "pr.opened", category: "work_item" });
-    const waitFor = createWaitForEvent(() => fakeStream([e]));
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([e]) });
     await expect(waitFor({ type: "ci.finished" })).rejects.toThrow("ended without matching event");
   });
 
@@ -263,7 +263,7 @@ describe("createWaitForEvent", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const waitFor = createWaitForEvent(controller.signal);
+    const waitFor = createWaitForEvent({ signal: controller.signal });
     await expect(waitFor({ type: "ci.finished" })).rejects.toMatchObject({ name: "AbortError" });
   });
 
@@ -280,7 +280,7 @@ describe("createWaitForEvent", () => {
       yield makeEvent({ event: "never-reached" }); // abort fires before blockPromise resolves
     }
 
-    const waitFor = createWaitForEvent(() => ({ events: blocking(), abort: resolveBlock }), controller.signal);
+    const waitFor = createWaitForEvent({ openStream: () => ({ events: blocking(), abort: resolveBlock }), signal: controller.signal });
     const waitPromise = waitFor({ type: "ci.finished" });
 
     controller.abort();
@@ -300,7 +300,7 @@ describe("createWaitForEvent", () => {
     } as unknown as AbortSignal;
 
     const target = makeEvent({ event: "ci.finished", category: "ci" });
-    const waitFor = createWaitForEvent(() => fakeStream([target]), mockSignal);
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([target]), signal: mockSignal });
     await waitFor({ type: "ci.finished" });
 
     expect(listeners).toHaveLength(0);
@@ -330,8 +330,36 @@ describe("createWaitForEvent", () => {
       await blockPromise;
     }
 
-    const waitFor = createWaitForEvent(() => ({ events: infinite(), abort: resolveBlock }), mockSignal);
+    const waitFor = createWaitForEvent({ openStream: () => ({ events: infinite(), abort: resolveBlock }), signal: mockSignal });
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 20 })).rejects.toThrow(WaitTimeoutError);
     expect(listeners).toHaveLength(0);
+  });
+
+  test("abort after resolve — settled flag prevents second rejection", async () => {
+    const controller = new AbortController();
+    const target = makeEvent({ event: "ci.finished", category: "ci" });
+    const waitFor = createWaitForEvent({ openStream: () => fakeStream([target]), signal: controller.signal });
+    const result = await waitFor({ type: "ci.finished" });
+    expect(result).toEqual(target);
+    // Aborting after resolution must be a no-op (no unhandled rejection, no throw)
+    controller.abort();
+  });
+
+  test("abort after timeout — settled flag prevents second rejection", async () => {
+    const controller = new AbortController();
+
+    let resolveBlock!: () => void;
+    const blockPromise = new Promise<void>((r) => {
+      resolveBlock = r;
+    });
+
+    async function* infinite(): AsyncGenerator<MonitorEvent> {
+      await blockPromise;
+    }
+
+    const waitFor = createWaitForEvent({ openStream: () => ({ events: infinite(), abort: resolveBlock }), signal: controller.signal });
+    await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 10 })).rejects.toThrow(WaitTimeoutError);
+    // Aborting after timeout resolution must be a no-op
+    controller.abort();
   });
 });

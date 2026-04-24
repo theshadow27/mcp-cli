@@ -105,17 +105,14 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
 type OpenStreamFn = typeof openEventStream;
 
 /**
- * Create a `waitForEvent` function bound to an optional AbortSignal.
+ * Create a `waitForEvent` function.
  *
- * The first argument is polymorphic:
- *   - omitted / undefined  → use real event stream, no cancellation
- *   - AbortSignal          → use real event stream, cancel on signal
- *   - function             → inject a fake stream (tests only)
+ * `opts.signal` — when provided and fires, the in-progress wait rejects with
+ * `signal.reason` (a DOMException AbortError when `abort()` is called with no
+ * args). If already aborted at call time, rejection is immediate. The abort
+ * listener is removed on any resolution path — no leaked listeners.
  *
- * When a `signal` is provided and fires, the in-progress wait rejects with a
- * `DOMException("The operation was aborted", "AbortError")`. If the signal is
- * already aborted at call time, rejection is immediate. The abort listener is
- * removed from the signal on any resolution path — no leaked listeners.
+ * `opts.openStream` — injectable for testing (default: the real openEventStream).
  *
  * Stream is always torn down on resolve or reject — no leaked subscribers.
  *
@@ -123,19 +120,16 @@ type OpenStreamFn = typeof openEventStream;
  * the action they intend to await. Without `since`, there is a 10–100ms
  * window between the call and the daemon's subscription where a matching
  * event could be missed, causing the caller to block until timeout.
- *
- * `openStream` is injectable for testing (default: the real openEventStream).
  */
-export function createWaitForEvent(
-  openStreamOrSignal?: OpenStreamFn | AbortSignal,
-  signalArg?: AbortSignal,
-): (filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }) => Promise<MonitorEvent> {
-  const openStream: OpenStreamFn = typeof openStreamOrSignal === "function" ? openStreamOrSignal : openEventStream;
-  const signal: AbortSignal | undefined = typeof openStreamOrSignal === "function" ? signalArg : openStreamOrSignal;
+export function createWaitForEvent(opts?: {
+  openStream?: OpenStreamFn;
+  signal?: AbortSignal;
+}): (filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }) => Promise<MonitorEvent> {
+  const { openStream = openEventStream, signal } = opts ?? {};
 
   return (filter, opts) => {
     if (signal?.aborted) {
-      return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
+      return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
     }
 
     return new Promise<MonitorEvent>((resolve, reject) => {
@@ -148,7 +142,7 @@ export function createWaitForEvent(
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
       function onAbort() {
-        settle(() => reject(new DOMException("The operation was aborted", "AbortError")));
+        settle(() => reject(signal!.reason ?? new DOMException("The operation was aborted", "AbortError")));
       }
 
       const cleanup = () => {
@@ -168,7 +162,7 @@ export function createWaitForEvent(
         }
       };
 
-      signal?.addEventListener("abort", onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort);
 
       if (opts?.timeoutMs !== undefined) {
         const ms = opts.timeoutMs;

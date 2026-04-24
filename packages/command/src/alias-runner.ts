@@ -29,8 +29,14 @@ import type { z } from "zod/v4";
 
 export async function runAlias(aliasPath: string, cliArgs: Record<string, string>, jsonInput?: string): Promise<void> {
   const controller = new AbortController();
-  const onSigint = () => controller.abort();
-  process.once("SIGINT", onSigint);
+  const onSignal = (sig: string) => {
+    controller.abort();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.kill(process.pid, sig);
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 
   try {
     const mcpProxy = createMcpProxy({ cwd: () => process.cwd() });
@@ -62,7 +68,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
       workItem: null,
       signal: controller.signal,
-      waitForEvent: createWaitForEvent(controller.signal),
+      waitForEvent: createWaitForEvent({ signal: controller.signal }),
     };
 
     if (isStructured) {
@@ -78,7 +84,8 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       await executeAliasBundled(js, undefined, ctx, false);
     }
   } finally {
-    process.off("SIGINT", onSigint);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
 }
 

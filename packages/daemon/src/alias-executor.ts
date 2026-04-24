@@ -142,7 +142,12 @@ async function main(): Promise<void> {
   // Wire cancellation: SIGINT from the terminal or SIGTERM from the daemon
   // killing this subprocess both abort waitForEvent calls.
   const controller = new AbortController();
-  const onSignal = () => controller.abort();
+  const onSignal = (sig: string) => {
+    controller.abort();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.kill(process.pid, sig);
+  };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
@@ -163,7 +168,7 @@ async function main(): Promise<void> {
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
     signal: controller.signal,
-    waitForEvent: createWaitForEvent(controller.signal),
+    waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
 
   try {
