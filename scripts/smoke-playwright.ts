@@ -6,9 +6,10 @@
  * on-disk path when running as a compiled Bun binary — the scenario that
  * caused #1601 and is fixed by #1615 but was previously untested in CI.
  *
- * Builds a tiny probe binary with --external playwright (matching how
- * dist/mcpd is built), then runs it against the installed node_modules/
- * playwright path.  No running daemon is required.
+ * Builds a tiny probe binary with --external playwright and
+ * --external playwright-core (matching how dist/mcpd is built), then runs
+ * it against the installed node_modules/playwright path.  No running daemon
+ * is required.
  *
  * Run after `bun install`:
  *   bun scripts/smoke-playwright.ts
@@ -24,8 +25,9 @@ const REPO_ROOT = join(import.meta.dir, "..");
 const PROBE_SRC = join(import.meta.dir, "playwright-resolver-probe.ts");
 const PROBE_OUT = join(REPO_ROOT, "dist", "playwright-resolver-probe");
 
-// playwright is a workspace devDependency — it must be in node_modules after
-// `bun install`.  We use this as the on-disk candidate to avoid needing a
+// playwright is an optionalDependency — it must be in node_modules after
+// `bun install` (optional deps are included by default unless --no-optional
+// is passed).  We use this as the on-disk candidate to avoid needing a
 // vendor-dir install during CI.
 const PLAYWRIGHT_CANDIDATE = join(REPO_ROOT, "node_modules", "playwright");
 
@@ -54,6 +56,9 @@ if (!existsSync(PLAYWRIGHT_CANDIDATE)) {
 console.error("Compiling probe binary...");
 
 mkdirSync(join(REPO_ROOT, "dist"), { recursive: true });
+
+// Workaround for Bun 1.3.12 truncated macOS code signatures (oven-sh/bun#29120) — mirrors build.ts.
+process.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 
 const buildResult =
   await $`bun build --compile --minify --external playwright --external playwright-core ${PROBE_SRC} --outfile ${PROBE_OUT}`

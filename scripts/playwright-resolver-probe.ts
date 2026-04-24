@@ -22,9 +22,7 @@ _resetCache();
 const chromium = await resolvePlaywright({
   candidates: [candidatePath],
   install: () => {
-    throw new Error(
-      `playwright not found at candidate path — pass a valid on-disk playwright installation`,
-    );
+    throw new Error("playwright not found at candidate path — pass a valid on-disk playwright installation");
   },
 });
 if (!chromium || typeof chromium.launchPersistentContext !== "function") {
