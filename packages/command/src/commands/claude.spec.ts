@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { type Mock, afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +34,7 @@ import { colorState, extractContentSummary, formatSessionShort } from "./session
 function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
   return {
     callTool: mock(async () => ({ content: [{ type: "text", text: "[]" }] })),
+    log: mock(() => {}),
     printError: mock(() => {}),
     exit: mock((code: number) => {
       throw new ExitError(code);
@@ -47,6 +48,10 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     pollMail: mock(async () => null),
     ...overrides,
   };
+}
+
+function logCalls(deps: ClaudeDeps): string[] {
+  return (deps.log as Mock<(...a: unknown[]) => void>).mock.calls.map((c) => String(c[0]));
 }
 
 function toolResult(data: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -565,7 +570,7 @@ describe("cmdClaude", () => {
     try {
       await cmdClaude(["spawn", "--help"]);
       const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
-      // cmdAgent's spawn help uses "mcx agent claude spawn" format
+      // Spawn uses provider-specific help via agentSpawn, not the generic registry
       expect(output).toContain("mcx agent claude spawn");
     } finally {
       console.log = origLog;
@@ -579,22 +584,14 @@ describe("mcx claude spawn", () => {
   test("--help prints usage and does not call tool", async () => {
     const callTool = mock(async () => toolResult({ success: true }));
     const deps = makeDeps({ callTool });
-
-    const logSpy = mock(() => {});
-    const origLog = console.log;
-    console.log = logSpy;
-    try {
-      await cmdClaude(["spawn", "--help"], deps);
-      expect(callTool).not.toHaveBeenCalled();
-      const output = logSpy.mock.calls.map((c) => (c as string[])[0]).join("\n");
-      expect(output).toContain("mcx claude spawn");
-      expect(output).toContain("--task");
-      expect(output).toContain("--worktree");
-      expect(output).toContain("--allow");
-      expect(output).toContain("Examples:");
-    } finally {
-      console.log = origLog;
-    }
+    await cmdClaude(["spawn", "--help"], deps);
+    expect(callTool).not.toHaveBeenCalled();
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude spawn");
+    expect(output).toContain("--task");
+    expect(output).toContain("--worktree");
+    expect(output).toContain("--allow");
+    expect(output).toContain("Examples:");
   });
 
   test("calls claude_prompt with task", async () => {
@@ -2414,6 +2411,17 @@ describe("claudeWait --mail-to", () => {
 // ── wait ──
 
 describe("mcx claude wait", () => {
+  test("--help prints usage and does not call tool", async () => {
+    const callTool = mock(async () => toolResult({ success: true }));
+    const deps = makeDeps({ callTool });
+    await cmdClaude(["wait", "--help"], deps);
+    expect(callTool).not.toHaveBeenCalled();
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude wait");
+    expect(output).toContain("--timeout");
+    expect(output).toContain("--all");
+  });
+
   test("calls claude_wait with no args (any session)", async () => {
     const callTool = mock(async () =>
       toolResult({

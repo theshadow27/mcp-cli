@@ -1889,3 +1889,43 @@ describe("agent deny", () => {
     await expect(cmdAgent(["codex", "deny"], deps)).rejects.toThrow(ExitError);
   });
 });
+
+// ── help dispatcher (production path) ──
+
+describe("help dispatcher", () => {
+  test("claude wait --help prints help via registry (production path)", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "wait", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude wait");
+    expect(output).toContain("--timeout");
+    expect(output).toContain("--all");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("claude bye --all --help shows help instead of ending sessions", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "bye", "--all", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude bye");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("non-claude provider uses providerName for help lookup", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["codex", "wait", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("No detailed help available");
+    expect(output).toContain("codex");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("unregistered subcommand with --help shows fallback message", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "bogus", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("No detailed help available");
+    expect(output).toContain("claude");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+});

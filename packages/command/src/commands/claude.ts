@@ -6,6 +6,8 @@
  */
 
 import { dirname, join, resolve } from "node:path";
+import { formatHelp, getHelp, hasHelpFlag } from "../help";
+import "../help-claude";
 import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
@@ -61,6 +63,7 @@ export interface SharedSessionDeps {
 }
 
 export interface ClaudeDeps extends SharedSessionDeps {
+  log: (...args: unknown[]) => void;
   getDiffStats: (worktreePath: string) => Promise<string | null>;
   getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
@@ -171,6 +174,7 @@ export const defaultDeps: ClaudeDeps = {
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
   },
+  log: console.log,
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   getDiffStats: defaultGetDiffStats,
@@ -235,42 +239,54 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     return;
   }
 
+  const subArgs = args.slice(1);
+  if (sub !== "spawn" && hasHelpFlag(subArgs)) {
+    const help = getHelp(`claude ${sub}`);
+    if (help) {
+      d.log(formatHelp(help));
+      return;
+    }
+    d.log(`No detailed help available for "mcx claude ${sub}".`);
+    d.log('Run "mcx claude --help" for available subcommands.');
+    return;
+  }
+
   switch (sub) {
     case "spawn":
-      await claudeSpawn(args.slice(1), d);
+      await claudeSpawn(subArgs, d);
       break;
     case "ls":
     case "list":
-      await claudeList(args.slice(1), d);
+      await claudeList(subArgs, d);
       break;
     case "send":
-      await claudeSend(args.slice(1), d);
+      await claudeSend(subArgs, d);
       break;
     case "bye":
     case "quit":
-      await claudeBye(args.slice(1), d);
+      await claudeBye(subArgs, d);
       break;
     case "interrupt":
-      await claudeInterrupt(args.slice(1), d);
+      await claudeInterrupt(subArgs, d);
       break;
     case "log":
-      await claudeLog(args.slice(1), d);
+      await claudeLog(subArgs, d);
       break;
     case "wait":
-      await claudeWait(args.slice(1), d);
+      await claudeWait(subArgs, d);
       break;
     case "resume":
-      await claudeResume(args.slice(1), d);
+      await claudeResume(subArgs, d);
       break;
     case "worktrees":
     case "wt":
-      await claudeWorktrees(args.slice(1), d);
+      await claudeWorktrees(subArgs, d);
       break;
     case "approve":
-      await claudeApprove(args.slice(1), d);
+      await claudeApprove(subArgs, d);
       break;
     case "deny":
-      await claudeDeny(args.slice(1), d);
+      await claudeDeny(subArgs, d);
       break;
     default:
       d.printError(
@@ -400,8 +416,14 @@ function tryWriteInitialTransition(workItemId: string, gitRoot: string): void {
 }
 
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
-  if (args.includes("--help") || args.includes("-h")) {
-    printSpawnUsage();
+  if (hasHelpFlag(args)) {
+    const spawnHelp = getHelp("claude spawn");
+    if (spawnHelp) {
+      d.log(formatHelp(spawnHelp));
+    } else {
+      d.log('No detailed help available for "mcx claude spawn".');
+      d.log('Run "mcx claude --help" for available subcommands.');
+    }
     return;
   }
 
@@ -1871,39 +1893,6 @@ export async function getActiveSessionWorktrees(listTool: string, d: SharedSessi
 }
 
 // ── Usage ──
-
-function printSpawnUsage(): void {
-  console.log(`mcx claude spawn — Start a new Claude Code session
-
-Usage:
-  mcx claude spawn --task "description"
-  mcx claude spawn --task "description" --allow Bash Read Write
-  mcx claude spawn --task "description" --worktree my-feature
-  mcx claude spawn --headed --task "description"
-
-Options:
-  --task, -t <string>        Task prompt for the session (required unless --resume)
-  --worktree, -w [name]      Run in a git worktree for branch isolation
-                             Auto-generates a name if omitted
-  --allow <tools...>         Space-separated tool patterns to auto-approve
-                             e.g. Bash Read Write Edit Glob Grep Skill
-                             Supports globs: mcp__grafana__*
-  --headed                   Open in a visible terminal tab (via tty)
-  --name, -n <name>          Human-readable session name (auto-generated if omitted)
-  --resume <id>              Resume a previous session by ID
-  --model, -m <name>         Model: opus, sonnet, haiku, or full ID (default: opus)
-  --cwd <path>               Working directory for the session
-  --wait                     Block until Claude produces a result
-  --timeout <ms>             Max wait time in ms (default: 270000, only with --wait)
-  --work-item <id>           Work item ID (#N); writes null→initial transition on spawn
-
-Examples:
-  mcx claude spawn --task "run the test suite and fix failures"
-  mcx claude spawn --allow Bash Read Write --task "monitor prod health"
-  mcx claude spawn -w fix-auth -t "fix the auth bug in issue #42"
-  mcx claude spawn --headed --task "interactive debugging session"
-  mcx claude spawn --resume abc123 --task "continue where you left off"`);
-}
 
 function printClaudeUsage(): void {
   console.log(`mcx claude — manage Claude Code sessions
