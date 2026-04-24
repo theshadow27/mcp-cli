@@ -34,6 +34,7 @@
     "dev:mcx": "bun packages/command/src/main.ts",
     "dev:mcpctl": "bun packages/control/src/main.tsx",
     "smoke-test": "bun scripts/smoke-test.ts",
+    "smoke-playwright": "bun scripts/smoke-playwright.ts",
     "prepare": "git config core.hooksPath .git-hooks"
   },
   "devDependencies": {

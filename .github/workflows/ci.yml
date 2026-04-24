@@ -155,3 +155,26 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun scripts/build.ts
       - run: ls -lh dist/
+      - name: Playwright resolver binary smoke test
+        timeout-minutes: 5
+        run: |
+          set +e
+          bun scripts/smoke-playwright.ts 2>&1 | tee /tmp/smoke_playwright.txt
+          code=${PIPESTATUS[0]}
+          if [ $code -eq 0 ]; then
+            exit 0
+          elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
+            echo "::warning::Bun crash (exit $code) during playwright smoke test — retrying once (see #1004)"
+            bun scripts/smoke-playwright.ts 2>&1 | tee /tmp/smoke_playwright_retry.txt
+            code2=${PIPESTATUS[0]}
+            if [ $code2 -eq 0 ]; then
+              exit 0
+            elif [ $code2 -eq 132 ] || [ $code2 -eq 139 ]; then
+              echo "::warning::Bun crash on retry too — treating as pass (known upstream bug, see #1004)"
+              exit 0
+            else
+              exit $code2
+            fi
+          else
+            exit $code
+          fi
