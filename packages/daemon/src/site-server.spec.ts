@@ -3,6 +3,7 @@ import { SITE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SiteServer, buildSiteToolCache, isWorkerEvent } from "./site-server";
 import { SITE_TOOLS } from "./site/tools";
+import type { WorkerClientTransport } from "./worker-transport";
 
 describe("isWorkerEvent (site)", () => {
   test("matches known event types", () => {
@@ -140,8 +141,8 @@ describe("SiteServer crash recovery", () => {
     server = new SiteServer(undefined, instantClient, mockWorkerFactory(), silentLogger);
     await server.start();
 
-    let restartedClient: unknown;
-    let restartedTransport: unknown;
+    let restartedClient: Client | null = null;
+    let restartedTransport: WorkerClientTransport | null = null;
     server.onRestarted = (c, t) => {
       restartedClient = c;
       restartedTransport = t;

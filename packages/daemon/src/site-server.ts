@@ -84,6 +84,7 @@ export class SiteServer {
   }
 
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
+    this.stopped = false;
     if (this.worker) throw new Error("SiteServer.start() called while worker is already running");
     const worker = this.workerFactory(workerPath("site-worker.ts"));
     this.worker = worker;
