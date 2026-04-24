@@ -188,6 +188,12 @@ export class WorkItemPoller {
         this.reconcile(item, status);
       }
 
+      // Prune ciRunStates for PR numbers no longer tracked (e.g., work item untracked via prNumber clear)
+      const trackedPrNums = new Set(prNumbers);
+      for (const pr of this.ciRunStates.keys()) {
+        if (!trackedPrNums.has(pr)) this.ciRunStates.delete(pr);
+      }
+
       this._lastError = null;
       this._pollCount++;
       this.adjustInterval(hasActive);

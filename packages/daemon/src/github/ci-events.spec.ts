@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type CiEvent, type CiRunState, computeCiTransitions, isGreenConclusion } from "./ci-events";
+import { type CiEvent, computeCiTransitions, isGreenConclusion } from "./ci-events";
 import type { CiCheck } from "./graphql-client";
 
 const SUITE_ID = 1000;
