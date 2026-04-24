@@ -381,7 +381,7 @@ describe("WorkItemDb", () => {
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(seeded?.version).toBe(3);
+      expect(seeded?.version).toBe(4);
 
       // v2 transitions table now exists
       const hasTransitions = raw
