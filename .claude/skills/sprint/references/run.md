@@ -30,16 +30,31 @@ qa:fail ≤ 2 rounds. Hitting a cap routes the work item to `needs-attention`.
 
 Determine what to run, in priority order:
 
-1. **Issue numbers passed as arguments** (e.g. `/sprint 123 456`) — use those
-2. **Sprint plan exists** — read `.claude/sprints/sprint-{N}.md` (latest by number),
-   use its issue list and batch assignments
-3. **Neither** — tell the user to run `/sprint plan` first or pass issue numbers
+1. **Single number matching a sprint file** (`/sprint 43` when `sprint-43.md` exists) —
+   sprint-number interpretation; use that plan; auto-chain on
+2. **Multiple numbers, or single number with no matching plan** (e.g. `/sprint 123 456`) —
+   ad-hoc issue numbers; run only, no auto-chain (no plan file to base review/retro on)
+3. **Sprint plan exists, no args** — read `.claude/sprints/sprint-{N}.md` (latest by
+   number), use its issue list and batch assignments; auto-chain on
+4. **Neither** — tell the user to run `/sprint plan` first or pass issue numbers
+
+**Mode** (from SKILL.md routing): default is auto-chain (run → review → retro
+inline). Explicit run-only is requested as `/sprint run` or `/sprint run <N>`.
 
 If using a sprint plan, announce: "Running sprint {N}: {goal}. Batch 1: #X, #Y, #Z..."
 
-Record the start timestamp in the sprint file header (append to the `>` line):
+Record the start timestamp in the sprint file header (append to the `>` line).
+In run-only mode, also append `(RUN ONLY)` on the same line so `/sprint review`
+and `/sprint retro` later know the run was intentionally detached:
+
 ```
 > Planned {date}. Started {date} {HH:MM local}. Target: 15 PRs.
+```
+
+or, in run-only mode:
+
+```
+> Planned {date}. Started {date} {HH:MM local} (RUN ONLY). Target: 15 PRs.
 ```
 
 Mark the sprint active for the main-checkout pre-commit guard (#1443):
@@ -392,6 +407,31 @@ If you discover the orchestrator's skill or phase definition is genuinely
 broken mid-sprint, **spike the sprint early.** Complete in-flight work, file
 the `meta` issue, replan. Don't limp along with a broken phase.
 
+## Run-only vs auto-chain mode
+
+The invoker may ask for run-only mode (the user wants to defer review/retro,
+e.g. because the release is going out separately, or they want to merge more
+PRs first). The routing is decided in `SKILL.md`:
+
+- **Auto-chain (default)** — on `/sprint` (plan exists) or `/sprint <N>` where
+  `sprint-<N>.md` exists: run → review → retro, all in this session.
+- **Run-only** — on `/sprint run` or `/sprint run <N>`: run stops at wind-down
+  step 8. Mark the plan header now so the intent is visible in git:
+
+  When you write the "Started …" timestamp to the plan header (see the
+  "Input" section at the top of this file), append `(RUN ONLY)` directly
+  after it, on the same line, e.g.:
+
+  ```
+  > Planned 2026-04-23 23:45 local. Started 2026-04-24 02:48 EDT (RUN ONLY). Target: 18 PRs (...)
+  ```
+
+  The marker is an operator note — `/sprint review` and `/sprint retro` read
+  it and produce a "resumed from RUN ONLY" line in the release notes / diary.
+
+Ad-hoc `/sprint <issue-numbers>` runs have no plan file to mark and do not
+auto-chain — the orchestrator just exits at wind-down step 8 for those.
+
 ## Wind-down
 
 When the sprint is winding down (≤2 active sessions):
@@ -406,5 +446,23 @@ When the sprint is winding down (≤2 active sessions):
 7. `git checkout main && git pull && bun run build`
 8. `mcx shutdown && mcx status` to pick up the new build (skip if another
    sprint is still active — restart kills its sessions)
-9. `/sprint review` to cut a release
-10. `/sprint retro` to capture learnings
+
+**If run-only mode** (plan header has `(RUN ONLY)` or invocation was
+`/sprint run …` or ad-hoc issue numbers): stop here. Report to the user
+what shipped and note that review/retro were skipped by request.
+
+**Otherwise (auto-chain mode)**: continue inline, same session, same context
+— do **not** re-invoke as `/sprint review` or `/sprint retro` (that pays a
+~300k-token cache miss to re-read the post-run conversation you already
+have):
+
+9. Read `references/review.md` and execute every step (gather what
+   shipped, bump version, lint + typecheck, commit, push, tag, push tag,
+   create GH release, update the sprint file's Results section). When
+   review.md says "this completes the review phase", continue to step 10.
+10. Read `references/retro.md` and execute every step (write the diary
+    file from the context you already have — do NOT launch scanners;
+    commit; push; remove `.claude/sprints/.active`).
+
+Report a single combined summary to the user when both are done: merged
+PRs, version cut, diary path, any unresolved follow-ups.
