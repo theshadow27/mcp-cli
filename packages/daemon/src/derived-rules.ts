@@ -23,7 +23,7 @@ export function isDerivedPending(r: DeriveResult): r is DerivedPending {
 export interface DerivedRule {
   name: string;
   match: (event: MonitorEvent) => boolean;
-  /** Mutates DB state and returns the event to emit, pending to retry, or null to skip. Publisher stamps src and causedBy. */
+  /** Mutates DB state and returns the event to emit, pending to retry, or null to skip. Publisher stamps src and causedBy. A rule returning `pending` must be safe to retry: either perform no side effects before returning pending, or ensure all mutations are idempotent. */
   apply: (event: MonitorEvent, ctx: DerivedCtx) => DeriveResult;
 }
 

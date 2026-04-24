@@ -486,6 +486,36 @@ describe("DerivedEventPublisher", () => {
     expect(received).toHaveLength(1);
   });
 
+  test("retry catches rule exceptions instead of crashing", async () => {
+    const db = freshDb();
+    const bus = new EventBus();
+    const workItemDb = new WorkItemDb(db);
+
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    let applyCalls = 0;
+    const failOnRetry: DerivedRule = {
+      name: "fail-on-retry",
+      match: (e) => e.event === "pr.merged",
+      apply: () => {
+        applyCalls++;
+        if (applyCalls === 1) return { pending: true, reason: "not ready" };
+        throw new Error("kaboom in retry");
+      },
+    };
+
+    const pub = new DerivedEventPublisher({ bus, rules: [failOnRetry], workItemDb, db, retryBaseMs: 10 });
+
+    bus.publish(prMergedInput(42));
+
+    await Bun.sleep(200);
+    pub.dispose();
+
+    expect(applyCalls).toBe(2);
+    expect(received).toHaveLength(1);
+  });
+
   test("pending rule does not cause infinite loop via depth cap on retried events", async () => {
     const db = freshDb();
     const bus = new EventBus();

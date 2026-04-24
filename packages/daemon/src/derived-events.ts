@@ -97,31 +97,39 @@ export class DerivedEventPublisher {
       this.pendingTimers.delete(timer);
       if (this.disposed) return;
 
-      const chain = [...(event.causedBy ?? []), event.seq];
-      const outputs: MonitorEventInput[] = [];
-      let stillPending = false;
+      try {
+        const chain = [...(event.causedBy ?? []), event.seq];
+        const outputs: MonitorEventInput[] = [];
+        let stillPending = false;
 
-      this.db.transaction(() => {
-        if (!rule.match(event)) return;
-        const out = rule.apply(event, this.ctx);
-        if (isDerivedPending(out)) {
-          stillPending = true;
-        } else if (out) {
-          outputs.push({ ...out, src: "daemon.derived", causedBy: chain });
+        this.db.transaction(() => {
+          if (!rule.match(event)) return;
+          const out = rule.apply(event, this.ctx);
+          if (isDerivedPending(out)) {
+            stillPending = true;
+          } else if (out) {
+            outputs.push({ ...out, src: "daemon.derived", causedBy: chain });
+          }
+        })();
+
+        for (const input of outputs) {
+          this.bus.publish(input);
         }
-      })();
 
-      for (const input of outputs) {
-        this.bus.publish(input);
-      }
+        if (outputs.length > 0) {
+          console.warn(`[DerivedEvents] rule "${rule.name}" succeeded on retry ${attempt + 1}`);
+        }
 
-      if (outputs.length > 0) {
-        console.warn(`[DerivedEvents] rule "${rule.name}" succeeded on retry ${attempt + 1}`);
-      }
-
-      if (stillPending) {
-        metrics.counter("mcpd_derived_retries_total", { rule: rule.name }).inc();
-        this.scheduleRetry(event, rule, attempt + 1);
+        if (stillPending) {
+          metrics.counter("mcpd_derived_retries_total", { rule: rule.name }).inc();
+          this.scheduleRetry(event, rule, attempt + 1);
+        }
+      } catch (err) {
+        console.error(
+          `[DerivedEvents] rule "${rule.name}" threw during retry ${attempt + 1} for event seq=${event.seq}:`,
+          err,
+        );
+        metrics.counter("mcpd_derived_retry_failures_total", { rule: rule.name }).inc();
       }
     }, delay);
 
