@@ -16,17 +16,18 @@
  * Exits 0 if the resolver works, 1 if it fails.
  */
 
-import { existsSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { $ } from "bun";
 
-const PROBE_SRC = resolve("scripts/playwright-resolver-probe.ts");
-const PROBE_OUT = resolve("dist/playwright-resolver-probe");
+const REPO_ROOT = join(import.meta.dir, "..");
+const PROBE_SRC = join(import.meta.dir, "playwright-resolver-probe.ts");
+const PROBE_OUT = join(REPO_ROOT, "dist", "playwright-resolver-probe");
 
 // playwright is a workspace devDependency — it must be in node_modules after
 // `bun install`.  We use this as the on-disk candidate to avoid needing a
 // vendor-dir install during CI.
-const PLAYWRIGHT_CANDIDATE = resolve("node_modules/playwright");
+const PLAYWRIGHT_CANDIDATE = join(REPO_ROOT, "node_modules", "playwright");
 
 let failed = false;
 
@@ -52,7 +53,7 @@ if (!existsSync(PLAYWRIGHT_CANDIDATE)) {
 
 console.error("Compiling probe binary...");
 
-await $`mkdir -p dist`;
+mkdirSync(join(REPO_ROOT, "dist"), { recursive: true });
 
 const buildResult =
   await $`bun build --compile --minify --external playwright --external playwright-core ${PROBE_SRC} --outfile ${PROBE_OUT}`

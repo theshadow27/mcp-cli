@@ -19,7 +19,14 @@ if (!candidatePath) {
 }
 
 _resetCache();
-const chromium = await resolvePlaywright({ candidates: [candidatePath] });
+const chromium = await resolvePlaywright({
+  candidates: [candidatePath],
+  install: () => {
+    throw new Error(
+      `playwright not found at candidate path — pass a valid on-disk playwright installation`,
+    );
+  },
+});
 if (!chromium || typeof chromium.launchPersistentContext !== "function") {
   process.stderr.write("resolvePlaywright returned invalid chromium object\n");
   process.exit(1);
