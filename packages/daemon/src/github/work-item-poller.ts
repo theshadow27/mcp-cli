@@ -270,15 +270,17 @@ export class WorkItemPoller {
         status.ciChecks,
         this.nowFn(),
       );
-      if (ciState?.emittedFinished) {
-        // Run is complete — drop state to prevent unbounded map growth
-        this.ciRunStates.delete(prNumber);
-      } else if (ciState) {
+      if (ciState) {
         this.ciRunStates.set(prNumber, ciState);
       }
       for (const ev of ciEvents) {
         this.onCiEvent(ev);
       }
+    }
+
+    // Clean up CI state when PR is no longer active
+    if (newPrState === "merged" || newPrState === "closed") {
+      this.ciRunStates.delete(prNumber);
     }
   }
 
