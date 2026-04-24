@@ -256,4 +256,82 @@ describe("createWaitForEvent", () => {
     const waitFor = createWaitForEvent(() => fakeStream([e]));
     await expect(waitFor({ type: "ci.finished" })).rejects.toThrow("ended without matching event");
   });
+
+  // ── AbortSignal cancellation ──
+
+  test("pre-aborted signal → immediate AbortError rejection", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const waitFor = createWaitForEvent(controller.signal);
+    await expect(waitFor({ type: "ci.finished" })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("signal fires while waiting → AbortError rejection", async () => {
+    const controller = new AbortController();
+
+    let resolveBlock!: () => void;
+    const blockPromise = new Promise<void>((r) => {
+      resolveBlock = r;
+    });
+
+    async function* blocking(): AsyncGenerator<MonitorEvent> {
+      await blockPromise;
+      yield makeEvent({ event: "never-reached" }); // abort fires before blockPromise resolves
+    }
+
+    const waitFor = createWaitForEvent(() => ({ events: blocking(), abort: resolveBlock }), controller.signal);
+    const waitPromise = waitFor({ type: "ci.finished" });
+
+    controller.abort();
+    await expect(waitPromise).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("abort listener removed on normal resolution — no leaked listeners", async () => {
+    let listeners: (() => void)[] = [];
+    const mockSignal = {
+      aborted: false,
+      addEventListener(_: string, fn: () => void) {
+        listeners.push(fn);
+      },
+      removeEventListener(_: string, fn: () => void) {
+        listeners = listeners.filter((l) => l !== fn);
+      },
+    } as unknown as AbortSignal;
+
+    const target = makeEvent({ event: "ci.finished", category: "ci" });
+    const waitFor = createWaitForEvent(() => fakeStream([target]), mockSignal);
+    await waitFor({ type: "ci.finished" });
+
+    expect(listeners).toHaveLength(0);
+  });
+
+  test("abort listener removed on timeout — no leaked listeners", async () => {
+    let listeners: (() => void)[] = [];
+    const mockSignal = {
+      aborted: false,
+      addEventListener(_: string, fn: () => void) {
+        listeners.push(fn);
+      },
+      removeEventListener(_: string, fn: () => void) {
+        listeners = listeners.filter((l) => l !== fn);
+      },
+    } as unknown as AbortSignal;
+
+    const noise = makeEvent({ event: "pr.opened", category: "work_item" });
+
+    let resolveBlock!: () => void;
+    const blockPromise = new Promise<void>((r) => {
+      resolveBlock = r;
+    });
+
+    async function* infinite(): AsyncGenerator<MonitorEvent> {
+      yield noise;
+      await blockPromise;
+    }
+
+    const waitFor = createWaitForEvent(() => ({ events: infinite(), abort: resolveBlock }), mockSignal);
+    await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 20 })).rejects.toThrow(WaitTimeoutError);
+    expect(listeners).toHaveLength(0);
+  });
 });

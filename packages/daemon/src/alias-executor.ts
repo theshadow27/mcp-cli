@@ -139,6 +139,13 @@ async function main(): Promise<void> {
   // Build the updated chain including the current alias
   const updatedChain = [...chain, currentAlias];
 
+  // Wire cancellation: SIGINT from the terminal or SIGTERM from the daemon
+  // killing this subprocess both abort waitForEvent calls.
+  const controller = new AbortController();
+  const onSignal = () => controller.abort();
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
   // Scope state to the caller's repo — NOT the daemon's cwd. Without an
   // explicit cwd from the caller, every alias invocation via the MCP server
   // would collapse into the NO_REPO_ROOT bucket (see PR #1307 review).
@@ -155,11 +162,17 @@ async function main(): Promise<void> {
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
-    waitForEvent: createWaitForEvent(),
+    signal: controller.signal,
+    waitForEvent: createWaitForEvent(controller.signal),
   };
 
-  const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);
-  process.stdout.write(JSON.stringify({ result: result ?? null }));
+  try {
+    const result = await executeAliasBundled(bundledJs, input, ctx, isDefineAlias);
+    process.stdout.write(JSON.stringify({ result: result ?? null }));
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
 }
 
 main().catch((err) => {

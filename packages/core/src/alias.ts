@@ -148,15 +148,22 @@ export interface AliasContext {
    */
   workItem: AliasWorkItemInfo | null;
   /**
+   * Cancellation signal for this alias invocation. Fires on SIGINT, SIGTERM,
+   * or daemon shutdown. Aliases that do long-running work should check this
+   * signal and abort gracefully. `waitForEvent` is wired to this signal
+   * automatically — a fired signal causes an in-progress wait to reject
+   * immediately with `AbortError`.
+   */
+  signal?: AbortSignal;
+  /**
    * Wait for the first monitor event that matches `filter`.
    *
    * Resolves with the matching event. Rejects with `WaitTimeoutError` if
-   * `opts.timeoutMs` elapses, or with an `Error` if the underlying event
-   * stream ends or errors before a matching event is observed. The
-   * underlying event stream subscription is always cleaned up on
-   * resolve/reject — no leaked subscribers.
-   *
-   * Cancellation via AbortSignal is not yet supported — see #1714.
+   * `opts.timeoutMs` elapses, or with a `DOMException("AbortError")` if
+   * `ctx.signal` fires, or with an `Error` if the underlying event stream
+   * ends or errors before a matching event is observed. The underlying event
+   * stream subscription is always cleaned up on resolve/reject — no leaked
+   * subscribers.
    */
   waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
 }
