@@ -38,6 +38,11 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 // ── Types ──
 
+interface PollItemResult {
+  isRateLimit: boolean;
+  authError?: string;
+}
+
 export interface PRComment {
   id: number;
   path: string;
@@ -232,21 +237,30 @@ export class CopilotPoller {
 
       const repo = this._repo;
       let anyRateLimitLow = false;
+      let anyAuthError: string | null = null;
       for (const item of tracked) {
         if (this.stopped) return;
-        if (await this.pollPR(repo, item, token)) anyRateLimitLow = true;
+        const r1 = await this.pollPR(repo, item, token);
+        if (r1.isRateLimit) anyRateLimitLow = true;
+        if (r1.authError) anyAuthError = r1.authError;
         if (this.stopped) return;
-        if (await this.pollReviews(repo, item, token)) anyRateLimitLow = true;
+        const r2 = await this.pollReviews(repo, item, token);
+        if (r2.isRateLimit) anyRateLimitLow = true;
+        if (r2.authError) anyAuthError = r2.authError;
         if (this.stopped) return;
-        if (await this.pollPRComments(repo, item, token)) anyRateLimitLow = true;
+        const r3 = await this.pollPRComments(repo, item, token);
+        if (r3.isRateLimit) anyRateLimitLow = true;
+        if (r3.authError) anyAuthError = r3.authError;
       }
       for (const item of trackedIssues) {
         if (this.stopped) return;
-        if (await this.pollIssueComments(repo, item, token)) anyRateLimitLow = true;
+        const r4 = await this.pollIssueComments(repo, item, token);
+        if (r4.isRateLimit) anyRateLimitLow = true;
+        if (r4.authError) anyAuthError = r4.authError;
       }
       this.rateLimitBackoff = anyRateLimitLow;
 
-      this._lastError = null;
+      this._lastError = anyAuthError;
       this._pollCount++;
       this.adjustInterval([...tracked, ...trackedIssues]);
     } catch (err) {
@@ -259,7 +273,7 @@ export class CopilotPoller {
     }
   }
 
-  private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+  private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
     const prNumber = item.prNumber as number;
 
     let result: FetchCommentsResult;
@@ -267,9 +281,10 @@ export class CopilotPoller {
       result = await this.fetchCommentsFn(repo, prNumber, token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isRateLimit = msg.includes("rate limit");
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
-      return isRateLimit;
+      if (msg.includes("rate limit")) return { isRateLimit: true };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
+      return { isRateLimit: false };
     }
 
     if (result.rateLimitLow) {
@@ -279,7 +294,7 @@ export class CopilotPoller {
     // Filter out threaded replies — only top-level review comments matter
     const comments = result.comments.filter((c) => c.in_reply_to_id == null);
 
-    if (this.stopped) return result.rateLimitLow;
+    if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
     const seenIds = new Set(this.stateDb.getSeenCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
@@ -290,7 +305,7 @@ export class CopilotPoller {
         const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
         this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
-      return result.rateLimitLow;
+      return { isRateLimit: result.rateLimitLow };
     }
 
     // Group new comments by author
@@ -328,10 +343,10 @@ export class CopilotPoller {
     // Update seen IDs with full union
     const unionIds = [...new Set([...seenIds, ...currentIds])];
     this.stateDb.updateSeenCommentIds(prNumber, unionIds);
-    return result.rateLimitLow;
+    return { isRateLimit: result.rateLimitLow };
   }
 
-  private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+  private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
     const prNumber = item.prNumber as number;
 
     let result: FetchReviewsResult;
@@ -340,7 +355,9 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch reviews for PR #${prNumber}: ${msg}`);
-      return msg.includes("rate limit");
+      if (msg.includes("rate limit")) return { isRateLimit: true };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
+      return { isRateLimit: false };
     }
 
     if (result.rateLimitLow) {
@@ -348,7 +365,7 @@ export class CopilotPoller {
     }
 
     const reviews = result.reviews;
-    if (this.stopped) return result.rateLimitLow;
+    if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
     const seenIds = new Set(this.stateDb.getSeenReviewIds(prNumber));
     const currentIds = reviews.map((r) => r.id);
@@ -416,10 +433,10 @@ export class CopilotPoller {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
       this.stateDb.updateSeenReviewIds(prNumber, unionIds);
     }
-    return result.rateLimitLow;
+    return { isRateLimit: result.rateLimitLow };
   }
 
-  private async pollPRComments(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+  private async pollPRComments(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
     const prNumber = item.prNumber as number;
 
     let result: FetchIssueCommentsResult;
@@ -428,7 +445,9 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch PR comments for PR #${prNumber}: ${msg}`);
-      return msg.includes("rate limit");
+      if (msg.includes("rate limit")) return { isRateLimit: true };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
+      return { isRateLimit: false };
     }
 
     if (result.rateLimitLow) {
@@ -436,7 +455,7 @@ export class CopilotPoller {
     }
 
     const comments = result.comments;
-    if (this.stopped) return result.rateLimitLow;
+    if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
     const seenIds = new Set(this.stateDb.getSeenPRCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
@@ -458,10 +477,10 @@ export class CopilotPoller {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
       this.stateDb.updateSeenPRCommentIds(prNumber, unionIds);
     }
-    return result.rateLimitLow;
+    return { isRateLimit: result.rateLimitLow };
   }
 
-  private async pollIssueComments(repo: RepoInfo, item: WorkItem, token: string): Promise<boolean> {
+  private async pollIssueComments(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
     const issueNumber = item.issueNumber as number;
 
     let result: FetchIssueCommentsResult;
@@ -470,7 +489,9 @@ export class CopilotPoller {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch issue comments for #${issueNumber}: ${msg}`);
-      return msg.includes("rate limit");
+      if (msg.includes("rate limit")) return { isRateLimit: true };
+      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
+      return { isRateLimit: false };
     }
 
     if (result.rateLimitLow) {
@@ -478,7 +499,7 @@ export class CopilotPoller {
     }
 
     const comments = result.comments;
-    if (this.stopped) return result.rateLimitLow;
+    if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
     const seenIds = new Set(this.stateDb.getSeenIssueCommentIds(issueNumber));
     const currentIds = comments.map((c) => c.id);
@@ -499,7 +520,7 @@ export class CopilotPoller {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
       this.stateDb.updateSeenIssueCommentIds(issueNumber, unionIds);
     }
-    return result.rateLimitLow;
+    return { isRateLimit: result.rateLimitLow };
   }
 
   private adjustInterval(tracked: WorkItem[]): void {
@@ -572,7 +593,15 @@ async function fetchPaginated<T>(startUrl: string, token: string): Promise<Fetch
       if (remaining !== null && Number.parseInt(remaining, 10) === 0) {
         throw new Error("GitHub API rate limit exhausted (403)");
       }
-      throw new Error(`GitHub API forbidden (403): ${response.statusText}`);
+      const retryAfter = response.headers.get("retry-after");
+      if (retryAfter !== null) {
+        const retryAfterSeconds = Number.parseInt(retryAfter, 10);
+        if (Number.isNaN(retryAfterSeconds)) {
+          throw new Error(`GitHub API secondary rate limit (403): retry after ${retryAfter}`);
+        }
+        throw new Error(`GitHub API secondary rate limit (403): retry after ${retryAfterSeconds}s`);
+      }
+      throw new Error(`GitHub API auth/scope error (403): ${response.statusText}`);
     }
 
     if (!response.ok) {
