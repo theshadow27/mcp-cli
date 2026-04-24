@@ -258,6 +258,23 @@ describe("cmdSite", () => {
     expect(params.arguments.enabled).toBe(true);
   });
 
+  test("parseKv normalizes --chrome-profile to chromeProfile (#1594)", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "atlassian", "--url", "https://x.atlassian.net/", "--chrome-profile", "../../default"], deps);
+    const { params } = readLastCall(calls);
+    expect(params.tool).toBe("site_add");
+    expect(params.arguments.chromeProfile).toBe("../../default");
+    expect(params.arguments["chrome-profile"]).toBeUndefined();
+  });
+
+  test("parseKv normalizes --browser-engine to browserEngine", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "x", "--url", "https://x.com", "--browser-engine", "playwright"], deps);
+    const { params } = readLastCall(calls);
+    expect(params.arguments.browserEngine).toBe("playwright");
+    expect(params.arguments["browser-engine"]).toBeUndefined();
+  });
+
   test("parseKv coerces numbers and booleans", async () => {
     const { deps, calls } = makeDeps();
     await cmdSite(["call", "s", "c", "--n", "42", "--b", "true", "--f", "false"], deps);

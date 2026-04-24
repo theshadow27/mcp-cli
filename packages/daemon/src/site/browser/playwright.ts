@@ -54,6 +54,34 @@ export interface OpenPageLike {
 }
 
 /**
+ * Partition requested sites into three buckets for an already-running browser.
+ * Exported for unit tests.
+ *
+ * - alreadyRunning: already has a tab open
+ * - toOpen: new site whose profileDir matches the running browser's profileDir
+ * - profileMismatch: new site with a different profileDir (needs disconnect first)
+ */
+export function partitionSitesForRunningBrowser(
+  runningProfile: string,
+  openedSiteNames: ReadonlySet<string>,
+  requested: SiteSpec[],
+): { alreadyRunning: SiteSpec[]; toOpen: SiteSpec[]; profileMismatch: SiteSpec[] } {
+  const alreadyRunning: SiteSpec[] = [];
+  const toOpen: SiteSpec[] = [];
+  const profileMismatch: SiteSpec[] = [];
+  for (const s of requested) {
+    if (openedSiteNames.has(s.name)) {
+      alreadyRunning.push(s);
+    } else if (s.profileDir !== runningProfile) {
+      profileMismatch.push(s);
+    } else {
+      toOpen.push(s);
+    }
+  }
+  return { alreadyRunning, toOpen, profileMismatch };
+}
+
+/**
  * Open a fresh tab per site and navigate it. Exported for unit tests.
  *
  * Why fresh tabs: reusing `ctx.pages()` picks up tabs restored from the
@@ -102,11 +130,38 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
   async start(sites: SiteSpec[], events: BrowserEvents): Promise<StartSiteResult[]> {
     if (this.context) {
-      return [...this.pages.entries()].map(([name, page]) => ({
-        site: name,
-        url: page.url(),
-        status: "already-running" as const,
-      }));
+      const runningProfile = [...this.siteSpecs.values()][0]?.profileDir ?? "";
+      const openedNames = new Set(this.pages.keys());
+      const { alreadyRunning, toOpen, profileMismatch } = partitionSitesForRunningBrowser(
+        runningProfile,
+        openedNames,
+        sites,
+      );
+
+      const results: StartSiteResult[] = [
+        ...alreadyRunning.map((s) => ({
+          site: s.name,
+          url: this.pages.get(s.name)?.url() ?? s.url,
+          status: "already-running" as const,
+        })),
+        ...profileMismatch.map((s) => ({
+          site: s.name,
+          url: s.url,
+          status: "profile-mismatch" as const,
+          error: `Browser is running with profileDir=${runningProfile}; this site uses ${s.profileDir}. Run site_disconnect first.`,
+        })),
+      ];
+
+      if (toOpen.length > 0) {
+        for (const s of toOpen) this.siteSpecs.set(s.name, s);
+        const newResults = await openSitesInContext(this.context, toOpen, (page, name) => {
+          this.pages.set(name, page);
+          this.attachListeners(page, name);
+        });
+        results.push(...newResults);
+      }
+
+      return results;
     }
     this.events = events;
     for (const s of sites) this.siteSpecs.set(s.name, s);
