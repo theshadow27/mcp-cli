@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
 import { loadCatalog } from "./catalog";
-import { getSite, listSites } from "./config";
+import { getBuiltinWiggleSource, getSite, listSites } from "./config";
+import { BUILTIN_SEEDS } from "./seeds";
 
 let tmp: string;
 
@@ -73,5 +74,42 @@ describe("built-in owa seed", () => {
       expect(call.jq_input).toBeTruthy();
       expect(call.jq_output).toBeTruthy();
     }
+  });
+});
+
+describe("embedded seed data (compiled-binary support)", () => {
+  test("BUILTIN_SEEDS contains teams and owa", () => {
+    expect(Object.keys(BUILTIN_SEEDS).sort()).toEqual(["owa", "teams"]);
+  });
+
+  test("teams seed has config, catalog, searchTemplate, and wiggleSrc", () => {
+    const teams = BUILTIN_SEEDS.teams;
+    expect(teams.config.url).toBe("https://teams.cloud.microsoft/v2/");
+    expect(Object.keys(teams.catalog).length).toBeGreaterThan(0);
+    expect(teams.searchTemplate).toBeDefined();
+    expect(teams.wiggleSrc).toContain("AUTOSUGGEST_INPUT");
+  });
+
+  test("owa seed has config, catalog, and wiggleSrc", () => {
+    const owa = BUILTIN_SEEDS.owa;
+    expect(owa.config.url).toBe("https://outlook.cloud.microsoft/mail/");
+    expect(Object.keys(owa.catalog).length).toBeGreaterThan(0);
+    expect(owa.wiggleSrc).toContain("New mail");
+  });
+
+  test("getBuiltinWiggleSource returns source for known seeds", () => {
+    expect(getBuiltinWiggleSource("teams")).toContain("module.exports");
+    expect(getBuiltinWiggleSource("owa")).toContain("module.exports");
+  });
+
+  test("getBuiltinWiggleSource returns null for unknown seeds", () => {
+    expect(getBuiltinWiggleSource("nonexistent")).toBeNull();
+  });
+
+  test("search_teams body_default is inlined from searchTemplate", () => {
+    const catalog = loadCatalog("teams", "teams");
+    const searchTeams = catalog.search_teams;
+    expect(searchTeams.body_default).toBeTruthy();
+    expect(searchTeams.body_default).toHaveProperty("EntityRequests");
   });
 });

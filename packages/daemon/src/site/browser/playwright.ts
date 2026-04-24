@@ -346,17 +346,29 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
     const spec = this.siteSpecs.get(siteName);
     const wigglePath = spec?.wigglePath;
-    if (!wigglePath || !existsSync(wigglePath)) return ["no-wiggle-configured"];
 
-    // Fresh-require so edits to wiggle.js take effect without restarting the worker.
-    try {
-      delete require.cache[require.resolve(wigglePath)];
-    } catch {
-      // Non-CJS resolvers may not populate require.cache — that's fine.
+    if (wigglePath && existsSync(wigglePath)) {
+      // User-override file on disk — fresh-require so edits take effect without restart.
+      try {
+        delete require.cache[require.resolve(wigglePath)];
+      } catch {
+        // Non-CJS resolvers may not populate require.cache — that's fine.
+      }
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const wiggleFn = require(wigglePath) as (page: Page) => Promise<string[]>;
+      return this.withPage(site, (page) => wiggleFn(page));
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const wiggleFn = require(wigglePath) as (page: Page) => Promise<string[]>;
-    return this.withPage(site, (page) => wiggleFn(page));
+
+    if (spec?.wiggleSrc) {
+      // Embedded seed script — evaluate CJS source from compiled binary.
+      const mod = { exports: {} as Record<string, unknown> };
+      const wrapper = new Function("module", "exports", "process", spec.wiggleSrc);
+      wrapper(mod, mod.exports, process);
+      const wiggleFn = mod.exports as unknown as (page: Page) => Promise<string[]>;
+      return this.withPage(site, (page) => wiggleFn(page));
+    }
+
+    return ["no-wiggle-configured"];
   }
 
   async evalInPage(code: string, site?: string): Promise<unknown> {
