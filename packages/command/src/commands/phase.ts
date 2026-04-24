@@ -45,6 +45,7 @@ import {
   createAliasState,
   createEphemeralState,
   createMcpProxy,
+  createWaitForEvent,
   executeAliasBundled,
   extractMetadata,
   findGitRoot,
@@ -832,6 +833,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     state: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     workItem: null,
+    waitForEvent: createWaitForEvent(),
   };
   const ctx = wrapDryRunContext(baseCtx, (line) => d.log(line));
 
@@ -1126,6 +1128,7 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
+    waitForEvent: createWaitForEvent(),
   };
 
   let input: unknown;

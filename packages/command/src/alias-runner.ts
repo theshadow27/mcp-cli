@@ -19,6 +19,7 @@ import {
   createAliasCache,
   createAliasState,
   createMcpProxy,
+  createWaitForEvent,
   executeAliasBundled,
   findGitRoot,
   isDefineAlias,
@@ -55,6 +56,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: null,
+    waitForEvent: createWaitForEvent(),
   };
 
   if (isStructured) {

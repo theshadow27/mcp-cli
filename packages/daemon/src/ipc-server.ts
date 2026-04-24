@@ -33,6 +33,7 @@ import {
   CheckAliasParamsSchema,
   DeleteAliasParamsSchema,
   DeleteNoteParamsSchema,
+  type EventFilterSpec,
   GetAliasParamsSchema,
   GetDaemonLogsParamsSchema,
   GetLogsParamsSchema,
@@ -47,6 +48,7 @@ import {
   ListWorkItemsParamsSchema,
   MarkReadParamsSchema,
   MarkSpansExportedParamsSchema,
+  type MonitorEvent,
   PROTOCOL_VERSION,
   PruneSpansParamsSchema,
   ReadMailParamsSchema,
@@ -69,6 +71,7 @@ import {
   hardenFile,
   isDefineAlias,
   loadManifest,
+  matchFilter,
   options,
   resolveRealpath,
   safeAliasPath,
@@ -97,20 +100,11 @@ export interface RequestContext {
 type RequestHandler = (params: unknown, ctx: RequestContext) => Promise<unknown>;
 
 /**
- * Convert a glob pattern (supporting * and ?) to a RegExp.
- * Used for --type and --src filter matching.
- */
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*")
-    .replace(/\?/g, ".");
-  return new RegExp(`^${escaped}$`);
-}
-
-/**
  * Build a server-side predicate from GET /events query params.
  * Returns null if no filters are specified (pass-through).
+ *
+ * Uses matchFilter() from core for the shared EventFilterSpec semantics.
+ * Heartbeats always pass through (server-side keepalive behaviour).
  */
 export function buildEventFilter(params: URLSearchParams): ((event: Record<string, unknown>) => boolean) | null {
   const subscribeRaw = params.get("subscribe");
@@ -125,36 +119,34 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
     return null;
   }
 
-  const categories = subscribeRaw ? new Set(subscribeRaw.split(",").map((s) => s.trim())) : null;
   const prNumber = prRaw !== null ? Number(prRaw) : null;
   if (prNumber !== null && !(Number.isInteger(prNumber) && prNumber >= 1)) {
     return () => false;
   }
-  const typePatterns = typeRaw
-    ? typeRaw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map(globToRegex)
-    : null;
-  const srcPattern = srcRaw ? globToRegex(srcRaw) : null;
+
+  const spec: EventFilterSpec = {
+    ...(subscribeRaw
+      ? { subscribe: subscribeRaw.split(",").map((s) => s.trim()) as EventFilterSpec["subscribe"] }
+      : {}),
+    ...(session ? { session } : {}),
+    ...(prNumber !== null ? { pr: prNumber } : {}),
+    ...(workItem ? { workItem } : {}),
+    ...(typeRaw
+      ? {
+          type: typeRaw
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }
+      : {}),
+    ...(srcRaw ? { src: srcRaw } : {}),
+    ...(phase ? { phase } : {}),
+  };
 
   return (event: Record<string, unknown>): boolean => {
+    // Heartbeats always pass through — server-side keepalive, not a data filter concern
     if (event.category === "heartbeat" || event.event === "heartbeat") return true;
-    if (categories && !categories.has(event.category as string)) return false;
-    if (session && event.sessionId !== session) return false;
-    if (prNumber !== null && event.prNumber !== prNumber) return false;
-    if (workItem && event.workItemId !== workItem) return false;
-    if (typePatterns) {
-      if (typeof event.event !== "string") return false;
-      if (!typePatterns.some((re) => re.test(event.event as string))) return false;
-    }
-    if (srcPattern) {
-      if (typeof event.src !== "string") return false;
-      if (!srcPattern.test(event.src)) return false;
-    }
-    if (phase && event.phase !== phase) return false;
-    return true;
+    return matchFilter(event as MonitorEvent, spec);
   };
 }
 
