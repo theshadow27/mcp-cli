@@ -1663,6 +1663,19 @@ describe("forwardWorkItemEvent", () => {
     }
   });
 
+  test("checks:started without runId omits runId from monitor event", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "checks:started", prNumber: 13 });
+      expect(events[0].event).toBe("checks.started");
+      expect(events[0].prNumber).toBe(13);
+      expect(events[0].runId).toBeUndefined();
+    } finally {
+      dispose();
+    }
+  });
+
   test("checks:passed maps to checks.passed", () => {
     const { server, dispose } = makeServer();
     try {
@@ -1675,7 +1688,7 @@ describe("forwardWorkItemEvent", () => {
     }
   });
 
-  test("review:approved maps reviewer field", () => {
+  test("review:approved maps to review.approved with prNumber", () => {
     const { server, dispose } = makeServer();
     try {
       const events = collect(server);
@@ -1724,9 +1737,21 @@ describe("forwardWorkItemEvent", () => {
     }
   });
 
-  test("no onMonitorEvent callback — does not throw", () => {
+  test("undefined onMonitorEvent — does not throw", () => {
     const { server, dispose } = makeServer();
     try {
+      expect(() => {
+        server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
+      }).not.toThrow();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("null onMonitorEvent at runtime — does not throw", () => {
+    const { server, dispose } = makeServer();
+    try {
+      (server as unknown as { onMonitorEvent: null }).onMonitorEvent = null;
       expect(() => {
         server.forwardWorkItemEvent({ type: "pr:merged", prNumber: 1 });
       }).not.toThrow();
