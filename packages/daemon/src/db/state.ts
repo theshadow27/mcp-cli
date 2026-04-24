@@ -1684,8 +1684,8 @@ export class StateDb {
       .run(prNumber, hash);
   }
 
-  deleteCopilotCommentState(prNumber: number): boolean {
-    const result = this.db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [prNumber]);
+  deleteCopilotCommentState(workItemNumber: number): boolean {
+    const result = this.db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [workItemNumber]);
     return result.changes > 0;
   }
 

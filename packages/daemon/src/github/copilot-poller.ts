@@ -214,12 +214,13 @@ export class CopilotPoller {
       );
 
       for (const item of allItems) {
-        const prTerminal = item.prNumber !== null && (item.prState === "merged" || item.prState === "closed");
-        const issueTerminal = item.prNumber === null && item.issueNumber !== null && item.phase === "done";
-        if (prTerminal) {
-          this.stateDb.deleteCopilotCommentState(item.prNumber as number);
-        } else if (issueTerminal) {
-          this.stateDb.deleteCopilotCommentState(item.issueNumber as number);
+        if (
+          item.prNumber !== null &&
+          (item.prState === "merged" || item.prState === "closed" || item.phase === "done")
+        ) {
+          this.stateDb.deleteCopilotCommentState(item.prNumber);
+        } else if (item.prNumber === null && item.issueNumber !== null && item.phase === "done") {
+          this.stateDb.deleteCopilotCommentState(item.issueNumber);
         }
       }
 

@@ -125,8 +125,8 @@ function createStateDb(db: Database) {
            last_poll_ts = excluded.last_poll_ts`,
       ).run(prNumber, hash);
     },
-    deleteCopilotCommentState(prNumber: number): boolean {
-      const result = db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [prNumber]);
+    deleteCopilotCommentState(workItemNumber: number): boolean {
+      const result = db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [workItemNumber]);
       return result.changes > 0;
     },
   };
@@ -915,6 +915,16 @@ describe("CopilotPoller", () => {
       await poller.poll();
 
       expect(stateDb.getSeenCommentIds(55)).toEqual([]);
+    });
+
+    test("done-phase PR state row is deleted on next poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:done-pr", prNumber: 88, prState: "open", phase: "done" });
+      stateDb.updateSeenCommentIds(88, [4001]);
+
+      const { poller } = makePoller();
+      await poller.poll();
+
+      expect(stateDb.getSeenCommentIds(88)).toEqual([]);
     });
 
     test("open PR state is preserved (dedup still works)", async () => {
