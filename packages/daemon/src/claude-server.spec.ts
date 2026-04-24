@@ -1733,6 +1733,45 @@ describe("forwardWorkItemEvent", () => {
     }
   });
 
+  test("pr:merge_state_changed maps with cascadeHead", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({
+        type: "pr:merge_state_changed",
+        prNumber: 42,
+        from: "BEHIND",
+        to: "CLEAN",
+        cascadeHead: 42,
+      });
+      expect(events[0].event).toBe("pr.merge_state_changed");
+      expect(events[0].prNumber).toBe(42);
+      expect(events[0].from).toBe("BEHIND");
+      expect(events[0].to).toBe("CLEAN");
+      expect(events[0].cascadeHead).toBe(42);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("pr:merge_state_changed with null cascadeHead", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({
+        type: "pr:merge_state_changed",
+        prNumber: 7,
+        from: null,
+        to: "UNKNOWN",
+        cascadeHead: null,
+      });
+      expect(events[0].event).toBe("pr.merge_state_changed");
+      expect(events[0].cascadeHead).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
   test("unmapped event type is silently dropped", () => {
     const { server, dispose } = makeServer();
     try {

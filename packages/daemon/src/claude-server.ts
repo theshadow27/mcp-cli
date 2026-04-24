@@ -17,6 +17,7 @@ import {
   CLAUDE_SERVER_NAME,
   PHASE_CHANGED,
   PR_CLOSED,
+  PR_MERGE_STATE_CHANGED,
   PR_MERGED,
   PR_OPENED,
   REVIEW_APPROVED,
@@ -454,6 +455,7 @@ export class ClaudeServer {
     "review:approved": REVIEW_APPROVED,
     "review:changes_requested": REVIEW_CHANGES_REQUESTED,
     "phase:changed": PHASE_CHANGED,
+    "pr:merge_state_changed": PR_MERGE_STATE_CHANGED,
   };
 
   /**
@@ -478,6 +480,7 @@ export class ClaudeServer {
       if ("from" in event) input.from = event.from;
       if ("to" in event) input.to = event.to;
       if ("runId" in event) input.runId = event.runId;
+      if ("cascadeHead" in event) input.cascadeHead = event.cascadeHead;
       this.onMonitorEvent(input);
     }
     this.worker?.postMessage({ type: "work_item_event", event });
