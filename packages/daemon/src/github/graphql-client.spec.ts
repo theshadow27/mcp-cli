@@ -345,6 +345,34 @@ describe("fetchTrackedPRs", () => {
     expect(result[0].files).toHaveLength(100);
   });
 
+  test("updatedAt missing falls back to current time, not epoch", async () => {
+    const before = Date.now() - 1000;
+    const body = {
+      data: {
+        repository: {
+          pr20: {
+            number: 20,
+            state: "OPEN",
+            isDraft: false,
+            mergeable: "UNKNOWN",
+            // updatedAt intentionally absent
+            commits: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const result = await fetchTrackedPRs(repo, [20], { getToken: mockGetToken, fetch: mockFetch(body) });
+
+    expect(result).toHaveLength(1);
+    const after = Date.now() + 1000;
+    const updatedAtMs = Date.parse(result[0].updatedAt);
+    expect(updatedAtMs).toBeGreaterThan(before);
+    expect(updatedAtMs).toBeLessThan(after);
+    expect(updatedAtMs).not.toBe(0); // not epoch
+  });
+
   test("logs warning when rateLimit.remaining drops below 500", async () => {
     const body = {
       data: {

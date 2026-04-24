@@ -213,7 +213,7 @@ function parsePR(raw: RawPR): PRStatus {
     mergeable: (raw.mergeable as PRStatus["mergeable"]) ?? "UNKNOWN",
     mergeStateStatus: (raw.mergeStateStatus as MergeStateStatus) ?? "UNKNOWN",
     autoMergeEnabled: raw.autoMergeRequest != null,
-    updatedAt: raw.updatedAt ?? new Date(0).toISOString(),
+    updatedAt: raw.updatedAt ?? new Date(Date.now()).toISOString().replace(/\.\d{3}Z$/, "Z"),
     ciState: rollup?.state ?? null,
     ciChecks,
     reviews,
