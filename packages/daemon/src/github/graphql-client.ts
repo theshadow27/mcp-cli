@@ -7,6 +7,8 @@
  * Phase 2a of #1049.
  */
 
+import type { MergeStateStatus } from "@mcp-cli/core";
+
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -40,6 +42,9 @@ export interface PRStatus {
   state: "OPEN" | "CLOSED" | "MERGED";
   isDraft: boolean;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  mergeStateStatus: MergeStateStatus;
+  autoMergeEnabled: boolean;
+  updatedAt: string;
   ciState: string | null;
   ciChecks: CiCheck[];
   reviews: Review[];
@@ -71,6 +76,9 @@ export function buildQuery(prNumbers: readonly number[]): string {
       headRefName
       baseRefName
       headRefOid
+      mergeStateStatus
+      autoMergeRequest { enabledAt }
+      updatedAt
       commits(last: 1) {
         totalCount
         nodes {
@@ -151,6 +159,9 @@ interface RawPR {
   headRefName?: string;
   baseRefName?: string;
   headRefOid?: string;
+  mergeStateStatus?: string;
+  autoMergeRequest?: { enabledAt?: string } | null;
+  updatedAt?: string;
   commits?: {
     totalCount?: number;
     nodes?: Array<{
@@ -200,6 +211,9 @@ function parsePR(raw: RawPR): PRStatus {
     state: (raw.state as PRStatus["state"]) ?? "OPEN",
     isDraft: raw.isDraft ?? false,
     mergeable: (raw.mergeable as PRStatus["mergeable"]) ?? "UNKNOWN",
+    mergeStateStatus: (raw.mergeStateStatus as MergeStateStatus) ?? "UNKNOWN",
+    autoMergeEnabled: raw.autoMergeRequest != null,
+    updatedAt: raw.updatedAt ?? new Date(0).toISOString(),
     ciState: rollup?.state ?? null,
     ciChecks,
     reviews,

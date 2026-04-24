@@ -13,6 +13,7 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
+import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
@@ -180,12 +181,24 @@ export class WorkItemPoller {
         statusMap.set(s.number, s);
       }
 
+      // Compute cascade head from the current snapshot of all fetched statuses
+      const cascadeHead = computeCascadeHead(
+        statuses.map(
+          (s): MergeStatePR => ({
+            prNumber: s.number,
+            mergeStateStatus: s.mergeStateStatus,
+            autoMergeEnabled: s.autoMergeEnabled,
+            updatedAt: s.updatedAt,
+          }),
+        ),
+      );
+
       // Compare and update
       for (const item of tracked) {
         if (this.stopped) return; // bail before writing if stopped mid-reconcile
         const status = statusMap.get(item.prNumber as number);
         if (!status) continue;
-        this.reconcile(item, status);
+        this.reconcile(item, status, cascadeHead);
       }
 
       // Prune ciRunStates for PR numbers no longer tracked (e.g., work item untracked via prNumber clear)
@@ -208,12 +221,13 @@ export class WorkItemPoller {
   }
 
   /** Compare fetched PR status against stored work item and emit events for changes. */
-  private reconcile(item: WorkItem, status: PRStatus): void {
+  private reconcile(item: WorkItem, status: PRStatus, cascadeHead: number | null): void {
     const prNumber = item.prNumber as number; // Safe: caller filters for non-null prNumber
     const newPrState = mapPrState(status);
     const newCiStatus = mapCiStatus(status);
     const newReviewStatus = mapReviewStatus(status);
     const srcChurn = computeSrcChurn(status.files);
+    const newMergeState = status.mergeStateStatus;
 
     const patch: Partial<WorkItem> = {};
     let changed = false;
@@ -259,6 +273,19 @@ export class WorkItemPoller {
       patch.reviewStatus = newReviewStatus;
       changed = true;
       this.emitReviewEvent(prNumber, newReviewStatus, status);
+    }
+
+    // Merge state changes
+    if (newMergeState !== (item.mergeStateStatus ?? null)) {
+      patch.mergeStateStatus = newMergeState;
+      changed = true;
+      this.onEvent({
+        type: "pr:merge_state_changed",
+        prNumber,
+        from: item.mergeStateStatus ?? null,
+        to: newMergeState,
+        cascadeHead,
+      });
     }
 
     if (changed) {

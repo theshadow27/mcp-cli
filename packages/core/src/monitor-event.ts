@@ -42,6 +42,7 @@ export const CHECKS_FAILED = "checks.failed" as const;
 export const REVIEW_APPROVED = "review.approved" as const;
 export const REVIEW_CHANGES_REQUESTED = "review.changes_requested" as const;
 export const PHASE_CHANGED = "phase.changed" as const;
+export const PR_MERGE_STATE_CHANGED = "pr.merge_state_changed" as const;
 
 // ── CI run event names (#1577) ──
 
@@ -238,6 +239,13 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const dur =
       typeof e.observedDurationMs === "number" ? `${Math.round((e.observedDurationMs as number) / 1000)}s` : "";
     return join(wi(e), pr(e), green, dur);
+  },
+
+  [PR_MERGE_STATE_CHANGED]: (e) => {
+    const from = typeof e.from === "string" ? e.from : "?";
+    const to = typeof e.to === "string" ? e.to : "?";
+    const head = typeof e.cascadeHead === "number" ? `cascade:#${e.cascadeHead}` : "";
+    return join(wi(e), pr(e), `${from} → ${to}`, head);
   },
 
   [MAIL_RECEIVED]: (e) => {

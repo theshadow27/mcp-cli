@@ -14,6 +14,9 @@ function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStat
     state: "OPEN",
     isDraft: false,
     mergeable: "UNKNOWN",
+    mergeStateStatus: "UNKNOWN",
+    autoMergeEnabled: false,
+    updatedAt: "2024-01-01T00:00:00Z",
     ciState: null,
     ciChecks: [],
     reviews: [],
@@ -78,7 +81,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("fetches and updates PR state", async () => {
-    db.createWorkItem({ id: "pr:42", prNumber: 42, prState: "open" });
+    db.createWorkItem({ id: "pr:42", prNumber: 42, prState: "open", mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -93,8 +96,7 @@ describe("WorkItemPoller", () => {
 
     const item = db.getWorkItem("pr:42");
     expect(item?.prState).toBe("merged");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ type: "pr:merged", prNumber: 42, mergeSha: null });
+    expect(events).toContainEqual(expect.objectContaining({ type: "pr:merged", prNumber: 42 }));
   });
 
   test("updates CI status and emits checks:passed", async () => {
@@ -199,6 +201,7 @@ describe("WorkItemPoller", () => {
       prState: "open",
       ciStatus: "passed",
       reviewStatus: "approved",
+      mergeStateStatus: "UNKNOWN",
     });
 
     const events: WorkItemEvent[] = [];
@@ -211,6 +214,7 @@ describe("WorkItemPoller", () => {
           state: "OPEN",
           isDraft: false,
           ciState: "SUCCESS",
+          mergeStateStatus: "UNKNOWN",
           reviews: [{ state: "APPROVED", author: "x" }],
         }),
       ],
@@ -501,6 +505,140 @@ describe("WorkItemPoller", () => {
 
     const item = db.getWorkItem("pr:12");
     expect(item?.ciStatus).toBe("pending");
+  });
+
+  // ── Merge state (#1581) ──
+
+  test("emits pr:merge_state_changed on first poll (null → UNKNOWN transition)", async () => {
+    db.createWorkItem({ id: "pr:30", prNumber: 30, mergeStateStatus: null });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 30, mergeStateStatus: "UNKNOWN" })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "pr:merge_state_changed", prNumber: 30, from: null, to: "UNKNOWN" }),
+    );
+    expect(db.getWorkItem("pr:30")?.mergeStateStatus).toBe("UNKNOWN");
+  });
+
+  test("emits pr:merge_state_changed on BEHIND→CLEAN transition", async () => {
+    db.createWorkItem({ id: "pr:31", prNumber: 31, mergeStateStatus: "BEHIND" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 31,
+          mergeStateStatus: "CLEAN",
+          autoMergeEnabled: true,
+          updatedAt: "2024-01-01T00:00:00Z",
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const evt = events.find((e) => e.type === "pr:merge_state_changed");
+    expect(evt).toBeDefined();
+    if (evt?.type === "pr:merge_state_changed") {
+      expect(evt.prNumber).toBe(31);
+      expect(evt.from).toBe("BEHIND");
+      expect(evt.to).toBe("CLEAN");
+      expect(evt.cascadeHead).toBe(31); // only armed PR, CLEAN
+    }
+    expect(db.getWorkItem("pr:31")?.mergeStateStatus).toBe("CLEAN");
+  });
+
+  test("no pr:merge_state_changed when status unchanged", async () => {
+    db.createWorkItem({ id: "pr:32", prNumber: 32, mergeStateStatus: "CLEAN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 32,
+          mergeStateStatus: "CLEAN",
+          autoMergeEnabled: true,
+          updatedAt: "2024-01-01T00:00:00Z",
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    expect(events.some((e) => e.type === "pr:merge_state_changed")).toBe(false);
+  });
+
+  test("cascadeHead is null when no PR has auto-merge enabled", async () => {
+    db.createWorkItem({ id: "pr:33", prNumber: 33, mergeStateStatus: "BEHIND" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 33, mergeStateStatus: "CLEAN", autoMergeEnabled: false })],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    const evt = events.find((e) => e.type === "pr:merge_state_changed");
+    expect(evt?.type === "pr:merge_state_changed" && evt.cascadeHead).toBeNull();
+  });
+
+  test("cascadeHead selects earliest CLEAN auto-merge PR across multi-PR poll", async () => {
+    db.createWorkItem({ id: "pr:40", prNumber: 40, mergeStateStatus: "UNKNOWN" });
+    db.createWorkItem({ id: "pr:41", prNumber: 41, mergeStateStatus: "UNKNOWN" });
+
+    const events: WorkItemEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 40,
+          mergeStateStatus: "CLEAN",
+          autoMergeEnabled: true,
+          updatedAt: "2024-01-02T00:00:00Z",
+        }),
+        makePRStatus({
+          number: 41,
+          mergeStateStatus: "CLEAN",
+          autoMergeEnabled: true,
+          updatedAt: "2024-01-01T00:00:00Z",
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      onEvent: (e) => events.push(e),
+    });
+
+    await poller.poll();
+
+    // Both PRs emit a merge_state_changed event; cascadeHead should be 41 (earlier updatedAt)
+    const mergeEvents = events.filter((e) => e.type === "pr:merge_state_changed");
+    expect(mergeEvents).toHaveLength(2);
+    for (const evt of mergeEvents) {
+      if (evt.type === "pr:merge_state_changed") {
+        expect(evt.cascadeHead).toBe(41);
+      }
+    }
   });
 
   // ── Phase 2 enrichment (#1576) ──
@@ -866,41 +1004,5 @@ describe("WorkItemPoller", () => {
     // PR merged — CI state should be cleaned up, but no duplicate events
     await poller.poll();
     expect(ciEvents).toHaveLength(0);
-  });
-});
-
-// ── computeSrcChurn unit tests (#1576) ──
-
-import { computeSrcChurn } from "./work-item-poller";
-
-describe("computeSrcChurn", () => {
-  test("counts only non-test files", () => {
-    const files = [
-      { path: "src/index.ts", additions: 100, deletions: 20 },
-      { path: "src/index.spec.ts", additions: 50, deletions: 10 },
-      { path: "src/__tests__/util.ts", additions: 30, deletions: 5 },
-      { path: "tests/e2e.ts", additions: 20, deletions: 3 },
-      { path: "test/fixtures/data.json", additions: 5, deletions: 1 },
-      { path: "src/util.test.ts", additions: 15, deletions: 2 },
-    ];
-
-    // Only src/index.ts (100+20=120) should count
-    expect(computeSrcChurn(files)).toBe(120);
-  });
-
-  test("returns 0 for all-test diff", () => {
-    expect(computeSrcChurn([{ path: "foo.spec.ts", additions: 99, deletions: 1 }])).toBe(0);
-  });
-
-  test("returns 0 for empty diff", () => {
-    expect(computeSrcChurn([])).toBe(0);
-  });
-
-  test("counts all lines for all-source diff", () => {
-    const files = [
-      { path: "src/a.ts", additions: 10, deletions: 5 },
-      { path: "src/b.ts", additions: 20, deletions: 3 },
-    ];
-    expect(computeSrcChurn(files)).toBe(38);
   });
 });

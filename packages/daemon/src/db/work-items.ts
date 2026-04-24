@@ -8,7 +8,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import type { CiStatus, MergeStateStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 
 /** A phase transition record from the append-only transition log. */
 export interface WorkItemTransition {
@@ -55,6 +55,7 @@ interface WorkItemRow {
   ci_run_id: number | null;
   ci_summary: string | null;
   review_status: string;
+  merge_state_status: string | null;
   phase: string;
   created_at: string;
   updated_at: string;
@@ -73,6 +74,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     ciRunId: row.ci_run_id,
     ciSummary: row.ci_summary,
     reviewStatus: row.review_status as ReviewStatus,
+    mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
     phase: row.phase as WorkItemPhase,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -189,6 +191,11 @@ export class WorkItemDb {
       this.setSchemaVersion(CONSUMER, 3);
       version = 3;
     }
+    if (version < 4) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN merge_state_status TEXT");
+      this.setSchemaVersion(CONSUMER, 4);
+      version = 4;
+    }
   }
 
   private setSchemaVersion(name: string, version: number): void {
@@ -199,8 +206,8 @@ export class WorkItemDb {
     const id = item.id ?? randomUUIDv7();
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $phase)`,
+        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
+         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)`,
       )
       .run({
         $id: id,
@@ -213,6 +220,7 @@ export class WorkItemDb {
         $ci_run_id: item.ciRunId ?? null,
         $ci_summary: item.ciSummary ?? null,
         $review_status: item.reviewStatus ?? "none",
+        $merge_state_status: item.mergeStateStatus ?? null,
         $phase: item.phase ?? "impl",
       });
 
@@ -262,6 +270,7 @@ export class WorkItemDb {
       ["ciRunId", "ci_run_id"],
       ["ciSummary", "ci_summary"],
       ["reviewStatus", "review_status"],
+      ["mergeStateStatus", "merge_state_status"],
       ["phase", "phase"],
     ];
 
@@ -372,20 +381,21 @@ export class WorkItemDb {
     const before = this.getWorkItem(item.id);
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $phase)
+        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
+         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)
          ON CONFLICT(id) DO UPDATE SET
-           issue_number  = COALESCE($issue_number, issue_number),
-           branch        = COALESCE($branch, branch),
-           pr_number     = COALESCE($pr_number, pr_number),
-           pr_state      = COALESCE($pr_state, pr_state),
-           pr_url        = COALESCE($pr_url, pr_url),
-           ci_status     = COALESCE($ci_status, ci_status),
-           ci_run_id     = COALESCE($ci_run_id, ci_run_id),
-           ci_summary    = COALESCE($ci_summary, ci_summary),
-           review_status = COALESCE($review_status, review_status),
-           phase         = COALESCE($phase, phase),
-           updated_at    = datetime('now')`,
+           issue_number       = COALESCE($issue_number, issue_number),
+           branch             = COALESCE($branch, branch),
+           pr_number          = COALESCE($pr_number, pr_number),
+           pr_state           = COALESCE($pr_state, pr_state),
+           pr_url             = COALESCE($pr_url, pr_url),
+           ci_status          = COALESCE($ci_status, ci_status),
+           ci_run_id          = COALESCE($ci_run_id, ci_run_id),
+           ci_summary         = COALESCE($ci_summary, ci_summary),
+           review_status      = COALESCE($review_status, review_status),
+           merge_state_status = COALESCE($merge_state_status, merge_state_status),
+           phase              = COALESCE($phase, phase),
+           updated_at         = datetime('now')`,
       )
       .run({
         $id: item.id,
@@ -398,6 +408,7 @@ export class WorkItemDb {
         $ci_run_id: item.ciRunId ?? null,
         $ci_summary: item.ciSummary ?? null,
         $review_status: item.reviewStatus ?? null,
+        $merge_state_status: item.mergeStateStatus ?? null,
         $phase: item.phase ?? null,
       });
 
