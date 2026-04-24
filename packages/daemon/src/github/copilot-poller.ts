@@ -35,6 +35,7 @@ export interface PRComment {
   path: string;
   line: number | null;
   original_line: number | null;
+  in_reply_to_id: number | null;
   user: { login: string } | null;
   body: string;
 }
@@ -164,7 +165,10 @@ export class CopilotPoller {
       }
 
       const allItems = this.workItemDb.listWorkItems();
-      const tracked = allItems.filter((item) => item.prNumber !== null);
+      const tracked = allItems.filter(
+        (item) =>
+          item.prNumber !== null && item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
+      );
 
       if (tracked.length === 0) {
         this._lastError = null;
@@ -224,7 +228,8 @@ export class CopilotPoller {
       this.rateLimitBackoff = false;
     }
 
-    const comments = result.comments;
+    // Filter out threaded replies — only top-level review comments matter
+    const comments = result.comments.filter((c) => c.in_reply_to_id == null);
 
     if (this.stopped) return;
 

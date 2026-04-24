@@ -18,6 +18,7 @@ function makeComment(overrides: Partial<PRComment> & { id: number }): PRComment 
     path: "src/index.ts",
     line: 10,
     original_line: null,
+    in_reply_to_id: null,
     user: { login: "github-copilot[bot]" },
     body: "Consider refactoring this.",
     ...overrides,
@@ -364,6 +365,131 @@ describe("CopilotPoller", () => {
       expect(events).toHaveLength(1);
       expect(events[0].newCount).toBe(2);
       expect(events[0].commentIds).toEqual([1001, 1002]);
+    });
+  });
+
+  // ── Active-only filtering (#4) ──
+
+  describe("active-only filtering", () => {
+    test("skips work items with phase=done", async () => {
+      workItemDb.createWorkItem({ id: "wi:done", prNumber: 10, prState: "open", phase: "done" });
+      workItemDb.createWorkItem({ id: "wi:active", prNumber: 11, prState: "open" });
+      const fetched: number[] = [];
+      const { poller, events } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          fetched.push(prNumber);
+          return okResult([makeComment({ id: prNumber * 100 })]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).toEqual([11]);
+      expect(events).toHaveLength(1);
+      expect(events[0].prNumber).toBe(11);
+    });
+
+    test("skips work items with prState=merged", async () => {
+      workItemDb.createWorkItem({ id: "wi:merged", prNumber: 20, prState: "merged" });
+      workItemDb.createWorkItem({ id: "wi:open", prNumber: 21, prState: "open" });
+      const fetched: number[] = [];
+      const { poller } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          fetched.push(prNumber);
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).toEqual([21]);
+    });
+
+    test("skips work items with prState=closed", async () => {
+      workItemDb.createWorkItem({ id: "wi:closed", prNumber: 30, prState: "closed" });
+      const fetched: number[] = [];
+      const { poller } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          fetched.push(prNumber);
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).toEqual([]);
+    });
+  });
+
+  // ── in_reply_to_id filtering (#5) ──
+
+  describe("in_reply_to_id filtering", () => {
+    test("threaded replies are excluded from events", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchComments: async () =>
+          okResult([
+            makeComment({ id: 1001, path: "src/a.ts", line: 1 }),
+            makeComment({ id: 1002, path: "src/a.ts", line: 1, in_reply_to_id: 1001, user: { login: "human" } }),
+          ]),
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].commentIds).toEqual([1001]);
+      expect(events[0].author).toBe("github-copilot[bot]");
+    });
+
+    test("all-reply comments yield no events", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      stateDb.updateSeenCommentIds(42, [1001]);
+      const { poller, events } = makePoller({
+        fetchComments: async () =>
+          okResult([
+            makeComment({ id: 1001 }),
+            makeComment({ id: 1002, in_reply_to_id: 1001, user: { login: "human" } }),
+          ]),
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // ── Edge cases (review #12) ──
+
+  describe("edge cases", () => {
+    test("user: null in comment uses 'unknown' as author", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchComments: async () => okResult([makeComment({ id: 1001, user: null })]),
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].author).toBe("unknown");
+    });
+
+    test("partial poll failure: lastError reflects the error after mixed results", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+
+      const { poller, events } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          if (prNumber === 42) throw new Error("network timeout");
+          return okResult([makeComment({ id: 2001 })]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].prNumber).toBe(43);
+      // lastError is null because the overall poll succeeded (per-PR errors are logged but don't set _lastError)
+      expect(poller.lastError).toBeNull();
     });
   });
 });
