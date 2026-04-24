@@ -2993,6 +2993,132 @@ describe("IpcServer HTTP transport", () => {
       expect(buffer).not.toContain("session.result");
       expect(buffer).toContain("pr.merged");
     });
+
+    test("backfill session.response excluded by default (no responseTail)", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.result")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("session.result");
+    });
+
+    test("backfill session.response included when responseTail matches", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0&responseTail=s1", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.result")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).toContain("session.response");
+      expect(buffer).toContain("session.result");
+    });
+
+    test("backfill session.response excluded when responseTail is different session", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0&responseTail=other-session", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("session.result")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      expect(buffer).not.toContain("session.response");
+      expect(buffer).toContain("session.result");
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
