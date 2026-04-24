@@ -66,6 +66,12 @@ describe("validateProfileDir", () => {
     expect(() => validateProfileDir("../sibling")).toThrow(/must be an absolute path or start with ~\//);
     expect(() => validateProfileDir("./local")).toThrow(/must be an absolute path or start with ~\//);
   });
+
+  test("rejects non-string input with a clear Error (not TypeError)", () => {
+    expect(() => validateProfileDir(42 as unknown as string)).toThrow(/must be a non-empty string/);
+    expect(() => validateProfileDir(null as unknown as string)).toThrow(/must be a non-empty string/);
+    expect(() => validateProfileDir(undefined as unknown as string)).toThrow(/must be a non-empty string/);
+  });
 });
 
 describe("writeSiteConfig validates name", () => {

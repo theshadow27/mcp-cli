@@ -26,6 +26,9 @@ export function validateSiteName(name: string): void {
 
 /** Reject browser.profileDir values that are not absolute or ~/…-relative. */
 export function validateProfileDir(raw: string): void {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new Error(`browser.profileDir must be a non-empty string; got: ${typeof raw}`);
+  }
   if (!isAbsolute(raw) && !raw.startsWith("~/")) {
     throw new Error(`browser.profileDir must be an absolute path or start with ~/; got: ${raw}`);
   }
