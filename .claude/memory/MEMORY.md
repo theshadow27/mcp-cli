@@ -21,6 +21,7 @@
 - [Bulk reads + serialized cascades](feedback_sprint_bulk_and_cascade.md) — no `for` loops for status (use bulk jq), single-pointer update-branch cascades (avoid N² CI)
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
 - [Phase run no --dry-run](feedback_phase_run_no_dry_run.md) — per-tick `mcx phase run <phase> --work-item` without --dry-run; never skip `impl` run (writes transition log + state)
+- [Quota end-of-block](feedback_quota_end_of_block.md) — 80% impl-freeze is for early/mid block; near quota reset, fire for effect so long as work won't overrun
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
