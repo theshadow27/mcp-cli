@@ -268,6 +268,12 @@ describe("parseSpawnArgs", () => {
     const result = parseSpawnArgs(["--task", "x"]);
     expect(result.workItemId).toBeUndefined();
   });
+
+  test("errors and does not consume next flag when --work-item value looks like a flag", () => {
+    const result = parseSpawnArgs(["--work-item", "--task", "x"]);
+    expect(result.error).toBe("--work-item requires an id");
+    expect(result.workItemId).toBeUndefined();
+  });
 });
 
 // ── resolveModelName ──

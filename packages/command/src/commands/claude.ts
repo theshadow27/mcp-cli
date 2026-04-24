@@ -329,9 +329,13 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 1;
     }
     if (arg === "--work-item") {
-      workItemId = allArgs[i + 1];
-      if (!workItemId) extraError = "--work-item requires an id";
-      return 1;
+      const next = allArgs[i + 1];
+      if (next && !next.startsWith("-")) {
+        workItemId = next;
+        return 1;
+      }
+      extraError = "--work-item requires an id";
+      return 0;
     }
     if (arg.startsWith("--work-item=")) {
       workItemId = arg.slice("--work-item=".length);
