@@ -1393,6 +1393,10 @@ export class IpcServer {
   private static readonly EVENTBUS_HEARTBEAT_MS = 15_000;
   /** Prune EventBus subscribers that haven't delivered an event in this window (#1557). */
   private static readonly EVENTBUS_SUB_TTL_MS = 10 * 60_000;
+  /** Max entries in liveBuffer during backfill before dropping oldest (#1589). */
+  static readonly LIVE_BUFFER_MAX_ENTRIES = 10_000;
+  /** Max byte size of liveBuffer during backfill before dropping oldest (#1589). */
+  static readonly LIVE_BUFFER_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1569,14 +1573,25 @@ export class IpcServer {
       // when the consumer falls more than 1 MB behind (live or backfill).
       const stream = new ReadableStream(
         {
-          start: (controller) => {
+          start: async (controller) => {
             // Flush an initial newline so Bun sends response headers immediately.
             // Without this, headers are buffered until the first event arrives.
             controller.enqueue(encoder.encode("\n"));
 
             // Buffer live events during backfill to avoid gaps or duplicates.
-            let liveBuffer: Array<string> | null = sinceSeq !== null && eventLog ? [] : null;
+            // Bounded: whichever of entry count or byte size is hit first triggers
+            // drop-oldest eviction. Overflow emits a gap control message. (#1589)
+            let liveBuffer: Array<{ line: string; seq: number | undefined }> | null =
+              sinceSeq !== null && eventLog ? [] : null;
+            let liveBufferBytes = 0;
+            let liveBufferDropped = 0;
+            let liveBufferHead = 0;
+            let firstDroppedSeq: number | undefined;
+            let lastDroppedSeq: number | undefined;
             let highWaterMark = 0;
+
+            const maxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
+            const maxBytes = IpcServer.LIVE_BUFFER_MAX_BYTES;
 
             subId = bus.subscribe(
               (_event, serialized) => {
@@ -1596,7 +1611,40 @@ export class IpcServer {
                 try {
                   const line = `${serialized}\n`;
                   if (liveBuffer !== null) {
-                    liveBuffer.push(line);
+                    const lineLen = line.length;
+                    let seq: number | undefined;
+                    try {
+                      const p = JSON.parse(serialized) as Record<string, unknown>;
+                      seq = typeof p.seq === "number" ? p.seq : undefined;
+                    } catch {
+                      /* non-JSON event — skip seq tracking */
+                    }
+                    // Reject single events that exceed the byte cap on their own.
+                    if (liveBufferHead >= liveBuffer.length && lineLen > maxBytes) {
+                      liveBufferDropped++;
+                      if (seq !== undefined) {
+                        firstDroppedSeq ??= seq;
+                        lastDroppedSeq = seq;
+                      }
+                      return;
+                    }
+                    // Evict from head while buffer exceeds either cap (O(1) via head pointer).
+                    while (
+                      liveBufferHead < liveBuffer.length &&
+                      (liveBuffer.length - liveBufferHead >= maxEntries || liveBufferBytes + lineLen > maxBytes)
+                    ) {
+                      const evicted = liveBuffer[liveBufferHead];
+                      if (!evicted) break;
+                      liveBufferBytes -= evicted.line.length;
+                      if (evicted.seq !== undefined) {
+                        firstDroppedSeq ??= evicted.seq;
+                        lastDroppedSeq = evicted.seq;
+                      }
+                      liveBufferHead++;
+                      liveBufferDropped++;
+                    }
+                    liveBuffer.push({ line, seq });
+                    liveBufferBytes += lineLen;
                   } else {
                     controller.enqueue(encoder.encode(line));
                   }
@@ -1610,6 +1658,7 @@ export class IpcServer {
             subscriberGauge.inc();
 
             // Backfill from durable log when client provides a valid cursor.
+            // Async: yields between batches so the event loop stays responsive. (#1589)
             if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
               let cursor = sinceSeq;
               while (true) {
@@ -1637,11 +1686,30 @@ export class IpcServer {
                 }
                 if (batch.length < 1000) break;
                 cursor = batch[batch.length - 1]?.seq ?? cursor;
+                // Yield to the event loop between batches so other IPC work isn't starved.
+                await new Promise<void>((r) => setTimeout(r, 0));
               }
               // Drain buffered live events; seq-based HWM drops overlaps.
               const buffered = liveBuffer ?? [];
+              const drainStart = liveBufferHead;
               liveBuffer = null;
-              for (const line of buffered) {
+
+              // Emit gap control message if liveBuffer overflowed during backfill.
+              if (liveBufferDropped > 0) {
+                const gap: Record<string, unknown> = { t: "gap", dropped: liveBufferDropped };
+                if (firstDroppedSeq !== undefined) gap.firstDroppedSeq = firstDroppedSeq;
+                if (lastDroppedSeq !== undefined) gap.lastDroppedSeq = lastDroppedSeq;
+                try {
+                  controller.enqueue(encoder.encode(`${JSON.stringify(gap)}\n`));
+                } catch {
+                  cleanup();
+                  return;
+                }
+              }
+
+              for (let i = drainStart; i < buffered.length; i++) {
+                const entry = buffered[i];
+                if (!entry) continue;
                 if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                   this.logger.warn("[events] slow consumer during backfill drain, dropping subscriber");
                   metrics.counter("mcpd_event_bus_slow_drops_total").inc();
@@ -1654,10 +1722,8 @@ export class IpcServer {
                   return;
                 }
                 try {
-                  const parsed = JSON.parse(line) as Record<string, unknown>;
-                  const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
-                  if (seq !== undefined && seq <= highWaterMark) continue;
-                  controller.enqueue(encoder.encode(line));
+                  if (entry.seq !== undefined && entry.seq <= highWaterMark) continue;
+                  controller.enqueue(encoder.encode(entry.line));
                 } catch {
                   cleanup();
                   return;
