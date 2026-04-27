@@ -635,7 +635,7 @@ describe("CopilotPoller", () => {
       expect(events[0].author).toBe("unknown");
     });
 
-    test("partial poll failure: lastError reflects the error after mixed results", async () => {
+    test("partial poll failure: lastError reflects per-item fetch errors", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
 
@@ -650,8 +650,142 @@ describe("CopilotPoller", () => {
 
       expect(events).toHaveLength(1);
       expect(events[0].prNumber).toBe(43);
-      // lastError is null because the overall poll succeeded (per-PR errors are logged but don't set _lastError)
+      expect(poller.lastError).toContain("network timeout");
+      expect(poller.lastError).toMatch(/^\d+\/\d+ items failed:/);
+    });
+
+    test("fetch errors clear after next fully clean poll", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      let callCount = 0;
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          callCount++;
+          if (callCount === 1) throw new Error("network timeout");
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+      expect(poller.lastError).toContain("network timeout");
+
+      await poller.poll();
       expect(poller.lastError).toBeNull();
+    });
+
+    test("multiple fetch errors are accumulated with deduplication", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+      workItemDb.createWorkItem({ id: "wi:3", prNumber: 44, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          if (prNumber === 42) throw new Error("network timeout");
+          if (prNumber === 43) throw new Error("network timeout");
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toMatch(/^2\/3 items failed: network timeout$/);
+    });
+
+    test("multiple sub-poll failures on one item count as one failed item", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("network timeout");
+        },
+        fetchReviews: async () => {
+          throw new Error("network timeout");
+        },
+        fetchIssueComments: async () => {
+          throw new Error("network timeout");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toMatch(/^1\/1 items failed: network timeout$/);
+    });
+
+    test("auth error takes priority over fetch errors in lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchComments: async (_repo, prNumber) => {
+          if (prNumber === 42) throw new Error("network timeout");
+          throw new Error("GitHub API auth/scope error (403): Forbidden");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("auth/scope");
+    });
+
+    test("fetchReviews error surfaces in lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchReviews: async () => {
+          throw new Error("reviews fetch failed");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("reviews fetch failed");
+      expect(poller.lastError).toMatch(/^1\/1 items failed:/);
+    });
+
+    test("fetchIssueComments error on PR item surfaces in lastError", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchIssueComments: async () => {
+          throw new Error("PR comments fetch failed");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("PR comments fetch failed");
+      expect(poller.lastError).toMatch(/^1\/1 items failed:/);
+    });
+
+    test("fetchIssueComments error on issue-only item surfaces in lastError", async () => {
+      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+
+      const { poller } = makePoller({
+        fetchIssueComments: async () => {
+          throw new Error("issue comments fetch failed");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toContain("issue comments fetch failed");
+      expect(poller.lastError).toMatch(/^1\/1 items failed:/);
+    });
+
+    test("fetch errors from different endpoints show distinct messages", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+
+      const { poller } = makePoller({
+        fetchComments: async () => {
+          throw new Error("inline timeout");
+        },
+        fetchReviews: async () => {
+          throw new Error("reviews timeout");
+        },
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toMatch(/^1\/1 items failed: inline timeout; reviews timeout$/);
     });
   });
 
