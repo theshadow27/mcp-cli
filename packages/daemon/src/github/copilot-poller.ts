@@ -41,6 +41,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 interface PollItemResult {
   isRateLimit: boolean;
   authError?: string;
+  fetchError?: string;
 }
 
 export interface PRComment {
@@ -249,29 +250,37 @@ export class CopilotPoller {
       const repo = this._repo;
       let anyRateLimitLow = false;
       let anyAuthError: string | null = null;
+      const fetchErrors: string[] = [];
+      const totalItems = tracked.length + trackedIssues.length;
+
+      const collectResult = (r: PollItemResult): void => {
+        if (r.isRateLimit) anyRateLimitLow = true;
+        if (r.authError) anyAuthError = r.authError;
+        if (r.fetchError) fetchErrors.push(r.fetchError);
+      };
+
       for (const item of tracked) {
         if (this.stopped) return;
-        const r1 = await this.pollPR(repo, item, token);
-        if (r1.isRateLimit) anyRateLimitLow = true;
-        if (r1.authError) anyAuthError = r1.authError;
+        collectResult(await this.pollPR(repo, item, token));
         if (this.stopped) return;
-        const r2 = await this.pollReviews(repo, item, token);
-        if (r2.isRateLimit) anyRateLimitLow = true;
-        if (r2.authError) anyAuthError = r2.authError;
+        collectResult(await this.pollReviews(repo, item, token));
         if (this.stopped) return;
-        const r3 = await this.pollPRComments(repo, item, token);
-        if (r3.isRateLimit) anyRateLimitLow = true;
-        if (r3.authError) anyAuthError = r3.authError;
+        collectResult(await this.pollPRComments(repo, item, token));
       }
       for (const item of trackedIssues) {
         if (this.stopped) return;
-        const r4 = await this.pollIssueComments(repo, item, token);
-        if (r4.isRateLimit) anyRateLimitLow = true;
-        if (r4.authError) anyAuthError = r4.authError;
+        collectResult(await this.pollIssueComments(repo, item, token));
       }
       this.rateLimitBackoff = anyRateLimitLow;
 
-      this._lastError = anyAuthError;
+      if (anyAuthError) {
+        this._lastError = anyAuthError;
+      } else if (fetchErrors.length > 0) {
+        const unique = [...new Set(fetchErrors)];
+        this._lastError = `${fetchErrors.length}/${totalItems} items failed: ${unique.join("; ")}`;
+      } else {
+        this._lastError = null;
+      }
       this._pollCount++;
       this.adjustInterval([...tracked, ...trackedIssues]);
     } catch (err) {
@@ -295,7 +304,7 @@ export class CopilotPoller {
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
       if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
-      return { isRateLimit: false };
+      return { isRateLimit: false, fetchError: msg };
     }
 
     if (result.rateLimitLow) {
@@ -368,7 +377,7 @@ export class CopilotPoller {
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch reviews for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
       if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
-      return { isRateLimit: false };
+      return { isRateLimit: false, fetchError: msg };
     }
 
     if (result.rateLimitLow) {
@@ -458,7 +467,7 @@ export class CopilotPoller {
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch PR comments for PR #${prNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
       if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
-      return { isRateLimit: false };
+      return { isRateLimit: false, fetchError: msg };
     }
 
     if (result.rateLimitLow) {
@@ -502,7 +511,7 @@ export class CopilotPoller {
       this.logger.warn(`[mcpd] CopilotPoller failed to fetch issue comments for #${issueNumber}: ${msg}`);
       if (msg.includes("rate limit")) return { isRateLimit: true };
       if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
-      return { isRateLimit: false };
+      return { isRateLimit: false, fetchError: msg };
     }
 
     if (result.rateLimitLow) {
