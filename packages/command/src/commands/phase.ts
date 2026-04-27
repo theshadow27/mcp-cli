@@ -718,33 +718,31 @@ export async function cmdPhase(
         const opts = parsePhaseRunArgs(filtered);
         const cwd = d.cwd();
         // Mirror the resolvedFrom fallback from executePhase (#1635):
-        // read history + optionally fetch work_items.phase so --from can be
-        // omitted when the transition log is empty (manually-spawned impl).
-        const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
-        const manifestForFrom = loadManifest(cwd);
-        const priorTargets = manifestForFrom
-          ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
-          : [];
-        let workItemPhase: string | null = null;
-        if (opts.workItemId !== null && manifestForFrom) {
-          try {
-            const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
-            if (wi) workItemPhase = wi.phase;
-          } catch {
-            // ignore; resolvedFrom falls back to null
+        // Only do the expensive history-read + ipcCall when --from is absent.
+        let resolvedFrom: string | null = opts.from;
+        if (resolvedFrom === null) {
+          const manifestForFrom = d.loadManifest(cwd);
+          const priorTargets = manifestForFrom
+            ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
+            : [];
+          if (priorTargets.length > 0) {
+            resolvedFrom = priorTargets[priorTargets.length - 1];
+          } else if (opts.workItemId !== null && manifestForFrom) {
+            const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+            try {
+              const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
+              if (
+                wi &&
+                opts.target !== manifestForFrom.manifest.initial &&
+                wi.phase in manifestForFrom.manifest.phases
+              ) {
+                resolvedFrom = wi.phase;
+              }
+            } catch {
+              // ignore; resolvedFrom stays null
+            }
           }
         }
-        const resolvedFrom =
-          opts.from !== null
-            ? opts.from
-            : priorTargets.length > 0
-              ? priorTargets[priorTargets.length - 1]
-              : manifestForFrom &&
-                  opts.target !== manifestForFrom.manifest.initial &&
-                  workItemPhase != null &&
-                  workItemPhase in manifestForFrom.manifest.phases
-                ? workItemPhase
-                : null;
         const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
         const tag = result.forced ? " [FORCED]" : "";
