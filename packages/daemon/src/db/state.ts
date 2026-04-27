@@ -1689,6 +1689,24 @@ export class StateDb {
     return result.changes > 0;
   }
 
+  getLastRepoPollTs(): string | null {
+    const row = this.db
+      .query<{ last_poll_ts: string }, []>("SELECT last_poll_ts FROM copilot_comment_state WHERE pr_number = 0")
+      .get();
+    return row?.last_poll_ts ?? null;
+  }
+
+  updateLastRepoPollTs(isoTs: string): void {
+    this.db
+      .query(
+        `INSERT INTO copilot_comment_state (pr_number, last_poll_ts)
+         VALUES (0, ?)
+         ON CONFLICT(pr_number) DO UPDATE SET
+           last_poll_ts = excluded.last_poll_ts`,
+      )
+      .run(isoTs);
+  }
+
   close(): void {
     this.db.close();
   }

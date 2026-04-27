@@ -52,6 +52,7 @@ export interface PRComment {
   in_reply_to_id: number | null;
   user: { login: string } | null;
   body: string;
+  pull_request_url?: string;
 }
 
 export interface CopilotInlineEvent {
@@ -102,7 +103,7 @@ export interface CopilotPollerOptions {
   stateDb: StateDb;
   logger?: Logger;
   intervalMs?: number;
-  fetchComments?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchCommentsResult>;
+  fetchRepoComments?: (repo: RepoInfo, since: string | null, token: string) => Promise<FetchCommentsResult>;
   fetchReviews?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchReviewsResult>;
   fetchIssueComments?: (repo: RepoInfo, number: number, token: string) => Promise<FetchIssueCommentsResult>;
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
@@ -126,7 +127,7 @@ export class CopilotPoller {
   private stopped = false;
   private repoDetectFailures = 0;
   private rateLimitBackoff = false;
-  private fetchCommentsFn: NonNullable<CopilotPollerOptions["fetchComments"]>;
+  private fetchRepoCommentsFn: NonNullable<CopilotPollerOptions["fetchRepoComments"]>;
   private fetchReviewsFn: NonNullable<CopilotPollerOptions["fetchReviews"]>;
   private fetchIssueCommentsFn: NonNullable<CopilotPollerOptions["fetchIssueComments"]>;
   private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
@@ -139,7 +140,7 @@ export class CopilotPoller {
     this.logger = opts.logger ?? consoleLogger;
     this.fixedInterval = opts.intervalMs ?? null;
     this.currentIntervalMs = this.fixedInterval ?? IDLE_INTERVAL_MS;
-    this.fetchCommentsFn = opts.fetchComments ?? fetchPRInlineComments;
+    this.fetchRepoCommentsFn = opts.fetchRepoComments ?? fetchRepoInlineComments;
     this.fetchReviewsFn = opts.fetchReviews ?? fetchPRReviews;
     this.fetchIssueCommentsFn = opts.fetchIssueComments ?? fetchIssueEndpointComments;
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
@@ -263,9 +264,28 @@ export class CopilotPoller {
         }
       };
 
+      // Batch-fetch all inline review comments in one repo-scoped call (#1738)
+      let inlineByPr = new Map<number, PRComment[]>();
+      if (tracked.length > 0) {
+        const since = this.stateDb.getLastRepoPollTs();
+        // `since=` is inclusive (>=updated_at); record pre-fetch ts so no comments fall through the gap
+        const preFetchTs = new Date().toISOString();
+        try {
+          const result = await this.fetchRepoCommentsFn(repo, since, token);
+          inlineByPr = groupCommentsByPr(result.comments);
+          if (result.rateLimitLow) anyRateLimitLow = true;
+          this.stateDb.updateLastRepoPollTs(preFetchTs);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`[mcpd] CopilotPoller failed to fetch repo comments: ${msg}`);
+          if (msg.includes("rate limit")) anyRateLimitLow = true;
+          else if (msg.includes("auth/scope") || msg.includes("auth failed")) anyAuthError = msg;
+        }
+      }
+
       for (const item of tracked) {
         if (this.stopped) return;
-        collectResult(await this.pollPR(repo, item, token), item.id);
+        this.processInlineComments(item, inlineByPr.get(item.prNumber as number) ?? []);
         if (this.stopped) return;
         collectResult(await this.pollReviews(repo, item, token), item.id);
         if (this.stopped) return;
@@ -297,28 +317,9 @@ export class CopilotPoller {
     }
   }
 
-  private async pollPR(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
+  private processInlineComments(item: WorkItem, allComments: PRComment[]): void {
     const prNumber = item.prNumber as number;
-
-    let result: FetchCommentsResult;
-    try {
-      result = await this.fetchCommentsFn(repo, prNumber, token);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`[mcpd] CopilotPoller failed to fetch comments for PR #${prNumber}: ${msg}`);
-      if (msg.includes("rate limit")) return { isRateLimit: true };
-      if (msg.includes("auth/scope") || msg.includes("auth failed")) return { isRateLimit: false, authError: msg };
-      return { isRateLimit: false, fetchError: msg };
-    }
-
-    if (result.rateLimitLow) {
-      this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
-    }
-
-    // Filter out threaded replies — only top-level review comments matter
-    const comments = result.comments.filter((c) => c.in_reply_to_id == null);
-
-    if (this.stopped) return { isRateLimit: result.rateLimitLow };
+    const comments = allComments.filter((c) => c.in_reply_to_id == null);
 
     const seenIds = new Set(this.stateDb.getSeenCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
@@ -329,10 +330,9 @@ export class CopilotPoller {
         const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
         this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
-      return { isRateLimit: result.rateLimitLow };
+      return;
     }
 
-    // Group new comments by author
     const byAuthor = new Map<string, PRComment[]>();
     for (const comment of newComments) {
       const author = comment.user?.login ?? "unknown";
@@ -364,10 +364,8 @@ export class CopilotPoller {
       });
     }
 
-    // Update seen IDs with full union
     const unionIds = [...new Set([...seenIds, ...currentIds])];
     this.stateDb.updateSeenCommentIds(prNumber, unionIds);
-    return { isRateLimit: result.rateLimitLow };
   }
 
   private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
@@ -652,12 +650,38 @@ async function fetchPaginated<T>(startUrl: string, token: string): Promise<Fetch
   return { items: allItems, rateLimitLow, rateLimitRemaining };
 }
 
-async function fetchPRInlineComments(repo: RepoInfo, prNumber: number, token: string): Promise<FetchCommentsResult> {
-  const result = await fetchPaginated<PRComment>(
-    `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/comments?per_page=100`,
-    token,
-  );
+async function fetchRepoInlineComments(
+  repo: RepoInfo,
+  since: string | null,
+  token: string,
+): Promise<FetchCommentsResult> {
+  let url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/comments?sort=created&direction=desc&per_page=100`;
+  if (since) {
+    url += `&since=${encodeURIComponent(since)}`;
+  }
+  const result = await fetchPaginated<PRComment>(url, token);
   return { comments: result.items, rateLimitLow: result.rateLimitLow, rateLimitRemaining: result.rateLimitRemaining };
+}
+
+export function parsePrNumberFromUrl(url: string): number | null {
+  const match = url.match(/\/pulls\/(\d+)$/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function groupCommentsByPr(comments: PRComment[]): Map<number, PRComment[]> {
+  const map = new Map<number, PRComment[]>();
+  for (const c of comments) {
+    if (!c.pull_request_url) continue;
+    const prNumber = parsePrNumberFromUrl(c.pull_request_url);
+    if (prNumber === null) continue;
+    let group = map.get(prNumber);
+    if (!group) {
+      group = [];
+      map.set(prNumber, group);
+    }
+    group.push(c);
+  }
+  return map;
 }
 
 async function fetchPRReviews(repo: RepoInfo, prNumber: number, token: string): Promise<FetchReviewsResult> {

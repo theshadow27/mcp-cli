@@ -20,6 +20,7 @@ import {
   type GitHubReview,
   type IssueComment,
   type PRComment,
+  parsePrNumberFromUrl,
 } from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
 import { createCopilotStateDb } from "./test-helpers";
@@ -31,7 +32,9 @@ function okResult(comments: PRComment[]): FetchCommentsResult {
   return { comments, rateLimitLow: false, rateLimitRemaining: 5000 };
 }
 
-function makeComment(overrides: Partial<PRComment> & { id: number }): PRComment {
+function makeComment(overrides: Partial<PRComment> & { id: number; prNumber?: number }): PRComment {
+  const pr = overrides.prNumber ?? 42;
+  const { prNumber: _, ...rest } = overrides;
   return {
     path: "src/index.ts",
     line: 10,
@@ -39,7 +42,8 @@ function makeComment(overrides: Partial<PRComment> & { id: number }): PRComment 
     in_reply_to_id: null,
     user: { login: "github-copilot[bot]" },
     body: "Consider refactoring this.",
-    ...overrides,
+    pull_request_url: `https://api.github.com/repos/test/repo/pulls/${pr}`,
+    ...rest,
   };
 }
 
@@ -92,7 +96,7 @@ describe("CopilotPoller", () => {
       logger: SILENT_LOGGER,
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",
-      fetchComments: async () => okResult([]),
+      fetchRepoComments: async () => okResult([]),
       fetchReviews: async () => okReviewResult([]),
       fetchIssueComments: async () => okIssueCommentResult([]),
       onEvent: (e) => events.push(e),
@@ -107,7 +111,7 @@ describe("CopilotPoller", () => {
     test("empty: no comments yields no events", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => okResult([]),
+        fetchRepoComments: async () => okResult([]),
       });
 
       await poller.poll();
@@ -123,7 +127,7 @@ describe("CopilotPoller", () => {
         makeComment({ id: 1002, path: "src/b.ts", line: 10 }),
       ];
       const { poller, events } = makePoller({
-        fetchComments: async () => okResult(comments),
+        fetchRepoComments: async () => okResult(comments),
       });
 
       await poller.poll();
@@ -143,7 +147,7 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([
             makeComment({ id: 1001, path: "src/a.ts", line: 5 }),
             makeComment({ id: 1002, path: "src/b.ts", line: 20 }),
@@ -164,7 +168,7 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001, 1002]);
 
       const { poller, events } = makePoller({
-        fetchComments: async () => okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 })]),
+        fetchRepoComments: async () => okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 })]),
       });
 
       await poller.poll();
@@ -179,7 +183,7 @@ describe("CopilotPoller", () => {
     test("emits separate events per author", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([
             makeComment({ id: 1001, user: { login: "github-copilot[bot]" }, path: "src/a.ts", line: 1 }),
             makeComment({ id: 1002, user: { login: "human-reviewer" }, path: "src/b.ts", line: 2 }),
@@ -210,7 +214,7 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           callCount++;
           if (callCount === 1) {
             return okResult([makeComment({ id: 1001 })]);
@@ -234,7 +238,7 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 }), makeComment({ id: 1003 })]),
       });
 
@@ -253,7 +257,7 @@ describe("CopilotPoller", () => {
     test("uses path basename and line number", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001, path: "packages/daemon/src/poller.ts", line: 143 })]),
       });
 
@@ -265,7 +269,7 @@ describe("CopilotPoller", () => {
     test("falls back to original_line when line is null", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001, path: "src/foo.ts", line: null, original_line: 50 })]),
       });
 
@@ -291,7 +295,7 @@ describe("CopilotPoller", () => {
     test("stop prevents further polls", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => okResult([makeComment({ id: 1001 })]),
+        fetchRepoComments: async () => okResult([makeComment({ id: 1001 })]),
       });
 
       poller.stop();
@@ -318,21 +322,24 @@ describe("CopilotPoller", () => {
       expect(poller.pollCount).toBe(4);
     });
 
-    test("fetch error for one PR does not abort other PRs", async () => {
+    test("repo-scoped fetch error skips inline comments but reviews still work", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
 
       const { poller, events } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          if (prNumber === 42) throw new Error("network error");
-          return okResult([makeComment({ id: 2001, path: "src/x.ts", line: 1 })]);
+        fetchRepoComments: async () => {
+          throw new Error("network error");
         },
+        fetchReviews: async () =>
+          okReviewResult([makeReview({ id: 5001, state: "APPROVED", user: { login: "reviewer" } })]),
       });
 
       await poller.poll();
 
-      expect(events).toHaveLength(1);
-      expect(events[0].prNumber).toBe(43);
+      const reviewEvents = events.filter((e) => e.event === REVIEW_APPROVED);
+      expect(reviewEvents).toHaveLength(2);
+      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      expect(inlineEvents).toHaveLength(0);
     });
   });
 
@@ -343,7 +350,7 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           callCount++;
           if (callCount === 1) {
             return { comments: [], rateLimitLow: true, rateLimitRemaining: 100 };
@@ -364,7 +371,7 @@ describe("CopilotPoller", () => {
     test("primary rate-limit error (remaining==0) does not set lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           throw new Error("GitHub API rate limit exhausted (403)");
         },
       });
@@ -377,7 +384,7 @@ describe("CopilotPoller", () => {
     test("secondary rate-limit error (retry-after) does not set lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           throw new Error("GitHub API secondary rate limit (403): retry after 60s");
         },
       });
@@ -390,7 +397,7 @@ describe("CopilotPoller", () => {
     test("auth/scope 403 does NOT trigger backoff and sets lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           throw new Error("GitHub API auth/scope error (403): Forbidden");
         },
       });
@@ -416,7 +423,7 @@ describe("CopilotPoller", () => {
     test("401 auth failure sets lastError without backoff", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           throw new Error("GitHub API auth failed (401) — token cache cleared");
         },
       });
@@ -430,7 +437,7 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller } = makePoller({
-        fetchComments: async () => {
+        fetchRepoComments: async () => {
           callCount++;
           if (callCount === 1) throw new Error("GitHub API auth/scope error (403): Forbidden");
           return okResult([]);
@@ -452,7 +459,7 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([
             makeComment({ id: 1001, path: "src/a.ts", line: 1 }),
             makeComment({ id: 1002, path: "src/b.ts", line: 2 }),
@@ -473,17 +480,13 @@ describe("CopilotPoller", () => {
     test("skips work items with phase=done", async () => {
       workItemDb.createWorkItem({ id: "wi:done", prNumber: 10, prState: "open", phase: "done" });
       workItemDb.createWorkItem({ id: "wi:active", prNumber: 11, prState: "open" });
-      const fetched: number[] = [];
       const { poller, events } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          fetched.push(prNumber);
-          return okResult([makeComment({ id: prNumber * 100 })]);
-        },
+        fetchRepoComments: async () =>
+          okResult([makeComment({ id: 1000, prNumber: 10 }), makeComment({ id: 1100, prNumber: 11 })]),
       });
 
       await poller.poll();
 
-      expect(fetched).toEqual([11]);
       expect(events).toHaveLength(1);
       expect(events[0].prNumber).toBe(11);
     });
@@ -491,32 +494,28 @@ describe("CopilotPoller", () => {
     test("skips work items with prState=merged", async () => {
       workItemDb.createWorkItem({ id: "wi:merged", prNumber: 20, prState: "merged" });
       workItemDb.createWorkItem({ id: "wi:open", prNumber: 21, prState: "open" });
-      const fetched: number[] = [];
-      const { poller } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          fetched.push(prNumber);
-          return okResult([]);
-        },
+      const { poller, events } = makePoller({
+        fetchRepoComments: async () =>
+          okResult([makeComment({ id: 2000, prNumber: 20 }), makeComment({ id: 2100, prNumber: 21 })]),
       });
 
       await poller.poll();
 
-      expect(fetched).toEqual([21]);
+      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      expect(inlineEvents).toHaveLength(1);
+      expect(inlineEvents[0].prNumber).toBe(21);
     });
 
     test("skips work items with prState=closed", async () => {
       workItemDb.createWorkItem({ id: "wi:closed", prNumber: 30, prState: "closed" });
-      const fetched: number[] = [];
-      const { poller } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          fetched.push(prNumber);
-          return okResult([]);
-        },
+      const { poller, events } = makePoller({
+        fetchRepoComments: async () => okResult([makeComment({ id: 3000, prNumber: 30 })]),
       });
 
       await poller.poll();
 
-      expect(fetched).toEqual([]);
+      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      expect(inlineEvents).toHaveLength(0);
     });
   });
 
@@ -526,7 +525,7 @@ describe("CopilotPoller", () => {
     test("threaded replies are excluded from events", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([
             makeComment({ id: 1001, path: "src/a.ts", line: 1 }),
             makeComment({ id: 1002, path: "src/a.ts", line: 1, in_reply_to_id: 1001, user: { login: "human" } }),
@@ -544,7 +543,7 @@ describe("CopilotPoller", () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenCommentIds(42, [1001]);
       const { poller, events } = makePoller({
-        fetchComments: async () =>
+        fetchRepoComments: async () =>
           okResult([
             makeComment({ id: 1001 }),
             makeComment({ id: 1002, in_reply_to_id: 1001, user: { login: "human" } }),
@@ -563,7 +562,7 @@ describe("CopilotPoller", () => {
     test("user: null in comment uses 'unknown' as author", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
-        fetchComments: async () => okResult([makeComment({ id: 1001, user: null })]),
+        fetchRepoComments: async () => okResult([makeComment({ id: 1001, user: null })]),
       });
 
       await poller.poll();
@@ -572,95 +571,20 @@ describe("CopilotPoller", () => {
       expect(events[0].author).toBe("unknown");
     });
 
-    test("partial poll failure: lastError reflects per-item fetch errors", async () => {
+    test("repo-scoped fetch error is transient: lastError stays null", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
 
       const { poller, events } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          if (prNumber === 42) throw new Error("network timeout");
-          return okResult([makeComment({ id: 2001 })]);
+        fetchRepoComments: async () => {
+          throw new Error("network timeout");
         },
       });
 
       await poller.poll();
 
-      expect(events).toHaveLength(1);
-      expect(events[0].prNumber).toBe(43);
-      expect(poller.lastError).toContain("network timeout");
-      expect(poller.lastError).toMatch(/^\d+\/\d+ items failed:/);
-    });
-
-    test("fetch errors clear after next fully clean poll", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      let callCount = 0;
-      const { poller } = makePoller({
-        fetchComments: async () => {
-          callCount++;
-          if (callCount === 1) throw new Error("network timeout");
-          return okResult([]);
-        },
-      });
-
-      await poller.poll();
-      expect(poller.lastError).toContain("network timeout");
-
-      await poller.poll();
+      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      expect(inlineEvents).toHaveLength(0);
       expect(poller.lastError).toBeNull();
-    });
-
-    test("multiple fetch errors are accumulated with deduplication", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:3", prNumber: 44, prState: "open" });
-
-      const { poller } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          if (prNumber === 42) throw new Error("network timeout");
-          if (prNumber === 43) throw new Error("network timeout");
-          return okResult([]);
-        },
-      });
-
-      await poller.poll();
-
-      expect(poller.lastError).toMatch(/^2\/3 items failed: network timeout$/);
-    });
-
-    test("multiple sub-poll failures on one item count as one failed item", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-
-      const { poller } = makePoller({
-        fetchComments: async () => {
-          throw new Error("network timeout");
-        },
-        fetchReviews: async () => {
-          throw new Error("network timeout");
-        },
-        fetchIssueComments: async () => {
-          throw new Error("network timeout");
-        },
-      });
-
-      await poller.poll();
-
-      expect(poller.lastError).toMatch(/^1\/1 items failed: network timeout$/);
-    });
-
-    test("auth error takes priority over fetch errors in lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
-
-      const { poller } = makePoller({
-        fetchComments: async (_repo, prNumber) => {
-          if (prNumber === 42) throw new Error("network timeout");
-          throw new Error("GitHub API auth/scope error (403): Forbidden");
-        },
-      });
-
-      await poller.poll();
-
-      expect(poller.lastError).toContain("auth/scope");
     });
 
     test("fetchReviews error surfaces in lastError", async () => {
@@ -708,21 +632,108 @@ describe("CopilotPoller", () => {
       expect(poller.lastError).toMatch(/^1\/1 items failed:/);
     });
 
-    test("fetch errors from different endpoints show distinct messages", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+  });
 
+  // ── Repo-scoped batching (#1738) ──
+
+  describe("repo-scoped batching", () => {
+    test("groups comments by pull_request_url to correct PRs", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchRepoComments: async () =>
+          okResult([
+            makeComment({ id: 1001, prNumber: 42, path: "src/a.ts", line: 1 }),
+            makeComment({ id: 2001, prNumber: 43, path: "src/b.ts", line: 2 }),
+            makeComment({ id: 2002, prNumber: 43, path: "src/c.ts", line: 3 }),
+          ]),
+      });
+
+      await poller.poll();
+
+      const pr42 = events.filter((e) => e.event === COPILOT_INLINE_POSTED && e.prNumber === 42);
+      const pr43 = events.filter((e) => e.event === COPILOT_INLINE_POSTED && e.prNumber === 43);
+      expect(pr42).toHaveLength(1);
+      expect(pr42[0].commentIds).toEqual([1001]);
+      expect(pr43).toHaveLength(1);
+      expect(pr43[0].commentIds).toEqual([2001, 2002]);
+    });
+
+    test("comments without pull_request_url are silently dropped", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchRepoComments: async () =>
+          okResult([
+            makeComment({ id: 1001, prNumber: 42 }),
+            { ...makeComment({ id: 1002 }), pull_request_url: undefined },
+          ]),
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].commentIds).toEqual([1001]);
+    });
+
+    test("comments for untracked PRs are ignored", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const { poller, events } = makePoller({
+        fetchRepoComments: async () =>
+          okResult([makeComment({ id: 1001, prNumber: 42 }), makeComment({ id: 9001, prNumber: 999 })]),
+      });
+
+      await poller.poll();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].prNumber).toBe(42);
+    });
+
+    test("since parameter passes last repo poll timestamp", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const sinceValues: Array<string | null> = [];
       const { poller } = makePoller({
-        fetchComments: async () => {
-          throw new Error("inline timeout");
+        fetchRepoComments: async (_repo, since) => {
+          sinceValues.push(since);
+          return okResult([]);
         },
-        fetchReviews: async () => {
-          throw new Error("reviews timeout");
+      });
+
+      await poller.poll();
+      expect(sinceValues[0]).toBeNull();
+
+      await poller.poll();
+      expect(sinceValues[1]).not.toBeNull();
+      expect(typeof sinceValues[1]).toBe("string");
+    });
+
+    test("no fetch when zero tracked PRs", async () => {
+      let fetched = false;
+      const { poller } = makePoller({
+        fetchRepoComments: async () => {
+          fetched = true;
+          return okResult([]);
         },
       });
 
       await poller.poll();
 
-      expect(poller.lastError).toMatch(/^1\/1 items failed: inline timeout; reviews timeout$/);
+      expect(fetched).toBe(false);
+    });
+  });
+
+  // ── parsePrNumberFromUrl ──
+
+  describe("parsePrNumberFromUrl", () => {
+    test("extracts PR number from standard URL", () => {
+      expect(parsePrNumberFromUrl("https://api.github.com/repos/owner/repo/pulls/123")).toBe(123);
+    });
+
+    test("returns null for malformed URL", () => {
+      expect(parsePrNumberFromUrl("not-a-url")).toBeNull();
+    });
+
+    test("returns null for non-pulls URL", () => {
+      expect(parsePrNumberFromUrl("https://api.github.com/repos/owner/repo/issues/42")).toBeNull();
     });
   });
 
@@ -1086,7 +1097,8 @@ describe("CopilotPoller", () => {
       stateDb.updateSeenCommentIds(77, [3001]);
 
       const { poller } = makePoller({
-        fetchComments: async () => okResult([makeComment({ id: 3001 }), makeComment({ id: 3002 })]),
+        fetchRepoComments: async () =>
+          okResult([makeComment({ id: 3001, prNumber: 77 }), makeComment({ id: 3002, prNumber: 77 })]),
       });
       await poller.poll();
 
