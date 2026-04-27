@@ -20,6 +20,12 @@ export function hasHelpFlag(args: readonly string[]): boolean {
   return args.includes("--help") || args.includes("-h");
 }
 
+export const CLAUDE_SUB_ALIASES: Readonly<Record<string, string>> = {
+  list: "ls",
+  quit: "bye",
+  wt: "worktrees",
+};
+
 export function formatHelp(help: CommandHelp): string {
   const lines: string[] = [];
 

@@ -4565,3 +4565,31 @@ describe("mcx claude deny", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No pending permission"));
   });
 });
+
+// ── help alias normalization ──
+
+describe("mcx claude <alias> --help", () => {
+  test("list --help resolves to ls help", async () => {
+    const deps = makeDeps();
+    await cmdClaude(["list", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude ls");
+    expect(output).not.toContain("No detailed help available");
+  });
+
+  test("quit --help resolves to bye help", async () => {
+    const deps = makeDeps();
+    await cmdClaude(["quit", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude bye");
+    expect(output).not.toContain("No detailed help available");
+  });
+
+  test("wt --help resolves to worktrees help", async () => {
+    const deps = makeDeps();
+    await cmdClaude(["wt", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude worktrees");
+    expect(output).not.toContain("No detailed help available");
+  });
+});

@@ -6,7 +6,7 @@
  */
 
 import { dirname, join, resolve } from "node:path";
-import { formatHelp, getHelp, hasHelpFlag } from "../help";
+import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
 import {
   CLAUDE_SERVER_NAME,
@@ -241,7 +241,8 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
 
   const subArgs = args.slice(1);
   if (sub !== "spawn" && hasHelpFlag(subArgs)) {
-    const help = getHelp(`claude ${sub}`);
+    const canonicalSub = CLAUDE_SUB_ALIASES[sub] ?? sub;
+    const help = getHelp(`claude ${canonicalSub}`);
     if (help) {
       d.log(formatHelp(help));
       return;

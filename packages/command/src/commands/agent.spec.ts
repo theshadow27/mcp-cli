@@ -1928,4 +1928,31 @@ describe("help dispatcher", () => {
     expect(output).toContain("claude");
     expect(deps.callTool).not.toHaveBeenCalled();
   });
+
+  test("claude list --help resolves to ls help", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "list", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude ls");
+    expect(output).not.toContain("No detailed help available");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("claude quit --help resolves to bye help", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "quit", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude bye");
+    expect(output).not.toContain("No detailed help available");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("claude wt --help resolves to worktrees help", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "wt", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("mcx claude worktrees");
+    expect(output).not.toContain("No detailed help available");
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
 });
