@@ -97,7 +97,7 @@ describe("CopilotPoller — review/sticky integration", () => {
       logger: SILENT_LOGGER,
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",
-      fetchComments: async () => ({ comments: [], rateLimitLow: false, rateLimitRemaining: 5000 }),
+      fetchRepoComments: async () => ({ comments: [], rateLimitLow: false, rateLimitRemaining: 5000 }),
       fetchReviews: async () => okReviews([]),
       fetchIssueComments: async () => okPRComments([]),
       onEvent: (e) => events.push(e),
