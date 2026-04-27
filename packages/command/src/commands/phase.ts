@@ -22,6 +22,7 @@ import {
   type AliasStateAccessor,
   type AliasWorkItemInfo,
   BranchGuardError,
+  type CliConfig,
   DisallowedTransitionError,
   GLOBAL_STATE_NAMESPACE,
   LOCKFILE_NAME,
@@ -58,7 +59,9 @@ import {
   loadManifest,
   parseLockfile,
   readAllTransitions,
+  readCliConfig,
   readTransitionHistory,
+  resolveRunsOn,
   serializeLockfile,
   sha256Hex,
   suggestPhases,
@@ -903,6 +906,7 @@ export interface PhaseExecuteDeps {
   exec: ExecFn;
   findGitRoot: (cwd: string) => string | null;
   now: () => Date;
+  readCliConfig: () => CliConfig;
 }
 
 export function spawnExec(cmd: string[]): ExecResult {
@@ -923,6 +927,7 @@ const defaultExecuteDeps: PhaseExecuteDeps = {
   exec: spawnExec,
   findGitRoot,
   now: () => new Date(),
+  readCliConfig,
 };
 
 export interface PhaseExecuteArgs {
@@ -1126,14 +1131,36 @@ export async function executePhase(
   // Branch guard — phases execute with full shell/mcp access, so refuse
   // to dispatch from any branch other than the manifest's `runsOn`. The
   // attempt entry above captured the intent for audit.
+  // phase.allowBranchOverride in ~/.mcp-cli/config.json can list feature branches
+  // for local POC/testing; those branches bypass the guard with a warning.
+  const allowBranches = ex.readCliConfig().phase?.allowBranchOverride ?? [];
+  if (allowBranches.length > 0) {
+    const expected = resolveRunsOn(loaded.manifest);
+    if (allowBranches.includes(expected)) {
+      d.logError(
+        `phase.allowBranchOverride in ~/.mcp-cli/config.json contains "${expected}" which is the manifest's runsOn branch.\n` +
+          `The allow-list is for feature branches only — remove "${expected}" from the list.`,
+      );
+      d.exit(1);
+    }
+  }
+  let branchGuardWarning: string | null = null;
   try {
-    checkRunsOn({ cwd, manifest: loaded.manifest, exec: ex.exec });
+    ({ warning: branchGuardWarning } = checkRunsOn({
+      cwd,
+      manifest: loaded.manifest,
+      exec: ex.exec,
+      allowBranches,
+    }));
   } catch (err) {
     if (err instanceof BranchGuardError) {
       d.logError(err.message);
       d.exit(1);
     }
     throw err;
+  }
+  if (branchGuardWarning) {
+    d.logError(branchGuardWarning);
   }
 
   let resolved: string;
