@@ -298,7 +298,9 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 
   const subArgs = args.slice(2);
   if (sub !== "spawn" && hasHelpFlag(subArgs)) {
-    const help = getHelp(`${providerName} ${sub}`);
+    const SUB_ALIASES: Record<string, string> = { list: "ls", quit: "bye", wt: "worktrees" };
+    const canonicalSub = SUB_ALIASES[sub] ?? sub;
+    const help = getHelp(`${providerName} ${canonicalSub}`);
     if (help) {
       d.log(formatHelp(help));
       return;

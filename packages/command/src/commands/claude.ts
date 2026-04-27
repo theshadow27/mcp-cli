@@ -241,7 +241,9 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
 
   const subArgs = args.slice(1);
   if (sub !== "spawn" && hasHelpFlag(subArgs)) {
-    const help = getHelp(`claude ${sub}`);
+    const SUB_ALIASES: Record<string, string> = { list: "ls", quit: "bye", wt: "worktrees" };
+    const canonicalSub = SUB_ALIASES[sub] ?? sub;
+    const help = getHelp(`claude ${canonicalSub}`);
     if (help) {
       d.log(formatHelp(help));
       return;
