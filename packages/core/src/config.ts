@@ -54,6 +54,16 @@ export interface McpConfigFile {
   mcpServers?: ServerConfigMap;
 }
 
+/** Phase execution configuration */
+export interface PhaseConfig {
+  /**
+   * Feature branches allowed to bypass the runsOn guard for local POC/testing.
+   * Must not contain the manifest's runsOn branch (typically "main") — add only
+   * short-lived feature branches you own. Set via ~/.mcp-cli/config.json.
+   */
+  allowBranchOverride?: string[];
+}
+
 /** Configuration for ephemeral (auto-saved) aliases */
 export interface EphemeralAliasConfig {
   /** Enable auto-saving long CLI calls as ephemeral aliases (default: true) */
@@ -81,6 +91,8 @@ export interface CliConfig {
   telemetry?: boolean;
   /** Whether the first-run telemetry notice has been shown */
   telemetryNoticeShown?: boolean;
+  /** Phase execution configuration */
+  phase?: PhaseConfig;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

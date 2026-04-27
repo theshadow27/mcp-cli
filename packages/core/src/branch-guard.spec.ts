@@ -155,4 +155,66 @@ describe("checkRunsOn", () => {
   test("DEFAULT_RUNS_ON is main", () => {
     expect(DEFAULT_RUNS_ON).toBe("main");
   });
+
+  test("passes with no warning when on expected branch (allowBranches irrelevant)", () => {
+    const exec = mockExec({
+      "git -C /repo rev-parse --is-inside-work-tree": OK("true\n"),
+      "git -C /repo symbolic-ref --short HEAD": OK("main\n"),
+    });
+    const result = checkRunsOn({ cwd: CWD, manifest: manifest(), exec, allowBranches: ["feat/x"] });
+    expect(result).toEqual({ warning: null });
+  });
+
+  describe("allowBranches", () => {
+    test("bypasses guard with one-line warning when current branch is in list", () => {
+      const exec = mockExec({
+        "git -C /repo rev-parse --is-inside-work-tree": OK("true\n"),
+        "git -C /repo symbolic-ref --short HEAD": OK("feat/poc\n"),
+      });
+      const result = checkRunsOn({
+        cwd: CWD,
+        manifest: manifest(),
+        exec,
+        allowBranches: ["feat/poc"],
+      });
+      expect(result.warning).toBeTypeOf("string");
+      expect(result.warning).toContain('phases running from branch "feat/poc"');
+      expect(result.warning).toContain('"main"');
+      expect(result.warning).toContain("install-security boundary not enforced");
+    });
+
+    test("still throws when current branch is not in the list", () => {
+      const exec = mockExec({
+        "git -C /repo rev-parse --is-inside-work-tree": OK("true\n"),
+        "git -C /repo symbolic-ref --short HEAD": OK("feat/other\n"),
+      });
+      expect(() => checkRunsOn({ cwd: CWD, manifest: manifest(), exec, allowBranches: ["feat/poc"] })).toThrow(
+        BranchGuardError,
+      );
+    });
+
+    test("bypass works when list contains multiple branches", () => {
+      const exec = mockExec({
+        "git -C /repo rev-parse --is-inside-work-tree": OK("true\n"),
+        "git -C /repo symbolic-ref --short HEAD": OK("feat/b\n"),
+      });
+      const result = checkRunsOn({
+        cwd: CWD,
+        manifest: manifest(),
+        exec,
+        allowBranches: ["feat/a", "feat/b"],
+      });
+      expect(result.warning).toContain('phases running from branch "feat/b"');
+    });
+
+    test("does not bypass for detached HEAD even if list is non-empty", () => {
+      const exec = mockExec({
+        "git -C /repo rev-parse --is-inside-work-tree": OK("true\n"),
+        "git -C /repo symbolic-ref --short HEAD": FAIL,
+      });
+      expect(() => checkRunsOn({ cwd: CWD, manifest: manifest(), exec, allowBranches: ["feat/poc"] })).toThrow(
+        BranchGuardError,
+      );
+    });
+  });
 });

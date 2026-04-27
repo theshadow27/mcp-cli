@@ -1593,6 +1593,70 @@ phases:
     expect(errs.some((e) => e.includes("phases only run from branch"))).toBe(true);
   }, 30_000);
 
+  test("phase.allowBranchOverride in config bypasses guard and prints one-line warning", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const ex = makeExecDeps({ branch: "feat/poc" });
+    const errs: string[] = [];
+    const logs: string[] = [];
+    await executePhase(
+      ["implement"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: (m) => logs.push(m),
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          throw new Error(`unexpected exit ${c}`);
+        }) as (code: number) => never,
+      },
+      {
+        ipcCall: ex.ipcCall,
+        exec: ex.exec,
+        findGitRoot: ex.findGitRoot,
+        now: ex.now,
+        readCliConfig: () => ({ phase: { allowBranchOverride: ["feat/poc"] } }),
+      },
+    );
+
+    // One-line warning printed to stderr, handler executed successfully
+    expect(errs.some((e) => e.includes("install-security boundary not enforced"))).toBe(true);
+    expect(logs.some((l) => l.includes('"action"'))).toBe(true);
+  }, 30_000);
+
+  test("phase.allowBranchOverride containing runsOn branch exits with error", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
+    writeFileSync(join(dir, "impl.ts"), phaseAlias);
+    await install();
+
+    const ex = makeExecDeps({ branch: "main" });
+    const errs: string[] = [];
+    let code: number | undefined;
+    await executePhase(
+      ["implement"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          code = c;
+          throw new Error("exit");
+        }) as (code: number) => never,
+      },
+      {
+        ipcCall: ex.ipcCall,
+        exec: ex.exec,
+        findGitRoot: ex.findGitRoot,
+        now: ex.now,
+        readCliConfig: () => ({ phase: { allowBranchOverride: ["main"] } }),
+      },
+    ).catch(() => {});
+
+    expect(code).toBe(1);
+    expect(errs.some((e) => e.includes("runsOn branch"))).toBe(true);
+  }, 30_000);
+
   test("missing work item for --work-item id exits 1", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifestMain);
     writeFileSync(join(dir, "impl.ts"), phaseAlias);

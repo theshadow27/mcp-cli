@@ -70,13 +70,29 @@ function describe(cb: CurrentBranch): string {
 /**
  * Verify the repo at `cwd` is on the manifest's `runsOn` branch.
  * Throws `BranchGuardError` with a user-facing refusal message on mismatch.
+ *
+ * If `allowBranches` (from `phase.allowBranchOverride` in ~/.mcp-cli/config.json)
+ * contains the current branch name, the guard is bypassed and a one-line warning
+ * is returned. The list must not include the `runsOn` branch — that validation is
+ * the caller's responsibility (phase.ts validates before calling here).
  */
-export function checkRunsOn(opts: { cwd: string; manifest: Pick<Manifest, "runsOn">; exec: ExecFn }): void {
+export function checkRunsOn(opts: {
+  cwd: string;
+  manifest: Pick<Manifest, "runsOn">;
+  exec: ExecFn;
+  allowBranches?: string[];
+}): { warning: string | null } {
   const expected = resolveRunsOn(opts.manifest);
   const cb = currentBranch(opts.cwd, opts.exec);
 
   if (cb.kind === "branch" && cb.name === expected) {
-    return;
+    return { warning: null };
+  }
+
+  if (cb.kind === "branch" && opts.allowBranches?.includes(cb.name)) {
+    return {
+      warning: `WARNING: phases running from branch "${cb.name}", not "${expected}" — install-security boundary not enforced`,
+    };
   }
 
   const actualDesc = describe(cb);
