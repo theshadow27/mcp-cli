@@ -1391,6 +1391,10 @@ export class IpcServer {
   private static readonly EVENTBUS_HEARTBEAT_MS = 15_000;
   /** Prune EventBus subscribers that haven't delivered an event in this window (#1557). */
   private static readonly EVENTBUS_SUB_TTL_MS = 10 * 60_000;
+  /** Max entries in liveBuffer during backfill before dropping oldest (#1589). */
+  static readonly LIVE_BUFFER_MAX_ENTRIES = 10_000;
+  /** Max byte size of liveBuffer during backfill before dropping oldest (#1589). */
+  static readonly LIVE_BUFFER_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1567,14 +1571,21 @@ export class IpcServer {
       // when the consumer falls more than 1 MB behind (live or backfill).
       const stream = new ReadableStream(
         {
-          start: (controller) => {
+          start: async (controller) => {
             // Flush an initial newline so Bun sends response headers immediately.
             // Without this, headers are buffered until the first event arrives.
             controller.enqueue(encoder.encode("\n"));
 
             // Buffer live events during backfill to avoid gaps or duplicates.
+            // Bounded: whichever of entry count or byte size is hit first triggers
+            // drop-oldest eviction. Overflow emits a gap control message. (#1589)
             let liveBuffer: Array<string> | null = sinceSeq !== null && eventLog ? [] : null;
+            let liveBufferBytes = 0;
+            let liveBufferDropped = 0;
             let highWaterMark = 0;
+
+            const maxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
+            const maxBytes = IpcServer.LIVE_BUFFER_MAX_BYTES;
 
             subId = bus.subscribe(
               (_event, serialized) => {
@@ -1594,7 +1605,17 @@ export class IpcServer {
                 try {
                   const line = `${serialized}\n`;
                   if (liveBuffer !== null) {
+                    // Evict oldest entries while buffer exceeds either cap.
+                    while (
+                      liveBuffer.length > 0 &&
+                      (liveBuffer.length >= maxEntries || liveBufferBytes + line.length > maxBytes)
+                    ) {
+                      const evicted = liveBuffer.shift();
+                      if (evicted) liveBufferBytes -= evicted.length;
+                      liveBufferDropped++;
+                    }
                     liveBuffer.push(line);
+                    liveBufferBytes += line.length;
                   } else {
                     controller.enqueue(encoder.encode(line));
                   }
@@ -1608,6 +1629,7 @@ export class IpcServer {
             subscriberGauge.inc();
 
             // Backfill from durable log when client provides a valid cursor.
+            // Async: yields between batches so the event loop stays responsive. (#1589)
             if (sinceSeq !== null && !Number.isNaN(sinceSeq) && sinceSeq >= 0 && eventLog) {
               let cursor = sinceSeq;
               while (true) {
@@ -1635,10 +1657,23 @@ export class IpcServer {
                 }
                 if (batch.length < 1000) break;
                 cursor = batch[batch.length - 1]?.seq ?? cursor;
+                // Yield to the event loop between batches so other IPC work isn't starved.
+                await new Promise<void>((r) => setTimeout(r, 0));
               }
               // Drain buffered live events; seq-based HWM drops overlaps.
               const buffered = liveBuffer ?? [];
               liveBuffer = null;
+
+              // Emit gap control message if liveBuffer overflowed during backfill.
+              if (liveBufferDropped > 0) {
+                try {
+                  controller.enqueue(encoder.encode(`${JSON.stringify({ t: "gap", dropped: liveBufferDropped })}\n`));
+                } catch {
+                  cleanup();
+                  return;
+                }
+              }
+
               for (const line of buffered) {
                 if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                   this.logger.warn("[events] slow consumer during backfill drain, dropping subscriber");

@@ -3119,6 +3119,165 @@ describe("IpcServer HTTP transport", () => {
       expect(buffer).not.toContain("session.response");
       expect(buffer).toContain("session.result");
     });
+
+    test("liveBuffer overflow emits gap control message when entry cap is exceeded (#1589)", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      // Pre-populate enough events so backfill takes real time (multiple batches).
+      // We need the backfill loop to be active while we flood liveBuffer.
+      const backfillCount = 2500;
+      for (let i = 0; i < backfillCount; i++) {
+        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
+      }
+
+      // Temporarily lower the cap so we can trigger overflow without publishing 10k events.
+      const origMaxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
+      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = 5;
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Flood live events while backfill is in progress. Because start() is async
+      // and yields between batches, some of these will land in the liveBuffer.
+      for (let i = 0; i < 20; i++) {
+        bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 900 + i });
+      }
+
+      let buffer = "";
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Wait until we see a live event (confirms backfill + drain completed)
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = origMaxEntries;
+
+      // Should contain the gap control message
+      const lines = buffer.split("\n").filter((l) => l.startsWith("{"));
+      const gapLines = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((o) => o.t === "gap");
+      expect(gapLines.length).toBe(1);
+      expect(typeof gapLines[0]?.dropped).toBe("number");
+      expect(gapLines[0]?.dropped as number).toBeGreaterThan(0);
+    });
+
+    test("liveBuffer overflow emits gap control message when byte cap is exceeded (#1589)", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      const backfillCount = 2500;
+      for (let i = 0; i < backfillCount; i++) {
+        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
+      }
+
+      // Set byte cap very low (500 bytes) while keeping entry cap high
+      const origMaxBytes = IpcServer.LIVE_BUFFER_MAX_BYTES;
+      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = 500;
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      for (let i = 0; i < 20; i++) {
+        bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 800 + i });
+      }
+
+      let buffer = "";
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = origMaxBytes;
+
+      const lines = buffer.split("\n").filter((l) => l.startsWith("{"));
+      const gapLines = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((o) => o.t === "gap");
+      expect(gapLines.length).toBe(1);
+      expect(gapLines[0]?.dropped as number).toBeGreaterThan(0);
+    });
+
+    test("large backfill does not block concurrent IPC requests (#1589)", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      // Pre-populate a large backlog
+      for (let i = 0; i < 5000; i++) {
+        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
+      }
+
+      // Start a backfill stream — the async yields let us interleave IPC.
+      const streamController = new AbortController();
+      const streamRes = fetch("http://localhost/events?since=0", {
+        method: "GET",
+        unix: socketPath,
+        signal: streamController.signal,
+      } as RequestInit);
+
+      // Immediately issue a concurrent IPC request (status endpoint).
+      // If backfill blocked the event loop, this would time out.
+      const statusRes = await fetch("http://localhost/rpc", {
+        method: "POST",
+        unix: socketPath,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method: "status", params: {} }),
+      } as RequestInit);
+
+      expect(statusRes.status).toBe(200);
+      const statusBody = (await statusRes.json()) as { result?: unknown };
+      expect(statusBody.result).toBeDefined();
+
+      // Clean up the stream
+      streamController.abort();
+      await streamRes.catch(() => {});
+    });
   });
 
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
