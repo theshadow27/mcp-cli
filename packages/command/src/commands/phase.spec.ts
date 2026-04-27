@@ -1175,9 +1175,11 @@ describe("formatDriftWarning", () => {
 
   test("labels phase-missing as NOT INSTALLED", () => {
     const msg = formatDriftWarning([
-      { kind: "phase-missing", path: "phases/qa.ts", expected: 'phase "qa" in lockfile', actual: "(not installed)" },
+      { kind: "phase-missing", path: "phases/qa.ts", expected: '"qa"', actual: "(not installed)" },
     ]);
     expect(msg).toContain("NOT INSTALLED");
+    expect(msg).toContain('"qa" but missing from lockfile');
+    expect(msg).not.toContain("in lockfile but missing from lockfile");
   });
 
   test("labels phase-extra as STALE LOCK ENTRY", () => {
