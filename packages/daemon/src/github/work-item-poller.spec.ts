@@ -1083,6 +1083,22 @@ describe("WorkItemPoller", () => {
     expect(secondStarted).toHaveLength(1);
   });
 
+  test("onCiEvent is not called when ciChecks is empty", async () => {
+    db.createWorkItem({ id: "#15", prNumber: 15, ciStatus: "none" });
+
+    const ciEvents: CiEvent[] = [];
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [makePRStatus({ number: 15, ciState: null, ciChecks: [] })],
+      detectRepo: async () => TEST_REPO,
+      onCiEvent: (e) => ciEvents.push(e),
+    });
+
+    await poller.poll();
+    expect(ciEvents).toHaveLength(0);
+  });
+
   test("CI state survives poller restart — no duplicate ci.started, correct observedDurationMs", async () => {
     db.createWorkItem({ id: "#20", prNumber: 20, prState: "open", ciStatus: "running" });
 
