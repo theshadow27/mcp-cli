@@ -68,11 +68,11 @@ import {
   WaitForMailParamsSchema,
   bundleAlias,
   consoleLogger,
+  createEventMatcher,
   hardenFile,
   isDefineAlias,
   isDefineMonitor,
   loadManifest,
-  matchFilter,
   options,
   resolveRealpath,
   safeAliasPath,
@@ -149,10 +149,12 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
     ...(phase ? { phase } : {}),
   };
 
+  const matcher = createEventMatcher(spec);
+
   return (event: Record<string, unknown>): boolean => {
     // Heartbeats always pass through — server-side keepalive, not a data filter concern
     if (event.category === "heartbeat" || event.event === "heartbeat") return true;
-    return matchFilter(event as MonitorEvent, spec);
+    return matcher(event as MonitorEvent);
   };
 }
 

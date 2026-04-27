@@ -119,6 +119,31 @@ describe("matchFilter", () => {
   });
 });
 
+// ── matchFilter memoization ──
+
+describe("matchFilter memoization", () => {
+  test("repeated calls with same spec object return correct results", () => {
+    const spec: EventFilterSpec = { type: "pr.*", src: "daemon.*" };
+    const events = [
+      makeEvent({ event: "pr.opened", src: "daemon.poller" }),
+      makeEvent({ event: "pr.merged", src: "daemon.poller" }),
+      makeEvent({ event: "session.result", src: "daemon.poller" }),
+      makeEvent({ event: "pr.closed", src: "user.script" }),
+    ];
+
+    expect(events.map((e) => matchFilter(e, spec))).toEqual([true, true, false, false]);
+  });
+
+  test("different spec objects with same shape are independent", () => {
+    const specA: EventFilterSpec = { type: "pr.*" };
+    const specB: EventFilterSpec = { type: "ci.*" };
+
+    const event = makeEvent({ event: "pr.opened" });
+    expect(matchFilter(event, specA)).toBe(true);
+    expect(matchFilter(event, specB)).toBe(false);
+  });
+});
+
 // ── filterSpecToStreamParams ──
 
 describe("filterSpecToStreamParams", () => {

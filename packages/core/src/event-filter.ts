@@ -71,6 +71,8 @@ export function createEventMatcher(spec: EventFilterSpec): (event: MonitorEvent)
   };
 }
 
+const matcherCache = new WeakMap<EventFilterSpec, (event: MonitorEvent) => boolean>();
+
 /**
  * Test whether a monitor event matches an EventFilterSpec.
  *
@@ -78,7 +80,12 @@ export function createEventMatcher(spec: EventFilterSpec): (event: MonitorEvent)
  * (e.g. the server-side ipc-server filter) must handle that separately.
  */
 export function matchFilter(event: MonitorEvent, spec: EventFilterSpec): boolean {
-  return createEventMatcher(spec)(event);
+  let matcher = matcherCache.get(spec);
+  if (!matcher) {
+    matcher = createEventMatcher(spec);
+    matcherCache.set(spec, matcher);
+  }
+  return matcher(event);
 }
 
 /** Convert an EventFilterSpec to openEventStream query params. */
@@ -175,6 +182,8 @@ export function createWaitForEvent(opts?: {
         }, ms);
       }
 
+      const matcher = createEventMatcher(filter);
+
       (async () => {
         try {
           for await (const event of events) {
@@ -185,7 +194,7 @@ export function createWaitForEvent(opts?: {
               (event as Record<string, unknown>).t === "heartbeat"
             )
               continue;
-            if (matchFilter(event, filter)) {
+            if (matcher(event)) {
               settle(() => resolve(event));
               break;
             }
