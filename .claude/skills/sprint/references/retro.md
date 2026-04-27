@@ -72,13 +72,42 @@ Use this template exactly:
 - **Sprint cost**: ~$X (if observable)
 ```
 
-## Commit and push
+## Commit and merge via PR
+
+**Why PR, not direct-push to main**: same reason as the release flow (see
+`review.md` step 4) — the autoapprover blocks direct-to-main pushes, and
+docs-only retros are not a special case from its perspective. Sprint 45
+hit this on the retro commit. A short-lived `sprint{N}/retro` branch →
+auto-merge PR runs through the same pipeline as every other merge.
+
+The retro PR also matches the existing in-sprint plan-amendment pattern
+(e.g. `sprint45/add-1775`) — one branch namespace per sprint for all
+sprint-meta commits.
 
 ```bash
-# SPRINT_OVERRIDE=1 bypasses the sprint-active pre-commit guard (#1443).
-git add .claude/diary/{filename}
+# (a) Create retro branch from current main (not a worktree — short-lived)
+git checkout -b sprint{N}/retro
+
+# (b) Stage the diary file + any sprint-file Results updates
+git add .claude/diary/{filename} .claude/sprints/sprint-{N}.md
+
+# (c) Commit — SPRINT_OVERRIDE=1 still needed because the sprint-active
+#     sentinel is set until the merge lands.
 SPRINT_OVERRIDE=1 git commit -m "retro: sprint {N} — {short title}"
-git push origin main
+
+# (d) Push the branch and open an auto-merge PR
+git push -u origin sprint{N}/retro
+gh pr create --base main --head sprint{N}/retro \
+  --title "retro: sprint {N} — {short title}" \
+  --body "Sprint {N} retrospective. See \`.claude/diary/{filename}\` for the writeup and \`.claude/sprints/sprint-{N}.md\` for the planning context.
+
+Docs-only PR — pre-commit hooks should skip the test suite."
+gh pr merge --squash --delete-branch --auto
+
+# (e) Wait for merge, then pull main
+gh pr view <n> --json state,mergedAt   # poll until MERGED
+git checkout main
+git pull --ff-only
 ```
 
 ## Clear the sprint-active sentinel
@@ -88,8 +117,8 @@ rm -f .claude/sprints/.active
 ```
 
 This lifts the pre-commit guard (#1443) so post-sprint maintenance commits
-on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the retro push
-succeeds — a stuck sentinel on a dead sprint still blocks commits.
+on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the retro PR
+merges — a stuck sentinel on a dead sprint still blocks commits.
 
 ## Guidelines
 
