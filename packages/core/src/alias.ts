@@ -164,6 +164,11 @@ export interface AliasContext {
    * ends or errors before a matching event is observed. The underlying event
    * stream subscription is always cleaned up on resolve/reject — no leaked
    * subscribers.
+   *
+   * ⚠️ Race warning: if you omit `since`, events that fire between this call
+   * and the stream subscription (typically <50ms) are missed. To avoid this,
+   * capture `await getCurrentSeq()` **before** triggering the action you're
+   * waiting for, then pass it as `opts.since`.
    */
   waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
 }
