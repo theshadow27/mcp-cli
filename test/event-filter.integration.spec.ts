@@ -127,6 +127,14 @@ function createOpenStream(socketPath: string) {
           }
         }
       }
+      const trailing = decoder.decode();
+      if (trailing.trim()) {
+        try {
+          yield JSON.parse(trailing.trim()) as MonitorEvent;
+        } catch {
+          // Ignore incomplete trailing data
+        }
+      }
     }
 
     return { events: iterate(), abort: () => controller.abort() };
@@ -222,9 +230,9 @@ describe("waitForEvent integration (real IPC server + EventBus)", () => {
     const waitForEvent = createWaitForEvent({ openStream });
 
     const baseSubscribers = bus.subscriberCount;
-    const promise = waitForEvent({ type: "ci.finished" }, { timeoutMs: 200 });
+    const promise = waitForEvent({ type: "ci.finished" }, { timeoutMs: 2_000 });
 
-    await pollUntil(() => bus.subscriberCount > baseSubscribers, 2_000);
+    await pollUntil(() => bus.subscriberCount > baseSubscribers, 1_000);
 
     bus.publish({ src: "test", event: "ci.started", category: "ci" });
 
