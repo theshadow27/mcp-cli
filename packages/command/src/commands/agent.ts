@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
-import { formatHelp, getHelp, hasHelpFlag } from "../help";
+import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
 import {
   PROMPT_IPC_TIMEOUT_MS,
@@ -298,8 +298,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 
   const subArgs = args.slice(2);
   if (sub !== "spawn" && hasHelpFlag(subArgs)) {
-    const SUB_ALIASES: Record<string, string> = { list: "ls", quit: "bye", wt: "worktrees" };
-    const canonicalSub = SUB_ALIASES[sub] ?? sub;
+    const canonicalSub = CLAUDE_SUB_ALIASES[sub] ?? sub;
     const help = getHelp(`${providerName} ${canonicalSub}`);
     if (help) {
       d.log(formatHelp(help));
