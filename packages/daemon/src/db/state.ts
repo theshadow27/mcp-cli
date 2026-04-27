@@ -1685,6 +1685,7 @@ export class StateDb {
   }
 
   deleteCopilotCommentState(workItemNumber: number): boolean {
+    if (workItemNumber === 0) return false;
     const result = this.db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [workItemNumber]);
     return result.changes > 0;
   }

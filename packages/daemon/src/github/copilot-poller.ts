@@ -266,6 +266,7 @@ export class CopilotPoller {
 
       // Batch-fetch all inline review comments in one repo-scoped call (#1738)
       let inlineByPr = new Map<number, PRComment[]>();
+      let repoPollTs: string | null = null;
       if (tracked.length > 0) {
         const since = this.stateDb.getLastRepoPollTs();
         // `since=` is inclusive (>=updated_at); record pre-fetch ts so no comments fall through the gap
@@ -274,7 +275,7 @@ export class CopilotPoller {
           const result = await this.fetchRepoCommentsFn(repo, since, token);
           inlineByPr = groupCommentsByPr(result.comments);
           if (result.rateLimitLow) anyRateLimitLow = true;
-          this.stateDb.updateLastRepoPollTs(preFetchTs);
+          repoPollTs = preFetchTs;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.logger.warn(`[mcpd] CopilotPoller failed to fetch repo comments: ${msg}`);
@@ -291,6 +292,7 @@ export class CopilotPoller {
         if (this.stopped) return;
         collectResult(await this.pollPRComments(repo, item, token), item.id);
       }
+      if (repoPollTs) this.stateDb.updateLastRepoPollTs(repoPollTs);
       for (const item of trackedIssues) {
         if (this.stopped) return;
         collectResult(await this.pollIssueComments(repo, item, token), item.id);
@@ -655,7 +657,7 @@ async function fetchRepoInlineComments(
   since: string | null,
   token: string,
 ): Promise<FetchCommentsResult> {
-  let url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/comments?sort=created&direction=desc&per_page=100`;
+  let url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/comments?sort=updated&direction=asc&per_page=100`;
   if (since) {
     url += `&since=${encodeURIComponent(since)}`;
   }
