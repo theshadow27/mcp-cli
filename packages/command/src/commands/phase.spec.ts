@@ -605,6 +605,59 @@ describe("cmdPhase dispatch", () => {
     expect(err).toContain("[FORCED]");
   });
 
+  test("run --no-execute falls back to last committed transition when --from omitted (#1635)", async () => {
+    // Prime the log with impl (initial → impl)
+    appendTransitionLog(transitionLogPath(dir), {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    const { err, code } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--work-item", "#77", "--no-execute"], { cwd: () => dir }),
+    );
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("impl → qa");
+    expect(err).not.toContain("(initial)");
+  });
+
+  test("run --no-execute falls back to work_items.phase when transition log is empty (#1635)", async () => {
+    // No transition log — work_items.phase="impl" should serve as implicit --from
+    const mockIpcCall = async (method: string, params: unknown) => {
+      if (method === "getWorkItem") {
+        return {
+          id: "#88",
+          issueNumber: 88,
+          prNumber: null,
+          branch: "feat/88",
+          prState: null,
+          prUrl: null,
+          ciStatus: "none",
+          ciRunId: null,
+          ciSummary: null,
+          reviewStatus: "pending",
+          phase: "impl",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        };
+      }
+      return null;
+    };
+    const { err, code } = await catchExit(() =>
+      cmdPhase(
+        ["run", "qa", "--work-item", "#88", "--no-execute"],
+        { cwd: () => dir },
+        { ipcCall: mockIpcCall as unknown as typeof import("@mcp-cli/core").ipcCall },
+      ),
+    );
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("impl → qa");
+    expect(err).not.toContain("(initial)");
+  });
+
   test("run on unknown phase exits 1 with suggestions", async () => {
     const { code, err } = await catchExit(() => cmdPhase(["run", "qaa", "--from", "impl"], { cwd: () => dir }));
     expect(code).toBe(1);
