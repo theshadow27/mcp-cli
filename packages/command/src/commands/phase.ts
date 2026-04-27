@@ -571,7 +571,11 @@ function shortHash(s: string): string {
   return s.length > 40 ? `${s.slice(0, 37)}...` : s;
 }
 
-export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>): Promise<void> {
+export async function cmdPhase(
+  args: string[],
+  deps?: Partial<PhaseInstallDeps>,
+  execDeps?: Partial<PhaseExecuteDeps>,
+): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
   const sub = args[0];
 
@@ -712,7 +716,36 @@ export async function cmdPhase(args: string[], deps?: Partial<PhaseInstallDeps>)
       } else if (argv.includes("--no-execute")) {
         const filtered = argv.filter((a) => a !== "--no-execute");
         const opts = parsePhaseRunArgs(filtered);
-        const result = phaseRun(opts, { cwd: d.cwd() });
+        const cwd = d.cwd();
+        // Mirror the resolvedFrom fallback from executePhase (#1635):
+        // read history + optionally fetch work_items.phase so --from can be
+        // omitted when the transition log is empty (manually-spawned impl).
+        const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+        const manifestForFrom = loadManifest(cwd);
+        const priorTargets = manifestForFrom
+          ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
+          : [];
+        let workItemPhase: string | null = null;
+        if (opts.workItemId !== null && manifestForFrom) {
+          try {
+            const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
+            if (wi) workItemPhase = wi.phase;
+          } catch {
+            // ignore; resolvedFrom falls back to null
+          }
+        }
+        const resolvedFrom =
+          opts.from !== null
+            ? opts.from
+            : priorTargets.length > 0
+              ? priorTargets[priorTargets.length - 1]
+              : manifestForFrom &&
+                  opts.target !== manifestForFrom.manifest.initial &&
+                  workItemPhase != null &&
+                  workItemPhase in manifestForFrom.manifest.phases
+                ? workItemPhase
+                : null;
+        const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
         const tag = result.forced ? " [FORCED]" : "";
         const trail = result.from ?? "(initial)";
