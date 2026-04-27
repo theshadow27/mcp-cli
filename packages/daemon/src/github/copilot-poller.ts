@@ -250,34 +250,38 @@ export class CopilotPoller {
       const repo = this._repo;
       let anyRateLimitLow = false;
       let anyAuthError: string | null = null;
-      const fetchErrors: string[] = [];
+      const failedItemIds = new Set<string>();
+      const fetchErrorMessages: string[] = [];
       const totalItems = tracked.length + trackedIssues.length;
 
-      const collectResult = (r: PollItemResult): void => {
+      const collectResult = (r: PollItemResult, itemId: string): void => {
         if (r.isRateLimit) anyRateLimitLow = true;
         if (r.authError) anyAuthError = r.authError;
-        if (r.fetchError) fetchErrors.push(r.fetchError);
+        if (r.fetchError) {
+          failedItemIds.add(itemId);
+          fetchErrorMessages.push(r.fetchError);
+        }
       };
 
       for (const item of tracked) {
         if (this.stopped) return;
-        collectResult(await this.pollPR(repo, item, token));
+        collectResult(await this.pollPR(repo, item, token), item.id);
         if (this.stopped) return;
-        collectResult(await this.pollReviews(repo, item, token));
+        collectResult(await this.pollReviews(repo, item, token), item.id);
         if (this.stopped) return;
-        collectResult(await this.pollPRComments(repo, item, token));
+        collectResult(await this.pollPRComments(repo, item, token), item.id);
       }
       for (const item of trackedIssues) {
         if (this.stopped) return;
-        collectResult(await this.pollIssueComments(repo, item, token));
+        collectResult(await this.pollIssueComments(repo, item, token), item.id);
       }
       this.rateLimitBackoff = anyRateLimitLow;
 
       if (anyAuthError) {
         this._lastError = anyAuthError;
-      } else if (fetchErrors.length > 0) {
-        const unique = [...new Set(fetchErrors)];
-        this._lastError = `${fetchErrors.length}/${totalItems} items failed: ${unique.join("; ")}`;
+      } else if (failedItemIds.size > 0) {
+        const unique = [...new Set(fetchErrorMessages)];
+        this._lastError = `${failedItemIds.size}/${totalItems} items failed: ${unique.join("; ")}`;
       } else {
         this._lastError = null;
       }
