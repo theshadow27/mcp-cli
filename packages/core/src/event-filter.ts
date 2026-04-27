@@ -123,10 +123,10 @@ type OpenStreamFn = typeof openEventStream;
  *
  * Stream is always torn down on resolve or reject — no leaked subscribers.
  *
- * **Important:** callers should capture a `since` cursor *before* triggering
- * the action they intend to await. Without `since`, there is a 10–100ms
- * window between the call and the daemon's subscription where a matching
- * event could be missed, causing the caller to block until timeout.
+ * ⚠️ Race warning: if you omit `since`, events that fire between this call
+ * and the stream subscription (10–100ms later) are missed. To avoid this,
+ * record the latest event sequence **before** triggering the action you're
+ * waiting for, then pass it as `opts.since`.
  */
 export function createWaitForEvent(opts?: {
   openStream?: OpenStreamFn;
