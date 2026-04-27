@@ -631,7 +631,6 @@ describe("CopilotPoller", () => {
       expect(poller.lastError).toContain("issue comments fetch failed");
       expect(poller.lastError).toMatch(/^1\/1 items failed:/);
     });
-
   });
 
   // ── Repo-scoped batching (#1738) ──
