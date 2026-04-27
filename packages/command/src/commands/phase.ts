@@ -488,7 +488,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
       entries.push({
         kind: "phase-missing",
         path: manifest.phases[name].source,
-        expected: `phase "${name}" in lockfile`,
+        expected: `"${name}"`,
         actual: "(not installed)",
       });
     }
