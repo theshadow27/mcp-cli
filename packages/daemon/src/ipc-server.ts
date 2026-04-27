@@ -1579,9 +1579,13 @@ export class IpcServer {
             // Buffer live events during backfill to avoid gaps or duplicates.
             // Bounded: whichever of entry count or byte size is hit first triggers
             // drop-oldest eviction. Overflow emits a gap control message. (#1589)
-            let liveBuffer: Array<string> | null = sinceSeq !== null && eventLog ? [] : null;
+            let liveBuffer: Array<{ line: string; seq: number | undefined }> | null =
+              sinceSeq !== null && eventLog ? [] : null;
             let liveBufferBytes = 0;
             let liveBufferDropped = 0;
+            let liveBufferHead = 0;
+            let firstDroppedSeq: number | undefined;
+            let lastDroppedSeq: number | undefined;
             let highWaterMark = 0;
 
             const maxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
@@ -1605,17 +1609,40 @@ export class IpcServer {
                 try {
                   const line = `${serialized}\n`;
                   if (liveBuffer !== null) {
-                    // Evict oldest entries while buffer exceeds either cap.
+                    const lineLen = line.length;
+                    let seq: number | undefined;
+                    try {
+                      const p = JSON.parse(serialized) as Record<string, unknown>;
+                      seq = typeof p.seq === "number" ? p.seq : undefined;
+                    } catch {
+                      /* non-JSON event — skip seq tracking */
+                    }
+                    // Reject single events that exceed the byte cap on their own.
+                    if (liveBufferHead >= liveBuffer.length && lineLen > maxBytes) {
+                      liveBufferDropped++;
+                      if (seq !== undefined) {
+                        firstDroppedSeq ??= seq;
+                        lastDroppedSeq = seq;
+                      }
+                      return;
+                    }
+                    // Evict from head while buffer exceeds either cap (O(1) via head pointer).
                     while (
-                      liveBuffer.length > 0 &&
-                      (liveBuffer.length >= maxEntries || liveBufferBytes + line.length > maxBytes)
+                      liveBufferHead < liveBuffer.length &&
+                      (liveBuffer.length - liveBufferHead >= maxEntries || liveBufferBytes + lineLen > maxBytes)
                     ) {
-                      const evicted = liveBuffer.shift();
-                      if (evicted) liveBufferBytes -= evicted.length;
+                      const evicted = liveBuffer[liveBufferHead];
+                      if (!evicted) break;
+                      liveBufferBytes -= evicted.line.length;
+                      if (evicted.seq !== undefined) {
+                        firstDroppedSeq ??= evicted.seq;
+                        lastDroppedSeq = evicted.seq;
+                      }
+                      liveBufferHead++;
                       liveBufferDropped++;
                     }
-                    liveBuffer.push(line);
-                    liveBufferBytes += line.length;
+                    liveBuffer.push({ line, seq });
+                    liveBufferBytes += lineLen;
                   } else {
                     controller.enqueue(encoder.encode(line));
                   }
@@ -1662,19 +1689,25 @@ export class IpcServer {
               }
               // Drain buffered live events; seq-based HWM drops overlaps.
               const buffered = liveBuffer ?? [];
+              const drainStart = liveBufferHead;
               liveBuffer = null;
 
               // Emit gap control message if liveBuffer overflowed during backfill.
               if (liveBufferDropped > 0) {
+                const gap: Record<string, unknown> = { t: "gap", dropped: liveBufferDropped };
+                if (firstDroppedSeq !== undefined) gap.firstDroppedSeq = firstDroppedSeq;
+                if (lastDroppedSeq !== undefined) gap.lastDroppedSeq = lastDroppedSeq;
                 try {
-                  controller.enqueue(encoder.encode(`${JSON.stringify({ t: "gap", dropped: liveBufferDropped })}\n`));
+                  controller.enqueue(encoder.encode(`${JSON.stringify(gap)}\n`));
                 } catch {
                   cleanup();
                   return;
                 }
               }
 
-              for (const line of buffered) {
+              for (let i = drainStart; i < buffered.length; i++) {
+                const entry = buffered[i];
+                if (!entry) continue;
                 if (controller.desiredSize !== null && controller.desiredSize <= 0) {
                   this.logger.warn("[events] slow consumer during backfill drain, dropping subscriber");
                   metrics.counter("mcpd_event_bus_slow_drops_total").inc();
@@ -1687,10 +1720,8 @@ export class IpcServer {
                   return;
                 }
                 try {
-                  const parsed = JSON.parse(line) as Record<string, unknown>;
-                  const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
-                  if (seq !== undefined && seq <= highWaterMark) continue;
-                  controller.enqueue(encoder.encode(line));
+                  if (entry.seq !== undefined && entry.seq <= highWaterMark) continue;
+                  controller.enqueue(encoder.encode(entry.line));
                 } catch {
                   cleanup();
                   return;
