@@ -1,6 +1,6 @@
 # Sprint 45
 
-> Planned 2026-04-24 13:30 EDT. Target: 15 PRs (9 monitor-focused + 3 orchestrator follow-ups + 3 DX/test fillers).
+> Planned 2026-04-24 13:30 EDT. Started 2026-04-27 17:34 EDT. Ended 2026-04-27 19:04 EDT. Target: 15 PRs (9 monitor-focused + 3 orchestrator follow-ups + 3 DX/test fillers). **Result: 13 PRs merged + 2 already-closed pre-sprint = 15/15 issues closed.**
 
 ## Goal
 
@@ -76,6 +76,7 @@ Flag the following in the impl prompt notes before spawning — the worker shoul
 - **#1715, #1726 (waitForEvent integration tests)** — consolidated into #1720 per Explore's finding that all three issues ask for nearly identical tests at different layers. Will close both with pointers to #1720 once it merges.
 - **#1698 (updatedAt epoch fallback)** — already CLOSED 2026-04-24 (noticed during reconnaissance; was still in open-issue list at plan start).
 - **#1700, #1696, #1636** — already fixed on main (closed during plan reconnaissance sweep). `#1700` → PR #1711; `#1696` → work-item-poller.ts:291-300 has the `isActionable` gate; `#1636` → phase.ts:1068-1069 has the `workItem.phase in manifest.phases` guard.
+- **#1728 and #1729** — already CLOSED by PR #1713 at 2026-04-24 08:24Z (defineMonitor cross-thread runtime), 9 hours before this plan was written. Planner missed retro rule #10 ("re-verify candidate state immediately before writing the plan"). Removed from Batch 1 at run start; sprint target now 13 picks (5 opus + 8 sonnet).
 - **#1737 (rename copilot.inline_posted)** — design decision needed (rename vs. filter to Copilot-authored only). Defer to sprint 46 opener.
 - **#1746 (mcx phase run auto-detect --from)** — needs user repro of the exact error; workaround exists. Defer.
 - **#1772 (help formatter column alignment)** — cosmetic; pulled to filler slot for #1771 only.
@@ -120,3 +121,19 @@ New rules observed at sprint 44 end:
 Sprint 44 shipped v1.7.4 — 13 PRs merged + 2 closed as already-done. Phase 5 foundations (AbortSignal, heartbeat normalization, responseTail gating) are in production; Phase 6 opens with `session.stuck`. Phase 3 CopilotPoller had its P0 papercuts fixed (403 vs rate-limit split, seen_comment_ids cleanup). The monitor epic is now at ~20% of open issues (down from ~25% pre-sprint).
 
 This sprint finishes the Phase 5 trust story (perf + docs + the integration test that proves it works end-to-end), finishes Phase 3 hardening (error accounting + 10x API cost reduction + integration test), and fixes the one bug that's kept MonitorRuntime dormant since #1713 landed (#1728). **After sprint 45: `ctx.waitForEvent` should be feature-complete; sprint 46 validates by migrating one real flow; sprint 47 migrates `run.md`.**
+
+## Results
+
+- **Released**: v1.7.5 (PR #1795 → tag `v1.7.5`)
+- **PRs merged**: 13 (#1777, #1778, #1779, #1780, #1781, #1782, #1783, #1784, #1785, #1786, #1789, #1790, #1793)
+- **Issues closed**: 15/15 — all 13 implemented + 2 already-closed pre-sprint (#1728, #1729 closed by PR #1713 before plan was written)
+- **QA repair rounds**: 6 (every PR with non-trivial diff hit round 2; only #1719 needed substantive code changes — others were Copilot-thread-only or clean lint cleanups)
+- **Adversarial reviews**: 2 (#1589 memory safety, #1738 GitHub API contract) — both routed to opus despite triage saying low/qa; both caught real blockers; both self-repaired by the reviewer
+- **Reviewer self-repair wins**: 2 (#1589 5 findings, #1738 3 findings — saved ~2 fresh opus repair sessions)
+- **Scope rework**: 1 — Hank/#1775 implemented env-var approach instead of plan-mandated config-file (plan's "pre-session clarifications" don't reach the worker)
+- **Time to merge first 8 PRs**: ~17 min (Batch 1 PRs all pushed by 21:51, Alice/#1727 merged 21:55)
+- **Time to last merge**: ~1h30 (sprint started 17:34 EDT, last PR merged 23:24 EDT after #1738 rebase + CI fix)
+- **Cost**: ~$50 (rough — opus is the bulk; Eve review-1589 alone hit $4)
+- **Quota**: started at 2% / 12% (fresh 5h block), peaked low — never hit 80% gate
+- **Daemon issues filed for retro**: `vq[$].has` error on every phase-changing `work_items_update` call (cosmetic — phase still updates), `mcx claude bye` always prefixes its success messages with "Error:", `session.stuck` event fires on every long bun-test run (signal/noise problem), worktree-held branches block `gh pr merge --delete-branch`'s local cleanup
+- **Planner miss**: retro rule #10 (re-verify state immediately before writing plan) violated — #1728 and #1729 were closed by PR #1713 9 hours before the plan was written; should have been caught
