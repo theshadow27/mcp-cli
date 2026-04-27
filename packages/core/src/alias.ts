@@ -166,8 +166,8 @@ export interface AliasContext {
    * subscribers.
    *
    * ⚠️ Race warning: if you omit `since`, events that fire between this call
-   * and the stream subscription (typically <50ms) are missed. To avoid this,
-   * capture `await getCurrentSeq()` **before** triggering the action you're
+   * and the stream subscription (10–100ms later) are missed. To avoid this,
+   * record the latest event sequence **before** triggering the action you're
    * waiting for, then pass it as `opts.since`.
    */
   waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
