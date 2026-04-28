@@ -25,6 +25,7 @@ import {
 } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resolver";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -656,8 +657,34 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 // ── Server startup ──
 
 async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
+  // Resolve which claude to spawn (and whether to front it with TLS) once
+  // at worker startup. See packages/daemon/src/claude-session/binary-resolver.ts
+  // and issue #1808.
+  const resolution = await resolveClaudeForSpawn();
+  const logger = quiet ? silentLogger : undefined;
+  let wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0] = { logger };
+  if (isResolved(resolution)) {
+    wsServerOpts = {
+      logger,
+      binaryPath: resolution.binaryPath,
+      tlsConfig: resolution.tlsConfig,
+    };
+    if (!quiet) {
+      const mode = resolution.tlsConfig ? "patched (wss://[::1])" : "noop (ws://localhost)";
+      console.log(`[_claude] resolved claude ${resolution.version} → ${mode}, strategy=${resolution.strategyId}`);
+    }
+  } else {
+    wsServerOpts = {
+      logger,
+      spawnDisabledReason: resolution.error,
+    };
+    if (!quiet) {
+      console.error(`[_claude] spawn disabled (${resolution.reason}): ${resolution.error}`);
+    }
+  }
+
   // Start WebSocket server
-  wsServer = new ClaudeWsServer({ logger: quiet ? silentLogger : undefined });
+  wsServer = new ClaudeWsServer(wsServerOpts);
   wsServer.onSessionEvent = forwardSessionEvent;
   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
   const port = await wsServer.start(wsPort);
