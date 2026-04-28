@@ -179,4 +179,41 @@ process.stdout.write('readyState=' + ws.readyState);
     // Either CLOSED(3) on rejection or stuck CONNECTING(0) past the deadline.
     expect(stdout).not.toContain("readyState=1");
   });
+
+  test("custom binaryPath is used in the spawn command", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({
+      spawn: ms.spawn,
+      logger: silentLogger,
+      binaryPath: "/opt/custom/claude.patched",
+    });
+    await server.start();
+    server.prepareSession("bin-session", { prompt: "hi" });
+    server.spawnClaude("bin-session");
+    expect(ms.lastCmd[0]).toBe("/opt/custom/claude.patched");
+    expect(ms.lastCmd).not.toContain("claude");
+  });
+
+  test("default binaryPath is 'claude' when not overridden", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+    server.prepareSession("default-session", { prompt: "hi" });
+    server.spawnClaude("default-session");
+    expect(ms.lastCmd[0]).toBe("claude");
+  });
+
+  test("spawnDisabledReason → spawnClaude throws with that reason and never invokes spawn", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({
+      spawn: ms.spawn,
+      logger: silentLogger,
+      spawnDisabledReason: "claude 9.9.9 is not supported by any registered patch strategy.",
+    });
+    await server.start();
+    server.prepareSession("blocked-session", { prompt: "hi" });
+    expect(() => server?.spawnClaude("blocked-session")).toThrow(/9\.9\.9/);
+    // spawn was never called: ms.lastCmd remains the initial empty array.
+    expect(ms.lastCmd).toEqual([]);
+  });
 });
