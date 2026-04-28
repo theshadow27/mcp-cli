@@ -63,6 +63,19 @@ describe("formatMonitorEvent — lifecycle events", () => {
     expect(line).toContain("→43");
   });
 
+  test("daemon.restarted falls back to seq when seqAfter absent", () => {
+    const line = formatMonitorEvent(
+      makeEvent({
+        seq: 5,
+        event: DAEMON_RESTARTED,
+        reason: "start",
+        seqBefore: 4,
+      }),
+    );
+    expect(line).toContain("seq:4");
+    expect(line).toContain("→5");
+  });
+
   test("daemon.config_reloaded shows changed keys", () => {
     const line = formatMonitorEvent(
       makeEvent({

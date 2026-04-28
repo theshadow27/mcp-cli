@@ -562,9 +562,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     event: DAEMON_RESTARTED,
     category: "daemon",
     seqBefore,
+    seqAfter: seqBefore + 1,
     reason: "start",
   });
-  restartedEvent.seqAfter = restartedEvent.seq;
   logger.info(`[mcpd] Published daemon.restarted (seqBefore=${seqBefore}, seqAfter=${restartedEvent.seqAfter})`);
 
   // Watch config files for hot reload

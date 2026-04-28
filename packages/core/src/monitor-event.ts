@@ -338,7 +338,8 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [DAEMON_RESTARTED]: (e) => {
     const reason = typeof e.reason === "string" ? e.reason : "";
     const before = typeof e.seqBefore === "number" ? `seq:${e.seqBefore}` : "";
-    const after = typeof e.seqAfter === "number" ? `→${e.seqAfter}` : "";
+    const seqAfter = typeof e.seqAfter === "number" ? e.seqAfter : e.seq;
+    const after = typeof seqAfter === "number" ? `→${seqAfter}` : "";
     return join(reason, before + after);
   },
 

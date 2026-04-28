@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   DAEMON_CONFIG_RELOADED,
   DAEMON_RESTARTED,
@@ -11,14 +11,27 @@ import { ConfigWatcher } from "./config/watcher";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
+const openDbs: Database[] = [];
+afterEach(() => {
+  for (const db of openDbs)
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+  openDbs.length = 0;
+});
+
 function freshLog(): EventLog {
   const db = new Database(":memory:");
+  openDbs.push(db);
   db.exec("PRAGMA journal_mode = WAL");
   return new EventLog(db);
 }
 
 function freshDb(): Database {
   const db = new Database(":memory:");
+  openDbs.push(db);
   db.exec("PRAGMA journal_mode = WAL");
   return db;
 }
@@ -38,15 +51,18 @@ describe("daemon.restarted", () => {
     const seqBefore = log2.currentSeq();
     expect(seqBefore).toBe(3);
 
+    const received: MonitorEvent[] = [];
     const bus2 = new EventBus(log2);
+    bus2.subscribe((e) => received.push(e));
+
     const restartedEvent = bus2.publish({
       src: "daemon",
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore,
+      seqAfter: seqBefore + 1,
       reason: "start",
     });
-    restartedEvent.seqAfter = restartedEvent.seq;
 
     expect(restartedEvent.seq).toBe(4);
     expect(restartedEvent.seqBefore).toBe(3);
@@ -54,6 +70,9 @@ describe("daemon.restarted", () => {
     expect(restartedEvent.reason).toBe("start");
     expect(restartedEvent.event).toBe(DAEMON_RESTARTED);
     expect(restartedEvent.category).toBe("daemon");
+
+    expect(received).toHaveLength(1);
+    expect(received[0].seqAfter).toBe(4);
   });
 
   test("daemon.restarted is first event after fresh start (seqBefore=0)", () => {
@@ -67,32 +86,33 @@ describe("daemon.restarted", () => {
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore,
+      seqAfter: seqBefore + 1,
       reason: "start",
     });
-    event.seqAfter = event.seq;
 
     expect(event.seq).toBe(1);
     expect(event.seqBefore).toBe(0);
     expect(event.seqAfter).toBe(1);
   });
 
-  test("daemon.restarted is persisted and retrievable via getSince", () => {
+  test("daemon.restarted is persisted and retrievable via getSince with seqAfter", () => {
     const log = freshLog();
     const bus = new EventBus(log);
 
-    const restartedEvent = bus.publish({
+    bus.publish({
       src: "daemon",
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore: 0,
+      seqAfter: 1,
       reason: "start",
     });
-    restartedEvent.seqAfter = restartedEvent.seq;
 
     const events = log.getSince(0);
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe(DAEMON_RESTARTED);
     expect(events[0].seqBefore).toBe(0);
+    expect(events[0].seqAfter).toBe(1);
     expect(events[0].reason).toBe("start");
   });
 });
