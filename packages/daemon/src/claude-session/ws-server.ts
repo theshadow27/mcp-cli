@@ -399,6 +399,16 @@ export class ClaudeWsServer {
   /** Called to forward monitor events to the main thread's EventBus (#1567). */
   onMonitorEvent: ((input: MonitorEventInput) => void) | null = null;
 
+  /**
+   * Optional TLS material. When set, `Bun.serve` runs in HTTPS mode and binds
+   * on `[::1]` instead of the default. Patched-claude (#1808) requires
+   * `wss://` and an IPv6 hostname that maps onto an entry in its allowlist.
+   * When null, the server keeps its previous plain-`ws://` behavior — the
+   * daemon flips this on once it resolves to a patched binary.
+   */
+  private readonly tlsConfig: { cert: string; key: string } | null;
+  private readonly hostname: string | undefined;
+
   constructor(deps?: {
     spawn?: SpawnFn;
     killTimeoutMs?: number;
@@ -408,6 +418,10 @@ export class ClaudeWsServer {
     reclaimIntervalMs?: number;
     connectTimeoutMs?: number;
     stuckConfig?: StuckDetectorConfig;
+    /** Self-signed cert + key. When provided, server runs as wss://. */
+    tlsConfig?: { cert: string; key: string } | null;
+    /** Override the bind hostname. Defaults to `::1` when TLS is set, otherwise unset (Bun default). */
+    hostname?: string;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -417,6 +431,13 @@ export class ClaudeWsServer {
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
     this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
+    this.tlsConfig = deps?.tlsConfig ?? null;
+    this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
+  }
+
+  /** True when the server is running in TLS (wss://) mode. */
+  get isTls(): boolean {
+    return this.tlsConfig !== null;
   }
 
   /** Current event sequence number (monotonically increasing). */
@@ -428,6 +449,8 @@ export class ClaudeWsServer {
   private createServer(p: number): ReturnType<typeof Bun.serve> {
     return Bun.serve<WsData>({
       port: p,
+      ...(this.hostname !== undefined ? { hostname: this.hostname } : {}),
+      ...(this.tlsConfig ? { tls: this.tlsConfig } : {}),
       fetch: (req, server) => {
         const url = new URL(req.url);
         const match = url.pathname.match(/^\/session\/([^/]+)$/);
@@ -673,10 +696,17 @@ export class ClaudeWsServer {
     const port = this.port;
     if (!port) throw new Error("WS server not started");
 
+    // When TLS is active, the spawn URL must use `wss://` and an IPv6 host
+    // that maps onto a hostname in claude's allowlist (post-2.1.120). The
+    // patcher (#1808) rewrites `claude-staging.fedstart.com` so that the
+    // allowlist contains the canonicalized form of `[::1]`.
+    const sdkUrl = this.tlsConfig
+      ? `wss://[::1]:${port}/session/${sessionId}`
+      : `ws://localhost:${port}/session/${sessionId}`;
     const cmd = [
       "claude",
       "--sdk-url",
-      `ws://localhost:${port}/session/${sessionId}`,
+      sdkUrl,
       "--permission-mode",
       "default",
       "-p",
@@ -718,6 +748,16 @@ export class ClaudeWsServer {
     if (session.config.cwd && session.config.worktree) {
       envOverrides.GIT_DIR = `${session.config.cwd}/.git`;
       envOverrides.GIT_WORK_TREE = session.config.cwd;
+    }
+    // In TLS mode the spawn URL is `wss://[::1]:...` against our self-signed
+    // cert. Bun's WebSocket client doesn't honor NODE_EXTRA_CA_CERTS or per-
+    // request `rejectUnauthorized: false`, so we widen trust globally for the
+    // spawned process. This also disables CA validation for any HTTPS the
+    // spawned claude makes (Anthropic API, web search). Issue #1829 tracks
+    // the strict-mode upgrade that detects when our cert is in the system
+    // keychain and uses `NODE_USE_SYSTEM_CA=1` instead.
+    if (this.tlsConfig) {
+      envOverrides.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     }
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
