@@ -46,6 +46,7 @@ import { cmdMail } from "./commands/mail";
 import { cmdMonitor } from "./commands/monitor";
 import { cmdNote } from "./commands/note";
 import { cmdPhase } from "./commands/phase";
+import { cmdPr } from "./commands/pr";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
 import { cmdRun } from "./commands/run";
@@ -385,6 +386,10 @@ async function main(): Promise<void> {
 
       case "claude":
         await cmdClaude(cleanArgs.slice(1));
+        break;
+
+      case "pr":
+        await cmdPr(cleanArgs.slice(1));
         break;
 
       case "codex":
@@ -924,6 +929,7 @@ Tools:
 Sessions:
   mcx claude <subcommand>             Manage Claude Code sessions
   mcx agent <provider> <subcommand>   Manage agent sessions (codex, acp, opencode)
+  mcx pr merge <pr>                   Merge a PR (worktree-aware, no local-branch errors)
 
 Servers:
   mcx status                          Server/daemon status

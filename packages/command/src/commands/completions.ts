@@ -55,6 +55,7 @@ export const SUBCOMMANDS = [
   "help",
   "agent",
   "claude",
+  "pr",
   "track",
   "untrack",
   "tracked",
