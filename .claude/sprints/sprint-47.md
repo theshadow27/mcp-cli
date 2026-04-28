@@ -1,6 +1,6 @@
 # Sprint 47
 
-> Planned 2026-04-28 00:50 EDT. Target: 10 PRs (Phase 6 wave + first waitForEvent migration + 2 orchestrator-DX fillers).
+> Planned 2026-04-28 00:50 EDT. Started 2026-04-28 00:55 EDT. Target: 10 PRs (Phase 6 wave + first waitForEvent migration + 2 orchestrator-DX fillers).
 
 ## Goal
 
