@@ -44,16 +44,13 @@ export const REVIEW_APPROVED = "review.approved" as const;
 export const REVIEW_CHANGES_REQUESTED = "review.changes_requested" as const;
 export const PHASE_CHANGED = "phase.changed" as const;
 export const PR_MERGE_STATE_CHANGED = "pr.merge_state_changed" as const;
+export const PR_REVIEW_COMMENT_POSTED = "pr.review_comment_posted" as const;
 
 // ── CI run event names (#1577) ──
 
 export const CI_STARTED = "ci.started" as const;
 export const CI_RUNNING = "ci.running" as const;
 export const CI_FINISHED = "ci.finished" as const;
-
-// ── Copilot event names (#1578) ──
-
-export const COPILOT_INLINE_POSTED = "copilot.inline_posted" as const;
 
 // ── Review event names (#1579) ──
 
@@ -271,7 +268,7 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), pr(e), `${from} → ${to}`, head);
   },
 
-  [COPILOT_INLINE_POSTED]: (e) => {
+  [PR_REVIEW_COMMENT_POSTED]: (e) => {
     const author = typeof e.author === "string" ? e.author : "";
     const count = typeof e.newCount === "number" ? `${e.newCount} comment${e.newCount === 1 ? "" : "s"}` : "";
     const first = typeof e.firstLine === "string" ? e.firstLine : "";
