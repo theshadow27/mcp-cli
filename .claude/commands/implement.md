@@ -38,6 +38,48 @@ Read the title, body, labels, and comments. Extract:
 
 Summarize what you understood back to the user in 3-5 bullet points before proceeding.
 
+### Step 1a: Read sprint plan context
+
+If a sprint is active, the issue may have plan-level scope decisions that
+override or narrow the issue body — typically captured in the sprint plan's
+"Pre-session clarifications required" section, "Hot-shared file watch", or
+the Excluded list. **The issue body alone is not authoritative when a
+sprint plan exists** (sprint-45 issue #1775 shipped the wrong design
+because the worker never read its plan entry, see #1801).
+
+```bash
+# Find the latest sprint plan
+SPRINT_PLAN=$(ls .claude/sprints/sprint-*.md 2>/dev/null | sort -t- -k2 -n | tail -1)
+
+if [ -n "$SPRINT_PLAN" ]; then
+  echo "Reading sprint plan: $SPRINT_PLAN"
+  # Look for the issue across all relevant sections
+  grep -B1 -A3 "#<number>" "$SPRINT_PLAN" || echo "(no entries for #<number> in sprint plan)"
+fi
+```
+
+Manually verify these specific sections of the plan reference the issue:
+
+1. **Issues table row** — model assignment, scrutiny level, batch
+2. **Pre-session clarifications required** — explicit scope narrowing or
+   forbidden approaches. **If this section names the issue, the
+   instructions there override anything in the issue body that conflicts.**
+3. **Hot-shared file watch** — files this issue touches that other in-flight
+   picks also touch; rebase awareness
+4. **Batch Plan / Dependency edges** — if this issue blockedBy another, the
+   blocker should already be merged before you start
+5. **Excluded (with reasons)** — if your issue number appears here, **stop
+   and report**: the orchestrator should not have spawned this — exit
+   without writing code, surface the conflict so the orchestrator can
+   resolve.
+
+Summarize the relevant plan context (if any) alongside the issue summary
+in your "what I understood" report. Examples of what to call out:
+
+- "Plan says: implement option 2-variant only (no env var, no CLI flag)"
+- "Plan says: hot-shared file with #NNNN — rebase before push"
+- "Plan does not list this issue — proceeding from issue body alone"
+
 ### Step 2: Plan the Work
 
 Explore the codebase to understand the relevant areas. Use Glob, Grep, and Read to find:
