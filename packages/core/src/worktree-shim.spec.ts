@@ -619,6 +619,7 @@ describe("pruneWorktrees", () => {
     });
 
     expect(result.pruned).toBe(1);
+    expect(result.prunedNames).toEqual(["feat-done"]);
     expect(result.skippedUnmerged).toEqual([]);
   });
 

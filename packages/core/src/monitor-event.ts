@@ -11,7 +11,21 @@
 
 // ── Event categories ──
 
-export type MonitorCategory = "session" | "work_item" | "ci" | "copilot" | "review" | "issue" | "mail" | "heartbeat";
+export const MONITOR_CATEGORIES = [
+  "session",
+  "work_item",
+  "ci",
+  "copilot",
+  "review",
+  "issue",
+  "mail",
+  "heartbeat",
+  "worker",
+  "daemon",
+  "gc",
+] as const;
+
+export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
 
 // ── Session event names ──
 
@@ -65,6 +79,19 @@ export const ISSUE_COMMENT = "issue.comment" as const;
 // ── Mail event names ──
 
 export const MAIL_RECEIVED = "mail.received" as const;
+
+// ── Worker event names (#1586) ──
+
+export const WORKER_RATELIMITED = "worker.ratelimited" as const;
+
+// ── Daemon lifecycle event names (#1586) ──
+
+export const DAEMON_RESTARTED = "daemon.restarted" as const;
+export const DAEMON_CONFIG_RELOADED = "daemon.config_reloaded" as const;
+
+// ── GC event names (#1586) ──
+
+export const GC_PRUNED = "gc.pruned" as const;
 
 // ── Heartbeat ──
 
@@ -300,6 +327,33 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const sender = typeof e.sender === "string" ? e.sender : "";
     const recipient = typeof e.recipient === "string" ? e.recipient : "";
     return join(sender, "→", recipient);
+  },
+
+  [WORKER_RATELIMITED]: (e) => {
+    const retry = typeof e.retryAfterMs === "number" ? `retry in ${Math.round(e.retryAfterMs / 1000)}s` : "";
+    const provider = typeof e.provider === "string" ? e.provider : "";
+    return join(sid(e), provider, retry);
+  },
+
+  [DAEMON_RESTARTED]: (e) => {
+    const reason = typeof e.reason === "string" ? e.reason : "";
+    const before = typeof e.seqBefore === "number" ? `seq:${e.seqBefore}` : "";
+    const seqAfter = typeof e.seqAfter === "number" ? e.seqAfter : e.seq;
+    const after = typeof seqAfter === "number" ? `→${seqAfter}` : "";
+    return join(reason, before + after);
+  },
+
+  [DAEMON_CONFIG_RELOADED]: (e) => {
+    const keys = Array.isArray(e.changedKeys) ? (e.changedKeys as string[]).join(", ") : "";
+    const path = typeof e.path === "string" ? e.path : "";
+    return join(path && cap(path, 40), keys && `keys: ${keys}`);
+  },
+
+  [GC_PRUNED]: (e) => {
+    const wt = Array.isArray(e.worktrees) ? `${(e.worktrees as string[]).length}wt` : "";
+    const br = Array.isArray(e.branches) ? `${(e.branches as string[]).length}br` : "";
+    const reason = typeof e.reason === "string" ? e.reason : "";
+    return join(wt, br, reason);
   },
 
   [HEARTBEAT]: (e) => `seq:${e.seq}`,

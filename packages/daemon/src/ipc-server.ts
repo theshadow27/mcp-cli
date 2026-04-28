@@ -49,8 +49,10 @@ import {
   MarkReadParamsSchema,
   MarkSpansExportedParamsSchema,
   type MonitorEvent,
+  type MonitorEventInput,
   PROTOCOL_VERSION,
   PruneSpansParamsSchema,
+  PublishEventParamsSchema,
   ReadMailParamsSchema,
   RecordAliasRunParamsSchema,
   RegisterServeParamsSchema,
@@ -1333,6 +1335,24 @@ export class IpcServer {
       const parsed = AliasStateAllParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
+    });
+
+    this.handlers.set("publishEvent", async (params, _ctx) => {
+      const parsed = PublishEventParamsSchema.parse(params);
+      if (!this.eventBus) {
+        throw Object.assign(new Error("EventBus not available"), { code: IPC_ERROR.INTERNAL_ERROR });
+      }
+      const input: MonitorEventInput = {
+        ...(parsed.extra && parsed.extra),
+        src: parsed.src,
+        event: parsed.event,
+        category: parsed.category,
+        ...(parsed.sessionId !== undefined && { sessionId: parsed.sessionId }),
+        ...(parsed.workItemId !== undefined && { workItemId: parsed.workItemId }),
+        ...(parsed.prNumber !== undefined && { prNumber: parsed.prNumber }),
+      };
+      const published = this.eventBus.publish(input);
+      return { ok: true as const, seq: published.seq };
     });
 
     this.handlers.set("shutdown", async (params, _ctx) => {

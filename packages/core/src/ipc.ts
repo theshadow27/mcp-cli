@@ -8,6 +8,7 @@
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
 import type { MonitorAliasMetadata } from "./alias-bundle";
+import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
 import type { WorkItem } from "./work-item";
@@ -62,7 +63,8 @@ export type IpcMethod =
   | "aliasStateGet"
   | "aliasStateSet"
   | "aliasStateDelete"
-  | "aliasStateAll";
+  | "aliasStateAll"
+  | "publishEvent";
 
 // -- Request/Response --
 
@@ -505,6 +507,21 @@ export interface AliasStateAllResult {
   entries: Record<string, unknown>;
 }
 
+export const PublishEventParamsSchema = z.object({
+  src: z.string().min(1),
+  event: z.string().min(1),
+  category: z.enum(MONITOR_CATEGORIES),
+  sessionId: z.string().optional(),
+  workItemId: z.string().optional(),
+  prNumber: z.number().optional(),
+  extra: z.record(z.string(), z.unknown()).optional(),
+});
+
+export interface PublishEventResult {
+  ok: true;
+  seq: number;
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -700,6 +717,7 @@ export interface IpcMethodResult {
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;
   aliasStateAll: AliasStateAllResult;
+  publishEvent: PublishEventResult;
 }
 
 // -- Error codes --

@@ -3952,7 +3952,7 @@ describe("monitor event mapping", () => {
       expect(events[0].model).toBe("claude-opus-4-7");
     });
 
-    test("session:rate_limited maps to session.rate_limited", () => {
+    test("session:rate_limited does not emit duplicate session event (worker.ratelimited is canonical)", () => {
       const server = makeServer();
       const events = collect(server);
 
@@ -3961,9 +3961,7 @@ describe("monitor event mapping", () => {
         sessionId: "s10",
       });
 
-      expect(events).toHaveLength(1);
-      expect(events[0].event).toBe("session.rate_limited");
-      expect(events[0].sessionId).toBe("s10");
+      expect(events).toHaveLength(0);
     });
 
     test("session:disconnected maps to session.disconnected with reason", () => {

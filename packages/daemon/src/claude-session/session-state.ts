@@ -36,7 +36,7 @@ export type SessionEvent =
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
-  | { type: "session:rate_limited"; sessionId: string }
+  | { type: "session:rate_limited"; sessionId: string; retryAfterMs?: number }
   | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" }
   | { type: "session:cleared" }
@@ -263,7 +263,8 @@ export class SessionState {
       const events: SessionEvent[] = [{ type: "session:response", message: strict.data }];
       if (strict.data.error === "rate_limit") {
         this.rateLimited = true;
-        events.push({ type: "session:rate_limited", sessionId: this.sessionId });
+        const retryAfterMs = extractRetryAfterMs(msg);
+        events.push({ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs });
       }
       return events;
     }
@@ -282,7 +283,8 @@ export class SessionState {
       const events: SessionEvent[] = [{ type: "session:response", message: assistant }];
       if (assistant.error === "rate_limit") {
         this.rateLimited = true;
-        events.push({ type: "session:rate_limited", sessionId: this.sessionId });
+        const retryAfterMs = extractRetryAfterMs(msg);
+        events.push({ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs });
       }
       return events;
     }
@@ -404,6 +406,12 @@ export class SessionState {
       },
     ];
   }
+}
+
+function extractRetryAfterMs(msg: NdjsonMessage): number | undefined {
+  if (typeof msg.retry_after_ms === "number") return msg.retry_after_ms;
+  if (typeof msg.retry_after === "number") return msg.retry_after * 1000;
+  return undefined;
 }
 
 /**

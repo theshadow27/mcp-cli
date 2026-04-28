@@ -8,6 +8,7 @@
 
 import { statSync } from "node:fs";
 import {
+  GC_PRUNED,
   WorktreeError,
   type WorktreeShimDeps,
   getDefaultBranch,
@@ -158,12 +159,18 @@ export function defaultGcDeps(): GcDeps {
   };
 }
 
+export interface GcResult {
+  prunedWorktrees: string[];
+  deletedBranches: string[];
+}
+
 /**
  * Core gc logic — pure enough to test with injected deps.
  */
-export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
+export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
   const { cwd } = deps;
   const prefix = opts.dryRun ? `${c.dim}[dry-run]${c.reset} ` : "";
+  const gcResult: GcResult = { prunedWorktrees: [], deletedBranches: [] };
 
   // Branches deleted during the worktree phase — skipped by the branch phase
   // to avoid "not found" false failures on the second `git branch -d`.
@@ -190,7 +197,7 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
     } catch (e) {
       if (!opts.dryRun) {
         deps.logError(`gc: ${e instanceof Error ? e.message : String(e)}`);
-        return;
+        return gcResult;
       }
       // dry-run: degrade gracefully — warn and continue with empty set.
       deps.logError("gc: active-session filter skipped — daemon unreachable (dry-run)");
@@ -204,7 +211,7 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       listed = listMcxWorktrees(cwd, deps);
     } catch (e) {
       deps.logError(`gc: ${e instanceof WorktreeError ? e.message : String(e)}`);
-      return;
+      return gcResult;
     }
 
     const recentSkipped: string[] = [];
@@ -275,6 +282,12 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       const unmerged = result.skippedUnmerged.length > 0 ? `, skipped ${result.skippedUnmerged.length} unmerged` : "";
       const tooRecent = recentSkipped.length > 0 ? `, skipped ${recentSkipped.length} too recent` : "";
       deps.logError(`worktrees: removed ${result.pruned}${unmerged}${tooRecent}`);
+      if (result.pruned > 0) {
+        gcResult.prunedWorktrees = result.prunedNames;
+        for (const b of result.deletedBranches) {
+          if (!gcResult.deletedBranches.includes(b)) gcResult.deletedBranches.push(b);
+        }
+      }
     }
   }
 
@@ -320,6 +333,7 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
         const { exitCode, stderr } = deps.exec(["git", "-C", cwd, "branch", flag, b]);
         if (exitCode === 0) {
           deleted++;
+          gcResult.deletedBranches.push(b);
         } else {
           failed.push(`${b}: ${stderr.trim()}`);
         }
@@ -328,6 +342,8 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<void> {
       for (const f of failed) deps.logError(`  ${f}`);
     }
   }
+
+  return gcResult;
 }
 
 function getMergedBranches(deps: WorktreeShimDeps, cwd: string, defaultBranch: string): string[] {
@@ -364,5 +380,22 @@ export async function cmdGc(args: string[], overrides: { dryRun?: boolean } = {}
     process.exit(1);
   }
   if (overrides.dryRun) opts.dryRun = true;
-  await runGc(opts, defaultGcDeps());
+  const result = await runGc(opts, defaultGcDeps());
+
+  if (!opts.dryRun && (result.prunedWorktrees.length > 0 || result.deletedBranches.length > 0)) {
+    try {
+      await ipcCall("publishEvent", {
+        src: "cli.gc",
+        event: GC_PRUNED,
+        category: "gc",
+        extra: {
+          worktrees: result.prunedWorktrees,
+          branches: result.deletedBranches,
+          reason: "manual",
+        },
+      });
+    } catch {
+      // Best-effort: daemon may be unavailable
+    }
+  }
 }
