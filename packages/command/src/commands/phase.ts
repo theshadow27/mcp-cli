@@ -734,7 +734,7 @@ export async function cmdPhase(
               const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
               if (
                 wi &&
-                wi.phase in manifestForFrom.manifest.phases &&
+                Object.hasOwn(manifestForFrom.manifest.phases, wi.phase) &&
                 (priorTargets.length > 0 || opts.target !== manifestForFrom.manifest.initial)
               ) {
                 dbCandidate = wi.phase;
@@ -1139,7 +1139,7 @@ export async function executePhase(
   //   3. null (first transition / unknown)
   const dbCandidate =
     workItem?.phase != null &&
-    workItem.phase in loaded.manifest.phases &&
+    Object.hasOwn(loaded.manifest.phases, workItem.phase) &&
     (priorTargets.length > 0 || parsed.target !== loaded.manifest.initial)
       ? workItem.phase
       : null;
