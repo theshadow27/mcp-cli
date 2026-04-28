@@ -720,30 +720,31 @@ export async function cmdPhase(
         const filtered = argv.filter((a) => a !== "--no-execute");
         const opts = parsePhaseRunArgs(filtered);
         const cwd = d.cwd();
-        // Mirror the resolvedFrom fallback from executePhase (#1635):
-        // Only do the expensive history-read + ipcCall when --from is absent.
+        // Mirror the resolvedFrom priority from executePhase (#1802):
+        // work_items.phase > log tail > null (same rationale as #1635).
         let resolvedFrom: string | null = opts.from;
         if (resolvedFrom === null) {
           const manifestForFrom = d.loadManifest(cwd);
           const priorTargets = manifestForFrom
             ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
             : [];
-          if (priorTargets.length > 0) {
-            resolvedFrom = priorTargets[priorTargets.length - 1];
-          } else if (opts.workItemId !== null && manifestForFrom) {
+          if (opts.workItemId !== null && manifestForFrom) {
             const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
             try {
               const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
               if (
                 wi &&
-                opts.target !== manifestForFrom.manifest.initial &&
-                wi.phase in manifestForFrom.manifest.phases
+                wi.phase in manifestForFrom.manifest.phases &&
+                (priorTargets.length > 0 || opts.target !== manifestForFrom.manifest.initial)
               ) {
                 resolvedFrom = wi.phase;
               }
             } catch {
               // ignore; resolvedFrom stays null
             }
+          }
+          if (resolvedFrom === null && priorTargets.length > 0) {
+            resolvedFrom = priorTargets[priorTargets.length - 1];
           }
         }
         const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd });
@@ -1086,24 +1087,23 @@ export async function executePhase(
   const logPath = transitionLogPath(cwd);
   const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
   const priorTargets = historyTargets(prior);
-  // When --from is not given and transition history is empty, fall back to
-  // work_items.phase as the implicit "from" so manually-spawned impl sessions
-  // don't cause a spurious "(initial) → triage" rejection (#1522).
-  // Exceptions:
-  //   - target === manifest.initial: first launch of the initial phase; keep
-  //     from=null so Rule 4 (initial phase enforcement) still applies.
-  //   - workItem.phase not in manifest.phases: stale/mismatched phase name
-  //     (e.g. daemon stores "impl" but manifest declares "implement"); fall
-  //     back to null to preserve the original Rule 4 error path (#1636).
+  // Resolve "from" phase. Priority (#1802):
+  //   1. Explicit --from flag
+  //   2. work_items.phase — the column is the source of truth after
+  //      force-updates that skip the JSONL transition log. Guard: when
+  //      history is empty AND target === manifest.initial, keep from=null
+  //      so Rule 4 (initial-phase enforcement) still applies on first launch.
+  //   3. Transition log tail (committed entries only)
+  //   4. null (first transition / unknown)
   const resolvedFrom =
     parsed.from !== null
       ? parsed.from
-      : priorTargets.length > 0
-        ? priorTargets[priorTargets.length - 1]
-        : parsed.target !== loaded.manifest.initial &&
-            workItem?.phase != null &&
-            workItem.phase in loaded.manifest.phases
-          ? workItem.phase
+      : workItem?.phase != null &&
+          workItem.phase in loaded.manifest.phases &&
+          (priorTargets.length > 0 || parsed.target !== loaded.manifest.initial)
+        ? workItem.phase
+        : priorTargets.length > 0
+          ? priorTargets[priorTargets.length - 1]
           : null;
   validateTransition({
     manifest: loaded.manifest,
