@@ -19,6 +19,7 @@ import {
   type LiveSpan,
   type SessionInfo,
   type WorkItemEvent,
+  consoleLogger,
   resolveModelName,
   silentLogger,
   startSpan,
@@ -661,26 +662,25 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // at worker startup. See packages/daemon/src/claude-session/binary-resolver.ts
   // and issue #1808.
   const resolution = await resolveClaudeForSpawn();
-  const logger = quiet ? silentLogger : undefined;
-  let wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0] = { logger };
+  // Route the resolver outcome through the same Logger the WS server uses,
+  // so test runs that pass quiet=true (silentLogger) don't trip the
+  // production-noise budget in scripts/check-coverage.ts.
+  const logger = quiet ? silentLogger : consoleLogger;
+  let wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0];
   if (isResolved(resolution)) {
     wsServerOpts = {
-      logger,
+      logger: quiet ? silentLogger : undefined,
       binaryPath: resolution.binaryPath,
       tlsConfig: resolution.tlsConfig,
     };
-    if (!quiet) {
-      const mode = resolution.tlsConfig ? "patched (wss://[::1])" : "noop (ws://localhost)";
-      console.log(`[_claude] resolved claude ${resolution.version} → ${mode}, strategy=${resolution.strategyId}`);
-    }
+    const mode = resolution.tlsConfig ? "patched (wss://[::1])" : "noop (ws://localhost)";
+    logger.info(`[_claude] resolved claude ${resolution.version} → ${mode}, strategy=${resolution.strategyId}`);
   } else {
     wsServerOpts = {
-      logger,
+      logger: quiet ? silentLogger : undefined,
       spawnDisabledReason: resolution.error,
     };
-    if (!quiet) {
-      console.error(`[_claude] spawn disabled (${resolution.reason}): ${resolution.error}`);
-    }
+    logger.error(`[_claude] spawn disabled (${resolution.reason}): ${resolution.error}`);
   }
 
   // Start WebSocket server

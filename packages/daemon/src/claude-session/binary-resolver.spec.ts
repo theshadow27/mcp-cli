@@ -50,14 +50,16 @@ describe("resolveClaudeForSpawn", () => {
     expect(r.error).toMatch(/exit 137/);
   });
 
-  test("noop strategy (claude < 2.1.120) → resolved with no TLS", async () => {
+  test('noop strategy (claude < 2.1.120) → resolved with no TLS, binaryPath="claude" (PATH lookup preserved)', async () => {
     const r = await resolveClaudeForSpawn(makeDeps({ versionResolver: async () => "2.1.119" }));
     expect(isResolved(r)).toBe(true);
     if (!isResolved(r)) throw new Error("typeguard");
-    expect(r.binaryPath).toBe("/usr/local/bin/claude");
+    // Preserves legacy PATH-resolved spawn — never an absolute path.
+    expect(r.binaryPath).toBe("claude");
     expect(r.tlsConfig).toBeNull();
     expect(r.strategyId).toBe("noop-pre-2.1.120");
     expect(r.version).toBe("2.1.119");
+    // sourcePath is informational only — `which claude` result, not the spawn target.
     expect(r.sourcePath).toBe("/usr/local/bin/claude");
   });
 

@@ -120,10 +120,13 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
     };
   }
 
-  // noop strategy: no patching needed. Spawn the user's claude as-is.
+  // noop strategy: no patching needed. Spawn via PATH lookup (legacy
+  // behavior) so symlink/wrapper rewrites between resolver and spawn keep
+  // working — `which` is consulted only to detect *whether* claude exists,
+  // never to pin the resolved path.
   if (strategy.id.startsWith("noop")) {
     return {
-      binaryPath: sourcePath,
+      binaryPath: "claude",
       tlsConfig: null,
       strategyId: strategy.id,
       version,
