@@ -63,8 +63,48 @@ echo "{N}" > .claude/sprints/.active
 ```
 The sentinel is gitignored. It blocks commits on main's checkout so workers
 that escape their worktree fail loudly instead of landing phantom commits
-on main (see #1425). `/sprint retro` removes it. Orchestrator commits
-(sprint-plan updates, release, retro) must set `SPRINT_OVERRIDE=1`.
+on main (see #1425). `/sprint retro` removes it. Orchestrator commits go
+to the `sprint-{N}` branch via the `.claude/worktrees/sprint-{N}/` worktree
+opened in `plan.md` Step 6a — `SPRINT_OVERRIDE=1` is still needed there
+because the sentinel applies repo-wide.
+
+### Sprint-meta edits during run
+
+The orchestrator makes several sprint-meta edits during the run:
+
+- **Start-of-run timestamp** (the "Started …" line in the plan header)
+- **Run-mode marker** ("(RUN ONLY)" if invoked as `/sprint run`)
+- **Excluded-section amendments** (e.g. "this issue was already-closed
+  pre-sprint, removed from Batch 1")
+- **Mid-sprint plan amendments** (swapping a filler, adjusting batches)
+
+All of these accumulate on the `sprint-{N}` branch. The flow is:
+
+```bash
+# (a) Edit in the sprint worktree (where the branch lives)
+$EDITOR .claude/worktrees/sprint-{N}/.claude/sprints/sprint-{N}.md
+
+# (b) Commit + push from the worktree
+(
+  cd .claude/worktrees/sprint-{N}
+  git add .claude/sprints/sprint-{N}.md
+  SPRINT_OVERRIDE=1 git commit -m "sprint({N}): <descriptor>"
+  git push
+)
+
+# (c) Sync the change back into the orchestrator's main checkout so phase
+#     scripts (which read .claude/sprints/sprint-{N}.md from CWD per #1437)
+#     see the latest content. The file stays uncommitted on main.
+cp .claude/worktrees/sprint-{N}/.claude/sprints/sprint-{N}.md .claude/sprints/sprint-{N}.md
+```
+
+The `sprint-{N}` PR (opened as draft in `plan.md` Step 6a) updates in place
+on every push — the user can watch sprint progress there.
+
+**Don't commit sprint-file edits on the main checkout.** The sentinel +
+pre-commit guard will reject it, and even if you bypass with
+`SPRINT_OVERRIDE=1` you'd race with the worktree's history. Always edit
+in the worktree.
 
 ### Task list setup — one Task per issue, NOT per batch
 

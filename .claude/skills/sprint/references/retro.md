@@ -22,6 +22,13 @@ The diary file is: `.claude/diary/yyyyMMdd.{sprint_number}.md`
 
 For example, sprint 12 on 2026-03-12 → `.claude/diary/20260312.12.md`
 
+**Where to write it**: directly inside the sprint worktree at
+`.claude/worktrees/sprint-{N}/.claude/diary/{filename}` — that's where it
+gets committed. (You can also write it in main checkout's working tree
+first if it's easier to draft there, then `cp` into the worktree before
+the commit step below. The sprint-active sentinel will block any commit
+from main checkout, which is what we want.)
+
 ## Write the entry
 
 Use this template exactly:
@@ -72,42 +79,72 @@ Use this template exactly:
 - **Sprint cost**: ~$X (if observable)
 ```
 
-## Commit and merge via PR
+## Commit the diary on the sprint branch
 
-**Why PR, not direct-push to main**: same reason as the release flow (see
-`review.md` step 4) — the autoapprover blocks direct-to-main pushes, and
-docs-only retros are not a special case from its perspective. Sprint 45
-hit this on the retro commit. A short-lived `sprint{N}/retro` branch →
-auto-merge PR runs through the same pipeline as every other merge.
+The diary file is the last commit on the long-lived `sprint-{N}` branch
+opened in `plan.md` Step 6a. After this, the sprint container PR has
+everything (plan + amendments + run-time edits + Results + release commit
+if any + diary) and is ready to merge.
 
-The retro PR also matches the existing in-sprint plan-amendment pattern
-(e.g. `sprint45/add-1775`) — one branch namespace per sprint for all
-sprint-meta commits.
+Add the diary in the sprint worktree:
 
 ```bash
-# (a) Create retro branch from current main (not a worktree — short-lived)
-git checkout -b sprint{N}/retro
+(
+  cd .claude/worktrees/sprint-{N}
+  # Diary file path was determined above (.claude/diary/yyyyMMdd.{N}.md)
+  cp ../../../{diary-file-from-main-checkout} .claude/diary/{yyyyMMdd.N}.md \
+    || $EDITOR .claude/diary/{yyyyMMdd.N}.md   # or write it directly here
+  git add .claude/diary/{yyyyMMdd.N}.md
+  SPRINT_OVERRIDE=1 git commit -m "retro: sprint {N} — {short title}"
+  git push
+)
+```
 
-# (b) Stage the diary file + any sprint-file Results updates
-git add .claude/diary/{filename} .claude/sprints/sprint-{N}.md
+## Merge the sprint PR + tag the release
 
-# (c) Commit — SPRINT_OVERRIDE=1 still needed because the sprint-active
-#     sentinel is set until the merge lands.
-SPRINT_OVERRIDE=1 git commit -m "retro: sprint {N} — {short title}"
+The sprint container PR is still **draft** (set in `plan.md` Step 6a).
+Convert it to ready, arm auto-merge, wait for it to land. After it merges,
+tag the release at the merged sha (if a release commit was added in
+`review.md` step 4) and create the GitHub release.
 
-# (d) Push the branch and open an auto-merge PR
-git push -u origin sprint{N}/retro
-gh pr create --base main --head sprint{N}/retro \
-  --title "retro: sprint {N} — {short title}" \
-  --body "Sprint {N} retrospective. See \`.claude/diary/{filename}\` for the writeup and \`.claude/sprints/sprint-{N}.md\` for the planning context.
+```bash
+SPRINT_PR=<the sprint-{N} PR number>
 
-Docs-only PR — pre-commit hooks should skip the test suite."
-gh pr merge --squash --delete-branch --auto
+# (a) Convert from draft to ready and arm auto-merge
+gh pr ready "$SPRINT_PR"
+gh pr merge "$SPRINT_PR" --squash --delete-branch --auto
 
-# (e) Wait for merge, then pull main
-gh pr view <n> --json state,mergedAt   # poll until MERGED
+# (b) Wait for merge
+until [ "$(gh pr view "$SPRINT_PR" --json state -q .state)" = "MERGED" ]; do sleep 30; done
+
+# (c) Pull main into the orchestrator's main checkout to capture the squashed sha
 git checkout main
 git pull --ff-only
+MERGED_SHA=$(git rev-parse HEAD)
+
+# (d) Tag — only if this sprint cut a release. Verify the merged commit is
+#     the squashed sprint commit (it'll be a single squash commit, not
+#     "release: vX.Y.Z" anymore — the title is whatever GitHub squashed it
+#     to, typically the PR title). The release commit is INSIDE the squash;
+#     the tag points at the merged sha regardless.
+if [ -n "$RELEASE_VERSION" ]; then
+  git tag "$RELEASE_VERSION" "$MERGED_SHA"
+  git push origin "$RELEASE_VERSION"
+
+  gh release create "$RELEASE_VERSION" --title "$RELEASE_VERSION" --notes "$(cat <<'EOF'
+<release notes prepared in review.md Step 3>
+EOF
+)"
+fi
+```
+
+## Clean up the sprint worktree
+
+After the PR merges, remove the sprint worktree and prune the local branch.
+
+```bash
+git worktree remove .claude/worktrees/sprint-{N}
+git branch -D sprint-{N}   # local branch (remote was --delete-branch'd by gh pr merge)
 ```
 
 ## Clear the sprint-active sentinel
@@ -117,8 +154,9 @@ rm -f .claude/sprints/.active
 ```
 
 This lifts the pre-commit guard (#1443) so post-sprint maintenance commits
-on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the retro PR
-merges — a stuck sentinel on a dead sprint still blocks commits.
+on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the sprint PR
+merges and the worktree is removed — a stuck sentinel on a dead sprint
+still blocks commits.
 
 ## Guidelines
 
