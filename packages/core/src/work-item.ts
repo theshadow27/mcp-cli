@@ -92,18 +92,26 @@ const VALID_TRANSITIONS: Record<WorkItemPhase, ReadonlySet<WorkItemPhase>> = {
   done: new Set(), // terminal
 };
 
-/** Check whether a phase transition is allowed. */
+/** Check whether a phase transition is allowed. Returns false for unknown phases. */
 export function canTransition(from: WorkItemPhase, to: WorkItemPhase): boolean {
-  return VALID_TRANSITIONS[from].has(to);
+  return VALID_TRANSITIONS[from]?.has(to) ?? false;
 }
 
-/** Return all phases reachable from the given phase. */
+/** Return all phases reachable from the given phase. Empty for unknown phases. */
 export function reachablePhases(from: WorkItemPhase): readonly WorkItemPhase[] {
-  return [...VALID_TRANSITIONS[from]] as WorkItemPhase[];
+  const transitions = VALID_TRANSITIONS[from];
+  return transitions ? ([...transitions] as WorkItemPhase[]) : [];
 }
 
 /** All work item phases in pipeline order. */
 export const WORK_ITEM_PHASES: readonly WorkItemPhase[] = ["impl", "review", "repair", "qa", "done"];
+
+const WORK_ITEM_PHASE_SET: ReadonlySet<string> = new Set(WORK_ITEM_PHASES);
+
+/** Check whether a phase string is one of the hardcoded standard phases. */
+export function isStandardPhase(phase: string): phase is WorkItemPhase {
+  return WORK_ITEM_PHASE_SET.has(phase);
+}
 
 /** Create a new WorkItem with sensible defaults. */
 export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {

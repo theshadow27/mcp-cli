@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
-import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, resolveRealpath } from "@mcp-cli/core";
+import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, isStandardPhase, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -432,7 +432,11 @@ export class WorkItemsServer {
                     };
                   }
                   // Manifest-driven mode: skip the hardcoded transition graph.
-                } else if (existing.phase !== newPhase && !canTransition(existing.phase, newPhase as WorkItemPhase)) {
+                } else if (
+                  isStandardPhase(existing.phase) &&
+                  existing.phase !== newPhase &&
+                  !canTransition(existing.phase, newPhase as WorkItemPhase)
+                ) {
                   return {
                     content: [
                       {

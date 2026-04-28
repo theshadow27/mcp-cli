@@ -651,6 +651,41 @@ describe("WorkItemsServer", () => {
     expect(last.forceReason).toBe("undeclared bypass");
   });
 
+  test("work_items_update from manifest-declared phase without manifest skips hardcoded validation (#1797)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const manifest = {
+      version: 1 as const,
+      initial: "impl",
+      phases: {
+        impl: { source: "./impl.ts", next: ["triage"] },
+        triage: { source: "./triage.ts", next: ["qa"] },
+        qa: { source: "./qa.ts", next: ["done"] },
+        done: { source: "./done.ts", next: [] },
+      },
+    };
+    server = new WorkItemsServer(db, { loadManifest: () => manifest });
+    const { client } = await server.start();
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 1797 } });
+
+    // Move to "triage" (manifest phase, not in hardcoded graph)
+    const toTriage = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:1797", phase: "triage", repoRoot: "/tmp/repo" },
+    });
+    expect(toTriage.isError).toBeFalsy();
+
+    // Now update WITHOUT repoRoot — manifest not loaded.
+    // Before #1797 fix this would throw: undefined is not an object (evaluating 'vq[$].has')
+    const toQa = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:1797", phase: "qa" },
+    });
+    expect(toQa.isError).toBeFalsy();
+    const content = toQa.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content[0].text).phase).toBe("qa");
+  });
+
   test("work_items_update force=true bypasses legacy transition check and logs forced", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
