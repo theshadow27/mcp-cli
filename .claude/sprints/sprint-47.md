@@ -136,3 +136,22 @@ Mix: ~3 opus + 7-8 sonnet. 1-2 high-scrutiny.
 Sprint 46 shipped v1.8.0 — 10 PRs (8 sprint + 2 out-of-band P1 components). The Monitor Epic dropped to ~13 open issues post-sprint-46; this sprint targets ~6 closes (#1586, #1587, #1610, #1659, #1832, #1737, #1681, #1788) which would bring it to ~5 — effectively the closing arc on the original Monitor Epic charter.
 
 Sprint 47 is the second of the back-to-back pair. The orchestrator-pain noise reducers from sprint 46 (#1797 vq[$].has, #1798 bye Error: prefix, #1799 session.stuck false-positives) are in main; the daemon restart at pre-flight will pick them up so this sprint runs in a measurably quieter room.
+
+> Ended 2026-04-28 05:10 EDT (~4h 15m orchestration). Result: 10 of 10 sprint PRs merged + 1 out-of-band P1 user-authored PR ingested via QA-only.
+
+## Results
+
+- **Released:** v1.8.1 (patch — daemon-internal additions, no command surface change)
+- **PRs merged:** 11 (10 sprint + 1 out-of-band #1835/#1808 from user's parallel session, QA'd via the autosprint flow)
+- **Issues closed:** 10 sprint issues (#1586, #1587, #1610, #1659, #1832, #1737, #1788, #1681, #1822, #1824) + #1808 (user-authored)
+- **Issues filed during sprint:** 4 (#1836 parallel-spawn ghosts, #1837 bye destroys live worktree, #1845 doc drift on triage `decision`→`action`, #1853 BudgetWatcher state persistence)
+- **Issues dropped:** 0
+- **Auto-merge interventions:** 4 (#1586, #1587, #1610, #1855 meta) admin-merged after exhausting flake retries on coverage CI; check + build green on each
+- **Bonus mid-sprint work:** PR #1855 (CI flake retry workaround for #1838) authored by orchestrator on a `meta/` branch
+
+## What broke (logged for retro)
+
+- **False-victory on #1586/PR1847.** QA worker posted `qa:pass` while coverage CI was still flipping red and 3 fresh Copilot threads appeared post-verdict. Orchestrator marked done + bye'd QA, would have left PR unmerged silently overnight without operator intervention. Saved memory at `.claude/memory/feedback_verify_merge_actually_fired.md`.
+- **Parallel-spawn ghosts (#1836)** — 3/8 sessions spawned in parallel produced disconnected ghosts; bye'ing one destroyed an active session's worktree (#1837). Lost ~$0.33 + 13 turns of #1659 progress.
+- **Bun coverage CI flake (#1838 + new exit-1 variant)** — preexisting flake compounded by a deterministic Bun coverage instrumentation crash mid-`compareVersions` after #1835 landed on main. CI workaround #1855 broadens retry; underlying flake still tracked under #1838 / Bun #1004.
+- **Test pollution discovery** — running `bun scripts/check-coverage.ts` locally on main fails on liveBuffer + #1681 timeout, but the same tests pass in isolation. Indicates cross-file state leakage.
