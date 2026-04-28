@@ -2003,6 +2003,214 @@ phases:
   }, 30_000);
 });
 
+describe("work_items.phase wins over stale transition log (#1802)", () => {
+  async function catchExit1802(
+    fn: () => Promise<unknown>,
+  ): Promise<{ code: number | undefined; out: string; err: string }> {
+    const origExit = process.exit;
+    const origLog = console.log;
+    const origErr = console.error;
+    let exitCode: number | undefined;
+    let out = "";
+    let err = "";
+    process.exit = ((c?: number) => {
+      exitCode = c;
+      throw new Error("__exit__");
+    }) as typeof process.exit;
+    console.log = (...a: unknown[]) => {
+      out += `${a.join(" ")}\n`;
+    };
+    console.error = (...a: unknown[]) => {
+      err += `${a.join(" ")}\n`;
+    };
+    try {
+      await fn().catch((e) => {
+        if ((e as Error).message !== "__exit__") throw e;
+      });
+    } finally {
+      process.exit = origExit;
+      console.log = origLog;
+      console.error = origErr;
+    }
+    return { code: exitCode, out, err };
+  }
+
+  function makeExecDeps1802(opts: { workItem: Record<string, unknown> }) {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const ipcCall = async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      if (method === "getWorkItem") return opts.workItem;
+      if (method === "aliasStateGet") return { value: undefined };
+      if (method === "aliasStateSet") return { ok: true };
+      if (method === "aliasStateDelete") return { ok: true };
+      if (method === "aliasStateAll") return { entries: {} };
+      if (method === "callTool") return { content: [{ type: "text", text: "{}" }] };
+      return null;
+    };
+    const exec = (cmd: string[]) => {
+      if (cmd.includes("rev-parse") && cmd.includes("--is-inside-work-tree")) return { stdout: "true", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "main\n", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    };
+    return {
+      ipcCall: ipcCall as unknown as typeof import("@mcp-cli/core").ipcCall,
+      exec,
+      findGitRoot: () => dir,
+      now: () => new Date("2026-04-14T00:00:00Z"),
+      calls,
+    };
+  }
+
+  const doneAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "done",
+  description: "done",
+  input: z.object({}).default({}),
+  output: z.object({ action: z.string() }),
+  fn: async () => ({ action: "merged" }),
+}));
+`.trim();
+
+  const manifest1802 = `
+runsOn: main
+initial: impl
+phases:
+  impl:
+    source: ./impl.ts
+    next: [triage]
+  triage:
+    source: ./impl.ts
+    next: [qa]
+  qa:
+    source: ./impl.ts
+    next: [done]
+  done:
+    source: ./done.ts
+    next: []
+`.trim();
+
+  test("executePhase uses work_items.phase over stale log after force-update", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1802);
+    writeFileSync(join(dir, "impl.ts"), doneAlias);
+    writeFileSync(join(dir, "done.ts"), doneAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Simulate: log says last committed target was "triage", but
+    // work_items_update force=true moved the column to "qa".
+    appendTransitionLog(transitionLogPath(dir), {
+      ts: "2026-04-14T00:00:00Z",
+      workItemId: "#1727",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(transitionLogPath(dir), {
+      ts: "2026-04-14T00:01:00Z",
+      workItemId: "#1727",
+      from: "impl",
+      to: "triage",
+      status: "committed",
+    });
+    // No "qa" entry — the force-update only touched the column.
+
+    const ex = makeExecDeps1802({
+      workItem: {
+        id: "#1727",
+        issueNumber: 1727,
+        prNumber: 100,
+        branch: "feat/1727",
+        prState: "open",
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "pending",
+        phase: "qa",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    });
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await executePhase(
+      ["done", "--work-item", "#1727"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: ((c: number) => {
+          exitCode = c;
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
+    ).catch(() => {});
+
+    // Before the fix this threw DisallowedTransitionError: triage → done
+    expect(exitCode).toBeUndefined();
+    expect(errs.some((e) => e.includes("approved") && e.includes("qa") && e.includes("done"))).toBe(true);
+  }, 30_000);
+
+  test("--no-execute uses work_items.phase over stale log after force-update", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1802);
+    writeFileSync(join(dir, "impl.ts"), doneAlias);
+    writeFileSync(join(dir, "done.ts"), doneAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Same stale-log scenario as above
+    appendTransitionLog(transitionLogPath(dir), {
+      ts: "2026-04-14T00:00:00Z",
+      workItemId: "#1727",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(transitionLogPath(dir), {
+      ts: "2026-04-14T00:01:00Z",
+      workItemId: "#1727",
+      from: "impl",
+      to: "triage",
+      status: "committed",
+    });
+
+    const mockIpcCall = async (method: string) => {
+      if (method === "getWorkItem") {
+        return {
+          id: "#1727",
+          issueNumber: 1727,
+          prNumber: 100,
+          branch: "feat/1727",
+          prState: "open",
+          prUrl: null,
+          ciStatus: "none",
+          ciRunId: null,
+          ciSummary: null,
+          reviewStatus: "pending",
+          phase: "qa",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        };
+      }
+      return null;
+    };
+    const { err, code } = await catchExit1802(() =>
+      cmdPhase(
+        ["run", "done", "--work-item", "#1727", "--no-execute"],
+        { cwd: () => dir },
+        { ipcCall: mockIpcCall as unknown as typeof import("@mcp-cli/core").ipcCall },
+      ),
+    );
+
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("qa");
+    expect(err).toContain("done");
+  });
+});
+
 describe("executePhase auto-persists work_items.phase (#1745)", () => {
   const triageAlias = `
 import { defineAlias, z } from "mcp-cli";
