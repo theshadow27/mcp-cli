@@ -20,6 +20,7 @@ function makeDeps(overrides?: Partial<WorktreeShimDeps>): WorktreeShimDeps {
   return {
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     printError: mock(() => {}),
+    printInfo: mock(() => {}),
     ...overrides,
   };
 }
@@ -211,8 +212,8 @@ describe("createWorktree", () => {
     const coreBareFixIdx = execCalls.findIndex((c) => c.includes("--unset") && c.includes("core.bare"));
     expect(coreBareFixIdx).toBeGreaterThan(coreBareReadAfterIdx);
 
-    // Should log the fix
-    expect(deps.printError).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
+    // Should log the fix (via printInfo, not printError)
+    expect(deps.printInfo).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
   });
 
   test("branchPrefix: false creates with raw branch name", () => {
@@ -260,11 +261,14 @@ describe("cleanupWorktree", () => {
   test("removes clean worktree and deletes merged branch", () => {
     const exec = happyExec();
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
 
-    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
-    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
+    expect(printInfo).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+    expect(printInfo).toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
+    expect(printError).not.toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+    expect(printError).not.toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
   });
 
   test("warns on dirty worktree without removing", () => {
@@ -273,8 +277,9 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
 
     expect(printError).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes"));
     // Should NOT have called worktree remove
@@ -287,17 +292,20 @@ describe("cleanupWorktree", () => {
   test("no-ops when worktree is already gone and directory absent", () => {
     const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 128 }));
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
     // Path doesn't exist on disk → no removal attempted, no messages
     expect(printError).not.toHaveBeenCalled();
+    expect(printInfo).not.toHaveBeenCalled();
   });
 
   test("guards against path traversal", () => {
     const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("../../../etc/passwd", "/repo/.claude/worktrees/x", { exec, printError }, "/repo");
+    cleanupWorktree("../../../etc/passwd", "/repo/.claude/worktrees/x", { exec, printError, printInfo }, "/repo");
     expect(exec).not.toHaveBeenCalled();
   });
 
@@ -312,8 +320,9 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
 
     // The branch delete call should use the trimmed branch name
     const deleteCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
@@ -335,10 +344,11 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
 
-    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+    expect(printInfo).toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
   });
 
   test("retries with --force when directory persists after exit-0 remove", () => {
@@ -365,12 +375,15 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("stubborn-wt", worktreePath, { exec, printError }, tmpDir);
+    cleanupWorktree("stubborn-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
 
     expect(forceAttempted).toBe(true);
-    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Removed worktree (--force)"));
-    expect(printError).toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
+    expect(printInfo).toHaveBeenCalledWith(expect.stringContaining("Removed worktree (--force)"));
+    expect(printInfo).toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
+    expect(printError).not.toHaveBeenCalledWith(expect.stringContaining("Removed worktree"));
+    expect(printError).not.toHaveBeenCalledWith(expect.stringContaining("Deleted branch"));
   });
 
   test("reports failure with diagnostics when both remove attempts fail", () => {
@@ -390,15 +403,20 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("stuck-wt", worktreePath, { exec, printError }, tmpDir);
+    cleanupWorktree("stuck-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
 
     const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
     expect(msgs.some((m) => m.includes("Failed to remove worktree"))).toBe(true);
     expect(msgs.some((m) => m.includes("fatal: cannot force remove"))).toBe(true);
-    // Should NOT have printed "Removed worktree" or "Deleted branch"
+    // Success messages must NOT appear on printError
     expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
     expect(msgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
+    // printInfo must also be silent — nothing was successfully removed
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(infoMsgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
+    expect(infoMsgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
   });
 
   test("attempts removal when git status fails but directory exists (corrupted worktree)", () => {
@@ -419,12 +437,16 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("corrupt-wt", worktreePath, { exec, printError }, tmpDir);
+    cleanupWorktree("corrupt-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
 
-    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(msgs.some((m) => m.includes("git status failed in worktree"))).toBe(true);
-    expect(msgs.some((m) => m.includes("Removed worktree"))).toBe(true);
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(errorMsgs.some((m) => m.includes("git status failed in worktree"))).toBe(true);
+    // Successful removal is an info message, not an error
+    expect(infoMsgs.some((m) => m.includes("Removed worktree"))).toBe(true);
+    expect(errorMsgs.some((m) => m.includes("Removed worktree"))).toBe(false);
   });
 
   test("corrupted worktree: skips --force when non-force removal fails", () => {
@@ -446,13 +468,19 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("corrupt-stuck-wt", worktreePath, { exec, printError }, tmpDir);
+    cleanupWorktree("corrupt-stuck-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
 
     const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
     expect(forceAttempted).toBe(false);
     expect(msgs.some((m) => m.includes("skipping --force because cleanliness could not be verified"))).toBe(true);
     expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
+    expect(
+      (printInfo as ReturnType<typeof mock>).mock.calls
+        .map((c: unknown[]) => c[0] as string)
+        .some((m) => m.startsWith("Removed worktree")),
+    ).toBe(false);
   });
 
   test("branch delete reports success only after rev-parse verification", () => {
@@ -467,15 +495,18 @@ describe("cleanupWorktree", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
-    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError }, "/repo");
+    cleanupWorktree("my-wt", "/repo/.claude/worktrees/my-wt", { exec, printError, printInfo }, "/repo");
 
-    const msgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
-    // Worktree was removed (path doesn't exist on disk)
-    expect(msgs.some((m) => m.startsWith("Removed worktree"))).toBe(true);
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    // Worktree was removed (path doesn't exist on disk) — success goes to printInfo
+    expect(infoMsgs.some((m) => m.startsWith("Removed worktree"))).toBe(true);
+    expect(errorMsgs.some((m) => m.startsWith("Removed worktree"))).toBe(false);
     // Branch should NOT be claimed as deleted — verification failed
-    expect(msgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
-    expect(msgs.some((m) => m.includes("branch still exists"))).toBe(true);
+    expect(infoMsgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
+    expect(errorMsgs.some((m) => m.includes("branch still exists"))).toBe(true);
   });
 });
 
@@ -579,11 +610,12 @@ describe("pruneWorktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
     const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(),
-      deps: { exec, printError },
+      deps: { exec, printError, printInfo },
     });
 
     expect(result.pruned).toBe(1);
@@ -610,11 +642,12 @@ describe("pruneWorktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
     const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(["feat-active"]),
-      deps: { exec, printError },
+      deps: { exec, printError, printInfo },
     });
 
     expect(result.pruned).toBe(0);
@@ -640,11 +673,12 @@ describe("pruneWorktrees", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const printError = mock(() => {});
+    const printInfo = mock(() => {});
 
     const result = await pruneWorktrees({
       repoRoot: "/repo",
       activeWorktrees: new Set(),
-      deps: { exec, printError },
+      deps: { exec, printError, printInfo },
     });
 
     expect(result.pruned).toBe(0);
@@ -698,19 +732,21 @@ describe("pruneWorktrees", () => {
       });
       const printErrors: string[] = [];
       const printError = mock((msg: string) => printErrors.push(msg));
+      const printInfos: string[] = [];
+      const printInfo = mock((msg: string) => printInfos.push(msg));
 
       const result = await pruneWorktrees({
         repoRoot,
         activeWorktrees: new Set(),
-        deps: { exec, printError },
+        deps: { exec, printError, printInfo },
       });
 
       expect(result.pruned).toBe(2);
       // Verify the batch-guard --unset call was made
       const unsetCalls = execCalls.filter((c) => c.includes("--unset") && c.includes("core.bare"));
       expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
-      // Verify the batch guard printed the fix
-      expect(printErrors.some((m) => m.includes("batch worktree prune"))).toBe(true);
+      // Verify the batch guard printed the fix (via printInfo, not printError)
+      expect(printInfos.some((m) => m.includes("batch worktree prune"))).toBe(true);
     } finally {
       rmSync(repoRoot, { recursive: true });
     }

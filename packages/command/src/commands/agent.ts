@@ -28,7 +28,7 @@ import {
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
-import { c, printError as defaultPrintError, formatToolResult } from "../output";
+import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   type SharedSessionDeps,
@@ -151,6 +151,7 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
   return {
     callTool: makeCallTool(provider),
     printError: defaultPrintError,
+    printInfo: defaultPrintInfo,
     exit: (code) => process.exit(code),
     getStaleDaemonWarning,
     getGitRoot,
@@ -584,7 +585,7 @@ async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProvider,
       }
     }
     cwd = worktreePath;
-    d.printError(`Created worktree: ${worktreePath}`);
+    d.printInfo(`Created worktree: ${worktreePath}`);
   }
 
   // Build the CLI command for the headed provider
@@ -620,7 +621,7 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
     toolArgs.cwd = worktreePath;
     toolArgs.worktree = worktreeName;
     toolArgs.repoRoot = repoRoot;
-    d.printError(`Created worktree via hook: ${worktreePath}`);
+    d.printInfo(`Created worktree via hook: ${worktreePath}`);
   } else if (wtConfig?.branchPrefix === false) {
     const worktreePath = resolveWorktreePath(repoRoot, worktreeName, wtConfig);
     const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", worktreeName, "HEAD"]);
@@ -631,7 +632,7 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
     toolArgs.cwd = worktreePath;
     toolArgs.worktree = worktreeName;
     toolArgs.repoRoot = repoRoot;
-    d.printError(`Created worktree: ${worktreePath}`);
+    d.printInfo(`Created worktree: ${worktreePath}`);
   } else {
     // Native worktree path (provider creates the worktree itself). We still
     // record repoRoot so session scoping, hook lookup at teardown, and
@@ -813,7 +814,7 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
     if (keepWorktree) {
       const wtPath =
         byeResult.cwd ?? resolveWorktreePath(d.getCwd(), byeResult.worktree, readWorktreeConfig(d.getCwd()));
-      d.printError(`Worktree preserved: ${wtPath}`);
+      d.printInfo(`Worktree preserved: ${wtPath}`);
     } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else if (hasFeature(provider, "resume")) {
@@ -1272,7 +1273,7 @@ async function agentResume(
       return;
     }
 
-    d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
+    d.printInfo(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
 
     for (const wt of orphaned) {
       try {
@@ -1369,7 +1370,7 @@ async function resumeAgentWorktree(
     toolArgs.prompt =
       "Your previous conversation history has just been restored via --continue/--resume. " +
       "Please review the restored context and continue where you left off, picking up any in-progress work.";
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [restoring conversation history]`);
+    d.printInfo(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [restoring conversation history]`);
   } else {
     // Git-context shim: build prompt from git state
     const branchRef = branch ?? "HEAD";
@@ -1393,7 +1394,7 @@ async function resumeAgentWorktree(
     }
 
     toolArgs.prompt = buildResumePrompt({ branch: branchRef, issueNumber, gitLog, gitDiff, prInfo });
-    d.printError(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [git context prompt]`);
+    d.printInfo(`Resuming session in ${wt.path} (branch: ${branch ?? "detached"}) [git context prompt]`);
   }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
@@ -1459,18 +1460,18 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
       deps: d,
     });
     if (pruned > 0) {
-      d.printError(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
+      d.printInfo(`Pruned ${pruned} worktree${pruned === 1 ? "" : "s"}.`);
     } else {
-      d.printError("Nothing to prune.");
+      d.printInfo("Nothing to prune.");
     }
     if (skippedUnmerged.length > 0) {
-      d.printError(`Skipped unmerged: ${skippedUnmerged.join(", ")}`);
+      d.printInfo(`Skipped unmerged: ${skippedUnmerged.join(", ")}`);
     }
     return;
   }
 
   if (mcxWorktrees.length === 0) {
-    d.printError("No mcx worktrees found.");
+    d.printInfo("No mcx worktrees found.");
     return;
   }
 

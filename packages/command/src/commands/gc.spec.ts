@@ -87,6 +87,7 @@ function makeDeps(
     getMtime: (p) => overrides.mtimes?.get(p) ?? null,
     queryMergedPrBranches: () => (overrides.mergedPrBranches !== undefined ? overrides.mergedPrBranches : null),
     printError: (m) => errors.push(m),
+    printInfo: (m) => logs.push(m),
     log: (m) => logs.push(m),
     logError: (m) => errors.push(m),
     logs,

@@ -29,6 +29,8 @@ export interface WorktreeShimDeps {
     opts?: { env?: Record<string, string> },
   ) => { stdout: string; stderr: string; exitCode: number };
   printError: (msg: string) => void;
+  /** Print an informational status message (no "Error:" prefix). Used for successful operations. */
+  printInfo: (msg: string) => void;
 }
 
 /** Result of worktree creation — fields to merge into tool call arguments. */
@@ -121,7 +123,7 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
     if (!existsSync(worktreePath)) {
       throw new WorktreeError(`Worktree setup hook succeeded but directory does not exist: ${worktreePath}`);
     }
-    deps.printError(`Created worktree via hook: ${worktreePath}`);
+    deps.printInfo(`Created worktree via hook: ${worktreePath}`);
     return {
       path: worktreePath,
       toolArgs: { cwd: worktreePath, worktree: name, repoRoot },
@@ -143,9 +145,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
       );
     }
     if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printError("Fixed core.bare=true after worktree add");
+      deps.printInfo("Fixed core.bare=true after worktree add");
     }
-    deps.printError(`Created worktree: ${worktreePath}`);
+    deps.printInfo(`Created worktree: ${worktreePath}`);
     return {
       path: worktreePath,
       toolArgs: { cwd: worktreePath, worktree: name, repoRoot },
@@ -176,9 +178,9 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree add");
+    deps.printInfo("Fixed core.bare=true after worktree add");
   }
-  deps.printError(`Created worktree: ${worktreePath}`);
+  deps.printInfo(`Created worktree: ${worktreePath}`);
   return {
     path: worktreePath,
     toolArgs: { cwd: worktreePath, worktree: name, repoRoot },
@@ -222,7 +224,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
       const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
       if (hookExit === 0 && !existsSync(worktreePath)) {
-        deps.printError(`Removed worktree via hook: ${worktreePath}`);
+        deps.printInfo(`Removed worktree via hook: ${worktreePath}`);
         deleteIfSafeToDelete(branch, effectiveRoot, deps);
       } else if (hookExit === 0) {
         deps.printError(`Worktree teardown hook returned success but directory still exists: ${worktreePath}`);
@@ -279,12 +281,12 @@ function removeWorktreeWithVerification(
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree removal");
+    deps.printInfo("Fixed core.bare=true after worktree removal");
   }
 
   // Verify: directory must actually be gone
   if (!existsSync(worktreePath)) {
-    deps.printError(`Removed worktree: ${worktreePath}`);
+    deps.printInfo(`Removed worktree: ${worktreePath}`);
     return true;
   }
 
@@ -312,11 +314,11 @@ function removeWorktreeWithVerification(
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree removal");
+    deps.printInfo("Fixed core.bare=true after worktree removal");
   }
 
   if (!existsSync(worktreePath)) {
-    deps.printError(`Removed worktree (--force): ${worktreePath}`);
+    deps.printInfo(`Removed worktree (--force): ${worktreePath}`);
     return true;
   }
 
@@ -351,7 +353,7 @@ function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeSh
       `refs/heads/${branch}`,
     ]);
     if (verifyExit !== 0) {
-      deps.printError(`Deleted branch: ${branch} (safe)`);
+      deps.printInfo(`Deleted branch: ${branch} (safe)`);
       return true;
     }
     deps.printError(`Warning: git branch -d returned success but branch still exists: ${branch}`);
@@ -496,7 +498,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
 
     // Guard: refuse to remove a worktree that contains the current CWD.
     if (cwd && (cwd === wt.path || cwd.startsWith(`${wt.path}/`))) {
-      deps.printError(`Skipping worktree containing current directory: ${wt.path}`);
+      deps.printInfo(`Skipping worktree containing current directory: ${wt.path}`);
       continue;
     }
 
@@ -508,7 +510,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd: repoRoot });
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
       if (hookExit === 0 && !existsSync(wt.path)) {
-        deps.printError(`Removed worktree via hook: ${wt.path}`);
+        deps.printInfo(`Removed worktree via hook: ${wt.path}`);
         pruned++;
         if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
@@ -533,7 +535,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   // same batch. This ensures the repo is in a valid state when we return. #1206
   if (pruned > 0) {
     if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printError("Fixed core.bare=true after batch worktree prune");
+      deps.printInfo("Fixed core.bare=true after batch worktree prune");
     }
   }
 

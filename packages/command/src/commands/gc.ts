@@ -17,7 +17,7 @@ import {
   readWorktreeConfig,
 } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
-import { c, printError } from "../output";
+import { c, printError, printInfo } from "../output";
 import { getAllActiveSessionWorktrees } from "./worktree-commands";
 
 export interface GcOptions {
@@ -152,6 +152,7 @@ export function defaultGcDeps(): GcDeps {
       }
     },
     printError,
+    printInfo,
     log: console.log,
     logError: console.error,
   };

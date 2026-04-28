@@ -94,7 +94,7 @@ export async function worktreesCommand(args: string[], deps: WorktreeCommandDeps
   }
 
   if (mcxWorktrees.length === 0 && !prune) {
-    deps.printError("No mcx worktrees found.");
+    deps.printInfo("No mcx worktrees found.");
     return;
   }
 
@@ -109,12 +109,12 @@ export async function worktreesCommand(args: string[], deps: WorktreeCommandDeps
   if (prune) {
     const result = await pruneWorktrees({ repoRoot: cwd, activeWorktrees, deps });
     if (result.pruned === 0) {
-      deps.printError("Nothing to prune.");
+      deps.printInfo("Nothing to prune.");
     } else {
-      deps.printError(`Pruned ${result.pruned} worktree${result.pruned === 1 ? "" : "s"}.`);
+      deps.printInfo(`Pruned ${result.pruned} worktree${result.pruned === 1 ? "" : "s"}.`);
     }
     if (result.skippedUnmerged.length > 0) {
-      deps.printError(`Skipped ${result.skippedUnmerged.length} unmerged: ${result.skippedUnmerged.join(", ")}`);
+      deps.printInfo(`Skipped ${result.skippedUnmerged.length} unmerged: ${result.skippedUnmerged.join(", ")}`);
     }
     return;
   }
