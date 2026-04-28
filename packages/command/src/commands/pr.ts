@@ -131,28 +131,27 @@ export async function prMerge(args: string[], deps: Partial<PrDeps> = {}): Promi
   // Poll until PR reaches MERGED state
   const deadline = Date.now() + parsed.timeout;
   while (Date.now() < deadline) {
-    const { stdout: state, exitCode: viewExit } = d.exec([
-      "gh",
-      "pr",
-      "view",
-      prNum,
-      "--json",
-      "state",
-      "-q",
-      ".state",
-    ]);
+    const {
+      stdout: state,
+      stderr: viewStderr,
+      exitCode: viewExit,
+    } = d.exec(["gh", "pr", "view", prNum, "--json", "state", "-q", ".state"]);
 
-    if (viewExit === 0) {
-      const upper = state.toUpperCase();
-      if (upper === "MERGED") {
-        console.error(`PR #${prNum} merged.`);
-        return;
-      }
-      if (upper === "CLOSED") {
-        d.printError(`PR #${prNum} was closed without merging.`);
-        d.exit(1);
-        return;
-      }
+    if (viewExit !== 0) {
+      d.printError(viewStderr || `gh pr view exited with code ${viewExit}`);
+      d.exit(viewExit);
+      return;
+    }
+
+    const upper = state.toUpperCase();
+    if (upper === "MERGED") {
+      console.error(`PR #${prNum} merged.`);
+      return;
+    }
+    if (upper === "CLOSED") {
+      d.printError(`PR #${prNum} was closed without merging.`);
+      d.exit(1);
+      return;
     }
 
     const remaining = deadline - Date.now();

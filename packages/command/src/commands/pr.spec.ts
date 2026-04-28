@@ -173,6 +173,36 @@ describe("prMerge", () => {
     expect(errors.some((e) => e.includes("timed out"))).toBe(true);
   });
 
+  test("--wait exits immediately on gh pr view failure", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      exec: (cmd) => {
+        if (cmd.includes("view")) return { stdout: "", stderr: "auth failure", exitCode: 1 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      printError: (m) => errors.push(m),
+    });
+    const err = await prMerge(["1", "--wait"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
+    expect(errors.some((e) => e.includes("auth failure"))).toBe(true);
+  });
+
+  test("--wait exits immediately on gh pr view failure (no stderr)", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      exec: (cmd) => {
+        if (cmd.includes("view")) return { stdout: "", stderr: "", exitCode: 2 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      printError: (m) => errors.push(m),
+    });
+    const err = await prMerge(["1", "--wait"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(2);
+    expect(errors.some((e) => e.includes("exited with code 2"))).toBe(true);
+  });
+
   test("--wait exits nonzero when PR is closed", async () => {
     const errors: string[] = [];
     const deps = makeDeps({
