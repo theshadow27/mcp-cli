@@ -132,6 +132,8 @@ const _originalOptions = {
   SITES_DIR: join(MCP_CLI_DIR, "sites"),
   /** Directory for patched copies of the user's claude binary (see issue #1808) */
   CLAUDE_PATCHED_DIR: join(MCP_CLI_DIR, "claude-patched"),
+  /** Directory for self-signed TLS material used by the local WSS listener (see issue #1808) */
+  TLS_DIR: join(MCP_CLI_DIR, "tls"),
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
