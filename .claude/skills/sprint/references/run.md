@@ -282,7 +282,9 @@ while issues remain:
     result = mcx phase run <item.phase> --work-item <item.id>
     case result.action:
       "spawn":     execute result.command (quota permitting), then
-                   phase_state_set session_id=<real-id> (replaces "pending:*")
+                   mcx call _work_items phase_state_set \
+                     '{"workItemId":"#<n>","repoRoot":"<abs-path>","key":"sessionId","value":"<real-id>"}'
+                   (replaces "pending:*"; note: key is "sessionId", not "session_id")
       "in-flight": session already running — no action this tick
       "wait":      continue — no action this tick
       "goto":      mcx phase run <result.target> --work-item <item.id>
@@ -400,7 +402,9 @@ invalidate GitHub auto-merge on some configurations. Before declaring a PR
 gh pr view $PR --json autoMergeRequest
 ```
 
-If `null`, re-arm with `gh pr merge $PR --squash --delete-branch --auto`.
+If `null`, re-arm with `mcx pr merge $PR --squash --auto` (the local
+worktree may still hold the branch — `mcx pr merge` skips the failing
+`--delete-branch` step; cleanup happens at `bye` time).
 Once the merge-runner is active and owns the merge loop, this is its job
 (see `agents/mergemaster.md`); the orchestrator only intervenes when the
 runner has escalated.
