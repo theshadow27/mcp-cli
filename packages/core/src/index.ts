@@ -51,3 +51,4 @@ export * from "./phase-source";
 export * from "./mcp-proxy";
 export * from "./bun-version";
 export * from "./sprint-plan";
+export * from "./claude-patch";

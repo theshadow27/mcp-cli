@@ -46,6 +46,14 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     getGitRoot: mock(() => null),
     getStaleDaemonWarning: mock(() => null),
     pollMail: mock(async () => null),
+    runPatchUpdate: mock(async () => ({
+      status: "noop" as const,
+      version: "2.1.119",
+      strategyId: "noop-pre-2.1.120",
+      sourcePath: "/usr/local/bin/claude",
+      sourceHash: "abc123",
+      reason: "no patch needed",
+    })),
     ...overrides,
   };
 }
@@ -4591,5 +4599,160 @@ describe("mcx claude <alias> --help", () => {
     const output = logCalls(deps).join("\n");
     expect(output).toContain("mcx claude worktrees");
     expect(output).not.toContain("No detailed help available");
+  });
+});
+
+describe("mcx claude patch-update", () => {
+  test("noop status logs the reason without exit code", async () => {
+    const deps = makeDeps();
+    await cmdClaude(["patch-update"], deps);
+    expect(logCalls(deps).join("\n")).toContain("needs no patch");
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  test("patched status logs the destination + strategy + source hash", async () => {
+    const deps = makeDeps({
+      runPatchUpdate: mock(async () => ({
+        status: "patched" as const,
+        version: "2.1.121",
+        strategyId: "host-check-ipv6-loopback-v1",
+        sourcePath: "/usr/local/bin/claude",
+        sourceHash: "deadbeefcafebabe1234567890abcdef",
+        patchedPath: "/x/2.1.121.patched",
+        currentLink: "/x/current",
+      })),
+    });
+    await cmdClaude(["patch-update"], deps);
+    const out = logCalls(deps).join("\n");
+    expect(out).toContain("Patched claude 2.1.121");
+    expect(out).toContain("host-check-ipv6-loopback-v1");
+    expect(out).toContain("deadbeefcafe"); // truncated sha prefix
+  });
+
+  test("already-current status hints --force", async () => {
+    const deps = makeDeps({
+      runPatchUpdate: mock(async () => ({
+        status: "already-current" as const,
+        version: "2.1.121",
+        strategyId: "host-check-ipv6-loopback-v1",
+        sourcePath: "/usr/local/bin/claude",
+        sourceHash: "abc",
+        patchedPath: "/x/2.1.121.patched",
+        currentLink: "/x/current",
+      })),
+    });
+    await cmdClaude(["patch-update"], deps);
+    expect(logCalls(deps).join("\n")).toContain("already patched");
+    expect(logCalls(deps).join("\n")).toContain("--force");
+  });
+
+  test("unsupported status exits 2 with the patcher's reason", async () => {
+    const deps = makeDeps({
+      runPatchUpdate: mock(async () => ({
+        status: "unsupported" as const,
+        version: "9.9.9",
+        sourcePath: "/usr/local/bin/claude",
+        sourceHash: "abc",
+        reason: "No patch strategy registered for claude 9.9.9.",
+      })),
+    });
+    await expect(cmdClaude(["patch-update"], deps)).rejects.toThrow(ExitError);
+    const errCalls = (deps.printError as Mock<(s: string) => void>).mock.calls.map((c) => c[0]);
+    expect(errCalls.some((s) => s.includes("9.9.9"))).toBe(true);
+    expect(errCalls.some((s) => s.includes("No patch strategy"))).toBe(true);
+    expect(deps.exit).toHaveBeenCalledWith(2);
+  });
+
+  test("patcher exception exits 1 with formatted error", async () => {
+    const deps = makeDeps({
+      runPatchUpdate: mock(async () => {
+        throw new Error("boom");
+      }),
+    });
+    await expect(cmdClaude(["patch-update"], deps)).rejects.toThrow(ExitError);
+    const errCalls = (deps.printError as Mock<(s: string) => void>).mock.calls.map((c) => c[0]);
+    expect(errCalls.some((s) => s.includes("patch-update failed: boom"))).toBe(true);
+    expect(deps.exit).toHaveBeenCalledWith(1);
+  });
+
+  test("--json prints the outcome as JSON without human-readable lines", async () => {
+    const deps = makeDeps();
+    const captured: string[] = [];
+    const origLog = console.log;
+    console.log = (s: string) => {
+      captured.push(s);
+    };
+    try {
+      await cmdClaude(["patch-update", "--json"], deps);
+    } finally {
+      console.log = origLog;
+    }
+    expect(captured.length).toBe(1);
+    const parsed = JSON.parse(captured[0]);
+    expect(parsed.status).toBe("noop");
+  });
+
+  test("--force is forwarded to the patcher", async () => {
+    const calls: Array<{ force?: boolean; sourcePath?: string }> = [];
+    const deps = makeDeps({
+      runPatchUpdate: mock(async (opts) => {
+        calls.push({ force: opts?.force, sourcePath: opts?.sourcePath });
+        return {
+          status: "noop" as const,
+          version: "2.1.119",
+          strategyId: "noop-pre-2.1.120",
+          sourcePath: opts?.sourcePath ?? "/usr/local/bin/claude",
+          sourceHash: "x",
+          reason: "no patch needed",
+        };
+      }),
+    });
+    await cmdClaude(["patch-update", "--force"], deps);
+    expect(calls[0].force).toBe(true);
+  });
+
+  test("--source <path> overrides the default source binary", async () => {
+    const calls: Array<{ sourcePath?: string }> = [];
+    const deps = makeDeps({
+      runPatchUpdate: mock(async (opts) => {
+        calls.push({ sourcePath: opts?.sourcePath });
+        return {
+          status: "noop" as const,
+          version: "2.1.119",
+          strategyId: "noop-pre-2.1.120",
+          sourcePath: opts?.sourcePath ?? "/usr/local/bin/claude",
+          sourceHash: "x",
+          reason: "no patch needed",
+        };
+      }),
+    });
+    await cmdClaude(["patch-update", "--source", "/custom/claude"], deps);
+    expect(calls[0].sourcePath).toBe("/custom/claude");
+  });
+
+  test("--source=<path> form is also accepted", async () => {
+    const calls: Array<{ sourcePath?: string }> = [];
+    const deps = makeDeps({
+      runPatchUpdate: mock(async (opts) => {
+        calls.push({ sourcePath: opts?.sourcePath });
+        return {
+          status: "noop" as const,
+          version: "2.1.119",
+          strategyId: "noop-pre-2.1.120",
+          sourcePath: opts?.sourcePath ?? "/usr/local/bin/claude",
+          sourceHash: "x",
+          reason: "no patch needed",
+        };
+      }),
+    });
+    await cmdClaude(["patch-update", "--source=/abs/claude"], deps);
+    expect(calls[0].sourcePath).toBe("/abs/claude");
+  });
+
+  test("unknown argument exits 1 with a helpful error", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["patch-update", "--bogus"], deps)).rejects.toThrow(ExitError);
+    const errCalls = (deps.printError as Mock<(s: string) => void>).mock.calls.map((c) => c[0]);
+    expect(errCalls.some((s) => s.includes("--bogus"))).toBe(true);
   });
 });

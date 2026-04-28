@@ -25,6 +25,7 @@ import {
   readWorktreeConfig,
   resolveModelName,
   resolveWorktreePath,
+  updatePatchedClaude,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
@@ -78,6 +79,8 @@ export interface ClaudeDeps extends SharedSessionDeps {
    * mail arrival alongside session events.
    */
   pollMail: (recipient: string) => Promise<MailMessage | null>;
+  /** Patcher entry point. Overridden in tests to avoid real codesign. */
+  runPatchUpdate: typeof updatePatchedClaude;
 }
 
 /**
@@ -200,6 +203,7 @@ export const defaultDeps: ClaudeDeps = {
     };
     return result.messages[0] ?? null;
   },
+  runPatchUpdate: updatePatchedClaude,
 };
 
 // ── Entry point ──
@@ -289,9 +293,12 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     case "deny":
       await claudeDeny(subArgs, d);
       break;
+    case "patch-update":
+      await claudePatchUpdate(subArgs, d);
+      break;
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", or "worktrees".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", or "worktrees".`,
       );
       d.exit(1);
   }
@@ -1241,6 +1248,75 @@ async function claudeDeny(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 }
 
+export interface PatchUpdateArgs {
+  force: boolean;
+  json: boolean;
+  sourcePath: string | undefined;
+}
+
+export function parsePatchUpdateArgs(args: string[], d: Pick<ClaudeDeps, "printError" | "exit">): PatchUpdateArgs {
+  let force = false;
+  let json = false;
+  let sourcePath: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--force") force = true;
+    else if (a === "--json") json = true;
+    else if (a === "--source") sourcePath = args[++i];
+    else if (a.startsWith("--source=")) sourcePath = a.slice("--source=".length);
+    else {
+      d.printError(`Unknown argument: ${a}`);
+      d.exit(1);
+    }
+  }
+  return { force, json, sourcePath };
+}
+
+/**
+ * `mcx claude patch-update` — refresh the patched copy of the user's claude
+ * binary so mcx-spawned sessions can connect to the local daemon. See #1808.
+ *
+ * Reads the user's installed claude (resolved via `which claude`), looks up
+ * the matching patch strategy by version, and writes a patched + ad-hoc
+ * re-signed copy under `~/.mcp-cli/claude-patched/`. The user's original
+ * binary is never modified. Idempotent — second call is a no-op.
+ */
+export async function claudePatchUpdate(args: string[], d: ClaudeDeps): Promise<void> {
+  const { force, json, sourcePath } = parsePatchUpdateArgs(args, d);
+
+  let outcome: Awaited<ReturnType<typeof updatePatchedClaude>>;
+  try {
+    outcome = await d.runPatchUpdate({ sourcePath, force });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    d.printError(`patch-update failed: ${msg}`);
+    return d.exit(1);
+  }
+
+  if (json) {
+    console.log(JSON.stringify(outcome, null, 2));
+    return;
+  }
+
+  switch (outcome.status) {
+    case "patched":
+      d.log(`Patched claude ${outcome.version} → ${outcome.patchedPath}`);
+      d.log(`Strategy: ${outcome.strategyId}`);
+      d.log(`Source: ${outcome.sourcePath} (sha256 ${outcome.sourceHash.slice(0, 12)}…)`);
+      break;
+    case "already-current":
+      d.log(`claude ${outcome.version} already patched (${outcome.strategyId}). Use --force to re-patch.`);
+      break;
+    case "noop":
+      d.log(`claude ${outcome.version} needs no patch (${outcome.reason}).`);
+      break;
+    case "unsupported":
+      d.printError(`claude ${outcome.version} is not supported by any registered patch strategy.`);
+      d.printError(outcome.reason);
+      d.exit(2);
+  }
+}
+
 export interface LogArgs {
   sessionPrefix: string | undefined;
   last: number;
@@ -1919,6 +1995,7 @@ Usage:
   mcx claude log <session> --full          Full output (no truncation)
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
+  mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude

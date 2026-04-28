@@ -130,6 +130,8 @@ const _originalOptions = {
   SPRINT_STATE_PATH: join(MCP_CLI_DIR, "sprint-state.json"),
   /** Directory for site configs, catalogs, and browser profiles */
   SITES_DIR: join(MCP_CLI_DIR, "sites"),
+  /** Directory for patched copies of the user's claude binary (see issue #1808) */
+  CLAUDE_PATCHED_DIR: join(MCP_CLI_DIR, "claude-patched"),
 };
 export const options = { ..._originalOptions };
 export function _restoreOptions(): void {
