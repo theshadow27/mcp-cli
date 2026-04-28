@@ -720,32 +720,40 @@ export async function cmdPhase(
         const filtered = argv.filter((a) => a !== "--no-execute");
         const opts = parsePhaseRunArgs(filtered);
         const cwd = d.cwd();
-        // Mirror the resolvedFrom priority from executePhase (#1802):
-        // work_items.phase > log tail > null (same rationale as #1635).
+        // Mirror pickResolvedFrom from executePhase (#1802, #1824).
         let resolvedFrom: string | null = opts.from;
         if (resolvedFrom === null) {
           const manifestForFrom = d.loadManifest(cwd);
           const priorTargets = manifestForFrom
             ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
             : [];
+          let dbCandidate: string | null = null;
           if (opts.workItemId !== null && manifestForFrom) {
             const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
             try {
               const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
               if (
                 wi &&
-                wi.phase in manifestForFrom.manifest.phases &&
+                Object.hasOwn(manifestForFrom.manifest.phases, wi.phase) &&
                 (priorTargets.length > 0 || opts.target !== manifestForFrom.manifest.initial)
               ) {
-                resolvedFrom = wi.phase;
+                dbCandidate = wi.phase;
               }
             } catch {
-              // ignore; resolvedFrom stays null
+              // ignore; dbCandidate stays null
             }
           }
-          if (resolvedFrom === null && priorTargets.length > 0) {
-            resolvedFrom = priorTargets[priorTargets.length - 1];
-          }
+          const logCandidate = priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
+          resolvedFrom = manifestForFrom
+            ? pickResolvedFrom(
+                dbCandidate,
+                logCandidate,
+                opts.target,
+                priorTargets,
+                manifestForFrom.manifest,
+                manifestForFrom.path,
+              )
+            : (dbCandidate ?? logCandidate);
         }
         const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
@@ -1024,6 +1032,40 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
  * state is "tried but did not complete", and a retry will not be blocked
  * by the transition log.
  */
+function isValidFrom(
+  from: string | null,
+  target: string,
+  history: string[],
+  manifest: Manifest,
+  manifestPath: string,
+): boolean {
+  try {
+    validateTransition({ manifest, from, target, history, force: null, manifestPath });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// When both db (work_items.phase) and log-tail candidates exist and differ,
+// prefer db when it yields a valid transition (primary case: force-updates skip
+// the log, #1802/#1823). Fall back to log tail otherwise — covers the inverse
+// case where auto-persist fails and leaves db stale (#1745/#1824) and the
+// neither-valid case where the log is audit-grade evidence.
+function pickResolvedFrom(
+  dbCandidate: string | null,
+  logCandidate: string | null,
+  target: string,
+  priorTargets: string[],
+  manifest: Manifest,
+  manifestPath: string,
+): string | null {
+  if (dbCandidate === null || logCandidate === null || dbCandidate === logCandidate) {
+    return dbCandidate ?? logCandidate;
+  }
+  return isValidFrom(dbCandidate, target, priorTargets, manifest, manifestPath) ? dbCandidate : logCandidate;
+}
+
 export async function executePhase(
   argv: string[],
   deps: Partial<PhaseInstallDeps>,
@@ -1087,24 +1129,25 @@ export async function executePhase(
   const logPath = transitionLogPath(cwd);
   const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
   const priorTargets = historyTargets(prior);
-  // Resolve "from" phase. Priority (#1802):
+  // Resolve "from" phase (#1802, #1824):
   //   1. Explicit --from flag
-  //   2. work_items.phase — the column is the source of truth after
-  //      force-updates that skip the JSONL transition log. Guard: when
-  //      history is empty AND target === manifest.initial, keep from=null
-  //      so Rule 4 (initial-phase enforcement) still applies on first launch.
-  //   3. Transition log tail (committed entries only)
-  //   4. null (first transition / unknown)
+  //   2. pickResolvedFrom: when db (work_items.phase) and log tail differ,
+  //      prefer db if it yields a valid transition (force-update case, #1823);
+  //      fallback to log tail otherwise (stale-db / auto-persist-fail case, #1824).
+  //      Guard: skip db when history is empty AND target === manifest.initial so
+  //      Rule 4 (initial-phase enforcement) still applies on first launch.
+  //   3. null (first transition / unknown)
+  const dbCandidate =
+    workItem?.phase != null &&
+    Object.hasOwn(loaded.manifest.phases, workItem.phase) &&
+    (priorTargets.length > 0 || parsed.target !== loaded.manifest.initial)
+      ? workItem.phase
+      : null;
+  const logCandidate = priorTargets.length > 0 ? priorTargets[priorTargets.length - 1] : null;
   const resolvedFrom =
     parsed.from !== null
       ? parsed.from
-      : workItem?.phase != null &&
-          workItem.phase in loaded.manifest.phases &&
-          (priorTargets.length > 0 || parsed.target !== loaded.manifest.initial)
-        ? workItem.phase
-        : priorTargets.length > 0
-          ? priorTargets[priorTargets.length - 1]
-          : null;
+      : pickResolvedFrom(dbCandidate, logCandidate, parsed.target, priorTargets, loaded.manifest, loaded.path);
   try {
     validateTransition({
       manifest: loaded.manifest,

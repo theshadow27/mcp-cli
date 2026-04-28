@@ -409,6 +409,21 @@ export class ClaudeWsServer {
   private readonly tlsConfig: { cert: string; key: string } | null;
   private readonly hostname: string | undefined;
 
+  /**
+   * Path of the binary to spawn (default: `"claude"`, looked up via PATH).
+   * The daemon overrides this with the patched-binary path when claude is
+   * 2.1.120+ (see binary-resolver.ts).
+   */
+  private readonly binaryPath: string;
+
+  /**
+   * If non-null, every spawn attempt throws with this reason instead of
+   * actually spawning. Used when the daemon can't resolve a working claude
+   * binary at startup (e.g. unsupported version) — read-only operations
+   * (list/log/wait) still work, but `claude_spawn` fails fast and clearly.
+   */
+  private readonly spawnDisabledReason: string | null;
+
   constructor(deps?: {
     spawn?: SpawnFn;
     killTimeoutMs?: number;
@@ -422,6 +437,10 @@ export class ClaudeWsServer {
     tlsConfig?: { cert: string; key: string } | null;
     /** Override the bind hostname. Defaults to `::1` when TLS is set, otherwise unset (Bun default). */
     hostname?: string;
+    /** Override the binary used for spawning (default: `"claude"`). */
+    binaryPath?: string;
+    /** Disable spawn with this reason. Read paths still work. */
+    spawnDisabledReason?: string | null;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -433,6 +452,8 @@ export class ClaudeWsServer {
     this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
     this.tlsConfig = deps?.tlsConfig ?? null;
     this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
+    this.binaryPath = deps?.binaryPath ?? "claude";
+    this.spawnDisabledReason = deps?.spawnDisabledReason ?? null;
   }
 
   /** True when the server is running in TLS (wss://) mode. */
@@ -696,6 +717,10 @@ export class ClaudeWsServer {
     const port = this.port;
     if (!port) throw new Error("WS server not started");
 
+    if (this.spawnDisabledReason !== null) {
+      throw new Error(this.spawnDisabledReason);
+    }
+
     // When TLS is active, the spawn URL must use `wss://` and an IPv6 host
     // that maps onto a hostname in claude's allowlist (post-2.1.120). The
     // patcher (#1808) rewrites `claude-staging.fedstart.com` so that the
@@ -704,7 +729,7 @@ export class ClaudeWsServer {
       ? `wss://[::1]:${port}/session/${sessionId}`
       : `ws://localhost:${port}/session/${sessionId}`;
     const cmd = [
-      "claude",
+      this.binaryPath,
       "--sdk-url",
       sdkUrl,
       "--permission-mode",

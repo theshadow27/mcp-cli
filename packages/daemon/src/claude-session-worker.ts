@@ -25,6 +25,7 @@ import {
 } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resolver";
 import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -656,8 +657,28 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 // ── Server startup ──
 
 async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
+  // Resolve which claude to spawn (and whether to front it with TLS) once
+  // at worker startup. See packages/daemon/src/claude-session/binary-resolver.ts
+  // and issue #1808. The resolution outcome is intentionally not logged
+  // here — workers run in a separate thread, so console output bypasses
+  // the parent daemon's logger and would leak into test stdout (tripping
+  // the production-noise budget in scripts/check-coverage.ts). The error
+  // case still surfaces clearly: spawnDisabledReason makes spawnClaude
+  // throw with the actionable message at first spawn attempt.
+  const resolution = await resolveClaudeForSpawn();
+  const wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0] = isResolved(resolution)
+    ? {
+        logger: quiet ? silentLogger : undefined,
+        binaryPath: resolution.binaryPath,
+        tlsConfig: resolution.tlsConfig,
+      }
+    : {
+        logger: quiet ? silentLogger : undefined,
+        spawnDisabledReason: resolution.error,
+      };
+
   // Start WebSocket server
-  wsServer = new ClaudeWsServer({ logger: quiet ? silentLogger : undefined });
+  wsServer = new ClaudeWsServer(wsServerOpts);
   wsServer.onSessionEvent = forwardSessionEvent;
   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
   const port = await wsServer.start(wsPort);
