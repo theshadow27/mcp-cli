@@ -2474,7 +2474,7 @@ phases:
     }
   }
 
-  test("repair→qa inferred from work_items.phase without --from flag", async () => {
+  test("repair→qa: prefers work_items.phase over stale log tail (#1746/#1802)", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
     for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
       writeFileSync(join(dir, f), stubAlias);
@@ -2482,13 +2482,10 @@ phases:
     const { deps: installDeps } = makeDriftDeps(dir);
     await cmdPhase(["install"], installDeps);
 
-    // Simulate: impl→review→qa→repair cycle committed; work_items.phase="repair"
-    seedLog(transitionLogPath(dir), [
-      { from: null, to: "impl" },
-      { from: "impl", to: "review" },
-      { from: "review", to: "qa" },
-      { from: "qa", to: "repair" },
-    ]);
+    // Log tail = "impl" (stale); work_items.phase = "repair" (advanced via work_items_update).
+    // Old code: resolvedFrom = "impl" → impl→qa DisallowedTransitionError (impl.next=[review]).
+    // New code: resolvedFrom = "repair" → repair→qa valid (repair.next=[review,qa]).
+    seedLog(transitionLogPath(dir), [{ from: null, to: "impl" }]);
 
     const { err, code } = await catchExit(() =>
       cmdPhase(
@@ -2500,11 +2497,10 @@ phases:
 
     expect(code).toBeUndefined();
     expect(err).toContain("approved");
-    expect(err).toContain("repair");
-    expect(err).toContain("qa");
+    expect(err).toContain("repair → qa");
   });
 
-  test("qa→repair inferred from work_items.phase without --from flag (second repair cycle)", async () => {
+  test("qa→repair: prefers work_items.phase over stale log tail (#1746/#1802)", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
     for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
       writeFileSync(join(dir, f), stubAlias);
@@ -2512,14 +2508,10 @@ phases:
     const { deps: installDeps } = makeDriftDeps(dir);
     await cmdPhase(["install"], installDeps);
 
-    // Simulate: impl→review→qa→repair→qa cycle; work_items.phase="qa"
-    seedLog(transitionLogPath(dir), [
-      { from: null, to: "impl" },
-      { from: "impl", to: "review" },
-      { from: "review", to: "qa" },
-      { from: "qa", to: "repair" },
-      { from: "repair", to: "qa" },
-    ]);
+    // Log tail = "impl" (stale); work_items.phase = "qa" (advanced via work_items_update).
+    // Old code: resolvedFrom = "impl" → impl→repair DisallowedTransitionError (impl.next=[review]).
+    // New code: resolvedFrom = "qa" → qa→repair valid (qa.next=[done,repair]).
+    seedLog(transitionLogPath(dir), [{ from: null, to: "impl" }]);
 
     const { err, code } = await catchExit(() =>
       cmdPhase(
@@ -2531,8 +2523,7 @@ phases:
 
     expect(code).toBeUndefined();
     expect(err).toContain("approved");
-    expect(err).toContain("qa");
-    expect(err).toContain("repair");
+    expect(err).toContain("qa → repair");
   });
 
   test("falls back to log tail when work_items.phase is null", async () => {
@@ -2561,8 +2552,40 @@ phases:
 
     expect(code).toBeUndefined();
     expect(err).toContain("approved");
-    expect(err).toContain("repair");
-    expect(err).toContain("qa");
+    expect(err).toContain("repair → qa");
+  });
+
+  test("hint uses err.from (not resolvedFrom) when --from is absent and auto-detection fails", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Empty log + no work item → resolvedFrom=null. validateTransition uses synthetic "(initial)".
+    // Hint must show "(initial)" (err.from) not "(unknown)" (resolvedFrom ?? fallback).
+    const { err, code } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => dir }));
+
+    expect(code).toBe(1);
+    expect(err).toContain('hint: "from" was auto-detected as "(initial)"');
+    expect(err).not.toContain("(unknown)");
+  });
+
+  test("hint is absent when --from is supplied explicitly", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // --from impl is explicit; impl→qa is invalid, but hint must NOT be appended.
+    const { err, code } = await catchExit(() => cmdPhase(["run", "qa", "--from", "impl"], { cwd: () => dir }));
+
+    expect(code).toBe(1);
+    expect(err).toContain("impl → qa is not an approved transition");
+    expect(err).not.toContain("hint:");
   });
 });
 

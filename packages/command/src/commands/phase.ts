@@ -1117,7 +1117,7 @@ export async function executePhase(
     });
   } catch (err) {
     if ((err instanceof DisallowedTransitionError || err instanceof RegressionError) && parsed.from === null) {
-      const detected = resolvedFrom ?? "(unknown)";
+      const detected = (err as DisallowedTransitionError | RegressionError).from;
       (err as Error).message += `\nhint: "from" was auto-detected as "${detected}"; pass --from <phase> to override`;
     }
     throw err;
