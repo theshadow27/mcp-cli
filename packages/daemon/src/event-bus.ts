@@ -12,7 +12,7 @@
  */
 
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
-import type { SubmitOptions } from "./coalesce";
+import type { CoalescerOptions, SubmitOptions } from "./coalesce";
 import { CoalescingPublisher } from "./coalesce";
 import type { EventLog } from "./event-log";
 import { metrics } from "./metrics";
@@ -149,7 +149,14 @@ export class EventBus {
 
   private getCoalescer(): CoalescingPublisher<MonitorEventInput> {
     if (!this.coalescer) {
-      this.coalescer = new CoalescingPublisher((input) => this.publish(input));
+      const opts: CoalescerOptions = {
+        metrics: {
+          pendingKeys: metrics.gauge("mcpd_coalescer_pending_keys"),
+          overflowTotal: metrics.counter("mcpd_coalescer_overflow_total"),
+          emitErrors: metrics.counter("mcpd_coalescer_emit_errors_total"),
+        },
+      };
+      this.coalescer = new CoalescingPublisher((input) => this.publish(input), opts);
     }
     return this.coalescer;
   }
