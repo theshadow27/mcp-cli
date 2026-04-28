@@ -178,6 +178,24 @@ describe("BudgetWatcher — session cost", () => {
     expect(events).toHaveLength(1);
     expect(events[0].limit).toBe(3.0);
   });
+
+  test("SESSION_IDLE triggers session budget check", () => {
+    const bus = new EventBus();
+    const db = makeDb();
+    db.setBudgetConfig({ sessionCap: 2.0 });
+
+    const events = collectEvents(bus, COST_SESSION_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999 });
+
+    bus.publish(sessionIdleEvent("s1", 1.0));
+    expect(events).toHaveLength(0);
+
+    bus.publish(sessionIdleEvent("s1", 2.5));
+    expect(events).toHaveLength(1);
+    expect(events[0].sessionId).toBe("s1");
+    expect(events[0].cost).toBe(2.5);
+    expect(events[0].limit).toBe(2.0);
+  });
 });
 
 // ── Sprint cost tests ──

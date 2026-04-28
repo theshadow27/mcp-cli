@@ -58,6 +58,7 @@ import {
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
   SendMailParamsSchema,
+  SetBudgetConfigParamsSchema,
   SetNoteParamsSchema,
   ShutdownParamsSchema,
   TouchAliasParamsSchema,
@@ -1340,7 +1341,8 @@ export class IpcServer {
     });
 
     this.handlers.set("setBudgetConfig", async (params) => {
-      this.db.setBudgetConfig(params as Partial<import("@mcp-cli/core").BudgetConfig>);
+      const parsed = SetBudgetConfigParamsSchema.parse(params);
+      this.db.setBudgetConfig(parsed);
       return { ok: true as const };
     });
 

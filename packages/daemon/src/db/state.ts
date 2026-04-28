@@ -1218,6 +1218,16 @@ export class StateDb {
       .map(toSessionRow);
   }
 
+  sprintCostSince(cutoffMs: number): { totalCost: number; sessionCount: number } {
+    const cutoff = formatSqliteDatetime(cutoffMs);
+    const row = this.db
+      .query<{ total_cost: number; cnt: number }, [string]>(
+        "SELECT COALESCE(SUM(total_cost), 0) AS total_cost, COUNT(*) AS cnt FROM agent_sessions WHERE spawned_at >= ?",
+      )
+      .get(cutoff);
+    return { totalCost: row?.total_cost ?? 0, sessionCount: row?.cnt ?? 0 };
+  }
+
   pruneOldSessions(maxAgeDays = 30): number {
     const cutoff = formatSqliteDatetime(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
     const result = this.db.run("DELETE FROM agent_sessions WHERE ended_at IS NOT NULL AND ended_at < ?", [cutoff]);

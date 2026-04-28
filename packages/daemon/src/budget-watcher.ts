@@ -6,7 +6,7 @@ import {
   SESSION_IDLE,
   SESSION_RESULT,
 } from "@mcp-cli/core";
-import type { MonitorEvent } from "@mcp-cli/core";
+import type { BudgetConfig, MonitorEvent } from "@mcp-cli/core";
 import type { StateDb } from "./db/state";
 import type { EventBus } from "./event-bus";
 import type { QuotaPoller } from "./quota";
@@ -51,6 +51,7 @@ export class BudgetWatcher {
 
     const pollMs = opts.quotaPollIntervalMs ?? DEFAULT_QUOTA_POLL_MS;
     this.quotaTimer = setInterval(() => this.checkQuota(), pollMs);
+    this.quotaTimer.unref();
   }
 
   dispose(): void {
@@ -76,12 +77,12 @@ export class BudgetWatcher {
     if (cost <= 0) return;
 
     const workItemId = typeof event.workItemId === "string" ? event.workItemId : undefined;
-    this.checkSessionBudget(sessionId, cost, workItemId);
-    this.checkSprintBudget();
+    const config = this.db.getBudgetConfig();
+    this.checkSessionBudget(config, sessionId, cost, workItemId);
+    this.checkSprintBudget(config);
   }
 
-  private checkSessionBudget(sessionId: string, cost: number, workItemId?: string): void {
-    const config = this.db.getBudgetConfig();
+  private checkSessionBudget(config: BudgetConfig, sessionId: string, cost: number, workItemId?: string): void {
     let state = this.sessionCosts.get(sessionId);
     if (!state) {
       state = { cost: 0, fired: false, workItemId };
@@ -105,13 +106,9 @@ export class BudgetWatcher {
     }
   }
 
-  private checkSprintBudget(): void {
-    const config = this.db.getBudgetConfig();
+  private checkSprintBudget(config: BudgetConfig): void {
     const cutoffMs = Date.now() - config.sprintWindowMs;
-
-    const sessions = this.db.listSessions();
-    const windowSessions = sessions.filter((s) => new Date(s.spawnedAt).getTime() >= cutoffMs);
-    const totalCost = windowSessions.reduce((sum, s) => sum + s.totalCost, 0);
+    const { totalCost, sessionCount } = this.db.sprintCostSince(cutoffMs);
 
     if (totalCost >= config.sprintCap && !this.sprintFired) {
       this.sprintFired = true;
@@ -121,7 +118,7 @@ export class BudgetWatcher {
         category: "cost",
         totalCost,
         limit: config.sprintCap,
-        sessionCount: windowSessions.length,
+        sessionCount,
       });
     } else if (totalCost < config.sprintCap && this.sprintFired) {
       this.sprintFired = false;
