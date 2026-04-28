@@ -24,6 +24,7 @@ interface SessionSnapshot {
   tokens: number;
   lastToolCall: { name: string; errorMessage?: string; at: number } | null;
   pendingPermissionCount: number;
+  hasActiveToolCall: boolean;
 }
 
 export class StuckDetector {
@@ -112,6 +113,11 @@ export class StuckDetector {
     const snapshot = this.getSnapshot();
 
     if (snapshot.pendingPermissionCount > 0 || snapshot.state === "waiting_permission") {
+      this.scheduleNext();
+      return;
+    }
+
+    if (snapshot.hasActiveToolCall) {
       this.scheduleNext();
       return;
     }
