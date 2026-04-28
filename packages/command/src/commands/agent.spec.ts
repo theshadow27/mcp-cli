@@ -1043,7 +1043,7 @@ describe("agent worktrees", () => {
       }),
     });
     await cmdAgent(["codex", "worktrees"], deps);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("No mcx worktrees found"));
+    expect(deps.printInfo).toHaveBeenCalledWith(expect.stringContaining("No mcx worktrees found"));
   });
 });
 
@@ -1172,7 +1172,7 @@ describe("agent bye with worktree", () => {
     await cmdAgent(["claude", "bye", "--keep", "abc12345"], deps);
     expect(deps.callTool).toHaveBeenCalledWith("claude_bye", { sessionId: SESSION_LIST[0].sessionId });
     // With --keep, cleanupWorktree should not run (no exec of git worktree remove)
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+    expect(deps.printInfo).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
   });
 
   test("--keep after session id preserves worktree", async () => {
@@ -1189,7 +1189,7 @@ describe("agent bye with worktree", () => {
       exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     });
     await cmdAgent(["claude", "bye", "abc12345", "--keep"], deps);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+    expect(deps.printInfo).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
     // Ensure cleanupWorktree did not remove the worktree (no git worktree remove exec)
     const execCalls = (deps.exec as ReturnType<typeof mock>).mock.calls;
     const removedWorktree = execCalls.some(
@@ -1212,7 +1212,7 @@ describe("agent bye with worktree", () => {
       exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     });
     await cmdAgent(["claude", "bye", "--keep-worktree", "abc12345"], deps);
-    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+    expect(deps.printInfo).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
   });
 });
 

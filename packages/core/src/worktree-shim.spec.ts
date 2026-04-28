@@ -212,8 +212,8 @@ describe("createWorktree", () => {
     const coreBareFixIdx = execCalls.findIndex((c) => c.includes("--unset") && c.includes("core.bare"));
     expect(coreBareFixIdx).toBeGreaterThan(coreBareReadAfterIdx);
 
-    // Should log the fix
-    expect(deps.printError).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
+    // Should log the fix (via printInfo, not printError)
+    expect(deps.printInfo).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
   });
 
   test("branchPrefix: false creates with raw branch name", () => {
@@ -732,7 +732,8 @@ describe("pruneWorktrees", () => {
       });
       const printErrors: string[] = [];
       const printError = mock((msg: string) => printErrors.push(msg));
-      const printInfo = mock(() => {});
+      const printInfos: string[] = [];
+      const printInfo = mock((msg: string) => printInfos.push(msg));
 
       const result = await pruneWorktrees({
         repoRoot,
@@ -744,8 +745,8 @@ describe("pruneWorktrees", () => {
       // Verify the batch-guard --unset call was made
       const unsetCalls = execCalls.filter((c) => c.includes("--unset") && c.includes("core.bare"));
       expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
-      // Verify the batch guard printed the fix
-      expect(printErrors.some((m) => m.includes("batch worktree prune"))).toBe(true);
+      // Verify the batch guard printed the fix (via printInfo, not printError)
+      expect(printInfos.some((m) => m.includes("batch worktree prune"))).toBe(true);
     } finally {
       rmSync(repoRoot, { recursive: true });
     }

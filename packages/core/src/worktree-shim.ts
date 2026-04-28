@@ -145,7 +145,7 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
       );
     }
     if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printError("Fixed core.bare=true after worktree add");
+      deps.printInfo("Fixed core.bare=true after worktree add");
     }
     deps.printInfo(`Created worktree: ${worktreePath}`);
     return {
@@ -178,7 +178,7 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree add");
+    deps.printInfo("Fixed core.bare=true after worktree add");
   }
   deps.printInfo(`Created worktree: ${worktreePath}`);
   return {
@@ -281,7 +281,7 @@ function removeWorktreeWithVerification(
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree removal");
+    deps.printInfo("Fixed core.bare=true after worktree removal");
   }
 
   // Verify: directory must actually be gone
@@ -314,7 +314,7 @@ function removeWorktreeWithVerification(
     );
   }
   if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printError("Fixed core.bare=true after worktree removal");
+    deps.printInfo("Fixed core.bare=true after worktree removal");
   }
 
   if (!existsSync(worktreePath)) {
@@ -498,7 +498,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
 
     // Guard: refuse to remove a worktree that contains the current CWD.
     if (cwd && (cwd === wt.path || cwd.startsWith(`${wt.path}/`))) {
-      deps.printError(`Skipping worktree containing current directory: ${wt.path}`);
+      deps.printInfo(`Skipping worktree containing current directory: ${wt.path}`);
       continue;
     }
 
@@ -535,7 +535,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   // same batch. This ensures the repo is in a valid state when we return. #1206
   if (pruned > 0) {
     if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printError("Fixed core.bare=true after batch worktree prune");
+      deps.printInfo("Fixed core.bare=true after batch worktree prune");
     }
   }
 

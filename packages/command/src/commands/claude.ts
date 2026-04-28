@@ -738,7 +738,7 @@ export async function claudeResume(args: string[], d: ClaudeDeps): Promise<void>
       return;
     }
 
-    d.printError(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
+    d.printInfo(`Resuming ${orphaned.length} orphaned worktree${orphaned.length === 1 ? "" : "s"}...`);
 
     for (const wt of orphaned) {
       await resumeWorktree(wt, parsed, d);
@@ -1115,7 +1115,7 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   if (byeResult.worktree) {
     if (keepWorktree) {
       const wtPath = byeResult.cwd ?? resolveKeptWorktreePath(byeResult);
-      d.printError(`Worktree preserved: ${wtPath}`);
+      d.printInfo(`Worktree preserved: ${wtPath}`);
     } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else {
