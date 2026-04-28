@@ -60,6 +60,7 @@ import {
   RestartServerParamsSchema,
   SaveAliasParamsSchema,
   SendMailParamsSchema,
+  SetBudgetConfigParamsSchema,
   SetNoteParamsSchema,
   ShutdownParamsSchema,
   TouchAliasParamsSchema,
@@ -1335,6 +1336,16 @@ export class IpcServer {
       const parsed = AliasStateAllParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
+    });
+
+    this.handlers.set("getBudgetConfig", async () => {
+      return this.db.getBudgetConfig();
+    });
+
+    this.handlers.set("setBudgetConfig", async (params) => {
+      const parsed = SetBudgetConfigParamsSchema.parse(params);
+      this.db.setBudgetConfig(parsed);
+      return { ok: true as const };
     });
 
     this.handlers.set("publishEvent", async (params, _ctx) => {

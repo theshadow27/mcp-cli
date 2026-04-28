@@ -64,6 +64,8 @@ export type IpcMethod =
   | "aliasStateSet"
   | "aliasStateDelete"
   | "aliasStateAll"
+  | "getBudgetConfig"
+  | "setBudgetConfig"
   | "publishEvent";
 
 // -- Request/Response --
@@ -666,6 +668,24 @@ export interface PruneSpansResult {
   pruned: number;
 }
 
+// -- Budget config (#1587) --
+
+export interface BudgetConfig {
+  sessionCap: number;
+  sprintCap: number;
+  sprintWindowMs: number;
+  quotaThresholds: number[];
+  quotaDeadband: number;
+}
+
+export const SetBudgetConfigParamsSchema = z.object({
+  sessionCap: z.number().nonnegative().optional(),
+  sprintCap: z.number().nonnegative().optional(),
+  sprintWindowMs: z.number().positive().optional(),
+  quotaThresholds: z.array(z.number().min(0).max(100)).optional(),
+  quotaDeadband: z.number().nonnegative().optional(),
+});
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -717,6 +737,8 @@ export interface IpcMethodResult {
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;
   aliasStateAll: AliasStateAllResult;
+  getBudgetConfig: BudgetConfig;
+  setBudgetConfig: { ok: true };
   publishEvent: PublishEventResult;
 }
 

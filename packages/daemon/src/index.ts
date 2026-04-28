@@ -62,6 +62,7 @@ import {
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
@@ -605,6 +606,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   watcher.start();
 
+  // Budget watcher: emits cost/quota threshold events (#1587)
+  // mailEventBus + eventLog are already created on origin/main earlier in this function (#1586).
+  const budgetWatcher = new BudgetWatcher({ bus: mailEventBus, db, quotaPoller });
+
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     daemonId,
@@ -1071,6 +1076,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       clearInterval(metricsInterval);
       eventLog.stopPruning();
       quotaPoller.stop();
+      budgetWatcher.dispose();
       workItemPoller?.stop();
       copilotPoller?.stop();
       derivedPublisher?.dispose();

@@ -3,7 +3,7 @@
  * plus get/set for CLI options like trust-claude, and server config inspection/modification.
  */
 
-import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
+import type { BudgetConfig, GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { DEFAULT_CLAUDE_WS_PORT, ipcCall, isStdioConfig, readCliConfig, writeCliConfig } from "@mcp-cli/core";
 import { c, printError } from "../output";
 import { readConfigFile, writeConfigFile } from "./config-file";
@@ -121,6 +121,11 @@ export async function configGetDispatch(args: string[], deps: ConfigDeps = defau
     return;
   }
 
+  if (isBudgetKey(key)) {
+    await configGetBudget(key, deps.log);
+    return;
+  }
+
   await configGetServer(args, deps);
 }
 
@@ -145,6 +150,11 @@ export async function configSetDispatch(args: string[], deps: ConfigDeps = defau
 
   if (second === "args") {
     await configSetServerArgs(args, deps);
+    return;
+  }
+
+  if (isBudgetKey(first)) {
+    await configSetBudget(first, second, deps.log);
     return;
   }
 
@@ -412,6 +422,97 @@ export function maskValue(value: string): string {
   if (value.length <= 8) return "****";
   return `${value.slice(0, 4)}****${value.slice(-3)}`;
 }
+
+// -- Budget config (#1587) --
+
+const BUDGET_KEYS: Record<string, keyof BudgetConfig> = {
+  "budget.session-cap": "sessionCap",
+  "budget.sprint-cap": "sprintCap",
+  "budget.sprint-window-hours": "sprintWindowMs",
+  "budget.quota-thresholds": "quotaThresholds",
+  "budget.quota-deadband": "quotaDeadband",
+};
+
+export function isBudgetKey(key: string): boolean {
+  return key in BUDGET_KEYS;
+}
+
+export { BUDGET_KEYS };
+
+export interface BudgetIpc {
+  get: () => Promise<BudgetConfig>;
+  set: (partial: Partial<BudgetConfig>) => Promise<{ ok: true }>;
+}
+
+const defaultBudgetIpc: BudgetIpc = {
+  get: () => ipcCall("getBudgetConfig"),
+  set: (partial) => ipcCall("setBudgetConfig", partial),
+};
+
+export async function configGetBudget(
+  key: string,
+  log?: (msg: string) => void,
+  ipc: BudgetIpc = defaultBudgetIpc,
+): Promise<void> {
+  const prop = BUDGET_KEYS[key];
+  if (!prop) {
+    printError(`Unknown budget key: ${key}. Valid keys: ${Object.keys(BUDGET_KEYS).join(", ")}`);
+    process.exit(1);
+  }
+  const config = await ipc.get();
+  let value: number | number[] = config[prop];
+  if (prop === "sprintWindowMs") {
+    value = (value as number) / (60 * 60 * 1000);
+  }
+  (log ?? console.log)(Array.isArray(value) ? JSON.stringify(value) : String(value));
+}
+
+export async function configSetBudget(
+  key: string,
+  rawValue: string | undefined,
+  log?: (msg: string) => void,
+  ipc: BudgetIpc = defaultBudgetIpc,
+): Promise<void> {
+  const prop = BUDGET_KEYS[key];
+  if (!prop) {
+    printError(`Unknown budget key: ${key}. Valid keys: ${Object.keys(BUDGET_KEYS).join(", ")}`);
+    process.exit(1);
+  }
+  if (rawValue === undefined) {
+    printError(`Usage: mcx config set ${key} <value>`);
+    process.exit(1);
+  }
+
+  const partial: Partial<BudgetConfig> = {};
+
+  if (prop === "quotaThresholds") {
+    const thresholds = rawValue.split(",").map(Number);
+    if (thresholds.some((n) => Number.isNaN(n) || n < 0 || n > 100)) {
+      printError("Quota thresholds must be comma-separated numbers between 0 and 100");
+      process.exit(1);
+    }
+    partial.quotaThresholds = thresholds;
+  } else if (prop === "sprintWindowMs") {
+    const hours = Number(rawValue);
+    if (Number.isNaN(hours) || hours <= 0) {
+      printError("Sprint window must be a positive number of hours");
+      process.exit(1);
+    }
+    partial.sprintWindowMs = hours * 60 * 60 * 1000;
+  } else {
+    const num = Number(rawValue);
+    if (Number.isNaN(num) || num < 0) {
+      printError(`${key} must be a non-negative number`);
+      process.exit(1);
+    }
+    (partial as Record<string, number>)[prop] = num;
+  }
+
+  await ipc.set(partial);
+  (log ?? console.log)(`${key} = ${rawValue}`);
+}
+
+// -- Masking --
 
 /** Return a config object with sensitive values masked (for JSON output). */
 export function maskConfig(config: ServerConfig, showSecrets: boolean): ServerConfig {

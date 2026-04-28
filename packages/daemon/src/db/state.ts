@@ -12,6 +12,7 @@ import { unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   type AliasType,
+  type BudgetConfig,
   type MailMessage,
   type MonitorAliasMetadata,
   type Span,
@@ -561,6 +562,32 @@ export class StateDb {
       "INSERT INTO daemon_state (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
       [key, value],
     );
+  }
+
+  // -- Budget config (#1587) --
+
+  getBudgetConfig(): BudgetConfig {
+    const raw = this.getState("budget_config");
+    const defaults: BudgetConfig = {
+      sessionCap: 3.0,
+      sprintCap: 30.0,
+      sprintWindowMs: 4 * 60 * 60 * 1000,
+      quotaThresholds: [80, 95],
+      quotaDeadband: 5,
+    };
+    if (!raw) return defaults;
+    try {
+      const parsed = JSON.parse(raw) as Partial<BudgetConfig>;
+      return { ...defaults, ...parsed };
+    } catch {
+      return defaults;
+    }
+  }
+
+  setBudgetConfig(partial: Partial<BudgetConfig>): void {
+    const current = this.getBudgetConfig();
+    const merged = { ...current, ...partial };
+    this.setState("budget_config", JSON.stringify(merged));
   }
 
   // -- Auth tokens --
@@ -1189,6 +1216,16 @@ export class StateDb {
       )
       .all()
       .map(toSessionRow);
+  }
+
+  sprintCostSince(cutoffMs: number): { totalCost: number; sessionCount: number } {
+    const cutoff = formatSqliteDatetime(cutoffMs);
+    const row = this.db
+      .query<{ total_cost: number; cnt: number }, [string]>(
+        "SELECT COALESCE(SUM(total_cost), 0) AS total_cost, COUNT(*) AS cnt FROM agent_sessions WHERE spawned_at >= ?",
+      )
+      .get(cutoff);
+    return { totalCost: row?.total_cost ?? 0, sessionCount: row?.cnt ?? 0 };
   }
 
   pruneOldSessions(maxAgeDays = 30): number {

@@ -23,6 +23,8 @@ export const MONITOR_CATEGORIES = [
   "worker",
   "daemon",
   "gc",
+  "cost",
+  "quota",
 ] as const;
 
 export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
@@ -79,6 +81,15 @@ export const ISSUE_COMMENT = "issue.comment" as const;
 // ── Mail event names ──
 
 export const MAIL_RECEIVED = "mail.received" as const;
+
+// ── Budget / cost event names (#1587) ──
+
+export const COST_SESSION_OVER_BUDGET = "cost.session_over_budget" as const;
+export const COST_SPRINT_OVER_BUDGET = "cost.sprint_over_budget" as const;
+
+// ── Quota event names (#1587) ──
+
+export const QUOTA_UTILIZATION_THRESHOLD = "quota.utilization_threshold" as const;
 
 // ── Worker event names (#1586) ──
 
@@ -327,6 +338,25 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const sender = typeof e.sender === "string" ? e.sender : "";
     const recipient = typeof e.recipient === "string" ? e.recipient : "";
     return join(sender, "→", recipient);
+  },
+
+  [COST_SESSION_OVER_BUDGET]: (e) => {
+    const limit = typeof e.limit === "number" ? `limit:$${e.limit.toFixed(2)}` : "";
+    return join(wi(e), sid(e), cost(e), limit);
+  },
+
+  [COST_SPRINT_OVER_BUDGET]: (e) => {
+    const total = typeof e.totalCost === "number" ? `$${(e.totalCost as number).toFixed(2)}` : "";
+    const limit = typeof e.limit === "number" ? `limit:$${e.limit.toFixed(2)}` : "";
+    const sessions = typeof e.sessionCount === "number" ? `${e.sessionCount} sessions` : "";
+    return join(total, limit, sessions);
+  },
+
+  [QUOTA_UTILIZATION_THRESHOLD]: (e) => {
+    const util = typeof e.utilization === "number" ? `${e.utilization.toFixed(0)}%` : "";
+    const thresh = typeof e.threshold === "number" ? `threshold:${e.threshold}%` : "";
+    const provider = typeof e.provider === "string" ? e.provider : "";
+    return join(provider, util, thresh);
   },
 
   [WORKER_RATELIMITED]: (e) => {
