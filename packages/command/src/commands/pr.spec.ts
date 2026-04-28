@@ -158,23 +158,34 @@ describe("prMerge", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
-  test("--wait times out gracefully", async () => {
-    const stderrLines: string[] = [];
-    const origError = console.error;
-    console.error = (m: string) => stderrLines.push(m);
-    try {
-      const deps = makeDeps({
-        exec: (cmd) => {
-          if (cmd.includes("view")) return { stdout: "OPEN", stderr: "", exitCode: 0 };
-          return { stdout: "", stderr: "", exitCode: 0 };
-        },
-      });
-      await prMerge(["9", "--wait", "--timeout", "100"], deps);
-      // Should NOT throw — timeout is a graceful exit, not an error
-      expect(stderrLines.some((e) => e.includes("timed out"))).toBe(true);
-    } finally {
-      console.error = origError;
-    }
+  test("--wait times out with exit 124", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      exec: (cmd) => {
+        if (cmd.includes("view")) return { stdout: "OPEN", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      printError: (m) => errors.push(m),
+    });
+    const err = await prMerge(["9", "--wait", "--timeout", "100"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(124);
+    expect(errors.some((e) => e.includes("timed out"))).toBe(true);
+  });
+
+  test("--wait exits nonzero when PR is closed", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      exec: (cmd) => {
+        if (cmd.includes("view")) return { stdout: "CLOSED", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      printError: (m) => errors.push(m),
+    });
+    const err = await prMerge(["11", "--wait", "--timeout", "30000"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
+    expect(errors.some((e) => e.includes("closed"))).toBe(true);
   });
 });
 

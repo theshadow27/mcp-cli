@@ -142,9 +142,17 @@ export async function prMerge(args: string[], deps: Partial<PrDeps> = {}): Promi
       ".state",
     ]);
 
-    if (viewExit === 0 && state.toUpperCase() === "MERGED") {
-      console.error(`PR #${prNum} merged.`);
-      return;
+    if (viewExit === 0) {
+      const upper = state.toUpperCase();
+      if (upper === "MERGED") {
+        console.error(`PR #${prNum} merged.`);
+        return;
+      }
+      if (upper === "CLOSED") {
+        d.printError(`PR #${prNum} was closed without merging.`);
+        d.exit(1);
+        return;
+      }
     }
 
     const remaining = deadline - Date.now();
@@ -152,7 +160,8 @@ export async function prMerge(args: string[], deps: Partial<PrDeps> = {}): Promi
     await d.sleep(Math.min(10_000, remaining));
   }
 
-  console.error(`PR #${prNum} not yet merged (timed out after ${parsed.timeout}ms).`);
+  d.printError(`PR #${prNum} not yet merged (timed out after ${parsed.timeout}ms).`);
+  d.exit(124);
 }
 
 // ── Entry point ──
