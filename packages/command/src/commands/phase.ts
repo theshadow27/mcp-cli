@@ -1105,15 +1105,23 @@ export async function executePhase(
         : priorTargets.length > 0
           ? priorTargets[priorTargets.length - 1]
           : null;
-  validateTransition({
-    manifest: loaded.manifest,
-    from: resolvedFrom,
-    target: parsed.target,
-    history: priorTargets,
-    workItemId: parsed.workItemId,
-    force: parsed.forceMessage !== null ? { message: parsed.forceMessage } : null,
-    manifestPath: loaded.path,
-  });
+  try {
+    validateTransition({
+      manifest: loaded.manifest,
+      from: resolvedFrom,
+      target: parsed.target,
+      history: priorTargets,
+      workItemId: parsed.workItemId,
+      force: parsed.forceMessage !== null ? { message: parsed.forceMessage } : null,
+      manifestPath: loaded.path,
+    });
+  } catch (err) {
+    if ((err instanceof DisallowedTransitionError || err instanceof RegressionError) && parsed.from === null) {
+      const detected = resolvedFrom ?? "(unknown)";
+      (err as Error).message += `\nhint: "from" was auto-detected as "${detected}"; pass --from <phase> to override`;
+    }
+    throw err;
+  }
 
   // Two-phase log — append an "attempted" entry before branch-guard or
   // handler dispatch. Captures audit evidence even when branch-guard
