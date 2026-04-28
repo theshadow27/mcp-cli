@@ -86,6 +86,7 @@ import { OpenCodeServer, buildOpenCodeToolCache } from "./opencode-server";
 import { reapOrphanedSessions } from "./orphan-reaper";
 import { QuotaPoller } from "./quota";
 import { ServerPool } from "./server-pool";
+import { SessionMetricsAggregator } from "./session-metrics";
 import { SiteServer, buildSiteToolCache } from "./site-server";
 import { TracingServer } from "./tracing-server";
 import { WorkItemsServer } from "./work-items-server";
@@ -583,6 +584,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const mailEventBus = new EventBus(eventLog);
   mailServer.setEventBus(mailEventBus);
 
+  // Session metrics aggregator (#1610) — on by default, opt-out via config
+  let sessionMetricsAgg: SessionMetricsAggregator | null = null;
+  const cliCfg = readCliConfig();
+  if (cliCfg.metrics?.session?.enabled !== false) {
+    sessionMetricsAgg = new SessionMetricsAggregator({
+      bus: mailEventBus,
+      db: db.database,
+    });
+    logger.info("[mcpd] Session metrics aggregator started");
+  }
+
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     daemonId,
@@ -1052,6 +1064,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       workItemPoller?.stop();
       copilotPoller?.stop();
       derivedPublisher?.dispose();
+      sessionMetricsAgg?.dispose();
       if (monitorRuntime) {
         const monPhase = performance.now();
         await withPhaseTimeout(monitorRuntime.stopAll(), SHUTDOWN_PHASE_TIMEOUT_MS, "monitorRuntime.stopAll", logger);
