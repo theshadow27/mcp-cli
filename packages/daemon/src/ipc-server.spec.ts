@@ -3258,6 +3258,22 @@ describe("IpcServer HTTP transport", () => {
       }
     });
 
+    test("LIVE_BUFFER_MAX_BYTES cap is enforced in UTF-8 bytes, not UTF-16 code units (#1788)", () => {
+      // 🎉 is a surrogate pair: 2 UTF-16 code units but 4 UTF-8 bytes.
+      // Before fix: liveBufferBytes used line.length (code units), so Unicode events were
+      // undercounted by up to 4x, allowing the buffer to exceed the nominal cap.
+      // After fix: encoder.encode(line).byteLength is used for accurate UTF-8 accounting.
+      const encoder = new TextEncoder();
+      const line = `{"event":"pr.merged","msg":"${"🎉".repeat(50)}"}\n`;
+      const codeUnits = line.length;
+      const utf8Bytes = encoder.encode(line).byteLength;
+      // Each 🎉 is 4 UTF-8 bytes but 2 UTF-16 code units → 50 emojis add 100 extra bytes.
+      expect(utf8Bytes).toBeGreaterThan(codeUnits);
+      expect(utf8Bytes - codeUnits).toBe(100);
+      // LIVE_BUFFER_MAX_BYTES is the cap used in the byte check; it now reflects UTF-8 bytes.
+      expect(IpcServer.LIVE_BUFFER_MAX_BYTES).toBe(10 * 1024 * 1024);
+    });
+
     test("large backfill does not block concurrent IPC requests (#1589)", async () => {
       const db = new Database(":memory:");
       const eventLog = new EventLog(db);

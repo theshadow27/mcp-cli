@@ -1395,7 +1395,7 @@ export class IpcServer {
   private static readonly EVENTBUS_SUB_TTL_MS = 10 * 60_000;
   /** Max entries in liveBuffer during backfill before dropping oldest (#1589). */
   static readonly LIVE_BUFFER_MAX_ENTRIES = 10_000;
-  /** Max byte size of liveBuffer during backfill before dropping oldest (#1589). */
+  /** Max UTF-8 byte size of liveBuffer during backfill before dropping oldest (#1589). */
   static readonly LIVE_BUFFER_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
   /**
@@ -1581,7 +1581,7 @@ export class IpcServer {
             // Buffer live events during backfill to avoid gaps or duplicates.
             // Bounded: whichever of entry count or byte size is hit first triggers
             // drop-oldest eviction. Overflow emits a gap control message. (#1589)
-            let liveBuffer: Array<{ line: string; seq: number | undefined }> | null =
+            let liveBuffer: Array<{ line: string; bytes: number; seq: number | undefined }> | null =
               sinceSeq !== null && eventLog ? [] : null;
             let liveBufferBytes = 0;
             let liveBufferDropped = 0;
@@ -1611,7 +1611,7 @@ export class IpcServer {
                 try {
                   const line = `${serialized}\n`;
                   if (liveBuffer !== null) {
-                    const lineLen = line.length;
+                    const lineBytes = encoder.encode(line).byteLength;
                     let seq: number | undefined;
                     try {
                       const p = JSON.parse(serialized) as Record<string, unknown>;
@@ -1620,7 +1620,7 @@ export class IpcServer {
                       /* non-JSON event — skip seq tracking */
                     }
                     // Reject single events that exceed the byte cap on their own.
-                    if (liveBufferHead >= liveBuffer.length && lineLen > maxBytes) {
+                    if (liveBufferHead >= liveBuffer.length && lineBytes > maxBytes) {
                       liveBufferDropped++;
                       if (seq !== undefined) {
                         firstDroppedSeq ??= seq;
@@ -1631,11 +1631,11 @@ export class IpcServer {
                     // Evict from head while buffer exceeds either cap (O(1) via head pointer).
                     while (
                       liveBufferHead < liveBuffer.length &&
-                      (liveBuffer.length - liveBufferHead >= maxEntries || liveBufferBytes + lineLen > maxBytes)
+                      (liveBuffer.length - liveBufferHead >= maxEntries || liveBufferBytes + lineBytes > maxBytes)
                     ) {
                       const evicted = liveBuffer[liveBufferHead];
                       if (!evicted) break;
-                      liveBufferBytes -= evicted.line.length;
+                      liveBufferBytes -= evicted.bytes;
                       if (evicted.seq !== undefined) {
                         firstDroppedSeq ??= evicted.seq;
                         lastDroppedSeq = evicted.seq;
@@ -1643,8 +1643,8 @@ export class IpcServer {
                       liveBufferHead++;
                       liveBufferDropped++;
                     }
-                    liveBuffer.push({ line, seq });
-                    liveBufferBytes += lineLen;
+                    liveBuffer.push({ line, bytes: lineBytes, seq });
+                    liveBufferBytes += lineBytes;
                   } else {
                     controller.enqueue(encoder.encode(line));
                   }
