@@ -274,9 +274,12 @@ This is the big one. It contains:
    Session-driving phases: dispatch on `action` (`spawn` runs the command;
    `in-flight` and `wait` leave the item idle; `goto` transitions to
    `target`). Compute / terminal phases (triage, done, needs-attention):
-   read the domain output (`triage.decision`, `done.error`, etc.) and take
-   the special-cased next step rather than treating the output as an
-   action. Record every transition, then iterate.
+   read the domain output (`done.error`, `needs-attention.reason`, etc.)
+   and take the special-cased next step rather than treating the output as
+   an action. Record every transition, then iterate. (Triage was once an
+   example of a `decision`-style domain output, but as of mcx #1832 it
+   uses the standard `action`/`target` schema like other session-driving
+   phases.)
 4. **State tracking** — how and where to persist issue/session/PR state. Most
    per-work-item state lives in the phase scratchpad declared in `.mcx.yaml`
    under `state:` and accessed via `ctx.state`.
