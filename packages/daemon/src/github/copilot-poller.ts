@@ -3,7 +3,7 @@
  *
  * Polls `GET /repos/{owner}/{repo}/pulls/{n}/comments` for each tracked PR,
  * tracks which comment IDs have been seen (persisted to SQLite), and emits
- * `copilot.inline_posted` events with only the diff (new comments).
+ * `pr.review_comment_posted` events with only the diff (new comments).
  *
  * Adaptive cadence: 10s when active work items exist, 60s idle, 300s after merge.
  * Respects GitHub API rate limits: backs off to 300s when remaining < 500.
@@ -11,9 +11,9 @@
 
 import type { Logger } from "@mcp-cli/core";
 import {
-  COPILOT_INLINE_POSTED,
   ISSUE_COMMENT,
   PR_COMMENT,
+  PR_REVIEW_COMMENT_POSTED,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   REVIEW_COMMENTED,
@@ -55,9 +55,9 @@ export interface PRComment {
   pull_request_url?: string;
 }
 
-export interface CopilotInlineEvent {
-  event: typeof COPILOT_INLINE_POSTED;
-  category: "copilot";
+export interface PRReviewCommentPostedEvent {
+  event: typeof PR_REVIEW_COMMENT_POSTED;
+  category: "work_item";
   workItemId: string;
   prNumber: number;
   newCount: number;
@@ -355,8 +355,8 @@ export class CopilotPoller {
 
       this.onEvent({
         src: "daemon.copilot-poller",
-        event: COPILOT_INLINE_POSTED,
-        category: "copilot",
+        event: PR_REVIEW_COMMENT_POSTED,
+        category: "work_item",
         workItemId: item.id,
         prNumber,
         newCount: authorComments.length,

@@ -2,9 +2,9 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import {
-  COPILOT_INLINE_POSTED,
   ISSUE_COMMENT,
   PR_COMMENT,
+  PR_REVIEW_COMMENT_POSTED,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   REVIEW_COMMENTED,
@@ -134,7 +134,7 @@ describe("CopilotPoller", () => {
 
       expect(events).toHaveLength(1);
       const evt = events[0];
-      expect(evt.event).toBe(COPILOT_INLINE_POSTED);
+      expect(evt.event).toBe(PR_REVIEW_COMMENT_POSTED);
       expect(evt.prNumber).toBe(42);
       expect(evt.newCount).toBe(2);
       expect(evt.commentIds).toEqual([1001, 1002]);
@@ -338,7 +338,7 @@ describe("CopilotPoller", () => {
 
       const reviewEvents = events.filter((e) => e.event === REVIEW_APPROVED);
       expect(reviewEvents).toHaveLength(2);
-      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      const inlineEvents = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED);
       expect(inlineEvents).toHaveLength(0);
     });
   });
@@ -501,7 +501,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      const inlineEvents = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED);
       expect(inlineEvents).toHaveLength(1);
       expect(inlineEvents[0].prNumber).toBe(21);
     });
@@ -514,7 +514,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      const inlineEvents = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED);
       expect(inlineEvents).toHaveLength(0);
     });
   });
@@ -582,7 +582,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const inlineEvents = events.filter((e) => e.event === COPILOT_INLINE_POSTED);
+      const inlineEvents = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED);
       expect(inlineEvents).toHaveLength(0);
       expect(poller.lastError).toBeNull();
     });
@@ -650,8 +650,8 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const pr42 = events.filter((e) => e.event === COPILOT_INLINE_POSTED && e.prNumber === 42);
-      const pr43 = events.filter((e) => e.event === COPILOT_INLINE_POSTED && e.prNumber === 43);
+      const pr42 = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED && e.prNumber === 42);
+      const pr43 = events.filter((e) => e.event === PR_REVIEW_COMMENT_POSTED && e.prNumber === 43);
       expect(pr42).toHaveLength(1);
       expect(pr42[0].commentIds).toEqual([1001]);
       expect(pr43).toHaveLength(1);
