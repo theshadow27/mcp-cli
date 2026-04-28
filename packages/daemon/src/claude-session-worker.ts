@@ -19,7 +19,6 @@ import {
   type LiveSpan,
   type SessionInfo,
   type WorkItemEvent,
-  consoleLogger,
   resolveModelName,
   silentLogger,
   startSpan,
@@ -660,28 +659,23 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
 async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // Resolve which claude to spawn (and whether to front it with TLS) once
   // at worker startup. See packages/daemon/src/claude-session/binary-resolver.ts
-  // and issue #1808.
+  // and issue #1808. The resolution outcome is intentionally not logged
+  // here — workers run in a separate thread, so console output bypasses
+  // the parent daemon's logger and would leak into test stdout (tripping
+  // the production-noise budget in scripts/check-coverage.ts). The error
+  // case still surfaces clearly: spawnDisabledReason makes spawnClaude
+  // throw with the actionable message at first spawn attempt.
   const resolution = await resolveClaudeForSpawn();
-  // Route the resolver outcome through the same Logger the WS server uses,
-  // so test runs that pass quiet=true (silentLogger) don't trip the
-  // production-noise budget in scripts/check-coverage.ts.
-  const logger = quiet ? silentLogger : consoleLogger;
-  let wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0];
-  if (isResolved(resolution)) {
-    wsServerOpts = {
-      logger: quiet ? silentLogger : undefined,
-      binaryPath: resolution.binaryPath,
-      tlsConfig: resolution.tlsConfig,
-    };
-    const mode = resolution.tlsConfig ? "patched (wss://[::1])" : "noop (ws://localhost)";
-    logger.info(`[_claude] resolved claude ${resolution.version} → ${mode}, strategy=${resolution.strategyId}`);
-  } else {
-    wsServerOpts = {
-      logger: quiet ? silentLogger : undefined,
-      spawnDisabledReason: resolution.error,
-    };
-    logger.error(`[_claude] spawn disabled (${resolution.reason}): ${resolution.error}`);
-  }
+  const wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0] = isResolved(resolution)
+    ? {
+        logger: quiet ? silentLogger : undefined,
+        binaryPath: resolution.binaryPath,
+        tlsConfig: resolution.tlsConfig,
+      }
+    : {
+        logger: quiet ? silentLogger : undefined,
+        spawnDisabledReason: resolution.error,
+      };
 
   // Start WebSocket server
   wsServer = new ClaudeWsServer(wsServerOpts);
