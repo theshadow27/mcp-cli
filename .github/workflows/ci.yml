@@ -114,8 +114,11 @@ jobs:
           elif grep -q "^ 0 fail$" /tmp/coverage_out.txt && ! grep -q "^FAIL:" /tmp/coverage_out.txt; then
             echo "::warning::Bun crash (exit $code) after all coverage tests passed — treating as pass (see #1004, #1419)"
             exit 0
-          elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
-            echo "::warning::Bun crash (exit $code) — retrying once (see #1004)"
+          elif [ $code -eq 132 ] || [ $code -eq 139 ] || ! grep -qE "^ +[0-9]+ fail$" /tmp/coverage_out.txt; then
+            # 132/139 = Bun panic (#1004); the grep guard covers the #1838 flake pattern
+            # where exit code is 1 but the test summary line ("N fail") is absent because
+            # Bun aborted mid-suite on a flaky liveBuffer test. Retry once.
+            echo "::warning::Coverage failed (exit $code) without test summary — retrying once (see #1004, #1838)"
             bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_retry.txt
             code2=${PIPESTATUS[0]}
             if [ $code2 -eq 0 ]; then
