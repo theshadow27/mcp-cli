@@ -79,14 +79,63 @@ Use this template exactly:
 - **Sprint cost**: ~$X (if observable)
 ```
 
+## Sweep memory updates authored this sprint
+
+Before staging the diary, look for `.claude/memory/` changes that were
+authored during the sprint but never committed. Memory files are routinely
+written in the orchestrator's **main checkout** (where it actually runs),
+not in the sprint worktree, so they sit as orphans on main unless the
+retro picks them up. Sprint 42 and sprint 47 both leaked memory files this
+way — `1adfcbe6 memory: sprint 42 additions` is the backfill commit.
+
+```bash
+# In the orchestrator's main checkout (NOT the sprint worktree):
+git status --porcelain .claude/memory/
+```
+
+Any output means there are uncommitted memory updates. Copy them into the
+sprint worktree so they ride the same retro commit as the diary:
+
+```bash
+(
+  cd ../../..   # → main checkout from inside .claude/worktrees/sprint-{N}
+  git status --porcelain .claude/memory/
+) | awk '$1 ~ /\?\?|M/ {print $2}' | while read -r f; do
+  mkdir -p "$(dirname "$f")"
+  cp "../../../$f" "$f"
+done
+```
+
+If the orchestrator authored the memory files **directly in the worktree**,
+this sweep is a no-op — `git status` in the main checkout shows nothing.
+
+## Promote applied memories into skill text
+
+A memory file lives in `.claude/memory/` until it earns a place in the
+sprint reference docs. After 2+ sprints in a row applying the same memory,
+copy the rule + **Why:** + **How to apply:** into the most-relevant
+`references/*.md` (`run.md` for orchestrator-loop rules; `plan.md` for
+planning rules; `review.md` / `retro.md` for those phases). Skill-text
+rules apply even when memory hasn't been loaded — important for fresh
+`/sprint plan` invocations that may not pull every memory file. Leave the
+memory file in place; it serves user-memory injection until the skill
+change merges, after which it can be archived in a future sprint.
+
+If the memory was applied 0 times this sprint, leave it alone — it's still
+earning its keep against future sessions.
+
+These promotions are part of the sprint container PR — stage them in the
+same retro commit as the diary, not a separate meta PR.
+
 ## Commit the diary on the sprint branch
 
 The diary file is the last commit on the long-lived `sprint-{N}` branch
 opened in `plan.md` Step 6a. After this, the sprint container PR has
 everything (plan + amendments + run-time edits + Results + release commit
-if any + diary) and is ready to merge.
+if any + diary + memory updates + skill promotions) and is ready to
+merge.
 
-Add the diary in the sprint worktree:
+Add the diary + any memory/skill updates in the sprint worktree:
 
 ```bash
 (
@@ -94,7 +143,12 @@ Add the diary in the sprint worktree:
   # Diary file path was determined above (.claude/diary/yyyyMMdd.{N}.md)
   cp ../../../{diary-file-from-main-checkout} .claude/diary/{yyyyMMdd.N}.md \
     || $EDITOR .claude/diary/{yyyyMMdd.N}.md   # or write it directly here
-  git add .claude/diary/{yyyyMMdd.N}.md
+
+  # Memory + skill updates were copied in by the two preceding sections.
+  # Stage everything together so the retro commit is self-contained.
+  git add .claude/diary/{yyyyMMdd.N}.md .claude/memory/ .claude/skills/
+  git status --short   # sanity check before committing
+
   SPRINT_OVERRIDE=1 git commit -m "retro: sprint {N} — {short title}"
   git push
 )
