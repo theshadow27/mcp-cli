@@ -46,6 +46,13 @@ export const SESSION_CONTAINMENT_ESCALATED = "session.containment_escalated" as 
 export const SESSION_CONTAINMENT_RESET = "session.containment_reset" as const;
 export const SESSION_IDLE = "session.idle" as const;
 export const SESSION_STUCK = "session.stuck" as const;
+export const SESSION_TOOL_USE = "session.tool_use" as const;
+
+// ── Session metric event names (#1610) ──
+
+export const METRIC_SESSION_FOOTPRINT = "metric.session.footprint" as const;
+export const METRIC_SESSION_COMMAND_HIST = "metric.session.command_hist" as const;
+export const METRIC_SESSION_QUERIES = "metric.session.queries" as const;
 
 // ── Work item event names ──
 
@@ -338,6 +345,28 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const sender = typeof e.sender === "string" ? e.sender : "";
     const recipient = typeof e.recipient === "string" ? e.recipient : "";
     return join(sender, "→", recipient);
+  },
+
+  [SESSION_TOOL_USE]: (e) => {
+    const tool = typeof e.toolName === "string" ? e.toolName : "";
+    const fp = typeof e.filePath === "string" ? cap(e.filePath, 40) : "";
+    return join(sid(e), tool, fp);
+  },
+
+  [METRIC_SESSION_FOOTPRINT]: (e) => {
+    const dirs = Array.isArray(e.footprint) ? (e.footprint as unknown[]).length : 0;
+    const ratio = typeof e.readWriteRatio === "number" ? `rw:${e.readWriteRatio}` : "";
+    return join(sid(e), `${dirs} dir(s)`, ratio);
+  },
+
+  [METRIC_SESSION_COMMAND_HIST]: (e) => {
+    const cmds = Array.isArray(e.commands) ? (e.commands as unknown[]).length : 0;
+    return join(sid(e), `${cmds} command(s)`);
+  },
+
+  [METRIC_SESSION_QUERIES]: (e) => {
+    const n = Array.isArray(e.recent) ? (e.recent as unknown[]).length : 0;
+    return join(sid(e), `${n} recent query(ies)`);
   },
 
   [COST_SESSION_OVER_BUDGET]: (e) => {

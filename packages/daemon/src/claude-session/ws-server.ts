@@ -11,7 +11,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   AgentPermissionRequest,
   Logger,
@@ -45,6 +45,7 @@ import {
   SESSION_PERMISSION_REQUEST,
   SESSION_RESULT,
   SESSION_STUCK,
+  SESSION_TOOL_USE,
   WORKER_RATELIMITED,
   consoleLogger,
   generateSessionName,
@@ -1604,6 +1605,7 @@ export class ClaudeWsServer {
         break;
       case "session:response":
         this.recordSessionProgress(sessionId, session);
+        this.emitToolUseEvents(sessionId, event.message);
         break;
       case "session:permission_request":
         session.pendingImmediate = true;
@@ -1767,6 +1769,23 @@ export class ClaudeWsServer {
     "session:containment_escalated": SESSION_CONTAINMENT_ESCALATED,
     "session:containment_reset": SESSION_CONTAINMENT_RESET,
   };
+
+  private emitToolUseEvents(sessionId: string, msg: { message: { content: Record<string, unknown>[] } }): void {
+    if (!this.onMonitorEvent) return;
+    for (const block of msg.message.content) {
+      if (block.type !== "tool_use" || typeof block.name !== "string") continue;
+      const input = (block.input ?? {}) as Record<string, unknown>;
+      const extracted = extractToolFields(block.name, input);
+      this.onMonitorEvent({
+        src: "daemon.claude-server",
+        event: SESSION_TOOL_USE,
+        category: "session",
+        sessionId,
+        toolName: block.name,
+        ...extracted,
+      });
+    }
+  }
 
   private publishSessionMonitorEvent(sessionId: string, event: SessionEvent): void {
     if (!this.onMonitorEvent) return;
@@ -2369,6 +2388,82 @@ async function drainStderr(stream: ReadableStream<Uint8Array>, lines: string[]):
 
 function isAddrInUse(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as { code: string }).code === "EADDRINUSE";
+}
+
+// ── Tool-use field extraction (#1610) ──
+
+const CONTENT_SCAN_LIMIT = 1_000_000;
+
+function countNewlines(s: string): number {
+  let count = 0;
+  const len = Math.min(s.length, CONTENT_SCAN_LIMIT);
+  for (let i = 0; i < len; i++) {
+    if (s.charCodeAt(i) === 10) count++;
+  }
+  return count + 1;
+}
+
+export function extractToolFields(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  switch (toolName) {
+    case "Read": {
+      const fp = input.file_path;
+      if (typeof fp === "string") {
+        fields.filePath = fp;
+        fields.dirPath = dirname(fp);
+      }
+      fields.linesHint = typeof input.limit === "number" ? input.limit : 2000;
+      break;
+    }
+    case "Write": {
+      const fp = input.file_path;
+      if (typeof fp === "string") {
+        fields.filePath = fp;
+        fields.dirPath = dirname(fp);
+      }
+      fields.linesHint = typeof input.content === "string" ? countNewlines(input.content) : 1;
+      fields.isWrite = true;
+      break;
+    }
+    case "Edit": {
+      const fp = input.file_path;
+      if (typeof fp === "string") {
+        fields.filePath = fp;
+        fields.dirPath = dirname(fp);
+      }
+      fields.linesHint = typeof input.new_string === "string" ? countNewlines(input.new_string) : 1;
+      fields.isWrite = true;
+      break;
+    }
+    case "Bash": {
+      if (typeof input.command === "string") {
+        fields.command = input.command;
+        const tokens = input.command.trim().split(/\s+/);
+        fields.cmdGroup = tokens.slice(0, 2).join(" ");
+      }
+      break;
+    }
+    case "Grep": {
+      if (typeof input.pattern === "string") fields.pattern = input.pattern;
+      if (typeof input.path === "string") fields.searchPath = input.path;
+      break;
+    }
+    case "Glob": {
+      if (typeof input.pattern === "string") fields.pattern = input.pattern;
+      if (typeof input.path === "string") fields.searchPath = input.path;
+      break;
+    }
+    case "NotebookEdit": {
+      const fp = input.file_path;
+      if (typeof fp === "string") {
+        fields.filePath = fp;
+        fields.dirPath = dirname(fp);
+      }
+      fields.isWrite = true;
+      break;
+    }
+  }
+  return fields;
 }
 
 // ── Default spawn ──

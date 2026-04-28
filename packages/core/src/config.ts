@@ -93,6 +93,12 @@ export interface CliConfig {
   telemetryNoticeShown?: boolean;
   /** Phase execution configuration */
   phase?: PhaseConfig;
+  /** Session metrics configuration (#1610). Default: enabled. */
+  metrics?: {
+    session?: {
+      enabled?: boolean;
+    };
+  };
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */
