@@ -18,7 +18,7 @@ reducers that the planner itself uses (`mcx claude ls` filters, `mcx pr
 merge`, daemon event types, phase-script behavior). A solo `/sprint plan`
 invocation in a fresh session — i.e. not auto-chained from a just-ended
 run — runs against whatever `dist/` binaries the previous sprint's
-wind-down left behind. Sometimes that's hours- or days-old (see #TBD —
+wind-down left behind. Sometimes that's hours- or days-old (see #1858 —
 sprint 47's wind-down rebuild also failed to fire, so dist was 12h
 stale at sprint 48 plan time).
 
