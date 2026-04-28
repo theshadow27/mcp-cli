@@ -29,7 +29,7 @@ While surveying:
 
 Meta issues (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`,
 `.gitignore`) do not go into the sprint backlog — they are applied by the
-orchestrator directly on main, outside any sprint. But they must be
+orchestrator outside any sprint, between sprints. But they must be
 reviewed **before** the sprint starts, while the user has full attention.
 Don't rely on the user to remember to run improvements independently —
 the plan phase pulls them up.
@@ -40,13 +40,34 @@ gh issue list --state open --label meta --json number,title,body,updatedAt --lim
 
 Present each one to the user in order of recency, with a short summary and
 a recommendation: **apply now, defer to later retro, or close.** For each
-one the user approves for *now*:
+one the user approves for *now*, apply via a short-lived `meta/<descriptor>`
+branch + auto-merge PR (the autoapprover blocks direct-push to main):
 
-1. Apply the change directly on `main` (orchestrator edits the files —
-   these are small, well-scoped edits, not worker tasks)
-2. Commit with a conventional message (`chore(skill): …`, `chore(memory): …`)
-3. Push
-4. Close the issue: `gh issue close <n> --comment "Applied in <sha>."`
+```bash
+# (a) Branch from main
+git checkout -b meta/<short-descriptor>
+
+# (b) Edit the meta files (orchestrator edits directly — small well-scoped
+#     changes, not worker tasks)
+
+# (c) Commit + push + auto-merge PR
+git add <files>
+git commit -m "chore(skill): …"   # or chore(memory): …
+git push -u origin meta/<short-descriptor>
+gh pr create --base main --head meta/<short-descriptor> \
+  --title "chore(skill): …" \
+  --body "Applies meta-fix #<n>. Docs/skill-only — pre-commit hooks should skip the test suite."
+gh pr merge --squash --delete-branch --auto
+
+# (d) After merge: close the issue
+gh pr view <pr> --json state -q .state    # poll until MERGED
+gh issue close <n> --comment "Applied in <merged-sha>."
+git checkout main && git pull --ff-only
+```
+
+Meta-fixes use their own `meta/<descriptor>` branch (not the sprint branch)
+because they're outside the sprint lifecycle — they need to land on main
+*before* the new sprint's plan PR opens, so the new sprint inherits them.
 
 Only proceed to Step 2 once the user has reviewed every pending `meta`
 issue. They might all get deferred — that's fine, the goal is just that
@@ -134,12 +155,13 @@ Rules:
 4. Group related issues so they land in the same sprint (shared context)
 5. **Never pick issues that modify orchestration meta-files**: `.claude/skills/**`,
    `.claude/memory/**`, `CLAUDE.md`, `.gitignore`, or similar files the
-   orchestrator reads live while running. Those changes belong in retro, done
-   by the orchestrator directly on main. Workers modifying these mid-sprint
-   means the orchestrator is reading a mix of old/new definitions across
-   concurrent sessions (observed in sprint 32 when `/qa` and a docs PR both
-   edited `run.md`). If an issue is pure meta, defer it to retro or a
-   user-led cleanup pass.
+   orchestrator reads live while running. Those changes belong in retro or
+   between sprints, applied by the orchestrator via the meta-fix flow in
+   Step 1a (a `meta/<descriptor>` branch + auto-merge PR). Workers modifying
+   these mid-sprint means the orchestrator is reading a mix of old/new
+   definitions across concurrent sessions (observed in sprint 32 when `/qa`
+   and a docs PR both edited `run.md`). If an issue is pure meta, defer it
+   to retro or a user-led cleanup pass.
 
 Split picks into:
 - **Goal issues** (10-12): aligned with the sprint thesis
@@ -255,6 +277,66 @@ Show the user:
 - Any issues you considered but excluded (and why)
 
 Wait for confirmation. The user may swap issues, adjust the goal, or approve as-is.
+
+## Step 6a: Open the long-lived sprint branch + draft PR
+
+Once the user approves, open the sprint container: a `sprint-{N}` branch in
+its own worktree, plus a draft PR that will accumulate every sprint-meta
+commit (plan, mid-sprint amendments, run-time edits, Results, retro,
+release) and merge as a single squash at retro time. See `SKILL.md` for
+the rationale.
+
+```bash
+# (a) Make sure main is current and the worktree path is free
+git fetch origin main
+git worktree list | grep -q "sprint-{N}" \
+  && { echo "ERROR: a sprint-{N} worktree already exists — leftover from an earlier attempt?" >&2; exit 1; }
+
+# (b) Create the sprint branch + worktree from current origin/main
+git worktree add -b sprint-{N} .claude/worktrees/sprint-{N} origin/main
+
+# (c) Move the plan file into the worktree (keep an uncommitted copy in
+#     the orchestrator's main checkout so phase scripts can read it during
+#     run — see run.md "Sprint-meta edits during run")
+cp .claude/sprints/sprint-{N}.md .claude/worktrees/sprint-{N}/.claude/sprints/sprint-{N}.md
+
+# (d) Commit the plan inside the worktree
+(
+  cd .claude/worktrees/sprint-{N}
+  git add .claude/sprints/sprint-{N}.md
+  git commit -m "sprint({N}): plan — {one-line goal}"
+  git push -u origin sprint-{N}
+)
+
+# (e) Open the container PR as DRAFT — converts to ready at retro time.
+#     Use --draft so it doesn't auto-merge prematurely.
+gh pr create --base main --head sprint-{N} \
+  --draft \
+  --title "sprint({N}): {one-line goal}" \
+  --body "$(cat <<'PRBODY'
+Sprint {N} container PR. Accumulates every sprint-meta commit on the
+\`sprint-{N}\` branch:
+
+- plan + any mid-sprint amendments
+- run-time edits (Started/Ended timestamps, Excluded section)
+- Results summary
+- retro diary file
+- release commit (if a release is cut this sprint)
+
+Marked **draft** until \`/sprint retro\` flips it ready and arms auto-merge.
+
+Docs/skill-only by construction — pre-commit hooks should skip the test suite.
+PRBODY
+)"
+```
+
+The orchestrator now has two relevant working trees:
+- **Main checkout** (`./`) — where `mcx` runs, where phase scripts read
+  `.claude/sprints/sprint-{N}.md` from. The plan file lives here uncommitted.
+- **Sprint worktree** (`.claude/worktrees/sprint-{N}/`) — where the
+  `sprint-{N}` branch lives. Source of truth for sprint-meta commits.
+
+The two are kept in sync manually (orchestrator copies updates between them).
 
 ## Step 7: Overlap with current sprint
 
