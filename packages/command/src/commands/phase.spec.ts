@@ -506,6 +506,35 @@ describe("phaseRun", () => {
   });
 });
 
+async function catchExit(fn: () => Promise<unknown>): Promise<{ code: number | undefined; out: string; err: string }> {
+  const origExit = process.exit;
+  const origLog = console.log;
+  const origErr = console.error;
+  let exitCode: number | undefined;
+  let out = "";
+  let err = "";
+  process.exit = ((c?: number) => {
+    exitCode = c;
+    throw new Error("__exit__");
+  }) as typeof process.exit;
+  console.log = (...a: unknown[]) => {
+    out += `${a.join(" ")}\n`;
+  };
+  console.error = (...a: unknown[]) => {
+    err += `${a.join(" ")}\n`;
+  };
+  try {
+    await fn().catch((e) => {
+      if ((e as Error).message !== "__exit__") throw e;
+    });
+  } finally {
+    process.exit = origExit;
+    console.log = origLog;
+    console.error = origErr;
+  }
+  return { code: exitCode, out, err };
+}
+
 describe("cmdPhase dispatch", () => {
   beforeEach(async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
@@ -526,37 +555,6 @@ describe("cmdPhase dispatch", () => {
     const { deps } = makeDriftDeps(dir);
     await cmdPhase(["install"], deps);
   });
-
-  async function catchExit(
-    fn: () => Promise<unknown>,
-  ): Promise<{ code: number | undefined; out: string; err: string }> {
-    const origExit = process.exit;
-    const origLog = console.log;
-    const origErr = console.error;
-    let exitCode: number | undefined;
-    let out = "";
-    let err = "";
-    process.exit = ((c?: number) => {
-      exitCode = c;
-      throw new Error("__exit__");
-    }) as typeof process.exit;
-    console.log = (...a: unknown[]) => {
-      out += `${a.join(" ")}\n`;
-    };
-    console.error = (...a: unknown[]) => {
-      err += `${a.join(" ")}\n`;
-    };
-    try {
-      await fn().catch((e) => {
-        if ((e as Error).message !== "__exit__") throw e;
-      });
-    } finally {
-      process.exit = origExit;
-      console.log = origLog;
-      console.error = origErr;
-    }
-    return { code: exitCode, out, err };
-  }
 
   test("no args prints usage", async () => {
     const { out, code } = await catchExit(() => cmdPhase([]));
@@ -2004,37 +2002,6 @@ phases:
 });
 
 describe("work_items.phase wins over stale transition log (#1802)", () => {
-  async function catchExit1802(
-    fn: () => Promise<unknown>,
-  ): Promise<{ code: number | undefined; out: string; err: string }> {
-    const origExit = process.exit;
-    const origLog = console.log;
-    const origErr = console.error;
-    let exitCode: number | undefined;
-    let out = "";
-    let err = "";
-    process.exit = ((c?: number) => {
-      exitCode = c;
-      throw new Error("__exit__");
-    }) as typeof process.exit;
-    console.log = (...a: unknown[]) => {
-      out += `${a.join(" ")}\n`;
-    };
-    console.error = (...a: unknown[]) => {
-      err += `${a.join(" ")}\n`;
-    };
-    try {
-      await fn().catch((e) => {
-        if ((e as Error).message !== "__exit__") throw e;
-      });
-    } finally {
-      process.exit = origExit;
-      console.log = origLog;
-      console.error = origErr;
-    }
-    return { code: exitCode, out, err };
-  }
-
   function makeExecDeps1802(opts: { workItem: Record<string, unknown> }) {
     const calls: Array<{ method: string; params: unknown }> = [];
     const ipcCall = async (method: string, params: unknown) => {
@@ -2196,7 +2163,7 @@ phases:
       }
       return null;
     };
-    const { err, code } = await catchExit1802(() =>
+    const { err, code } = await catchExit(() =>
       cmdPhase(
         ["run", "done", "--work-item", "#1727", "--no-execute"],
         { cwd: () => dir },
