@@ -2406,6 +2406,189 @@ defineAlias(({ z }) => ({
   }, 30_000);
 });
 
+describe("auto-detects --from for repair↔qa cycles without explicit flag (#1746)", () => {
+  const stubAlias = `
+import { defineAlias, z } from "mcp-cli";
+defineAlias(({ z }) => ({
+  name: "stub",
+  description: "stub",
+  input: z.object({}).default({}),
+  output: z.object({}).default({}),
+  fn: async () => ({}),
+}));
+`.trim();
+
+  const manifest1746 = `
+runsOn: main
+initial: impl
+phases:
+  impl:
+    source: ./impl.ts
+    next: [review]
+  review:
+    source: ./review.ts
+    next: [repair, qa]
+  repair:
+    source: ./repair.ts
+    next: [review, qa]
+  qa:
+    source: ./qa.ts
+    next: [done, repair]
+  done:
+    source: ./done.ts
+    next: []
+`.trim();
+
+  function makeIpcCall1746(workItemPhase: string | null) {
+    return async (method: string) => {
+      if (method === "getWorkItem") {
+        return {
+          id: "#1746",
+          issueNumber: 1746,
+          prNumber: null,
+          branch: "feat/1746",
+          prState: "open",
+          prUrl: null,
+          ciStatus: "none",
+          ciRunId: null,
+          ciSummary: null,
+          reviewStatus: "pending",
+          phase: workItemPhase,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        };
+      }
+      return null;
+    };
+  }
+
+  function seedLog(logPath: string, entries: Array<{ from: string | null; to: string }>) {
+    for (let i = 0; i < entries.length; i++) {
+      appendTransitionLog(logPath, {
+        ts: `2026-04-27T00:0${i}:00Z`,
+        workItemId: "#1746",
+        from: entries[i].from,
+        to: entries[i].to,
+        status: "committed",
+      });
+    }
+  }
+
+  test("repair→qa: prefers work_items.phase over stale log tail (#1746/#1802)", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Log tail = "impl" (stale); work_items.phase = "repair" (advanced via work_items_update).
+    // Old code: resolvedFrom = "impl" → impl→qa DisallowedTransitionError (impl.next=[review]).
+    // New code: resolvedFrom = "repair" → repair→qa valid (repair.next=[review,qa]).
+    seedLog(transitionLogPath(dir), [{ from: null, to: "impl" }]);
+
+    const { err, code } = await catchExit(() =>
+      cmdPhase(
+        ["run", "qa", "--work-item", "#1746", "--no-execute"],
+        { cwd: () => dir },
+        { ipcCall: makeIpcCall1746("repair") as unknown as typeof import("@mcp-cli/core").ipcCall },
+      ),
+    );
+
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("repair → qa");
+  });
+
+  test("qa→repair: prefers work_items.phase over stale log tail (#1746/#1802)", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Log tail = "impl" (stale); work_items.phase = "qa" (advanced via work_items_update).
+    // Old code: resolvedFrom = "impl" → impl→repair DisallowedTransitionError (impl.next=[review]).
+    // New code: resolvedFrom = "qa" → qa→repair valid (qa.next=[done,repair]).
+    seedLog(transitionLogPath(dir), [{ from: null, to: "impl" }]);
+
+    const { err, code } = await catchExit(() =>
+      cmdPhase(
+        ["run", "repair", "--work-item", "#1746", "--no-execute"],
+        { cwd: () => dir },
+        { ipcCall: makeIpcCall1746("qa") as unknown as typeof import("@mcp-cli/core").ipcCall },
+      ),
+    );
+
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("qa → repair");
+  });
+
+  test("falls back to log tail when work_items.phase is null", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Log tail = "repair"; work_items.phase = null (not yet persisted)
+    seedLog(transitionLogPath(dir), [
+      { from: null, to: "impl" },
+      { from: "impl", to: "review" },
+      { from: "review", to: "qa" },
+      { from: "qa", to: "repair" },
+    ]);
+
+    const { err, code } = await catchExit(() =>
+      cmdPhase(
+        ["run", "qa", "--work-item", "#1746", "--no-execute"],
+        { cwd: () => dir },
+        { ipcCall: makeIpcCall1746(null) as unknown as typeof import("@mcp-cli/core").ipcCall },
+      ),
+    );
+
+    expect(code).toBeUndefined();
+    expect(err).toContain("approved");
+    expect(err).toContain("repair → qa");
+  });
+
+  test("hint uses err.from (not resolvedFrom) when --from is absent and auto-detection fails", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Empty log + no work item → resolvedFrom=null. validateTransition uses synthetic "(initial)".
+    // Hint must show "(initial)" (err.from) not "(unknown)" (resolvedFrom ?? fallback).
+    const { err, code } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => dir }));
+
+    expect(code).toBe(1);
+    expect(err).toContain('hint: "from" was auto-detected as "(initial)"');
+    expect(err).not.toContain("(unknown)");
+  });
+
+  test("hint is absent when --from is supplied explicitly", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest1746);
+    for (const f of ["impl.ts", "review.ts", "repair.ts", "qa.ts", "done.ts"]) {
+      writeFileSync(join(dir, f), stubAlias);
+    }
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // --from impl is explicit; impl→qa is invalid, but hint must NOT be appended.
+    const { err, code } = await catchExit(() => cmdPhase(["run", "qa", "--from", "impl"], { cwd: () => dir }));
+
+    expect(code).toBe(1);
+    expect(err).toContain("impl → qa is not an approved transition");
+    expect(err).not.toContain("hint:");
+  });
+});
+
 describe("spawnExec (#1408)", () => {
   test("returns exitCode=1 and message when binary does not exist", () => {
     const result = spawnExec(["/nonexistent/binary/that/cannot/be/found"]);
