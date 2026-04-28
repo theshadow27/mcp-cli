@@ -1335,6 +1335,15 @@ export class IpcServer {
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
     });
 
+    this.handlers.set("getBudgetConfig", async () => {
+      return this.db.getBudgetConfig();
+    });
+
+    this.handlers.set("setBudgetConfig", async (params) => {
+      this.db.setBudgetConfig(params as Partial<import("@mcp-cli/core").BudgetConfig>);
+      return { ok: true as const };
+    });
+
     this.handlers.set("shutdown", async (params, _ctx) => {
       const { force } = ShutdownParamsSchema.parse(params ?? {});
       // Check force BEFORE querying DB — --force is the escape hatch when DB is degraded

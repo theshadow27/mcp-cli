@@ -62,7 +62,9 @@ export type IpcMethod =
   | "aliasStateGet"
   | "aliasStateSet"
   | "aliasStateDelete"
-  | "aliasStateAll";
+  | "aliasStateAll"
+  | "getBudgetConfig"
+  | "setBudgetConfig";
 
 // -- Request/Response --
 
@@ -649,6 +651,16 @@ export interface PruneSpansResult {
   pruned: number;
 }
 
+// -- Budget config (#1587) --
+
+export interface BudgetConfig {
+  sessionCap: number;
+  sprintCap: number;
+  sprintWindowMs: number;
+  quotaThresholds: number[];
+  quotaDeadband: number;
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -700,6 +712,8 @@ export interface IpcMethodResult {
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;
   aliasStateAll: AliasStateAllResult;
+  getBudgetConfig: BudgetConfig;
+  setBudgetConfig: { ok: true };
 }
 
 // -- Error codes --

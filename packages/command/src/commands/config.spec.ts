@@ -3,15 +3,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import type { ConfigDeps } from "./config";
+import type { BudgetIpc, ConfigDeps } from "./config";
 import {
+  BUDGET_KEYS,
   cmdConfig,
+  configGetBudget,
   configGetDispatch,
   configGetServer,
+  configSetBudget,
   configSetDispatch,
   configSetServerArgs,
   configSetServerEnv,
   configSetServerUrl,
+  isBudgetKey,
   isCliOptionKey,
   maskConfig,
   maskValue,
@@ -988,3 +992,292 @@ function readConfigFrom(path: string): Record<string, unknown> {
     return {};
   }
 }
+
+// -- Budget config keys (#1587) --
+
+describe("isBudgetKey", () => {
+  it("recognizes valid budget keys", () => {
+    expect(isBudgetKey("budget.session-cap")).toBe(true);
+    expect(isBudgetKey("budget.sprint-cap")).toBe(true);
+    expect(isBudgetKey("budget.sprint-window-hours")).toBe(true);
+    expect(isBudgetKey("budget.quota-thresholds")).toBe(true);
+    expect(isBudgetKey("budget.quota-deadband")).toBe(true);
+  });
+
+  it("rejects non-budget keys", () => {
+    expect(isBudgetKey("trust-claude")).toBe(false);
+    expect(isBudgetKey("budget.unknown")).toBe(false);
+    expect(isBudgetKey("budget")).toBe(false);
+    expect(isBudgetKey("session-cap")).toBe(false);
+  });
+});
+
+describe("BUDGET_KEYS", () => {
+  it("maps CLI keys to BudgetConfig properties", () => {
+    expect(BUDGET_KEYS["budget.session-cap"]).toBe("sessionCap");
+    expect(BUDGET_KEYS["budget.sprint-cap"]).toBe("sprintCap");
+    expect(BUDGET_KEYS["budget.sprint-window-hours"]).toBe("sprintWindowMs");
+    expect(BUDGET_KEYS["budget.quota-thresholds"]).toBe("quotaThresholds");
+    expect(BUDGET_KEYS["budget.quota-deadband"]).toBe("quotaDeadband");
+  });
+
+  it("has exactly 5 keys", () => {
+    expect(Object.keys(BUDGET_KEYS)).toHaveLength(5);
+  });
+});
+
+// -- Budget IPC helper --
+
+function fakeBudgetIpc(config?: Partial<import("@mcp-cli/core").BudgetConfig>): {
+  ipc: BudgetIpc;
+  setCalls: Partial<import("@mcp-cli/core").BudgetConfig>[];
+} {
+  const defaults: import("@mcp-cli/core").BudgetConfig = {
+    sessionCap: 3.0,
+    sprintCap: 30.0,
+    sprintWindowMs: 4 * 60 * 60 * 1000,
+    quotaThresholds: [80, 95],
+    quotaDeadband: 5,
+    ...config,
+  };
+  const setCalls: Partial<import("@mcp-cli/core").BudgetConfig>[] = [];
+  return {
+    ipc: {
+      get: async () => defaults,
+      set: async (partial) => {
+        setCalls.push(partial);
+        return { ok: true as const };
+      },
+    },
+    setCalls,
+  };
+}
+
+// -- configGetBudget (#1587) --
+
+describe("configGetBudget", () => {
+  it("exits for unknown budget key", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configGetBudget("budget.unknown");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("gets session-cap", async () => {
+    const logs: string[] = [];
+    const { ipc } = fakeBudgetIpc({ sessionCap: 5.0 });
+
+    await configGetBudget("budget.session-cap", (m) => logs.push(m), ipc);
+
+    expect(logs).toEqual(["5"]);
+  });
+
+  it("gets sprint-cap", async () => {
+    const logs: string[] = [];
+    const { ipc } = fakeBudgetIpc({ sprintCap: 25.0 });
+
+    await configGetBudget("budget.sprint-cap", (m) => logs.push(m), ipc);
+
+    expect(logs).toEqual(["25"]);
+  });
+
+  it("converts sprint-window-hours from ms", async () => {
+    const logs: string[] = [];
+    const { ipc } = fakeBudgetIpc({ sprintWindowMs: 6 * 60 * 60 * 1000 });
+
+    await configGetBudget("budget.sprint-window-hours", (m) => logs.push(m), ipc);
+
+    expect(logs).toEqual(["6"]);
+  });
+
+  it("gets quota-thresholds as JSON array", async () => {
+    const logs: string[] = [];
+    const { ipc } = fakeBudgetIpc({ quotaThresholds: [50, 75, 90] });
+
+    await configGetBudget("budget.quota-thresholds", (m) => logs.push(m), ipc);
+
+    expect(logs).toEqual(["[50,75,90]"]);
+  });
+
+  it("gets quota-deadband", async () => {
+    const logs: string[] = [];
+    const { ipc } = fakeBudgetIpc({ quotaDeadband: 10 });
+
+    await configGetBudget("budget.quota-deadband", (m) => logs.push(m), ipc);
+
+    expect(logs).toEqual(["10"]);
+  });
+});
+
+// -- configSetBudget (#1587) --
+
+describe("configSetBudget", () => {
+  it("exits for unknown budget key", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.unknown", "5");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when value is missing", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.session-cap", undefined);
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for invalid quota thresholds", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.quota-thresholds", "abc,def");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for out-of-range quota thresholds", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.quota-thresholds", "50,150");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for invalid sprint window", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.sprint-window-hours", "0");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for non-numeric sprint window", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.sprint-window-hours", "abc");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for negative number on numeric key", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.session-cap", "-5");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits for non-numeric value on numeric key", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await configSetBudget("budget.session-cap", "abc");
+    } catch {
+      // expected
+    }
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("sets session-cap via IPC", async () => {
+    const logs: string[] = [];
+    const { ipc, setCalls } = fakeBudgetIpc();
+
+    await configSetBudget("budget.session-cap", "5.0", (m) => logs.push(m), ipc);
+
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].sessionCap).toBe(5.0);
+    expect(logs).toEqual(["budget.session-cap = 5.0"]);
+  });
+
+  it("sets quota-thresholds via IPC", async () => {
+    const logs: string[] = [];
+    const { ipc, setCalls } = fakeBudgetIpc();
+
+    await configSetBudget("budget.quota-thresholds", "50,75,90", (m) => logs.push(m), ipc);
+
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].quotaThresholds).toEqual([50, 75, 90]);
+  });
+
+  it("sets sprint-window-hours converting to ms", async () => {
+    const logs: string[] = [];
+    const { ipc, setCalls } = fakeBudgetIpc();
+
+    await configSetBudget("budget.sprint-window-hours", "6", (m) => logs.push(m), ipc);
+
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].sprintWindowMs).toBe(6 * 60 * 60 * 1000);
+  });
+
+  it("sets quota-deadband via IPC", async () => {
+    const logs: string[] = [];
+    const { ipc, setCalls } = fakeBudgetIpc();
+
+    await configSetBudget("budget.quota-deadband", "10", (m) => logs.push(m), ipc);
+
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].quotaDeadband).toBe(10);
+  });
+});
