@@ -44,7 +44,11 @@ export class CoalescingPublisher<T> {
   constructor(emit: (event: T) => void, opts: CoalescerOptions = {}) {
     this.emit = emit;
     this.clock = opts.clock ?? systemClock;
-    this.maxKeys = opts.maxKeys ?? DEFAULT_MAX_KEYS;
+    const maxKeys = opts.maxKeys ?? DEFAULT_MAX_KEYS;
+    if (!Number.isFinite(maxKeys) || maxKeys < 1) {
+      throw new RangeError(`CoalescingPublisher: maxKeys must be a positive integer, got ${maxKeys}`);
+    }
+    this.maxKeys = Math.trunc(maxKeys);
     this.metrics = opts.metrics ?? null;
   }
 
@@ -53,7 +57,12 @@ export class CoalescingPublisher<T> {
 
     if (opts.mode === "never") {
       this.flushKey(key);
-      this.emit(event);
+      try {
+        this.emit(event);
+      } catch (err) {
+        this.metrics?.emitErrors.inc();
+        throw err;
+      }
       return;
     }
 
@@ -75,8 +84,11 @@ export class CoalescingPublisher<T> {
     } else if (this.pending.size >= this.maxKeys) {
       const oldest = this.pending.keys().next();
       if (!oldest.done) {
-        this.flushKey(oldest.value);
-        this.metrics?.overflowTotal.inc();
+        try {
+          this.flushKey(oldest.value);
+        } finally {
+          this.metrics?.overflowTotal.inc();
+        }
       }
     }
 
