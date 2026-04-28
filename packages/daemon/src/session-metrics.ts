@@ -95,16 +95,21 @@ export interface SessionMetricsAggregatorOpts {
   bus: EventBus;
   db: Database;
   maxQueries?: number;
+  maxPaths?: number;
   coalesceWindowMs?: number;
+  pruneAfterDays?: number;
 }
 
 const DEFAULT_MAX_QUERIES = 20;
+const DEFAULT_MAX_PATHS = 1000;
 const DEFAULT_COALESCE_WINDOW_MS = 500;
+const DEFAULT_PRUNE_AFTER_DAYS = 30;
 
 export class SessionMetricsAggregator {
   private readonly bus: EventBus;
   private readonly db: Database;
   private readonly maxQueries: number;
+  private readonly maxPaths: number;
   private readonly coalesceWindowMs: number;
   private readonly sessions = new Map<string, SessionMetricState>();
   private readonly subId: number;
@@ -112,19 +117,27 @@ export class SessionMetricsAggregator {
 
   private readonly saveStmt: ReturnType<Database["prepare"]>;
   private readonly loadStmt: ReturnType<Database["prepare"]>;
-  private readonly deleteStmt: ReturnType<Database["prepare"]>;
+  private readonly pruneStmt: ReturnType<Database["prepare"]>;
 
   constructor(opts: SessionMetricsAggregatorOpts) {
     this.bus = opts.bus;
     this.db = opts.db;
     this.maxQueries = opts.maxQueries ?? DEFAULT_MAX_QUERIES;
+    this.maxPaths = opts.maxPaths ?? DEFAULT_MAX_PATHS;
     this.coalesceWindowMs = opts.coalesceWindowMs ?? DEFAULT_COALESCE_WINDOW_MS;
 
     this.saveStmt = this.db.prepare(
       "INSERT OR REPLACE INTO session_metrics (session_id, metrics_json, updated_at) VALUES (?, ?, unixepoch())",
     );
     this.loadStmt = this.db.prepare("SELECT metrics_json FROM session_metrics WHERE session_id = ?");
-    this.deleteStmt = this.db.prepare("DELETE FROM session_metrics WHERE session_id = ?");
+    this.pruneStmt = this.db.prepare("DELETE FROM session_metrics WHERE updated_at < unixepoch() - ?");
+
+    const pruneAfterDays = opts.pruneAfterDays ?? DEFAULT_PRUNE_AFTER_DAYS;
+    try {
+      this.pruneStmt.run(pruneAfterDays * 86400);
+    } catch {
+      // best-effort cleanup — don't block startup
+    }
 
     this.subId = this.bus.subscribe((event) => this.handleEvent(event), isRelevantEvent);
   }
@@ -190,6 +203,9 @@ export class SessionMetricsAggregator {
     if (dirPath) {
       let entry = state.dirFootprint.get(dirPath);
       if (!entry) {
+        if (state.dirFootprint.size >= this.maxPaths) {
+          evictOldest(state.dirFootprint);
+        }
         entry = { read: 0, wrote: 0, fileSet: new Set() };
         state.dirFootprint.set(dirPath, entry);
       }
@@ -220,6 +236,9 @@ export class SessionMetricsAggregator {
     if (filePath && !isWrite) {
       let rd = state.readDepth.get(filePath);
       if (!rd) {
+        if (state.readDepth.size >= this.maxPaths) {
+          evictOldest(state.readDepth);
+        }
         rd = { readCount: 0, linesReadTotal: 0, maxLines: 0 };
         state.readDepth.set(filePath, rd);
       }
@@ -258,8 +277,9 @@ export class SessionMetricsAggregator {
     this.accumulateStateTime(state);
     this.emitAllMetrics(sessionId, state);
     this.flushCoalesced(sessionId);
-    this.persistSession(sessionId, state);
-    this.sessions.delete(sessionId);
+    if (this.persistSession(sessionId, state)) {
+      this.sessions.delete(sessionId);
+    }
   }
 
   // ── Metric emission (coalesced) ──
@@ -349,12 +369,14 @@ export class SessionMetricsAggregator {
 
   // ── Persistence ──
 
-  private persistSession(sessionId: string, state: SessionMetricState): void {
-    if (!state.hasToolCalls) return;
+  private persistSession(sessionId: string, state: SessionMetricState): boolean {
+    if (!state.hasToolCalls) return true;
     try {
       this.saveStmt.run(sessionId, serializeState(state));
+      return true;
     } catch (err) {
       console.error(`[SessionMetrics] Failed to persist metrics for ${sessionId}:`, err);
+      return false;
     }
   }
 
@@ -371,6 +393,11 @@ export class SessionMetricsAggregator {
 }
 
 // ── Pure helpers ──
+
+function evictOldest<V>(map: Map<string, V>): void {
+  const first = map.keys().next();
+  if (!first.done) map.delete(first.value);
+}
 
 export function createFreshState(sessionId: string): SessionMetricState {
   return {

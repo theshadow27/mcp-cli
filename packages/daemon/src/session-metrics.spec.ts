@@ -459,6 +459,70 @@ describe("SessionMetricsAggregator", () => {
     });
   });
 
+  describe("TTL pruning", () => {
+    test("prunes stale rows on construction", () => {
+      db.exec(
+        `INSERT INTO session_metrics (session_id, metrics_json, updated_at)
+         VALUES ('old', '{}', unixepoch() - 86400 * 60)`,
+      );
+      db.exec(
+        `INSERT INTO session_metrics (session_id, metrics_json, updated_at)
+         VALUES ('recent', '{}', unixepoch() - 86400 * 5)`,
+      );
+
+      const agg2 = new SessionMetricsAggregator({ bus, db, coalesceWindowMs: 500, pruneAfterDays: 30 });
+      const rows = db.query<{ session_id: string }, []>("SELECT session_id FROM session_metrics").all();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].session_id).toBe("recent");
+      agg2.dispose();
+    });
+  });
+
+  describe("maxPaths cap", () => {
+    test("evicts oldest dirFootprint entry when maxPaths exceeded", () => {
+      const agg2 = new SessionMetricsAggregator({ bus, db, maxPaths: 3, coalesceWindowMs: 500 });
+
+      for (let i = 0; i < 5; i++) {
+        bus.publish(toolUse("s1", "Read", { filePath: `/d${i}/f.ts`, dirPath: `/d${i}`, linesHint: 10 }));
+      }
+
+      const state = defined(agg2.getState("s1"));
+      expect(state.dirFootprint.size).toBe(3);
+      expect(state.dirFootprint.has("/d0")).toBe(false);
+      expect(state.dirFootprint.has("/d1")).toBe(false);
+      expect(state.dirFootprint.has("/d4")).toBe(true);
+      agg2.dispose();
+    });
+
+    test("evicts oldest readDepth entry when maxPaths exceeded", () => {
+      const agg2 = new SessionMetricsAggregator({ bus, db, maxPaths: 3, coalesceWindowMs: 500 });
+
+      for (let i = 0; i < 5; i++) {
+        bus.publish(toolUse("s1", "Read", { filePath: `/src/f${i}.ts`, dirPath: "/src", linesHint: 10 }));
+      }
+
+      const state = defined(agg2.getState("s1"));
+      expect(state.readDepth.size).toBe(3);
+      expect(state.readDepth.has("/src/f0.ts")).toBe(false);
+      expect(state.readDepth.has("/src/f1.ts")).toBe(false);
+      expect(state.readDepth.has("/src/f4.ts")).toBe(true);
+      agg2.dispose();
+    });
+  });
+
+  describe("persist failure retention", () => {
+    test("retains in-memory state when DB write fails", () => {
+      bus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
+
+      db.exec("DROP TABLE session_metrics");
+
+      bus.publish(sessionEnd("s1"));
+
+      expect(agg.sessionCount).toBe(1);
+      expect(agg.getState("s1")?.hasToolCalls).toBe(true);
+    });
+  });
+
   describe("dispose", () => {
     test("persists all active sessions to DB", () => {
       bus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
@@ -515,6 +579,73 @@ describe("serializeState / deserializeState", () => {
     expect(restored.commandHist.size).toBe(0);
     expect(restored.queries).toHaveLength(0);
     expect(restored.readDepth.size).toBe(0);
+  });
+});
+
+describe("extractToolFields → aggregator integration", () => {
+  let db: Database;
+  let bus: EventBus;
+  let agg: SessionMetricsAggregator;
+  let extractToolFields: (toolName: string, input: Record<string, unknown>) => Record<string, unknown>;
+
+  beforeEach(async () => {
+    db = freshDb();
+    bus = new EventBus();
+    agg = new SessionMetricsAggregator({ bus, db, coalesceWindowMs: 500 });
+    const mod = await import("./claude-session/ws-server");
+    extractToolFields = mod.extractToolFields;
+  });
+
+  afterEach(() => {
+    agg.dispose();
+    db.close();
+  });
+
+  test("extractToolFields output flows through bus into aggregator state", () => {
+    const readInput = { file_path: "/src/foo.ts", limit: 50 };
+    const readFields = extractToolFields("Read", readInput);
+    bus.publish({
+      src: "daemon.claude-server",
+      event: SESSION_TOOL_USE,
+      category: "session",
+      sessionId: "int-s1",
+      toolName: "Read",
+      ...readFields,
+    });
+
+    const bashInput = { command: "bun test --bail" };
+    const bashFields = extractToolFields("Bash", bashInput);
+    bus.publish({
+      src: "daemon.claude-server",
+      event: SESSION_TOOL_USE,
+      category: "session",
+      sessionId: "int-s1",
+      toolName: "Bash",
+      ...bashFields,
+    });
+
+    const grepInput = { pattern: "handleEvent", path: "/src" };
+    const grepFields = extractToolFields("Grep", grepInput);
+    bus.publish({
+      src: "daemon.claude-server",
+      event: SESSION_TOOL_USE,
+      category: "session",
+      sessionId: "int-s1",
+      toolName: "Grep",
+      ...grepFields,
+    });
+
+    const state = defined(agg.getState("int-s1"));
+
+    expect(state.dirFootprint.has("/src")).toBe(true);
+    expect(defined(state.dirFootprint.get("/src")).read).toBe(50);
+
+    expect(defined(state.readDepth.get("/src/foo.ts")).readCount).toBe(1);
+
+    expect(state.commandHist.get("bun test")).toBe(1);
+
+    expect(state.queries).toHaveLength(1);
+    expect(state.queries[0]).toEqual({ tool: "Grep", pattern: "handleEvent", path: "/src" });
   });
 });
 
