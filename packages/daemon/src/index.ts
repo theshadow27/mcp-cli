@@ -32,8 +32,10 @@ import {
   BUILD_VERSION,
   CLAUDE_SERVER_NAME,
   CODEX_SERVER_NAME,
+  DAEMON_CONFIG_RELOADED,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
+  DAEMON_RESTARTED,
   DEFAULT_CLAUDE_WS_PORT,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
@@ -549,9 +551,26 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }, idleTimeoutMs);
   }
 
+  const eventLog = new EventLog(db.getDatabase());
+  const seqBefore = eventLog.currentSeq();
+  eventLog.startPruning();
+  const mailEventBus = new EventBus(eventLog);
+  mailServer.setEventBus(mailEventBus);
+
+  const restartedEvent = mailEventBus.publish({
+    src: "daemon",
+    event: DAEMON_RESTARTED,
+    category: "daemon",
+    seqBefore,
+    seqAfter: seqBefore + 1,
+    reason: "start",
+  });
+  logger.info(`[mcpd] Published daemon.restarted (seqBefore=${seqBefore}, seqAfter=${restartedEvent.seq})`);
+
   // Watch config files for hot reload
   const watcher = new ConfigWatcher(config, (event) => {
     const { added, removed, changed } = pool.updateConfig(event.config);
+    const changedKeys = [...added, ...removed, ...changed];
     const parts: string[] = [];
     if (added.length) parts.push(`added: ${added.join(", ")}`);
     if (removed.length) parts.push(`removed: ${removed.join(", ")}`);
@@ -561,6 +580,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     } else {
       logger.info("[mcpd] Config reloaded (no server changes)");
     }
+    mailEventBus.publish({
+      src: "daemon",
+      event: DAEMON_CONFIG_RELOADED,
+      category: "daemon",
+      changedKeys,
+    });
     // Update PID file with new hash (use locked fd if available)
     const updatedPid = {
       pid: process.pid,
@@ -577,11 +602,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }
   });
   watcher.start();
-
-  const eventLog = new EventLog(db.getDatabase());
-  eventLog.startPruning();
-  const mailEventBus = new EventBus(eventLog);
-  mailServer.setEventBus(mailEventBus);
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {

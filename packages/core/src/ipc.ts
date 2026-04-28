@@ -62,7 +62,8 @@ export type IpcMethod =
   | "aliasStateGet"
   | "aliasStateSet"
   | "aliasStateDelete"
-  | "aliasStateAll";
+  | "aliasStateAll"
+  | "publishEvent";
 
 // -- Request/Response --
 
@@ -505,6 +506,21 @@ export interface AliasStateAllResult {
   entries: Record<string, unknown>;
 }
 
+export const PublishEventParamsSchema = z.object({
+  src: z.string().min(1),
+  event: z.string().min(1),
+  category: z.string().min(1),
+  sessionId: z.string().optional(),
+  workItemId: z.string().optional(),
+  prNumber: z.number().optional(),
+  extra: z.record(z.string(), z.unknown()).optional(),
+});
+
+export interface PublishEventResult {
+  ok: true;
+  seq: number;
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -700,6 +716,7 @@ export interface IpcMethodResult {
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;
   aliasStateAll: AliasStateAllResult;
+  publishEvent: PublishEventResult;
 }
 
 // -- Error codes --

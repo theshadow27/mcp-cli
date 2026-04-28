@@ -46,6 +46,7 @@ import {
   SESSION_RATE_LIMITED,
   SESSION_RESULT,
   SESSION_STUCK,
+  WORKER_RATELIMITED,
   consoleLogger,
   generateSessionName,
 } from "@mcp-cli/core";
@@ -1711,6 +1712,13 @@ export class ClaudeWsServer {
         } catch (err) {
           logErr("resolveEventWaiters failed", err);
         }
+        this.onMonitorEvent?.({
+          src: "daemon.claude-server",
+          event: WORKER_RATELIMITED,
+          category: "worker",
+          sessionId,
+          provider: "anthropic",
+        });
         break;
       case "session:disconnected":
         this.disposeStuckDetector(session);
