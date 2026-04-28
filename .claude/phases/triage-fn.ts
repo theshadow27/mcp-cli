@@ -1,9 +1,4 @@
-/**
- * Core triage logic, extracted for testability.
- *
- * The defineAlias wrapper in triage.ts constructs TriageDeps from the
- * AliasContext and delegates here.
- */
+/** Core triage logic, extracted for testability via dependency injection. */
 
 export interface TriageEventFilter {
   type?: string | string[];
@@ -50,16 +45,16 @@ export type TriageResult =
     }
   | { action: "wait"; reason: string };
 
-const WAIT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export async function runTriage(
-  input: { labels: string[]; since?: number },
+  input: { labels: string[]; since?: number; timeoutMs?: number },
   work: TriageWork,
   deps: TriageDeps,
 ): Promise<TriageResult> {
   const missing: string[] = [];
   if (work.issueNumber == null) missing.push("issueNumber");
-  if (work.branch == null) missing.push("branch");
+  if (!work.branch) missing.push("branch");
   if (missing.length > 0) {
     throw new Error(
       `phase-triage requires ${missing.map((f) => `'${f}'`).join(" and ")} on the work item ${work.id} (missing: ${missing.join(", ")})`,
@@ -73,9 +68,10 @@ export async function runTriage(
 
   if (prNumber == null) {
     try {
+      const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const event = await deps.waitForEvent(
         { type: ["pr.opened", "session.result"], workItem: work.id },
-        { timeoutMs: WAIT_TIMEOUT_MS, since: input.since },
+        { timeoutMs, since: input.since },
       );
       if (event.prNumber != null) {
         prNumber = event.prNumber;
@@ -121,8 +117,11 @@ export async function runTriage(
 
   try {
     await deps.updateWorkItem(work.id, prNumber);
-  } catch {
-    // work_items server unavailable — caller handles via CLI
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|unavailable/i.test(msg)) {
+      throw err;
+    }
   }
 
   return {

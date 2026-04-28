@@ -141,6 +141,22 @@ describe("runTriage — PR available", () => {
   });
 });
 
+describe("runTriage — runEstimate failure", () => {
+  test("runEstimate error propagates to caller", async () => {
+    await expect(
+      runTriage(
+        { labels: [] },
+        makeWork({ prNumber: 100 }),
+        makeDeps({
+          runEstimate: () => {
+            throw new Error("triage.ts failed: exit code 1");
+          },
+        }),
+      ),
+    ).rejects.toThrow("triage.ts failed: exit code 1");
+  });
+});
+
 // ── (a) Event arrives during wait → resolved with event ──
 
 describe("runTriage — waitForEvent", () => {
@@ -273,6 +289,24 @@ describe("runTriage — replay", () => {
     expect(capturedOpts).toEqual({ timeoutMs: 30_000, since: 42 });
   });
 
+  test("timeoutMs input overrides default", async () => {
+    let capturedOpts: unknown;
+
+    await runTriage(
+      { labels: [], timeoutMs: 5_000 },
+      makeWork(),
+      makeDeps({
+        findPr: () => null,
+        waitForEvent: async (_filter, opts) => {
+          capturedOpts = opts;
+          throw makeTimeoutError();
+        },
+      }),
+    );
+
+    expect(capturedOpts).toMatchObject({ timeoutMs: 5_000 });
+  });
+
   test("replayed event with prNumber resolves triage", async () => {
     const result = await runTriage(
       { labels: [], since: 10 },
@@ -304,6 +338,10 @@ describe("runTriage — validation", () => {
     await expect(runTriage({ labels: [] }, makeWork({ branch: null }), makeDeps())).rejects.toThrow("branch");
   });
 
+  test("throws when branch is empty string", async () => {
+    await expect(runTriage({ labels: [] }, makeWork({ branch: "" }), makeDeps())).rejects.toThrow("branch");
+  });
+
   test("throws when both missing — lists both", async () => {
     await expect(runTriage({ labels: [] }, makeWork({ issueNumber: null, branch: null }), makeDeps())).rejects.toThrow(
       "issueNumber' and 'branch'",
@@ -330,16 +368,29 @@ describe("runTriage — state", () => {
     expect(stateWrites.triage_reasons).toBe("small; clean");
   });
 
-  test("updateWorkItem failure is swallowed", async () => {
+  test("updateWorkItem connectivity failure is swallowed", async () => {
     const result = await runTriage(
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
         runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
-        updateWorkItem: () => Promise.reject(new Error("unavailable")),
+        updateWorkItem: () => Promise.reject(new Error("ECONNREFUSED")),
       }),
     );
     expect(result.action).toBe("goto");
+  });
+
+  test("updateWorkItem non-connectivity error is re-thrown", async () => {
+    await expect(
+      runTriage(
+        { labels: [] },
+        makeWork({ prNumber: 100 }),
+        makeDeps({
+          runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+          updateWorkItem: () => Promise.reject(new Error("schema validation failed")),
+        }),
+      ),
+    ).rejects.toThrow("schema validation failed");
   });
 
   test("updateWorkItem called with correct args", async () => {

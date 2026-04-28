@@ -18,6 +18,7 @@ defineAlias({
   input: z.object({
     labels: z.array(z.string()).default([]),
     since: z.number().optional(),
+    timeoutMs: z.number().optional(),
   }),
   output: z.object({
     action: z.enum(["goto", "wait"]),
