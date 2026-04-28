@@ -55,7 +55,7 @@ export interface PRComment {
   pull_request_url?: string;
 }
 
-export interface CopilotInlineEvent {
+export interface PRReviewCommentPostedEvent {
   event: typeof PR_REVIEW_COMMENT_POSTED;
   category: "work_item";
   workItemId: string;

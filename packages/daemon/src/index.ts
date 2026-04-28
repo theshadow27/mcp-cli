@@ -962,7 +962,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             logger,
             onEvent: (event) => {
               if (event.event === PR_REVIEW_COMMENT_POSTED) {
-                const key = `copilot:${event.prNumber}:${event.author}`;
+                const key = `${event.event}:${event.prNumber}:${event.author}`;
                 mailEventBus.publishCoalesced(event, key, {
                   mode: "merge",
                   merge: (a, b) => {
