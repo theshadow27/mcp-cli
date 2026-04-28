@@ -888,7 +888,7 @@ describe("SessionState", () => {
 
       expect(events).toHaveLength(2);
       expect(events[0].type).toBe("session:response");
-      expect(events[1]).toEqual({ type: "session:rate_limited", sessionId: "sess-1" });
+      expect(events[1]).toMatchObject({ type: "session:rate_limited", sessionId: "sess-1" });
       expect(session.rateLimited).toBe(true);
     });
 
@@ -934,7 +934,37 @@ describe("SessionState", () => {
       expect(session.rateLimited).toBe(true);
       expect(session.parseMismatch).toBe(true);
       expect(events).toHaveLength(2);
-      expect(events[1]).toEqual({ type: "session:rate_limited", sessionId: "test-rl" });
+      expect(events[1]).toMatchObject({ type: "session:rate_limited", sessionId: "test-rl" });
+    });
+
+    test("retryAfterMs extracted from raw message", () => {
+      const session = initSession();
+      const events = session.handleMessage({
+        ...ASSISTANT_RATE_LIMITED,
+        retry_after_ms: 30000,
+      });
+
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        type: "session:rate_limited",
+        sessionId: "sess-1",
+        retryAfterMs: 30000,
+      });
+    });
+
+    test("retryAfterMs converts retry_after seconds to ms", () => {
+      const session = initSession();
+      const events = session.handleMessage({
+        ...ASSISTANT_RATE_LIMITED,
+        retry_after: 30,
+      });
+
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        type: "session:rate_limited",
+        sessionId: "sess-1",
+        retryAfterMs: 30000,
+      });
     });
   });
 
