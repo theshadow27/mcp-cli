@@ -1,6 +1,6 @@
 # Sprint 46
 
-> Planned 2026-04-27 20:25 EDT. Started 2026-04-27 22:01 EDT. Target: 8 PRs (5 orchestrator-pain fixes + 3 small DX/data wins).
+> Planned 2026-04-27 20:25 EDT. Started 2026-04-27 22:01 EDT. Ended 2026-04-28 00:25 EDT. Target: 8 PRs (5 orchestrator-pain fixes + 3 small DX/data wins). **Shipped: 10 PRs (8 sprint + 2 out-of-band P1 fixes for #1808). Released v1.8.0.**
 
 ## Goal
 
@@ -118,6 +118,31 @@ Mix: 5 opus + 4 sonnet. 3-4 high-scrutiny (Phase 6 trio + waitForEvent migration
 Hot-shared file watch (preview):
 - `packages/daemon/src/monitor/<event-publish path>` — #1586 + #1587 + #1610 all add new event types. Likely converge in one file or two adjacent files. Serialize.
 - `packages/core/src/event-filter.ts` — waitForEvent migration touches the consumer side; new events on the producer side. Independent regions but plan to verify at run time.
+
+## Results
+
+- **Released**: v1.8.0 (minor bump — two new top-level subcommands: `mcx pr merge`, `mcx claude patch-update`)
+- **PRs merged**: 10 (8 sprint picks + 2 out-of-band P1 fixes)
+- **Sprint picks closed**: 8/8 — every issue from the plan landed.
+- **Out-of-band adds**: #1808 (PR #1826 — claude-patch infrastructure) and #1830 (PR #1830 — daemon TLS WSS listener). Both are slices of the response to the P1 sdk-url break that Anthropic shipped in claude 2.1.121 mid-sprint pre-flight; user authored in a parallel session, sprint orchestrator pulled them in as opus-QA picks once the branches were ready.
+- **New issues filed during sprint**: 11 — #1807 (run.md phase_state_set arg-shape doc), #1808 (P1 sdk-url break — closed), #1810/#1811/#1820 (pre-existing flaky tests), #1812 (sites edge cases), #1816 (meta: docs(sprint/run): use mcx pr merge), #1818 (session-state.spec coverage), #1819 (closed dup of #1798 sweep), #1822 (pr.ts silent gh failure), #1827 (claude-patch follow-ups), #1829 (TLS strict-mode follow-up).
+- **Issues dropped**: none planned-but-skipped this sprint.
+
+### Sprint timeline highlights (the loud ones)
+
+- **22:03 — sprint blocked at first spawn.** Every Batch-1 session died in <1s with `spawn exited`. Root cause: claude 2.1.121, dropped earlier the same day, added a runtime check rejecting `--sdk-url ws://localhost`. Filed P1 #1808 with the full reverse-engineering recon (5-host allowlist, pure URL.hostname string-match, no DNS, TLS enforced, no env bypass, no integrity check). Pinned `~/.local/bin/claude` to an archived 2.1.119 wrapper script with `chflags uchg` after the auto-updater stomped two prior pin attempts. Total dead time: ~22 minutes; cost: ~zero (sessions died before any tokens).
+- **23:10 — three sprint bugs fired live during one transition.** Forcing `#1768` from triage → qa hit `wq[$].has` (the bug #1797 fixes), `bye` printed `Error: Removed worktree:` for a successful prune (the bug #1798 fixes), and the orchestrator's idle-bye deleted a local branch on an open PR (the territory #1800 covered). Confirmed organic reproduction logged.
+- **02:44 — #1797 merged**, unblocking Batch 2. #1799 merged minutes later **without `force=true`** — confirmed the fix was working in main even though this orchestrator's daemon was still running the pre-#1797 build (every other transition this sprint went through `force=true` because the daemon never restarted; restart would have killed all in-flight sessions).
+- **03:35 — first out-of-band P1 PR (#1826) merged.** opus-QA pass + CI green; user kept authoring components in parallel session.
+- **04:07 — second out-of-band P1 PR (#1830) merged after a trivial constants-file rebase** (both P1 PRs added one entry to the same object — `CLAUDE_PATCHED_DIR` and `TLS_DIR`).
+- **Self-repair pattern paid for itself again.** Reviewers/QA workers self-repaired 4 separate qa:fail or review-changes-requested situations (#1768, #1800, #1802, #1746) instead of spawning fresh opus repair sessions. Saved ~$15-20 of opus.
+
+### Cost summary (orchestrator perspective)
+
+- **Quota at end:** ~14% of 5h, ~21% of 7d. Quota was never a constraint.
+- **Most expensive impl:** #1798 at $4.55 (Carol — text-only fix expanded into a 9-file printError → printInfo sweep + 2 self-repair rounds when the reviewer found unfixed call sites).
+- **Cheapest impl:** #1768 at $0.69 (Eve, sonnet, sites validation).
+- **Adversarial reviews:** 2 (PR #1814 #1800, PR #1817 #1798). Both flagged real issues; both went to self-repair, no escalations.
 
 ## Context
 
