@@ -313,11 +313,17 @@ function resetIfBrowserDied(): void {
 async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
   return withBrowserLock(async () => {
     resetIfBrowserDied();
-    const siteNames = Array.isArray(args.sites)
-      ? (args.sites as string[])
-      : listSites()
-          .filter((s) => s.enabled)
-          .map((s) => s.name);
+    let siteNames: string[];
+    if ("sites" in args) {
+      if (!Array.isArray(args.sites) || !args.sites.every((s) => typeof s === "string")) {
+        return error("'sites' must be an array of site names");
+      }
+      siteNames = args.sites as string[];
+    } else {
+      siteNames = listSites()
+        .filter((s) => s.enabled)
+        .map((s) => s.name);
+    }
     const sites = siteNames.map((n) => requireSite(n));
     if (sites.length === 0) return error("No sites configured");
 
