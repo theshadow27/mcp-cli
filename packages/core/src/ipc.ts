@@ -8,6 +8,7 @@
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
 import type { MonitorAliasMetadata } from "./alias-bundle";
+import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
 import type { WorkItem } from "./work-item";
@@ -62,7 +63,10 @@ export type IpcMethod =
   | "aliasStateGet"
   | "aliasStateSet"
   | "aliasStateDelete"
-  | "aliasStateAll";
+  | "aliasStateAll"
+  | "getBudgetConfig"
+  | "setBudgetConfig"
+  | "publishEvent";
 
 // -- Request/Response --
 
@@ -505,6 +509,21 @@ export interface AliasStateAllResult {
   entries: Record<string, unknown>;
 }
 
+export const PublishEventParamsSchema = z.object({
+  src: z.string().min(1),
+  event: z.string().min(1),
+  category: z.enum(MONITOR_CATEGORIES),
+  sessionId: z.string().optional(),
+  workItemId: z.string().optional(),
+  prNumber: z.number().optional(),
+  extra: z.record(z.string(), z.unknown()).optional(),
+});
+
+export interface PublishEventResult {
+  ok: true;
+  seq: number;
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -649,6 +668,24 @@ export interface PruneSpansResult {
   pruned: number;
 }
 
+// -- Budget config (#1587) --
+
+export interface BudgetConfig {
+  sessionCap: number;
+  sprintCap: number;
+  sprintWindowMs: number;
+  quotaThresholds: number[];
+  quotaDeadband: number;
+}
+
+export const SetBudgetConfigParamsSchema = z.object({
+  sessionCap: z.number().nonnegative().optional(),
+  sprintCap: z.number().nonnegative().optional(),
+  sprintWindowMs: z.number().positive().optional(),
+  quotaThresholds: z.array(z.number().min(0).max(100)).optional(),
+  quotaDeadband: z.number().nonnegative().optional(),
+});
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -700,6 +737,9 @@ export interface IpcMethodResult {
   aliasStateSet: AliasStateSetResult;
   aliasStateDelete: AliasStateDeleteResult;
   aliasStateAll: AliasStateAllResult;
+  getBudgetConfig: BudgetConfig;
+  setBudgetConfig: { ok: true };
+  publishEvent: PublishEventResult;
 }
 
 // -- Error codes --

@@ -43,10 +43,10 @@ import {
   SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_REQUEST,
-  SESSION_RATE_LIMITED,
   SESSION_RESULT,
   SESSION_STUCK,
   SESSION_TOOL_USE,
+  WORKER_RATELIMITED,
   consoleLogger,
   generateSessionName,
 } from "@mcp-cli/core";
@@ -1713,6 +1713,15 @@ export class ClaudeWsServer {
         } catch (err) {
           logErr("resolveEventWaiters failed", err);
         }
+        this.onMonitorEvent?.({
+          src: "daemon.claude-server",
+          event: WORKER_RATELIMITED,
+          category: "worker",
+          sessionId,
+          provider: "anthropic",
+          ...("retryAfterMs" in event &&
+            typeof event.retryAfterMs === "number" && { retryAfterMs: event.retryAfterMs }),
+        });
         break;
       case "session:disconnected":
         this.disposeStuckDetector(session);
@@ -1753,7 +1762,6 @@ export class ClaudeWsServer {
     "session:error": SESSION_ERROR,
     "session:cleared": SESSION_CLEARED,
     "session:model_changed": SESSION_MODEL_CHANGED,
-    "session:rate_limited": SESSION_RATE_LIMITED,
     "session:disconnected": SESSION_DISCONNECTED,
     "session:ended": SESSION_ENDED,
     "session:containment_warning": SESSION_CONTAINMENT_WARNING,

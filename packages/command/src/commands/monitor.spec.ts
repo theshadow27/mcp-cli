@@ -4,12 +4,15 @@ import {
   CHECKS_FAILED,
   CHECKS_PASSED,
   CHECKS_STARTED,
+  COST_SESSION_OVER_BUDGET,
+  COST_SPRINT_OVER_BUDGET,
   HEARTBEAT,
   MAIL_RECEIVED,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
   PR_OPENED,
+  QUOTA_UTILIZATION_THRESHOLD,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   SESSION_CLEARED,
@@ -157,6 +160,29 @@ describe("formatMonitorEvent", () => {
         recipient: "impl@sessions",
       }),
       makeEvent(HEARTBEAT, { category: "heartbeat", src: "daemon", seq: 4210 }),
+      makeEvent(COST_SESSION_OVER_BUDGET, {
+        category: "cost",
+        src: "daemon.budget-watcher",
+        sessionId: "fcfbc19dabc",
+        workItemId: "#1441",
+        cost: 3.25,
+        limit: 3.0,
+      }),
+      makeEvent(COST_SPRINT_OVER_BUDGET, {
+        category: "cost",
+        src: "daemon.budget-watcher",
+        totalCost: 31.5,
+        limit: 30.0,
+        sessionCount: 15,
+      }),
+      makeEvent(QUOTA_UTILIZATION_THRESHOLD, {
+        category: "quota",
+        src: "daemon.budget-watcher",
+        provider: "anthropic",
+        utilization: 82,
+        threshold: 80,
+        windowEnd: "2026-04-19T01:00:00Z",
+      }),
     ];
 
     for (const e of events) {
@@ -174,6 +200,46 @@ describe("formatMonitorEvent", () => {
     const line = formatMonitorEvent(e);
     expect(line.length).toBeLessThanOrEqual(200);
     expect(line).toContain("…");
+  });
+
+  test("cost.session_over_budget shows cost and limit", () => {
+    const e = makeEvent(COST_SESSION_OVER_BUDGET, {
+      category: "cost",
+      sessionId: "fcfbc19dabc",
+      workItemId: "#1441",
+      cost: 3.25,
+      limit: 3.0,
+    });
+    const line = formatMonitorEvent(e);
+    expect(line).toContain("$3.25");
+    expect(line).toContain("limit:$3.00");
+    expect(line).toContain("#1441");
+  });
+
+  test("cost.sprint_over_budget shows total and session count", () => {
+    const e = makeEvent(COST_SPRINT_OVER_BUDGET, {
+      category: "cost",
+      totalCost: 31.5,
+      limit: 30.0,
+      sessionCount: 15,
+    });
+    const line = formatMonitorEvent(e);
+    expect(line).toContain("$31.50");
+    expect(line).toContain("limit:$30.00");
+    expect(line).toContain("15 sessions");
+  });
+
+  test("quota.utilization_threshold shows provider and utilization", () => {
+    const e = makeEvent(QUOTA_UTILIZATION_THRESHOLD, {
+      category: "quota",
+      provider: "anthropic",
+      utilization: 82,
+      threshold: 80,
+    });
+    const line = formatMonitorEvent(e);
+    expect(line).toContain("anthropic");
+    expect(line).toContain("82%");
+    expect(line).toContain("threshold:80%");
   });
 
   test("unknown event type falls back to generic formatter", () => {

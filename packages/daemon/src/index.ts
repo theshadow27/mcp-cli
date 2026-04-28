@@ -32,8 +32,10 @@ import {
   BUILD_VERSION,
   CLAUDE_SERVER_NAME,
   CODEX_SERVER_NAME,
+  DAEMON_CONFIG_RELOADED,
   DAEMON_IDLE_TIMEOUT_MS,
   DAEMON_READY_SIGNAL,
+  DAEMON_RESTARTED,
   DEFAULT_CLAUDE_WS_PORT,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
@@ -60,6 +62,7 @@ import {
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
@@ -550,9 +553,26 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     }, idleTimeoutMs);
   }
 
+  const eventLog = new EventLog(db.getDatabase());
+  const seqBefore = eventLog.currentSeq();
+  eventLog.startPruning();
+  const mailEventBus = new EventBus(eventLog);
+  mailServer.setEventBus(mailEventBus);
+
+  const restartedEvent = mailEventBus.publish({
+    src: "daemon",
+    event: DAEMON_RESTARTED,
+    category: "daemon",
+    seqBefore,
+    seqAfter: seqBefore + 1,
+    reason: "start",
+  });
+  logger.info(`[mcpd] Published daemon.restarted (seqBefore=${seqBefore}, seqAfter=${restartedEvent.seqAfter})`);
+
   // Watch config files for hot reload
   const watcher = new ConfigWatcher(config, (event) => {
     const { added, removed, changed } = pool.updateConfig(event.config);
+    const changedKeys = [...added, ...removed, ...changed];
     const parts: string[] = [];
     if (added.length) parts.push(`added: ${added.join(", ")}`);
     if (removed.length) parts.push(`removed: ${removed.join(", ")}`);
@@ -561,6 +581,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       logger.info(`[mcpd] Config reloaded: ${parts.join("; ")}`);
     } else {
       logger.info("[mcpd] Config reloaded (no server changes)");
+    }
+    if (changedKeys.length > 0) {
+      mailEventBus.publish({
+        src: "daemon",
+        event: DAEMON_CONFIG_RELOADED,
+        category: "daemon",
+        changedKeys,
+      });
     }
     // Update PID file with new hash (use locked fd if available)
     const updatedPid = {
@@ -579,10 +607,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   });
   watcher.start();
 
-  const eventLog = new EventLog(db.getDatabase());
-  eventLog.startPruning();
-  const mailEventBus = new EventBus(eventLog);
-  mailServer.setEventBus(mailEventBus);
+  // Budget watcher: emits cost/quota threshold events (#1587)
+  // mailEventBus + eventLog are already created on origin/main earlier in this function (#1586).
+  const budgetWatcher = new BudgetWatcher({ bus: mailEventBus, db, quotaPoller });
 
   // Session metrics aggregator (#1610) — on by default, opt-out via config
   let sessionMetricsAgg: SessionMetricsAggregator | null = null;
@@ -1061,6 +1088,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       clearInterval(metricsInterval);
       eventLog.stopPruning();
       quotaPoller.stop();
+      budgetWatcher.dispose();
       workItemPoller?.stop();
       copilotPoller?.stop();
       derivedPublisher?.dispose();
