@@ -1,6 +1,6 @@
 # Sprint 46
 
-> Planned 2026-04-27 20:25 EDT. Target: 8 PRs (5 orchestrator-pain fixes + 3 small DX/data wins).
+> Planned 2026-04-27 20:25 EDT. Started 2026-04-27 22:01 EDT. Target: 8 PRs (5 orchestrator-pain fixes + 3 small DX/data wins).
 
 ## Goal
 
