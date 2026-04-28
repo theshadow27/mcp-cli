@@ -80,7 +80,7 @@ export function parsePrMergeArgs(args: string[]): PrMergeArgs {
   }
 
   if (!prNumber && !error) {
-    error = "Usage: mcx pr merge <pr-number> [--squash] [--auto] [--wait]";
+    error = "Usage: mcx pr merge <pr-number> [--squash|--rebase|--merge] [--auto] [--wait] [--timeout/-t <ms>]";
   }
 
   // Default to squash if no strategy given
