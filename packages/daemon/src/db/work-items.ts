@@ -82,6 +82,10 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
   };
 }
 
+// Sentinel string used in upsertWorkItem to distinguish "explicitly set to null"
+// from "field not provided" (which should leave the column unchanged via COALESCE).
+const NULL_SENTINEL = "__NULL__";
+
 // ---------- DB class ----------
 
 export class WorkItemDb {
@@ -452,7 +456,7 @@ export class WorkItemDb {
            ci_run_id          = COALESCE($ci_run_id, ci_run_id),
            ci_summary         = COALESCE($ci_summary, ci_summary),
            review_status      = COALESCE($review_status, review_status),
-           merge_state_status = COALESCE($merge_state_status, merge_state_status),
+           merge_state_status = CASE WHEN $merge_state_status = '__NULL__' THEN NULL ELSE COALESCE($merge_state_status, merge_state_status) END,
            phase              = COALESCE($phase, phase),
            updated_at         = datetime('now')`,
       )
@@ -467,7 +471,7 @@ export class WorkItemDb {
         $ci_run_id: item.ciRunId ?? null,
         $ci_summary: item.ciSummary ?? null,
         $review_status: item.reviewStatus ?? null,
-        $merge_state_status: item.mergeStateStatus ?? null,
+        $merge_state_status: "mergeStateStatus" in item ? (item.mergeStateStatus ?? NULL_SENTINEL) : null,
         $phase: item.phase ?? null,
       });
 

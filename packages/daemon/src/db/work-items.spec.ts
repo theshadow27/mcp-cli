@@ -281,6 +281,35 @@ describe("WorkItemDb", () => {
       expect(updated.branch).toBe("feat/x");
       expect(updated.prNumber).toBe(100);
     });
+
+    test("mergeStateStatus: explicit null clears existing value", () => {
+      const db = createDb();
+      db.upsertWorkItem({ id: "pr:200", prNumber: 200, mergeStateStatus: "BLOCKED" });
+      const before = db.getWorkItem("pr:200");
+      expect(before?.mergeStateStatus).toBe("BLOCKED");
+
+      const cleared = db.upsertWorkItem({ id: "pr:200", mergeStateStatus: null });
+      expect(cleared.mergeStateStatus).toBeNull();
+    });
+
+    test("mergeStateStatus: absent key preserves existing value", () => {
+      const db = createDb();
+      db.upsertWorkItem({ id: "pr:201", prNumber: 201, mergeStateStatus: "BLOCKED" });
+
+      // upsert without mergeStateStatus key at all — should keep "BLOCKED"
+      const kept = db.upsertWorkItem({ id: "pr:201" });
+      expect(kept.mergeStateStatus).toBe("BLOCKED");
+    });
+
+    test("mergeStateStatus: round-trips a value through successive upserts", () => {
+      const db = createDb();
+      db.upsertWorkItem({ id: "pr:202", prNumber: 202 });
+      db.upsertWorkItem({ id: "pr:202", mergeStateStatus: "CLEAN" });
+      expect(db.getWorkItem("pr:202")?.mergeStateStatus).toBe("CLEAN");
+
+      db.upsertWorkItem({ id: "pr:202", mergeStateStatus: null });
+      expect(db.getWorkItem("pr:202")?.mergeStateStatus).toBeNull();
+    });
   });
 
   describe("unique constraints", () => {
