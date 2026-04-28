@@ -43,7 +43,6 @@ import {
   SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_REQUEST,
-  SESSION_RATE_LIMITED,
   SESSION_RESULT,
   SESSION_STUCK,
   WORKER_RATELIMITED,
@@ -1718,6 +1717,8 @@ export class ClaudeWsServer {
           category: "worker",
           sessionId,
           provider: "anthropic",
+          ...("retryAfterMs" in event &&
+            typeof event.retryAfterMs === "number" && { retryAfterMs: event.retryAfterMs }),
         });
         break;
       case "session:disconnected":
@@ -1759,7 +1760,6 @@ export class ClaudeWsServer {
     "session:error": SESSION_ERROR,
     "session:cleared": SESSION_CLEARED,
     "session:model_changed": SESSION_MODEL_CHANGED,
-    "session:rate_limited": SESSION_RATE_LIMITED,
     "session:disconnected": SESSION_DISCONNECTED,
     "session:ended": SESSION_ENDED,
     "session:containment_warning": SESSION_CONTAINMENT_WARNING,

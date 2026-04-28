@@ -5,7 +5,6 @@ import {
   DAEMON_RESTARTED,
   GC_PRUNED,
   type MonitorEvent,
-  type MonitorEventInput,
   WORKER_RATELIMITED,
 } from "@mcp-cli/core";
 import { ConfigWatcher } from "./config/watcher";
@@ -45,9 +44,9 @@ describe("daemon.restarted", () => {
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore,
-      seqAfter: seqBefore + 1,
       reason: "start",
     });
+    restartedEvent.seqAfter = restartedEvent.seq;
 
     expect(restartedEvent.seq).toBe(4);
     expect(restartedEvent.seqBefore).toBe(3);
@@ -68,9 +67,9 @@ describe("daemon.restarted", () => {
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore,
-      seqAfter: seqBefore + 1,
       reason: "start",
     });
+    event.seqAfter = event.seq;
 
     expect(event.seq).toBe(1);
     expect(event.seqBefore).toBe(0);
@@ -81,14 +80,14 @@ describe("daemon.restarted", () => {
     const log = freshLog();
     const bus = new EventBus(log);
 
-    bus.publish({
+    const restartedEvent = bus.publish({
       src: "daemon",
       event: DAEMON_RESTARTED,
       category: "daemon",
       seqBefore: 0,
-      seqAfter: 1,
       reason: "start",
     });
+    restartedEvent.seqAfter = restartedEvent.seq;
 
     const events = log.getSince(0);
     expect(events).toHaveLength(1);

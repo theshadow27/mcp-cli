@@ -1343,13 +1343,13 @@ export class IpcServer {
         throw Object.assign(new Error("EventBus not available"), { code: IPC_ERROR.INTERNAL_ERROR });
       }
       const input: MonitorEventInput = {
+        ...(parsed.extra && parsed.extra),
         src: parsed.src,
         event: parsed.event,
-        category: parsed.category as MonitorEventInput["category"],
-        ...(parsed.sessionId && { sessionId: parsed.sessionId }),
-        ...(parsed.workItemId && { workItemId: parsed.workItemId }),
+        category: parsed.category,
+        ...(parsed.sessionId !== undefined && { sessionId: parsed.sessionId }),
+        ...(parsed.workItemId !== undefined && { workItemId: parsed.workItemId }),
         ...(parsed.prNumber !== undefined && { prNumber: parsed.prNumber }),
-        ...(parsed.extra && parsed.extra),
       };
       const published = this.eventBus.publish(input);
       return { ok: true as const, seq: published.seq };

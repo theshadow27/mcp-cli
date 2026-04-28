@@ -283,7 +283,10 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       const tooRecent = recentSkipped.length > 0 ? `, skipped ${recentSkipped.length} too recent` : "";
       deps.logError(`worktrees: removed ${result.pruned}${unmerged}${tooRecent}`);
       if (result.pruned > 0) {
-        gcResult.prunedWorktrees = result.removable.slice(0, result.pruned);
+        gcResult.prunedWorktrees = result.prunedNames;
+        for (const b of result.deletedBranches) {
+          if (!gcResult.deletedBranches.includes(b)) gcResult.deletedBranches.push(b);
+        }
       }
     }
   }

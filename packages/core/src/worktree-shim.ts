@@ -83,6 +83,8 @@ export interface WorktreePruneResult {
   pruned: number;
   /** Names of worktrees that would be or were removed. */
   removable: string[];
+  /** Names of worktrees that were actually removed (empty in dry-run). */
+  prunedNames: string[];
   skippedUnmerged: string[];
   /** Branches that were deleted (empty in dry-run). */
   deletedBranches: Set<string>;
@@ -457,6 +459,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
 
   let pruned = 0;
   const removable: string[] = [];
+  const prunedNames: string[] = [];
   const skippedUnmerged: string[] = [];
   const deletedBranches = new Set<string>();
   // Resolve symlinks on cwd — macOS does not resolve them in process.cwd(),
@@ -512,6 +515,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       if (hookExit === 0 && !existsSync(wt.path)) {
         deps.printInfo(`Removed worktree via hook: ${wt.path}`);
         pruned++;
+        prunedNames.push(wtName);
         if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
         }
@@ -523,6 +527,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     } else {
       if (removeWorktreeWithVerification(repoRoot, wt.path, deps)) {
         pruned++;
+        prunedNames.push(wtName);
         if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
           deletedBranches.add(wt.branch);
         }
@@ -539,7 +544,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     }
   }
 
-  return { pruned, removable, skippedUnmerged, deletedBranches };
+  return { pruned, removable, prunedNames, skippedUnmerged, deletedBranches };
 }
 
 // ── Errors ──

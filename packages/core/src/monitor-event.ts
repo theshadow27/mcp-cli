@@ -11,18 +11,21 @@
 
 // ── Event categories ──
 
-export type MonitorCategory =
-  | "session"
-  | "work_item"
-  | "ci"
-  | "copilot"
-  | "review"
-  | "issue"
-  | "mail"
-  | "heartbeat"
-  | "worker"
-  | "daemon"
-  | "gc";
+export const MONITOR_CATEGORIES = [
+  "session",
+  "work_item",
+  "ci",
+  "copilot",
+  "review",
+  "issue",
+  "mail",
+  "heartbeat",
+  "worker",
+  "daemon",
+  "gc",
+] as const;
+
+export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
 
 // ── Session event names ──
 

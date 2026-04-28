@@ -562,10 +562,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     event: DAEMON_RESTARTED,
     category: "daemon",
     seqBefore,
-    seqAfter: seqBefore + 1,
     reason: "start",
   });
-  logger.info(`[mcpd] Published daemon.restarted (seqBefore=${seqBefore}, seqAfter=${restartedEvent.seq})`);
+  restartedEvent.seqAfter = restartedEvent.seq;
+  logger.info(`[mcpd] Published daemon.restarted (seqBefore=${seqBefore}, seqAfter=${restartedEvent.seqAfter})`);
 
   // Watch config files for hot reload
   const watcher = new ConfigWatcher(config, (event) => {
@@ -580,12 +580,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     } else {
       logger.info("[mcpd] Config reloaded (no server changes)");
     }
-    mailEventBus.publish({
-      src: "daemon",
-      event: DAEMON_CONFIG_RELOADED,
-      category: "daemon",
-      changedKeys,
-    });
+    if (changedKeys.length > 0) {
+      mailEventBus.publish({
+        src: "daemon",
+        event: DAEMON_CONFIG_RELOADED,
+        category: "daemon",
+        changedKeys,
+      });
+    }
     // Update PID file with new hash (use locked fd if available)
     const updatedPid = {
       pid: process.pid,
