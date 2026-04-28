@@ -1,0 +1,25 @@
+export {
+  BUILTIN_STRATEGIES,
+  STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1,
+  STRATEGY_NOOP_PRE_2_1_120,
+  compareVersion,
+  countOccurrences,
+  replaceAllBytes,
+  resolveStrategy,
+  type PatchStrategy,
+  type ValidateResult,
+} from "./strategies";
+export {
+  DEFAULT_DEPS,
+  defaultExtractEntitlements,
+  defaultResignBinary,
+  defaultSmokeTest,
+  defaultVersionResolver,
+  readCurrentPatchedMeta,
+  resolveSourceClaudePath,
+  updatePatchedClaude,
+  type PatchedMeta,
+  type PatcherDeps,
+  type UpdateOptions,
+  type UpdateOutcome,
+} from "./patcher";

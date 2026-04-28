@@ -144,3 +144,23 @@ registerHelp("claude deny", {
     ["--message, -m <reason>", "Denial reason"],
   ],
 });
+
+registerHelp("claude patch-update", {
+  name: "mcx claude patch-update",
+  summary: "Refresh the patched copy of claude used for mcx-spawned sessions (see #1808)",
+  usage: [
+    "mcx claude patch-update",
+    "mcx claude patch-update --force",
+    "mcx claude patch-update --source /path/to/claude",
+    "mcx claude patch-update --json",
+  ],
+  options: [
+    ["--force", "Re-patch even if the cached copy looks current"],
+    ["--source <path>", "Use this binary as the source (default: `which claude`)"],
+    ["--json", "Output the outcome as structured JSON"],
+  ],
+  examples: [
+    "mcx claude patch-update                    # idempotent; runs after every claude auto-update",
+    "mcx claude patch-update --force            # rebuild the patched copy from scratch",
+  ],
+});
