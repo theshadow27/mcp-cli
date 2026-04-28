@@ -303,6 +303,11 @@ export function extractErrorMessage(err: unknown): string {
   return err.message;
 }
 
+/** Print an informational status message to stderr (no "Error:" prefix). */
+export function printInfo(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
 /** Print an error to stderr */
 export function printError(message: string): void {
   console.error(`${c.red}Error${c.reset}: ${message}`);

@@ -18,6 +18,7 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
   return {
     callTool: mock(async () => ({ content: [{ type: "text", text: "[]" }] })),
     printError: mock(() => {}),
+    printInfo: mock(() => {}),
     exit: mock((code: number) => {
       throw new ExitError(code);
     }) as AgentDeps["exit"],

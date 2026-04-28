@@ -28,7 +28,7 @@ import {
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { applyJqFilter } from "../jq/index";
-import { c, printError as defaultPrintError, formatToolResult } from "../output";
+import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   type SharedSessionDeps,
@@ -151,6 +151,7 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
   return {
     callTool: makeCallTool(provider),
     printError: defaultPrintError,
+    printInfo: defaultPrintInfo,
     exit: (code) => process.exit(code),
     getStaleDaemonWarning,
     getGitRoot,
