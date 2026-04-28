@@ -82,6 +82,7 @@ export class SessionState {
   rateLimited = false;
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
   lastToolCall: { name: string; errorMessage?: string; at: number } | null = null;
+  hasActiveToolCall = false;
   private readonly genRequestId: RequestIdGenerator;
 
   /**
@@ -294,6 +295,7 @@ export class SessionState {
   }
 
   private handleResult(msg: NdjsonMessage): SessionEvent[] {
+    this.hasActiveToolCall = false;
     const successResult = ResultSuccess.safeParse(msg);
     if (successResult.success) {
       const r = successResult.data;
@@ -361,9 +363,11 @@ export class SessionState {
       const block = content[i];
       if (block.type === "tool_use" && typeof block.name === "string") {
         this.lastToolCall = { name: block.name, at: Date.now() };
+        this.hasActiveToolCall = true;
         return;
       }
     }
+    this.hasActiveToolCall = false;
   }
 
   private extractLastToolCallRaw(msg: NdjsonMessage): void {

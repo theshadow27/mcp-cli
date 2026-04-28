@@ -1836,6 +1836,7 @@ export class ClaudeWsServer {
           tokens: session.state.tokens,
           lastToolCall: session.state.lastToolCall,
           pendingPermissionCount: session.state.pendingPermissions.size,
+          hasActiveToolCall: session.state.hasActiveToolCall,
         }),
         (event) => this.handleStuckEvent(sessionId, session, event),
       );

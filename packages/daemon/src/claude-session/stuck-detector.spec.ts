@@ -13,6 +13,7 @@ interface MockSnapshot {
   tokens: number;
   lastToolCall: { name: string; errorMessage?: string; at: number } | null;
   pendingPermissionCount: number;
+  hasActiveToolCall: boolean;
 }
 
 function setup(overrides?: Partial<MockSnapshot>) {
@@ -21,6 +22,7 @@ function setup(overrides?: Partial<MockSnapshot>) {
     tokens: 100,
     lastToolCall: null,
     pendingPermissionCount: 0,
+    hasActiveToolCall: false,
     ...overrides,
   };
   const events: StuckEvent[] = [];
@@ -223,6 +225,54 @@ describe("StuckDetector", () => {
     expect(events[1].tier).toBe(2);
   });
 
+  test("active tool call suppresses stuck events (false positive: long bun test)", async () => {
+    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
+    detector = d;
+    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
+    d.recordProgress(100);
+
+    // Wait well past all thresholds — no event should fire while tool is active
+    await Bun.sleep(500);
+    expect(events.length).toBe(0);
+  });
+
+  test("stuck fires after active tool call completes with no progress (true positive: frozen session)", async () => {
+    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
+    detector = d;
+    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
+    d.recordProgress(100);
+
+    // Tool active — no events
+    await Bun.sleep(150);
+    expect(events.length).toBe(0);
+
+    // Tool completes but session makes no progress (frozen)
+    snapshot.hasActiveToolCall = false;
+
+    await pollUntil(() => events.length >= 1, 2000);
+    expect(events[0].tier).toBe(1);
+    expect(events[0].lastTool).toBe("Bash");
+  });
+
+  test("active tool call resumes detection after tool completes with progress", async () => {
+    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
+    detector = d;
+    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
+    d.recordProgress(100);
+
+    // Tool active — suppressed
+    await Bun.sleep(150);
+    expect(events.length).toBe(0);
+
+    // Tool completes, progress recorded (normal flow)
+    snapshot.hasActiveToolCall = false;
+    d.recordProgress(200);
+
+    // Timer reset — wait past threshold, should get tier 1
+    await pollUntil(() => events.length >= 1, 2000);
+    expect(events[0].tier).toBe(1);
+  });
+
   test("constructor throws on empty thresholdsMs", () => {
     expect(
       () =>
@@ -234,6 +284,7 @@ describe("StuckDetector", () => {
             tokens: 0,
             lastToolCall: null,
             pendingPermissionCount: 0,
+            hasActiveToolCall: false,
           }),
           () => {},
         ),
@@ -246,6 +297,7 @@ describe("StuckDetector", () => {
       tokens: 0,
       lastToolCall: null,
       pendingPermissionCount: 0,
+      hasActiveToolCall: false,
     });
     expect(() => new StuckDetector("s", { thresholdsMs: [100, 100], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
       "strictly ascending",
@@ -261,6 +313,7 @@ describe("StuckDetector", () => {
       tokens: 0,
       lastToolCall: null,
       pendingPermissionCount: 0,
+      hasActiveToolCall: false,
     });
     expect(() => new StuckDetector("s", { thresholdsMs: [0], repeatMs: 300 }, makeSnapshot, () => {})).toThrow(
       "positive finite number",
@@ -282,6 +335,7 @@ describe("StuckDetector", () => {
       tokens: 0,
       lastToolCall: null,
       pendingPermissionCount: 0,
+      hasActiveToolCall: false,
     });
     expect(() => new StuckDetector("s", { thresholdsMs: [100], repeatMs: 0 }, makeSnapshot, () => {})).toThrow(
       "repeatMs must be positive",
