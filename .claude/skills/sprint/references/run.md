@@ -107,7 +107,7 @@ disconnected sessions.
 
 ```bash
 bun run build                          # compile latest binaries
-mcx claude ls --short 2>/dev/null      # verify no sessions active before restart
+mcx claude ls --all --short 2>/dev/null # verify no sessions active across repos before restart
 mcx shutdown                           # stop the stale daemon
 mcx status                             # auto-starts the daemon with new binary
 git config --get core.bare             # MUST be "false" — see note below
@@ -157,8 +157,10 @@ via `_work_items.work_items_update`.
 | `mcx untrack <number>` | Stop tracking |
 | `mcx claude wait --timeout 30000` | Block until session or work-item event |
 
-**`work_items_update` does NOT auto-populate `branch` from `prNumber`** —
-always set both together when attaching a PR (triage requires both):
+**`work_items_update` will best-effort auto-populate `branch` from
+`prNumber`** when `branch` is omitted (resolves via `gh`). Pass both
+explicitly when you already have the branch — it avoids the extra
+network round-trip and works offline:
 
 ```bash
 PR=<n>
@@ -215,8 +217,11 @@ while issues remain:
     case result.action:
       "spawn":     execute result.command (quota permitting), then
                    mcx call _work_items phase_state_set \
-                     '{"workItemId":"#<n>","repoRoot":"<abs>","key":"sessionId","value":"<real-id>"}'
-                   (replaces "pending:*"; key is "sessionId", not "session_id")
+                     '{"workItemId":"<item.id>","repoRoot":"<abs>","key":"session_id","value":"<real-id>"}'
+                   (replaces "pending:*"; use the tracked item's actual id —
+                    "issue:<n>" or "pr:<n>" — and snake_case state keys:
+                    session_id / qa_session_id / review_session_id /
+                    repair_session_id, matching the phase the spawn served)
       "in-flight": session running — no action this tick
       "wait":      no action this tick
       "goto":      mcx phase run <result.target> --work-item <item.id>
@@ -271,7 +276,7 @@ gh issue view $ISSUE --comments                                              # 4
 
 For each open thread demand one of:
 - **Addressed** — code/doc fix in the PR + a reply citing the fix commit
-  (post yourself via `gh api .../comments/{id}/replies -X POST -f body=…`
+  (post yourself via `gh api .../comments/{id}/replies -X POST -f body="<message>"`
   if the fix is present but the reply isn't)
 - **Dismissed** — explicit reply (out of scope, incorrect, resolved
   elsewhere). No silent skips
