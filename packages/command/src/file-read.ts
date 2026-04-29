@@ -23,3 +23,14 @@ export function readFileWithLimit(path: string): string {
   }
   return readFileSync(resolved, "utf-8");
 }
+
+/**
+ * Resolve an `@path` reference: if `value` starts with `@`, read and return
+ * the file contents; otherwise return `value` as-is.
+ *
+ * Delegates to `read` for testability — callers pass `readFileWithLimit`.
+ */
+export function resolveAtPath(value: string, read: (path: string) => string): string {
+  if (!value.startsWith("@")) return value;
+  return read(value.slice(1));
+}

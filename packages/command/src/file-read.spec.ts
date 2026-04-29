@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { readFileWithLimit } from "./file-read";
+import { readFileWithLimit, resolveAtPath } from "./file-read";
 
 const TMP = join(import.meta.dir, "__tmp_file_read_test__");
 
@@ -37,5 +37,38 @@ describe("readFileWithLimit", () => {
     writeFileSync(p, '{"tilde":true}');
     const relFromHome = relative(homedir(), p);
     expect(readFileWithLimit(`~/${relFromHome}`)).toBe('{"tilde":true}');
+  });
+});
+
+describe("resolveAtPath", () => {
+  const read = (path: string) => `content of ${path}`;
+
+  test("returns value as-is when not an @-reference", () => {
+    expect(resolveAtPath("inline prompt", read)).toBe("inline prompt");
+  });
+
+  test("strips @ and calls read with the path", () => {
+    expect(resolveAtPath("@/tmp/spec.md", read)).toBe("content of /tmp/spec.md");
+  });
+
+  test("returns empty string for @file that reads empty", () => {
+    expect(resolveAtPath("@/tmp/empty.md", () => "")).toBe("");
+  });
+
+  test("propagates errors from read", () => {
+    const failRead = () => {
+      throw new Error("file not found");
+    };
+    expect(() => resolveAtPath("@/tmp/missing.md", failRead)).toThrow("file not found");
+  });
+
+  test("does not treat lone @ as a file reference", () => {
+    // A bare "@" has an empty path — the read function is called with ""
+    const trackPath: string[] = [];
+    resolveAtPath("@", (p) => {
+      trackPath.push(p);
+      return "result";
+    });
+    expect(trackPath).toEqual([""]);
   });
 });

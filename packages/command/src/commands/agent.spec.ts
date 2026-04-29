@@ -32,6 +32,7 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
     logError: mock(() => {}),
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     pollMail: mock(async () => null),
+    readFileWithLimit: mock(() => "file content"),
     ...overrides,
   };
 }
@@ -264,6 +265,25 @@ describe("agent codex spawn", () => {
     await cmdAgent(["codex", "spawn", "--task", "x"], deps);
     expect(deps.printError).toHaveBeenCalledWith("connection refused");
   });
+
+  test("@file resolves task from file contents", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
+      readFileWithLimit: mock(() => "task from file"),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "@/tmp/spec.md"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ prompt: "task from file" }));
+  });
+
+  test("@file spawn exits with error on missing file", async () => {
+    const deps = makeDeps({
+      readFileWithLimit: mock(() => {
+        throw new Error('File "/tmp/missing.md" does not exist');
+      }),
+    });
+    await expect(cmdAgent(["codex", "spawn", "--task", "@/tmp/missing.md"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
+  });
 });
 
 describe("agent codex ls", () => {
@@ -324,6 +344,31 @@ describe("agent codex send", () => {
     await expect(cmdAgent(["codex", "send"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
+
+  test("@file resolves message from file contents", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ok: true });
+      }),
+      readFileWithLimit: mock(() => "prompt from file"),
+    });
+    await cmdAgent(["codex", "send", "abc12345", "@/tmp/followup.md"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith(
+      "codex_prompt",
+      expect.objectContaining({ sessionId: SESSION_LIST[0].sessionId, prompt: "prompt from file" }),
+    );
+  });
+
+  test("@file send exits with error on missing file", async () => {
+    const deps = makeDeps({
+      readFileWithLimit: mock(() => {
+        throw new Error('File "/tmp/gone.md" does not exist');
+      }),
+    });
+    await expect(cmdAgent(["codex", "send", "abc12345", "@/tmp/gone.md"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
+  });
 });
 
 describe("agent codex bye", () => {
@@ -349,6 +394,35 @@ describe("agent codex interrupt", () => {
     });
     await cmdAgent(["codex", "interrupt", "abc12345"], deps);
     expect(deps.callTool).toHaveBeenCalledWith("codex_interrupt", { sessionId: SESSION_LIST[0].sessionId });
+  });
+
+  test("passes literal --reason in tool args", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ok: true });
+      }),
+    });
+    await cmdAgent(["codex", "interrupt", "abc12345", "--reason", "switching scope"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_interrupt", {
+      sessionId: SESSION_LIST[0].sessionId,
+      reason: "switching scope",
+    });
+  });
+
+  test("@file resolves --reason from file", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ok: true });
+      }),
+      readFileWithLimit: mock(() => "reason from file"),
+    });
+    await cmdAgent(["codex", "interrupt", "abc12345", "--reason", "@/tmp/reason.md"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_interrupt", {
+      sessionId: SESSION_LIST[0].sessionId,
+      reason: "reason from file",
+    });
   });
 });
 

@@ -55,6 +55,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
       sourceHash: "abc123",
       reason: "no patch needed",
     })),
+    readFileWithLimit: mock(() => "file content"),
     ...overrides,
   };
 }
@@ -868,6 +869,36 @@ describe("mcx claude spawn", () => {
     } finally {
       console.log = origLog;
     }
+  });
+
+  test("@file resolves task from file contents", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc12345" }));
+    const deps = makeDeps({
+      callTool,
+      readFileWithLimit: mock(() => "task loaded from file"),
+    });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "@/tmp/spec.md"], deps);
+      expect(callTool).toHaveBeenCalledWith(
+        "claude_prompt",
+        expect.objectContaining({ prompt: "task loaded from file" }),
+      );
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("@file missing file exits with error", async () => {
+    const deps = makeDeps({
+      readFileWithLimit: mock(() => {
+        throw new Error('File "/tmp/missing.md" does not exist');
+      }),
+    });
+    await expect(cmdClaude(["spawn", "--task", "@/tmp/missing.md"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
   });
 });
 
@@ -1721,6 +1752,39 @@ describe("mcx claude send", () => {
       console.log = origLog;
     }
   });
+
+  test("@file resolves message from file contents", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ success: true });
+    });
+    const deps = makeDeps({
+      callTool,
+      readFileWithLimit: mock(() => "prompt from file"),
+    });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["send", "abc", "@/tmp/followup.md"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+        prompt: "prompt from file",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("@file send exits with error on missing file", async () => {
+    const deps = makeDeps({
+      readFileWithLimit: mock(() => {
+        throw new Error('File "/tmp/gone.md" does not exist');
+      }),
+    });
+    await expect(cmdClaude(["send", "abc", "@/tmp/gone.md"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
+  });
 });
 
 // ── bye ──
@@ -2135,6 +2199,49 @@ describe("mcx claude interrupt", () => {
   test("errors on duplicate positional argument", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["interrupt", "def", "extra"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("passes literal --reason string in tool args", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ interrupted: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["interrupt", "def", "--reason", "switching scope"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_interrupt", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+        reason: "switching scope",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("@file resolves --reason from file contents", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ interrupted: true });
+    });
+    const deps = makeDeps({
+      callTool,
+      readFileWithLimit: mock(() => "reason from file"),
+    });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["interrupt", "def", "--reason", "@/tmp/switch.md"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_interrupt", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+        reason: "reason from file",
+      });
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 
