@@ -424,6 +424,18 @@ describe("agent codex interrupt", () => {
       reason: "reason from file",
     });
   });
+
+  test("--reason with no value exits with usage error", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["codex", "interrupt", "abc12345", "--reason"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
+  });
+
+  test("unknown flag exits with error", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["codex", "interrupt", "abc12345", "--bogus"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--bogus"));
+  });
 });
 
 describe("agent codex log", () => {

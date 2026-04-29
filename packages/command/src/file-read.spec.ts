@@ -22,10 +22,17 @@ describe("readFileWithLimit", () => {
 
   test("rejects files over 10MB", () => {
     const p = join(TMP, "huge.bin");
-    // Create an 11MB file
     const buf = Buffer.alloc(11 * 1024 * 1024, 0x41);
     writeFileSync(p, buf);
     expect(() => readFileWithLimit(p)).toThrow(/exceeds 10MB limit/);
+  });
+
+  test("rejects binary files (null bytes in first 8KB)", () => {
+    const p = join(TMP, "binary.bin");
+    const buf = Buffer.alloc(1024, 0x41);
+    buf[512] = 0x00;
+    writeFileSync(p, buf);
+    expect(() => readFileWithLimit(p)).toThrow(/appears to be binary/);
   });
 
   test("throws on non-existent files", () => {
@@ -62,13 +69,12 @@ describe("resolveAtPath", () => {
     expect(() => resolveAtPath("@/tmp/missing.md", failRead)).toThrow("file not found");
   });
 
-  test("does not treat lone @ as a file reference", () => {
-    // A bare "@" has an empty path — the read function is called with ""
-    const trackPath: string[] = [];
-    resolveAtPath("@", (p) => {
-      trackPath.push(p);
-      return "result";
-    });
-    expect(trackPath).toEqual([""]);
+  test("throws a helpful error for bare @", () => {
+    expect(() => resolveAtPath("@", read)).toThrow("'@' requires a path");
+  });
+
+  test("@@ escapes to a literal @ string", () => {
+    expect(resolveAtPath("@@mention", read)).toBe("@mention");
+    expect(resolveAtPath("@@/not/a/path", read)).toBe("@/not/a/path");
   });
 });

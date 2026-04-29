@@ -855,8 +855,15 @@ async function agentInterrupt(args: string[], provider: AgentProvider, d: AgentD
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--reason") {
+      if (i + 1 >= args.length) {
+        d.printError(`Usage: mcx agent ${provider.name} interrupt <session-id> [--reason <text|@file>]`);
+        d.exit(1);
+      }
       rawReason = args[++i];
-    } else if (!args[i].startsWith("-")) {
+    } else if (args[i].startsWith("--")) {
+      d.printError(`Unknown flag: ${args[i]}`);
+      d.exit(1);
+    } else {
       positional.push(args[i]);
     }
   }

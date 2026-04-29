@@ -2243,6 +2243,18 @@ describe("mcx claude interrupt", () => {
       console.log = origLog;
     }
   });
+
+  test("--reason with no value exits with usage error", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "--reason"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("requires a value"));
+  });
+
+  test("unknown flag exits with error", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "--bogus"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--bogus"));
+  });
 });
 
 // ── log ──
