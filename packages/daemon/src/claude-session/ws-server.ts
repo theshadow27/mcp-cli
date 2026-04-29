@@ -930,9 +930,9 @@ export class ClaudeWsServer {
 
     const session = this.getSession(sessionId);
     const pendingReason = session.pendingInterruptReason;
-    session.pendingInterruptReason = null;
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
+    session.pendingInterruptReason = null;
     this.sendToWs(session, outbound);
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
