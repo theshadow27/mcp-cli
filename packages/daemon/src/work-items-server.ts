@@ -6,7 +6,7 @@
  */
 
 import { resolve } from "node:path";
-import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, isStandardPhase, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -450,7 +450,7 @@ export class WorkItemsServer {
               }
             }
 
-            const patch: Partial<WorkItem> = {};
+            const patch: WorkItemPatch = {};
             if (a.phase !== undefined) patch.phase = String(a.phase) as WorkItemPhase;
             // For nullable fields: explicit null clears the field (stores SQL NULL).
             // undefined means "not provided — leave unchanged".

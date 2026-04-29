@@ -40,6 +40,7 @@ export interface WorkItem {
   phase: WorkItemPhase;
   createdAt: string;
   updatedAt: string;
+  version: number;
 }
 
 /** Discriminated union of work item lifecycle events. */
@@ -113,6 +114,9 @@ export function isStandardPhase(phase: string): phase is WorkItemPhase {
   return WORK_ITEM_PHASE_SET.has(phase);
 }
 
+/** Updatable subset of WorkItem — excludes server-managed fields. */
+export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "createdAt" | "updatedAt" | "version">>;
+
 /** Create a new WorkItem with sensible defaults. */
 export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
   const now = new Date().toISOString();
@@ -131,5 +135,6 @@ export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
     phase: phase ?? "impl",
     createdAt: now,
     updatedAt: now,
+    version: 1,
   };
 }
