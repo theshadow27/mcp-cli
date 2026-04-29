@@ -1119,11 +1119,37 @@ export class ClaudeWsServer {
       });
     }
 
-    const info = {
+    const info: { worktree: string | null; cwd: string | null; repoRoot: string | null } = {
       worktree: session.worktree,
       cwd: session.config.cwd ?? null,
       repoRoot: session.config.repoRoot ?? null,
     };
+
+    // Remove from map before the guard scan so that concurrent bye() calls on sessions
+    // sharing the same worktree don't see each other and both suppress — which would
+    // leave the worktree orphaned. JS is single-threaded: this delete is visible to any
+    // bye() that starts after the next await. terminateSession's own sessions.delete is
+    // now a no-op but kept for safety.
+    this.sessions.delete(resolvedId);
+
+    // Guard: suppress worktree cleanup if another session references the same worktree.
+    // Parallel spawn can assign the same worktree to multiple sessions (#1836);
+    // without this check, bye on a dead ghost destroys a live session's working dir (#1837).
+    // Match by cwd (full path), not just worktree name — names aren't unique across repos.
+    if (info.worktree) {
+      for (const [otherId, other] of this.sessions) {
+        if (other.worktree === info.worktree && (other.config.cwd ?? null) === info.cwd) {
+          this.logger.warn(
+            `[_claude] bye ${resolvedId.slice(0, 8)}: worktree "${info.worktree}" also claimed by session ${otherId.slice(0, 8)} — skipping cleanup`,
+          );
+          info.worktree = null;
+          info.cwd = null;
+          info.repoRoot = null;
+          break;
+        }
+      }
+    }
+
     const reason = message ? `Session ended: ${message}` : "Session ended by user";
     await this.terminateSession(resolvedId, session, reason);
     return info;

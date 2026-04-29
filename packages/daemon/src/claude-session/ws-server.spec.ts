@@ -1749,6 +1749,94 @@ describe("ClaudeWsServer", () => {
     expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
   });
 
+  test("bye suppresses worktree cleanup when another session shares the same worktree (#1837)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    // Simulate parallel-spawn race: two sessions claim the same worktree
+    server.prepareSession("ghost-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+    server.prepareSession("active-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+
+    // Bye the ghost — worktree should be suppressed because active-session still uses it
+    const ghostResult = await server.bye("ghost-session");
+    expect(ghostResult.worktree).toBeNull();
+    expect(ghostResult.cwd).toBeNull();
+    expect(ghostResult.repoRoot).toBeNull();
+
+    // Bye the remaining session — worktree should be returned for cleanup
+    const activeResult = await server.bye("active-session");
+    expect(activeResult.worktree).toBe("claude-shared");
+    expect(activeResult.cwd).toBe("/repo/.claude/worktrees/claude-shared");
+    expect(activeResult.repoRoot).toBe("/repo");
+  });
+
+  test("bye with concurrent calls on shared worktree: exactly one returns worktree for cleanup (#1837)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("ghost-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+    server.prepareSession("active-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+
+    // Concurrent byes — one must suppress, the other must return the worktree
+    const [ghostResult, activeResult] = await Promise.all([server.bye("ghost-session"), server.bye("active-session")]);
+
+    const worktrees = [ghostResult.worktree, activeResult.worktree];
+    const nonNullCount = worktrees.filter((w) => w !== null).length;
+    expect(nonNullCount).toBe(1);
+  });
+
+  test("bye does NOT suppress cleanup when same worktree name is in different repos (#1837)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("session-a", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo-a/.claude/worktrees/claude-shared",
+      repoRoot: "/repo-a",
+    });
+    server.prepareSession("session-b", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo-b/.claude/worktrees/claude-shared",
+      repoRoot: "/repo-b",
+    });
+
+    // Bye session-a — should NOT be suppressed because session-b is in a different repo/cwd
+    const resultA = await server.bye("session-a");
+    expect(resultA.worktree).toBe("claude-shared");
+    expect(resultA.cwd).toBe("/repo-a/.claude/worktrees/claude-shared");
+    expect(resultA.repoRoot).toBe("/repo-a");
+
+    const resultB = await server.bye("session-b");
+    expect(resultB.worktree).toBe("claude-shared");
+    expect(resultB.cwd).toBe("/repo-b/.claude/worktrees/claude-shared");
+    expect(resultB.repoRoot).toBe("/repo-b");
+  });
+
   test("sessionCount tracks active sessions", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
