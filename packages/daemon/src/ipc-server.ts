@@ -1428,15 +1428,14 @@ export class IpcServer {
   static readonly LIVE_BUFFER_MAX_ENTRIES = 10_000;
   /** Max UTF-8 byte size of liveBuffer during backfill before dropping oldest (#1589). */
   static readonly LIVE_BUFFER_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
-  /**
-   * Backfill batch size for /events `since=<seq>` replay. Smaller values yield
-   * more often (one `setTimeout(0)` per batch), giving live publishes during
-   * backfill more chances to land in `liveBuffer`. Test-mutable so the
-   * `liveBuffer overflow` tests can guarantee a publish-during-backfill window
-   * without depending on Bun event-loop ordering between fetch resolution
-   * and the next backfill yield (#1589 / sprint-47 retro flake).
-   */
+  /** Backfill batch size for /events `since=<seq>` replay. Test-mutable. */
   static BACKFILL_BATCH_SIZE = 1000;
+  /**
+   * Optional async hook called at each backfill yield point. When set, replaces
+   * the default `setTimeout(0)` yield. Tests inject live events here to
+   * guarantee they land in `liveBuffer` without relying on event-loop timing.
+   */
+  static BACKFILL_YIELD_FN: (() => Promise<void>) | null = null;
 
   /**
    * Handle GET /logs — Server-Sent Events stream for real-time log tailing.
@@ -1728,7 +1727,7 @@ export class IpcServer {
                 if (batch.length < batchSize) break;
                 cursor = batch[batch.length - 1]?.seq ?? cursor;
                 // Yield to the event loop between batches so other IPC work isn't starved.
-                await new Promise<void>((r) => setTimeout(r, 0));
+                await (IpcServer.BACKFILL_YIELD_FN?.() ?? new Promise<void>((r) => setTimeout(r, 0)));
               }
               // Drain buffered live events; seq-based HWM drops overlaps.
               const buffered = liveBuffer ?? [];
