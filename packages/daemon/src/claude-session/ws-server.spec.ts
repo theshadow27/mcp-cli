@@ -1555,11 +1555,39 @@ describe("ClaudeWsServer", () => {
     const ghostResult = await server.bye("ghost-session");
     expect(ghostResult.worktree).toBeNull();
     expect(ghostResult.cwd).toBeNull();
+    expect(ghostResult.repoRoot).toBeNull();
 
     // Bye the remaining session — worktree should be returned for cleanup
     const activeResult = await server.bye("active-session");
     expect(activeResult.worktree).toBe("claude-shared");
     expect(activeResult.cwd).toBe("/repo/.claude/worktrees/claude-shared");
+    expect(activeResult.repoRoot).toBe("/repo");
+  });
+
+  test("bye with concurrent calls on shared worktree: exactly one returns worktree for cleanup (#1837)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("ghost-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+    server.prepareSession("active-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+
+    // Concurrent byes — one must suppress, the other must return the worktree
+    const [ghostResult, activeResult] = await Promise.all([server.bye("ghost-session"), server.bye("active-session")]);
+
+    const worktrees = [ghostResult.worktree, activeResult.worktree];
+    const nonNullCount = worktrees.filter((w) => w !== null).length;
+    expect(nonNullCount).toBe(1);
   });
 
   test("sessionCount tracks active sessions", async () => {
