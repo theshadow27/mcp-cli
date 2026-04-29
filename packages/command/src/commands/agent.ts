@@ -42,7 +42,14 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
-import { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
+import {
+  colorState,
+  extractContentSummary,
+  formatAge,
+  formatSessionShort,
+  formatStatusStanza,
+  walkTranscript,
+} from "./session-display";
 import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
@@ -347,9 +354,12 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
     case "deny":
       await agentDeny(subArgs, provider, d);
       break;
+    case "status":
+      await agentStatus(subArgs, provider, d);
+      break;
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", or "worktrees".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", "worktrees", or "status".`,
       );
       d.exit(1);
   }
@@ -1526,6 +1536,97 @@ async function agentDeny(args: string[], provider: AgentProvider, d: AgentDeps):
   if (message) toolArgs.message = message;
   const result = await d.callTool(`${P}_deny`, toolArgs);
   console.log(formatToolResult(result));
+}
+
+// ── Status ──
+
+async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
+  const P = provider.toolPrefix;
+  const { json, rest: r1 } = extractJsonFlag(args);
+
+  // Collect comma-separated targets (may span multiple positional args)
+  let targets: string[] = [];
+  for (const arg of r1) {
+    if (!arg.startsWith("-")) {
+      targets = targets.concat(arg.split(",").filter(Boolean));
+    }
+  }
+
+  if (targets.length === 0) {
+    d.printError(`Usage: mcx agent ${provider.name} status <target>[,<target>...] [--json]`);
+    d.exit(1);
+    return;
+  }
+
+  // Fetch session list once, then resolve each target locally
+  const listResult = await d.callTool(`${P}_session_list`, {});
+  const listText = formatToolResult(listResult);
+  let allSessions: Array<Record<string, unknown>>;
+  try {
+    allSessions = JSON.parse(listText);
+  } catch {
+    d.printError("Failed to parse session list");
+    d.exit(1);
+    return;
+  }
+
+  const resolved: Array<{ session: Record<string, unknown>; entries: Array<Record<string, unknown>> }> = [];
+
+  for (const target of targets) {
+    const session = findSessionByTarget(allSessions, target);
+    if (!session) {
+      d.printError(`Warning: no session matching "${target}"`);
+      continue;
+    }
+    const sessionId = String(session.sessionId);
+    const txResult = await d.callTool(`${P}_transcript`, { sessionId, limit: 150 });
+    const txText = formatToolResult(txResult);
+    let entries: Array<Record<string, unknown>> = [];
+    try {
+      entries = JSON.parse(txText);
+    } catch {
+      // empty transcript is fine
+    }
+    resolved.push({ session, entries });
+  }
+
+  if (resolved.length === 0) {
+    d.exit(1);
+    return;
+  }
+
+  if (json) {
+    const output = resolved.map(({ session, entries }) => {
+      const stats = walkTranscript(entries as unknown as Parameters<typeof walkTranscript>[0]);
+      return { ...session, status: stats };
+    });
+    d.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  for (let i = 0; i < resolved.length; i++) {
+    if (i > 0) d.log("");
+    const { session, entries } = resolved[i];
+    const stats = walkTranscript(entries as unknown as Parameters<typeof walkTranscript>[0]);
+    const lastTs =
+      entries.length > 0 ? ((entries[entries.length - 1] as { timestamp?: number }).timestamp ?? null) : null;
+    const lines = formatStatusStanza(session, stats, lastTs ?? null);
+    for (const line of lines) d.log(line);
+  }
+}
+
+/**
+ * Find a session by exact name (case-insensitive) or UUID prefix.
+ * Returns null if not found or ambiguous.
+ */
+function findSessionByTarget(sessions: Array<Record<string, unknown>>, target: string): Record<string, unknown> | null {
+  const lower = target.toLowerCase();
+  const nameMatches = sessions.filter((s) => typeof s.name === "string" && s.name.toLowerCase() === lower);
+  if (nameMatches.length === 1) return nameMatches[0];
+
+  const idMatches = sessions.filter((s) => typeof s.sessionId === "string" && s.sessionId.startsWith(target));
+  if (idMatches.length === 1) return idMatches[0];
+  return null;
 }
 
 function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {
