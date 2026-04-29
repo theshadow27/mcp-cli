@@ -40,6 +40,7 @@ export interface WorkItem {
   phase: WorkItemPhase;
   createdAt: string;
   updatedAt: string;
+  version: number;
 }
 
 /** Discriminated union of work item lifecycle events. */
@@ -131,5 +132,6 @@ export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
     phase: phase ?? "impl",
     createdAt: now,
     updatedAt: now,
+    version: 1,
   };
 }

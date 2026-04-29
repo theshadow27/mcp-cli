@@ -61,6 +61,7 @@ interface WorkItemRow {
   created_at: string;
   updated_at: string;
   last_seen_head_oid: string | null;
+  version: number;
 }
 
 function rowToWorkItem(row: WorkItemRow): WorkItem {
@@ -79,7 +80,21 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     phase: row.phase as WorkItemPhase,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    version: row.version,
   };
+}
+
+/** Thrown when updateWorkItem detects a concurrent modification (version mismatch). */
+export class StaleUpdateError extends Error {
+  readonly expectedVersion: number;
+  readonly workItemId: string;
+
+  constructor(id: string, expectedVersion: number) {
+    super(`stale update: work item ${id} was modified concurrently (expected version ${expectedVersion})`);
+    this.name = "StaleUpdateError";
+    this.workItemId = id;
+    this.expectedVersion = expectedVersion;
+  }
 }
 
 // Sentinel string used in upsertWorkItem to distinguish "explicitly set to null"
@@ -214,6 +229,11 @@ export class WorkItemDb {
       this.setSchemaVersion(CONSUMER, 5);
       version = 5;
     }
+    if (version < 6) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+      this.setSchemaVersion(CONSUMER, 6);
+      version = 6;
+    }
   }
 
   private setSchemaVersion(name: string, version: number): void {
@@ -269,54 +289,70 @@ export class WorkItemDb {
     return result.changes > 0;
   }
 
-  updateWorkItem(id: string, patch: Partial<WorkItem>, opts?: { forced?: boolean; forceReason?: string }): WorkItem {
-    const existing = this.getWorkItem(id);
-    if (!existing) {
-      throw new Error(`work item not found: ${id}`);
-    }
+  updateWorkItem(
+    id: string,
+    patch: Partial<WorkItem>,
+    opts?: { forced?: boolean; forceReason?: string; expectedVersion?: number },
+  ): WorkItem {
+    return this.db
+      .transaction(() => {
+        const existing = this.getWorkItem(id);
+        if (!existing) {
+          throw new Error(`work item not found: ${id}`);
+        }
 
-    const fields: string[] = [];
-    const values: Record<string, unknown> = { $id: id };
+        if (opts?.expectedVersion !== undefined && existing.version !== opts.expectedVersion) {
+          throw new StaleUpdateError(id, opts.expectedVersion);
+        }
 
-    const mappings: Array<[keyof WorkItem, string]> = [
-      ["issueNumber", "issue_number"],
-      ["branch", "branch"],
-      ["prNumber", "pr_number"],
-      ["prState", "pr_state"],
-      ["prUrl", "pr_url"],
-      ["ciStatus", "ci_status"],
-      ["ciRunId", "ci_run_id"],
-      ["ciSummary", "ci_summary"],
-      ["reviewStatus", "review_status"],
-      ["mergeStateStatus", "merge_state_status"],
-      ["phase", "phase"],
-    ];
+        const fields: string[] = [];
+        const values: Record<string, unknown> = { $id: id, $version: existing.version };
 
-    for (const [key, col] of mappings) {
-      if (key in patch) {
-        fields.push(`${col} = $${col}`);
-        values[`$${col}`] = patch[key] ?? null;
-      }
-    }
+        const mappings: Array<[keyof WorkItem, string]> = [
+          ["issueNumber", "issue_number"],
+          ["branch", "branch"],
+          ["prNumber", "pr_number"],
+          ["prState", "pr_state"],
+          ["prUrl", "pr_url"],
+          ["ciStatus", "ci_status"],
+          ["ciRunId", "ci_run_id"],
+          ["ciSummary", "ci_summary"],
+          ["reviewStatus", "review_status"],
+          ["mergeStateStatus", "merge_state_status"],
+          ["phase", "phase"],
+        ];
 
-    if (fields.length === 0) {
-      return existing;
-    }
+        for (const [key, col] of mappings) {
+          if (key in patch) {
+            fields.push(`${col} = $${col}`);
+            values[`$${col}`] = patch[key] ?? null;
+          }
+        }
 
-    // Always bump updated_at
-    fields.push("updated_at = datetime('now')");
+        if (fields.length === 0) {
+          return existing;
+        }
 
-    this.db
-      .prepare(`UPDATE work_items SET ${fields.join(", ")} WHERE id = $id`)
-      .run(values as Record<string, string | number | null>);
+        fields.push("updated_at = datetime('now')");
+        fields.push("version = version + 1");
 
-    if (patch.phase !== undefined && patch.phase !== existing.phase) {
-      this.recordTransition(id, existing.phase, patch.phase, opts?.forced ?? false, opts?.forceReason);
-    }
+        const result = this.db
+          .prepare(`UPDATE work_items SET ${fields.join(", ")} WHERE id = $id AND version = $version`)
+          .run(values as Record<string, string | number | null>);
 
-    const updated = this.getWorkItem(id);
-    if (!updated) throw new Error(`failed to read back work item: ${id}`);
-    return updated;
+        if (result.changes === 0) {
+          throw new StaleUpdateError(id, existing.version);
+        }
+
+        if (patch.phase !== undefined && patch.phase !== existing.phase) {
+          this.recordTransition(id, existing.phase, patch.phase, opts?.forced ?? false, opts?.forceReason);
+        }
+
+        const updated = this.getWorkItem(id);
+        if (!updated) throw new Error(`failed to read back work item: ${id}`);
+        return updated;
+      })
+      .immediate();
   }
 
   recordTransition(

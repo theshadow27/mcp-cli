@@ -241,6 +241,7 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     phase: "impl",
     createdAt: "2026-04-10T00:00:00Z",
     updatedAt: "2026-04-10T00:00:00Z",
+    version: 1,
     ...overrides,
   };
 }

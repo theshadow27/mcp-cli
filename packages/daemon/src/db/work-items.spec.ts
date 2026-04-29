@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkItemDb } from "./work-items";
+import { StaleUpdateError, WorkItemDb } from "./work-items";
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -352,7 +352,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(5);
+      expect(row?.version).toBe(6);
     });
 
     test("does not touch PRAGMA user_version (leaves it free for other consumers)", () => {
@@ -376,7 +376,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(5);
+      expect(row?.version).toBe(6);
     });
 
     test("legacy v1 DB (work_items table, no transitions table) seeds at 1 then upgrades to 2", () => {
@@ -410,7 +410,7 @@ describe("WorkItemDb", () => {
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(seeded?.version).toBe(5);
+      expect(seeded?.version).toBe(6);
 
       // v2 transitions table now exists
       const hasTransitions = raw
@@ -444,7 +444,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(5);
+      expect(row?.version).toBe(6);
 
       // And the tables actually got created (regression for the PRAGMA-fallback bug)
       const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
@@ -553,6 +553,161 @@ describe("WorkItemDb", () => {
       const log = db.listTransitions(item.id);
       expect(log[1].forced).toBe(true);
       expect(log[1].forceReason).toBe("abandoned");
+    });
+  });
+
+  describe("version tracking", () => {
+    test("createWorkItem starts at version 1", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      expect(item.version).toBe(1);
+    });
+
+    test("updateWorkItem increments version", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      const v2 = db.updateWorkItem(item.id, { ciStatus: "running" });
+      expect(v2.version).toBe(2);
+      const v3 = db.updateWorkItem(item.id, { ciStatus: "passed" });
+      expect(v3.version).toBe(3);
+    });
+
+    test("no-op patch does not increment version", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      const same = db.updateWorkItem(item.id, {});
+      expect(same.version).toBe(1);
+    });
+
+    test("expectedVersion match succeeds", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      const updated = db.updateWorkItem(item.id, { ciStatus: "running" }, { expectedVersion: 1 });
+      expect(updated.version).toBe(2);
+    });
+
+    test("expectedVersion mismatch throws StaleUpdateError", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      db.updateWorkItem(item.id, { ciStatus: "running" });
+      expect(() => db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 1 })).toThrow(
+        StaleUpdateError,
+      );
+    });
+
+    test("StaleUpdateError carries item id and expected version", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      db.updateWorkItem(item.id, { ciStatus: "running" });
+      try {
+        db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 1 });
+        throw new Error("should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(StaleUpdateError);
+        const err = e as StaleUpdateError;
+        expect(err.workItemId).toBe(item.id);
+        expect(err.expectedVersion).toBe(1);
+      }
+    });
+  });
+
+  describe("concurrent update stress test", () => {
+    test("N=20 sequential writers produce no lost updates", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      const db = new WorkItemDb(raw);
+
+      const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
+      const N = 20;
+
+      for (let i = 0; i < N; i++) {
+        db.updateWorkItem(item.id, { ciSummary: `writer-${i}` });
+      }
+
+      const final = db.getWorkItem(item.id);
+      expect(final).not.toBeNull();
+      expect(final?.version).toBe(N + 1);
+      expect(final?.ciSummary).toBe(`writer-${N - 1}`);
+    });
+
+    test("N=20 concurrent connections produce no lost updates", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      const setup = new Database(p, { create: true });
+      setup.exec("PRAGMA journal_mode = WAL");
+      const setupDb = new WorkItemDb(setup);
+      const item = setupDb.createWorkItem({ issueNumber: 1, phase: "impl" });
+      const itemId = item.id;
+      setup.close();
+
+      const N = 20;
+      const results: boolean[] = [];
+
+      for (let i = 0; i < N; i++) {
+        const conn = new Database(p);
+        conn.exec("PRAGMA busy_timeout = 5000");
+        const wi = new WorkItemDb(conn);
+        try {
+          wi.updateWorkItem(itemId, { ciSummary: `conn-${i}` });
+          results.push(true);
+        } catch {
+          results.push(false);
+        } finally {
+          conn.close();
+        }
+      }
+
+      expect(results.every(Boolean)).toBe(true);
+
+      const verify = new Database(p);
+      const verifyDb = new WorkItemDb(verify);
+      const final = verifyDb.getWorkItem(itemId);
+      expect(final).not.toBeNull();
+      expect(final?.version).toBe(N + 1);
+
+      const transitions = verifyDb.listTransitions(itemId);
+      expect(transitions).toHaveLength(1);
+      verify.close();
+    });
+
+    test("N=20 concurrent phase updates produce correct transition log", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      const setup = new Database(p, { create: true });
+      setup.exec("PRAGMA journal_mode = WAL");
+      const setupDb = new WorkItemDb(setup);
+      const item = setupDb.createWorkItem({ issueNumber: 1, phase: "impl" });
+      const itemId = item.id;
+      setup.close();
+
+      const phases = ["review", "qa", "done"] as const;
+      const N = 20;
+
+      for (let i = 0; i < N; i++) {
+        const conn = new Database(p);
+        conn.exec("PRAGMA busy_timeout = 5000");
+        const wi = new WorkItemDb(conn);
+        const phase = phases[i % phases.length];
+        try {
+          wi.updateWorkItem(itemId, { phase }, { forced: true, forceReason: `writer-${i}` });
+        } catch {
+          // stale version races are expected
+        }
+        conn.close();
+      }
+
+      const verify = new Database(p);
+      const verifyDb = new WorkItemDb(verify);
+      const transitions = verifyDb.listTransitions(itemId);
+
+      for (let i = 1; i < transitions.length; i++) {
+        expect(transitions[i].fromPhase).toBe(transitions[i - 1].toPhase);
+      }
+      verify.close();
     });
   });
 });
