@@ -1120,7 +1120,8 @@ export class ClaudeWsServer {
 
   /**
    * Check whether a session is idle (safe to send a follow-up prompt).
-   * Returns the resolved session ID and current state, or null if not found.
+   * Returns the resolved session ID and current state, or null if not found
+   * or the prefix is ambiguous.
    * "Idle" means state is `idle` or `init` — no active turn, no pending permissions.
    */
   checkSessionIdle(sessionId: string): { resolvedId: string; state: SessionStateEnum; idle: boolean } | null {
