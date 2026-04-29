@@ -310,15 +310,27 @@ function resetIfBrowserDied(): void {
   }
 }
 
+const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";
+
+/** Validates and returns the `sites` argument as a dense, non-empty string array, or an error string. */
+export function parseSitesArg(sites: unknown): string[] | string {
+  if (!Array.isArray(sites)) return SITES_ARG_ERROR;
+  if (sites.length === 0) return SITES_ARG_ERROR;
+  for (let i = 0; i < sites.length; i++) {
+    if (!(i in sites)) return SITES_ARG_ERROR;
+  }
+  if (!sites.every((s) => typeof s === "string")) return SITES_ARG_ERROR;
+  return sites as string[];
+}
+
 async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
   return withBrowserLock(async () => {
     resetIfBrowserDied();
     let siteNames: string[];
     if ("sites" in args) {
-      if (!Array.isArray(args.sites) || !args.sites.every((s) => typeof s === "string")) {
-        return error("'sites' must be an array of site names");
-      }
-      siteNames = args.sites as string[];
+      const result = parseSitesArg(args.sites);
+      if (typeof result === "string") return error(result);
+      siteNames = result;
     } else {
       siteNames = listSites()
         .filter((s) => s.enabled)
