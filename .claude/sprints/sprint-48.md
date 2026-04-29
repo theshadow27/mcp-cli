@@ -102,6 +102,18 @@ Visible to workers via Step 1a in `.claude/commands/implement.md`.
 - **#1850 (replacement char)**: 1-character fix in section header. Trivial.
 - **#1798 (bye Error: prefix)**: success-path messages in `mcx claude bye` are routed through the same printer as error messages. Split the path or pass a severity flag. Apply parallel fix to `mcx agent claude` per the #1819 followup if it's the same code path — file a separate PR if not.
 
+## Backups (swap-in if a main pick drops or capacity remains)
+
+Order: pull from top. All are small, isolated, and known-scoped.
+
+| # | Title | Scrutiny | Model | Why it's a backup |
+|---|-------|----------|-------|-------|
+| 1819 | agent.ts/claude.ts: success messages still 'Error:' prefix (followup #1798) | low | sonnet | Natural pair to #1798. If #1798 implementer covers `mcx agent claude` too, close as done; else ~5 LOC drop-in. |
+| 1848 | test(harness): extend startTestDaemon to accept PATH override | low | sonnet | 1 file, ~15 LOC test infra. No collisions. Useful for any future mock-binary test (#1870-style). |
+| 1812 | fix(sites): handleBrowserStart should reject empty/sparse arrays | low | sonnet | 1 file, ~10 LOC validation guard. Isolated to sites worker. |
+| 1604 | mcx claude spawn help text correction | low | sonnet | Doc-only. Touches `claude.ts` but only the help string — folds naturally into the agent-UX cluster as a worker bonus. |
+| 1811 | flaky: server-pool SIGTERM disconnect test | low | sonnet | 1 file test hardening. Risk: hard to repro locally — only swap in if pattern is clear. |
+
 ## Excluded (with reasons)
 
 - **#1798 (bye Error: prefix)** — dropped at run start (2026-04-29 02:08 EDT): PR #1817 + followup #1819 already merged 2026-04-28, both issues closed before the sprint ran. Was originally listed as a low-scrutiny sonnet pick; the late-sprint-47 work picked it up out-of-band. Sprint 48 ships 14 PRs instead of 15.
