@@ -131,9 +131,9 @@ sessions, including from a concurrent sprint in another repo.
 `git config core.bare false` before every batch of git operations.
 Pre-flight + post-`bye` check until the sticky fix lands.
 
-**Run all sprint commands from within the project root.** `mcx claude ls`
-and `mcx claude wait` filter sessions by the current repo's git root —
-use `--all` for cross-repo view.
+**Run all sprint commands from within the project root.** `mcx claude ls`,
+`mcx claude wait`, and `mcx monitor` scope to the current repo's git root —
+use `--all` (ls/wait) or `--src <pattern>` (monitor) for a cross-repo view.
 
 ### Quota check
 
@@ -155,7 +155,8 @@ via `_work_items.work_items_update`.
 | `mcx tracked --json` | List all tracked items with PR/CI/review state |
 | `mcx tracked --phase impl` | Filter by phase |
 | `mcx untrack <number>` | Stop tracking |
-| `mcx claude wait --timeout 30000` | Block until session or work-item event |
+| `mcx monitor --subscribe session,work_item --json --max-events 1 --timeout 60` | Block for one enriched event (per-tick) |
+| `mcx monitor --subscribe session,work_item --json` | Long-lived stream (open at sprint start; tail) |
 
 **`work_items_update` will best-effort auto-populate `branch` from
 `prNumber`** when `branch` is omitted (resolves via `gh`). Pass both
@@ -169,13 +170,26 @@ mcx call _work_items work_items_update \
   "{\"id\":\"#$ISSUE\",\"prNumber\":$PR,\"branch\":\"$BRANCH\"}"
 ```
 
-Poller event types surfaced via `mcx claude wait`:
+Event types surfaced on the `mcx monitor` stream (load-bearing — payloads
+are pre-enriched by the producers in #1575/#1576/#1577/#1581/#1585/#1586/
+#1587/#1610, so most cases don't need a follow-up `mcx claude log` /
+`gh pr view`):
 
-| Event | Meaning |
-|-------|---------|
-| `checks:passed` / `checks:failed` | CI outcome |
-| `review:approved` / `review:changes_requested` | Review outcome |
-| `pr:merged` / `pr:closed` | PR outcome |
+| Event type | Payload highlights | Meaning / action |
+|------------|-------------------|------------------|
+| `session.idle` / `session.result` | `cost`, `turns`, `lastTool`, `resultPreview` (#1575/#1610) | Worker idle — tick the bound work item |
+| `session.permission_request` | `tool`, `args` | Approval needed — `mcx claude log` for context, then `mcx claude send` |
+| `session.stuck` | `lastTool`, `lastToolError`, `tokenDelta` (#1585) | Heuristic stall — interrupt + send guidance |
+| `pr.merge_state_changed` | `state`, `cascadeHead` (#1576/#1581) | If `cascadeHead`, advance the merge queue |
+| `ci.started` / `ci.running` / `ci.finished` | per-check `conclusions`, `allGreen` (#1577) | CI outcome — tick the PR's work item |
+| `pr.review_comment_posted` (a.k.a. copilot inline; renamed in #1737) | `path`, `line`, `body` | Possibly substantive — file followup if so |
+| `work_item.phase_changed` | `from`, `to` | Phase script updated state — observe |
+| `cost.session_over_budget` / `cost.sprint_over_budget` / `quota.utilization_threshold` (#1587) | thresholds + utilization | Apply [Quota gating](#quota-gating) |
+| `daemon.restarted` / `worker.ratelimited` / `daemon.config_reloaded` (#1586) | source/reason | Diagnostic — log + continue |
+
+`mcx claude wait` is the legacy CLI for one-off interactive use (humans,
+not the orchestrator). It surfaces the same EventBus but loses enrichment
+and forces the 5-lookup hydration loop the monitor stream eliminates.
 
 ## Interacting with workers
 
@@ -202,35 +216,97 @@ genuinely complete? If you can't, the session probably shouldn't end.
 
 ## Pipeline loop (one tick)
 
-Per-issue logic is phase-scripted. The orchestrator's loop is:
+Per-issue logic is phase-scripted. The orchestrator drives transitions
+**reactively** off the `mcx monitor` event stream — push, not poll.
+
+**Why stream and not `mcx claude wait`:** the monitor producers
+(#1575/#1576/#1577/#1581/#1585/#1586/#1587/#1610) attach `cost`, `turns`,
+`lastTool`, `resultPreview`, `cascadeHead`, `allGreen`, `conclusions`,
+`srcChurn`, etc. directly to events. Acting on a `mcx claude wait` line
+forces the orchestrator into a 5-lookup hydration loop (`log` + `gh pr
+view` + `gh api comments` + `gh api reviews` + `gh issue view`) per event.
+Acting on the monitor stream collapses that to ~1 lookup (the action). At
+15 sessions/sprint that is the difference between ~60 redundant tool calls
+per turn and ~1.
 
 ```
 while issues remain:
-  event = mcx claude wait --timeout 30000 --short
+  event = mcx monitor --subscribe session,work_item --json \
+                      --max-events 1 --timeout 60
+  # NOTE: --timeout is in *seconds* for monitor (was milliseconds for wait).
+  # Empty stdout on timeout is normal — fall through and re-enter the loop.
+
   quota = mcx call _metrics quota_status     # see Quota gating
 
-  for each tracked item:
-    # Tick the phase. Do NOT pass --dry-run — it skips the transition log
-    # + state writes (provider/model/labels/sessionId), breaking subsequent
-    # transitions.
-    result = mcx phase run <item.phase> --work-item <item.id>
-    case result.action:
-      "spawn":     execute result.command (quota permitting), then
-                   mcx call _work_items phase_state_set \
-                     '{"workItemId":"<item.id>","repoRoot":"<abs>","key":"session_id","value":"<real-id>"}'
-                   (replaces "pending:*"; use the tracked item's actual id —
-                    "issue:<n>" or "pr:<n>" — and snake_case state keys:
-                    session_id / qa_session_id / review_session_id /
-                    repair_session_id, matching the phase the spawn served)
-      "in-flight": session running — no action this tick
-      "wait":      no action this tick
-      "goto":      mcx phase run <result.target> --work-item <item.id>
-                   then update work_item.phase = result.target
+  # Find the tracked item this event belongs to. Both session and
+  # work_item categories carry workItemId in payload; session events
+  # additionally carry sessionId.
+  item = lookup-by-payload(event)
 
-  for each active session:
-    if permission_request: check log, send answer
-    if idle with PR pushed (impl): bye + tick current phase again
-    if cost > $50: interrupt → bye → file issue
+  case event.type:
+    "session.idle" | "session.result":
+      # Pre-enriched: payload already has cost, turns, lastTool, resultPreview.
+      # No mcx claude log needed unless the resultPreview is ambiguous.
+      result = mcx phase run <item.phase> --work-item <item.id>
+      case result.action:
+        "spawn":     execute result.command (quota permitting), then
+                     mcx call _work_items phase_state_set \
+                       '{"workItemId":"<item.id>","repoRoot":"<abs>","key":"session_id","value":"<real-id>"}'
+                     (replaces "pending:*"; tracked-item ids are
+                      "issue:<n>" or "pr:<n>"; state keys are snake_case:
+                      session_id / qa_session_id / review_session_id /
+                      repair_session_id, matching the spawning phase)
+        "in-flight": session running — no action this tick
+        "wait":      no action this tick
+        "goto":      mcx phase run <result.target> --work-item <item.id>
+                     then update work_item.phase = result.target
+
+    "session.permission_request":
+      mcx claude log <event.sessionId>                    # only branch needing log
+      mcx claude send <event.sessionId> "<answer>"
+
+    "session.stuck":                                       # #1585 — heuristic surfaced
+      apply Handling stuck workers — interrupt + send guidance
+
+    "ci.finished":                                         # #1577 — payload.allGreen + conclusions
+      if event.payload.allGreen and item bound:
+        mcx phase run <item.phase> --work-item <item.id>   # tick — likely advances
+
+    "pr.merge_state_changed":                              # #1581 — payload.cascadeHead
+      if event.payload.cascadeHead:
+        advance the merge queue (mcx pr merge ... or per merge-runner)
+
+    "pr.review_comment_posted":                            # 4-surface poller (#1737)
+      if comment is substantive:
+        file followup issue + (optionally) send the implementer to address
+
+    "work_item.phase_changed":                             # phase script just updated
+      observe — log to plan if Excluded was bumped
+
+    "cost.session_over_budget" | "cost.sprint_over_budget" |
+    "quota.utilization_threshold":                         # #1587
+      apply Quota gating
+
+    "daemon.restarted" | "worker.ratelimited" |
+    "daemon.config_reloaded":                              # #1586 — diagnostic
+      log + continue — these surface real conditions but rarely need
+      orchestrator action
+
+    (other types):
+      observe; if unexpected, file an issue per the "every problem"
+      rule — most likely a producer added a new event type without
+      run.md catching up
+
+  # Cross-cutting per-tick: spawn fresh impl sessions for unblocked tasks.
+  # The event stream tells you WHEN to react; spawning new work happens on
+  # task-list state regardless of stream activity.
+  for each task pending with no unresolved blockedBy:
+    spawn an impl session per the task's plan entry
+
+  # Cleanup-only: idle sessions with PR pushed AND qa:pass label AND zero
+  # open threads on all 4 surfaces → bye. Verified merge (state=MERGED &&
+  # mergedAt!=null) is required before marking task done — see
+  # feedback_verify_merge_actually_fired.md.
 
   file issues for any problems observed
 ```
@@ -239,13 +315,34 @@ The phase scripts encapsulate what was previously 6-step transition
 recipes — e.g. impl→review is now `mcx phase run triage` followed by,
 when `result.action == "goto"`, `mcx phase run <result.target>
 --work-item <item.id>`. (Triage uses the standard `action`/`target`
-schema since #1832 — no special-cased `decision` field.)
+schema since #1832 — no special-cased `decision` field, and triage itself
+consumes events through `ctx.waitForEvent` rather than its own polling.)
+
+**Long-lived alternative** — instead of `--max-events 1` per tick, open
+one stream at sprint start and tail it:
+
+```bash
+# Once at sprint start (kept alive, append-only):
+mcx monitor --subscribe session,work_item --json \
+  > /tmp/sprint-{N}-events.ndjson 2>&1 &
+# Each tick: read new lines since last cursor.
+```
+
+Pick the long-lived form when the orchestrator's harness can poll a
+file/pipe; pick `--max-events 1` per tick when each loop iteration is a
+fresh subprocess. The `mcx claude wait`-shaped per-tick form is the
+straight drop-in.
 
 **Key invariants** (orchestrator discipline, not enforced by scripts):
-- Use `mcx claude wait`, never `sleep`
-- `session:result` means idle, not ended
+- Use `mcx monitor` for orchestrator decisions; never `sleep`, and never
+  `mcx claude wait` polling (legacy interactive CLI, loses enrichment)
+- `session.result` / `session.idle` mean *idle*, not ended — both surface
+  the same payload shape, both come pre-enriched
 - Don't `bye` before verifying PR pushed
 - Don't `bye` a QA session before `qa:pass` / `qa:fail` is on the PR
+- Verify merged with `state == MERGED && mergedAt != null` (not just
+  "auto-merge queued") before marking work item done —
+  `feedback_verify_merge_actually_fired.md`
 - Spawn fresh sessions per phase — never reuse across impl/review/QA
 - Reuse worktrees across phases via `--cwd` (phase scripts prefer this)
 - Never `bye` + respawn to sidestep a stuck session — `send` instead
