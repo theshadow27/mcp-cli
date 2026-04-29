@@ -155,6 +155,20 @@ async function handlePrompt(
 
   if (sessionId) {
     // Follow-up prompt to existing session
+    if (args.ifIdle) {
+      const check = server.checkSessionIdle(sessionId);
+      if (check && !check.idle) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `send: session ${check.resolvedId.slice(0, 8)} is busy (state=${check.state}). Use without --if-idle to queue.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     server.sendPrompt(sessionId, prompt);
   } else {
     // New session
