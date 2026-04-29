@@ -1590,6 +1590,36 @@ describe("ClaudeWsServer", () => {
     expect(nonNullCount).toBe(1);
   });
 
+  test("bye does NOT suppress cleanup when same worktree name is in different repos (#1837)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("session-a", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo-a/.claude/worktrees/claude-shared",
+      repoRoot: "/repo-a",
+    });
+    server.prepareSession("session-b", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo-b/.claude/worktrees/claude-shared",
+      repoRoot: "/repo-b",
+    });
+
+    // Bye session-a — should NOT be suppressed because session-b is in a different repo/cwd
+    const resultA = await server.bye("session-a");
+    expect(resultA.worktree).toBe("claude-shared");
+    expect(resultA.cwd).toBe("/repo-a/.claude/worktrees/claude-shared");
+    expect(resultA.repoRoot).toBe("/repo-a");
+
+    const resultB = await server.bye("session-b");
+    expect(resultB.worktree).toBe("claude-shared");
+    expect(resultB.cwd).toBe("/repo-b/.claude/worktrees/claude-shared");
+    expect(resultB.repoRoot).toBe("/repo-b");
+  });
+
   test("sessionCount tracks active sessions", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

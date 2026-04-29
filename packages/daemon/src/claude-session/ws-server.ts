@@ -1119,9 +1119,10 @@ export class ClaudeWsServer {
     // Guard: suppress worktree cleanup if another session references the same worktree.
     // Parallel spawn can assign the same worktree to multiple sessions (#1836);
     // without this check, bye on a dead ghost destroys a live session's working dir (#1837).
+    // Match by cwd (full path), not just worktree name — names aren't unique across repos.
     if (info.worktree) {
       for (const [otherId, other] of this.sessions) {
-        if (other.worktree === info.worktree) {
+        if (other.worktree === info.worktree && (other.config.cwd ?? null) === info.cwd) {
           this.logger.warn(
             `[_claude] bye ${resolvedId.slice(0, 8)}: worktree "${info.worktree}" also claimed by session ${otherId.slice(0, 8)} — skipping cleanup`,
           );
