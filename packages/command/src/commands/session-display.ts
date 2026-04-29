@@ -48,6 +48,8 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
   const dirReads = new Map<string, number>();
   const dirWrites = new Map<string, number>();
   const cmdMap = new Map<string, { count: number; lastOutput: string | null }>();
+  // Maps tool_use_id → cmdMap key so tool_results can be attributed to the right command
+  const bashToolUseIds = new Map<string, string>();
   const queries: QueryEntry[] = [];
 
   for (const entry of entries) {
@@ -97,6 +99,7 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
             const firstToken = input.command.trim().split(/\s+/)[0] ?? "bash";
             const existing = cmdMap.get(firstToken);
             cmdMap.set(firstToken, { count: (existing?.count ?? 0) + 1, lastOutput: existing?.lastOutput ?? null });
+            if (typeof b.id === "string") bashToolUseIds.set(b.id, firstToken);
           } else if ((name === "Grep" || name === "Glob") && typeof input.pattern === "string") {
             const q: QueryEntry = { tool: name, pattern: input.pattern };
             if (typeof input.path === "string") q.path = input.path;
@@ -106,20 +109,18 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
       }
     }
 
-    // Capture Bash tool results to attach to last command invocation
+    // Capture Bash tool results: match by tool_use_id to attribute to the right command
     if (entry.direction === "outbound" && type === "user" && entry.message.message) {
       const msg = entry.message.message as { content?: unknown };
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (!block || typeof block !== "object") continue;
           const b = block as Record<string, unknown>;
-          if (b.type !== "tool_result" || typeof b.content !== "string") continue;
-          // Find the last command that has no lastOutput yet and attach this result
-          for (const [cmd, entry_] of cmdMap) {
-            if (entry_.lastOutput === null) {
-              const trimmed = b.content.trim().slice(0, 200);
-              cmdMap.set(cmd, { ...entry_, lastOutput: trimmed });
-            }
+          if (b.type !== "tool_result" || typeof b.tool_use_id !== "string") continue;
+          const cmdKey = bashToolUseIds.get(b.tool_use_id);
+          if (cmdKey && typeof b.content === "string") {
+            const existing = cmdMap.get(cmdKey);
+            if (existing) cmdMap.set(cmdKey, { ...existing, lastOutput: b.content.trim().slice(0, 200) });
           }
         }
       }

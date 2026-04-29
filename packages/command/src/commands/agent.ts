@@ -1563,7 +1563,9 @@ async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps
   const listText = formatToolResult(listResult);
   let allSessions: Array<Record<string, unknown>>;
   try {
-    allSessions = JSON.parse(listText);
+    const parsed: unknown = JSON.parse(listText);
+    if (!Array.isArray(parsed)) throw new Error("expected array");
+    allSessions = parsed as Array<Record<string, unknown>>;
   } catch {
     d.printError("Failed to parse session list");
     d.exit(1);
@@ -1573,11 +1575,16 @@ async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps
   const resolved: Array<{ session: Record<string, unknown>; entries: Array<Record<string, unknown>> }> = [];
 
   for (const target of targets) {
-    const session = findSessionByTarget(allSessions, target);
-    if (!session) {
-      d.printError(`Warning: no session matching "${target}"`);
+    const lookup = findSessionByTarget(allSessions, target);
+    if (!lookup.found) {
+      if (lookup.ambiguous) {
+        d.printError(`Ambiguous target "${target}": matches ${lookup.candidates.join(", ")}`);
+      } else {
+        d.printError(`Warning: no session matching "${target}"`);
+      }
       continue;
     }
+    const session = lookup.session;
     const sessionId = String(session.sessionId);
     const txResult = await d.callTool(`${P}_transcript`, { sessionId, limit: 150 });
     const txText = formatToolResult(txResult);
@@ -1615,18 +1622,29 @@ async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps
   }
 }
 
-/**
- * Find a session by exact name (case-insensitive) or UUID prefix.
- * Returns null if not found or ambiguous.
- */
-function findSessionByTarget(sessions: Array<Record<string, unknown>>, target: string): Record<string, unknown> | null {
+type SessionLookup =
+  | { found: true; session: Record<string, unknown> }
+  | { found: false; ambiguous: false }
+  | { found: false; ambiguous: true; candidates: string[] };
+
+/** Find a session by exact name (case-insensitive) or UUID prefix. */
+function findSessionByTarget(sessions: Array<Record<string, unknown>>, target: string): SessionLookup {
   const lower = target.toLowerCase();
   const nameMatches = sessions.filter((s) => typeof s.name === "string" && s.name.toLowerCase() === lower);
-  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length === 1) return { found: true, session: nameMatches[0] };
+  if (nameMatches.length > 1) {
+    const candidates = nameMatches.map((s) => `${s.name} (${String(s.sessionId).slice(0, 8)})`);
+    return { found: false, ambiguous: true, candidates };
+  }
 
   const idMatches = sessions.filter((s) => typeof s.sessionId === "string" && s.sessionId.startsWith(target));
-  if (idMatches.length === 1) return idMatches[0];
-  return null;
+  if (idMatches.length === 1) return { found: true, session: idMatches[0] };
+  if (idMatches.length > 1) {
+    const candidates = idMatches.map((s) => String(s.sessionId).slice(0, 8));
+    return { found: false, ambiguous: true, candidates };
+  }
+
+  return { found: false, ambiguous: false };
 }
 
 function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {

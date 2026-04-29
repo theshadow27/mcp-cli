@@ -399,6 +399,69 @@ describe("walkTranscript", () => {
     expect(stats.commandSummary).toHaveLength(0);
     expect(stats.lastQueries).toHaveLength(0);
   });
+
+  test("attributes Bash lastOutput by tool_use_id, not first-null heuristic", () => {
+    // Interleaved: bun → result, Read → result, git → result
+    // Verify bun gets its own output and git gets its own output (not crossed)
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "bun test foo.spec.ts" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "bash-1", content: "PASS 10 tests" }] },
+        },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "/src/foo.ts" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "read-1", content: "file contents" }] },
+        },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "bash-2", name: "Bash", input: { command: "git status" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "bash-2", content: "On branch main" }] },
+        },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    const bun = stats.commandSummary.find((e) => e.cmd === "bun");
+    const git = stats.commandSummary.find((e) => e.cmd === "git");
+    expect(bun?.lastOutput).toBe("PASS 10 tests");
+    expect(git?.lastOutput).toBe("On branch main");
+    // Non-Bash tool_result must not bleed into any Bash command
+    expect(bun?.lastOutput).not.toContain("file contents");
+    expect(git?.lastOutput).not.toContain("file contents");
+  });
+
+  test("later Bash result overwrites lastOutput for same command key", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "b1", name: "Bash", input: { command: "bun test" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "FAIL" }] } },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "b2", name: "Bash", input: { command: "bun test" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b2", content: "PASS" }] } },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    const bun = stats.commandSummary.find((e) => e.cmd === "bun");
+    expect(bun?.count).toBe(2);
+    expect(bun?.lastOutput).toBe("PASS");
+  });
 });
 
 describe("formatLifecycleLine", () => {

@@ -621,6 +621,31 @@ describe("agent claude status", () => {
     await expect(cmdAgent(["claude", "status"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage:"));
   });
+
+  test("ambiguous name prints distinct error with candidates", async () => {
+    const session2 = { ...CLAUDE_SESSION, sessionId: "eee33333-aaaa-bbbb-cccc-dddddddddddd", name: "Alice" };
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION, session2]);
+        return toolResult([]);
+      }),
+    });
+    await expect(cmdAgent(["claude", "status", "Alice"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Ambiguous"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Alice"));
+  });
+
+  test("ambiguous UUID prefix prints distinct error with candidates", async () => {
+    const session2 = { ...CLAUDE_SESSION, sessionId: "ccc22222-aaaa-bbbb-cccc-dddddddddddd", name: "Bob" };
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION, session2]);
+        return toolResult([]);
+      }),
+    });
+    await expect(cmdAgent(["claude", "status", "ccc"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Ambiguous"));
+  });
 });
 
 // ── OpenCode via agent ──
