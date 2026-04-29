@@ -631,6 +631,29 @@ describe("WorkItemDb", () => {
       const updated = db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 2 });
       expect(updated.version).toBe(3);
     });
+
+    test("setBranchIfNull increments version", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      expect(item.version).toBe(1);
+      db.setBranchIfNull(item.id, "feat/branch");
+      const after = db.getWorkItem(item.id);
+      expect(after?.version).toBe(2);
+      expect(after?.branch).toBe("feat/branch");
+    });
+
+    test("expectedVersion respects version bumped by setBranchIfNull", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      db.setBranchIfNull(item.id, "feat/branch");
+      // version is now 2; expectedVersion: 1 should reject
+      expect(() => db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 1 })).toThrow(
+        StaleUpdateError,
+      );
+      // expectedVersion: 2 should succeed
+      const updated = db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 2 });
+      expect(updated.version).toBe(3);
+    });
   });
 
   describe("concurrent update stress test", () => {

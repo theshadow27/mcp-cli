@@ -294,7 +294,9 @@ export class WorkItemDb {
    */
   setBranchIfNull(id: string, branch: string): boolean {
     const result = this.db
-      .prepare("UPDATE work_items SET branch = $branch, updated_at = datetime('now') WHERE id = $id AND branch IS NULL")
+      .prepare(
+        "UPDATE work_items SET branch = $branch, version = version + 1, updated_at = datetime('now') WHERE id = $id AND branch IS NULL",
+      )
       .run({ $id: id, $branch: branch });
     return result.changes > 0;
   }
@@ -486,7 +488,7 @@ export class WorkItemDb {
    * Atomically create or update a work item.
    * Uses INSERT ... ON CONFLICT(id) DO UPDATE to avoid TOCTOU races.
    */
-  upsertWorkItem(item: Partial<WorkItem> & { id: string }): WorkItem {
+  upsertWorkItem(item: WorkItemPatch & { id: string }): WorkItem {
     const before = this.getWorkItem(item.id);
     this.db
       .query(
