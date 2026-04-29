@@ -104,6 +104,7 @@ Visible to workers via Step 1a in `.claude/commands/implement.md`.
 
 ## Excluded (with reasons)
 
+- **#1798 (bye Error: prefix)** — dropped at run start (2026-04-29 02:08 EDT): PR #1817 + followup #1819 already merged 2026-04-28, both issues closed before the sprint ran. Was originally listed as a low-scrutiny sonnet pick; the late-sprint-47 work picked it up out-of-band. Sprint 48 ships 14 PRs instead of 15.
 - **#1602 (slim builds)** — sprint-47-tentative anchor. High-effort build refactor, design not yet finalized, no current blocker. Move to sprint 49 with a design doc first.
 - **#1604 (spawn help text)** — doc-only filler; trim to keep agent-UX cluster focused. Will land naturally with #1606/#1607 as workers update help strings.
 - **#1605 (wait stable header)** — overlaps with the Monitor Epic event-projection shape (#1486). Wait until #1486 lands its projection helper, then route both through it.
