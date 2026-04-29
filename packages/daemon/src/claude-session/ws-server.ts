@@ -1103,11 +1103,28 @@ export class ClaudeWsServer {
       });
     }
 
-    const info = {
+    const info: { worktree: string | null; cwd: string | null; repoRoot: string | null } = {
       worktree: session.worktree,
       cwd: session.config.cwd ?? null,
       repoRoot: session.config.repoRoot ?? null,
     };
+
+    // Guard: suppress worktree cleanup if another session references the same worktree.
+    // Parallel spawn can assign the same worktree to multiple sessions (#1836);
+    // without this check, bye on a dead ghost destroys a live session's working dir (#1837).
+    if (info.worktree) {
+      for (const [otherId, other] of this.sessions) {
+        if (otherId !== resolvedId && other.worktree === info.worktree) {
+          this.logger.warn(
+            `[_claude] bye ${resolvedId.slice(0, 8)}: worktree "${info.worktree}" also claimed by session ${otherId.slice(0, 8)} — skipping cleanup`,
+          );
+          info.worktree = null;
+          info.cwd = null;
+          break;
+        }
+      }
+    }
+
     const reason = message ? `Session ended: ${message}` : "Session ended by user";
     await this.terminateSession(resolvedId, session, reason);
     return info;
