@@ -270,3 +270,29 @@ migrate single-project repos into a personal org specifically to unlock
 merge queue and other collaboration-scale features (team-level
 CODEOWNERS, per-team runner groups, IP allowlisting, SSO). Mention both
 paths in the generated skill's pre-flight section.
+
+**31. Enumerate every comment/review surface per platform — not just the
+obvious one.** GitHub PRs surface comments on four distinct API endpoints:
+PR-body comments, inline file:line comments (where Copilot code review
+lives), review containers (APPROVED / CHANGES_REQUESTED / COMMENTED), and
+linked-issue comments. Phase agents that only check the PR-body surface
+ship PRs with unresolved review threads. Before transitioning a PR to
+`done`, enumerate **all** surfaces and demand each open thread be
+addressed (with a reply citing the fix commit) or dismissed (with an
+explicit out-of-scope reply). No silent skips. The principle generalizes:
+every collaboration platform has more "where comments live" than the
+default UI shows; an autonomous merger that doesn't enumerate them all
+will leak unresolved threads into main.
+
+**32. Task lists track issues, not batches.** When the planner groups
+N issues into M batches, it's tempting to mirror the structure as M
+TaskCreate items where Batch 2 is blocked-by Batch 1. Don't. Create one
+Task per *issue* with `addBlockedBy` edges for explicit cross-issue
+dependencies (file conflicts, ordering requirements). Batch-level tasks
+serialize idle slots — the orchestrator waits for "Batch 2 to finish
+before starting Batch 3" instead of pulling the next unblocked issue.
+Issue-granular tasks let the dependency graph drain naturally and peak
+concurrency stays high. This rule lives in the skill's run.md, not in
+retro learnings, because every sprint forgets it otherwise — the visual
+clarity of "3 batches" pulls the orchestrator back toward the wrong
+abstraction unless the skill explicitly forbids it.

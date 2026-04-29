@@ -42,6 +42,11 @@ function commandForProvider(provider: Provider): string[] {
 
 function pickModel(labels: string[]): "opus" | "sonnet" {
   // Flaky work always needs deep analysis (see run.md history).
+  // Orchestrator gate: a flaky issue must have a nerd-snipe root-cause
+  // comment on the issue before reaching this phase — see
+  // .claude/memory/feedback_flaky_tests.md and run.md "Flaky / CI-instability
+  // issues — nerd-snipe gate before impl". Without it, expect symptom-masking
+  // patches (sprint 47 / #1870).
   if (labels.includes("flaky")) return "opus";
   // Docs-only is cheap; everything else defaults to opus.
   if (labels.includes("docs-only") || labels.includes("documentation")) return "sonnet";

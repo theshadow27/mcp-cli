@@ -8,6 +8,21 @@
  */
 
 const args = process.argv.slice(2);
+
+// Handle --version probes from the daemon's binary-resolver (#1808/#1835).
+// Without this, the resolver's spawn of `<claude> --version` exits 1, the
+// worker boots in spawnDisabledReason mode, and any test that calls
+// claude_prompt times out at 30s — which then makes scripts/check-coverage.ts
+// exit non-zero with a 500KB stderr write in flight, truncating output at
+// the kernel pipe buffer (~74KB) and hiding the real failure. See #1870.
+if (args.includes("--version") || args.includes("-v")) {
+  // Report a pre-2.1.120 version so the daemon's binary-resolver picks the
+  // noop / legacy ws:// strategy — no patched binary or TLS material needed
+  // for the test fixture.
+  process.stdout.write("2.1.119 (mock-claude)\n");
+  process.exit(0);
+}
+
 const sdkUrlIdx = args.indexOf("--sdk-url");
 if (sdkUrlIdx === -1 || !args[sdkUrlIdx + 1]) {
   process.stderr.write("mock-claude: missing --sdk-url\n");

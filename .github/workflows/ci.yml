@@ -95,12 +95,12 @@ jobs:
       # Backstops the coverage ratchet against PRs merged without pre-commit hooks
       # (force-push, web UI edits, etc.). See #1252.
       #
-      # Bun crashes (SIGILL exit 132, or post-cleanup exit 1) happen AFTER all tests
-      # complete, matching the same pattern handled in the check job (see #1004).
-      # We treat non-zero exit as a pass when "PASS: All coverage thresholds met"
-      # appears (thresholds already checked), or when "^ 0 fail$" appears (all tests
-      # passed but Bun crashed before threshold check). Real threshold failures always
-      # produce a FAIL line instead. See #1419 for the exit-1 case.
+      # Real Bun panics (SIGILL 132 / SIGSEGV 139) get one retry. Truncated-output
+      # heuristics removed: per #1870, the "exit 1 with no test summary" pattern
+      # was a deterministic test failure plus a kernel-pipe-buffer truncation in
+      # check-coverage.ts, not a Bun flake — broadening the retry guard there
+      # accomplished nothing. The "PASS: All coverage thresholds met" / "0 fail"
+      # passthroughs cover the legitimate post-test exit-1 case from #1419.
       - name: Coverage thresholds
         run: |
           set +e
@@ -109,28 +109,22 @@ jobs:
           if [ $code -eq 0 ]; then
             exit 0
           elif grep -q "PASS: All coverage thresholds met" /tmp/coverage_out.txt; then
-            echo "::warning::Bun crash (exit $code) after coverage check passed — treating as pass (see #1004)"
+            echo "::warning::Bun crash (exit $code) after coverage check passed — treating as pass (#1419)"
             exit 0
           elif grep -q "^ 0 fail$" /tmp/coverage_out.txt && ! grep -q "^FAIL:" /tmp/coverage_out.txt; then
-            echo "::warning::Bun crash (exit $code) after all coverage tests passed — treating as pass (see #1004, #1419)"
+            echo "::warning::Bun crash (exit $code) after all coverage tests passed — treating as pass (#1419)"
             exit 0
-          elif [ $code -eq 132 ] || [ $code -eq 139 ] || ! grep -qE "^ +[0-9]+ fail$" /tmp/coverage_out.txt; then
-            # 132/139 = Bun panic (#1004); the grep guard covers the #1838 flake pattern
-            # where exit code is 1 but the test summary line ("N fail") is absent because
-            # Bun aborted mid-suite on a flaky liveBuffer test. Retry once.
-            echo "::warning::Coverage failed (exit $code) without test summary — retrying once (see #1004, #1838)"
+          elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
+            echo "::warning::Bun panic (exit $code) — retrying once"
             bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_retry.txt
             code2=${PIPESTATUS[0]}
             if [ $code2 -eq 0 ]; then
               exit 0
             elif grep -q "PASS: All coverage thresholds met" /tmp/coverage_retry.txt; then
-              echo "::warning::Bun crash (exit $code2) on retry after coverage passed — treating as pass (see #1004)"
+              echo "::warning::Bun crash (exit $code2) on retry after coverage passed — treating as pass (#1419)"
               exit 0
             elif grep -q "^ 0 fail$" /tmp/coverage_retry.txt && ! grep -q "^FAIL:" /tmp/coverage_retry.txt; then
-              echo "::warning::Bun crash (exit $code2) on retry after all coverage tests passed — treating as pass (see #1004, #1419)"
-              exit 0
-            elif [ $code2 -eq 132 ] || [ $code2 -eq 139 ]; then
-              echo "::warning::Bun crash on retry too — treating as pass (known upstream bug, see #1004)"
+              echo "::warning::Bun crash (exit $code2) on retry after all coverage tests passed — treating as pass (#1419)"
               exit 0
             else
               exit $code2

@@ -57,7 +57,7 @@ packages/
 - **No shell interpolation**: never pass template literals with `${}` to `execSync` or `execFileSync` — use `spawnSync("cmd", [...args])` instead. `scripts/check-shell-injection.ts` enforces this at commit time.
 - **Test time budget**: no single test file should take >5s in isolation. If it does, extract pure logic into unit tests or split the file. `scripts/check-coverage.ts` profiles every test file and warns on overages (does not block commits — see #812 for the replacement plan).
 - **No implementation code in index files**: `index.ts` is for barrel exports only. Entry points go in `main.ts` (or `main.tsx`). This keeps testable code separate from untestable process boilerplate.
-- **Bun segfaults**: If you encounter a Bun segfault (panic/crash after tests pass, especially in CI), add the crash details (bun.report URL, address, worker count, Bun version) as a comment on #1004. We're collecting data for an upstream bug report. **Always `open` the bun.report URL** so the crash telemetry reaches Bun's team.
+- **Bun segfaults / coverage crashes**: The historical worker-cleanup segfault was tracked in #1004 (closed 2026-04-11, fixed upstream). Do NOT file new crashes under #1004 — open a fresh issue with the bun.report URL, address, Bun version, reproducible commit, and (if applicable) the bisect anchor. **Always `open` the bun.report URL** so Bun gets the crash telemetry.
 
 ## Orchestration manifest
 

@@ -3131,16 +3131,21 @@ describe("IpcServer HTTP transport", () => {
       });
       server.start(socketPath);
 
-      // Pre-populate enough events so backfill spans many batches (10 × 1000 = 9 yield
-      // points). Live events published after `await fetch()` are guaranteed to land during
-      // a backfill yield, making the test timing-independent.
-      const backfillCount = 10_000;
+      // Pre-populate events for backfill. Force a tiny batch size so backfill yields
+      // many times — that guarantees the test's synchronous publish loop after
+      // `await fetch()` lands inside the backfill window (not after `liveBuffer = null`),
+      // regardless of how Bun orders fetch resolution against the backfill's
+      // `setTimeout(0)` yields. Without this, the publish loop occasionally races
+      // backfill completion and the gap message never fires (sprint-47 retro flake).
+      const backfillCount = 200;
       for (let i = 0; i < backfillCount; i++) {
         bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
       }
 
       const origMaxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
+      const origBatchSize = IpcServer.BACKFILL_BATCH_SIZE;
       (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = 5;
+      IpcServer.BACKFILL_BATCH_SIZE = 1;
 
       const controller = new AbortController();
       try {
@@ -3167,7 +3172,10 @@ describe("IpcServer HTTP transport", () => {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.includes("pr.merged")) break;
+          // Wait for the gap control message specifically. With BACKFILL_BATCH_SIZE=1
+          // the live publishes are also written to eventLog, so they re-emerge as
+          // backfill rows; "pr.merged" alone doesn't prove the gap path executed.
+          if (buffer.includes('"t":"gap"')) break;
         }
 
         controller.abort();
@@ -3189,6 +3197,7 @@ describe("IpcServer HTTP transport", () => {
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
       } finally {
         (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = origMaxEntries;
+        IpcServer.BACKFILL_BATCH_SIZE = origBatchSize;
       }
     });
 
@@ -3203,13 +3212,18 @@ describe("IpcServer HTTP transport", () => {
       });
       server.start(socketPath);
 
-      const backfillCount = 10_000;
+      // Tiny batch size + small backfill: same fix as the entry-cap test above —
+      // forces many `setTimeout(0)` yields so the test's synchronous publish loop
+      // is guaranteed to land in `liveBuffer` before backfill completes.
+      const backfillCount = 200;
       for (let i = 0; i < backfillCount; i++) {
         bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
       }
 
       const origMaxBytes = IpcServer.LIVE_BUFFER_MAX_BYTES;
+      const origBatchSize = IpcServer.BACKFILL_BATCH_SIZE;
       (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = 500;
+      IpcServer.BACKFILL_BATCH_SIZE = 1;
 
       const controller = new AbortController();
       try {
@@ -3234,7 +3248,10 @@ describe("IpcServer HTTP transport", () => {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.includes("pr.merged")) break;
+          // Wait for the gap control message specifically. With BACKFILL_BATCH_SIZE=1
+          // the live publishes are also written to eventLog, so they re-emerge as
+          // backfill rows; "pr.merged" alone doesn't prove the gap path executed.
+          if (buffer.includes('"t":"gap"')) break;
         }
 
         controller.abort();
@@ -3255,6 +3272,7 @@ describe("IpcServer HTTP transport", () => {
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
       } finally {
         (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = origMaxBytes;
+        IpcServer.BACKFILL_BATCH_SIZE = origBatchSize;
       }
     });
 

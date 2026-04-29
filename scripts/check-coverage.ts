@@ -273,9 +273,15 @@ const testDuration = Date.now() - testStart;
 const stdout = stdout1 + stdout2;
 const stderr = stderr1 + stderr2;
 
-// Print original output so user sees test results + coverage table
-process.stdout.write(stdout);
-process.stderr.write(stderr);
+// Print original output so user sees test results + coverage table.
+// Use awaited Bun.write so the kernel pipe drains before any later
+// process.exit() — process.stderr.write() returns immediately and the
+// unflushed tail is discarded on _exit(2), truncating diagnostic output
+// at the kernel pipe boundary (~64–74KB on macOS/Linux). That's how a
+// single failing test silently wiped the rest of the coverage report
+// in CI. See #1870.
+await Bun.write(Bun.stdout, stdout);
+await Bun.write(Bun.stderr, stderr);
 
 // Fail if either run failed
 const exitCode = exitCode1 !== 0 ? exitCode1 : exitCode2;
