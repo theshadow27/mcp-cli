@@ -462,6 +462,17 @@ describe("walkTranscript", () => {
     expect(bun?.count).toBe(2);
     expect(bun?.lastOutput).toBe("PASS");
   });
+
+  test("empty Bash command string falls back to 'bash' key", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "b1", name: "Bash", input: { command: "" } }]),
+      makeAssistantMsg([{ type: "tool_use", id: "b2", name: "Bash", input: { command: "   " } }]),
+    ];
+    const stats = walkTranscript(entries);
+    const bash = stats.commandSummary.find((e) => e.cmd === "bash");
+    expect(bash).toBeDefined();
+    expect(bash?.count).toBe(2);
+  });
 });
 
 describe("formatLifecycleLine", () => {

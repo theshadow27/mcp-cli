@@ -1548,7 +1548,12 @@ async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps
   let targets: string[] = [];
   for (const arg of r1) {
     if (!arg.startsWith("-")) {
-      targets = targets.concat(arg.split(",").filter(Boolean));
+      targets = targets.concat(
+        arg
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
     }
   }
 
@@ -1592,7 +1597,7 @@ async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps
     try {
       entries = JSON.parse(txText);
     } catch {
-      // empty transcript is fine
+      d.printError(`Warning: failed to parse transcript for session ${sessionId}`);
     }
     resolved.push({ session, entries });
   }

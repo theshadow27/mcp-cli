@@ -96,7 +96,7 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
             const d = dirname(input.file_path);
             dirWrites.set(d, (dirWrites.get(d) ?? 0) + 1);
           } else if (name === "Bash" && typeof input.command === "string") {
-            const firstToken = input.command.trim().split(/\s+/)[0] ?? "bash";
+            const firstToken = input.command.trim().split(/\s+/)[0] || "bash";
             const existing = cmdMap.get(firstToken);
             cmdMap.set(firstToken, { count: (existing?.count ?? 0) + 1, lastOutput: existing?.lastOutput ?? null });
             if (typeof b.id === "string") bashToolUseIds.set(b.id, firstToken);
@@ -171,7 +171,7 @@ function extractTextOnly(content: unknown): string | null {
   return joined || null;
 }
 
-/** Format elapsed milliseconds as "HH:MM" or "MM:SS". */
+/** Format elapsed milliseconds as "H:MM:SS" or "M:SS". */
 export function formatElapsed(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
   const h = Math.floor(totalSec / 3600);
