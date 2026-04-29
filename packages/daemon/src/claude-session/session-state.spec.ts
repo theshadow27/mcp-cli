@@ -1135,4 +1135,80 @@ describe("SessionState", () => {
       expect(session.lastToolCall?.errorMessage).toBeUndefined();
     });
   });
+
+  // ── hasActiveToolCall tracking (#1818) ──
+
+  describe("hasActiveToolCall", () => {
+    const ASSISTANT_WITH_TOOL_USE = {
+      type: "assistant",
+      message: {
+        id: "msg-tc1",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        content: [
+          { type: "text", text: "Let me run that." },
+          { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "echo hi" } },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 50, output_tokens: 30 },
+      },
+      parent_tool_use_id: null,
+      uuid: "uuid-tc1",
+      session_id: "sess-1",
+    };
+
+    test("starts false", () => {
+      const session = new SessionState("s");
+      expect(session.hasActiveToolCall).toBe(false);
+    });
+
+    test("set true on assistant message with tool_use block", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_WITH_TOOL_USE);
+      expect(session.hasActiveToolCall).toBe(true);
+    });
+
+    test("cleared on next assistant message with no tool_use block", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_WITH_TOOL_USE);
+      expect(session.hasActiveToolCall).toBe(true);
+
+      session.handleMessage(ASSISTANT_MSG); // text-only content
+      expect(session.hasActiveToolCall).toBe(false);
+    });
+
+    test("cleared on result success", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_WITH_TOOL_USE);
+      expect(session.hasActiveToolCall).toBe(true);
+
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.hasActiveToolCall).toBe(false);
+    });
+
+    test("cleared on result error", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_WITH_TOOL_USE);
+      expect(session.hasActiveToolCall).toBe(true);
+
+      session.handleMessage(RESULT_ERROR);
+      expect(session.hasActiveToolCall).toBe(false);
+    });
+
+    test("cleared via fallback result path", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_WITH_TOOL_USE);
+      expect(session.hasActiveToolCall).toBe(true);
+
+      // Fallback result — missing is_error, duration_ms, etc.
+      session.handleMessage({
+        type: "result",
+        subtype: "success",
+        result: "ok",
+        session_id: "sess-1",
+      });
+      expect(session.hasActiveToolCall).toBe(false);
+    });
+  });
 });
