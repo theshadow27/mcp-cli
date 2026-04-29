@@ -9,6 +9,7 @@ import {
 import type { BudgetConfig, MonitorEvent } from "@mcp-cli/core";
 import type { StateDb } from "./db/state";
 import type { EventBus } from "./event-bus";
+import type { EventLog } from "./event-log";
 import type { QuotaPoller } from "./quota";
 
 interface SessionCostState {
@@ -25,6 +26,7 @@ export class BudgetWatcher {
   private readonly bus: EventBus;
   private readonly db: StateDb;
   private readonly quotaPoller: QuotaPoller;
+  private readonly eventLog: EventLog | null;
   private readonly subId: number;
   private readonly sessionCosts = new Map<string, SessionCostState>();
   private sprintFired = false;
@@ -37,10 +39,12 @@ export class BudgetWatcher {
     db: StateDb;
     quotaPoller: QuotaPoller;
     quotaPollIntervalMs?: number;
+    eventLog?: EventLog;
   }) {
     this.bus = opts.bus;
     this.db = opts.db;
     this.quotaPoller = opts.quotaPoller;
+    this.eventLog = opts.eventLog ?? null;
 
     const config = this.db.getBudgetConfig();
     for (const t of config.quotaThresholds) {
@@ -60,6 +64,71 @@ export class BudgetWatcher {
     if (this.quotaTimer) {
       clearInterval(this.quotaTimer);
       this.quotaTimer = null;
+    }
+  }
+
+  /**
+   * Replay persisted events to restore in-memory budget state across daemon restarts.
+   * Call once after construction, before the daemon starts handling live requests.
+   * Returns the number of events replayed.
+   */
+  reconcile(): number {
+    if (!this.eventLog) return 0;
+
+    let replayed = 0;
+    let cursor = 0;
+
+    while (true) {
+      const events = this.eventLog.getSince(cursor);
+      if (events.length === 0) break;
+      for (const event of events) {
+        this.applyReplayEvent(event);
+        replayed++;
+        cursor = event.seq;
+      }
+      if (events.length < 1000) break;
+    }
+
+    // Re-arm sprint if costs have dropped below the cap since the last crossing.
+    if (this.sprintFired) {
+      const config = this.db.getBudgetConfig();
+      const cutoffMs = Date.now() - config.sprintWindowMs;
+      const { totalCost } = this.db.sprintCostSince(cutoffMs);
+      if (totalCost < config.sprintCap) {
+        this.sprintFired = false;
+      }
+    }
+
+    return replayed;
+  }
+
+  private applyReplayEvent(event: MonitorEvent): void {
+    const sessionId = typeof event.sessionId === "string" ? event.sessionId : null;
+
+    switch (event.event) {
+      case COST_SESSION_OVER_BUDGET: {
+        if (!sessionId) break;
+        let state = this.sessionCosts.get(sessionId);
+        if (!state) {
+          state = { cost: 0, fired: false };
+          this.sessionCosts.set(sessionId, state);
+        }
+        state.fired = true;
+        if (typeof event.cost === "number") state.cost = event.cost;
+        if (typeof event.workItemId === "string") state.workItemId = event.workItemId;
+        break;
+      }
+      case COST_SPRINT_OVER_BUDGET:
+        this.sprintFired = true;
+        break;
+      case SESSION_ENDED:
+        if (sessionId) this.sessionCosts.delete(sessionId);
+        break;
+      case QUOTA_UTILIZATION_THRESHOLD: {
+        const threshold = typeof event.threshold === "number" ? event.threshold : null;
+        if (threshold !== null) this.quotaArmed.set(threshold, false);
+        break;
+      }
     }
   }
 
