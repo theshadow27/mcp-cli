@@ -25,6 +25,7 @@
 - [Claude 2.1.121 sdk-url break](feedback_claude_2_1_121_break.md) — chflags-uchg shim at ~/.local/bin/claude → 2.1.119; archive at ~/.local/share/mcp-cli-archive/; #1808 tracks fix
 - [Don't touch parallel #1808 worktrees](feedback_parallel_p1_session.md) — user runs #1808 in a direct claude session; never blanket-prune; don't bye sessions you didn't spawn
 - [Verify auto-merge actually fired](feedback_verify_merge_actually_fired.md) — after qa:pass + `gh pr merge --auto`, poll until state=MERGED; QA verdict + auto-merge queue ≠ proof of merge
+- [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
