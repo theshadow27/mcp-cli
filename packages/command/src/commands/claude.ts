@@ -1087,10 +1087,13 @@ function joinSessionsToWorkItems(sessions: SessionInfo[], workItems: WorkItem[])
 
 async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   let wait = false;
+  let ifIdle = false;
   const rest: string[] = [];
   for (const arg of args) {
     if (arg === "--wait") {
       wait = true;
+    } else if (arg === "--if-idle") {
+      ifIdle = true;
     } else {
       rest.push(arg);
     }
@@ -1100,15 +1103,28 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   const message = rest.slice(1).join(" ").trim();
 
   if (!sessionPrefix || !message) {
-    d.printError("Usage: mcx claude send [--wait] <session-id> <message>");
+    d.printError("Usage: mcx claude send [--wait] [--if-idle] <session-id> <message>");
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
   const toolArgs: Record<string, unknown> = { sessionId, prompt: message };
   if (wait) toolArgs.wait = true;
+  if (ifIdle) toolArgs.ifIdle = true;
 
   const result = await d.callTool("claude_prompt", toolArgs);
+
+  // When --if-idle is set, the daemon may return isError:true if the session is busy.
+  // Surface the error to stderr and exit non-zero so callers get a clear failure signal.
+  if (ifIdle) {
+    const r = result as { isError?: boolean; content?: Array<{ text?: string }> };
+    if (r?.isError) {
+      const text = r?.content?.[0]?.text ?? "session is busy";
+      d.printError(text);
+      d.exit(1);
+    }
+  }
+
   console.log(formatToolResult(result));
 }
 
@@ -2044,6 +2060,7 @@ Resume options:
 
 Send options:
   --wait                      Block until Claude produces a result
+  --if-idle                   Fail with exit code 1 if the session is busy instead of queuing
 
 List/Wait options:
   --all, -a                   Show all sessions (bypass repo scoping)

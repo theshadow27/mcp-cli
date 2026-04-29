@@ -509,6 +509,78 @@ describe("ClaudeWsServer", () => {
     expect(status.state).toBe("connecting");
   });
 
+  test("checkSessionIdle returns not-idle for connecting session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("s1", { prompt: "Hello" });
+    server.spawnClaude("s1");
+
+    const result = server.checkSessionIdle("s1");
+    expect(result).not.toBeNull();
+    expect(result?.idle).toBe(false);
+    expect(result?.state).toBe("connecting");
+    expect(result?.resolvedId).toBe("s1");
+  });
+
+  test("checkSessionIdle returns idle for idle session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      ws.send(resultMessage("test-session"));
+      await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+      const result = server.checkSessionIdle("test-session");
+      expect(result?.idle).toBe(true);
+      expect(result?.state).toBe("idle");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("checkSessionIdle returns null for unknown session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    const result = server.checkSessionIdle("nonexistent");
+    expect(result).toBeNull();
+  });
+
+  test("checkSessionIdle resolves by prefix", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session-abc", { prompt: "Hello" });
+    server.spawnClaude("test-session-abc");
+
+    const ws = await connectMockClaude(port, "test-session-abc");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session-abc"));
+      ws.send(resultMessage("test-session-abc"));
+      await pollUntil(() =>
+        server?.listSessions().some((s) => s.sessionId === "test-session-abc" && s.state === "idle"),
+      );
+
+      const result = server.checkSessionIdle("test-session");
+      expect(result?.resolvedId).toBe("test-session-abc");
+      expect(result?.idle).toBe(true);
+    } finally {
+      ws.close();
+    }
+  });
+
   test("transcript stores messages up to limit", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

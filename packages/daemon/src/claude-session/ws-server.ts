@@ -1118,6 +1118,25 @@ export class ClaudeWsServer {
     return [...this.sessions.entries()].map(([sessionId, s]) => this.buildSessionInfo(sessionId, s));
   }
 
+  /**
+   * Check whether a session is idle (safe to send a follow-up prompt).
+   * Returns the resolved session ID and current state, or null if not found
+   * or the prefix is ambiguous.
+   * "Idle" means state is `idle` or `init` — no active turn, no pending permissions.
+   */
+  checkSessionIdle(sessionId: string): { resolvedId: string; state: SessionStateEnum; idle: boolean } | null {
+    let resolvedId: string;
+    try {
+      resolvedId = this.resolveSessionId(sessionId);
+    } catch {
+      return null;
+    }
+    const session = this.sessions.get(resolvedId);
+    if (!session) return null;
+    const state = session.state.state;
+    return { resolvedId, state, idle: state === "idle" || state === "init" };
+  }
+
   /** Get transcript for a session. Falls back to JSONL file when requesting more entries than the ring buffer holds. */
   getTranscript(sessionId: string, last?: number): TranscriptEntry[] {
     const session = this.getSession(sessionId);

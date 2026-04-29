@@ -1648,6 +1648,61 @@ describe("mcx claude send", () => {
       console.log = origLog;
     }
   });
+
+  test("--if-idle passes ifIdle flag to daemon", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ sessionId: "abc12345-1111-2222-3333-444444444444" });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["send", "--if-idle", "abc", "do something"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        sessionId: "abc12345-1111-2222-3333-444444444444",
+        prompt: "do something",
+        ifIdle: true,
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--if-idle exits non-zero when daemon returns isError", async () => {
+    const busyResponse = {
+      content: [
+        { type: "text", text: "send: session abc12345 is busy (state=active). Use without --if-idle to queue." },
+      ],
+      isError: true,
+    };
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return busyResponse;
+    });
+    const deps = makeDeps({ callTool });
+
+    await expect(cmdClaude(["send", "--if-idle", "abc", "do something"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("busy"));
+  });
+
+  test("--if-idle does not exit when daemon returns success", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ sessionId: "abc12345-1111-2222-3333-444444444444" });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["send", "--if-idle", "abc", "do something"], deps);
+      expect(deps.exit).not.toHaveBeenCalled();
+    } finally {
+      console.log = origLog;
+    }
+  });
 });
 
 // ── bye ──

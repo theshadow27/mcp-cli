@@ -49,7 +49,10 @@ registerHelp("claude send", {
   name: "mcx claude send",
   summary: "Send a follow-up prompt to a running session",
   usage: ["mcx claude send <session> <message>", "mcx claude send --wait <session> <message>"],
-  options: [["--wait", "Block until Claude produces a result"]],
+  options: [
+    ["--wait", "Block until Claude produces a result"],
+    ["--if-idle", "Exit non-zero if the session is busy instead of queuing the prompt"],
+  ],
   examples: ['mcx claude send abc123 "now run the tests"'],
 });
 

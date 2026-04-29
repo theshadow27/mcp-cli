@@ -34,6 +34,12 @@ export const CLAUDE_TOOLS = buildAgentTools({
             'Pass a UUID to resume that specific session (--resume <id>), or "continue" ' +
             "to resume the most recent conversation in the cwd (--continue).",
         },
+        ifIdle: {
+          type: "boolean",
+          description:
+            "When true, reject the prompt with isError if the target session is busy " +
+            "(active turn, connecting, awaiting permission). Only applies to follow-up prompts (sessionId required).",
+        },
       },
     },
     session_list: {
