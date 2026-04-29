@@ -3120,6 +3120,72 @@ describe("IpcServer HTTP transport", () => {
       expect(buffer).toContain("session.result");
     });
 
+    /**
+     * Shared setup for liveBuffer overflow tests. Installs a one-shot
+     * BACKFILL_YIELD_FN that publishes {@link count} events during the
+     * first backfill yield, guaranteeing they land in liveBuffer.
+     * Returns a restore function for use in `finally`.
+     */
+    function installOverflowHook(
+      bus: EventBus,
+      overrides: Record<string, unknown>,
+      opts: { count: number; event: string; baseNumber: number },
+    ): () => void {
+      const saved: Record<string, unknown> = {};
+      for (const key of Object.keys(overrides)) {
+        saved[key] = (IpcServer as unknown as Record<string, unknown>)[key];
+        (IpcServer as unknown as Record<string, unknown>)[key] = overrides[key];
+      }
+      const origYieldFn = IpcServer.BACKFILL_YIELD_FN;
+      let fired = false;
+      IpcServer.BACKFILL_YIELD_FN = async () => {
+        if (!fired) {
+          fired = true;
+          for (let i = 0; i < opts.count; i++) {
+            bus.publish({ src: "test", event: opts.event, category: "work_item", prNumber: opts.baseNumber + i });
+          }
+        }
+      };
+      return () => {
+        for (const [key, val] of Object.entries(saved)) {
+          (IpcServer as unknown as Record<string, unknown>)[key] = val;
+        }
+        IpcServer.BACKFILL_YIELD_FN = origYieldFn;
+      };
+    }
+
+    async function readUntilGap(socketPath: string): Promise<Record<string, unknown>[]> {
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=0", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes('"t":"gap"')) break;
+      }
+      controller.abort();
+      reader.releaseLock();
+      const parsed: Array<Record<string, unknown>> = [];
+      for (const l of buffer.split("\n").filter((s) => s.startsWith("{"))) {
+        try {
+          parsed.push(JSON.parse(l) as Record<string, unknown>);
+        } catch {
+          /* partial chunk */
+        }
+      }
+      return parsed;
+    }
+
     test("liveBuffer overflow emits gap control message when entry cap is exceeded (#1589)", async () => {
       const db = new Database(":memory:");
       const eventLog = new EventLog(db);
@@ -3131,64 +3197,15 @@ describe("IpcServer HTTP transport", () => {
       });
       server.start(socketPath);
 
-      // Pre-populate events for backfill. Force a tiny batch size so backfill yields
-      // many times — that guarantees the test's synchronous publish loop after
-      // `await fetch()` lands inside the backfill window (not after `liveBuffer = null`),
-      // regardless of how Bun orders fetch resolution against the backfill's
-      // `setTimeout(0)` yields. Without this, the publish loop occasionally races
-      // backfill completion and the gap message never fires (sprint-47 retro flake).
-      const backfillCount = 200;
-      for (let i = 0; i < backfillCount; i++) {
-        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
-      }
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s0" });
 
-      const origMaxEntries = IpcServer.LIVE_BUFFER_MAX_ENTRIES;
-      const origBatchSize = IpcServer.BACKFILL_BATCH_SIZE;
-      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = 5;
-      IpcServer.BACKFILL_BATCH_SIZE = 1;
-
-      const controller = new AbortController();
+      const restore = installOverflowHook(
+        bus,
+        { LIVE_BUFFER_MAX_ENTRIES: 5, BACKFILL_BATCH_SIZE: 1 },
+        { count: 20, event: "pr.merged", baseNumber: 900 },
+      );
       try {
-        const res = await fetch("http://localhost/events?since=0", {
-          method: "GET",
-          unix: socketPath,
-          signal: controller.signal,
-        } as RequestInit);
-
-        expect(res.status).toBe(200);
-        if (!res.body) throw new Error("Expected response body");
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        // Flood live events while backfill is in progress. Because start() is async
-        // and yields between batches, these land in the liveBuffer.
-        for (let i = 0; i < 20; i++) {
-          bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 900 + i });
-        }
-
-        let buffer = "";
-        const deadline = Date.now() + 5_000;
-        while (Date.now() < deadline) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          // Wait for the gap control message specifically. With BACKFILL_BATCH_SIZE=1
-          // the live publishes are also written to eventLog, so they re-emerge as
-          // backfill rows; "pr.merged" alone doesn't prove the gap path executed.
-          if (buffer.includes('"t":"gap"')) break;
-        }
-
-        controller.abort();
-        reader.releaseLock();
-
-        const parsed: Array<Record<string, unknown>> = [];
-        for (const l of buffer.split("\n").filter((s) => s.startsWith("{"))) {
-          try {
-            parsed.push(JSON.parse(l) as Record<string, unknown>);
-          } catch {
-            /* partial chunk */
-          }
-        }
+        const parsed = await readUntilGap(socketPath);
         const gapLines = parsed.filter((o) => o.t === "gap");
         expect(gapLines.length).toBe(1);
         expect(typeof gapLines[0]?.dropped).toBe("number");
@@ -3196,8 +3213,7 @@ describe("IpcServer HTTP transport", () => {
         expect(gapLines[0]?.firstDroppedSeq).toBeDefined();
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
       } finally {
-        (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_ENTRIES = origMaxEntries;
-        IpcServer.BACKFILL_BATCH_SIZE = origBatchSize;
+        restore();
       }
     });
 
@@ -3212,67 +3228,22 @@ describe("IpcServer HTTP transport", () => {
       });
       server.start(socketPath);
 
-      // Tiny batch size + small backfill: same fix as the entry-cap test above —
-      // forces many `setTimeout(0)` yields so the test's synchronous publish loop
-      // is guaranteed to land in `liveBuffer` before backfill completes.
-      const backfillCount = 200;
-      for (let i = 0; i < backfillCount; i++) {
-        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
-      }
+      bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s0" });
 
-      const origMaxBytes = IpcServer.LIVE_BUFFER_MAX_BYTES;
-      const origBatchSize = IpcServer.BACKFILL_BATCH_SIZE;
-      (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = 500;
-      IpcServer.BACKFILL_BATCH_SIZE = 1;
-
-      const controller = new AbortController();
+      const restore = installOverflowHook(
+        bus,
+        { LIVE_BUFFER_MAX_BYTES: 500, BACKFILL_BATCH_SIZE: 1 },
+        { count: 20, event: "pr.merged", baseNumber: 800 },
+      );
       try {
-        const res = await fetch("http://localhost/events?since=0", {
-          method: "GET",
-          unix: socketPath,
-          signal: controller.signal,
-        } as RequestInit);
-
-        expect(res.status).toBe(200);
-        if (!res.body) throw new Error("Expected response body");
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        for (let i = 0; i < 20; i++) {
-          bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 800 + i });
-        }
-
-        let buffer = "";
-        const deadline = Date.now() + 5_000;
-        while (Date.now() < deadline) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          // Wait for the gap control message specifically. With BACKFILL_BATCH_SIZE=1
-          // the live publishes are also written to eventLog, so they re-emerge as
-          // backfill rows; "pr.merged" alone doesn't prove the gap path executed.
-          if (buffer.includes('"t":"gap"')) break;
-        }
-
-        controller.abort();
-        reader.releaseLock();
-
-        const parsed: Array<Record<string, unknown>> = [];
-        for (const l of buffer.split("\n").filter((s) => s.startsWith("{"))) {
-          try {
-            parsed.push(JSON.parse(l) as Record<string, unknown>);
-          } catch {
-            /* partial chunk */
-          }
-        }
+        const parsed = await readUntilGap(socketPath);
         const gapLines = parsed.filter((o) => o.t === "gap");
         expect(gapLines.length).toBe(1);
         expect(gapLines[0]?.dropped as number).toBeGreaterThan(0);
         expect(gapLines[0]?.firstDroppedSeq).toBeDefined();
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
       } finally {
-        (IpcServer as unknown as Record<string, unknown>).LIVE_BUFFER_MAX_BYTES = origMaxBytes;
-        IpcServer.BACKFILL_BATCH_SIZE = origBatchSize;
+        restore();
       }
     });
 
