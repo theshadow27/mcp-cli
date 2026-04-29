@@ -1159,6 +1159,52 @@ describe("mcx claude ls", () => {
     }
   });
 
+  test("shows scope hint when no sessions in current repo but sessions exist elsewhere", async () => {
+    let callCount = 0;
+    const deps = makeDeps({
+      callTool: mock(async (_tool: string, args: Record<string, unknown>) => {
+        callCount++;
+        // First call: scoped (repoRoot set) → no sessions
+        if (args?.repoRoot) return toolResult([]);
+        // Second call: unfiltered → sessions exist in another repo
+        return toolResult([SESSION_LIST[0]]);
+      }),
+      getGitRoot: mock(() => "/home/user/myrepo"),
+    });
+
+    const errSpy = mock(() => {});
+    const origErr = console.error;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const messages = errSpy.mock.calls.map((c: unknown[]) => (c as string[])[0]);
+      expect(messages).toContain("No active sessions in current scope.");
+      expect(messages.some((m: string) => m.includes("use --all to see them"))).toBe(true);
+      expect(callCount).toBe(2);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
+  test("shows plain no-sessions when no sessions anywhere", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult([])),
+      getGitRoot: mock(() => "/home/user/myrepo"),
+    });
+
+    const errSpy = mock(() => {});
+    const origErr = console.error;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      const messages = errSpy.mock.calls.map((c: unknown[]) => (c as string[])[0]);
+      expect(messages).toContain("No active sessions.");
+      expect(messages.every((m: string) => !m.includes("use --all"))).toBe(true);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
   test("accepts 'list' alias", async () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult([])),
