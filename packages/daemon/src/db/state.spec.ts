@@ -1892,6 +1892,47 @@ describe("StateDb", () => {
       db.close();
     });
 
+    test("legacy DB missing tables gets them created (handles half-migrated DBs from old try/catch failures)", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Simulate a half-migrated legacy DB: tool_cache exists (triggers legacy path)
+      // but copilot_comment_state and auth_tokens were never created (old try/catch ate the error).
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
+      raw.close();
+
+      const db = new StateDb(p);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const tables = db["db"]
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .all()
+        .map((r) => r.name);
+      expect(tables).toContain("copilot_comment_state");
+      expect(tables).toContain("auth_tokens");
+      expect(tables).toContain("aliases");
+      expect(tables).toContain("spans");
+      db.close();
+    });
+
+    test("migration error propagates instead of being silently swallowed", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Both claude_sessions and agent_sessions exist → the rename step throws.
+      // Verifies that migration failures bubble up rather than being eaten.
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec("CREATE TABLE claude_sessions (session_id TEXT PRIMARY KEY)");
+      raw.exec("CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY)");
+      raw.close();
+
+      expect(() => new StateDb(p)).toThrow();
+    });
+
     test("data migrations run exactly once (not on every boot)", () => {
       const p = tmpDb();
       paths.push(p);

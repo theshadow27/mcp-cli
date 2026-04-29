@@ -79,11 +79,12 @@ export class StateDb {
    *
    * Replaces the legacy bare `try { ALTER TABLE } catch {}` pattern that silently
    * swallowed ALL exceptions (disk-full, permissions, corruption). Each migration
-   * now runs exactly once; failures bubble up.
+   * step and its version bump are atomic (single transaction); failures bubble up.
    *
-   * Legacy handling: existing databases have already applied all prior migrations
-   * via the old try/catch code. We detect them by checking for `tool_cache` (the
-   * first table created) and skip straight to the current version.
+   * Legacy handling: existing databases are detected by `tool_cache` presence.
+   * We still run applyV1Schema() on legacy DBs (all IF NOT EXISTS — safe no-op on
+   * healthy DBs) to recover any tables that the old bare try/catch silently failed
+   * to create (e.g. copilot_comment_state on a half-migrated DB).
    */
   private migrate(): void {
     this.db.exec(`
@@ -105,7 +106,9 @@ export class StateDb {
           .get()?.n ?? 0;
 
       if (hasToolCache > 0) {
-        // Existing DB — all prior migrations already applied by legacy try/catch code.
+        // Existing DB — run schema DDL idempotently to recover any tables the old
+        // try/catch code silently failed to create (e.g. copilot_comment_state).
+        this.applyV1Schema();
         version = 3;
       } else {
         // Fresh DB, or ancient DB that only has claude_sessions.
@@ -140,185 +143,10 @@ export class StateDb {
     }
 
     if (version < 1) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS tool_cache (
-          server_name TEXT NOT NULL,
-          tool_name TEXT NOT NULL,
-          description TEXT,
-          input_schema_json TEXT,
-          signature TEXT,
-          cached_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          PRIMARY KEY (server_name, tool_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS usage_stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          server_name TEXT NOT NULL,
-          tool_name TEXT NOT NULL,
-          called_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          duration_ms INTEGER,
-          success INTEGER NOT NULL DEFAULT 1,
-          error_message TEXT,
-          daemon_id TEXT,
-          trace_id TEXT,
-          parent_id TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS daemon_state (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_usage_server_tool ON usage_stats(server_name, tool_name);
-        CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id);
-
-        CREATE TABLE IF NOT EXISTS auth_tokens (
-          server_name TEXT PRIMARY KEY,
-          access_token TEXT NOT NULL,
-          refresh_token TEXT,
-          token_type TEXT DEFAULT 'Bearer',
-          expires_at INTEGER,
-          scope TEXT,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS oauth_clients (
-          server_name TEXT PRIMARY KEY,
-          client_id TEXT NOT NULL,
-          client_secret TEXT,
-          client_info_json TEXT,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS oauth_verifiers (
-          server_name TEXT PRIMARY KEY,
-          code_verifier TEXT NOT NULL,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS oauth_discovery (
-          server_name TEXT PRIMARY KEY,
-          state_json TEXT NOT NULL,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS aliases (
-          name TEXT PRIMARY KEY,
-          description TEXT,
-          file_path TEXT NOT NULL,
-          alias_type TEXT NOT NULL DEFAULT 'freeform',
-          input_schema_json TEXT,
-          output_schema_json TEXT,
-          bundled_js TEXT,
-          source_hash TEXT,
-          expires_at INTEGER,
-          run_count INTEGER NOT NULL DEFAULT 0,
-          last_run_at INTEGER,
-          scope TEXT,
-          monitor_definitions_json TEXT,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS server_logs (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          server_name TEXT NOT NULL,
-          line TEXT NOT NULL,
-          timestamp_ms INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
-          ON server_logs(server_name, timestamp_ms DESC);
-
-        CREATE TABLE IF NOT EXISTS mail (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          sender TEXT NOT NULL,
-          recipient TEXT NOT NULL,
-          subject TEXT,
-          body TEXT,
-          reply_to INTEGER REFERENCES mail(id),
-          read INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_mail_recipient
-          ON mail(recipient, read, created_at);
-
-        CREATE TABLE IF NOT EXISTS notes (
-          server_name TEXT NOT NULL,
-          tool_name TEXT NOT NULL,
-          note TEXT NOT NULL,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          PRIMARY KEY (server_name, tool_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS alias_state (
-          repo_root TEXT NOT NULL,
-          namespace TEXT NOT NULL,
-          key TEXT NOT NULL,
-          value_json TEXT NOT NULL,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          PRIMARY KEY (repo_root, namespace, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS session_metrics (
-          session_id TEXT PRIMARY KEY,
-          metrics_json TEXT NOT NULL,
-          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_sessions (
-          session_id   TEXT PRIMARY KEY,
-          name         TEXT,
-          provider     TEXT NOT NULL DEFAULT 'claude',
-          pid          INTEGER,
-          pid_start_time INTEGER,
-          state        TEXT NOT NULL DEFAULT 'connecting',
-          model        TEXT,
-          cwd          TEXT,
-          worktree     TEXT,
-          repo_root    TEXT,
-          total_cost   REAL NOT NULL DEFAULT 0,
-          total_tokens INTEGER NOT NULL DEFAULT 0,
-          spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
-          ended_at     TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS spans (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          trace_id TEXT NOT NULL,
-          span_id TEXT NOT NULL,
-          parent_span_id TEXT,
-          trace_flags TEXT NOT NULL DEFAULT '01',
-          name TEXT NOT NULL,
-          start_time_ms INTEGER NOT NULL,
-          end_time_ms INTEGER NOT NULL,
-          duration_ms INTEGER NOT NULL,
-          status TEXT NOT NULL DEFAULT 'UNSET',
-          attributes_json TEXT,
-          events_json TEXT,
-          daemon_id TEXT,
-          exported_at INTEGER,
-          created_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
-        CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
-        CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
-
-        CREATE TABLE IF NOT EXISTS copilot_comment_state (
-          pr_number              INTEGER PRIMARY KEY,
-          seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
-          seen_review_ids        TEXT NOT NULL DEFAULT '[]',
-          seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
-          seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
-          last_sticky_body_hash  TEXT,
-          last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-      `);
-      this.setSchemaVersion(CONSUMER, 1);
+      this.db.transaction(() => {
+        this.applyV1Schema();
+        this.setSchemaVersion(CONSUMER, 1);
+      })();
       version = 1;
     }
 
@@ -340,8 +168,8 @@ export class StateDb {
           SET repo_root = rtrim(repo_root, '/')
           WHERE repo_root LIKE '%/'
         `);
+        this.setSchemaVersion(CONSUMER, 2);
       })();
-      this.setSchemaVersion(CONSUMER, 2);
       version = 2;
     }
 
@@ -355,26 +183,204 @@ export class StateDb {
           return false;
         }
       });
-      if (toUpdate.length > 0) {
-        this.db.transaction(() => {
-          for (const { repo_root } of toUpdate) {
-            const canonical = resolveRealpath(resolve(repo_root));
-            this.db.run(
-              `DELETE FROM alias_state
-               WHERE repo_root = ?
-                 AND EXISTS (
-                   SELECT 1 FROM alias_state AS c
-                   WHERE c.repo_root = ? AND c.namespace = alias_state.namespace AND c.key = alias_state.key
-                 )`,
-              [repo_root, canonical],
-            );
-            this.db.run("UPDATE alias_state SET repo_root = ? WHERE repo_root = ?", [canonical, repo_root]);
-          }
-        })();
-      }
-      this.setSchemaVersion(CONSUMER, 3);
-      version = 3;
+      this.db.transaction(() => {
+        for (const { repo_root } of toUpdate) {
+          const canonical = resolveRealpath(resolve(repo_root));
+          this.db.run(
+            `DELETE FROM alias_state
+             WHERE repo_root = ?
+               AND EXISTS (
+                 SELECT 1 FROM alias_state AS c
+                 WHERE c.repo_root = ? AND c.namespace = alias_state.namespace AND c.key = alias_state.key
+               )`,
+            [repo_root, canonical],
+          );
+          this.db.run("UPDATE alias_state SET repo_root = ? WHERE repo_root = ?", [canonical, repo_root]);
+        }
+        this.setSchemaVersion(CONSUMER, 3);
+      })();
     }
+  }
+
+  private applyV1Schema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tool_cache (
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        description TEXT,
+        input_schema_json TEXT,
+        signature TEXT,
+        cached_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (server_name, tool_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        called_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        duration_ms INTEGER,
+        success INTEGER NOT NULL DEFAULT 1,
+        error_message TEXT,
+        daemon_id TEXT,
+        trace_id TEXT,
+        parent_id TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS daemon_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_usage_server_tool ON usage_stats(server_name, tool_name);
+      CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id);
+
+      CREATE TABLE IF NOT EXISTS auth_tokens (
+        server_name TEXT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        token_type TEXT DEFAULT 'Bearer',
+        expires_at INTEGER,
+        scope TEXT,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        server_name TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        client_secret TEXT,
+        client_info_json TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_verifiers (
+        server_name TEXT PRIMARY KEY,
+        code_verifier TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS oauth_discovery (
+        server_name TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS aliases (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        file_path TEXT NOT NULL,
+        alias_type TEXT NOT NULL DEFAULT 'freeform',
+        input_schema_json TEXT,
+        output_schema_json TEXT,
+        bundled_js TEXT,
+        source_hash TEXT,
+        expires_at INTEGER,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        last_run_at INTEGER,
+        scope TEXT,
+        monitor_definitions_json TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS server_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_name TEXT NOT NULL,
+        line TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
+        ON server_logs(server_name, timestamp_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS mail (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        subject TEXT,
+        body TEXT,
+        reply_to INTEGER REFERENCES mail(id),
+        read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mail_recipient
+        ON mail(recipient, read, created_at);
+
+      CREATE TABLE IF NOT EXISTS notes (
+        server_name TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        note TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (server_name, tool_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS alias_state (
+        repo_root TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (repo_root, namespace, key)
+      );
+
+      CREATE TABLE IF NOT EXISTS session_metrics (
+        session_id TEXT PRIMARY KEY,
+        metrics_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        session_id   TEXT PRIMARY KEY,
+        name         TEXT,
+        provider     TEXT NOT NULL DEFAULT 'claude',
+        pid          INTEGER,
+        pid_start_time INTEGER,
+        state        TEXT NOT NULL DEFAULT 'connecting',
+        model        TEXT,
+        cwd          TEXT,
+        worktree     TEXT,
+        repo_root    TEXT,
+        total_cost   REAL NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at     TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS spans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trace_id TEXT NOT NULL,
+        span_id TEXT NOT NULL,
+        parent_span_id TEXT,
+        trace_flags TEXT NOT NULL DEFAULT '01',
+        name TEXT NOT NULL,
+        start_time_ms INTEGER NOT NULL,
+        end_time_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'UNSET',
+        attributes_json TEXT,
+        events_json TEXT,
+        daemon_id TEXT,
+        exported_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
+
+      CREATE TABLE IF NOT EXISTS copilot_comment_state (
+        pr_number              INTEGER PRIMARY KEY,
+        seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
+        seen_review_ids        TEXT NOT NULL DEFAULT '[]',
+        seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
+        seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
+        last_sticky_body_hash  TEXT,
+        last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
   }
 
   private setSchemaVersion(name: string, version: number): void {
