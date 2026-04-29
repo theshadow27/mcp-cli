@@ -708,23 +708,28 @@ describe("WorkItemDb", () => {
 
       const phases = ["review", "qa", "done"] as const;
       const N = 20;
+      let successes = 0;
 
       for (let i = 0; i < N; i++) {
         const conn = new Database(p);
         conn.exec("PRAGMA busy_timeout = 5000");
         const wi = new WorkItemDb(conn);
         const phase = phases[i % phases.length];
-        try {
-          wi.updateWorkItem(itemId, { phase }, { forced: true, forceReason: `writer-${i}` });
-        } catch {
-          // stale version races are expected
-        }
+        wi.updateWorkItem(itemId, { phase }, { forced: true, forceReason: `writer-${i}` });
+        successes++;
         conn.close();
       }
 
+      expect(successes).toBe(N);
+
       const verify = new Database(p);
       const verifyDb = new WorkItemDb(verify);
+      const final = verifyDb.getWorkItem(itemId);
+      expect(final).not.toBeNull();
+      expect(final?.version).toBe(N + 1);
+
       const transitions = verifyDb.listTransitions(itemId);
+      expect(transitions.length).toBeGreaterThanOrEqual(N);
 
       for (let i = 1; i < transitions.length; i++) {
         expect(transitions[i].fromPhase).toBe(transitions[i - 1].toPhase);

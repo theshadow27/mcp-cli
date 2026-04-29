@@ -8,7 +8,15 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-import type { CiStatus, MergeStateStatus, PrState, ReviewStatus, WorkItem, WorkItemPhase } from "@mcp-cli/core";
+import type {
+  CiStatus,
+  MergeStateStatus,
+  PrState,
+  ReviewStatus,
+  WorkItem,
+  WorkItemPatch,
+  WorkItemPhase,
+} from "@mcp-cli/core";
 import type { CiRunState } from "../github/ci-events";
 
 /** A phase transition record from the append-only transition log. */
@@ -293,7 +301,7 @@ export class WorkItemDb {
 
   updateWorkItem(
     id: string,
-    patch: Partial<WorkItem>,
+    patch: WorkItemPatch,
     opts?: { forced?: boolean; forceReason?: string; expectedVersion?: number },
   ): WorkItem {
     return this.db
@@ -310,7 +318,7 @@ export class WorkItemDb {
         const fields: string[] = [];
         const values: Record<string, unknown> = { $id: id, $version: existing.version };
 
-        const mappings: Array<[keyof WorkItem, string]> = [
+        const mappings: Array<[keyof WorkItemPatch, string]> = [
           ["issueNumber", "issue_number"],
           ["branch", "branch"],
           ["prNumber", "pr_number"],

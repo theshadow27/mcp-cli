@@ -114,6 +114,9 @@ export function isStandardPhase(phase: string): phase is WorkItemPhase {
   return WORK_ITEM_PHASE_SET.has(phase);
 }
 
+/** Updatable subset of WorkItem — excludes server-managed fields. */
+export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "createdAt" | "updatedAt" | "version">>;
+
 /** Create a new WorkItem with sensible defaults. */
 export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
   const now = new Date().toISOString();

@@ -11,7 +11,7 @@
 
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
-import type { CiStatus, PrState, ReviewStatus, WorkItem } from "@mcp-cli/core";
+import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
@@ -238,7 +238,7 @@ export class WorkItemPoller {
     const srcChurn = computeSrcChurn(status.files);
     const newMergeState = status.mergeStateStatus;
 
-    const patch: Partial<WorkItem> = {};
+    const patch: WorkItemPatch = {};
     let changed = false;
 
     // PR state changes
