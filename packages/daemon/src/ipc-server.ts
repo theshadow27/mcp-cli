@@ -1431,9 +1431,9 @@ export class IpcServer {
   /** Backfill batch size for /events `since=<seq>` replay. Test-mutable. */
   static BACKFILL_BATCH_SIZE = 1000;
   /**
-   * Optional async hook called at each backfill yield point. When set, replaces
-   * the default `setTimeout(0)` yield. Tests inject live events here to
-   * guarantee they land in `liveBuffer` without relying on event-loop timing.
+   * Optional async hook called at each backfill yield point. Runs *before* the
+   * default `setTimeout(0)` yield (never replaces it). Tests inject live events
+   * here to guarantee they land in `liveBuffer` during the backfill window.
    */
   static BACKFILL_YIELD_FN: (() => Promise<void>) | null = null;
 
@@ -1727,7 +1727,8 @@ export class IpcServer {
                 if (batch.length < batchSize) break;
                 cursor = batch[batch.length - 1]?.seq ?? cursor;
                 // Yield to the event loop between batches so other IPC work isn't starved.
-                await (IpcServer.BACKFILL_YIELD_FN?.() ?? new Promise<void>((r) => setTimeout(r, 0)));
+                await IpcServer.BACKFILL_YIELD_FN?.();
+                await new Promise<void>((r) => setTimeout(r, 0));
               }
               // Drain buffered live events; seq-based HWM drops overlaps.
               const buffered = liveBuffer ?? [];
