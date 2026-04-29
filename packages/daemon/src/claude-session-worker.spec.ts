@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { matchesRepoRoot, matchesScopeRoot } from "./claude-session-worker";
+import { afterEach, describe, expect, test } from "bun:test";
+import { silentLogger } from "@mcp-cli/core";
+import { handlePrompt, matchesRepoRoot, matchesScopeRoot } from "./claude-session-worker";
+import type { SpawnFn } from "./claude-session/ws-server";
+import { ClaudeWsServer } from "./claude-session/ws-server";
 
 // ── matchesScopeRoot ──
 
@@ -79,5 +82,38 @@ describe("matchesRepoRoot", () => {
     // Ghost sessions (crashed workers) with both fields null are invisible to filtered waits.
     // They remain visible when no filter is active (repoRoot=undefined path above).
     expect(matchesRepoRoot({ repoRoot: null, cwd: null }, "/repo/a")).toBe(false);
+  });
+});
+
+// ── handlePrompt spawn-failure path (#1836) ──
+
+describe("handlePrompt spawn failure (#1836)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  test("cleans up ghost session and posts db:end when spawnClaude throws", async () => {
+    const failingSpawn: SpawnFn = () => {
+      throw new Error("spawn failed: too many processes");
+    };
+    server = new ClaudeWsServer({ spawn: failingSpawn, logger: silentLogger });
+    await server.start();
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    // handlePrompt re-throws after cleanup so the IPC layer can return an error response
+    await expect(handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" })).rejects.toThrow("spawn failed");
+
+    // Ghost must be removed from the in-memory sessions map
+    expect(server.listSessions()).toHaveLength(0);
+
+    // db:end must be posted so the parent worker can mark the DB row ended
+    expect(messages.some((m) => (m as { type: string }).type === "db:end")).toBe(true);
   });
 });

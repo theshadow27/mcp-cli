@@ -141,7 +141,7 @@ async function handleToolCall(
   }
 }
 
-async function handlePrompt(
+export async function handlePrompt(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
 ): Promise<{
@@ -225,7 +225,15 @@ async function handlePrompt(
       },
     });
 
-    const pid = server.spawnClaude(sessionId, workerSpan?.traceparent());
+    let pid: number;
+    try {
+      pid = server.spawnClaude(sessionId, workerSpan?.traceparent());
+    } catch (err) {
+      // Spawn failed — clean up the session to avoid ghost entries (#1836).
+      server.removeUnspawnedSession(sessionId);
+      self.postMessage({ type: "db:end", sessionId });
+      throw err;
+    }
 
     // Capture pidStartTime here in the worker thread (off the main event loop)
     // so the parent doesn't need to do a blocking ps(1) call per session.
