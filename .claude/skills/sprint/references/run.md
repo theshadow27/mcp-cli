@@ -318,6 +318,38 @@ If `null`, re-arm with `mcx pr merge $PR --squash --auto`. Once a
 merge-runner (`agents/mergemaster.md` or `mcx merge-queue` per #1397) is
 active, this is its job; the orchestrator only intervenes on escalation.
 
+### Flaky / CI-instability issues — nerd-snipe gate before impl
+
+`label:flaky` already routes to opus via `impl.ts:45`. That is **not
+enough** — sprint 47's deterministic post-#1835 coverage crash got opus,
+opus produced a CI-retry workaround, and the same retro acknowledged the
+workaround "hits on every sprint PR." The pattern: opus implements a
+fix-shaped patch around the symptom because nobody made it find the
+root cause first.
+
+For any issue that is `label:flaky`, or whose body describes
+intermittent / deterministic CI failure without a clear test-code error,
+gate impl on a nerd-snipe pass:
+
+1. **Spawn `nerd-snipe` (opus) before phase=impl.** Brief: the repro,
+   the suspected commit range, prior diagnoses (especially any that
+   blamed upstream), and the constraint that the trail must land on the
+   issue.
+2. **Trail goes on the GitHub issue, not in the session.** nerd-snipe
+   posts its findings — timeline, bisect log, mechanism, fix plan — as
+   an issue comment. This is the mechanism that stops the next sprint
+   from re-running the same misdiagnosis.
+3. **Hard gate.** If nerd-snipe cannot identify *both* the root cause
+   and a concrete fix, do NOT advance the issue to phase=impl. Apply
+   `needs-attention` and surface in sprint review. "Spawn opus and hope"
+   is what got us into the loop.
+4. **Then phase=impl on opus**, with the issue-comment fix plan as the
+   spec. Adversarial review verifies the implementation matches the
+   documented mechanism, not just "tests pass now."
+
+See `.claude/memory/feedback_flaky_tests.md` for the rule and the
+sprint-47/#1870 incident that motivated it.
+
 ### qa:pass + qa:fail dual-label invariant (orchestrator audit)
 
 The QA worker swaps labels transactionally, but PRs occasionally end up
