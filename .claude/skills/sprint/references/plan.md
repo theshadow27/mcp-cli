@@ -22,9 +22,11 @@ wind-down left behind. Sometimes that's hours- or days-old (see #1858 —
 sprint 47's wind-down rebuild also failed to fire, so dist was 12h
 stale at sprint 48 plan time).
 
+Detect staleness — last-build mtime vs latest main commit. Try GNU
+`stat -c %Y` first; fall back to BSD `stat -f %m`:
+
 ```bash
-# Detect staleness — last-build mtime vs latest main commit
-LAST_BUILD=$(stat -f %m dist/mcx 2>/dev/null || stat -c %Y dist/mcx)
+LAST_BUILD=$(stat -c %Y dist/mcx 2>/dev/null || stat -f %m dist/mcx 2>/dev/null || echo 0)
 HEAD_TS=$(git log -1 --format=%ct origin/main 2>/dev/null || echo 0)
 if [ "${LAST_BUILD:-0}" -lt "${HEAD_TS:-0}" ] || ! mcx status >/dev/null 2>&1; then
   git checkout main
@@ -40,7 +42,7 @@ proceeding. Leftover sessions from a prior sprint can be `bye`'d with
 `--keep` (preserve worktree as evidence). But sessions you didn't spawn —
 or worktrees on `issue-1808-*` / patcher / TLS branches — belong to the
 user's parallel work; leave them alone (see
-`feedback_parallel_p1_session.md`).
+`.claude/memory/feedback_parallel_p1_session.md`).
 
 The run-phase pre-flight (`run.md`) repeats this check before spawning;
 that's intentional and idempotent when dist is already current.

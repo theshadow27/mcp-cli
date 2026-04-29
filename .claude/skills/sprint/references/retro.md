@@ -88,8 +88,9 @@ not in the sprint worktree, so they sit as orphans on main unless the
 retro picks them up. Sprint 42 and sprint 47 both leaked memory files this
 way — `1adfcbe6 memory: sprint 42 additions` is the backfill commit.
 
+In the orchestrator's main checkout (NOT the sprint worktree):
+
 ```bash
-# In the orchestrator's main checkout (NOT the sprint worktree):
 git status --porcelain .claude/memory/
 ```
 
