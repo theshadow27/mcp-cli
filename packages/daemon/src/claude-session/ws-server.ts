@@ -665,6 +665,9 @@ export class ClaudeWsServer {
   /** Prepare a session and return the assigned name. */
   prepareSession(sessionId: string, config: SessionConfig): string {
     const state = new SessionState(sessionId);
+    // Pre-populate state.cwd from config so session info shows the correct
+    // cwd even if the Claude process never connects (#1836).
+    if (config.cwd) state.cwd = config.cwd;
     const router = new PermissionRouter(config.permissionStrategy ?? "auto", config.permissionRules);
 
     // Auto-generate a name if not explicitly provided
@@ -1111,6 +1114,17 @@ export class ClaudeWsServer {
     const reason = message ? `Session ended: ${message}` : "Session ended by user";
     await this.terminateSession(resolvedId, session, reason);
     return info;
+  }
+
+  /**
+   * Remove a session that was prepared but never successfully spawned.
+   * Unlike terminateSession, this is synchronous and skips process/WS cleanup
+   * since the session never had a process or connection (#1836).
+   */
+  removeUnspawnedSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.sessions.delete(sessionId);
   }
 
   /** List all sessions. */

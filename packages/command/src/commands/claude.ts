@@ -340,8 +340,9 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
         worktree = next;
         return 1;
       }
-      // Auto-generate worktree name
-      worktree = `claude-${Date.now().toString(36)}`;
+      // Auto-generate worktree name — use random UUID to avoid collisions
+      // when multiple spawns run in the same millisecond (#1836)
+      worktree = `claude-${crypto.randomUUID().slice(0, 8)}`;
       return 0;
     }
     if (arg === "--resume") {

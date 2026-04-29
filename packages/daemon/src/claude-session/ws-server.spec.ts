@@ -4391,3 +4391,130 @@ describe("stuck detector integration", () => {
     ws.close();
   });
 });
+
+// ── #1836: parallel spawn race ──
+
+describe("parallel spawn (#1836)", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(() => {
+    server?.stop();
+    server = undefined;
+  });
+
+  test("prepareSession pre-populates state.cwd from config", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("cwd-pre-pop", { prompt: "Hello", cwd: "/my/worktree" });
+    const sessions = server.listSessions();
+    expect(sessions[0].cwd).toBe("/my/worktree");
+  });
+
+  test("removeUnspawnedSession removes session from map", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("dead-session", { prompt: "Hello", cwd: "/tmp/wt" });
+    expect(server.listSessions()).toHaveLength(1);
+
+    server.removeUnspawnedSession("dead-session");
+    expect(server.listSessions()).toHaveLength(0);
+  });
+
+  test("removeUnspawnedSession is no-op for unknown session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.removeUnspawnedSession("nonexistent");
+    expect(server.listSessions()).toHaveLength(0);
+  });
+
+  test("3 concurrent sessions all connect successfully", async () => {
+    let spawnCount = 0;
+    const spawnFn: SpawnFn = () => {
+      spawnCount++;
+      const pid = 10000 + spawnCount;
+      return {
+        pid,
+        exited: new Promise<number>(() => {}),
+        kill: () => {},
+      };
+    };
+    server = new ClaudeWsServer({ spawn: spawnFn, logger: silentLogger });
+    const port = await server.start();
+
+    const sessionIds = ["s-parallel-1", "s-parallel-2", "s-parallel-3"];
+
+    for (const id of sessionIds) {
+      server.prepareSession(id, {
+        prompt: `Task for ${id}`,
+        cwd: `/worktree/${id}`,
+        worktree: id,
+      });
+      server.spawnClaude(id);
+    }
+
+    expect(server.listSessions()).toHaveLength(3);
+
+    // All sessions should show cwd from config (not null)
+    for (const info of server.listSessions()) {
+      expect(info.cwd).not.toBeNull();
+      expect(info.state).toBe("connecting");
+    }
+
+    // Connect each mock client sequentially to avoid message-delivery race
+    // in the test harness (server sends user message on open; if we
+    // Promise.all the connections, a message can arrive before the next
+    // waitForMessage sets its handler).
+    const wsConnections: WebSocket[] = [];
+    for (const id of sessionIds) {
+      const ws = await connectMockClaude(port, id);
+      const msg = await waitForMessage(ws);
+      expect(msg).toContain('"type":"user"');
+      wsConnections.push(ws);
+    }
+
+    // Send system/init from all 3 and verify they all reach init state
+    for (let i = 0; i < sessionIds.length; i++) {
+      wsConnections[i].send(systemInitMessage(sessionIds[i]));
+    }
+    await pollUntil(() => {
+      const sessions = server?.listSessions() ?? [];
+      return sessions.every((s) => s.state === "init");
+    }, 2_000);
+
+    const sessions = server.listSessions();
+    expect(sessions).toHaveLength(3);
+    for (const s of sessions) {
+      expect(s.state).toBe("init");
+      expect(s.cwd).not.toBeNull();
+    }
+
+    for (const ws of wsConnections) ws.close();
+  });
+
+  test("spawnClaude failure — removeUnspawnedSession cleans up ghost", async () => {
+    const failingSpawn: SpawnFn = () => {
+      throw new Error("spawn failed: too many processes");
+    };
+    server = new ClaudeWsServer({ spawn: failingSpawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("fail-session", { prompt: "Hello", cwd: "/tmp/wt" });
+    expect(server.listSessions()).toHaveLength(1);
+
+    // spawnClaude should throw — caller (handlePrompt) catches and cleans up
+    const srv = server;
+    expect(() => srv?.spawnClaude("fail-session")).toThrow("spawn failed");
+
+    // Session is still in map until caller cleans up
+    expect(server.listSessions()).toHaveLength(1);
+
+    server.removeUnspawnedSession("fail-session");
+    expect(server.listSessions()).toHaveLength(0);
+  });
+});

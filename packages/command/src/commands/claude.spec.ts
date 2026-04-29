@@ -148,6 +148,16 @@ describe("parseSpawnArgs", () => {
     expect(result.worktree).toStartWith("claude-");
   });
 
+  test("auto-generated worktree names are unique across rapid calls (#1836)", () => {
+    const names = new Set<string>();
+    for (let i = 0; i < 50; i++) {
+      const result = parseSpawnArgs(["--worktree", "--task", "x"]);
+      const wt = result.worktree ?? "";
+      expect(names.has(wt)).toBe(false);
+      names.add(wt);
+    }
+  });
+
   test("parses -w shorthand", () => {
     const result = parseSpawnArgs(["-w", "feat", "-t", "x"]);
     expect(result.worktree).toBe("feat");
