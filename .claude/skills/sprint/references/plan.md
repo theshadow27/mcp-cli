@@ -11,6 +11,42 @@ session commands filter to the current repo. If you're in the wrong directory, y
 won't see your sessions. When running concurrent sprints across repos, each orchestrator
 is isolated to its own repo — use `--all` only when you explicitly need a cross-repo view.
 
+## Step 0: Pre-flight (rebuild + restart if stale)
+
+Plan from a fresh build. Sprints routinely land orchestrator-pain
+reducers that the planner itself uses (`mcx claude ls` filters, `mcx pr
+merge`, daemon event types, phase-script behavior). A solo `/sprint plan`
+invocation in a fresh session — i.e. not auto-chained from a just-ended
+run — runs against whatever `dist/` binaries the previous sprint's
+wind-down left behind. Sometimes that's hours- or days-old (see #1858 —
+sprint 47's wind-down rebuild also failed to fire, so dist was 12h
+stale at sprint 48 plan time).
+
+Detect staleness — last-build mtime vs latest main commit. Try GNU
+`stat -c %Y` first; fall back to BSD `stat -f %m`:
+
+```bash
+LAST_BUILD=$(stat -c %Y dist/mcx 2>/dev/null || stat -f %m dist/mcx 2>/dev/null || echo 0)
+HEAD_TS=$(git log -1 --format=%ct origin/main 2>/dev/null || echo 0)
+if [ "${LAST_BUILD:-0}" -lt "${HEAD_TS:-0}" ] || ! mcx status >/dev/null 2>&1; then
+  git checkout main
+  git pull --ff-only
+  bun run build
+  mcx claude ls --short 2>/dev/null     # confirm no in-flight sessions before restart
+  mcx shutdown && mcx status            # restart daemon to pick up new binary
+fi
+```
+
+If `mcx claude ls` returns idle sessions, **inspect each one** before
+proceeding. Leftover sessions from a prior sprint can be `bye`'d with
+`--keep` (preserve worktree as evidence). But sessions you didn't spawn —
+or worktrees on `issue-1808-*` / patcher / TLS branches — belong to the
+user's parallel work; leave them alone (see
+`.claude/memory/feedback_parallel_p1_session.md`).
+
+The run-phase pre-flight (`run.md`) repeats this check before spawning;
+that's intentional and idempotent when dist is already current.
+
 ## Step 1: Survey the board
 
 Fetch all open issues and recently closed issues:

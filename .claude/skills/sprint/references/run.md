@@ -236,8 +236,10 @@ while issues remain:
 ```
 
 The phase scripts encapsulate what was previously 6-step transition
-recipes — e.g. impl→review is now `mcx phase run triage` followed by
-`mcx phase run <result.target>`.
+recipes — e.g. impl→review is now `mcx phase run triage` followed by,
+when `result.action == "goto"`, `mcx phase run <result.target>
+--work-item <item.id>`. (Triage uses the standard `action`/`target`
+schema since #1832 — no special-cased `decision` field.)
 
 **Key invariants** (orchestrator discipline, not enforced by scripts):
 - Use `mcx claude wait`, never `sleep`
