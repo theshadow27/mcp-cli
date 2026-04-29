@@ -1846,6 +1846,195 @@ describe("StateDb", () => {
     });
   });
 
+  describe("migrations", () => {
+    test("fresh DB sets schema version to 3", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const version = db["db"]
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("state")?.version;
+      expect(version).toBe(3);
+      db.close();
+    });
+
+    test("re-opening migrated DB is idempotent", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const db1 = new StateDb(p);
+      db1.close();
+
+      const db2 = new StateDb(p);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const version = db2["db"]
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("state")?.version;
+      expect(version).toBe(3);
+      db2.close();
+    });
+
+    test("legacy DB with tool_cache is detected at current version", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
+      raw.exec("CREATE TABLE aliases (name TEXT PRIMARY KEY, file_path TEXT NOT NULL)");
+      raw.close();
+
+      const db = new StateDb(p);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const version = db["db"]
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("state")?.version;
+      expect(version).toBe(3);
+      db.close();
+    });
+
+    test("legacy DB missing tables gets them created (handles half-migrated DBs from old try/catch failures)", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Simulate a half-migrated legacy DB: tool_cache exists (triggers legacy path)
+      // but copilot_comment_state and auth_tokens were never created (old try/catch ate the error).
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
+      raw.close();
+
+      const db = new StateDb(p);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const tables = db["db"]
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .all()
+        .map((r) => r.name);
+      expect(tables).toContain("copilot_comment_state");
+      expect(tables).toContain("auth_tokens");
+      expect(tables).toContain("aliases");
+      expect(tables).toContain("spans");
+      db.close();
+    });
+
+    test("migration error propagates instead of being silently swallowed", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Both claude_sessions and agent_sessions exist → the rename step throws.
+      // Verifies that migration failures bubble up rather than being eaten.
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec("CREATE TABLE claude_sessions (session_id TEXT PRIMARY KEY)");
+      raw.exec("CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY)");
+      raw.close();
+
+      expect(() => new StateDb(p)).toThrow();
+    });
+
+    test("data migrations run exactly once (not on every boot)", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const db1 = new StateDb(p);
+
+      // Insert alias_state with trailing slash — this should be canonicalized by v2
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      db1["db"].run(
+        "INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at) VALUES (?, ?, ?, ?, unixepoch())",
+        ["/repo/", "ns", "k", '"val"'],
+      );
+      db1.close();
+
+      // Re-open — v2 already ran, so the trailing-slash row persists as-is
+      // (not re-canonicalized, because migrations don't re-run)
+      const db2 = new StateDb(p);
+      // The row should still have the trailing slash because v2 already ran on first boot
+      // (when there was no data). The trailing-slash row was inserted AFTER v2 ran.
+      expect(db2.getAliasState("/repo/", "ns", "k")).toBe("val");
+      db2.close();
+    });
+
+    test("all expected tables are created on fresh DB", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const tables = db["db"]
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence' ORDER BY name",
+        )
+        .all()
+        .map((r) => r.name);
+
+      const expected = [
+        "agent_sessions",
+        "alias_state",
+        "aliases",
+        "auth_tokens",
+        "copilot_comment_state",
+        "daemon_state",
+        "mail",
+        "notes",
+        "oauth_clients",
+        "oauth_discovery",
+        "oauth_verifiers",
+        "schema_versions",
+        "server_logs",
+        "session_metrics",
+        "spans",
+        "tool_cache",
+        "usage_stats",
+      ];
+      expect(tables).toEqual(expected);
+      db.close();
+    });
+
+    test("aliases table has all columns on fresh DB (no ALTER TABLE needed)", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const cols = (db["db"].prepare("PRAGMA table_info(aliases)").all() as Array<{ name: string }>).map((r) => r.name);
+
+      expect(cols).toContain("alias_type");
+      expect(cols).toContain("input_schema_json");
+      expect(cols).toContain("output_schema_json");
+      expect(cols).toContain("bundled_js");
+      expect(cols).toContain("source_hash");
+      expect(cols).toContain("expires_at");
+      expect(cols).toContain("run_count");
+      expect(cols).toContain("last_run_at");
+      expect(cols).toContain("scope");
+      expect(cols).toContain("monitor_definitions_json");
+      db.close();
+    });
+
+    test("agent_sessions has all columns on fresh DB", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const cols = (db["db"].prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).map(
+        (r) => r.name,
+      );
+
+      expect(cols).toContain("provider");
+      expect(cols).toContain("repo_root");
+      expect(cols).toContain("pid_start_time");
+      expect(cols).toContain("name");
+      db.close();
+    });
+
+    test("copilot_comment_state has all columns on fresh DB", () => {
+      const db = createDb();
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const cols = (db["db"].prepare("PRAGMA table_info(copilot_comment_state)").all() as Array<{ name: string }>).map(
+        (r) => r.name,
+      );
+
+      expect(cols).toContain("seen_review_ids");
+      expect(cols).toContain("seen_pr_comment_ids");
+      expect(cols).toContain("seen_issue_comment_ids");
+      expect(cols).toContain("last_sticky_body_hash");
+      db.close();
+    });
+  });
+
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);
