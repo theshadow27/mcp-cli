@@ -609,6 +609,28 @@ describe("WorkItemDb", () => {
         expect(err.expectedVersion).toBe(1);
       }
     });
+
+    test("upsertWorkItem increments version on conflict", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      expect(item.version).toBe(1);
+      db.upsertWorkItem({ id: item.id, ciStatus: "running" });
+      const afterUpsert = db.getWorkItem(item.id);
+      expect(afterUpsert?.version).toBe(2);
+    });
+
+    test("expectedVersion respects version bumped by upsertWorkItem", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1 });
+      db.upsertWorkItem({ id: item.id, ciStatus: "running" });
+      // version is now 2; expectedVersion: 1 should reject
+      expect(() => db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 1 })).toThrow(
+        StaleUpdateError,
+      );
+      // expectedVersion: 2 should succeed
+      const updated = db.updateWorkItem(item.id, { ciStatus: "passed" }, { expectedVersion: 2 });
+      expect(updated.version).toBe(3);
+    });
   });
 
   describe("concurrent update stress test", () => {
@@ -632,7 +654,7 @@ describe("WorkItemDb", () => {
       expect(final?.ciSummary).toBe(`writer-${N - 1}`);
     });
 
-    test("N=20 concurrent connections produce no lost updates", () => {
+    test("N=20 sequential writes via separate connections produce no lost updates", () => {
       const p = tmpDb();
       paths.push(p);
 
@@ -673,7 +695,7 @@ describe("WorkItemDb", () => {
       verify.close();
     });
 
-    test("N=20 concurrent phase updates produce correct transition log", () => {
+    test("N=20 sequential phase updates via separate connections produce correct transition log", () => {
       const p = tmpDb();
       paths.push(p);
 

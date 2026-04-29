@@ -230,8 +230,10 @@ export class WorkItemDb {
       version = 5;
     }
     if (version < 6) {
-      this.db.exec("ALTER TABLE work_items ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
-      this.setSchemaVersion(CONSUMER, 6);
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+        this.setSchemaVersion(CONSUMER, 6);
+      })();
       version = 6;
     }
   }
@@ -494,6 +496,7 @@ export class WorkItemDb {
            review_status      = COALESCE($review_status, review_status),
            merge_state_status = CASE WHEN $merge_state_status = '__NULL__' THEN NULL ELSE COALESCE($merge_state_status, merge_state_status) END,
            phase              = COALESCE($phase, phase),
+           version            = version + 1,
            updated_at         = datetime('now')`,
       )
       .run({
