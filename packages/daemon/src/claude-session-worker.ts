@@ -141,7 +141,7 @@ async function handleToolCall(
   }
 }
 
-async function handlePrompt(
+export async function handlePrompt(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
 ): Promise<{

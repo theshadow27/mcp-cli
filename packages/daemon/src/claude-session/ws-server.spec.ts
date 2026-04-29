@@ -4433,7 +4433,7 @@ describe("parallel spawn (#1836)", () => {
     expect(server.listSessions()).toHaveLength(0);
   });
 
-  test("3 concurrent sessions all connect successfully", async () => {
+  test("3 sessions prepared before any spawn — all coexist with cwd set (#1836)", async () => {
     let spawnCount = 0;
     const spawnFn: SpawnFn = () => {
       spawnCount++;
@@ -4449,12 +4449,16 @@ describe("parallel spawn (#1836)", () => {
 
     const sessionIds = ["s-parallel-1", "s-parallel-2", "s-parallel-3"];
 
+    // Prepare all sessions before spawning any — mirrors the interleaved ordering
+    // that occurs during parallel `mcx claude spawn` calls (#1836).
     for (const id of sessionIds) {
       server.prepareSession(id, {
         prompt: `Task for ${id}`,
         cwd: `/worktree/${id}`,
         worktree: id,
       });
+    }
+    for (const id of sessionIds) {
       server.spawnClaude(id);
     }
 

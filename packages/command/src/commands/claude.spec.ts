@@ -148,13 +148,21 @@ describe("parseSpawnArgs", () => {
     expect(result.worktree).toStartWith("claude-");
   });
 
-  test("auto-generated worktree names are unique across rapid calls (#1836)", () => {
-    const names = new Set<string>();
-    for (let i = 0; i < 50; i++) {
-      const result = parseSpawnArgs(["--worktree", "--task", "x"]);
-      const wt = result.worktree ?? "";
-      expect(names.has(wt)).toBe(false);
-      names.add(wt);
+  test("auto-generated worktree names are unique even when Date.now is frozen (#1836)", () => {
+    // Freeze Date.now to reproduce the same-millisecond condition that caused
+    // collisions with the old `claude-${Date.now().toString(36)}` scheme.
+    const orig = Date.now;
+    Date.now = () => 1_745_913_600_000;
+    try {
+      const names = new Set<string>();
+      for (let i = 0; i < 50; i++) {
+        const result = parseSpawnArgs(["--worktree", "--task", "x"]);
+        const wt = result.worktree ?? "";
+        expect(names.has(wt)).toBe(false);
+        names.add(wt);
+      }
+    } finally {
+      Date.now = orig;
     }
   });
 
