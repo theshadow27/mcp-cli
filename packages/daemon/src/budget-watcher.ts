@@ -21,6 +21,13 @@ interface SessionCostState {
 const SESSION_EVENTS: ReadonlySet<string> = new Set([SESSION_RESULT, SESSION_IDLE, SESSION_ENDED]);
 
 const DEFAULT_QUOTA_POLL_MS = 60_000;
+const RECONCILE_BATCH_SIZE = 1000;
+const RECONCILE_EVENTS = [
+  COST_SESSION_OVER_BUDGET,
+  COST_SPRINT_OVER_BUDGET,
+  SESSION_ENDED,
+  QUOTA_UTILIZATION_THRESHOLD,
+] as const;
 
 export class BudgetWatcher {
   private readonly bus: EventBus;
@@ -44,7 +51,12 @@ export class BudgetWatcher {
     this.bus = opts.bus;
     this.db = opts.db;
     this.quotaPoller = opts.quotaPoller;
-    this.eventLog = opts.eventLog ?? null;
+
+    const busEventLog = opts.bus.eventLog ?? null;
+    if (opts.eventLog && busEventLog && opts.eventLog !== busEventLog) {
+      throw new Error("BudgetWatcher: opts.eventLog and opts.bus.eventLog must match when both are provided");
+    }
+    this.eventLog = opts.eventLog ?? busEventLog ?? null;
 
     const config = this.db.getBudgetConfig();
     for (const t of config.quotaThresholds) {
@@ -75,18 +87,22 @@ export class BudgetWatcher {
   reconcile(): number {
     if (!this.eventLog) return 0;
 
+    const targetSeq = this.eventLog.currentSeq();
+    if (targetSeq === 0) return 0;
+
     let replayed = 0;
     let cursor = 0;
 
-    while (true) {
-      const events = this.eventLog.getSince(cursor);
+    while (cursor < targetSeq) {
+      const events = this.eventLog.getSince(cursor, RECONCILE_BATCH_SIZE, { events: RECONCILE_EVENTS });
       if (events.length === 0) break;
       for (const event of events) {
+        if (event.seq > targetSeq) break;
         this.applyReplayEvent(event);
         replayed++;
         cursor = event.seq;
       }
-      if (events.length < 1000) break;
+      if (events.length < RECONCILE_BATCH_SIZE) break;
     }
 
     // Re-arm sprint if costs have dropped below the cap since the last crossing.
