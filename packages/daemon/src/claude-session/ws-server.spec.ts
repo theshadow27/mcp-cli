@@ -1233,6 +1233,151 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("interrupt with reason prepends context to next sendPrompt", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(10);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Consume the interrupt control_request, then listen for the user message
+      const interruptPromise = waitForMessage(ws);
+      server.interrupt("test-session", "Wrong path, abandon it");
+      await interruptPromise;
+
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Do something else");
+
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.type).toBe("user");
+      expect(parsed.message.content).toBe("[Interrupt context: Wrong path, abandon it]\n\nDo something else");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("interrupt reason is consumed on first sendPrompt only", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(10);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Consume the interrupt control_request
+      const interruptPromise = waitForMessage(ws);
+      server.interrupt("test-session", "Stop that");
+      await interruptPromise;
+
+      // First send: reason prepended
+      const firstMsgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "First follow-up");
+      const firstMsg = await firstMsgPromise;
+      const firstParsed = JSON.parse(firstMsg.trim());
+      expect(firstParsed.message.content).toContain("[Interrupt context: Stop that]");
+
+      // Session goes idle again
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Second send: no reason prepended
+      const secondMsgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Second follow-up");
+      const secondMsg = await secondMsgPromise;
+      const secondParsed = JSON.parse(secondMsg.trim());
+      expect(secondParsed.message.content).toBe("Second follow-up");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("bare interrupt clears a previously set pending reason", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(10);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Set a reason via first interrupt
+      const firstInterruptPromise = waitForMessage(ws);
+      server.interrupt("test-session", "Wrong path");
+      await firstInterruptPromise;
+
+      // Bare interrupt should clear the pending reason
+      const secondInterruptPromise = waitForMessage(ws);
+      server.interrupt("test-session");
+      await secondInterruptPromise;
+
+      // sendPrompt should not prepend the stale reason
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Next instruction");
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.message.content).toBe("Next instruction");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("interrupt without reason does not affect sendPrompt", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(10);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Consume the interrupt control_request
+      const interruptPromise = waitForMessage(ws);
+      server.interrupt("test-session");
+      await interruptPromise;
+
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Plain message");
+
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.message.content).toBe("Plain message");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("waitForEvent resolves on session:result", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

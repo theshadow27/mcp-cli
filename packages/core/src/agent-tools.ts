@@ -206,6 +206,11 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         type: "object" as const,
         properties: {
           sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to interrupt" },
+          reason: {
+            type: "string" as const,
+            description:
+              "Optional reason for the interruption. When provided, it is prepended to the next send so the session understands why it was interrupted.",
+          },
           ...ov("interrupt")?.extraProperties,
         },
         required: ["sessionId"] as const,

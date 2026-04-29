@@ -1261,15 +1261,36 @@ export function parseByeResult(result: unknown): ByeResult {
 export { cleanupWorktree } from "@mcp-cli/core";
 
 async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
-  const sessionPrefix = args[0];
+  let sessionPrefix: string | undefined;
+  let reason: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--reason" || args[i] === "-r") {
+      if (i + 1 >= args.length) {
+        d.printError(`${args[i]} requires a value`);
+        d.exit(1);
+      }
+      reason = args[++i];
+    } else if (args[i].startsWith("-")) {
+      d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.exit(1);
+    } else if (sessionPrefix !== undefined) {
+      d.printError(`Unexpected argument: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.exit(1);
+    } else {
+      sessionPrefix = args[i];
+    }
+  }
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude interrupt <session-id>");
+    d.printError("Usage: mcx claude interrupt <session-id> [--reason <text>]");
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
-  const result = await d.callTool("claude_interrupt", { sessionId });
+  const toolArgs: Record<string, unknown> = { sessionId };
+  if (reason) toolArgs.reason = reason;
+  const result = await d.callTool("claude_interrupt", toolArgs);
   console.log(formatToolResult(result));
 }
 
@@ -2029,7 +2050,7 @@ Usage:
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude bye <session>                 End session and stop process
-  mcx claude interrupt <session>           Interrupt the current turn
+  mcx claude interrupt <session> [--reason <text>]  Interrupt the current turn
   mcx claude approve <session>              Approve latest pending permission request
   mcx claude deny <session>                Deny latest pending permission request
   mcx claude log <session> [--last N]      View session transcript

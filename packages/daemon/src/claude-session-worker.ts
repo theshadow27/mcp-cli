@@ -323,7 +323,8 @@ function handleInterrupt(
 ): {
   content: Array<{ type: "text"; text: string }>;
 } {
-  server.interrupt(args.sessionId as string);
+  const reason = typeof args.reason === "string" ? args.reason : undefined;
+  server.interrupt(args.sessionId as string, reason);
   return { content: [{ type: "text", text: JSON.stringify({ interrupted: true }) }] };
 }
 
