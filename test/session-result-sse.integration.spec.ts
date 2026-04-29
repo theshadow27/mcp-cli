@@ -10,26 +10,20 @@
  * is the only way to catch regressions in the worker→main postMessage bridge.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { rpc } from "./harness";
+import { type TestDaemon, createTestDir, rpc, startTestDaemon } from "./harness";
 
 setDefaultTimeout(30_000);
 
 // ---------------------------------------------------------------------------
-// Daemon startup with a fake "claude" binary that uses our mock WS client
+// Test suite — single shared daemon to avoid per-test startup overhead
 // ---------------------------------------------------------------------------
 
-interface DaemonHandle {
-  proc: ReturnType<typeof Bun.spawn>;
-  dir: string;
-  socketPath: string;
-  kill: () => Promise<void>;
-}
+let daemon: TestDaemon | undefined;
 
-async function startDaemonWithMockClaude(): Promise<DaemonHandle> {
-  const dir = Bun.env.TMPDIR ? `${Bun.env.TMPDIR}/mcp-test-sse-${Date.now()}` : `/tmp/mcp-test-sse-${Date.now()}`;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+beforeAll(async () => {
+  const dir = createTestDir();
 
   // Create a fake "claude" binary that delegates to mock-claude.ts
   const mockBinDir = join(dir, "bin");
@@ -39,90 +33,7 @@ async function startDaemonWithMockClaude(): Promise<DaemonHandle> {
   writeFileSync(claudeScript, `#!/bin/sh\nexec bun "${mockClaudePath}" "$@"\n`);
   chmodSync(claudeScript, 0o755);
 
-  const socketPath = join(dir, "mcpd.sock");
-
-  try {
-    unlinkSync(socketPath);
-  } catch {
-    // doesn't exist, fine
-  }
-
-  writeFileSync(join(dir, "servers.json"), JSON.stringify({ mcpServers: {} }));
-
-  const proc = Bun.spawn(["bun", resolve("packages/daemon/src/main.ts")], {
-    stdout: "ignore",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      MCP_CLI_DIR: dir,
-      MCP_DAEMON_TIMEOUT: "30000",
-      PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
-    },
-  });
-
-  // Poll for daemon readiness
-  const deadline = Date.now() + 15_000;
-  let ready = false;
-
-  while (Date.now() < deadline) {
-    const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(50).then(() => false)]);
-    if (exited) break;
-
-    if (!existsSync(socketPath)) {
-      await Bun.sleep(50);
-      continue;
-    }
-
-    try {
-      const res = await rpc(socketPath, "ping");
-      if (res.result && (res.result as { pong?: boolean }).pong) {
-        ready = true;
-        break;
-      }
-    } catch {
-      await Bun.sleep(50);
-    }
-  }
-
-  if (!ready) {
-    proc.kill();
-    const stderr = await new Response(proc.stderr as ReadableStream).text();
-    rmSync(dir, { recursive: true, force: true });
-    throw new Error(`Daemon failed to start within 15s.\nstderr: ${stderr}`);
-  }
-
-  return {
-    proc,
-    dir,
-    socketPath,
-    kill: async () => {
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-      const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(5_000).then(() => false)]);
-      if (!exited) {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // already exited
-        }
-        await Promise.race([proc.exited, Bun.sleep(2_000)]);
-      }
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Test suite — single shared daemon to avoid per-test startup overhead
-// ---------------------------------------------------------------------------
-
-let daemon: DaemonHandle | undefined;
-
-beforeAll(async () => {
-  daemon = await startDaemonWithMockClaude();
+  daemon = await startTestDaemon({}, { dir, pathPrefix: mockBinDir });
 });
 
 afterAll(async () => {

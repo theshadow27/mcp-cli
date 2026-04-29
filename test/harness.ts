@@ -43,7 +43,7 @@ export function echoServerConfig(): ServerConfig {
  */
 export async function startTestDaemon(
   servers: ServerConfigMap,
-  options?: { timeout?: number; idleTimeout?: number; dir?: string; skipVirtualServers?: boolean },
+  options?: { timeout?: number; idleTimeout?: number; dir?: string; skipVirtualServers?: boolean; pathPrefix?: string },
 ): Promise<TestDaemon> {
   const dir = options?.dir ?? createTestDir();
   const socketPath = join(dir, "mcpd.sock");
@@ -66,6 +66,7 @@ export async function startTestDaemon(
       MCP_CLI_DIR: dir,
       MCP_DAEMON_TIMEOUT: String(options?.idleTimeout ?? 30_000),
       ...(options?.skipVirtualServers ? { MCP_DAEMON_SKIP_VIRTUAL_SERVERS: "1" } : {}),
+      ...(options?.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH ?? ""}` } : {}),
     },
   });
 
