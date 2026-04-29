@@ -1,6 +1,6 @@
 # Sprint 48
 
-> Planned 2026-04-29 14:30 EDT. Started 2026-04-29 02:08 EDT. Target: 15 PRs.
+> Planned 2026-04-29 14:30 EDT. Started 2026-04-29 02:08 EDT. Ended 2026-04-29 05:24 EDT (~3h 16m). Target: 15 PRs. Shipped: 16.
 
 ## Goal
 
@@ -177,3 +177,38 @@ Sprint 47 shipped v1.8.1 — 11 PRs (10 sprint + 1 out-of-band P1 #1835). The Ph
 Three meta cleanup PRs landed between sprint-47 retro and sprint-48 plan: #1862 (run.md prune), #1868 (sprint-48 plan-time meta cleanup, applied #1845 doc drift), and the diary postmortem amendment. The orchestrator's reading material is in better shape going into sprint 48 than it was for sprint 47.
 
 The Monitor Epic dropped to ~5 issues post-sprint-47 — effectively closed. Phase 6 was the original charter; remaining issues are followups (#1486, #1572, #1565, #1791, #1792). No urgency to push them.
+
+## Results
+
+**16 PRs merged** in ~3h 16m. Originally planned for 15; #1798 dropped at run start (already merged via PR #1817 cluster); two backups pulled in (#1848 test infra, #1812 sites validation) per user request to keep pipeline saturated.
+
+| # | PR | Branch | Final outcome |
+|---|----|--------|---------------|
+| 1818 | #1872 | feat/issue-1818-hasactivetoolcall-assertions | merged (1 QA round, no repair) |
+| 1850 | #1873 | fix/issue-1850-repair-replacement-char | merged (1 QA round) |
+| 1849 | #1874 | fix/issue-1849-findpr-exitcode | merged (1 QA round) |
+| 1603 | #1876 | fix/issue-1603-claude-ls-scope-hint | merged (1 QA round) |
+| 1848 | #1877 | refactor/issue-1848-startTestDaemon-pathPrefix | merged (1 QA round) |
+| 1812 | #1878 | fix/issue-1812-handle-browser-start-validation | merged (1 repair, real correctness bug #1881 found by QA — sparse-array bypass) |
+| 1864 | #1879 | fix/issue-1864-toctou-updateworkitem | merged (adversarial review + 2 reviewer self-repair rounds; one real find: upsertWorkItem version bypass) |
+| 1820 | #1880 | fix/issue-1820-livebuffer-flaky-tests | merged (1 repair for Copilot threads) |
+| 1853 | #1884 | fix/issue-1853-budget-watcher-state-restore | merged (1 repair) |
+| 1606 | #1885 | feat/issue-1606-if-idle-flag | merged (1 repair: ifIdle missing from tool inputSchema, real fix) |
+| 1836 | #1886 | fix/issue-1836-parallel-spawn-race | merged (adversarial review + 1 reviewer self-repair; 3 root causes identified by Alice — UUID collision, cwd null, ghost cleanup; all fixed) |
+| 1859 | #1887 | fix/issue-1859-schema-versions-state-db | merged (adversarial review + 1 self-repair; reviewer found error path untested) |
+| 1837 | #1895 | fix/issue-1837-bye-worktree-guard | merged (1 reviewer self-repair: TOCTOU guard hardened; one real find by adversarial reviewer) |
+| 1607 | #1896 | feat/issue-1607-interrupt-reason | merged (1 reviewer self-repair: 3 blockers including 🔴 wrong-session-on-typo arg parser) |
+| 1608 | #1898 | feat/issue-1608-at-file-notation | merged (1 reviewer self-repair + 1 manual rebase after #1607 landed; 2 🔴 found by review — binary-file rejection missing, bare @ confusing) |
+| 1609 | #1901 | feat/issue-1609-agent-claude-status | merged (adversarial review + 2 repair rounds; CI flake on #1882 made round 2 noisy) |
+
+**Models:** 4 opus impl (#1836, #1864, #1859, plus repair sessions) + 12 sonnet impl. All 4 high-scrutiny picks ran adversarial review. Reviewer self-repair pattern saved spawning fresh opus repairs on 5 PRs.
+
+**Repair rounds:** 14 of 16 PRs needed at least one repair (mostly for unreplied Copilot inline threads). #1818 and #1850 sailed through QA with no repair.
+
+**Pre-existing flaky test #1882** (server-pool.spec.ts:1731 SIGTERM/SIGKILL race) caused noise on multiple PRs — flagged by QA agents but unrelated to the changes. Filed as #1882. Two retry rounds got past it on #1820 and #1609.
+
+**New issues filed during the sprint** (orchestrator + workers): #1881 (sparse-array bypass — fixed inline on #1812), #1882 (server-pool.spec.ts:1731 flake), #1883 (StaleUpdateError typed catch-sites — followup to #1864), #1899 (path traversal guard for @path — followup to #1608), #1900 (lint rule for unbounded args[++i] — followup to #1608), #1903, #1904 (followups from #1609 review).
+
+**Auto-merge:** All 16 PRs used `--auto`; no admin-merge. Sprint 47 carried 4 admin-merges; sprint 48 used zero (the post-#1835 coverage CI fix #1869 held — no PR needed admin override). That's the leading-indicator success the plan called for.
+
+**Cost / quota:** Started block at 56% utilization; new 5h block reset at 02:50 EDT mid-sprint (reset to ~5%, ended at ~52% sevenDay). One block sufficient.
