@@ -1953,6 +1953,46 @@ describe("mcx claude interrupt", () => {
     }
   });
 
+  test("passes reason to tool when --reason flag is provided", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ interrupted: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["interrupt", "def", "--reason", "Wrong path, abandon it"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_interrupt", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+        reason: "Wrong path, abandon it",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("passes reason to tool when -r flag is provided", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ interrupted: true });
+    });
+    const deps = makeDeps({ callTool });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["interrupt", "def", "-r", "Stop editing"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_interrupt", {
+        sessionId: "def67890-aaaa-bbbb-cccc-dddddddddddd",
+        reason: "Stop editing",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("errors when no session specified", async () => {
     const deps = makeDeps();
     await expect(cmdClaude(["interrupt"], deps)).rejects.toThrow(ExitError);

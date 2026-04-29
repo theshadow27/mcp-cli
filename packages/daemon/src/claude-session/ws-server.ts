@@ -344,6 +344,12 @@ interface WsSession {
    * Reset only on clearSession (respawn = fresh work cycle).
    */
   workCompleted: boolean;
+  /**
+   * Reason provided with the last interrupt call. Prepended to the next sendPrompt
+   * so the session sees why it was interrupted before the new instruction.
+   * Cleared after it is consumed by sendPrompt or when the session is cleared/ended.
+   */
+  pendingInterruptReason: string | null;
 }
 
 interface WsData {
@@ -649,6 +655,7 @@ export class ClaudeWsServer {
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
         workCompleted: false,
+        pendingInterruptReason: null,
         traceparent: null,
         stuckDetector: null,
       });
@@ -700,6 +707,7 @@ export class ClaudeWsServer {
       createdAt: Date.now(),
       pendingImmediate: false,
       workCompleted: false,
+      pendingInterruptReason: null,
       traceparent: null,
       stuckDetector: null,
     });
@@ -921,9 +929,12 @@ export class ClaudeWsServer {
     }
 
     const session = this.getSession(sessionId);
-    const outbound = session.state.queuePrompt(message);
+    const pendingReason = session.pendingInterruptReason;
+    session.pendingInterruptReason = null;
+    const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
+    const outbound = session.state.queuePrompt(effective);
     this.sendToWs(session, outbound);
-    this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: message } });
+    this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
   }
 
@@ -935,11 +946,14 @@ export class ClaudeWsServer {
     this.recordSessionProgress(sessionId, session);
   }
 
-  /** Interrupt the current turn. */
-  interrupt(sessionId: string): void {
+  /** Interrupt the current turn. If reason is provided, it is prepended to the next sendPrompt. */
+  interrupt(sessionId: string, reason?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
     this.sendToWs(session, outbound);
+    if (reason) {
+      session.pendingInterruptReason = reason;
+    }
   }
 
   /**
@@ -1000,6 +1014,7 @@ export class ClaudeWsServer {
     if (session.clearing) return;
     session.clearing = true;
     session.workCompleted = false;
+    session.pendingInterruptReason = null;
 
     // Reset state machine (preserves cumulative cost/tokens)
     const events = session.state.resetForClear();
