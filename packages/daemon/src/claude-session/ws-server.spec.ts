@@ -1237,6 +1237,43 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("bare interrupt clears a previously set pending reason", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    const ws = await connectMockClaude(port, "test-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("test-session"));
+      await Bun.sleep(10);
+      ws.send(resultMessage("test-session"));
+      await Bun.sleep(10);
+
+      // Set a reason via first interrupt
+      const firstInterruptPromise = waitForMessage(ws);
+      server.interrupt("test-session", "Wrong path");
+      await firstInterruptPromise;
+
+      // Bare interrupt should clear the pending reason
+      const secondInterruptPromise = waitForMessage(ws);
+      server.interrupt("test-session");
+      await secondInterruptPromise;
+
+      // sendPrompt should not prepend the stale reason
+      const msgPromise = waitForMessage(ws);
+      server.sendPrompt("test-session", "Next instruction");
+      const msg = await msgPromise;
+      const parsed = JSON.parse(msg.trim());
+      expect(parsed.message.content).toBe("Next instruction");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("interrupt without reason does not affect sendPrompt", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

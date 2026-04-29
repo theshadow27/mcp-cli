@@ -1224,9 +1224,19 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
   let reason: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
-    if ((args[i] === "--reason" || args[i] === "-r") && i + 1 < args.length) {
+    if (args[i] === "--reason" || args[i] === "-r") {
+      if (i + 1 >= args.length) {
+        d.printError(`${args[i]} requires a value`);
+        d.exit(1);
+      }
       reason = args[++i];
-    } else if (!args[i].startsWith("-")) {
+    } else if (args[i].startsWith("-")) {
+      d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.exit(1);
+    } else if (sessionPrefix !== undefined) {
+      d.printError(`Unexpected argument: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.exit(1);
+    } else {
       sessionPrefix = args[i];
     }
   }

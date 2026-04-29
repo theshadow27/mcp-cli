@@ -1997,6 +1997,26 @@ describe("mcx claude interrupt", () => {
     const deps = makeDeps();
     await expect(cmdClaude(["interrupt"], deps)).rejects.toThrow(ExitError);
   });
+
+  test("errors when --reason flag has no value", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "--reason"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("errors when -r flag has no value", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "-r"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("errors on unknown flag", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "--typo"], deps)).rejects.toThrow(ExitError);
+  });
+
+  test("errors on duplicate positional argument", async () => {
+    const deps = makeDeps();
+    await expect(cmdClaude(["interrupt", "def", "extra"], deps)).rejects.toThrow(ExitError);
+  });
 });
 
 // ── log ──

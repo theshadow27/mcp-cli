@@ -951,9 +951,7 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
     this.sendToWs(session, outbound);
-    if (reason) {
-      session.pendingInterruptReason = reason;
-    }
+    session.pendingInterruptReason = reason ?? null;
   }
 
   /**
