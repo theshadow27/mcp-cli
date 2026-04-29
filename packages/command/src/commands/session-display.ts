@@ -147,7 +147,7 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
     lastResult,
     directoryFootprint: footprint,
     commandSummary,
-    lastQueries: queries.slice(-lastQueryCount),
+    lastQueries: lastQueryCount === 0 ? [] : queries.slice(-lastQueryCount),
   };
 }
 
@@ -238,7 +238,7 @@ export function formatStatusStanza(
     lines.push("");
     lines.push("Command summary:");
     for (const { cmd, count, lastOutput } of stats.commandSummary) {
-      const last = lastOutput ? `  (last: ${lastOutput.slice(0, 60)}…)` : "";
+      const last = lastOutput ? `  (last: ${lastOutput.length > 60 ? `${lastOutput.slice(0, 60)}…` : lastOutput})` : "";
       lines.push(`  ${cmd.padEnd(20)} ${count} ${count === 1 ? "run" : "runs"}${last}`);
     }
   }

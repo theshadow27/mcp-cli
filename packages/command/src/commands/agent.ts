@@ -1700,6 +1700,7 @@ Usage:
   mcx agent ${name} approve <session> [req-id]  Approve pending permission request
   mcx agent ${name} deny <session> [req-id]     Deny pending permission request
   mcx agent ${name} worktrees [--prune]          List mcx-created worktrees
+  mcx agent ${name} status <target> [--json]     One-shot session inspector
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }

@@ -473,6 +473,15 @@ describe("walkTranscript", () => {
     expect(bash).toBeDefined();
     expect(bash?.count).toBe(2);
   });
+
+  test("lastQueryCount=0 returns empty lastQueries", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "g1", name: "Grep", input: { pattern: "foo" } }]),
+      makeAssistantMsg([{ type: "tool_use", id: "g2", name: "Glob", input: { pattern: "*.ts" } }]),
+    ];
+    const stats = walkTranscript(entries, 0);
+    expect(stats.lastQueries).toHaveLength(0);
+  });
 });
 
 describe("formatLifecycleLine", () => {
