@@ -81,12 +81,20 @@ export class EventLog {
     return result.seq;
   }
 
-  getSince(afterSeq: number, limit = 1000): MonitorEvent[] {
-    const rows = this.db
-      .query<{ seq: number; payload: string }, [number, number]>(
-        "SELECT seq, payload FROM monitor_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
-      )
-      .all(afterSeq, limit);
+  getSince(afterSeq: number, limit = 1000, opts?: { events?: readonly string[] }): MonitorEvent[] {
+    let rows: { seq: number; payload: string }[];
+
+    if (opts?.events?.length) {
+      const placeholders = opts.events.map(() => "?").join(", ");
+      const sql = `SELECT seq, payload FROM monitor_events WHERE seq > ? AND event IN (${placeholders}) ORDER BY seq ASC LIMIT ?`;
+      rows = this.db.prepare(sql).all(afterSeq, ...opts.events, limit) as { seq: number; payload: string }[];
+    } else {
+      rows = this.db
+        .query<{ seq: number; payload: string }, [number, number]>(
+          "SELECT seq, payload FROM monitor_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+        )
+        .all(afterSeq, limit);
+    }
 
     // Overlay the authoritative seq from the DB column — payload stores seq=0 placeholder.
     return rows.map((r) => ({ ...(JSON.parse(r.payload) as MonitorEvent), seq: r.seq }));

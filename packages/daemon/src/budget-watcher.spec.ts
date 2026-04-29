@@ -14,6 +14,7 @@ import {
 import { BudgetWatcher } from "./budget-watcher";
 import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
+import { EventLog } from "./event-log";
 import type { QuotaPoller, QuotaStatus } from "./quota";
 
 const dbPaths: string[] = [];
@@ -418,5 +419,199 @@ describe("BudgetWatcher — dispose", () => {
 
     bus.publish(sessionResultEvent("s1", 5.0));
     expect(events).toHaveLength(0);
+  });
+});
+
+// ── Reconcile (daemon restart state restoration) ──
+
+function makeDbWithLog(): { db: StateDb; eventLog: EventLog } {
+  const db = makeDb();
+  const eventLog = new EventLog(db.database);
+  return { db, eventLog };
+}
+
+function loggedEvent(partial: Partial<MonitorEvent> & { event: string; category: string }): MonitorEvent {
+  return {
+    seq: 0,
+    ts: new Date().toISOString(),
+    src: "daemon.budget-watcher",
+    ...partial,
+  } as MonitorEvent;
+}
+
+describe("BudgetWatcher — reconcile", () => {
+  let watcher: BudgetWatcher | null = null;
+
+  afterEach(() => {
+    watcher?.dispose();
+    watcher = null;
+    cleanupDbs();
+  });
+
+  test("returns 0 when no eventLog provided", () => {
+    const db = makeDb();
+    const bus = new EventBus();
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999 });
+    expect(watcher.reconcile()).toBe(0);
+  });
+
+  test("returns 0 on empty event log", () => {
+    const { db, eventLog } = makeDbWithLog();
+    const bus = new EventBus();
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    expect(watcher.reconcile()).toBe(0);
+  });
+
+  test("returns count of events replayed", () => {
+    const { db, eventLog } = makeDbWithLog();
+    eventLog.append(loggedEvent({ event: COST_SESSION_OVER_BUDGET, category: "cost", sessionId: "s1", cost: 2.5 }));
+    eventLog.append(loggedEvent({ event: COST_SPRINT_OVER_BUDGET, category: "cost" }));
+    const bus = new EventBus();
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    expect(watcher.reconcile()).toBe(2);
+  });
+
+  test("session budget not re-fired after restart when COST_SESSION_OVER_BUDGET is in the log", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ sessionCap: 2.0 });
+    eventLog.append(loggedEvent({ event: COST_SESSION_OVER_BUDGET, category: "cost", sessionId: "s1", cost: 2.5 }));
+
+    const bus = new EventBus();
+    const fired = collectEvents(bus, COST_SESSION_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    bus.publish(sessionResultEvent("s1", 3.0));
+    expect(fired).toHaveLength(0);
+  });
+
+  test("session budget fires normally for sessions not seen in the log", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ sessionCap: 2.0 });
+    eventLog.append(loggedEvent({ event: COST_SESSION_OVER_BUDGET, category: "cost", sessionId: "s1", cost: 2.5 }));
+
+    const bus = new EventBus();
+    const fired = collectEvents(bus, COST_SESSION_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    // s2 has no prior log entry — should fire normally
+    bus.publish(sessionResultEvent("s2", 3.0));
+    expect(fired).toHaveLength(1);
+    expect(fired[0].sessionId).toBe("s2");
+  });
+
+  test("SESSION_ENDED in log clears session state so it re-fires on restart", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ sessionCap: 2.0 });
+    eventLog.append(loggedEvent({ event: COST_SESSION_OVER_BUDGET, category: "cost", sessionId: "s1", cost: 2.5 }));
+    eventLog.append(loggedEvent({ event: SESSION_ENDED, category: "session", sessionId: "s1" }));
+
+    const bus = new EventBus();
+    const fired = collectEvents(bus, COST_SESSION_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    // s1 ended before restart — re-fires on new crossing
+    bus.publish(sessionResultEvent("s1", 3.0));
+    expect(fired).toHaveLength(1);
+  });
+
+  test("sprint budget not re-fired after restart when COST_SPRINT_OVER_BUDGET is in the log", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ sprintCap: 5.0 });
+
+    db.upsertSession({ sessionId: "s1", state: "active" });
+    db.updateSessionCost("s1", 6.0, 1000);
+
+    eventLog.append(loggedEvent({ event: COST_SPRINT_OVER_BUDGET, category: "cost" }));
+
+    const bus = new EventBus();
+    const fired = collectEvents(bus, COST_SPRINT_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    bus.publish(sessionResultEvent("s1", 6.0));
+    expect(fired).toHaveLength(0);
+  });
+
+  test("sprint budget re-arms during reconcile if current cost has since dropped below cap", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ sprintCap: 5.0 });
+
+    // Costs are now below the cap
+    db.upsertSession({ sessionId: "s1", state: "active" });
+    db.updateSessionCost("s1", 2.0, 500);
+
+    eventLog.append(loggedEvent({ event: COST_SPRINT_OVER_BUDGET, category: "cost" }));
+
+    const bus = new EventBus();
+    const fired = collectEvents(bus, COST_SPRINT_OVER_BUDGET);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: fakeQuotaPoller(), quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    // Cost was re-armed (current cost < cap), so crossing fires again
+    db.updateSessionCost("s1", 6.0, 1500);
+    bus.publish(sessionResultEvent("s1", 6.0));
+    expect(fired).toHaveLength(1);
+  });
+
+  test("quota threshold not re-fired after restart when QUOTA_UTILIZATION_THRESHOLD is in the log", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ quotaThresholds: [80], quotaDeadband: 5 });
+    eventLog.append(loggedEvent({ event: QUOTA_UTILIZATION_THRESHOLD, category: "quota", threshold: 80 }));
+
+    const poller = fakeQuotaPoller();
+    const bus = new EventBus();
+    const fired = collectEvents(bus, QUOTA_UTILIZATION_THRESHOLD);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: poller, quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    poller.status = {
+      fiveHour: { utilization: 85, resetsAt: "2026-04-29T01:00:00Z" },
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+      fetchedAt: Date.now(),
+    } as QuotaStatus;
+
+    watcher.checkQuota();
+    expect(fired).toHaveLength(0);
+  });
+
+  test("quota threshold re-arms after reconcile if utilization drops below deadband", () => {
+    const { db, eventLog } = makeDbWithLog();
+    db.setBudgetConfig({ quotaThresholds: [80], quotaDeadband: 5 });
+    eventLog.append(loggedEvent({ event: QUOTA_UTILIZATION_THRESHOLD, category: "quota", threshold: 80 }));
+
+    const poller = fakeQuotaPoller();
+    const bus = new EventBus();
+    const fired = collectEvents(bus, QUOTA_UTILIZATION_THRESHOLD);
+    watcher = new BudgetWatcher({ bus, db, quotaPoller: poller, quotaPollIntervalMs: 999_999, eventLog });
+    watcher.reconcile();
+
+    // Utilization drops below deadband — re-arms
+    poller.status = {
+      fiveHour: { utilization: 70, resetsAt: "2026-04-29T01:00:00Z" },
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+      fetchedAt: Date.now(),
+    } as QuotaStatus;
+    watcher.checkQuota();
+
+    // Now fires again at 85
+    poller.status = {
+      fiveHour: { utilization: 85, resetsAt: "2026-04-29T01:00:00Z" },
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+      fetchedAt: Date.now(),
+    } as QuotaStatus;
+    watcher.checkQuota();
+    expect(fired).toHaveLength(1);
   });
 });

@@ -609,7 +609,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Budget watcher: emits cost/quota threshold events (#1587)
   // mailEventBus + eventLog are already created on origin/main earlier in this function (#1586).
-  const budgetWatcher = new BudgetWatcher({ bus: mailEventBus, db, quotaPoller });
+  const budgetWatcher = new BudgetWatcher({ bus: mailEventBus, db, quotaPoller, eventLog });
+  const budgetReconciled = budgetWatcher.reconcile();
+  if (budgetReconciled > 0) {
+    logger.info(`[mcpd] Budget watcher reconciliation replayed ${budgetReconciled} event(s)`);
+  }
 
   // Session metrics aggregator (#1610) — on by default, opt-out via config
   let sessionMetricsAgg: SessionMetricsAggregator | null = null;
