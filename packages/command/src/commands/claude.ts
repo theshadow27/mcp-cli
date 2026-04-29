@@ -869,15 +869,21 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 
   // Pass scopeRoot or repoRoot to daemon for server-side filtering unless --all
   const toolArgs: Record<string, unknown> = {};
+  let activeFilter: string | undefined;
   if (!showAll) {
     const scope = detectScope();
     if (scope) {
       toolArgs.scopeRoot = scope.root;
+      activeFilter = scope.root;
     } else {
       const gitRoot = d.getGitRoot();
-      if (gitRoot) toolArgs.repoRoot = gitRoot;
+      if (gitRoot) {
+        toolArgs.repoRoot = gitRoot;
+        activeFilter = gitRoot;
+      }
     }
   }
+  const filterLabel = toolArgs.scopeRoot ? "other scopes" : "other repos";
 
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
@@ -922,7 +928,25 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
 
   if (sessions.length === 0) {
     if (quotaBanner) console.error(quotaBanner);
-    console.error("No active sessions.");
+    if (activeFilter) {
+      // Re-query without scope to check whether sessions exist elsewhere
+      let allCount = 0;
+      try {
+        const allResult = await d.callTool("claude_session_list", {});
+        const allSessions = JSON.parse(formatToolResult(allResult));
+        allCount = Array.isArray(allSessions) ? allSessions.length : 0;
+      } catch {
+        // ignore — fall through to plain message
+      }
+      if (allCount > 0) {
+        console.error("No active sessions in current scope.");
+        console.error(`(${allCount} session${allCount === 1 ? "" : "s"} in ${filterLabel} — use --all to see them)`);
+      } else {
+        console.error("No active sessions.");
+      }
+    } else {
+      console.error("No active sessions.");
+    }
     return;
   }
 
