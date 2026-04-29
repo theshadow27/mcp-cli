@@ -349,7 +349,7 @@ describe("runTriage — validation", () => {
   });
 });
 
-// ── State writes ─��
+// ── State writes ──
 
 describe("runTriage — state", () => {
   test("writes triage_scrutiny and triage_reasons", async () => {
