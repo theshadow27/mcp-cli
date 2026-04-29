@@ -28,6 +28,7 @@ import {
   updatePatchedClaude,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
+import { readFileWithLimit, resolveAtPath } from "../file-read";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -82,6 +83,8 @@ export interface ClaudeDeps extends SharedSessionDeps {
   pollMail: (recipient: string) => Promise<MailMessage | null>;
   /** Patcher entry point. Overridden in tests to avoid real codesign. */
   runPatchUpdate: typeof updatePatchedClaude;
+  /** Read a file by path, enforcing size limits. Injected for testability. */
+  readFileWithLimit: (path: string) => string;
 }
 
 /**
@@ -206,6 +209,7 @@ export const defaultDeps: ClaudeDeps = {
     return result.messages[0] ?? null;
   },
   runPatchUpdate: updatePatchedClaude,
+  readFileWithLimit,
 };
 
 // ── Entry point ──
@@ -463,9 +467,16 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.exit(1);
   }
 
-  const toolArgs: Record<string, unknown> = {
-    prompt: parsed.task ?? "Continue from where you left off.",
-  };
+  const rawTask = parsed.task ?? "Continue from where you left off.";
+  let task = rawTask;
+  try {
+    task = resolveAtPath(rawTask, d.readFileWithLimit);
+  } catch (e) {
+    d.printError(e instanceof Error ? e.message : String(e));
+    d.exit(1);
+  }
+
+  const toolArgs: Record<string, unknown> = { prompt: task };
   if (parsed.resume) toolArgs.sessionId = parsed.resume;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
@@ -1101,10 +1112,18 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const sessionPrefix = rest[0];
-  const message = rest.slice(1).join(" ").trim();
+  const rawMessage = rest.slice(1).join(" ").trim();
 
-  if (!sessionPrefix || !message) {
-    d.printError("Usage: mcx claude send [--wait] [--if-idle] <session-id> <message>");
+  if (!sessionPrefix || !rawMessage) {
+    d.printError("Usage: mcx claude send [--wait] [--if-idle] <session-id> <message|@file>");
+    d.exit(1);
+  }
+
+  let message = rawMessage;
+  try {
+    message = resolveAtPath(rawMessage, d.readFileWithLimit);
+  } catch (e) {
+    d.printError(e instanceof Error ? e.message : String(e));
     d.exit(1);
   }
 
@@ -1262,7 +1281,7 @@ export { cleanupWorktree } from "@mcp-cli/core";
 
 async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
   let sessionPrefix: string | undefined;
-  let reason: string | undefined;
+  let rawReason: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--reason" || args[i] === "-r") {
@@ -1270,12 +1289,12 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
         d.printError(`${args[i]} requires a value`);
         d.exit(1);
       }
-      reason = args[++i];
+      rawReason = args[++i];
     } else if (args[i].startsWith("-")) {
-      d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
       d.exit(1);
     } else if (sessionPrefix !== undefined) {
-      d.printError(`Unexpected argument: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text>]`);
+      d.printError(`Unexpected argument: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
       d.exit(1);
     } else {
       sessionPrefix = args[i];
@@ -1283,13 +1302,22 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (!sessionPrefix) {
-    d.printError("Usage: mcx claude interrupt <session-id> [--reason <text>]");
+    d.printError("Usage: mcx claude interrupt <session-id> [--reason <text|@file>]");
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d);
   const toolArgs: Record<string, unknown> = { sessionId };
-  if (reason) toolArgs.reason = reason;
+
+  if (rawReason !== undefined) {
+    try {
+      toolArgs.reason = resolveAtPath(rawReason, d.readFileWithLimit);
+    } catch (e) {
+      d.printError(e instanceof Error ? e.message : String(e));
+      d.exit(1);
+    }
+  }
+
   const result = await d.callTool("claude_interrupt", toolArgs);
   console.log(formatToolResult(result));
 }

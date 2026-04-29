@@ -27,6 +27,7 @@ import {
   resolveWorktreePath,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
+import { readFileWithLimit, resolveAtPath } from "../file-read";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -70,6 +71,8 @@ export interface AgentDeps extends SharedSessionDeps {
    * mail arrival alongside session events (fixes #1359).
    */
   pollMail: (recipient: string) => Promise<MailMessage | null>;
+  /** Read a file by path, enforcing size limits. Injected for testability. */
+  readFileWithLimit: (path: string) => string;
 }
 
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
@@ -179,6 +182,7 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
         exitCode: result.exitCode,
       };
     },
+    readFileWithLimit,
   };
 }
 
@@ -507,9 +511,16 @@ async function agentSpawn(
   }
 
   const P = provider.toolPrefix;
-  const toolArgs: Record<string, unknown> = {
-    prompt: parsed.task ?? "Continue from where you left off.",
-  };
+  const rawTask = parsed.task ?? "Continue from where you left off.";
+  let task = rawTask;
+  try {
+    task = resolveAtPath(rawTask, d.readFileWithLimit);
+  } catch (e) {
+    d.printError(e instanceof Error ? e.message : String(e));
+    d.exit(1);
+  }
+
+  const toolArgs: Record<string, unknown> = { prompt: task };
   if (parsed.resume) toolArgs.sessionId = parsed.resume;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
@@ -776,10 +787,18 @@ async function agentSend(args: string[], provider: AgentProvider, d: AgentDeps):
   }
 
   const sessionPrefix = rest[0];
-  const message = rest.slice(1).join(" ").trim();
+  const rawMessage = rest.slice(1).join(" ").trim();
 
-  if (!sessionPrefix || !message) {
-    d.printError(`Usage: mcx agent ${provider.name} send [--wait] <session-id> <message>`);
+  if (!sessionPrefix || !rawMessage) {
+    d.printError(`Usage: mcx agent ${provider.name} send [--wait] <session-id> <message|@file>`);
+    d.exit(1);
+  }
+
+  let message = rawMessage;
+  try {
+    message = resolveAtPath(rawMessage, d.readFileWithLimit);
+  } catch (e) {
+    d.printError(e instanceof Error ? e.message : String(e));
     d.exit(1);
   }
 
@@ -831,15 +850,44 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
 
 async function agentInterrupt(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
-  const sessionPrefix = args[0];
+  let rawReason: string | undefined;
+  const positional: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--reason") {
+      if (i + 1 >= args.length) {
+        d.printError(`Usage: mcx agent ${provider.name} interrupt <session-id> [--reason <text|@file>]`);
+        d.exit(1);
+      }
+      rawReason = args[++i];
+    } else if (args[i].startsWith("--")) {
+      d.printError(`Unknown flag: ${args[i]}`);
+      d.exit(1);
+    } else {
+      positional.push(args[i]);
+    }
+  }
+
+  const sessionPrefix = positional[0];
 
   if (!sessionPrefix) {
-    d.printError(`Usage: mcx agent ${provider.name} interrupt <session-id>`);
+    d.printError(`Usage: mcx agent ${provider.name} interrupt <session-id> [--reason <text|@file>]`);
     d.exit(1);
   }
 
   const sessionId = await resolveSessionId(sessionPrefix, d, `${P}_session_list`);
-  const result = await d.callTool(`${P}_interrupt`, { sessionId });
+  const toolArgs: Record<string, unknown> = { sessionId };
+
+  if (rawReason !== undefined) {
+    try {
+      toolArgs.reason = resolveAtPath(rawReason, d.readFileWithLimit);
+    } catch (e) {
+      d.printError(e instanceof Error ? e.message : String(e));
+      d.exit(1);
+    }
+  }
+
+  const result = await d.callTool(`${P}_interrupt`, toolArgs);
   d.log(formatToolResult(result));
 }
 
