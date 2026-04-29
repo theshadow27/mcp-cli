@@ -310,12 +310,16 @@ function resetIfBrowserDied(): void {
   }
 }
 
+const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";
+
 /** Validates and returns the `sites` argument as a dense, non-empty string array, or an error string. */
 export function parseSitesArg(sites: unknown): string[] | string {
-  if (!Array.isArray(sites)) return "'sites' must be a non-empty array of site name strings";
-  if (sites.length === 0) return "'sites' must be a non-empty array of site name strings";
-  if (sites.length !== Object.keys(sites).length) return "'sites' must be a non-empty array of site name strings";
-  if (!sites.every((s) => typeof s === "string")) return "'sites' must be a non-empty array of site name strings";
+  if (!Array.isArray(sites)) return SITES_ARG_ERROR;
+  if (sites.length === 0) return SITES_ARG_ERROR;
+  for (let i = 0; i < sites.length; i++) {
+    if (!(i in sites)) return SITES_ARG_ERROR;
+  }
+  if (!sites.every((s) => typeof s === "string")) return SITES_ARG_ERROR;
   return sites as string[];
 }
 

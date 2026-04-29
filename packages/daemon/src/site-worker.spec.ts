@@ -27,6 +27,16 @@ describe("parseSitesArg", () => {
     expect(typeof parseSitesArg(sparseWithOneHole)).toBe("string");
   });
 
+  test("rejects sparse arrays with extra enumerable properties", () => {
+    const sparse = new Array(3);
+    sparse[0] = "a";
+    // hole at index 1
+    sparse[2] = "b";
+    (sparse as unknown as Record<string, unknown>).foo = "padding";
+    // Object.keys(sparse).length === 3 === sparse.length, but index 1 is a hole
+    expect(typeof parseSitesArg(sparse)).toBe("string");
+  });
+
   test("rejects arrays containing non-strings", () => {
     expect(typeof parseSitesArg([1, 2])).toBe("string");
     expect(typeof parseSitesArg(["ok", null])).toBe("string");
