@@ -43,7 +43,14 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
-import { colorState, extractContentSummary, formatAge, formatSessionShort } from "./session-display";
+import {
+  colorState,
+  extractContentSummary,
+  formatAge,
+  formatSessionShort,
+  formatStatusStanza,
+  walkTranscript,
+} from "./session-display";
 import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
@@ -351,9 +358,12 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
     case "deny":
       await agentDeny(subArgs, provider, d);
       break;
+    case "status":
+      await agentStatus(subArgs, provider, d);
+      break;
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", or "worktrees".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", "worktrees", or "status".`,
       );
       d.exit(1);
   }
@@ -1576,6 +1586,120 @@ async function agentDeny(args: string[], provider: AgentProvider, d: AgentDeps):
   console.log(formatToolResult(result));
 }
 
+// ── Status ──
+
+async function agentStatus(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
+  const P = provider.toolPrefix;
+  const { json, rest: r1 } = extractJsonFlag(args);
+
+  // Collect comma-separated targets (may span multiple positional args)
+  let targets: string[] = [];
+  for (const arg of r1) {
+    if (!arg.startsWith("-")) {
+      targets = targets.concat(
+        arg
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+    }
+  }
+
+  if (targets.length === 0) {
+    d.printError(`Usage: mcx agent ${provider.name} status <target>[,<target>...] [--json]`);
+    d.exit(1);
+    return;
+  }
+
+  // Fetch session list once, then resolve each target locally
+  const listResult = await d.callTool(`${P}_session_list`, {});
+  const listText = formatToolResult(listResult);
+  let allSessions: Array<Record<string, unknown>>;
+  try {
+    const parsed: unknown = JSON.parse(listText);
+    if (!Array.isArray(parsed)) throw new Error("expected array");
+    allSessions = parsed as Array<Record<string, unknown>>;
+  } catch {
+    d.printError("Failed to parse session list");
+    d.exit(1);
+    return;
+  }
+
+  const resolved: Array<{ session: Record<string, unknown>; entries: Array<Record<string, unknown>> }> = [];
+
+  for (const target of targets) {
+    const lookup = findSessionByTarget(allSessions, target);
+    if (!lookup.found) {
+      if (lookup.ambiguous) {
+        d.printError(`Ambiguous target "${target}": matches ${lookup.candidates.join(", ")}`);
+      } else {
+        d.printError(`Warning: no session matching "${target}"`);
+      }
+      continue;
+    }
+    const session = lookup.session;
+    const sessionId = String(session.sessionId);
+    const txResult = await d.callTool(`${P}_transcript`, { sessionId, limit: 150 });
+    const txText = formatToolResult(txResult);
+    let entries: Array<Record<string, unknown>> = [];
+    try {
+      entries = JSON.parse(txText);
+    } catch {
+      d.printError(`Warning: failed to parse transcript for session ${sessionId}`);
+    }
+    resolved.push({ session, entries });
+  }
+
+  if (resolved.length === 0) {
+    d.exit(1);
+    return;
+  }
+
+  if (json) {
+    const output = resolved.map(({ session, entries }) => {
+      const stats = walkTranscript(entries as unknown as Parameters<typeof walkTranscript>[0]);
+      return { ...session, status: stats };
+    });
+    d.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  for (let i = 0; i < resolved.length; i++) {
+    if (i > 0) d.log("");
+    const { session, entries } = resolved[i];
+    const stats = walkTranscript(entries as unknown as Parameters<typeof walkTranscript>[0]);
+    const lastTs =
+      entries.length > 0 ? ((entries[entries.length - 1] as { timestamp?: number }).timestamp ?? null) : null;
+    const lines = formatStatusStanza(session, stats, lastTs ?? null);
+    for (const line of lines) d.log(line);
+  }
+}
+
+type SessionLookup =
+  | { found: true; session: Record<string, unknown> }
+  | { found: false; ambiguous: false }
+  | { found: false; ambiguous: true; candidates: string[] };
+
+/** Find a session by exact name (case-insensitive) or UUID prefix. */
+function findSessionByTarget(sessions: Array<Record<string, unknown>>, target: string): SessionLookup {
+  const lower = target.toLowerCase();
+  const nameMatches = sessions.filter((s) => typeof s.name === "string" && s.name.toLowerCase() === lower);
+  if (nameMatches.length === 1) return { found: true, session: nameMatches[0] };
+  if (nameMatches.length > 1) {
+    const candidates = nameMatches.map((s) => `${s.name} (${String(s.sessionId).slice(0, 8)})`);
+    return { found: false, ambiguous: true, candidates };
+  }
+
+  const idMatches = sessions.filter((s) => typeof s.sessionId === "string" && s.sessionId.startsWith(target));
+  if (idMatches.length === 1) return { found: true, session: idMatches[0] };
+  if (idMatches.length > 1) {
+    const candidates = idMatches.map((s) => String(s.sessionId).slice(0, 8));
+    return { found: false, ambiguous: true, candidates };
+  }
+
+  return { found: false, ambiguous: false };
+}
+
 function printAgentUsage(log: ((...args: unknown[]) => void) | undefined = console.log): void {
   const out = log ?? console.log;
   const providers = getAllProviders()
@@ -1624,6 +1748,7 @@ Usage:
   mcx agent ${name} approve <session> [req-id]  Approve pending permission request
   mcx agent ${name} deny <session> [req-id]     Deny pending permission request
   mcx agent ${name} worktrees [--prune]          List mcx-created worktrees
+  mcx agent ${name} status <target> [--json]     One-shot session inspector
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }

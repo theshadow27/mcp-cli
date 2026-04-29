@@ -7,8 +7,10 @@ import {
   filterByRepo,
   formatAge,
   formatCost,
+  formatElapsed,
   formatLifecycleLine,
   formatSessionShort,
+  walkTranscript,
 } from "./session-display";
 
 describe("estimateCost", () => {
@@ -245,6 +247,242 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     ...overrides,
   };
 }
+
+describe("formatElapsed", () => {
+  test("formats seconds as MM:SS", () => {
+    expect(formatElapsed(90_000)).toBe("1:30");
+    expect(formatElapsed(5_000)).toBe("0:05");
+  });
+
+  test("formats hours as HH:MM:SS", () => {
+    expect(formatElapsed(3_661_000)).toBe("1:01:01");
+  });
+});
+
+describe("walkTranscript", () => {
+  function makeUserMsg(text: string): TranscriptEntry {
+    return {
+      timestamp: Date.now(),
+      direction: "outbound",
+      message: {
+        type: "user",
+        message: { content: [{ type: "text", text }] },
+      },
+    };
+  }
+
+  function makeAssistantMsg(content: unknown[]): TranscriptEntry {
+    return {
+      timestamp: Date.now(),
+      direction: "inbound",
+      message: { type: "assistant", message: { content } },
+    };
+  }
+
+  function makeToolUse(name: string, input: Record<string, unknown>): Record<string, unknown> {
+    return { type: "tool_use", id: "tu1", name, input };
+  }
+
+  test("extracts last user prompt", () => {
+    const entries = [makeUserMsg("first"), makeUserMsg("second")];
+    const stats = walkTranscript(entries);
+    expect(stats.lastPrompt).toBe("second");
+  });
+
+  test("skips prompts with only tool_result blocks", () => {
+    const entries: TranscriptEntry[] = [
+      makeUserMsg("the real prompt"),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "x", content: "some output" }] },
+        },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    expect(stats.lastPrompt).toBe("the real prompt");
+  });
+
+  test("extracts last assistant text as lastResult", () => {
+    const entries = [
+      makeAssistantMsg([{ type: "text", text: "first response" }]),
+      makeAssistantMsg([{ type: "text", text: "second response" }]),
+    ];
+    const stats = walkTranscript(entries);
+    expect(stats.lastResult).toBe("second response");
+  });
+
+  test("extracts lastResult from result type message", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        timestamp: Date.now(),
+        direction: "inbound",
+        message: { type: "result", result: "Done! All tests pass." },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    expect(stats.lastResult).toBe("Done! All tests pass.");
+  });
+
+  test("aggregates Read tool calls into directory footprint", () => {
+    const entries = [
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/foo.ts" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/bar.ts" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/lib/baz.ts" })]),
+    ];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.reads).toBe(2);
+    expect(src?.writes).toBe(0);
+    const lib = stats.directoryFootprint.find((e) => e.dir === "/lib");
+    expect(lib?.reads).toBe(1);
+  });
+
+  test("aggregates Write/Edit into directory footprint writes", () => {
+    const entries = [
+      makeAssistantMsg([makeToolUse("Write", { file_path: "/src/foo.ts", content: "x" })]),
+      makeAssistantMsg([makeToolUse("Edit", { file_path: "/src/bar.ts", old_string: "a", new_string: "b" })]),
+    ];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.writes).toBe(2);
+    expect(src?.reads).toBe(0);
+  });
+
+  test("aggregates Bash commands by first token", () => {
+    const entries = [
+      makeAssistantMsg([makeToolUse("Bash", { command: "bun test foo.spec.ts" })]),
+      makeAssistantMsg([makeToolUse("Bash", { command: "bun test bar.spec.ts" })]),
+      makeAssistantMsg([makeToolUse("Bash", { command: "git status" })]),
+    ];
+    const stats = walkTranscript(entries);
+    const bun = stats.commandSummary.find((e) => e.cmd === "bun");
+    expect(bun?.count).toBe(2);
+    const git = stats.commandSummary.find((e) => e.cmd === "git");
+    expect(git?.count).toBe(1);
+  });
+
+  test("collects last N Grep/Glob queries", () => {
+    const entries = [
+      makeAssistantMsg([makeToolUse("Grep", { pattern: "foo", path: "/src" })]),
+      makeAssistantMsg([makeToolUse("Glob", { pattern: "**/*.ts" })]),
+      makeAssistantMsg([makeToolUse("Grep", { pattern: "bar" })]),
+      makeAssistantMsg([makeToolUse("Grep", { pattern: "baz" })]),
+    ];
+    const stats = walkTranscript(entries, 3);
+    expect(stats.lastQueries).toHaveLength(3);
+    expect(stats.lastQueries[0].pattern).toBe("**/*.ts");
+    expect(stats.lastQueries[1].pattern).toBe("bar");
+    expect(stats.lastQueries[2].pattern).toBe("baz");
+  });
+
+  test("sorts footprint by total activity descending", () => {
+    const entries = [
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/a/f.ts" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/f.ts" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/g.ts" })]),
+      makeAssistantMsg([makeToolUse("Write", { file_path: "/b/h.ts", content: "" })]),
+    ];
+    const stats = walkTranscript(entries);
+    expect(stats.directoryFootprint[0].dir).toBe("/b");
+    expect(stats.directoryFootprint[0].reads).toBe(2);
+    expect(stats.directoryFootprint[0].writes).toBe(1);
+  });
+
+  test("returns empty stats for empty transcript", () => {
+    const stats = walkTranscript([]);
+    expect(stats.lastPrompt).toBeNull();
+    expect(stats.lastResult).toBeNull();
+    expect(stats.directoryFootprint).toHaveLength(0);
+    expect(stats.commandSummary).toHaveLength(0);
+    expect(stats.lastQueries).toHaveLength(0);
+  });
+
+  test("attributes Bash lastOutput by tool_use_id, not first-null heuristic", () => {
+    // Interleaved: bun → result, Read → result, git → result
+    // Verify bun gets its own output and git gets its own output (not crossed)
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "bun test foo.spec.ts" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "bash-1", content: "PASS 10 tests" }] },
+        },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "/src/foo.ts" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "read-1", content: "file contents" }] },
+        },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "bash-2", name: "Bash", input: { command: "git status" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "bash-2", content: "On branch main" }] },
+        },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    const bun = stats.commandSummary.find((e) => e.cmd === "bun");
+    const git = stats.commandSummary.find((e) => e.cmd === "git");
+    expect(bun?.lastOutput).toBe("PASS 10 tests");
+    expect(git?.lastOutput).toBe("On branch main");
+    // Non-Bash tool_result must not bleed into any Bash command
+    expect(bun?.lastOutput).not.toContain("file contents");
+    expect(git?.lastOutput).not.toContain("file contents");
+  });
+
+  test("later Bash result overwrites lastOutput for same command key", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "b1", name: "Bash", input: { command: "bun test" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "FAIL" }] } },
+      },
+      makeAssistantMsg([{ type: "tool_use", id: "b2", name: "Bash", input: { command: "bun test" } }]),
+      {
+        timestamp: Date.now(),
+        direction: "outbound",
+        message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b2", content: "PASS" }] } },
+      },
+    ];
+    const stats = walkTranscript(entries);
+    const bun = stats.commandSummary.find((e) => e.cmd === "bun");
+    expect(bun?.count).toBe(2);
+    expect(bun?.lastOutput).toBe("PASS");
+  });
+
+  test("empty Bash command string falls back to 'bash' key", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "b1", name: "Bash", input: { command: "" } }]),
+      makeAssistantMsg([{ type: "tool_use", id: "b2", name: "Bash", input: { command: "   " } }]),
+    ];
+    const stats = walkTranscript(entries);
+    const bash = stats.commandSummary.find((e) => e.cmd === "bash");
+    expect(bash).toBeDefined();
+    expect(bash?.count).toBe(2);
+  });
+
+  test("lastQueryCount=0 returns empty lastQueries", () => {
+    const entries: TranscriptEntry[] = [
+      makeAssistantMsg([{ type: "tool_use", id: "g1", name: "Grep", input: { pattern: "foo" } }]),
+      makeAssistantMsg([{ type: "tool_use", id: "g2", name: "Glob", input: { pattern: "*.ts" } }]),
+    ];
+    const stats = walkTranscript(entries, 0);
+    expect(stats.lastQueries).toHaveLength(0);
+  });
+});
 
 describe("formatLifecycleLine", () => {
   test("impl phase with no PR", () => {

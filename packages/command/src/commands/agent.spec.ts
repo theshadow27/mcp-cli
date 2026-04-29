@@ -585,6 +585,155 @@ describe("agent claude ls", () => {
   });
 });
 
+// ── Status ──
+
+const CLAUDE_SESSION = {
+  sessionId: "ccc11111-aaaa-bbbb-cccc-dddddddddddd",
+  name: "Alice",
+  provider: "claude",
+  state: "idle",
+  model: "claude-sonnet-4-6",
+  cwd: "/repo",
+  cost: 13.83,
+  tokens: 50000,
+  numTurns: 182,
+  pendingPermissions: 0,
+  pendingPermissionDetails: [],
+  worktree: null,
+  processAlive: true,
+  snapshotTs: Date.now() - 263_000,
+};
+
+describe("agent claude status", () => {
+  test("calls claude_session_list then claude_transcript", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "ccc11111"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+    expect(deps.callTool).toHaveBeenCalledWith("claude_transcript", {
+      sessionId: CLAUDE_SESSION.sessionId,
+      limit: 150,
+    });
+  });
+
+  test("outputs session header line", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "ccc11111"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("Alice");
+    expect(output).toContain("ccc11111");
+    expect(output).toContain("182 turns");
+  });
+
+  test("--json emits structured array", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "--json", "ccc11111"], deps);
+    const output = logCalls(deps).join("\n");
+    const parsed = JSON.parse(output);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].sessionId).toBe(CLAUDE_SESSION.sessionId);
+    expect(parsed[0].status).toBeDefined();
+  });
+
+  test("comma-separated targets resolves both sessions", async () => {
+    const session2 = { ...CLAUDE_SESSION, sessionId: "ddd22222-aaaa-bbbb-cccc-dddddddddddd", name: "Bob" };
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION, session2]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "ccc11111,ddd22222"], deps);
+    const callArgs = (deps.callTool as ReturnType<typeof mock>).mock.calls;
+    const transcriptCalls = callArgs.filter((c) => c[0] === "claude_transcript");
+    expect(transcriptCalls).toHaveLength(2);
+  });
+
+  test("unknown target prints warning and exits non-zero when all unresolved", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await expect(cmdAgent(["claude", "status", "zzzzzzz"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("zzzzzzz"));
+  });
+
+  test("partial resolution: warns on bad target, succeeds with good one", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "ccc11111,zzzzzzz"], deps);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("zzzzzzz"));
+    // Should NOT exit non-zero since one resolved
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("ccc11111");
+  });
+
+  test("resolves by session name", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION]);
+        return toolResult([]);
+      }),
+    });
+    await cmdAgent(["claude", "status", "Alice"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("claude_transcript", {
+      sessionId: CLAUDE_SESSION.sessionId,
+      limit: 150,
+    });
+  });
+
+  test("errors without target", async () => {
+    const deps = makeDeps();
+    await expect(cmdAgent(["claude", "status"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage:"));
+  });
+
+  test("ambiguous name prints distinct error with candidates", async () => {
+    const session2 = { ...CLAUDE_SESSION, sessionId: "eee33333-aaaa-bbbb-cccc-dddddddddddd", name: "Alice" };
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION, session2]);
+        return toolResult([]);
+      }),
+    });
+    await expect(cmdAgent(["claude", "status", "Alice"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Ambiguous"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Alice"));
+  });
+
+  test("ambiguous UUID prefix prints distinct error with candidates", async () => {
+    const session2 = { ...CLAUDE_SESSION, sessionId: "ccc22222-aaaa-bbbb-cccc-dddddddddddd", name: "Bob" };
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([CLAUDE_SESSION, session2]);
+        return toolResult([]);
+      }),
+    });
+    await expect(cmdAgent(["claude", "status", "ccc"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Ambiguous"));
+  });
+});
+
 // ── OpenCode via agent ──
 
 describe("agent opencode spawn", () => {
