@@ -51,6 +51,10 @@ defineAlias({
           stdout: "pipe",
           stderr: "pipe",
         });
+        if (proc.exitCode !== 0) {
+          const err = new TextDecoder().decode(proc.stderr).trim();
+          throw new Error(`gh pr list failed (exit ${proc.exitCode}): ${err}`);
+        }
         const out = new TextDecoder().decode(proc.stdout).trim();
         const n = Number.parseInt(out, 10);
         return Number.isFinite(n) ? n : null;

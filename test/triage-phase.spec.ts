@@ -327,6 +327,42 @@ describe("runTriage — replay", () => {
   });
 });
 
+// ── findPr throws (exit code check from #1849) ──
+
+describe("runTriage — findPr throws", () => {
+  test("findPr throwing on first call propagates to caller", async () => {
+    await expect(
+      runTriage(
+        { labels: [] },
+        makeWork(),
+        makeDeps({
+          findPr: () => {
+            throw new Error("gh pr list failed (exit 1): authentication required");
+          },
+        }),
+      ),
+    ).rejects.toThrow("gh pr list failed (exit 1): authentication required");
+  });
+
+  test("findPr throwing inside waitForEvent path is re-thrown (not caught as WaitTimeoutError)", async () => {
+    let calls = 0;
+    await expect(
+      runTriage(
+        { labels: [] },
+        makeWork(),
+        makeDeps({
+          findPr: () => {
+            calls++;
+            if (calls === 1) return null;
+            throw new Error("gh pr list failed (exit 1): network timeout");
+          },
+          waitForEvent: async () => ({ event: "session.result" }),
+        }),
+      ),
+    ).rejects.toThrow("gh pr list failed (exit 1): network timeout");
+  });
+});
+
 // ── Validation ──
 
 describe("runTriage — validation", () => {
