@@ -274,7 +274,7 @@ while issues remain:
 
     "pr.merge_state_changed":                              # #1581 — payload.cascadeHead
       if event.payload.cascadeHead:
-        advance the merge queue (mcx pr merge ... or per merge-runner)
+        advance the merge queue with mcx pr merge --auto
 
     "pr.review_comment_posted":                            # 4-surface poller (#1737)
       if comment is substantive:
@@ -403,9 +403,9 @@ When it replies `needs opus repair`, spawn a fresh opus repair per the
 normal flow. When it pushes a fix and updates the sticky to ✅,
 transition to QA.
 
-### Auto-merge re-arm after force-push (when no merge-runner is active)
+### Auto-merge re-arm after force-push
 
-When the orchestrator is driving merges, force-push rebases silently
+The orchestrator drives merges directly. Force-push rebases silently
 invalidate GitHub auto-merge on some configurations. Before declaring a
 PR "queued for merge":
 
@@ -413,9 +413,9 @@ PR "queued for merge":
 gh pr view $PR --json autoMergeRequest
 ```
 
-If `null`, re-arm with `mcx pr merge $PR --squash --auto`. Once a
-merge-runner (`agents/mergemaster.md` or `mcx merge-queue` per #1397) is
-active, this is its job; the orchestrator only intervenes on escalation.
+If `null`, re-arm with `mcx pr merge $PR --squash --auto`. The
+deterministic merge-queue service in #1397 will eventually subsume this
+loop; until it lands, the orchestrator owns it.
 
 ### Flaky / CI-instability issues — nerd-snipe gate before impl
 
