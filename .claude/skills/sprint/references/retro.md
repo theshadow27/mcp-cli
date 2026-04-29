@@ -165,3 +165,28 @@ still blocks commits.
 - Note process improvements for the next sprint
 - Keep it concise — engineering notes, not an essay
 - If something went wrong, say what the fix or workaround was
+
+## Anecdotes go in the diary, not in run.md
+
+The diary is the chronological record of what happened in a sprint. The
+sprint-skill `references/*.md` files are the **active rule sheet** — what
+the orchestrator does on every tick, this sprint and the next. Don't
+let "we burned X because of Y in sprint Z" anecdotes accrete into the
+rule sheet; they belong here, in the diary. When a new rule emerges
+from a sprint:
+
+- Write the **rule + Why + How to apply** into the appropriate skill file
+  (`run.md` for orchestrator-loop rules, `plan.md` for planning rules,
+  etc.) — concise, no sprint number
+- Capture the **incident** in the diary (this sprint's "What didn't work"
+  section) with full sprint context, issue numbers, costs
+
+If a rule's "Why" needs to cite a specific incident to be understandable,
+the rule isn't general enough — keep refining until the rule stands on
+its own and the diary holds the incident.
+
+Closed-fix anecdotes (like "we used to do X until #N taught us not to")
+should not live in the active rule sheet at all once the underlying fix
+has shipped. Either the rule is universally true (state it without the
+issue ref) or it's contingent on an open follow-up (then keep the open
+issue ref so the staleness is visible).
