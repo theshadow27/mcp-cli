@@ -74,298 +74,279 @@ export class StateDb {
 
   // -- Migrations --
 
+  /**
+   * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
+   *
+   * Replaces the legacy bare `try { ALTER TABLE } catch {}` pattern that silently
+   * swallowed ALL exceptions (disk-full, permissions, corruption). Each migration
+   * now runs exactly once; failures bubble up.
+   *
+   * Legacy handling: existing databases have already applied all prior migrations
+   * via the old try/catch code. We detect them by checking for `tool_cache` (the
+   * first table created) and skip straight to the current version.
+   */
   private migrate(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS tool_cache (
-        server_name TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        description TEXT,
-        input_schema_json TEXT,
-        signature TEXT,
-        cached_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (server_name, tool_name)
-      );
-
-      CREATE TABLE IF NOT EXISTS usage_stats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_name TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        called_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        duration_ms INTEGER,
-        success INTEGER NOT NULL DEFAULT 1,
-        error_message TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS daemon_state (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_usage_server_tool ON usage_stats(server_name, tool_name);
-
-      CREATE TABLE IF NOT EXISTS auth_tokens (
-        server_name TEXT PRIMARY KEY,
-        access_token TEXT NOT NULL,
-        refresh_token TEXT,
-        token_type TEXT DEFAULT 'Bearer',
-        expires_at INTEGER,
-        scope TEXT,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE TABLE IF NOT EXISTS oauth_clients (
-        server_name TEXT PRIMARY KEY,
-        client_id TEXT NOT NULL,
-        client_secret TEXT,
-        client_info_json TEXT,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE TABLE IF NOT EXISTS oauth_verifiers (
-        server_name TEXT PRIMARY KEY,
-        code_verifier TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE TABLE IF NOT EXISTS oauth_discovery (
-        server_name TEXT PRIMARY KEY,
-        state_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE TABLE IF NOT EXISTS aliases (
-        name TEXT PRIMARY KEY,
-        description TEXT,
-        file_path TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      CREATE TABLE IF NOT EXISTS server_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_name TEXT NOT NULL,
-        line TEXT NOT NULL,
-        timestamp_ms INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
-        ON server_logs(server_name, timestamp_ms DESC);
-
-      CREATE TABLE IF NOT EXISTS mail (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender TEXT NOT NULL,
-        recipient TEXT NOT NULL,
-        subject TEXT,
-        body TEXT,
-        reply_to INTEGER REFERENCES mail(id),
-        read INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_mail_recipient
-        ON mail(recipient, read, created_at);
-
-      CREATE TABLE IF NOT EXISTS notes (
-        server_name TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        note TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (server_name, tool_name)
-      );
-
-      CREATE TABLE IF NOT EXISTS alias_state (
-        repo_root TEXT NOT NULL,
-        namespace TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (repo_root, namespace, key)
-      );
-
-      CREATE TABLE IF NOT EXISTS session_metrics (
-        session_id TEXT PRIMARY KEY,
-        metrics_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-    `);
-
-    // -- Additive migrations (new columns on existing tables) --
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN alias_type TEXT NOT NULL DEFAULT 'freeform'");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN input_schema_json TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN output_schema_json TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN bundled_js TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN source_hash TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN expires_at INTEGER");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN last_run_at INTEGER");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN scope TEXT");
-    } catch (err) {
-      // Only swallow the "column already exists" case; rethrow anything else
-      // (disk-full, permissions, corruption) so it surfaces instead of silently
-      // leaving the schema unmigrated.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/duplicate column name: scope/i.test(msg)) throw err;
-    }
-    try {
-      this.db.exec("ALTER TABLE aliases ADD COLUMN monitor_definitions_json TEXT");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/duplicate column name: monitor_definitions_json/i.test(msg)) throw err;
-    }
-
-    // -- Trace context columns on usage_stats --
-    try {
-      this.db.exec("ALTER TABLE usage_stats ADD COLUMN daemon_id TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE usage_stats ADD COLUMN trace_id TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE usage_stats ADD COLUMN parent_id TEXT");
-    } catch {
-      /* column already exists */
-    }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id)");
-
-    // -- Rename claude_sessions → agent_sessions, add provider column --
-    try {
-      this.db.exec("ALTER TABLE claude_sessions RENAME TO agent_sessions");
-    } catch {
-      /* already renamed or doesn't exist yet */
-    }
-    // If agent_sessions never existed, create agent_sessions directly
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS agent_sessions (
-        session_id   TEXT PRIMARY KEY,
-        provider     TEXT NOT NULL DEFAULT 'claude',
-        pid          INTEGER,
-        state        TEXT NOT NULL DEFAULT 'connecting',
-        model        TEXT,
-        cwd          TEXT,
-        worktree     TEXT,
-        total_cost   REAL NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
-        ended_at     TEXT
+      CREATE TABLE IF NOT EXISTS schema_versions (
+        name    TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
       )
     `);
-    try {
-      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'");
-    } catch {
-      /* column already exists (from rename or fresh creation) */
-    }
-    try {
-      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN repo_root TEXT");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN pid_start_time INTEGER");
-    } catch {
-      /* column already exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE agent_sessions ADD COLUMN name TEXT");
-    } catch {
-      /* column already exists */
+
+    const CONSUMER = "state";
+    let version = this.db
+      .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+      .get(CONSUMER)?.version;
+
+    if (version === undefined) {
+      const hasToolCache =
+        this.db
+          .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='tool_cache'")
+          .get()?.n ?? 0;
+
+      if (hasToolCache > 0) {
+        // Existing DB — all prior migrations already applied by legacy try/catch code.
+        version = 3;
+      } else {
+        // Fresh DB, or ancient DB that only has claude_sessions.
+        // Rename claude_sessions → agent_sessions before v1 creates the table fresh.
+        const hasClaude =
+          this.db
+            .query<{ n: number }, []>(
+              "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='claude_sessions'",
+            )
+            .get()?.n ?? 0;
+        if (hasClaude > 0) {
+          this.db.exec("ALTER TABLE claude_sessions RENAME TO agent_sessions");
+          const cols = new Set(
+            (this.db.prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).map((r) => r.name),
+          );
+          for (const [col, def] of [
+            ["provider", "TEXT NOT NULL DEFAULT 'claude'"],
+            ["repo_root", "TEXT"],
+            ["pid_start_time", "INTEGER"],
+            ["name", "TEXT"],
+          ] as const) {
+            if (!cols.has(col)) {
+              this.db.exec(`ALTER TABLE agent_sessions ADD COLUMN ${col} ${def}`);
+            }
+          }
+        }
+        version = 0;
+      }
+      this.db
+        .query<void, [string, number]>("INSERT INTO schema_versions (name, version) VALUES (?, ?)")
+        .run(CONSUMER, version);
     }
 
-    // -- Spans table (export buffer) --
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS spans (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        trace_id TEXT NOT NULL,
-        span_id TEXT NOT NULL,
-        parent_span_id TEXT,
-        trace_flags TEXT NOT NULL DEFAULT '01',
-        name TEXT NOT NULL,
-        start_time_ms INTEGER NOT NULL,
-        end_time_ms INTEGER NOT NULL,
-        duration_ms INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'UNSET',
-        attributes_json TEXT,
-        events_json TEXT,
-        daemon_id TEXT,
-        exported_at INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-      CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
-      CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
-      CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
-    `);
+    if (version < 1) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_cache (
+          server_name TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          description TEXT,
+          input_schema_json TEXT,
+          signature TEXT,
+          cached_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (server_name, tool_name)
+        );
 
-    // -- Canonicalize alias_state rows written with trailing-slash repo_root --
-    // path.resolve() was added in v1.6.3 to normalize repoRoot, but rows written
-    // before that fix used raw caller-supplied paths (e.g. "/repo/"). Strip trailing
-    // slashes from any such rows so they merge with their canonical counterparts.
-    // Rows that collide on (stripped_root, namespace, key) are deleted (the
-    // non-trailing-slash row is canonical and takes precedence by updated_at).
-    this.db.transaction(() => {
-      // Delete losers — trailing-slash rows where a canonical row already exists
-      this.db.run(`
-        DELETE FROM alias_state
-        WHERE repo_root LIKE '%/'
-          AND EXISTS (
-            SELECT 1 FROM alias_state AS canonical
-            WHERE canonical.repo_root = rtrim(alias_state.repo_root, '/')
-              AND canonical.namespace  = alias_state.namespace
-              AND canonical.key        = alias_state.key
-          )
+        CREATE TABLE IF NOT EXISTS usage_stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_name TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          called_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          duration_ms INTEGER,
+          success INTEGER NOT NULL DEFAULT 1,
+          error_message TEXT,
+          daemon_id TEXT,
+          trace_id TEXT,
+          parent_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS daemon_state (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_usage_server_tool ON usage_stats(server_name, tool_name);
+        CREATE INDEX IF NOT EXISTS idx_usage_trace ON usage_stats(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_usage_daemon ON usage_stats(daemon_id);
+
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+          server_name TEXT PRIMARY KEY,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT,
+          token_type TEXT DEFAULT 'Bearer',
+          expires_at INTEGER,
+          scope TEXT,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+          server_name TEXT PRIMARY KEY,
+          client_id TEXT NOT NULL,
+          client_secret TEXT,
+          client_info_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS oauth_verifiers (
+          server_name TEXT PRIMARY KEY,
+          code_verifier TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS oauth_discovery (
+          server_name TEXT PRIMARY KEY,
+          state_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS aliases (
+          name TEXT PRIMARY KEY,
+          description TEXT,
+          file_path TEXT NOT NULL,
+          alias_type TEXT NOT NULL DEFAULT 'freeform',
+          input_schema_json TEXT,
+          output_schema_json TEXT,
+          bundled_js TEXT,
+          source_hash TEXT,
+          expires_at INTEGER,
+          run_count INTEGER NOT NULL DEFAULT 0,
+          last_run_at INTEGER,
+          scope TEXT,
+          monitor_definitions_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS server_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_name TEXT NOT NULL,
+          line TEXT NOT NULL,
+          timestamp_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_server_logs_lookup
+          ON server_logs(server_name, timestamp_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS mail (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sender TEXT NOT NULL,
+          recipient TEXT NOT NULL,
+          subject TEXT,
+          body TEXT,
+          reply_to INTEGER REFERENCES mail(id),
+          read INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mail_recipient
+          ON mail(recipient, read, created_at);
+
+        CREATE TABLE IF NOT EXISTS notes (
+          server_name TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          note TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (server_name, tool_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS alias_state (
+          repo_root TEXT NOT NULL,
+          namespace TEXT NOT NULL,
+          key TEXT NOT NULL,
+          value_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (repo_root, namespace, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS session_metrics (
+          session_id TEXT PRIMARY KEY,
+          metrics_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+          session_id   TEXT PRIMARY KEY,
+          name         TEXT,
+          provider     TEXT NOT NULL DEFAULT 'claude',
+          pid          INTEGER,
+          pid_start_time INTEGER,
+          state        TEXT NOT NULL DEFAULT 'connecting',
+          model        TEXT,
+          cwd          TEXT,
+          worktree     TEXT,
+          repo_root    TEXT,
+          total_cost   REAL NOT NULL DEFAULT 0,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
+          ended_at     TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS spans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trace_id TEXT NOT NULL,
+          span_id TEXT NOT NULL,
+          parent_span_id TEXT,
+          trace_flags TEXT NOT NULL DEFAULT '01',
+          name TEXT NOT NULL,
+          start_time_ms INTEGER NOT NULL,
+          end_time_ms INTEGER NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'UNSET',
+          attributes_json TEXT,
+          events_json TEXT,
+          daemon_id TEXT,
+          exported_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
+        CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
+
+        CREATE TABLE IF NOT EXISTS copilot_comment_state (
+          pr_number              INTEGER PRIMARY KEY,
+          seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
+          seen_review_ids        TEXT NOT NULL DEFAULT '[]',
+          seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
+          seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
+          last_sticky_body_hash  TEXT,
+          last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+        );
       `);
-      // Migrate winners — remaining trailing-slash rows have no conflict
-      this.db.run(`
-        UPDATE alias_state
-        SET repo_root = rtrim(repo_root, '/')
-        WHERE repo_root LIKE '%/'
-      `);
-    })();
+      this.setSchemaVersion(CONSUMER, 1);
+      version = 1;
+    }
 
-    // -- Canonicalize alias_state rows written with symlink repo_root (#1526) --
-    // resolveRealpath() normalization was added after rows may have been written
-    // with symlink paths. Walk all distinct repo_root values and resolve each;
-    // update rows to canonical path, deleting conflicts where canonical already
-    // exists (same merge logic as the trailing-slash migration above).
-    {
+    if (version < 2) {
+      // Canonicalize alias_state rows written with trailing-slash repo_root.
+      this.db.transaction(() => {
+        this.db.run(`
+          DELETE FROM alias_state
+          WHERE repo_root LIKE '%/'
+            AND EXISTS (
+              SELECT 1 FROM alias_state AS canonical
+              WHERE canonical.repo_root = rtrim(alias_state.repo_root, '/')
+                AND canonical.namespace  = alias_state.namespace
+                AND canonical.key        = alias_state.key
+            )
+        `);
+        this.db.run(`
+          UPDATE alias_state
+          SET repo_root = rtrim(repo_root, '/')
+          WHERE repo_root LIKE '%/'
+        `);
+      })();
+      this.setSchemaVersion(CONSUMER, 2);
+      version = 2;
+    }
+
+    if (version < 3) {
+      // Canonicalize alias_state rows written with symlink repo_root (#1526).
       const symRows = this.db.query<{ repo_root: string }, []>("SELECT DISTINCT repo_root FROM alias_state").all();
       const toUpdate = symRows.filter(({ repo_root }) => {
         try {
@@ -391,31 +372,13 @@ export class StateDb {
           }
         })();
       }
+      this.setSchemaVersion(CONSUMER, 3);
+      version = 3;
     }
+  }
 
-    // -- Copilot comment state (#1578) --
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS copilot_comment_state (
-        pr_number        INTEGER PRIMARY KEY,
-        seen_comment_ids TEXT NOT NULL DEFAULT '[]',
-        last_poll_ts     TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-
-    // -- Additional comment surfaces (#1579) --
-    for (const col of [
-      "seen_review_ids TEXT NOT NULL DEFAULT '[]'",
-      "seen_pr_comment_ids TEXT NOT NULL DEFAULT '[]'",
-      "seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]'",
-      "last_sticky_body_hash TEXT",
-    ]) {
-      try {
-        this.db.exec(`ALTER TABLE copilot_comment_state ADD COLUMN ${col}`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/duplicate column name/i.test(msg)) throw err;
-      }
-    }
+  private setSchemaVersion(name: string, version: number): void {
+    this.db.query<void, [number, string]>("UPDATE schema_versions SET version = ? WHERE name = ?").run(version, name);
   }
 
   // -- Tool cache --
