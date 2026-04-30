@@ -215,14 +215,69 @@ export const DEFAULT_DEPS: PatcherDeps = {
 };
 
 /**
- * Resolve the path to the user's installed claude binary by spawning `which claude`.
- * Returns null if claude is not on PATH.
+ * Resolve the path to the claude binary mcx should use.
+ *
+ * Lookup order:
+ *   1. `MCX_CLAUDE_BINARY` env — per-process override. Useful for one-off
+ *      testing or scripts that want to point at a specific binary without
+ *      mutating persistent config.
+ *   2. `claudeBinary` in `~/.mcp-cli/config.json` — persistent override. Lets
+ *      users pin mcx-spawned workers to a known-good version (e.g. an
+ *      archived 2.1.119) while leaving their interactive `claude` on PATH
+ *      free to auto-update. Set via `mcx config set claude-binary <path>`.
+ *      Useful when a new claude release introduces a Remote-Control gate
+ *      that mcx hasn't yet caught up to (see #1808 / strategies.ts).
+ *   3. `which claude` on PATH — default for regular use.
+ *
+ * Returns null if none resolves. Both overrides are rejected if the file
+ * doesn't exist, so a stale value fails loudly rather than silently falling
+ * back to PATH.
+ *
+ * The config-file lookup is best-effort: if the config file is missing or
+ * malformed, we silently fall through to PATH rather than throwing.
+ *
+ * `configPathOverride` is for tests — production callers pass nothing and
+ * the real `~/.mcp-cli/config.json` is read.
  */
-export function resolveSourceClaudePath(): string | null {
+export function resolveSourceClaudePath(configPathOverride?: string): string | null {
+  const envOverride = process.env.MCX_CLAUDE_BINARY?.trim();
+  if (envOverride) {
+    if (existsSync(envOverride)) return envOverride;
+    throw new Error(
+      `MCX_CLAUDE_BINARY="${envOverride}" does not exist. Unset it or point it at an installed claude binary.`,
+    );
+  }
+
+  const configOverride = readConfigClaudeBinary(configPathOverride ?? options.MCP_CLI_CONFIG_PATH)?.trim();
+  if (configOverride) {
+    if (existsSync(configOverride)) return configOverride;
+    throw new Error(
+      `claude-binary in ~/.mcp-cli/config.json points at "${configOverride}", which does not exist. Update or unset via \`mcx config set claude-binary <path>\`.`,
+    );
+  }
+
   const r = spawnSync("which", ["claude"], { encoding: "utf-8", timeout: 5_000 });
   if (r.status !== 0) return null;
   const path = (r.stdout || "").trim();
   return path || null;
+}
+
+/**
+ * Read `claudeBinary` from the CLI config file. Returns null on any error
+ * (missing file, malformed JSON, missing field) — callers fall through to
+ * the next resolution step rather than failing.
+ *
+ * We read the file directly here instead of importing `readCliConfig` to
+ * avoid a circular dep (cli-config → telemetry → patcher).
+ */
+function readConfigClaudeBinary(configPath: string): string | null {
+  try {
+    const text = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(text) as { claudeBinary?: unknown };
+    return typeof parsed.claudeBinary === "string" ? parsed.claudeBinary : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

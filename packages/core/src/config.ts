@@ -91,6 +91,14 @@ export interface CliConfig {
   telemetry?: boolean;
   /** Whether the first-run telemetry notice has been shown */
   telemetryNoticeShown?: boolean;
+  /**
+   * Path to the claude binary mcx-spawned workers should use. When set,
+   * overrides `which claude` so workers can be pinned to a known-good version
+   * (e.g. an archived 2.1.119) while the user's interactive `claude` on PATH
+   * keeps auto-updating. The `MCX_CLAUDE_BINARY` env var takes precedence.
+   * Set via: `mcx config set claude-binary /path/to/claude`.
+   */
+  claudeBinary?: string;
   /** Phase execution configuration */
   phase?: PhaseConfig;
   /** Session metrics configuration (#1610). Default: enabled. */

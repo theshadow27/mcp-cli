@@ -115,13 +115,21 @@ export const STRATEGY_NOOP_PRE_2_1_120: PatchStrategy = {
  * `[000:000:000:000:000:0:0:1]` is the same length (27 bytes) and
  * canonicalizes to `[::1]` via WHATWG URL parsing.
  *
- * Validated end-to-end against 2.1.121 on 2026-04-27: full SDK protocol
- * round-trip (init → assistant inference → clean close). See issue #1808.
+ * Version match policy: lower bound only (≥ 2.1.120, when the host check
+ * was introduced). No upper bound — Anthropic ships claude-code patch
+ * releases multiple times per day, and bumping a version tuple every
+ * release is unsustainable. `validate` is the safety net: it asserts
+ * exactly 4 replacements, so a release that reshapes the binary fails
+ * loudly at patch time rather than producing a silently-broken copy.
+ *
+ * Validated end-to-end against 2.1.121 on 2026-04-27 and 2.1.123 on
+ * 2026-04-30: full SDK protocol round-trip (init → assistant inference →
+ * clean close). See issue #1808.
  */
 export const STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1: PatchStrategy = {
   id: "host-check-ipv6-loopback-v1",
   description: "Replace claude-staging.fedstart.com with [000:000:000:000:000:0:0:1] (canonicalizes to [::1]).",
-  matches: (version) => compareVersion(version, "2.1.120") >= 0 && compareVersion(version, "2.1.121") <= 0,
+  matches: (version) => compareVersion(version, "2.1.120") >= 0,
   apply: (src) => {
     const find = enc.encode("claude-staging.fedstart.com");
     const replace = enc.encode("[000:000:000:000:000:0:0:1]");
