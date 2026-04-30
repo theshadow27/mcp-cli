@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ContainmentGuard } from "./containment";
 
@@ -605,9 +605,11 @@ describe("ContainmentGuard — symlink path traversal", () => {
 
   test("denies Write to /tmp symlink pointing outside allowed prefixes", () => {
     // Nominal path starts with /tmp/ so old resolve()-based check would allow it,
-    // but real target is process.cwd() (the project dir, not under any allowed prefix).
+    // but real target is outside any allowed prefix. We use homedir() instead of
+    // process.cwd() because the latter may be under /private/tmp (e.g. in a QA worktree),
+    // which would cause resolveRealpath to return a path that passes the prefix check.
     const linkPath = join("/tmp", `mcp-containment-test-${process.pid}`);
-    symlinkSync(process.cwd(), linkPath);
+    symlinkSync(homedir(), linkPath);
     try {
       const g = new ContainmentGuard("/unrelated/worktree");
       const r = g.evaluate("Write", { file_path: join(linkPath, "evil.ts") });
