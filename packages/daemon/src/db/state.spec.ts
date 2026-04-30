@@ -1941,7 +1941,8 @@ describe("StateDb", () => {
       const db1 = new StateDb(p);
 
       // Downgrade schema_version to 1 and insert a trailing-slash row while the
-      // DB is still open (avoids a second migrate() call on re-open).
+      // DB is still open — accessing db1's raw handle avoids opening a second
+      // StateDb (which would re-run migrate() and reset version back to 3).
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const raw = db1["db"];
       raw.run("UPDATE schema_versions SET version = 1 WHERE name = 'state'");
