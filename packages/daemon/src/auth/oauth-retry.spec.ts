@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateDb } from "../db/state";
 import { metrics } from "../metrics";
+import { OAuthCallbackTimeoutError } from "./callback-server";
 import type { CallbackServer } from "./callback-server";
 import type { KeychainTokens } from "./keychain";
 import { runOAuthFlowWithDcrRetry } from "./oauth-retry";
@@ -134,7 +135,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
           callbackNum++;
           if (callbackNum === 1) {
             // First attempt: no callback received within the timeout window
-            return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+            return makeCallback(Promise.reject(new OAuthCallbackTimeoutError()));
           }
           // Second attempt: user completes consent
           return makeCallback(Promise.resolve("code-fresh"));
@@ -180,7 +181,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
         startCallbackServer: () => {
           callbackNum++;
           if (callbackNum === 1) {
-            return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+            return makeCallback(Promise.reject(new OAuthCallbackTimeoutError()));
           }
           return makeCallback(Promise.resolve("code-fresh"));
         },
@@ -214,7 +215,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
         },
         startCallbackServer: () => {
           callbackNum++;
-          if (callbackNum === 1) return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+          if (callbackNum === 1) return makeCallback(Promise.reject(new OAuthCallbackTimeoutError()));
           return makeCallback(Promise.resolve("code-x"));
         },
       },
@@ -243,7 +244,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
         {},
         {
           authFn: async () => "REDIRECT",
-          startCallbackServer: () => makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)"))),
+          startCallbackServer: () => makeCallback(Promise.reject(new OAuthCallbackTimeoutError())),
         },
       ),
     ).rejects.toThrow();
@@ -270,7 +271,7 @@ describe("runOAuthFlowWithDcrRetry", () => {
           authFn: async () => "REDIRECT",
           startCallbackServer: () => {
             callbackNum++;
-            return makeCallback(Promise.reject(new Error("OAuth callback timeout (2 minutes)")));
+            return makeCallback(Promise.reject(new OAuthCallbackTimeoutError()));
           },
         },
       ),

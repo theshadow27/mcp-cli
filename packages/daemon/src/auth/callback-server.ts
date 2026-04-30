@@ -29,6 +29,13 @@ const ERROR_HTML = `<!DOCTYPE html>
 <h2>Authentication Error</h2><p>No authorization code received.</p>
 </body></html>`;
 
+export class OAuthCallbackTimeoutError extends Error {
+  constructor() {
+    super("OAuth callback timeout (2 minutes)");
+    this.name = "OAuthCallbackTimeoutError";
+  }
+}
+
 export function startCallbackServer(preferredPort?: number): CallbackServer {
   // Promise executor runs synchronously, so these are assigned before use
   let resolveCode = (_code: string): void => {};
@@ -91,7 +98,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
     if (!stopped) {
       stopped = true;
       server.stop(true);
-      rejectCode(new Error("OAuth callback timeout (2 minutes)"));
+      rejectCode(new OAuthCallbackTimeoutError());
     }
   }, 120_000);
 
