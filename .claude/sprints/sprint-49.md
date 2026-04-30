@@ -1,6 +1,6 @@
 # Sprint 49
 
-> Planned 2026-04-30 EDT. Target: 15 PRs.
+> Planned 2026-04-30 EDT. Started 2026-04-30 18:07 EDT. Ended 2026-04-30 19:07 EDT (~1h 0m). Target: 15 PRs. Result: 15/15 merged.
 
 ## Goal
 
@@ -157,6 +157,23 @@ Order: pull from top.
 8. **No Bun.sleep in test fixes** (#1687, #1552, #1888 — all timing-sensitive). Use deterministic synchronization.
 9. **Plan-time issue audit caught close-as-dones**: 11 issues already done or duplicates closed at plan time (no spawn cost).
 10. **Bundled PRs require explicit bundle marker in TaskCreate.** Don't spawn separate sessions for #1893+#1894 or the status bundle.
+
+## Results
+
+- **Released**: v1.8.3
+- **PRs merged**: 15/15 planned
+- **Issues closed**: 26 (15 sprint picks + 11 close-as-done at plan time)
+- **New issues filed during sprint**: 8 (#1922 qa phase model=null DX, #1929 home-dir denylist gaps follow-up, #1934 closeAll flaky, #1935 findAsyncMethods brace bug, #1936 scripts/*.spec.ts pathIgnorePatterns, #1940 dup of #1935, plus 2 from QA)
+- **Repair rounds**: 1 (#1899 — opus repair after adversarial review found home-dir allowlist defeated containment goal); 1 reviewer self-repair (#1899 round 2 — root-cwd bypass + 2 🟡)
+- **QA rounds total**: 21 across 14 PRs (5 PRs needed re-QA: #1687, #1525, #1910, #1889, #1893, #1897 ×3, #1531, #1911, #1899)
+- **Wall time**: ~1h 0m (planned ~2h 30m–3h 30m — beat estimate by 60%+)
+
+### Highlights
+
+- **Test stability cluster fixes shipped**: #1687 (containment /tmp cwd, +4 dups), #1552 (server-pool SIGTERM/SIGKILL, +3 dups), #1910 (resolve-playwright vendorPkg DI). Total: 8 flaky-test issues closed.
+- **Security pick #1899 went through full adversarial-review cycle**: round-1 caught home-dir allowlist defeating containment, round-2 caught root-cwd bypass. Final fix is cwd-only by default with shared `isPathContained()` primitive. Filed #1929 follow-up for broader credential audit.
+- **First sprint on monitor-stream playbook**: ~28 actionable events across 21 sessions; orchestrator never used `mcx claude wait` polling. Filed #1922 for qa.ts re-entry returning model=null (orchestrator bug recovered with `phase_state_delete` + re-spawn).
+- **Reviewer self-repair pattern fired once** (#1899 round 2 — 1 🔴 + 2 🟡 contained edits) — saved ~$8 vs fresh repair spawn.
 
 ## Tentative sprint 50 outline
 
