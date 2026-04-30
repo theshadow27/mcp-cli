@@ -219,8 +219,10 @@ export const defaultDeps: ClaudeDeps = {
  * dispatcher. These must be handled by `cmdClaudeInternal` directly —
  * forwarding them to `cmdAgent` produces an "Unknown subcommand" error
  * because the agent dispatcher only knows the cross-provider verbs.
+ *
+ * Exported so tests can assert every member routes through `cmdClaudeInternal`.
  */
-const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update"]);
+export const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update"]);
 
 /**
  * `mcx claude` — thin alias that routes to `mcx agent claude` for shared
