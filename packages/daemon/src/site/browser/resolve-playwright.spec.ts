@@ -121,6 +121,9 @@ describe("resolvePlaywright", () => {
     const result = resolvePlaywright({
       candidates: ["/nonexistent/path/playwright"],
       install: () => ({ exitCode: 0, stderr: "" }),
+      // Force the post-install existence check to fail regardless of whether
+      // playwright is already installed in the real vendor dir on this machine.
+      vendorPkg: "/nonexistent/vendor/playwright",
     });
 
     await expect(result).rejects.toThrow(/package not found/);
