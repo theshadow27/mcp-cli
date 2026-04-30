@@ -12,7 +12,7 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { StateDb } from "../db/state";
 import { metrics } from "../metrics";
-import { type CallbackServer, startCallbackServer } from "./callback-server";
+import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, type OAuthProviderOpts } from "./oauth-provider";
 
 export interface OAuthRetryDeps {
@@ -69,7 +69,7 @@ export async function runOAuthFlowWithDcrRetry(
       }
       return "authenticated";
     } catch (err) {
-      const isTimeout = err instanceof Error && err.message.startsWith("OAuth callback timeout");
+      const isTimeout = err instanceof OAuthCallbackTimeoutError;
       if (isTimeout && attempt < MAX_RETRIES) {
         console.error(
           "[auth] OAuth callback timed out (possibly 5xx on authorize) — deleting cached client registration and retrying...",

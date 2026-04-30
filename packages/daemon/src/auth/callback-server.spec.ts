@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type CallbackServer, startCallbackServer } from "./callback-server";
+import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
 
 describe("startCallbackServer", () => {
   let server: CallbackServer | undefined;
@@ -94,6 +94,7 @@ describe("startCallbackServer", () => {
 
       const [result] = await settled;
       expect(result.status).toBe("rejected");
+      expect((result as PromiseRejectedResult).reason).toBeInstanceOf(OAuthCallbackTimeoutError);
       expect((result as PromiseRejectedResult).reason.message).toContain("timeout");
     } finally {
       globalThis.setTimeout = origSetTimeout;
