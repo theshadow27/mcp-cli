@@ -42,7 +42,8 @@ export function formatHelp(help: CommandHelp): string {
     const flagWidth = Math.max(...help.options.map(([f]) => f.length));
     const pad = Math.min(flagWidth + 2, 32);
     for (const [flag, desc] of help.options) {
-      lines.push(`  ${flag.padEnd(pad)}${desc}`);
+      const spacer = flag.length >= pad ? "  " : " ".repeat(pad - flag.length);
+      lines.push(`  ${flag}${spacer}${desc}`);
     }
   }
 
