@@ -199,6 +199,7 @@ export class StateDb {
         }
         this.setSchemaVersion(CONSUMER, 3);
       })();
+      version = 3;
     }
   }
 
