@@ -157,7 +157,10 @@ describe("parseSpawnArgs", () => {
     // across 50 calls — ~1-in-3.5M chance of false failure, see #1889).
     const origDateNow = Date.now;
     Date.now = () => 1_745_913_600_000;
-    const origRandomUUID = globalThis.crypto.randomUUID;
+    // Capture the full own-property descriptor so we restore exactly what existed.
+    // If randomUUID is inherited (no own descriptor), deleting the shadowing own
+    // property we install is the correct restore path.
+    const origDescriptor = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
     let callCount = 0;
     Object.defineProperty(globalThis.crypto, "randomUUID", {
       value: () => {
@@ -175,11 +178,11 @@ describe("parseSpawnArgs", () => {
       }
     } finally {
       Date.now = origDateNow;
-      Object.defineProperty(globalThis.crypto, "randomUUID", {
-        value: origRandomUUID,
-        configurable: true,
-        writable: true,
-      });
+      if (origDescriptor) {
+        Object.defineProperty(globalThis.crypto, "randomUUID", origDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis.crypto, "randomUUID");
+      }
     }
   });
 
