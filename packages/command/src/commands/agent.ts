@@ -14,6 +14,7 @@ import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
 import {
+  DEFAULT_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   buildHookEnv,
@@ -1081,7 +1082,7 @@ async function agentWait(
   // without waiting for the orphaned wait — daemon has its own timeout.
   let result: unknown;
   if (mailTo) {
-    const totalMs = timeout ?? 270_000;
+    const totalMs = timeout ?? DEFAULT_TIMEOUT_MS;
     const pollStart = Date.now();
     const mailPoll = pollMailUntil(d, mailTo, totalMs, pollStart);
     const winner = await Promise.race([
@@ -1769,7 +1770,7 @@ function printSpawnUsage(
     "  --model, -m <name>         Model (default: provider default)",
     "  --cwd <path>               Working directory",
     "  --wait                     Block until result",
-    "  --timeout <ms>             Max wait time (default: 270000)",
+    `  --timeout <ms>             Max wait time (default: ${DEFAULT_TIMEOUT_MS})`,
     "  --json                     Output raw JSON",
   ];
 

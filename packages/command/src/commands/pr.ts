@@ -6,6 +6,7 @@
  * (#1800). Local cleanup is left to `mcx claude bye` → cleanupWorktree.
  */
 
+import { DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
 import { printError as defaultPrintError } from "../output";
 
 // ── Deps ──
@@ -51,7 +52,7 @@ export function parsePrMergeArgs(args: string[]): PrMergeArgs {
   let mergeCommit = false;
   let auto = false;
   let wait = false;
-  let timeout = 270_000;
+  let timeout = DEFAULT_TIMEOUT_MS;
   let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -203,7 +204,7 @@ Merge strategy (default: --squash):
 Options:
   --auto                               Enable auto-merge (requires branch protection)
   --wait                               Block until the PR reaches MERGED state
-  --timeout, -t <ms>                   Max wait time (default: 270000)
+  --timeout, -t <ms>                   Max wait time (default: ${DEFAULT_TIMEOUT_MS})
 
 Unlike 'gh pr merge --delete-branch', 'mcx pr merge' never attempts local branch
 deletion. Use 'mcx claude bye' to clean up the worktree and local branch once
