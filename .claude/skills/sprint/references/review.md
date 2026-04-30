@@ -57,15 +57,19 @@ while later steps appear to succeed. Run them strictly in order, verifying
 each step before the next.
 
 ```bash
-# (a) Pull latest main into the sprint worktree, rebase the sprint branch
-#     onto it. Workers have been merging to main throughout the sprint —
-#     rebase picks those up so package.json is bumped on top of the
-#     latest version.
+# (a) Merge latest main into the sprint branch (no rebase — preserves
+#     forward-only push semantics, no force-push needed). Workers have
+#     been merging to main throughout the sprint; this brings their
+#     commits into the sprint branch so package.json is bumped on top
+#     of the latest version. The merge commit becomes part of the sprint
+#     branch's history; the eventual squash-merge of the sprint container
+#     PR collapses everything into a single commit on main, so the merge
+#     commit doesn't pollute main's history.
 (
   cd .claude/worktrees/sprint-{N}
   git fetch origin main
-  git rebase origin/main
-  # If rebase produces conflicts on .claude/sprints/sprint-{N}.md or the
+  git merge --no-edit origin/main
+  # If merge produces conflicts on .claude/sprints/sprint-{N}.md or the
   # diary file, that's a meta-file conflict — workers shouldn't be touching
   # those (per plan.md Step 3 rule 5). Investigate before proceeding.
 )
@@ -86,14 +90,14 @@ bun -e "
   bun typecheck     # catches TS errors before the hook does
 )
 
-# (d) Commit + force-push the sprint branch — SPRINT_OVERRIDE=1 bypasses
-#     the sprint-active pre-commit guard (#1443). Force-push (with-lease)
-#     is needed because the rebase rewrote history.
+# (d) Commit + push the sprint branch — SPRINT_OVERRIDE=1 bypasses the
+#     sprint-active pre-commit guard (#1443). Plain `git push` works
+#     because we merged (didn't rebase) — no history rewrite.
 (
   cd .claude/worktrees/sprint-{N}
   git add package.json
   SPRINT_OVERRIDE=1 git commit -m "release: vX.Y.Z"
-  git push --force-with-lease
+  git push
 )
 
 # (e) Verify the sprint PR picked up the release commit
@@ -111,9 +115,10 @@ always part of the sprint container.
 ### If the commit fails (pre-commit hook rejected it)
 
 1. Read the hook output — usually a lint/typecheck fix.
-2. Apply the fix in the sprint worktree, re-stage, re-commit.
-3. Force-push the sprint branch (`git push --force-with-lease`) — the
-   sprint container PR updates in place.
+2. Apply the fix in the sprint worktree, re-stage, re-commit (a fresh
+   commit, not `--amend` — the merge in step (a) is already pushed).
+3. Push the sprint branch (`git push`) — the sprint container PR updates
+   in place.
 4. **Do not tag yet.** Tagging happens in `retro.md` *after* the sprint PR
    merges. If a Release workflow gets triggered by an early tag push,
    cancel it, delete the tag (local + remote), and restart from there.
