@@ -83,14 +83,20 @@ export function findAsyncMethods(lines: string[]): MethodRegion[] {
 
     // Scan forward from the match position to find the opening '{' of the body.
     // Track paren depth to skip past the parameter list and return type annotation.
+    // Track angle-bracket depth to skip '{' inside generic return types like
+    // Promise<{ result: string }> — the '{' inside '<>' is not the body start.
     let bodyStart = -1;
+    let bodyStartCol = -1; // column of the '{' within lines[bodyStart]
     let parenDepth = 0;
     let seenOpenParen = false;
+    let angleBracketDepth = 0;
 
     outer: for (let j = i; j < Math.min(i + 20, lines.length); j++) {
       // On the first line, start scanning from the match position to avoid
       // false-positive '{' in code before the matched signature.
       const segment = j === i ? line.slice(m.index) : lines[j];
+      // segmentOffset: how many characters to add to ci to get the column in lines[j].
+      const segmentOffset = j === i ? m.index : 0;
       for (let ci = 0; ci < segment.length; ci++) {
         const ch = segment[ci];
         if (ch === "(") {
@@ -98,8 +104,13 @@ export function findAsyncMethods(lines: string[]): MethodRegion[] {
           seenOpenParen = true;
         } else if (ch === ")") {
           parenDepth--;
-        } else if (ch === "{" && seenOpenParen && parenDepth === 0) {
+        } else if (ch === "<") {
+          angleBracketDepth++;
+        } else if (ch === ">") {
+          if (angleBracketDepth > 0) angleBracketDepth--;
+        } else if (ch === "{" && seenOpenParen && parenDepth === 0 && angleBracketDepth === 0) {
           bodyStart = j;
+          bodyStartCol = segmentOffset + ci;
           break outer;
         } else if (ch === "=" && segment[ci + 1] === ">" && seenOpenParen && parenDepth === 0) {
           // Concise arrow function without braces — skip.
@@ -113,11 +124,15 @@ export function findAsyncMethods(lines: string[]): MethodRegion[] {
       continue;
     }
 
-    // Count braces to find the matching closing brace of the method body.
+    // Count braces from the body-start '{' to find the matching closing brace.
+    // Start at bodyStartCol (not line start) so that return-type '}' characters
+    // that appear earlier on the same line as the body '{' are not counted.
     let depth = 0;
     let endLine = -1;
     for (let k = bodyStart; k < lines.length; k++) {
-      for (const ch of lines[k]) {
+      const startCol = k === bodyStart ? bodyStartCol : 0;
+      for (let c = startCol; c < lines[k].length; c++) {
+        const ch = lines[k][c];
         if (ch === "{") depth++;
         else if (ch === "}") {
           depth--;

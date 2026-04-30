@@ -41,6 +41,39 @@ describe("findAsyncMethods", () => {
     expect(methods[0].endLine).toBe(6);
   });
 
+  test("finds method with multi-line object return type (Promise<{...}>)", () => {
+    // Regression: '{' inside the generic return type annotation must not be
+    // treated as the body start. The real body '{' comes after '}>' closes.
+    const lines = [
+      "async function handlePrompt(args: Record<string, unknown>): Promise<{",
+      "  content: Array<{ type: string }>;",
+      "  isError?: boolean;",
+      "}> {",
+      "  this.sessions.delete(id);",
+      "  await this.work();",
+      "}",
+    ];
+    const methods = findAsyncMethods(lines);
+    expect(methods).toHaveLength(1);
+    expect(methods[0].name).toBe("handlePrompt");
+    expect(methods[0].startLine).toBe(0);
+    expect(methods[0].endLine).toBe(6);
+  });
+
+  test("finds method with inline object return type (Promise<{ x: string }>)", () => {
+    const lines = [
+      "  async start(): Promise<{ client: Client; transport: Transport }> {",
+      "    await this.connect();",
+      "    return { client: this.client, transport: this.transport };",
+      "  }",
+    ];
+    const methods = findAsyncMethods(lines);
+    expect(methods).toHaveLength(1);
+    expect(methods[0].name).toBe("start");
+    expect(methods[0].startLine).toBe(0);
+    expect(methods[0].endLine).toBe(3);
+  });
+
   test("does not find non-async methods", () => {
     const lines = ["class Foo {", "  delete(id: string): void {", "    this.sessions.delete(id);", "  }", "}"];
     expect(findAsyncMethods(lines)).toHaveLength(0);
