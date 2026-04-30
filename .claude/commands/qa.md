@@ -131,7 +131,63 @@ if [ "$AGE" -lt 90 ]; then
 fi
 ```
 
-**Step 5b.2 — Enumerate and gate.**
+**Step 5b.2 — Triage Copilot threads: dismiss nits/out-of-scope inline.**
+
+Before counting unreplied threads, walk each Copilot inline thread and
+classify. Sprint 48 (#1907) showed ~3 of 4 Copilot threads were
+nits/false-positives that got dismissed during a *repair* round — at
+~$2-3 per round just to post "false positive" replies. Doing this
+classification in the QA pass avoids that round-trip entirely.
+
+Classify each thread as one of:
+
+- **actionable** — points to a real correctness, security, or test gap
+  in the changed code. Leave unreplied; it becomes a blocker in the
+  count below.
+- **nit** — style/formatting/naming opinion with no correctness
+  implication (e.g. "extract repeated string to const", "consider a
+  helper", variable name suggestions). Dismiss inline.
+- **out-of-scope** — applies to a platform/concern this project doesn't
+  support (e.g. Windows PATH separator on a Unix-only project), or
+  contradicts an explicit project rule (e.g. "use Node fs API" when
+  CLAUDE.md says "Bun all the way"). Dismiss inline.
+
+**Be strict on `actionable`.** When in doubt, leave unreplied. A
+dismissed correctness gap is far more expensive than an extra repair
+round. If a thread's correctness implication is non-obvious, treat it
+as actionable. The classification is asymmetric on purpose.
+
+For each `nit` or `out-of-scope` thread, post a one-line dismissal:
+
+```bash
+gh api repos/theshadow27/mcp-cli/pulls/$PR/comments/<thread-id>/replies \
+  -X POST -f body="<dismissal reason — keep terse>"
+```
+
+Sample dismissals (match the substance, don't copy verbatim):
+- "Style nit; not changing in this PR."
+- "Project is Unix-only — Windows PATH not applicable."
+- "Conflicts with project rule (CLAUDE.md: Bun all the way)."
+- "False positive — <one-line why Copilot misread the code>."
+
+Do NOT reply via `gh pr comment` (top-level PR comment, not a thread
+reply — the count check below won't see it). The
+`/pulls/$PR/comments/<id>/replies` endpoint is the only one that posts
+into the thread.
+
+After dismissals are posted, proceed to the gate. Threads you
+correctly classified as `actionable` will still appear in
+`UNREPLIED_COUNT` and force `qa:fail` with a meaningful blocker list.
+
+This step does NOT apply to:
+- Adversarial reviewer threads (`## Adversarial Review` sticky on the
+  PR by a `claude` session) — those follow a different protocol.
+- `CHANGES_REQUESTED` reviews from human reviewers — those are always
+  blockers regardless of substance.
+- Top-level PR-body comments raising new concerns — read those for
+  awareness; if they raise blockers, that's qa:fail.
+
+**Step 5b.3 — Enumerate and gate.**
 
 The structured check that actually blocks `qa:pass`:
 
@@ -179,25 +235,12 @@ without a dismissal, the verdict is `qa:fail` — no exceptions. This isn't
 judgment, it's arithmetic. Include the unreplied thread IDs and line
 refs in the qa:fail body so the repairer knows exactly what to address.
 
-If you're tempted to post `qa:pass` with unreplied threads because "they're
-minor nits", **don't** — file a follow-up issue referencing the threads
-and dismiss them in replies first (see Step 5b.3). A thread with no reply
-is an unresolved claim; the tool can't distinguish "nit" from "real bug"
-without the owner saying so explicitly.
-
-**Step 5b.3 — Dismissing a nit-class Copilot finding.**
-
-If a Copilot finding is genuinely out-of-scope or a style nit that you
-don't want to fix in this PR, post a dismissing reply citing the reason
-or a follow-up issue. That counts as "replied" and unblocks `qa:pass`:
-
-```bash
-gh api repos/theshadow27/mcp-cli/pulls/$PR/comments/<thread-id>/replies \
-  -X POST -f body="Deferred — perf nit, not correctness. Filed as #<new-issue> for a future optimization pass."
-```
-
-Do NOT reply via `gh pr comment` (that's a top-level PR comment, not a
-thread reply — the check above won't see it).
+If you're tempted to post `qa:pass` with unreplied threads because
+"they're minor nits", **don't** — go back to Step 5b.2, classify them,
+and dismiss them with a one-line reply. The count check is arithmetic
+and a thread with no reply is an unresolved claim. Either dismiss it
+(if it's truly a nit) or treat it as a blocker (if you can't justify
+dismissal in one line).
 
 ### Step 5c: Check CI Status
 
@@ -328,7 +371,7 @@ File issues for:
 - Keep the comment concise but complete enough to serve as an audit trail.
 - Run typecheck AND tests — both must pass.
 - **NEVER report READY FOR MERGE with failing CI.** This is a hard rule with zero exceptions. If CI fails and you can't fix it, report NOT READY.
-- **NEVER label `qa:pass` while unreplied Copilot inline threads or un-dismissed CHANGES_REQUESTED reviews exist.** The Step 5b gate is arithmetic — if `UNREPLIED_COUNT > 0`, `qa:fail` is the only permitted outcome. No "these are nits" exceptions; dismiss them in thread replies (Step 5b.3) before flipping the verdict.
+- **NEVER label `qa:pass` while unreplied Copilot inline threads or un-dismissed CHANGES_REQUESTED reviews exist.** The Step 5b gate is arithmetic — if `UNREPLIED_COUNT > 0`, `qa:fail` is the only permitted outcome. No "these are nits" exceptions at the gate; classify and dismiss them in Step 5b.2 with a one-line reason before reaching the gate.
 - **ALWAYS swap labels transactionally** — `gh pr edit <N> --add-label qa:pass --remove-label qa:fail` (or vice versa) in one command. Never `--add-label` without the matching `--remove-label`.
 - **NEVER move git branches.** No `git checkout main`, no `gh pr checkout`, no `gh pr merge`, no `git checkout <branch>`. Your worktree is already on the correct branch. Branch movement is the orchestrator's job.
 - Process ONE issue per invocation.

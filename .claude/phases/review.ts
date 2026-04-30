@@ -1,7 +1,7 @@
 /**
  * Phase: review — adversarial review for high-scrutiny PRs.
  *
- * On first entry: emits the spawn plan for a sonnet reviewer.
+ * On first entry: emits the spawn plan for the reviewer.
  * On re-entry (review_session_id already set): scans the PR for the sticky
  *   `## Adversarial Review` comment and decides the transition.
  *     - no comment yet         → { action: "wait" }
@@ -11,12 +11,18 @@
  * Round cap: review_round >= 2 and issues remain → prefer qa (matches
  * run.md's "two reviews max" rule).
  *
+ * Model resolution order (first match wins):
+ *   1. `input.model` — explicit override from the orchestrator
+ *   2. Sprint plan table — Model column for this issue (mirrors impl.ts)
+ *   3. Default `sonnet` — sonnet adversarial bandwidth is the baseline
+ *
  * State writes (this handler): review_session_id sentinel, review_round, previous_phase.
  * Orchestrator responsibility: replace review_session_id "pending:*" with real
  * session ID after spawn; delete review_session_id before re-entering review
  * for a new round (so the handler spawns a fresh reviewer rather than reading
  * the previous reviewer's comment).
  */
+import { findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 
 const REVIEW_ROUND_CAP = 2;
@@ -48,6 +54,7 @@ defineAlias({
   description: "Sprint phase: spawn adversarial reviewer or act on its sticky comment.",
   input: z.object({
     provider: ProviderSchema.default("claude"),
+    model: z.enum(["opus", "sonnet"]).optional(),
   }),
   output: z.object({
     action: z.enum(["spawn", "wait", "goto"]),
@@ -57,6 +64,7 @@ defineAlias({
     command: z.array(z.string()).optional(),
     prompt: z.string().optional(),
     allowTools: z.array(z.string()).optional(),
+    model: z.enum(["opus", "sonnet"]).optional(),
   }),
   fn: async (input, ctx) => {
     const work = ctx.workItem;
@@ -77,12 +85,22 @@ defineAlias({
 
     // No session yet → spawn one.
     if (!sessionId) {
+      // Model resolution: explicit input → sprint plan → default sonnet.
+      // Mirrors impl.ts so plan-mandated opus picks get opus reviewers too.
+      let model: "opus" | "sonnet";
+      if (input.model) {
+        model = input.model;
+      } else {
+        const planModel = work.issueNumber != null ? findModelInSprintPlan(work.issueNumber, process.cwd()) : null;
+        model = planModel ?? "sonnet";
+      }
+
       const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
       const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})`;
       const cmdBase = input.provider.startsWith("acp:")
         ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
         : ["mcx", input.provider, "spawn"];
-      const command = [...cmdBase, "--worktree", "--model", "sonnet", "-t", prompt, "--allow", ...allowTools];
+      const command = [...cmdBase, "--worktree", "--model", model, "-t", prompt, "--allow", ...allowTools];
       // Persist round counter and sentinel before returning — re-entry returns
       // "wait" (not a new spawn) until the orchestrator clears review_session_id.
       await ctx.state.set("review_round", round);
@@ -94,6 +112,7 @@ defineAlias({
         command,
         prompt,
         allowTools,
+        model,
       };
     }
 
