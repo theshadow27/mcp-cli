@@ -1,4 +1,4 @@
-import { DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from "@mcp-cli/core";
 import { registerHelp } from "./help";
 
 registerHelp("claude spawn", {
@@ -95,7 +95,7 @@ registerHelp("claude wait", {
   summary: "Block until a session event occurs",
   usage: ["mcx claude wait <session>", "mcx claude wait --all", "mcx claude wait --pr 42", "mcx claude wait --checks"],
   options: [
-    ["--timeout, -t <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, max: 299000)`],
+    ["--timeout, -t <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, max: ${MAX_TIMEOUT_MS})`],
     ["--after <seq>", "Sequence cursor for race-free polling"],
     ["--short", "Compact output"],
     ["--all, -a", "Wait across all sessions (bypass repo scoping)"],
