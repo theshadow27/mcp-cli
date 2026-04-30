@@ -1,6 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { readFileWithLimit, resolveAtPath } from "./file-read";
 
@@ -38,11 +37,8 @@ describe("readFileWithLimit", () => {
     expect(() => readFileWithLimit(join(TMP, "nope.txt"))).toThrow();
   });
 
-  test("expands ~ to home directory", () => {
-    const p = join(TMP, "tilde-test.json");
-    writeFileSync(p, '{"tilde":true}');
-    const relFromHome = relative(homedir(), p);
-    expect(readFileWithLimit(`~/${relFromHome}`)).toBe('{"tilde":true}');
+  test("rejects ~/path (home directory not in allowlist)", () => {
+    expect(() => readFileWithLimit("~/some-file.txt")).toThrow(/outside the allowed directory/);
   });
 });
 
@@ -60,19 +56,18 @@ describe("path containment guard", () => {
     expect(readFileWithLimit(rel)).toBe("relative-allowed");
   });
 
-  test("rejects absolute path outside cwd and home", () => {
-    expect(() => readFileWithLimit("/etc/passwd")).toThrow(/outside the allowed directories/);
+  test("rejects absolute path outside cwd", () => {
+    expect(() => readFileWithLimit("/etc/passwd")).toThrow(/outside the allowed directory/);
   });
 
   test("rejects traversal via ../", () => {
-    // Enough ../ to escape both cwd and home to reach /etc/passwd
     const depth = process.cwd().split("/").length;
     const traversal = `${"../".repeat(depth)}etc/passwd`;
-    expect(() => readFileWithLimit(traversal)).toThrow(/outside the allowed directories/);
+    expect(() => readFileWithLimit(traversal)).toThrow(/outside the allowed directory/);
   });
 
   test("rejects /dev paths", () => {
-    expect(() => readFileWithLimit("/dev/null")).toThrow(/outside the allowed directories/);
+    expect(() => readFileWithLimit("/dev/null")).toThrow(/outside the allowed directory/);
   });
 
   test("rejects symlink that escapes cwd", () => {
@@ -83,7 +78,7 @@ describe("path containment guard", () => {
       /* may not exist */
     }
     symlinkSync("/etc/hosts", link);
-    expect(() => readFileWithLimit(link)).toThrow(/outside the allowed directories/);
+    expect(() => readFileWithLimit(link)).toThrow(/outside the allowed directory/);
   });
 
   test("error message includes both original and resolved paths", () => {
@@ -93,26 +88,38 @@ describe("path containment guard", () => {
     } catch (e) {
       const msg = (e as Error).message;
       expect(msg).toContain("/etc/passwd");
-      expect(msg).toContain("outside the allowed directories");
+      expect(msg).toContain("outside the allowed directory");
     }
   });
 
   test("non-existent path outside allowed dirs is caught before ENOENT", () => {
-    expect(() => readFileWithLimit("/nonexistent/path/file.txt")).toThrow(/outside the allowed directories/);
+    expect(() => readFileWithLimit("/nonexistent/path/file.txt")).toThrow(/outside the allowed directory/);
   });
 });
 
 describe("sensitive path denylist", () => {
   test("blocks .ssh paths", () => {
-    expect(() => readFileWithLimit("~/.ssh/id_rsa")).toThrow(/sensitive pattern/);
+    const dir = join(TMP, ".ssh");
+    mkdirSync(dir, { recursive: true });
+    const p = join(dir, "id_rsa");
+    writeFileSync(p, "PRIVATE KEY");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
   test("blocks .aws paths", () => {
-    expect(() => readFileWithLimit("~/.aws/credentials")).toThrow(/sensitive pattern/);
+    const dir = join(TMP, ".aws");
+    mkdirSync(dir, { recursive: true });
+    const p = join(dir, "credentials");
+    writeFileSync(p, "aws_secret_access_key=xxx");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
   test("blocks .gnupg paths", () => {
-    expect(() => readFileWithLimit("~/.gnupg/private-keys-v1.d/key")).toThrow(/sensitive pattern/);
+    const dir = join(TMP, ".gnupg", "private-keys-v1.d");
+    mkdirSync(dir, { recursive: true });
+    const p = join(dir, "key");
+    writeFileSync(p, "GPG KEY");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
   test("blocks .env files", () => {
@@ -127,12 +134,22 @@ describe("sensitive path denylist", () => {
     expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
+  test("blocks .envrc files", () => {
+    const p = join(TMP, ".envrc");
+    writeFileSync(p, "export AWS_SECRET_ACCESS_KEY=xxx");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
+  });
+
   test("blocks .npmrc", () => {
-    expect(() => readFileWithLimit("~/.npmrc")).toThrow(/sensitive pattern/);
+    const p = join(TMP, ".npmrc");
+    writeFileSync(p, "//registry.npmjs.org/:_authToken=xxx");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
   test("blocks .netrc", () => {
-    expect(() => readFileWithLimit("~/.netrc")).toThrow(/sensitive pattern/);
+    const p = join(TMP, ".netrc");
+    writeFileSync(p, "machine github.com login xxx");
+    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
   });
 
   test("does not block files that merely contain 'env' in the name", () => {

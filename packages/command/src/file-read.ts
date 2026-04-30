@@ -3,13 +3,13 @@
  *
  * Prevents hanging on device files (e.g. /dev/urandom), guards against
  * accidentally loading huge files into memory, and blocks path traversal
- * outside the user's working directory or home directory (#1899).
+ * outside the user's working directory (#1899).
  */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { resolveRealpath } from "@mcp-cli/core";
+import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -17,23 +17,18 @@ const SENSITIVE_PATTERNS = [
   /(?:^|\/)\.ssh\//,
   /(?:^|\/)\.aws\//,
   /(?:^|\/)\.gnupg\//,
-  /(?:^|\/)\.env(?:\.|$)/,
+  /(?:^|\/)\.env(?:rc|[.]|$)/,
   /(?:^|\/)\.npmrc$/,
   /(?:^|\/)\.netrc$/,
 ];
 
 /**
- * Check whether `resolved` falls inside one of the allowed prefixes
- * (cwd or home). Both the path and the prefixes are fully resolved
- * through symlinks before comparison.
+ * Check whether `resolved` falls inside cwd. Both the path and cwd
+ * are fully resolved through symlinks before comparison.
  */
 function isPathAllowed(resolved: string): boolean {
   const cwd = resolveRealpath(process.cwd());
-  const home = resolveRealpath(homedir());
-  for (const prefix of [cwd, home]) {
-    if (resolved === prefix || resolved.startsWith(`${prefix}/`)) return true;
-  }
-  return false;
+  return isPathContained(resolved, cwd);
 }
 
 function isSensitivePath(resolved: string): boolean {
@@ -42,8 +37,13 @@ function isSensitivePath(resolved: string): boolean {
 
 /**
  * Read a file with a size check and path containment guard.
- * Throws if the path escapes cwd/home, matches a sensitive pattern,
+ * Throws if the path escapes cwd, matches a sensitive pattern,
  * exceeds MAX_FILE_SIZE, doesn't exist, or appears to be binary.
+ *
+ * Accepted risk: TOCTOU window between resolveRealpath and readFileSync
+ * allows a symlink target swap. Practical risk is low for direct CLI use;
+ * a proper fix requires open(O_NOFOLLOW) + fstat which readFileSync
+ * does not support. See #1899 review for discussion.
  */
 export function readFileWithLimit(path: string): string {
   const expanded = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
@@ -51,16 +51,18 @@ export function readFileWithLimit(path: string): string {
   const resolved = resolveRealpath(absolute);
 
   if (!isPathAllowed(resolved)) {
-    throw new Error(`Path "${path}" resolves to "${resolved}" which is outside the allowed directories (cwd and home)`);
+    throw new Error(`Path "${path}" resolves to "${resolved}" which is outside the allowed directory (cwd)`);
   }
 
   if (isSensitivePath(resolved)) {
     throw new Error(
-      `Path "${path}" matches a sensitive pattern (.ssh, .aws, .gnupg, .env, .npmrc, .netrc) — reading blocked`,
+      `Path "${path}" matches a sensitive pattern (.ssh, .aws, .gnupg, .env/.envrc, .npmrc, .netrc) — reading blocked`,
     );
   }
 
-  process.stderr.write(`[@file] resolved: ${resolved}\n`);
+  if (process.env.DEBUG) {
+    process.stderr.write(`[@file] resolved: ${resolved}\n`);
+  }
 
   const file = Bun.file(resolved);
   if (file.size > MAX_FILE_SIZE) {
