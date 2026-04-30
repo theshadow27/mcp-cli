@@ -37,8 +37,8 @@ describe("readFileWithLimit", () => {
     expect(() => readFileWithLimit(join(TMP, "nope.txt"))).toThrow();
   });
 
-  test("rejects ~/path (home directory not in allowlist)", () => {
-    expect(() => readFileWithLimit("~/some-file.txt")).toThrow(/outside the allowed directory/);
+  test("rejects ~/path with clear message", () => {
+    expect(() => readFileWithLimit("~/some-file.txt")).toThrow(/~\/ paths are not supported/);
   });
 });
 
@@ -97,65 +97,17 @@ describe("path containment guard", () => {
   });
 });
 
-describe("sensitive path denylist", () => {
-  test("blocks .ssh paths", () => {
-    const dir = join(TMP, ".ssh");
-    mkdirSync(dir, { recursive: true });
-    const p = join(dir, "id_rsa");
-    writeFileSync(p, "PRIVATE KEY");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .aws paths", () => {
-    const dir = join(TMP, ".aws");
-    mkdirSync(dir, { recursive: true });
-    const p = join(dir, "credentials");
-    writeFileSync(p, "aws_secret_access_key=xxx");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .gnupg paths", () => {
-    const dir = join(TMP, ".gnupg", "private-keys-v1.d");
-    mkdirSync(dir, { recursive: true });
-    const p = join(dir, "key");
-    writeFileSync(p, "GPG KEY");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .env files", () => {
+describe("dotfiles inside cwd are allowed (no denylist)", () => {
+  test("allows .env inside cwd", () => {
     const p = join(TMP, ".env");
     writeFileSync(p, "SECRET=hunter2");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
+    expect(readFileWithLimit(p)).toBe("SECRET=hunter2");
   });
 
-  test("blocks .env.local files", () => {
-    const p = join(TMP, ".env.local");
-    writeFileSync(p, "SECRET=hunter2");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .envrc files", () => {
-    const p = join(TMP, ".envrc");
-    writeFileSync(p, "export AWS_SECRET_ACCESS_KEY=xxx");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .npmrc", () => {
+  test("allows .npmrc inside cwd", () => {
     const p = join(TMP, ".npmrc");
     writeFileSync(p, "//registry.npmjs.org/:_authToken=xxx");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("blocks .netrc", () => {
-    const p = join(TMP, ".netrc");
-    writeFileSync(p, "machine github.com login xxx");
-    expect(() => readFileWithLimit(p)).toThrow(/sensitive pattern/);
-  });
-
-  test("does not block files that merely contain 'env' in the name", () => {
-    const p = join(TMP, "environment.ts");
-    writeFileSync(p, "export const x = 1;");
-    expect(readFileWithLimit(p)).toBe("export const x = 1;");
+    expect(readFileWithLimit(p)).toBe("//registry.npmjs.org/:_authToken=xxx");
   });
 });
 

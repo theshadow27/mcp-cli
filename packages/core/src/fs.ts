@@ -9,6 +9,7 @@ import { consoleLogger } from "./logger";
  * Both arguments must already be fully resolved (symlinks followed).
  */
 export function isPathContained(resolvedPath: string, resolvedRoot: string): boolean {
+  if (resolvedRoot === "/") return false;
   return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}/`);
 }
 

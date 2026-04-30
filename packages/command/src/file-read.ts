@@ -7,38 +7,20 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
-const SENSITIVE_PATTERNS = [
-  /(?:^|\/)\.ssh\//,
-  /(?:^|\/)\.aws\//,
-  /(?:^|\/)\.gnupg\//,
-  /(?:^|\/)\.env(?:rc|[.]|$)/,
-  /(?:^|\/)\.npmrc$/,
-  /(?:^|\/)\.netrc$/,
-];
-
-/**
- * Check whether `resolved` falls inside cwd. Both the path and cwd
- * are fully resolved through symlinks before comparison.
- */
 function isPathAllowed(resolved: string): boolean {
   const cwd = resolveRealpath(process.cwd());
   return isPathContained(resolved, cwd);
 }
 
-function isSensitivePath(resolved: string): boolean {
-  return SENSITIVE_PATTERNS.some((p) => p.test(resolved));
-}
-
 /**
  * Read a file with a size check and path containment guard.
- * Throws if the path escapes cwd, matches a sensitive pattern,
- * exceeds MAX_FILE_SIZE, doesn't exist, or appears to be binary.
+ * Throws if the path escapes cwd, exceeds MAX_FILE_SIZE, doesn't exist,
+ * or appears to be binary.
  *
  * Accepted risk: TOCTOU window between resolveRealpath and readFileSync
  * allows a symlink target swap. Practical risk is low for direct CLI use;
@@ -46,18 +28,14 @@ function isSensitivePath(resolved: string): boolean {
  * does not support. See #1899 review for discussion.
  */
 export function readFileWithLimit(path: string): string {
-  const expanded = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-  const absolute = resolve(expanded);
+  if (path.startsWith("~/")) {
+    throw new Error("~/ paths are not supported by @file — use a path relative to cwd instead");
+  }
+  const absolute = resolve(path);
   const resolved = resolveRealpath(absolute);
 
   if (!isPathAllowed(resolved)) {
     throw new Error(`Path "${path}" resolves to "${resolved}" which is outside the allowed directory (cwd)`);
-  }
-
-  if (isSensitivePath(resolved)) {
-    throw new Error(
-      `Path "${path}" matches a sensitive pattern (.ssh, .aws, .gnupg, .env/.envrc, .npmrc, .netrc) — reading blocked`,
-    );
   }
 
   if (process.env.DEBUG) {
