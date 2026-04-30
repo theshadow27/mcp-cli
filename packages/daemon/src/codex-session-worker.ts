@@ -19,7 +19,7 @@
  */
 
 import { CodexSession, type CodexSessionConfig } from "@mcp-cli/codex";
-import { type AgentSessionEvent, CODEX_SERVER_NAME } from "@mcp-cli/core";
+import { type AgentSessionEvent, CODEX_SERVER_NAME, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { CODEX_TOOLS } from "./codex-session/tools";
@@ -192,7 +192,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
   isError?: boolean;
 }> {
   const prompt = args.prompt as string;
-  const timeoutMs = (args.timeout as number) ?? 270_000;
+  const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   let sessionId = args.sessionId as string | undefined;
 
   if (sessionId) {
@@ -373,7 +373,7 @@ async function handleWait(args: Record<string, unknown>): Promise<{
   isError?: boolean;
 }> {
   const sessionId = args.sessionId as string | undefined;
-  const timeoutMs = (args.timeout as number) ?? 270_000;
+  const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
 
   // afterSeq cursor: check buffer first, then block until a new event arrives

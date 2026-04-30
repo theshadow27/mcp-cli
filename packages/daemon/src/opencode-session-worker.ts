@@ -13,7 +13,7 @@
  *   4. Worker sends MCP JSON-RPC responses + DB event messages back
  */
 
-import { type AgentSessionEvent, OPENCODE_SERVER_NAME } from "@mcp-cli/core";
+import { type AgentSessionEvent, DEFAULT_TIMEOUT_MS, OPENCODE_SERVER_NAME } from "@mcp-cli/core";
 import { OpenCodeSession, type OpenCodeSessionConfig } from "@mcp-cli/opencode";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -187,7 +187,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
   isError?: boolean;
 }> {
   const prompt = args.prompt as string;
-  const timeoutMs = (args.timeout as number) ?? 270_000;
+  const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   let sessionId = args.sessionId as string | undefined;
 
   if (sessionId) {
@@ -367,7 +367,7 @@ async function handleWait(args: Record<string, unknown>): Promise<{
   isError?: boolean;
 }> {
   const sessionId = args.sessionId as string | undefined;
-  const timeoutMs = (args.timeout as number) ?? 270_000;
+  const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
 
   // afterSeq cursor: check buffer first, then block until a new event arrives

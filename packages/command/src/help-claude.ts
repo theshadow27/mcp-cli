@@ -1,3 +1,4 @@
+import { DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
 import { registerHelp } from "./help";
 
 registerHelp("claude spawn", {
@@ -22,7 +23,7 @@ registerHelp("claude spawn", {
     ["--model, -m <name>", "Model: opus, sonnet, haiku, or full ID (default: opus)"],
     ["--cwd <path>", "Working directory for the session"],
     ["--wait", "Block until Claude produces a result"],
-    ["--timeout <ms>", "Max wait time in ms (default: 270000, only with --wait)"],
+    ["--timeout <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)`],
     ["--work-item <id>", "Work item ID (#N); writes null→initial transition on spawn"],
   ],
   examples: [
@@ -94,7 +95,7 @@ registerHelp("claude wait", {
   summary: "Block until a session event occurs",
   usage: ["mcx claude wait <session>", "mcx claude wait --all", "mcx claude wait --pr 42", "mcx claude wait --checks"],
   options: [
-    ["--timeout, -t <ms>", "Max wait time in ms (default: 270000, max: 299000)"],
+    ["--timeout, -t <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, max: 299000)`],
     ["--after <seq>", "Sequence cursor for race-free polling"],
     ["--short", "Compact output"],
     ["--all, -a", "Wait across all sessions (bypass repo scoping)"],
@@ -120,7 +121,7 @@ registerHelp("claude resume", {
     ["--model, -m <name>", "Model: opus, sonnet, haiku, or full ID"],
     ["--allow <tools...>", "Space-separated tool patterns to auto-approve"],
     ["--wait", "Block until Claude produces a result"],
-    ["--timeout <ms>", "Max wait time in ms (default: 270000)"],
+    ["--timeout <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS})`],
   ],
 });
 
