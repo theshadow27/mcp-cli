@@ -1128,8 +1128,8 @@ export class ClaudeWsServer {
     // Remove from map before the guard scan so that concurrent bye() calls on sessions
     // sharing the same worktree don't see each other and both suppress — which would
     // leave the worktree orphaned. JS is single-threaded: this delete is visible to any
-    // bye() that starts after the next await. terminateSession's own sessions.delete is
-    // now a no-op but kept for safety.
+    // bye() that starts after the next await. terminateSession also deletes before its
+    // first await (idempotent here, primary for all other call sites).
     this.sessions.delete(resolvedId);
 
     // Guard: suppress worktree cleanup if another session references the same worktree.
@@ -2338,6 +2338,12 @@ export class ClaudeWsServer {
     }
     session.ws = null;
 
+    // Remove from map before any await so concurrent bye() or terminateSession()
+    // calls that start after the next microtask turn won't find the session in the
+    // map. JS is single-threaded: this delete is visible to any caller that begins
+    // after this point. Idempotent when bye() already deleted it.
+    this.sessions.delete(sessionId);
+
     // Kill process and await exit.
     // Null refs first so the proc.exited handler skips the stale exit
     // and no other path can signal a recycled PID.
@@ -2355,9 +2361,6 @@ export class ClaudeWsServer {
       session.pid = null;
       await this.killRawPid(pid, session.pidStartTime);
     }
-
-    // Remove from map
-    this.sessions.delete(sessionId);
   }
 }
 
