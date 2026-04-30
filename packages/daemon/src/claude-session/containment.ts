@@ -1,7 +1,7 @@
 // Worktree containment enforcement — see #1441 for design.
 
 import { resolve } from "node:path";
-import { resolveRealpath } from "@mcp-cli/core";
+import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
 // ── Types ──
 
@@ -255,10 +255,8 @@ function extractFilePath(toolName: string, input: Record<string, unknown>): stri
 }
 
 function isPathOutside(filePath: string, worktreeRoot: string): boolean {
-  // resolve(worktreeRoot, filePath) handles relative paths against worktreeRoot;
-  // resolveRealpath then follows any symlinks so escapes via symlinks are caught (#1481).
   const resolved = resolveRealpath(resolve(worktreeRoot, filePath));
-  return !resolved.startsWith(`${worktreeRoot}/`) && resolved !== worktreeRoot;
+  return !isPathContained(resolved, worktreeRoot);
 }
 
 // ── Allowed external paths ──

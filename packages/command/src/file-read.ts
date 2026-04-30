@@ -1,22 +1,47 @@
 /**
- * Safe file reading with size limits.
+ * Safe file reading with size limits and path containment.
  *
- * Prevents hanging on device files (e.g. /dev/urandom) and guards against
- * accidentally loading huge files into memory.
+ * Prevents hanging on device files (e.g. /dev/urandom), guards against
+ * accidentally loading huge files into memory, and blocks path traversal
+ * outside the user's working directory (#1899).
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { resolve } from "node:path";
+import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
+function isPathAllowed(resolved: string): boolean {
+  const cwd = resolveRealpath(process.cwd());
+  return isPathContained(resolved, cwd);
+}
+
 /**
- * Read a file with a size check.
- * Throws if the file exceeds MAX_FILE_SIZE, doesn't exist, or appears to be binary.
+ * Read a file with a size check and path containment guard.
+ * Throws if the path escapes cwd, exceeds MAX_FILE_SIZE, doesn't exist,
+ * or appears to be binary.
+ *
+ * Accepted risk: TOCTOU window between resolveRealpath and readFileSync
+ * allows a symlink target swap. Practical risk is low for direct CLI use;
+ * a proper fix requires open(O_NOFOLLOW) + fstat which readFileSync
+ * does not support. See #1899 review for discussion.
  */
 export function readFileWithLimit(path: string): string {
-  const resolved = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+  if (path.startsWith("~/")) {
+    throw new Error("~/ paths are not supported by @file — use a path relative to cwd instead");
+  }
+  const absolute = resolve(path);
+  const resolved = resolveRealpath(absolute);
+
+  if (!isPathAllowed(resolved)) {
+    throw new Error(`Path "${path}" resolves to "${resolved}" which is outside the allowed directory (cwd)`);
+  }
+
+  if (process.env.DEBUG) {
+    process.stderr.write(`[@file] resolved: ${resolved}\n`);
+  }
+
   const file = Bun.file(resolved);
   if (file.size > MAX_FILE_SIZE) {
     throw new Error(`File "${resolved}" is ${(file.size / 1024 / 1024).toFixed(1)}MB — exceeds 10MB limit`);

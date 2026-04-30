@@ -4,8 +4,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
-import { auditRuntimePermissions, ensureStateDir, hardenFile, resolveRealpath } from "./fs";
+import { auditRuntimePermissions, ensureStateDir, hardenFile, isPathContained, resolveRealpath } from "./fs";
 import { capturingLogger } from "./logger";
+
+describe("isPathContained", () => {
+  test("returns true for path inside root", () => {
+    expect(isPathContained("/home/user/project/file.ts", "/home/user/project")).toBe(true);
+  });
+
+  test("returns true when path equals root", () => {
+    expect(isPathContained("/home/user/project", "/home/user/project")).toBe(true);
+  });
+
+  test("returns false for path outside root", () => {
+    expect(isPathContained("/etc/passwd", "/home/user/project")).toBe(false);
+  });
+
+  test("returns false for prefix-matching but non-child path", () => {
+    expect(isPathContained("/home/user/project-other/file", "/home/user/project")).toBe(false);
+  });
+
+  test("returns false when root is / (fail closed)", () => {
+    expect(isPathContained("/etc/passwd", "/")).toBe(false);
+    expect(isPathContained("/home/user/file", "/")).toBe(false);
+    expect(isPathContained("/", "/")).toBe(false);
+  });
+});
 
 describe("resolveRealpath", () => {
   test("returns real path for existing file", () => {

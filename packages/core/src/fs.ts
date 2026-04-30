@@ -5,6 +5,15 @@ import type { Logger } from "./logger";
 import { consoleLogger } from "./logger";
 
 /**
+ * Check whether `resolvedPath` is equal to or nested under `resolvedRoot`.
+ * Both arguments must already be fully resolved (symlinks followed).
+ */
+export function isPathContained(resolvedPath: string, resolvedRoot: string): boolean {
+  if (resolvedRoot === "/") return false;
+  return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}/`);
+}
+
+/**
  * Resolve symlinks in filePath. For non-existent paths, walks up the directory
  * chain until realpathSync succeeds, then re-joins the missing tail — same
  * iterative approach used in ContainmentGuard (#1481).
