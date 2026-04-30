@@ -1936,23 +1936,32 @@ describe("StateDb", () => {
     test("data migrations run exactly once (not on every boot)", () => {
       const p = tmpDb();
       paths.push(p);
+
+      // Open fresh DB — migrations run v0→v3, schema_version lands at 3.
       const db1 = new StateDb(p);
 
-      // Insert alias_state with trailing slash — this should be canonicalized by v2
+      // Downgrade schema_version to 1 and insert a trailing-slash row while the
+      // DB is still open — accessing db1's raw handle avoids opening a second
+      // StateDb (which would re-run migrate() and reset version back to 3).
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
-      db1["db"].run(
+      const raw = db1["db"];
+      raw.run("UPDATE schema_versions SET version = 1 WHERE name = 'state'");
+      raw.run(
         "INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at) VALUES (?, ?, ?, ?, unixepoch())",
         ["/repo/", "ns", "k", '"val"'],
       );
       db1.close();
 
-      // Re-open — v2 already ran, so the trailing-slash row persists as-is
-      // (not re-canonicalized, because migrations don't re-run)
+      // Re-open — v2 runs because schema_version was 1; row should be canonicalized.
       const db2 = new StateDb(p);
-      // The row should still have the trailing slash because v2 already ran on first boot
-      // (when there was no data). The trailing-slash row was inserted AFTER v2 ran.
-      expect(db2.getAliasState("/repo/", "ns", "k")).toBe("val");
+      expect(db2.getAliasState("/repo", "ns", "k")).toBe("val");
+      expect(db2.getAliasState("/repo/", "ns", "k")).toBeUndefined();
       db2.close();
+
+      // Re-open again — migrations do NOT re-run; canonical row persists unchanged.
+      const db3 = new StateDb(p);
+      expect(db3.getAliasState("/repo", "ns", "k")).toBe("val");
+      db3.close();
     });
 
     test("all expected tables are created on fresh DB", () => {
