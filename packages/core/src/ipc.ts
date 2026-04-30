@@ -481,7 +481,10 @@ export const GetWorkItemParamsSchema = z
 // -- Alias state schemas --
 
 const AliasStateScope = z.object({
-  repoRoot: z.string().min(1),
+  repoRoot: z
+    .string()
+    .min(1)
+    .refine((v) => v.startsWith("/"), { message: "repoRoot must be an absolute path" }),
   namespace: z.string().min(1),
 });
 

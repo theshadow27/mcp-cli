@@ -496,6 +496,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !rawRepoRoot.startsWith("/")) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -524,6 +530,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !rawRepoRoot.startsWith("/")) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -558,6 +570,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !rawRepoRoot.startsWith("/")) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -586,6 +604,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !rawRepoRoot.startsWith("/")) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             if (!workItemId || !repoRoot) {
               return {
