@@ -4743,10 +4743,19 @@ describe("parallel spawn (#1836)", () => {
     const spawnFn: SpawnFn = () => {
       spawnCount++;
       const pid = 10000 + spawnCount;
+      let resolveExited: ((code: number) => void) | undefined;
+      let killed = false;
+      const exited = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
       return {
         pid,
-        exited: new Promise<number>(() => {}),
-        kill: () => {},
+        exited,
+        kill: () => {
+          if (killed) return;
+          killed = true;
+          resolveExited?.(0);
+        },
       };
     };
     server = new ClaudeWsServer({ spawn: spawnFn, logger: silentLogger });
