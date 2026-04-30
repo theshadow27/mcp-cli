@@ -96,6 +96,25 @@ describe("formatHelp", () => {
     const longDescIdx = longLine?.indexOf("long flag") ?? -1;
     expect(shortDescIdx).toBe(longDescIdx);
   });
+
+  test("long flag exceeding pad cap still has spacer before description", () => {
+    // Flag longer than 32 chars triggers pad cap — without fix, desc runs together with flag
+    const longFlag = "--this-flag-is-definitely-longer-than-32-chars <val>";
+    const output = formatHelp({
+      name: "mcx longflag",
+      summary: "long flag test",
+      usage: ["mcx longflag"],
+      options: [
+        [longFlag, "the description"],
+        ["--short", "other desc"],
+      ],
+    });
+    const lines = output.split("\n");
+    const longLine = lines.find((l) => l.includes(longFlag));
+    expect(longLine).toBeDefined();
+    // Must have at least 2 spaces between flag and description
+    expect(longLine).toMatch(new RegExp(`${longFlag}\\s{2,}the description`));
+  });
 });
 
 describe("claude subcommand help registry", () => {
