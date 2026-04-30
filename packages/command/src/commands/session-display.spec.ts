@@ -326,28 +326,35 @@ describe("walkTranscript", () => {
     expect(stats.lastResult).toBe("Done! All tests pass.");
   });
 
-  test("aggregates Read tool calls into directory footprint", () => {
+  test("aggregates Read line counts into directory footprint", () => {
     const entries = [
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/foo.ts" })]),
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/bar.ts" })]),
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/lib/baz.ts" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/foo.ts", limit: 100 })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/src/bar.ts", limit: 50 })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/lib/baz.ts", limit: 200 })]),
     ];
     const stats = walkTranscript(entries);
     const src = stats.directoryFootprint.find((e) => e.dir === "/src");
-    expect(src?.reads).toBe(2);
+    expect(src?.reads).toBe(150); // 100 + 50
     expect(src?.writes).toBe(0);
     const lib = stats.directoryFootprint.find((e) => e.dir === "/lib");
-    expect(lib?.reads).toBe(1);
+    expect(lib?.reads).toBe(200);
   });
 
-  test("aggregates Write/Edit into directory footprint writes", () => {
+  test("Read without limit defaults to 2000 lines", () => {
+    const entries = [makeAssistantMsg([makeToolUse("Read", { file_path: "/src/foo.ts" })])];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.reads).toBe(2000);
+  });
+
+  test("aggregates Write byte count and Edit line count into directory footprint writes", () => {
     const entries = [
-      makeAssistantMsg([makeToolUse("Write", { file_path: "/src/foo.ts", content: "x" })]),
-      makeAssistantMsg([makeToolUse("Edit", { file_path: "/src/bar.ts", old_string: "a", new_string: "b" })]),
+      makeAssistantMsg([makeToolUse("Write", { file_path: "/src/foo.ts", content: "hello world" })]), // 11 bytes
+      makeAssistantMsg([makeToolUse("Edit", { file_path: "/src/bar.ts", old_string: "a", new_string: "x\ny\nz" })]), // 3 lines
     ];
     const stats = walkTranscript(entries);
     const src = stats.directoryFootprint.find((e) => e.dir === "/src");
-    expect(src?.writes).toBe(2);
+    expect(src?.writes).toBe(14); // 11 bytes + 3 lines
     expect(src?.reads).toBe(0);
   });
 
@@ -380,15 +387,15 @@ describe("walkTranscript", () => {
 
   test("sorts footprint by total activity descending", () => {
     const entries = [
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/a/f.ts" })]),
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/f.ts" })]),
-      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/g.ts" })]),
-      makeAssistantMsg([makeToolUse("Write", { file_path: "/b/h.ts", content: "" })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/a/f.ts", limit: 10 })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/f.ts", limit: 10 })]),
+      makeAssistantMsg([makeToolUse("Read", { file_path: "/b/g.ts", limit: 10 })]),
+      makeAssistantMsg([makeToolUse("Write", { file_path: "/b/h.ts", content: "hello" })]),
     ];
     const stats = walkTranscript(entries);
     expect(stats.directoryFootprint[0].dir).toBe("/b");
-    expect(stats.directoryFootprint[0].reads).toBe(2);
-    expect(stats.directoryFootprint[0].writes).toBe(1);
+    expect(stats.directoryFootprint[0].reads).toBe(20); // 2 × 10
+    expect(stats.directoryFootprint[0].writes).toBe(5); // "hello".length
   });
 
   test("returns empty stats for empty transcript", () => {

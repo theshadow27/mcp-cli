@@ -148,6 +148,14 @@ registerHelp("claude deny", {
   ],
 });
 
+registerHelp("claude status", {
+  name: "mcx claude status",
+  summary: "One-shot session inspector — show transcript metrics for one or more sessions",
+  usage: ["mcx claude status <target>", "mcx claude status <target1>,<target2>", "mcx claude status <target> --json"],
+  options: [["--json", "Output raw JSON instead of formatted display"]],
+  examples: ["mcx claude status Alice", "mcx claude status Alice,Bob", "mcx claude status abc123 --json"],
+});
+
 registerHelp("claude patch-update", {
   name: "mcx claude patch-update",
   summary: "Refresh the patched copy of claude used for mcx-spawned sessions (see #1808)",
