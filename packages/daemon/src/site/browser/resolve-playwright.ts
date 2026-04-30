@@ -49,6 +49,8 @@ let pending: Promise<BrowserType> | null = null;
 export function resolvePlaywright(opts?: {
   candidates?: string[];
   install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
+  /** Override the path checked after a successful install. Defaults to VENDOR_PKG. For testing only. */
+  vendorPkg?: string;
 }): Promise<BrowserType> {
   if (!pending) {
     pending = doResolve(opts).catch((err) => {
@@ -62,6 +64,7 @@ export function resolvePlaywright(opts?: {
 async function doResolve(opts?: {
   candidates?: string[];
   install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
+  vendorPkg?: string;
 }): Promise<BrowserType> {
   const candidates = opts?.candidates ?? playwrightCandidates();
 
@@ -90,16 +93,17 @@ async function doResolve(opts?: {
     );
   }
 
-  if (!existsSync(VENDOR_PKG)) {
+  const resolvedVendorPkg = opts?.vendorPkg ?? VENDOR_PKG;
+  if (!existsSync(resolvedVendorPkg)) {
     throw new Error(
-      `playwright install succeeded but package not found at ${VENDOR_PKG}. ` +
+      `playwright install succeeded but package not found at ${resolvedVendorPkg}. ` +
         `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
     );
   }
 
   console.error("[site] playwright installed successfully");
 
-  const mod = await import(VENDOR_PKG);
+  const mod = await import(resolvedVendorPkg);
   if (!mod.chromium) {
     throw new Error(`playwright installed but chromium export is missing at ${VENDOR_PKG}`);
   }
