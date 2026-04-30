@@ -609,6 +609,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
     // process.cwd() because the latter may be under /private/tmp (e.g. in a QA worktree),
     // which would cause resolveRealpath to return a path that passes the prefix check.
     const linkPath = join("/tmp", `mcp-containment-test-${process.pid}`);
+    rmSync(linkPath, { force: true }); // guard against EEXIST from a crashed prior run
     symlinkSync(homedir(), linkPath);
     try {
       const g = new ContainmentGuard("/unrelated/worktree");
