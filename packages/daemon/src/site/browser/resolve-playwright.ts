@@ -105,7 +105,7 @@ async function doResolve(opts?: {
 
   const mod = await import(resolvedVendorPkg);
   if (!mod.chromium) {
-    throw new Error(`playwright installed but chromium export is missing at ${VENDOR_PKG}`);
+    throw new Error(`playwright installed but chromium export is missing at ${resolvedVendorPkg}`);
   }
   return mod.chromium as BrowserType;
 }
