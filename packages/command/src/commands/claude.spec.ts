@@ -8,10 +8,12 @@ import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
 import {
+  CLAUDE_ONLY_SUBCOMMANDS,
   MODEL_SHORTNAMES,
   buildHeadedCommand,
   buildResumePrompt,
   cmdClaude,
+  defaultDeps,
   defaultGetPrStatus,
   extractIssueNumber,
   formatQuotaBanner,
@@ -5092,5 +5094,52 @@ describe("mcx claude patch-update", () => {
     await expect(cmdClaude(["patch-update", "--bogus"], deps)).rejects.toThrow(ExitError);
     const errCalls = (deps.printError as Mock<(s: string) => void>).mock.calls.map((c) => c[0]);
     expect(errCalls.some((s) => s.includes("--bogus"))).toBe(true);
+  });
+});
+
+// ── CLAUDE_ONLY_SUBCOMMANDS routing regression (#1911) ──
+
+/**
+ * Capture log calls made via `defaultDeps.log` during `fn()`.
+ * `defaultDeps.log` is assigned `console.log` at module-init time, so
+ * reassigning `console.log` at test time does not intercept it. Patching
+ * the exported `defaultDeps.log` property directly does.
+ */
+async function captureDefaultLog(fn: () => Promise<void>): Promise<string[]> {
+  const captured: string[] = [];
+  const origLog = defaultDeps.log;
+  defaultDeps.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    defaultDeps.log = origLog;
+  }
+  return captured;
+}
+
+describe("cmdClaude routing — CLAUDE_ONLY_SUBCOMMANDS regression", () => {
+  test("patch-update --help routes to internal handler without deps injection", async () => {
+    // Exercises the production routing path (no deps arg) via CLAUDE_ONLY_SUBCOMMANDS.
+    // Before #1909 this would fall through to cmdAgent which produced "Unknown claude subcommand".
+    const lines = await captureDefaultLog(() => cmdClaude(["patch-update", "--help"]));
+
+    const output = lines.join("\n");
+    expect(output).not.toContain("Unknown claude subcommand");
+    expect(output.toLowerCase()).toContain("patch-update");
+  });
+
+  test("every CLAUDE_ONLY_SUBCOMMANDS member routes to internal handler without deps injection", async () => {
+    // Structural guard: if a new claude-only subcommand is added to cmdClaudeInternal's
+    // switch but forgotten in CLAUDE_ONLY_SUBCOMMANDS, it would silently fall through to
+    // cmdAgent and produce "Unknown subcommand" for callers.
+    for (const sub of CLAUDE_ONLY_SUBCOMMANDS) {
+      // Use --help so we exercise routing without triggering IPC or real side effects.
+      const lines = await captureDefaultLog(() => cmdClaude([sub, "--help"]));
+
+      const output = lines.join("\n");
+      expect(output).not.toContain("Unknown claude subcommand");
+      // The internal help path emits something mentioning the subcommand.
+      expect(output.toLowerCase()).toContain(sub);
+    }
   });
 });
