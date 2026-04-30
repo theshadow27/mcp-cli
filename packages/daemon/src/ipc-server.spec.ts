@@ -2198,8 +2198,8 @@ describe("IpcServer HTTP transport", () => {
     });
 
     test("GET /events with invalid pr returns 400", async () => {
+      startServerWithBus();
       for (const bad of ["abc", "1.5", "-1", "0", ""]) {
-        startServerWithBus();
         const res = await fetch(`http://localhost/events?pr=${encodeURIComponent(bad)}`, {
           method: "GET",
           unix: socketPath,
@@ -3309,8 +3309,8 @@ describe("IpcServer HTTP transport", () => {
   // -- GET /events NDJSON endpoint tests (ring-buffer / pushEvent path) --
 
   test("GET /events with invalid pr returns 400 on ring-buffer path", async () => {
+    startServer();
     for (const bad of ["abc", "1.5", "-1", "0", ""]) {
-      startServer();
       const res = await fetch(`http://localhost/events?pr=${encodeURIComponent(bad)}`, {
         method: "GET",
         unix: socketPath,
