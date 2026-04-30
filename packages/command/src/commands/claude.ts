@@ -311,9 +311,14 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     case "patch-update":
       await claudePatchUpdate(subArgs, d);
       break;
+    case "status": {
+      const { cmdAgent } = await import("./agent");
+      await cmdAgent(["claude", sub, ...subArgs]);
+      break;
+    }
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", or "worktrees".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", "worktrees", or "status".`,
       );
       d.exit(1);
   }
@@ -2094,6 +2099,7 @@ Usage:
   mcx claude log <session> --json          Raw JSON transcript output
   mcx claude log <session> --json --jq '.' Apply jq filter to JSON output
   mcx claude log <session> --full          Full output (no truncation)
+  mcx claude status <target>[,<target>...] [--json]  One-shot session inspector
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
   mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)

@@ -88,11 +88,17 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
 
           if (name === "Read" && typeof input.file_path === "string") {
             const d = dirname(input.file_path);
-            dirReads.set(d, (dirReads.get(d) ?? 0) + 1);
-          } else if (
-            (name === "Edit" || name === "Write" || name === "MultiEdit") &&
-            typeof input.file_path === "string"
-          ) {
+            const lines = typeof input.limit === "number" ? input.limit : 2000;
+            dirReads.set(d, (dirReads.get(d) ?? 0) + lines);
+          } else if (name === "Write" && typeof input.file_path === "string") {
+            const d = dirname(input.file_path);
+            const bytes = typeof input.content === "string" ? input.content.length : 0;
+            dirWrites.set(d, (dirWrites.get(d) ?? 0) + bytes);
+          } else if (name === "Edit" && typeof input.file_path === "string") {
+            const d = dirname(input.file_path);
+            const lines = typeof input.new_string === "string" ? input.new_string.split("\n").length : 0;
+            dirWrites.set(d, (dirWrites.get(d) ?? 0) + lines);
+          } else if (name === "MultiEdit" && typeof input.file_path === "string") {
             const d = dirname(input.file_path);
             dirWrites.set(d, (dirWrites.get(d) ?? 0) + 1);
           } else if (name === "Bash" && typeof input.command === "string") {
@@ -221,7 +227,7 @@ export function formatStatusStanza(
   // Directory footprint
   if (stats.directoryFootprint.length > 0) {
     lines.push("");
-    lines.push("Directory footprint (read / write):");
+    lines.push("Directory footprint (read / write lines):");
     const maxDir = Math.min(stats.directoryFootprint.length, 6);
     const dirColWidth = Math.max(...stats.directoryFootprint.slice(0, maxDir).map((e) => e.dir.length), 10) + 2;
     for (let i = 0; i < maxDir; i++) {
