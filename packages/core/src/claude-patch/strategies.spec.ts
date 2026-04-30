@@ -72,14 +72,19 @@ describe("STRATEGY_NOOP_PRE_2_1_120", () => {
 });
 
 describe("STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1", () => {
-  test("matches 2.1.120 and 2.1.121", () => {
+  test("matches 2.1.120 and every later version (no upper bound)", () => {
     expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.120")).toBe(true);
     expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.121")).toBe(true);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.122")).toBe(true);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.123")).toBe(true);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.999")).toBe(true);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.2.0")).toBe(true);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("3.0.0")).toBe(true);
   });
-  test("does not match earlier or later versions", () => {
+  test("does not match versions before the host check existed", () => {
     expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.119")).toBe(false);
-    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.122")).toBe(false);
-    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.2.0")).toBe(false);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("2.1.0")).toBe(false);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.matches("1.99.99")).toBe(false);
   });
   test("apply replaces all 4 occurrences in a synthetic buffer", () => {
     const synthetic = enc.encode(
@@ -117,13 +122,13 @@ describe("resolveStrategy", () => {
   test("picks noop for old versions", () => {
     expect(resolveStrategy("2.1.119")?.id).toBe("noop-pre-2.1.120");
   });
-  test("picks ipv6 loopback for 2.1.120-2.1.121", () => {
+  test("picks ipv6 loopback for every 2.1.120+ version", () => {
     expect(resolveStrategy("2.1.120")?.id).toBe("host-check-ipv6-loopback-v1");
     expect(resolveStrategy("2.1.121")?.id).toBe("host-check-ipv6-loopback-v1");
-  });
-  test("returns null for unsupported newer versions", () => {
-    expect(resolveStrategy("2.1.122")).toBeNull();
-    expect(resolveStrategy("3.0.0")).toBeNull();
+    expect(resolveStrategy("2.1.122")?.id).toBe("host-check-ipv6-loopback-v1");
+    expect(resolveStrategy("2.1.123")?.id).toBe("host-check-ipv6-loopback-v1");
+    expect(resolveStrategy("2.2.0")?.id).toBe("host-check-ipv6-loopback-v1");
+    expect(resolveStrategy("3.0.0")?.id).toBe("host-check-ipv6-loopback-v1");
   });
   test("registry order is first-match-wins", () => {
     const overlapping = [

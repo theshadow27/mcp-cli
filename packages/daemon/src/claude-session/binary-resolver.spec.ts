@@ -50,21 +50,25 @@ describe("resolveClaudeForSpawn", () => {
     expect(r.error).toMatch(/exit 137/);
   });
 
-  test('noop strategy (claude < 2.1.120) → resolved with no TLS, binaryPath="claude" (PATH lookup preserved)', async () => {
+  test("noop strategy (claude < 2.1.120) → resolved with no TLS, binaryPath = resolved sourcePath", async () => {
     const r = await resolveClaudeForSpawn(makeDeps({ versionResolver: async () => "2.1.119" }));
     expect(isResolved(r)).toBe(true);
     if (!isResolved(r)) throw new Error("typeguard");
-    // Preserves legacy PATH-resolved spawn — never an absolute path.
-    expect(r.binaryPath).toBe("claude");
+    // binaryPath now matches sourcePath so config / env overrides actually
+    // pin the spawn target; previously this returned the literal string
+    // "claude" and PATH-resolved at spawn time, silently bypassing overrides.
+    expect(r.binaryPath).toBe("/usr/local/bin/claude");
+    expect(r.binaryPath).toBe(r.sourcePath);
     expect(r.tlsConfig).toBeNull();
     expect(r.strategyId).toBe("noop-pre-2.1.120");
     expect(r.version).toBe("2.1.119");
-    // sourcePath is informational only — `which claude` result, not the spawn target.
     expect(r.sourcePath).toBe("/usr/local/bin/claude");
   });
 
   test("unsupported version → unsupported-version error", async () => {
-    const r = await resolveClaudeForSpawn(makeDeps({ versionResolver: async () => "9.9.9" }));
+    // Inject empty registry — built-in registry has no gaps so "unsupported"
+    // is otherwise unreachable. See strategies.ts for the rationale.
+    const r = await resolveClaudeForSpawn(makeDeps({ versionResolver: async () => "9.9.9", strategies: [] }));
     expect(isResolved(r)).toBe(false);
     if (isResolved(r)) throw new Error("typeguard");
     expect(r.reason).toBe("unsupported-version");

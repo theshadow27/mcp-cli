@@ -15,6 +15,17 @@ import {
 } from "./patcher";
 import type { PatcherDeps } from "./patcher";
 
+/** Unset an env var properly (assigning undefined would coerce to string "undefined"). */
+function unsetEnv(key: string): void {
+  delete process.env[key];
+}
+
+/** Restore an env var captured by `process.env.X` to its original state. */
+function restoreEnv(key: string, prev: string | undefined): void {
+  if (prev === undefined) unsetEnv(key);
+  else process.env[key] = prev;
+}
+
 const enc = new TextEncoder();
 
 function makeFakeDeps(overrides: Partial<PatcherDeps> = {}): PatcherDeps {
@@ -132,10 +143,15 @@ describe("updatePatchedClaude", () => {
   });
 
   test("unsupported version returns unsupported outcome", async () => {
+    // The built-in registry has no gaps (noop covers <2.1.120, ipv6-loopback
+    // covers everything from 2.1.120 onward), so to exercise the "unsupported"
+    // path we inject an empty strategy registry. This still validates the
+    // patcher's failure mode for the real-world case where a future claude
+    // release ships a check that no registered strategy can handle.
     const sourcePath = makeFakeClaudeBinary(tmpDir, "9.9.9");
     const result = await updatePatchedClaude(
       { sourcePath, storeDir },
-      makeFakeDeps({ versionResolver: async () => "9.9.9" }),
+      makeFakeDeps({ versionResolver: async () => "9.9.9", strategies: [] }),
     );
     expect(result.status).toBe("unsupported");
     if (result.status !== "unsupported") throw new Error("typeguard");
@@ -276,8 +292,104 @@ describe("default subprocess wrappers", () => {
     // Either claude is on PATH (returns abs path) or it's not (returns null).
     // Both branches are valid; we only care that the function runs without throwing
     // and returns one of the two expected shapes.
-    const result = resolveSourceClaudePath();
-    expect(result === null || (typeof result === "string" && result.length > 0)).toBe(true);
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    unsetEnv("MCX_CLAUDE_BINARY");
+    try {
+      const result = resolveSourceClaudePath();
+      expect(result === null || (typeof result === "string" && result.length > 0)).toBe(true);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath honors MCX_CLAUDE_BINARY when the file exists", () => {
+    // Use bun's own binary as the override target — guaranteed to exist on the
+    // path running this test, and is an executable file so the existsSync check
+    // passes.
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = process.execPath;
+    try {
+      expect(resolveSourceClaudePath()).toBe(process.execPath);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath throws when MCX_CLAUDE_BINARY points at a missing file", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = "/nonexistent/path/to/claude";
+    try {
+      expect(() => resolveSourceClaudePath()).toThrow(/does not exist/);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath ignores empty MCX_CLAUDE_BINARY and falls back to PATH", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = "   ";
+    try {
+      const result = resolveSourceClaudePath();
+      expect(result === null || (typeof result === "string" && result.length > 0)).toBe(true);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath honors claudeBinary from the config file when env is unset", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    unsetEnv("MCX_CLAUDE_BINARY");
+    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    writeFileSync(cfgPath, JSON.stringify({ claudeBinary: process.execPath }));
+    try {
+      expect(resolveSourceClaudePath(cfgPath)).toBe(process.execPath);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath: env wins over config file", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = process.execPath;
+    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    writeFileSync(cfgPath, JSON.stringify({ claudeBinary: "/this/should/be/ignored" }));
+    try {
+      // env wins → returns process.execPath, not the (nonexistent) config path
+      expect(resolveSourceClaudePath(cfgPath)).toBe(process.execPath);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath throws when config claudeBinary points at a missing file", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    unsetEnv("MCX_CLAUDE_BINARY");
+    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    writeFileSync(cfgPath, JSON.stringify({ claudeBinary: "/nonexistent/path/to/claude" }));
+    try {
+      expect(() => resolveSourceClaudePath(cfgPath)).toThrow(/does not exist/);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("resolveSourceClaudePath silently falls through when config file is missing or malformed", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    unsetEnv("MCX_CLAUDE_BINARY");
+    const dir = mkdtempSync(join(tmpdir(), "rsc-cfg-"));
+    const missingPath = join(dir, "this-file-does-not-exist.json");
+    const malformedPath = join(dir, "malformed-cfg.json");
+    writeFileSync(malformedPath, "{ not valid json");
+    try {
+      // Both paths must not throw — they fall through to PATH lookup,
+      // which returns either a path or null depending on the test env.
+      const r1 = resolveSourceClaudePath(missingPath);
+      const r2 = resolveSourceClaudePath(malformedPath);
+      expect(r1 === null || typeof r1 === "string").toBe(true);
+      expect(r2 === null || typeof r2 === "string").toBe(true);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
   });
 });
 

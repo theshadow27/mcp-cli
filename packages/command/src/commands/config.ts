@@ -87,13 +87,14 @@ async function configSources(deps: ConfigDeps): Promise<void> {
 
 // -- CLI option keys --
 
-const VALID_KEYS = ["trust-claude", "terminal", "ws-port"] as const;
+const VALID_KEYS = ["trust-claude", "terminal", "ws-port", "claude-binary"] as const;
 type ConfigKey = (typeof VALID_KEYS)[number];
 
-const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal" | "wsPort"> = {
+const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal" | "wsPort" | "claudeBinary"> = {
   "trust-claude": "trustClaude",
   terminal: "terminal",
   "ws-port": "wsPort",
+  "claude-binary": "claudeBinary",
 };
 
 /** Keys whose values are stored as booleans (vs strings) */

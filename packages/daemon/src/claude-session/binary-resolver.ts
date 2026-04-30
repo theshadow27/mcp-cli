@@ -28,6 +28,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
+  type PatchStrategy,
   type PatchedMeta,
   defaultVersionResolver,
   options,
@@ -78,6 +79,8 @@ export interface ResolverDeps {
   patchedStoreDir?: string;
   /** Default: generate or load the cached cert under `~/.mcp-cli/tls/`. */
   ensureCert?: () => SelfSignedMaterial;
+  /** Default: BUILTIN_STRATEGIES. Override for tests. */
+  strategies?: readonly PatchStrategy[];
 }
 
 export function isResolved(r: ClaudeResolution): r is ResolvedClaude {
@@ -111,7 +114,7 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
     };
   }
 
-  const strategy = resolveStrategy(version);
+  const strategy = resolveStrategy(version, deps.strategies);
   if (!strategy) {
     return {
       error: `claude ${version} is not supported by any registered patch strategy. Upgrade mcx (which ships a strategy registry that's tested against new claude releases), or file an issue at https://github.com/theshadow27/mcp-cli/issues with the version.`,
@@ -120,13 +123,16 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
     };
   }
 
-  // noop strategy: no patching needed. Spawn via PATH lookup (legacy
-  // behavior) so symlink/wrapper rewrites between resolver and spawn keep
-  // working — `which` is consulted only to detect *whether* claude exists,
-  // never to pin the resolved path.
+  // noop strategy: no patching needed. Use the resolved sourcePath directly —
+  // it already accounts for `MCX_CLAUDE_BINARY` env, the `claudeBinary` config
+  // override, and `which claude` fallback. Earlier versions returned the
+  // literal string "claude" here so symlink/wrapper rewrites between resolver
+  // and spawn would take effect; that pattern is now subsumed by the override
+  // mechanism, and the literal-"claude" form would silently bypass the user's
+  // configured pin (e.g. an archived 2.1.119) when PATH points elsewhere.
   if (strategy.id.startsWith("noop")) {
     return {
-      binaryPath: "claude",
+      binaryPath: sourcePath,
       tlsConfig: null,
       strategyId: strategy.id,
       version,

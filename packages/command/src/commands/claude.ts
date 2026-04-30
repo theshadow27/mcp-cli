@@ -215,7 +215,17 @@ export const defaultDeps: ClaudeDeps = {
 // ── Entry point ──
 
 /**
- * `mcx claude` — thin alias that routes to `mcx agent claude`.
+ * Subcommands that exist only on `mcx claude`, not in the generic agent
+ * dispatcher. These must be handled by `cmdClaudeInternal` directly —
+ * forwarding them to `cmdAgent` produces an "Unknown subcommand" error
+ * because the agent dispatcher only knows the cross-provider verbs.
+ */
+const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update"]);
+
+/**
+ * `mcx claude` — thin alias that routes to `mcx agent claude` for shared
+ * subcommands (spawn/ls/send/...), and dispatches claude-only subcommands
+ * (patch-update) through the internal handler.
  *
  * Kept as a top-level command because orchestration workflows, memory files,
  * and CLAUDE.md all reference `mcx claude` directly.
@@ -231,8 +241,7 @@ export async function cmdClaude(args: string[], deps?: Partial<ClaudeDeps>): Pro
     return;
   }
 
-  if (deps) {
-    // Direct dispatch for testing with injected deps
+  if (deps || CLAUDE_ONLY_SUBCOMMANDS.has(sub)) {
     await cmdClaudeInternal(args, deps);
     return;
   }
