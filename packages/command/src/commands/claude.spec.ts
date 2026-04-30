@@ -152,18 +152,34 @@ describe("parseSpawnArgs", () => {
   test("auto-generated worktree names are unique even when Date.now is frozen (#1836)", () => {
     // Freeze Date.now to reproduce the same-millisecond condition that caused
     // collisions with the old `claude-${Date.now().toString(36)}` scheme.
-    const orig = Date.now;
+    // Mock crypto.randomUUID to a deterministic counter so the test is never
+    // probabilistically flaky (original relied on 8 hex chars never colliding
+    // across 50 calls — ~1-in-3.5M chance of false failure, see #1889).
+    const origDateNow = Date.now;
     Date.now = () => 1_745_913_600_000;
+    const origRandomUUID = globalThis.crypto.randomUUID;
+    let callCount = 0;
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      value: () => {
+        const prefix = callCount.toString(16).padStart(8, "0");
+        callCount++;
+        return `${prefix}-0000-4000-8000-000000000000`;
+      },
+      configurable: true,
+      writable: true,
+    });
     try {
-      const names = new Set<string>();
       for (let i = 0; i < 50; i++) {
         const result = parseSpawnArgs(["--worktree", "--task", "x"]);
-        const wt = result.worktree ?? "";
-        expect(names.has(wt)).toBe(false);
-        names.add(wt);
+        expect(result.worktree).toBe(`claude-${i.toString(16).padStart(8, "0")}`);
       }
     } finally {
-      Date.now = orig;
+      Date.now = origDateNow;
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        value: origRandomUUID,
+        configurable: true,
+        writable: true,
+      });
     }
   });
 
