@@ -202,6 +202,20 @@ git worktree remove .claude/worktrees/sprint-{N}
 git branch -D sprint-{N}   # local branch (remote was --delete-branch'd by gh pr merge)
 ```
 
+## Introspection cadence (sprints ending in 7)
+
+If the sprint number ends in 7 (17, 27, 37, 47, **57**, 67…), queue a
+code-first introspection round to feed the *next* sprint's plan. The round
+runs as part of this retro: spawn one Explore agent with the prompt template
+at `.claude/skills/sprint/references/introspection.md`, triage findings with
+the user, and file the load-bearing ones as initiative issues. They land in
+sprint-{N+1}'s plan as Bucket-1 candidates.
+
+Skip if the sprint number does not end in 7.
+
+The first round (sprint 47 → sprint 48) produced #1856–#1866; #1867 tracks
+the cadence. See `introspection.md` for the prompt + triage flow.
+
 ## Clear the sprint-active sentinel
 
 ```bash

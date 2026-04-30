@@ -47,6 +47,7 @@ The sprint number threads through all phases:
 - `references/run.md` — sprint execution phase (orchestrator prose)
 - `references/review.md` — release + changelog phase
 - `references/retro.md` — retrospective / diary phase
+- `references/introspection.md` — periodic code-first introspection (sprints ending in 7)
 
 **Per-phase logic is defined in `.mcx.yaml` + `.claude/phases/*.ts`**, not
 in `run.md`. Inspect a phase with `mcx phase show <name>` or preview its
