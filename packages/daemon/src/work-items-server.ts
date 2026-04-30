@@ -5,7 +5,7 @@
  * Tools: track, untrack, list, get, update — mapping to WorkItemDb CRUD.
  */
 
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, isStandardPhase, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -496,6 +496,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -524,6 +530,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -558,6 +570,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             const key = String(a.key ?? "");
             if (!workItemId || !repoRoot || !key) {
@@ -586,6 +604,12 @@ export class WorkItemsServer {
             }
             const workItemId = String(a.workItemId ?? "");
             const rawRepoRoot = String(a.repoRoot ?? "").trim();
+            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
+              return {
+                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
+                isError: true,
+              };
+            }
             const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
             if (!workItemId || !repoRoot) {
               return {

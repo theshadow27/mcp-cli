@@ -261,4 +261,16 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
     });
     expect(resp.error).toBeDefined();
   });
+
+  test("relative repoRoot is rejected — returns IPC error with clear message", async () => {
+    const { rpc } = start();
+
+    for (const method of ["aliasStateGet", "aliasStateSet", "aliasStateDelete", "aliasStateAll"] as const) {
+      const params: Record<string, unknown> = { repoRoot: "../other-repo", namespace: "ns", key: "k" };
+      if (method === "aliasStateSet") params.value = "x";
+      const resp = await rpc({ id: `rel-${method}`, method, params });
+      expect(resp.error).toBeDefined();
+      expect(String(resp.error?.message ?? "")).toContain("absolute");
+    }
+  });
 });

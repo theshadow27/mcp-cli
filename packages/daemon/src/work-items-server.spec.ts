@@ -1392,6 +1392,26 @@ describe("phase_state tools", () => {
     }
   });
 
+  test("relative repoRoot is rejected — returns isError with clear message", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
+
+    for (const toolName of ["phase_state_get", "phase_state_set", "phase_state_delete", "phase_state_list"] as const) {
+      const result = await client.callTool({
+        name: toolName,
+        arguments: { workItemId: "issue:100", repoRoot: "../other-repo", key: "k", value: "v" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("absolute");
+    }
+  });
+
   test("phase_state_set rejects undefined value", async () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;

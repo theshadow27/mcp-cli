@@ -5,6 +5,7 @@
  * Encoding: JSON request/response bodies
  */
 
+import { isAbsolute } from "node:path";
 import { z } from "zod/v4";
 import type { AliasType } from "./alias";
 import type { MonitorAliasMetadata } from "./alias-bundle";
@@ -481,7 +482,10 @@ export const GetWorkItemParamsSchema = z
 // -- Alias state schemas --
 
 const AliasStateScope = z.object({
-  repoRoot: z.string().min(1),
+  repoRoot: z
+    .string()
+    .min(1)
+    .refine((v) => isAbsolute(v), { message: "repoRoot must be an absolute path" }),
   namespace: z.string().min(1),
 });
 
