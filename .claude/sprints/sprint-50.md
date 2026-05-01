@@ -134,3 +134,7 @@ loop. Plan-time triage closed 11 dups/already-done. Adversarial review on
   bloat as intended; only loss observed was the `mcx tracked --json`
   schema (`.id` not `.workItem`/`.items`), recovered with one inspect
   call. Net positive — keep trying.
+- **Author-trust constraint added to plan skill** (mid-run, user-flagged):
+  `references/plan.md` Step 1 now requires `--author theshadow27` filter on
+  issue surveys. Sprint 50's tracked items audited clean (all 17 from
+  theshadow27); constraint codified to prevent future drift.
