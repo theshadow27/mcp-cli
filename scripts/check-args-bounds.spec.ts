@@ -40,6 +40,12 @@ describe("check-args-bounds isSafe()", () => {
       const lines = ["  val = args[++i]; // ?? should this be nullish?"];
       expect(isSafe(lines, 0)).toBe(false);
     });
+
+    test("comment containing i + 1 and args.length is not a bounds guard", () => {
+      // Rule 3 must strip inline comments before testing for a bounds comparison
+      const lines = ["  // TODO: add i + 1 < args.length check here", "  val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
   });
 
   describe("safe cases", () => {

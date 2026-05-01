@@ -9,8 +9,9 @@
  * A line is considered SAFE if ANY of the following hold:
  *   1. Null coalescing immediately after args[++i]:  args[++i] ??
  *   2. Truthy pre-check: current or preceding line contains args[i + 1]
- *   3. Explicit bounds check in the preceding 6 lines: both `i + 1` and
- *      `args.length` appear on the same line
+ *   3. Explicit bounds comparison on the current line or in the preceding 6 lines:
+ *      `i + 1 <|<=|>|>= args.length` or the reversed form — inline comments stripped
+ *      first so `// i + 1 < args.length` is not treated as a guard
  *   4. Post-check on the assigned variable: the line assigns args[++i] to a
  *      variable, and one of the next 2 lines checks that variable with
  *      `!varName`, `varName === undefined`, `varName === null`, or
@@ -35,8 +36,8 @@ const ACCESS_PATTERN = /args\[\+\+i\]/;
 /** Matches a variable assignment from args[++i], e.g. `const val = args[++i]` or `foo = args[++i]`. */
 const ASSIGN_PATTERN = /\b(\w+)\s*=\s*args\[\+\+i\]/;
 
-/** Matches an explicit `i + 1` token (with optional whitespace). */
-const I_PLUS_1 = /\bi\s*\+\s*1\b/;
+/** Matches a real bounds comparison between `i + 1` and `args.length` in either order. */
+const BOUNDS_EXPR = /\bi\s*\+\s*1\s*[<>]=?\s*args\.length\b|\bargs\.length\s*[<>]=?\s*\bi\s*\+\s*1\b/;
 
 export interface Violation {
   file: string;
@@ -64,11 +65,11 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
   if (TRUTHY_PRE_CHECK.test(line)) return true;
   if (lineIdx > 0 && TRUTHY_PRE_CHECK.test(lines[lineIdx - 1])) return true;
 
-  // Rule 3: explicit bounds check in the preceding 6 lines *or on the current line*
-  // (includes same-line ternary: `val = i + 1 < args.length ? args[++i] : null`)
+  // Rule 3: explicit bounds comparison on the current line or in the preceding 6 lines.
+  // Strip inline comments before matching so `// i + 1 < args.length` is not a guard.
   const lookback = Math.max(0, lineIdx - 6);
   for (let j = lookback; j <= lineIdx; j++) {
-    if (I_PLUS_1.test(lines[j]) && lines[j].includes("args.length")) return true;
+    if (BOUNDS_EXPR.test(lines[j].replace(/\/\/.*$/, ""))) return true;
   }
 
   // Rule 4: post-check on assigned variable
