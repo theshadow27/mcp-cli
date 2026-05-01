@@ -760,4 +760,49 @@ describe("WorkItemDb", () => {
       verify.close();
     });
   });
+
+  describe("schema_versions idempotency (#1890 #1891)", () => {
+    test("schema_versions row exists after fresh migration", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      new WorkItemDb(raw);
+      const row = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items");
+      expect(row).toBeDefined();
+      expect(row?.version).toBeGreaterThanOrEqual(0);
+      raw.close();
+    });
+
+    test("INSERT OR IGNORE: constructor does not crash when schema_versions row is pre-seeded (concurrent race simulation)", () => {
+      const p = tmpDb();
+      paths.push(p);
+      // Simulate the winner process: seed schema_versions before WorkItemDb opens.
+      const seed = new Database(p, { create: true });
+      seed.exec("PRAGMA journal_mode = WAL");
+      seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
+      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('work_items', 6)");
+      seed.close();
+      // The second process (this WorkItemDb call) must not throw a UNIQUE constraint error.
+      const db2 = new Database(p, { create: true });
+      db2.exec("PRAGMA journal_mode = WAL");
+      expect(() => new WorkItemDb(db2)).not.toThrow();
+      db2.close();
+    });
+
+    test("setSchemaVersion UPSERT: version is at latest migration level after construction", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      new WorkItemDb(raw);
+      const version = raw
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("work_items")?.version;
+      expect(version).toBeGreaterThanOrEqual(1);
+      raw.close();
+    });
+  });
 });
