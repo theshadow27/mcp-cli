@@ -34,6 +34,12 @@ describe("check-args-bounds isSafe()", () => {
       const lines = ["  const next = args[i + 1];", "  val = args[++i];"];
       expect(isSafe(lines, 1)).toBe(false);
     });
+
+    test("?? in a comment is not a null-coalescing guard", () => {
+      // Rule 1 must require ?? adjacent to args[++i], not anywhere on the line
+      const lines = ["  val = args[++i]; // ?? should this be nullish?"];
+      expect(isSafe(lines, 0)).toBe(false);
+    });
   });
 
   describe("safe cases", () => {
@@ -97,6 +103,12 @@ describe("check-args-bounds isSafe()", () => {
 
     test("truthy pre-check on same line via args[i + 1]", () => {
       const lines = ["  if (args[i + 1]) val = args[++i];"];
+      expect(isSafe(lines, 0)).toBe(true);
+    });
+
+    test("same-line ternary bounds check", () => {
+      // Rule 3 must include the current line (j <= lineIdx) to catch this pattern
+      const lines = ["  val = i + 1 < args.length ? args[++i] : null;"];
       expect(isSafe(lines, 0)).toBe(true);
     });
   });

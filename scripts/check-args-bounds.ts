@@ -7,7 +7,7 @@
  * This causes subtle bugs where missing required flags go undetected.
  *
  * A line is considered SAFE if ANY of the following hold:
- *   1. Null coalescing on the same line:  ??
+ *   1. Null coalescing immediately after args[++i]:  args[++i] ??
  *   2. Truthy pre-check: current or preceding line contains args[i + 1]
  *   3. Explicit bounds check in the preceding 6 lines: both `i + 1` and
  *      `args.length` appear on the same line
@@ -53,8 +53,9 @@ export interface Violation {
 export function isSafe(lines: string[], lineIdx: number): boolean {
   const line = lines[lineIdx];
 
-  // Rule 1: null coalescing on same line
-  if (line.includes("??")) return true;
+  // Rule 1: null coalescing immediately after args[++i] — not anywhere on the line,
+  // which would match `??` in comments or on unrelated sub-expressions.
+  if (/args\[\+\+i\]\s*\?\?/.test(line)) return true;
 
   // Rule 2: truthy pre-check — current or preceding line uses args[i + 1] as a guard
   // Must appear in a boolean context: `&& args[i + 1]`, `|| args[i + 1]`,
@@ -63,9 +64,10 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
   if (TRUTHY_PRE_CHECK.test(line)) return true;
   if (lineIdx > 0 && TRUTHY_PRE_CHECK.test(lines[lineIdx - 1])) return true;
 
-  // Rule 3: explicit bounds check anywhere in the preceding 6 lines
+  // Rule 3: explicit bounds check in the preceding 6 lines *or on the current line*
+  // (includes same-line ternary: `val = i + 1 < args.length ? args[++i] : null`)
   const lookback = Math.max(0, lineIdx - 6);
-  for (let j = lookback; j < lineIdx; j++) {
+  for (let j = lookback; j <= lineIdx; j++) {
     if (I_PLUS_1.test(lines[j]) && lines[j].includes("args.length")) return true;
   }
 
