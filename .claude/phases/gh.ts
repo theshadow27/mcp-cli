@@ -6,7 +6,7 @@
  * one subprocess. Mutations skip dedup.
  */
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface GhResult {
   stdout: string;
@@ -33,7 +33,10 @@ export async function gh(
 
   if (!skipDedup) {
     inflight.set(key, promise);
-    promise.finally(() => inflight.delete(key));
+    promise.then(
+      () => inflight.delete(key),
+      () => inflight.delete(key),
+    );
   }
 
   return promise;

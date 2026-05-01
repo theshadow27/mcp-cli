@@ -136,7 +136,7 @@ defineAlias({
       );
     }
 
-    const result = mergePr(work.prNumber);
+    const result = await mergePr(work.prNumber);
     if (!result.ok) {
       return {
         merged: false,
