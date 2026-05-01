@@ -14,6 +14,7 @@ export interface RemoteHelperHandlers {
 
 export interface ProtocolOptions {
   marksDir: string;
+  onError?: (message: string) => void;
 }
 
 /** Read a single line from a ReadableStream reader, stripping the trailing newline. */
@@ -71,6 +72,7 @@ export async function runProtocol(
   const reader = stdin.getReader();
   const writer = stdout.getWriter();
   const buffer = { remainder: "" };
+  const logError = options.onError ?? ((msg: string) => process.stderr.write(msg));
 
   try {
     while (true) {
@@ -97,7 +99,7 @@ export async function runProtocol(
           const response = await handlers.list(forPush);
           await writeLine(writer, `${response}\n`);
         } catch (err) {
-          process.stderr.write(`git-remote-mcx: list failed: ${errorMessage(err)}\n`);
+          logError(`git-remote-mcx: list failed: ${errorMessage(err)}\n`);
           await writeLine(writer, "\n");
           return;
         }
@@ -121,7 +123,7 @@ export async function runProtocol(
           const response = await handlers.handleImport(refs);
           await writeLine(writer, response);
         } catch (err) {
-          process.stderr.write(`git-remote-mcx: import failed: ${errorMessage(err)}\n`);
+          logError(`git-remote-mcx: import failed: ${errorMessage(err)}\n`);
           await writeLine(writer, "done\n");
           return;
         }
@@ -148,7 +150,15 @@ export async function runProtocol(
           const response = await handlers.handleExport(exportStream);
           await writeLine(writer, response);
         } catch (err) {
-          process.stderr.write(`git-remote-mcx: export failed: ${errorMessage(err)}\n`);
+          // Best-effort cancel: exportStream.cancel() throws if the handler held a
+          // reader lock when it threw (locked stream). Swallow that so the original
+          // error always reaches logError + the terminator write below.
+          try {
+            await exportStream.cancel("handler-error");
+          } catch {
+            /* locked */
+          }
+          logError(`git-remote-mcx: export failed: ${errorMessage(err)}\n`);
           await writeLine(writer, "\n");
           return;
         }
