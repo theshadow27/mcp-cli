@@ -19,6 +19,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   AbstractWorkerServer,
   BASE_WORKER_EVENT_TYPES,
+  type BaseWorkerEvent,
   type DbCost,
   type DbUpsertSession,
   type WorkerServerDescriptor,
@@ -37,7 +38,7 @@ interface MonitorEventMessage {
 
 export const WORKER_EVENT_TYPES: ReadonlySet<string> = new Set([...BASE_WORKER_EVENT_TYPES, "monitor:event"]);
 
-export function isWorkerEvent(data: unknown): data is MonitorEventMessage {
+export function isWorkerEvent(data: unknown): data is BaseWorkerEvent | MonitorEventMessage {
   return (
     typeof data === "object" &&
     data !== null &&

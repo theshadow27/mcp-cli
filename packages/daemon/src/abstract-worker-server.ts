@@ -200,6 +200,7 @@ export abstract class AbstractWorkerServer {
           resolve();
         } else if (event.data?.type === "error") {
           clearTimeout(timeout);
+          cleanup();
           reject(new Error(`${d.displayName} session worker init failed: ${event.data.message}`));
         }
       };
@@ -226,7 +227,7 @@ export abstract class AbstractWorkerServer {
           handshakeTimer = setTimeout(() => {
             if (connectResolved) return;
             this.metrics.counter("mcpd_connect_timeouts_total").inc();
-            reject(new Error("MCP handshake timeout (10s)"));
+            reject(new Error(`MCP handshake timeout (${this.handshakeTimeoutMs / 1000}s)`));
           }, this.handshakeTimeoutMs);
         }),
       ]);

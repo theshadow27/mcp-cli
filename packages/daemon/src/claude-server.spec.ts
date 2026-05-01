@@ -1245,7 +1245,7 @@ describe("ClaudeServer connect timeout metric", () => {
     const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50, undefined, undefined, testMetrics);
 
-    await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
+    await expect(server.start()).rejects.toThrow("MCP handshake timeout (0.05s)");
     expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
