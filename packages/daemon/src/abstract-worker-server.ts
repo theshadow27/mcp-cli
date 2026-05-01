@@ -275,12 +275,12 @@ export abstract class AbstractWorkerServer {
       } catch {
         // ignore close errors
       }
+      this.cleanupWorkerHandlers(worker);
       try {
         worker.terminate();
       } catch {
         /* worker may already be dead */
       }
-      this.cleanupWorkerHandlers(worker);
       this.worker = null;
       this.transport = null;
       this.client = null;
