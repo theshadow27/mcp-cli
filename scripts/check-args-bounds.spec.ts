@@ -22,6 +22,18 @@ describe("check-args-bounds isSafe()", () => {
       const lines = ["  sourcePath = args[++i];", "  else if (a.startsWith('--source=')) sourcePath = a.slice(9);"];
       expect(isSafe(lines, 0)).toBe(false);
     });
+
+    test("post-check matches longer identifier with same suffix (word-boundary)", () => {
+      // 'id' should not match 'requestId === undefined'
+      const lines = ["  id = args[++i];", "  if (requestId === undefined) {"];
+      expect(isSafe(lines, 0)).toBe(false);
+    });
+
+    test("bare args[i + 1] read is not a guard", () => {
+      // Reading args[i + 1] into a variable is not a truthy pre-check
+      const lines = ["  const next = args[i + 1];", "  val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
   });
 
   describe("safe cases", () => {

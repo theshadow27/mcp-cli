@@ -56,9 +56,12 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
   // Rule 1: null coalescing on same line
   if (line.includes("??")) return true;
 
-  // Rule 2: truthy pre-check — current or preceding line contains args[i + 1]
-  if (line.includes("args[i + 1]")) return true;
-  if (lineIdx > 0 && lines[lineIdx - 1].includes("args[i + 1]")) return true;
+  // Rule 2: truthy pre-check — current or preceding line uses args[i + 1] as a guard
+  // Must appear in a boolean context: `&& args[i + 1]`, `|| args[i + 1]`,
+  // `if (args[i + 1]`, or `while (... args[i + 1]` — not a bare read like `const x = args[i + 1]`.
+  const TRUTHY_PRE_CHECK = /(?:&&|\|\||if\s*\(|while\s*\()[^)]*args\[i\s*\+\s*1\]/;
+  if (TRUTHY_PRE_CHECK.test(line)) return true;
+  if (lineIdx > 0 && TRUTHY_PRE_CHECK.test(lines[lineIdx - 1])) return true;
 
   // Rule 3: explicit bounds check anywhere in the preceding 6 lines
   const lookback = Math.max(0, lineIdx - 6);
@@ -74,10 +77,9 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
     for (let j = lineIdx + 1; j <= lookahead; j++) {
       const next = lines[j];
       if (
-        next.includes(`!${varName}`) ||
-        next.includes(`${varName} === undefined`) ||
-        next.includes(`${varName} === null`) ||
-        next.includes(`${varName} == null`)
+        new RegExp(`!\\b${varName}\\b`).test(next) ||
+        new RegExp(`\\b${varName}\\b\\s*===?\\s*(undefined|null)\\b`).test(next) ||
+        new RegExp(`\\b(undefined|null)\\s*===?\\s*\\b${varName}\\b`).test(next)
       ) {
         return true;
       }
@@ -146,4 +148,4 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-main();
+if (import.meta.main) main();
