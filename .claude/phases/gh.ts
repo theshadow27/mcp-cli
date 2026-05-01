@@ -2,8 +2,7 @@
  * Async GitHub CLI helper for phase scripts.
  *
  * Replaces blocking Bun.spawnSync('gh', ...) with async Bun.spawn.
- * In-process request deduplication: concurrent identical read calls share
- * one subprocess. Mutations skip dedup.
+ * Timeout with SIGTERM → SIGKILL escalation.
  */
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -28,9 +27,12 @@ async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
     stderr: "pipe",
   });
 
+  let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
     proc.kill();
-    setTimeout(() => proc.kill(9), 5_000);
+    sigkillTimer = setTimeout(() => {
+      try { proc.kill(9); } catch { /* already exited */ }
+    }, 5_000);
   }, timeoutMs);
 
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -40,6 +42,7 @@ async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
   ]);
 
   clearTimeout(timer);
+  if (sigkillTimer) clearTimeout(sigkillTimer);
 
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
@@ -87,9 +90,12 @@ export async function prComment(prNumber: number, body: string): Promise<void> {
 export async function spawn(cmd: string[], opts?: { timeoutMs?: number }): Promise<GhResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+  let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
     proc.kill();
-    setTimeout(() => proc.kill(9), 5_000);
+    sigkillTimer = setTimeout(() => {
+      try { proc.kill(9); } catch { /* already exited */ }
+    }, 5_000);
   }, timeoutMs);
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -97,5 +103,6 @@ export async function spawn(cmd: string[], opts?: { timeoutMs?: number }): Promi
     proc.exited,
   ]);
   clearTimeout(timer);
+  if (sigkillTimer) clearTimeout(sigkillTimer);
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }

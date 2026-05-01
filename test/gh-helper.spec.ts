@@ -15,7 +15,13 @@ describe("spawn — async subprocess wrapper", () => {
   });
 
   test("kills process on timeout", async () => {
-    const result = await spawn(["sleep", "30"], { timeoutMs: 200 });
+    const timeoutMs = 200;
+    const start = Date.now();
+    const result = await spawn(["sleep", "30"], { timeoutMs });
+    const elapsed = Date.now() - start;
+
     expect(result.exitCode).not.toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 50);
+    expect(elapsed).toBeLessThan(5_000);
   });
 });
