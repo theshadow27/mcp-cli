@@ -163,4 +163,39 @@ describe("claude subcommand help registry", () => {
     const formatted = formatHelp(help);
     expect(formatted).toContain("mcp__grafana__*");
   });
+
+  test("spawn entry documents non-blocking behaviour and warns against backgrounding", async () => {
+    await import("./help-claude");
+    const help = getHelp("claude spawn");
+    if (!help) throw new Error("expected claude spawn help to be registered");
+    expect(help.summary).toContain("returns immediately");
+    const formatted = formatHelp(help);
+    expect(formatted).toContain("returns immediately");
+    expect(formatted).toContain("background");
+    expect(formatted).toContain("mcx claude wait");
+  });
+});
+
+describe("formatHelp notes field", () => {
+  test("renders notes between summary and Usage section", () => {
+    const output = formatHelp({
+      name: "mcx notecmd",
+      summary: "test note rendering",
+      notes: ["NOTE: this is important", "Do not do the thing."],
+      usage: ["mcx notecmd <arg>"],
+    });
+    const noteIdx = output.indexOf("NOTE: this is important");
+    const usageIdx = output.indexOf("Usage:");
+    expect(noteIdx).toBeGreaterThan(-1);
+    expect(usageIdx).toBeGreaterThan(noteIdx);
+  });
+
+  test("does not render Notes: section when notes is absent", () => {
+    const output = formatHelp({
+      name: "mcx nonotes",
+      summary: "no notes here",
+      usage: ["mcx nonotes"],
+    });
+    expect(output).not.toContain("NOTE:");
+  });
 });
