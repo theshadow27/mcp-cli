@@ -116,3 +116,21 @@ loop. Plan-time triage closed 11 dups/already-done. Adversarial review on
 - **`workflow` label created** to replace `meta` mislabeling on
   workflow-idea issues (#1860, #1806 relabeled; #1863 closed in favor of
   #1945 with corrected Haiku-audit framing).
+
+## Retro notes (captured during run)
+
+- **Long-lived Monitor should be the runbook default, not an alternative**
+  (user feedback during run). `references/run.md` currently presents the
+  per-tick `--max-events 1` form first and the long-lived stream as
+  "Long-lived alternative" — this should be inverted. The orchestrator's
+  Monitor harness tool persists across ticks, ndjson is push-shaped, and
+  the `--max-events 1` form belongs to subprocess harnesses we don't use.
+- **Premature bye on #1922 (Dave session 1bbc1f5d)**: I ended Dave's
+  session immediately after `session.idle` while PR #1949 was still
+  CI=BLOCKED. Runbook says bye only on PR merged OR `qa:pass` + clean
+  threads + green CI. PR survived on origin (worktree cleanup deleted only
+  the local branch), so recoverable, but a process violation worth flagging.
+- **Compaction trial mid-run**: post-spawn compaction reduced context
+  bloat as intended; only loss observed was the `mcx tracked --json`
+  schema (`.id` not `.workItem`/`.items`), recovered with one inspect
+  call. Net positive — keep trying.
