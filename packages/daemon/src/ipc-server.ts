@@ -27,6 +27,7 @@ import {
   ShutdownParamsSchema,
   consoleLogger,
   hardenFile,
+  loadManifest,
   options,
   startSpan,
 } from "@mcp-cli/core";
@@ -123,7 +124,7 @@ export class IpcServer {
       workItemDb,
       eventBus,
       resolveIssuePr: opts.resolveIssuePr ?? null,
-      loadManifestFn: opts.loadManifest ?? null,
+      loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
     });
     this.db.pruneExpiredAliases();
