@@ -95,10 +95,13 @@ loop. Plan-time triage closed 11 dups/already-done. Adversarial review on
 
 ## Process notes (carry-forward from sprint 49)
 
-1. **Capture phase JSON once, extract both fields**: `OUT=$(mcx phase run
-   <p> --work-item ...) && MODEL=$(echo "$OUT" | jq -r '.model // "sonnet"') &&
-   PROMPT=$(echo "$OUT" | jq -r '.prompt')` — never call twice. Codified
-   workaround until #1922 lands.
+1. **Capture phase JSON once, extract both fields**:
+
+   ```bash
+   OUT=$(mcx phase run <p> --work-item ...) && MODEL=$(echo "$OUT" | jq -r '.model // "sonnet"') && PROMPT=$(echo "$OUT" | jq -r '.prompt')
+   ```
+
+   — never call twice. Codified workaround until #1922 lands.
 2. **Reviewer self-repair on contained findings** — keep using; saved a
    repair spawn on #1899.
 3. **Bundled PRs for related issues** — #1890+#1891 + #1632+#1633.
