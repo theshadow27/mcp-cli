@@ -297,6 +297,7 @@ describe("t5801 error handling", () => {
     // error path per git-remote-helpers(1) has no list-failure syntax and
     // needs the caller-side exit decision from #1211/#1212.
     expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("provider unreachable");
   });
 
@@ -317,6 +318,7 @@ describe("t5801 error handling", () => {
     // line. Bare "\n" leaves git with no status for any ref. #1212 must
     // replace this with real per-ref error status lines.
     expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("push rejected: offline");
   });
 
