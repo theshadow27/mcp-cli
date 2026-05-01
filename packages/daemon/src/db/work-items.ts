@@ -168,7 +168,7 @@ export class WorkItemDb {
         version = 0;
       }
       this.db
-        .query<void, [string, number]>("INSERT INTO schema_versions (name, version) VALUES (?, ?)")
+        .query<void, [string, number]>("INSERT OR IGNORE INTO schema_versions (name, version) VALUES (?, ?)")
         .run(CONSUMER, version);
     }
 
@@ -247,7 +247,11 @@ export class WorkItemDb {
   }
 
   private setSchemaVersion(name: string, version: number): void {
-    this.db.query<void, [number, string]>("UPDATE schema_versions SET version = ? WHERE name = ?").run(version, name);
+    this.db
+      .query<void, [string, number]>(
+        "INSERT INTO schema_versions (name, version) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET version = excluded.version",
+      )
+      .run(name, version);
   }
 
   createWorkItem(item: Partial<WorkItem>): WorkItem {
