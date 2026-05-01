@@ -24,6 +24,7 @@
  */
 import { findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
+import { gh } from "./gh";
 
 const REVIEW_ROUND_CAP = 2;
 
@@ -34,16 +35,10 @@ const ProviderSchema = z
     { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
   );
 
-function scanReviewComments(prNumber: number): { found: boolean; hasBlockers: boolean; summary: string } {
-  const proc = Bun.spawnSync({
-    cmd: ["gh", "pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (proc.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
-  const body = new TextDecoder().decode(proc.stdout);
-  // Sticky reviewer comment always starts with this marker.
-  const sticky = body.split(/\n{2,}/).reverse().find((b) => b.includes("## Adversarial Review"));
+async function scanReviewComments(prNumber: number): Promise<{ found: boolean; hasBlockers: boolean; summary: string }> {
+  const result = await gh(["pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"]);
+  if (result.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
+  const sticky = result.stdout.split(/\n{2,}/).reverse().find((b) => b.includes("## Adversarial Review"));
   if (!sticky) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
   const hasBlockers = /🔴|🟡/.test(sticky);
   return { found: true, hasBlockers, summary: hasBlockers ? "blockers remain" : "all clear" };
@@ -122,7 +117,7 @@ defineAlias({
     // Session exists — check PR for sticky comment.
     // Read stored model so all return paths include it (see #1922).
     const storedModel = (await ctx.state.get<string>("review_model")) as "opus" | "sonnet" | null;
-    const scan = scanReviewComments(work.prNumber);
+    const scan = await scanReviewComments(work.prNumber);
     if (!scan.found) {
       return { action: "wait" as const, reason: scan.summary, round, ...(storedModel ? { model: storedModel } : {}) };
     }

@@ -15,15 +15,16 @@
  * session ID after spawn; delete it on spawn failure so next entry re-spawns.
  */
 import { defineAlias, z } from "mcp-cli";
+import { prEdit } from "./gh";
 
 const REPAIR_ROUND_CAP = 3;
 
-function removeLabel(prNumber: number, label: string): void {
-  Bun.spawnSync({
-    cmd: ["gh", "pr", "edit", String(prNumber), "--remove-label", label],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function removeLabel(prNumber: number, label: string): Promise<void> {
+  try {
+    await prEdit(prNumber, ["--remove-label", label]);
+  } catch {
+    /* best-effort — label may already be absent */
+  }
 }
 
 const ProviderSchema = z
@@ -106,7 +107,7 @@ defineAlias({
     // Without this, qa sees the old qa:fail label and loops back to repair
     // instead of running a new QA session (sprint 36 hit this on #1412).
     await ctx.state.delete("qa_session_id");
-    removeLabel(work.prNumber, "qa:fail");
+    await removeLabel(work.prNumber, "qa:fail");
 
     // Persist round, sentinel, and prompt before returning. The prompt is
     // stored so in-flight re-entry can return it without recomputing state

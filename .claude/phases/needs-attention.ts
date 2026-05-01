@@ -8,6 +8,7 @@
  * done).
  */
 import { defineAlias, z } from "mcp-cli";
+import { prComment, prEdit } from "./gh";
 
 defineAlias({
   name: "phase-needs-attention",
@@ -40,14 +41,10 @@ defineAlias({
     const qaFailRound = (await ctx.state.get<number>("qa_fail_round")) ?? 0;
     const triage = (await ctx.state.get<string>("triage_scrutiny")) ?? "unknown";
 
-    // Strip stale qa: labels — they'd be misleading once we escalate.
-    for (const label of ["qa:pass", "qa:fail"]) {
-      Bun.spawnSync({
-        cmd: ["gh", "pr", "edit", String(work.prNumber), "--remove-label", label],
-        stderr: "pipe",
-        stdout: "pipe",
-      });
-    }
+    // Strip stale qa: labels in parallel — best-effort, label may already be absent.
+    await Promise.all(
+      ["qa:pass", "qa:fail"].map((label) => prEdit(work.prNumber, ["--remove-label", label]).catch(() => {})),
+    );
 
     const body = [
       "## 🚩 Needs attention",
@@ -63,12 +60,13 @@ defineAlias({
       `Triage scrutiny was **${triage}**. An operator should decide between: refining the issue spec, taking over the PR manually, or closing it.`,
     ].join("\n");
 
-    const cmt = Bun.spawnSync({
-      cmd: ["gh", "pr", "comment", String(work.prNumber), "--body", body],
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const commented = cmt.exitCode === 0;
+    let commented = false;
+    try {
+      await prComment(work.prNumber, body);
+      commented = true;
+    } catch {
+      /* best-effort — escalation still proceeds */
+    }
 
     try {
       await ctx.mcp._work_items.work_items_update({ id: work.id, phase: "needs-attention" });
