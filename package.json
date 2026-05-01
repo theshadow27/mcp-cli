@@ -26,6 +26,7 @@
     "lint": "bun install && bunx biome check --write .",
     "lint:check": "bun install && bunx biome check .",
     "lint:shell": "bun scripts/check-shell-injection.ts",
+    "lint:args-bounds": "bun scripts/check-args-bounds.ts",
     "lint:timeouts": "bun scripts/check-test-timeouts.ts",
     "lint:teardown": "bun scripts/check-session-teardown.ts",
     "check:phase-drift": "bun scripts/check-phase-drift.ts",
