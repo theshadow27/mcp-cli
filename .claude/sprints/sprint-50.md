@@ -138,3 +138,11 @@ loop. Plan-time triage closed 11 dups/already-done. Adversarial review on
   `references/plan.md` Step 1 now requires `--author theshadow27` filter on
   issue surveys. Sprint 50's tracked items audited clean (all 17 from
   theshadow27); constraint codified to prevent future drift.
+
+## Results
+
+- **Released**: v1.8.4
+- **PRs merged**: 10 — #1949 (#1922), #1951 (#1934), #1954 (#1890+#1891 bundle), #1952 (#1825), #1955 (#1941), #1959 (#1604), #1953 (#1857), #1950 (#1865), #1957 (#1856), #1963 (#1900)
+- **Issues closed**: 12 (10 via PR + #1929 dup of #1926, #1908 already-implemented in pre-sprint refactor)
+- **Issues dropped**: 3 — #1928 (containment.spec.ts CWD-sensitive), #1632+#1633 (check-test-timeouts regex bundle), #1690 (ciRunStates SQLite persistence). Rolled to sprint 51.
+- **New issues filed during sprint**: #1947 (runbook gap — Monitor tool not in run.md), #1948 (permission_request event noise on auto-allowed tools), follow-ups for review.md/scoping deferred to retro
