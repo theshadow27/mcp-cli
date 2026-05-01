@@ -1,6 +1,6 @@
 # Sprint 50
 
-> Planned 2026-04-30 20:28 EDT. Started 2026-04-30 20:55 EDT. Target: 15 PRs.
+> Planned 2026-04-30 20:28 EDT. Started 2026-04-30 20:55 EDT. Ended 2026-04-30 23:05 EDT. Target: 15 PRs. Shipped: 10 merged + 2 closed-without-PR.
 
 ## Goal
 
@@ -138,4 +138,3 @@ loop. Plan-time triage closed 11 dups/already-done. Adversarial review on
   `references/plan.md` Step 1 now requires `--author theshadow27` filter on
   issue surveys. Sprint 50's tracked items audited clean (all 17 from
   theshadow27); constraint codified to prevent future drift.
-- **Stale quota report bug** (user-observed mid-run): \`mcx call _metrics quota_status\` reported 5h utilization at 46% while actual was 100% (extra-usage cap). Orchestrator gating logic relies on this; under-reporting could let it spawn during full-pause conditions. File post-retro with telemetry from this run.
