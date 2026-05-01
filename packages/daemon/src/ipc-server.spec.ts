@@ -2501,9 +2501,9 @@ describe("IpcServer HTTP transport", () => {
       await reader.read(); // drain initial flush
 
       // Simulate worker posting a monitor:event message
-      const handle = (claudeServer as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(
-        claudeServer,
-      );
+      const handle = (
+        claudeServer as unknown as { handleProviderEvent: (e: unknown) => void }
+      ).handleProviderEvent.bind(claudeServer);
       handle({
         type: "monitor:event",
         input: {

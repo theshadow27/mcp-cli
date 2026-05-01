@@ -583,7 +583,7 @@ describe("OpenCodeServer connect timeout metric", () => {
 
     server = new OpenCodeServer(db, undefined, () => neverConnect, silentLogger, 50);
 
-    await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
+    await expect(server.start()).rejects.toThrow("MCP handshake timeout (0.05s)");
     expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
