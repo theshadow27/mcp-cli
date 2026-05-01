@@ -82,6 +82,21 @@ describe("parseSharedSpawnArgs", () => {
     expect(result.error).toBe("--model requires a value");
   });
 
+  it("errors on --model null (jq null coercion guard)", () => {
+    const result = parseSharedSpawnArgs(["--model", "null", "--task", "x"]);
+    expect(result.error).toMatch(/not a valid model name/);
+  });
+
+  it("errors on --model none", () => {
+    const result = parseSharedSpawnArgs(["--model", "none", "--task", "x"]);
+    expect(result.error).toMatch(/not a valid model name/);
+  });
+
+  it("errors on --model undefined", () => {
+    const result = parseSharedSpawnArgs(["--model", "undefined", "--task", "x"]);
+    expect(result.error).toMatch(/not a valid model name/);
+  });
+
   it("errors on empty --allow", () => {
     const result = parseSharedSpawnArgs(["--allow", "--task", "x"]);
     expect(result.error).toBe("--allow requires at least one tool pattern");

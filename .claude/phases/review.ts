@@ -101,9 +101,12 @@ defineAlias({
         ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
         : ["mcx", input.provider, "spawn"];
       const command = [...cmdBase, "--worktree", "--model", model, "-t", prompt, "--allow", ...allowTools];
-      // Persist round counter and sentinel before returning — re-entry returns
-      // "wait" (not a new spawn) until the orchestrator clears review_session_id.
+      // Persist round counter, model, and sentinel before returning — re-entry
+      // returns "wait" (not a new spawn) until the orchestrator clears
+      // review_session_id. Storing model lets wait/goto return it for safe
+      // single-call extraction by the orchestrator (see #1922).
       await ctx.state.set("review_round", round);
+      await ctx.state.set("review_model", model);
       await ctx.state.set("review_session_id", `pending:${Date.now()}`);
       return {
         action: "spawn" as const,
@@ -117,13 +120,15 @@ defineAlias({
     }
 
     // Session exists — check PR for sticky comment.
+    // Read stored model so all return paths include it (see #1922).
+    const storedModel = (await ctx.state.get<string>("review_model")) as "opus" | "sonnet" | null;
     const scan = scanReviewComments(work.prNumber);
     if (!scan.found) {
-      return { action: "wait" as const, reason: scan.summary, round };
+      return { action: "wait" as const, reason: scan.summary, round, ...(storedModel ? { model: storedModel } : {}) };
     }
 
     if (!scan.hasBlockers) {
-      return { action: "goto" as const, target: "qa" as const, reason: "review clean → qa", round };
+      return { action: "goto" as const, target: "qa" as const, reason: "review clean → qa", round, ...(storedModel ? { model: storedModel } : {}) };
     }
 
     // Blockers present. Cap exceeded → hand off to qa instead of looping.
@@ -133,11 +138,12 @@ defineAlias({
         target: "qa" as const,
         reason: `review round cap (${REVIEW_ROUND_CAP}) reached; deferring remaining items to qa`,
         round,
+        ...(storedModel ? { model: storedModel } : {}),
       };
     }
 
     await ctx.state.set("review_round", round + 1);
     await ctx.state.set("previous_phase", "review");
-    return { action: "goto" as const, target: "repair" as const, reason: "blockers remain → repair", round };
+    return { action: "goto" as const, target: "repair" as const, reason: "blockers remain → repair", round, ...(storedModel ? { model: storedModel } : {}) };
   },
 });

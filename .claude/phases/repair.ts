@@ -44,6 +44,7 @@ defineAlias({
     target: z.enum(["needs-attention"]).optional(),
     reason: z.string(),
     round: z.number(),
+    model: z.enum(["opus", "sonnet"]).optional(),
     command: z.array(z.string()).optional(),
     prompt: z.string().optional(),
     allowTools: z.array(z.string()).optional(),
@@ -65,10 +66,13 @@ defineAlias({
     const existingSession = await ctx.state.get<string>("repair_session_id");
     if (existingSession) {
       const round = (await ctx.state.get<number>("repair_round")) ?? 1;
+      const storedPrompt = await ctx.state.get<string>("repair_prompt");
       return {
         action: "in-flight" as const,
         reason: `repair session in flight (round ${round})`,
         round,
+        model: "opus" as const,
+        ...(storedPrompt ? { prompt: storedPrompt } : {}),
       };
     }
 
@@ -104,15 +108,18 @@ defineAlias({
     await ctx.state.delete("qa_session_id");
     removeLabel(work.prNumber, "qa:fail");
 
-    // Persist round and sentinel before returning. Orchestrator replaces
-    // repair_session_id with real session ID; deletes on spawn failure.
+    // Persist round, sentinel, and prompt before returning. The prompt is
+    // stored so in-flight re-entry can return it without recomputing state
+    // (repair_prompt is read in the in-flight guard above — see #1922).
     await ctx.state.set("repair_round", round);
+    await ctx.state.set("repair_prompt", prompt);
     await ctx.state.set("repair_session_id", `pending:${Date.now()}`);
 
     return {
       action: "spawn" as const,
       reason: `repair round ${round}, triggered by ${previous}`,
       round,
+      model: "opus" as const,
       command,
       prompt,
       allowTools,

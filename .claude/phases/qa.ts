@@ -57,6 +57,7 @@ defineAlias({
     target: z.enum(["done", "repair", "needs-attention"]).optional(),
     reason: z.string(),
     round: z.number().optional(),
+    model: z.enum(["opus", "sonnet"]).optional(),
     command: z.array(z.string()).optional(),
     prompt: z.string().optional(),
     allowTools: z.array(z.string()).optional(),
@@ -78,30 +79,33 @@ defineAlias({
 
     const sessionId = await ctx.state.get<string>("qa_session_id");
 
+    const qaModel = "sonnet" as const;
+    const qaPrompt = `/qa ${work.issueNumber} (PR ${work.prNumber}, branch ${work.branch})`;
+
     if (!sessionId) {
       const worktreePath = await ctx.state.get<string>("worktree_path");
       const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
-      const prompt = `/qa ${work.issueNumber} (PR ${work.prNumber}, branch ${work.branch})`;
       const cmdBase = input.provider.startsWith("acp:")
         ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
         : ["mcx", input.provider, "spawn"];
       const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
-      const command = [...cmdBase, ...worktreeFlags, "--model", "sonnet", "-t", prompt, "--allow", ...allowTools];
+      const command = [...cmdBase, ...worktreeFlags, "--model", qaModel, "-t", qaPrompt, "--allow", ...allowTools];
       // Write sentinel before returning — prevents re-spawn on retry.
       // Orchestrator replaces with real session ID after spawn.
       await ctx.state.set("qa_session_id", `pending:${Date.now()}`);
       return {
         action: "spawn" as const,
         reason: "qa session starting",
+        model: qaModel,
         command,
-        prompt,
+        prompt: qaPrompt,
         allowTools,
       };
     }
 
     const { hasPass, hasFail } = readQaLabels(work.prNumber);
     if (!hasPass && !hasFail) {
-      return { action: "wait" as const, reason: "qa:pass / qa:fail label not set yet" };
+      return { action: "wait" as const, reason: "qa:pass / qa:fail label not set yet", model: qaModel, prompt: qaPrompt };
     }
 
     // Label hygiene: pass is the authoritative verdict when both are present
@@ -109,7 +113,7 @@ defineAlias({
     // every verdict so merge gates can trust "pass xor fail" (see #1303).
     if (hasPass) {
       if (hasFail) removeLabel(work.prNumber, "qa:fail");
-      return { action: "goto" as const, target: "done" as const, reason: "qa:pass → done" };
+      return { action: "goto" as const, target: "done" as const, reason: "qa:pass → done", model: qaModel, prompt: qaPrompt };
     }
     // hasFail only — no stale pass possible (we would have returned above).
 
@@ -120,6 +124,8 @@ defineAlias({
         target: "needs-attention" as const,
         reason: `qa fail cap (${QA_FAIL_CAP}) exceeded — escalating`,
         round: round - 1,
+        model: qaModel,
+        prompt: qaPrompt,
       };
     }
     await ctx.state.set("qa_fail_round", round);
@@ -129,6 +135,8 @@ defineAlias({
       target: "repair" as const,
       reason: `qa:fail round ${round} → repair`,
       round,
+      model: qaModel,
+      prompt: qaPrompt,
     };
   },
 });
