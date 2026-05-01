@@ -114,7 +114,7 @@ const EXCLUSIONS: Record<string, string> = {
 
   // Daemon internals — connection lifecycle requires integration
   "daemon/src/server-pool.ts": "51% coverage, connection lifecycle (#45/#51)",
-  "daemon/src/ipc-server.ts": "59% coverage, handler logic (#46)",
+
   "daemon/src/config/watcher.ts": "47% coverage, FS watcher loop (#48)",
 
   // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
