@@ -267,7 +267,26 @@ export abstract class AbstractWorkerServer {
       throw err;
     }
 
-    this.onPostStart();
+    try {
+      this.onPostStart();
+    } catch (err) {
+      try {
+        await this.client?.close();
+      } catch {
+        // ignore close errors
+      }
+      try {
+        worker.terminate();
+      } catch {
+        /* worker may already be dead */
+      }
+      this.cleanupWorkerHandlers(worker);
+      this.worker = null;
+      this.transport = null;
+      this.client = null;
+      this.teardownWorkerExtra();
+      throw err;
+    }
     return { client: this.client, transport: this.transport };
   }
 
@@ -522,9 +541,11 @@ export abstract class AbstractWorkerServer {
       case "metrics:observe":
         this.metrics.histogram(event.name, event.labels).observe(event.value);
         break;
-      default:
-        this.handleProviderEvent(event);
+      default: {
+        const _exhaustive: never = event;
+        void _exhaustive;
         break;
+      }
     }
   }
 }
