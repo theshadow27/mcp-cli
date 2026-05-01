@@ -15,6 +15,7 @@
  * session ID after spawn; delete it on spawn failure.
  */
 import { defineAlias, z } from "mcp-cli";
+import { gh, prEdit } from "./gh";
 
 const QA_FAIL_CAP = 2;
 
@@ -25,25 +26,15 @@ const ProviderSchema = z
     { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
   );
 
-function readQaLabels(prNumber: number): { hasPass: boolean; hasFail: boolean } {
-  const proc = Bun.spawnSync({
-    cmd: ["gh", "pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (proc.exitCode !== 0) return { hasPass: false, hasFail: false };
-  const names = new Set(
-    new TextDecoder().decode(proc.stdout).split(/\r?\n/).map((l) => l.trim()),
-  );
+async function readQaLabels(prNumber: number): Promise<{ hasPass: boolean; hasFail: boolean }> {
+  const result = await gh(["pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"]);
+  if (result.exitCode !== 0) return { hasPass: false, hasFail: false };
+  const names = new Set(result.stdout.split(/\r?\n/).map((l) => l.trim()));
   return { hasPass: names.has("qa:pass"), hasFail: names.has("qa:fail") };
 }
 
-function removeLabel(prNumber: number, label: string): void {
-  Bun.spawnSync({
-    cmd: ["gh", "pr", "edit", String(prNumber), "--remove-label", label],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function removeLabel(prNumber: number, label: string): Promise<void> {
+  await prEdit(prNumber, ["--remove-label", label]);
 }
 
 defineAlias({
@@ -103,7 +94,7 @@ defineAlias({
       };
     }
 
-    const { hasPass, hasFail } = readQaLabels(work.prNumber);
+    const { hasPass, hasFail } = await readQaLabels(work.prNumber);
     if (!hasPass && !hasFail) {
       return { action: "wait" as const, reason: "qa:pass / qa:fail label not set yet", model: qaModel, prompt: qaPrompt };
     }
@@ -112,7 +103,7 @@ defineAlias({
     // (the most recent QA round set it). Strip the stale counterpart on
     // every verdict so merge gates can trust "pass xor fail" (see #1303).
     if (hasPass) {
-      if (hasFail) removeLabel(work.prNumber, "qa:fail");
+      if (hasFail) await removeLabel(work.prNumber, "qa:fail");
       return { action: "goto" as const, target: "done" as const, reason: "qa:pass → done", model: qaModel, prompt: qaPrompt };
     }
     // hasFail only — no stale pass possible (we would have returned above).

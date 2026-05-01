@@ -13,8 +13,8 @@ function makeWork(overrides: Partial<TriageWork> = {}): TriageWork {
 
 function makeDeps(overrides: Partial<TriageDeps> = {}): TriageDeps {
   return {
-    findPr: () => null,
-    runEstimate: () => ({ scrutiny: "low" as const, reasons: ["small diff"] }),
+    findPr: async () => null,
+    runEstimate: async () => ({ scrutiny: "low" as const, reasons: ["small diff"] }),
     waitForEvent: () => Promise.reject(new Error("waitForEvent not configured")),
     stateGet: () => Promise.resolve(undefined),
     stateSet: () => Promise.resolve(),
@@ -37,7 +37,7 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["small diff"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["small diff"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -53,8 +53,8 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork(),
       makeDeps({
-        findPr: () => 101,
-        runEstimate: () => ({ scrutiny: "high", reasons: ["large diff"] }),
+        findPr: async () => 101,
+        runEstimate: async () => ({ scrutiny: "high", reasons: ["large diff"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -70,7 +70,7 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "high", reasons: ["complex"] }),
+        runEstimate: async () => ({ scrutiny: "high", reasons: ["complex"] }),
       }),
     );
     expect(result).toMatchObject({ action: "goto", target: "review" });
@@ -81,7 +81,7 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["trivial"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["trivial"] }),
       }),
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
@@ -92,7 +92,7 @@ describe("runTriage — PR available", () => {
       { labels: ["flaky"] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["small diff"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["small diff"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -110,7 +110,7 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
         stateGet: async <T>(key: string): Promise<T | undefined> =>
           (key === "labels" ? "flaky" : undefined) as T | undefined,
       }),
@@ -128,7 +128,7 @@ describe("runTriage — PR available", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({
+        runEstimate: async () => ({
           scrutiny: "low",
           reasons: ["ok"],
           metrics,
@@ -148,7 +148,7 @@ describe("runTriage — runEstimate failure", () => {
         { labels: [] },
         makeWork({ prNumber: 100 }),
         makeDeps({
-          runEstimate: () => {
+          runEstimate: async () => {
             throw new Error("triage.ts failed: exit code 1");
           },
         }),
@@ -165,9 +165,9 @@ describe("runTriage — waitForEvent", () => {
       { labels: [] },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async () => ({ event: "pr.opened", prNumber: 200 }),
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -182,12 +182,12 @@ describe("runTriage — waitForEvent", () => {
       { labels: [] },
       makeWork(),
       makeDeps({
-        findPr: () => {
+        findPr: async () => {
           calls++;
           return calls >= 2 ? 201 : null;
         },
         waitForEvent: async () => ({ event: "session.result" }),
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -201,7 +201,7 @@ describe("runTriage — waitForEvent", () => {
       { labels: [] },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async () => ({ event: "session.result" }),
       }),
     );
@@ -220,7 +220,7 @@ describe("runTriage — timeout", () => {
       { labels: [] },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: () => Promise.reject(makeTimeoutError()),
       }),
     );
@@ -236,7 +236,7 @@ describe("runTriage — timeout", () => {
         { labels: [] },
         makeWork(),
         makeDeps({
-          findPr: () => null,
+          findPr: async () => null,
           waitForEvent: () => Promise.reject(new Error("connection refused")),
         }),
       ),
@@ -255,7 +255,7 @@ describe("runTriage — replay", () => {
       { labels: [] },
       makeWork({ id: "#99" }),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async (filter, opts) => {
           capturedFilter = filter;
           capturedOpts = opts;
@@ -278,7 +278,7 @@ describe("runTriage — replay", () => {
       { labels: [], since: 42 },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async (_filter, opts) => {
           capturedOpts = opts;
           throw makeTimeoutError();
@@ -296,7 +296,7 @@ describe("runTriage — replay", () => {
       { labels: [], timeoutMs: 5_000 },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async (_filter, opts) => {
           capturedOpts = opts;
           throw makeTimeoutError();
@@ -312,12 +312,12 @@ describe("runTriage — replay", () => {
       { labels: [], since: 10 },
       makeWork(),
       makeDeps({
-        findPr: () => null,
+        findPr: async () => null,
         waitForEvent: async () => ({
           event: "pr.opened",
           prNumber: 300,
         }),
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
       }),
     );
     expect(result).toMatchObject({
@@ -336,7 +336,7 @@ describe("runTriage — findPr throws", () => {
         { labels: [] },
         makeWork(),
         makeDeps({
-          findPr: () => {
+          findPr: async () => {
             throw new Error("gh pr list failed (exit 1): authentication required");
           },
         }),
@@ -351,7 +351,7 @@ describe("runTriage — findPr throws", () => {
         { labels: [] },
         makeWork(),
         makeDeps({
-          findPr: () => {
+          findPr: async () => {
             calls++;
             if (calls === 1) return null;
             throw new Error("gh pr list failed (exit 1): network timeout");
@@ -394,7 +394,7 @@ describe("runTriage — state", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["small", "clean"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["small", "clean"] }),
         stateSet: async (key, value) => {
           stateWrites[key] = value;
         },
@@ -409,7 +409,7 @@ describe("runTriage — state", () => {
       { labels: [] },
       makeWork({ prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
         updateWorkItem: () => Promise.reject(new Error("ECONNREFUSED")),
       }),
     );
@@ -422,7 +422,7 @@ describe("runTriage — state", () => {
         { labels: [] },
         makeWork({ prNumber: 100 }),
         makeDeps({
-          runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+          runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
           updateWorkItem: () => Promise.reject(new Error("schema validation failed")),
         }),
       ),
@@ -435,7 +435,7 @@ describe("runTriage — state", () => {
       { labels: [] },
       makeWork({ id: "#55", prNumber: 100 }),
       makeDeps({
-        runEstimate: () => ({ scrutiny: "low", reasons: ["ok"] }),
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["ok"] }),
         updateWorkItem: async (id, prNumber) => {
           calledWith = { id, prNumber };
         },

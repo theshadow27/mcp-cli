@@ -19,12 +19,12 @@ export interface TriageWork {
 }
 
 export interface TriageDeps {
-  findPr(branch: string): number | null;
-  runEstimate(prNumber: number): {
+  findPr(branch: string): Promise<number | null>;
+  runEstimate(prNumber: number): Promise<{
     scrutiny: "low" | "high";
     reasons: string[];
     metrics?: Record<string, unknown>;
-  };
+  }>;
   waitForEvent(
     filter: TriageEventFilter,
     opts?: { timeoutMs?: number; since?: number },
@@ -63,7 +63,7 @@ export async function runTriage(
 
   let prNumber = work.prNumber;
   if (prNumber == null) {
-    prNumber = deps.findPr(work.branch!);
+    prNumber = await deps.findPr(work.branch!);
   }
 
   if (prNumber == null) {
@@ -76,7 +76,7 @@ export async function runTriage(
       if (event.prNumber != null) {
         prNumber = event.prNumber;
       } else {
-        prNumber = deps.findPr(work.branch!);
+        prNumber = await deps.findPr(work.branch!);
       }
       if (prNumber == null) {
         return {
@@ -95,7 +95,7 @@ export async function runTriage(
     }
   }
 
-  const raw = deps.runEstimate(prNumber);
+  const raw = await deps.runEstimate(prNumber);
 
   const labels =
     input.labels.length > 0
