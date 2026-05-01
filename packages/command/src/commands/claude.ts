@@ -1370,8 +1370,13 @@ export function parsePatchUpdateArgs(args: string[], d: Pick<ClaudeDeps, "printE
     const a = args[i];
     if (a === "--force") force = true;
     else if (a === "--json") json = true;
-    else if (a === "--source") sourcePath = args[++i];
-    else if (a.startsWith("--source=")) sourcePath = a.slice("--source=".length);
+    else if (a === "--source") {
+      if (i + 1 >= args.length) {
+        d.printError("--source requires a value");
+        d.exit(1);
+      }
+      sourcePath = args[++i];
+    } else if (a.startsWith("--source=")) sourcePath = a.slice("--source=".length);
     else {
       d.printError(`Unknown argument: ${a}`);
       d.exit(1);
@@ -1445,7 +1450,12 @@ export function parseApproveArgs(
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--request-id" || args[i] === "-r") {
-      requestId = args[++i];
+      const val = args[++i];
+      if (!val) {
+        d.printError("--request-id requires a value");
+        d.exit(1);
+      }
+      requestId = val;
     } else if (!args[i].startsWith("-")) {
       positional.push(args[i]);
     }
@@ -1475,9 +1485,19 @@ export function parseDenyArgs(
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--request-id" || args[i] === "-r") {
-      requestId = args[++i];
+      const val = args[++i];
+      if (!val) {
+        d.printError("--request-id requires a value");
+        d.exit(1);
+      }
+      requestId = val;
     } else if (args[i] === "--message" || args[i] === "-m") {
-      message = args[++i];
+      const val = args[++i];
+      if (!val) {
+        d.printError("--message requires a value");
+        d.exit(1);
+      }
+      message = val;
     } else if (!args[i].startsWith("-")) {
       positional.push(args[i]);
     }
@@ -2083,7 +2103,7 @@ function printClaudeUsage(): void {
   console.log(`mcx claude — manage Claude Code sessions
 
 Usage:
-  mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
+  mcx claude spawn --task "description"    Start a new Claude session (returns immediately — do not background)
   mcx claude spawn --headed --task "desc"  Start Claude in a visible terminal tab
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude resume <worktree-or-branch>   Resume with conversation history (--continue)

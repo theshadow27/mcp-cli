@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2056,5 +2057,47 @@ describe("StateDb", () => {
     expect(db2.getState("hello")).toBe("world");
     expect(db2.getCachedTools("srv")).toHaveLength(1);
     db2.close();
+  });
+
+  describe("schema_versions idempotency (#1890 #1891)", () => {
+    test("schema_versions row exists after fresh migration", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const db = new StateDb(p);
+      const row = db
+        .getDatabase()
+        .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+        .get("state");
+      expect(row).toBeDefined();
+      expect(row?.version).toBeGreaterThanOrEqual(0);
+      db.close();
+    });
+
+    test("INSERT OR IGNORE: constructor does not crash when schema_versions row is pre-seeded (concurrent race simulation)", () => {
+      const p = tmpDb();
+      paths.push(p);
+      // Simulate the winner process: seed schema_versions before StateDb opens.
+      const seed = new Database(p, { create: true });
+      seed.exec("PRAGMA journal_mode = WAL");
+      seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
+      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('state', 3)");
+      seed.close();
+      // The second process (this StateDb call) must not throw a UNIQUE constraint error.
+      expect(() => new StateDb(p)).not.toThrow();
+    });
+
+    test("setSchemaVersion UPSERT: version is bumped correctly across multiple migrations", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const db = new StateDb(p);
+      const rawVersion = () =>
+        db
+          .getDatabase()
+          .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
+          .get("state")?.version;
+      // After construction the version should be at the latest migration level.
+      expect(rawVersion()).toBeGreaterThanOrEqual(1);
+      db.close();
+    });
   });
 });

@@ -1738,7 +1738,7 @@ function printProviderUsage(
   log(`mcx agent ${name} — manage ${label} sessions
 
 Usage:
-  mcx agent ${name} spawn --task "description"   Start a new session
+  mcx agent ${name} spawn --task "description"   Start a new session (returns immediately — do not background)
   mcx agent ${name} ls [--short] [--json]        List active sessions
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
@@ -1761,7 +1761,12 @@ function printSpawnUsage(
 ): void {
   const name = agentOverride ?? provider.name;
   const lines: string[] = [
-    `mcx agent ${name} spawn — Start a new ${agentOverride ?? providerDisplayName(provider)} session`,
+    `mcx agent ${name} spawn — Start a new ${agentOverride ?? providerDisplayName(provider)} session (returns immediately)`,
+    "",
+    "NOTE: spawn returns immediately with the new session ID. The session runs",
+    "asynchronously in the daemon. Do not invoke this command via a background",
+    "runner — it is wasteful and clutters the audit trail. To block on",
+    `completion, use: mcx agent ${name} wait <session-id>`,
     "",
     "Options:",
     `  --task, -t <string>        Task prompt for the session (required${hasFeature(provider, "resume") ? " unless --resume" : ""})`,

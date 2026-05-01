@@ -288,15 +288,17 @@ describe("t5801 error handling", () => {
       handleImport: async () => "done\n",
       handleExport: async () => "ok refs/heads/main\n\n",
     };
+    const errors: string[] = [];
     const stdin = streamFrom("list\n\n");
     const { stream, result } = collectStream();
-    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
     // Stub-oracle only: bare "\n" is a blank terminator with zero status
     // lines. A real list handler should emit `@refs/... HEAD\n\n`; a real
     // error path per git-remote-helpers(1) has no list-failure syntax and
-    // needs the caller-side exit decision from #1211/#1212. Stderr diagnostic
-    // is not asserted here but is load-bearing — do not drop it in refactors.
+    // needs the caller-side exit decision from #1211/#1212.
     expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("provider unreachable");
   });
 
   test("t5801-33: provider push failure writes safe terminator and resolves", async () => {
@@ -307,15 +309,17 @@ describe("t5801 error handling", () => {
         throw new Error("push rejected: offline");
       },
     };
+    const errors: string[] = [];
     const stdin = streamFrom("export\nstream-payload\n");
     const { stream, result } = collectStream();
-    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR });
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
     // Stub-oracle only: git-remote-helpers(1) requires per-ref
     // `ok <refname>\n` or `error <refname> <reason>\n` followed by a blank
     // line. Bare "\n" leaves git with no status for any ref. #1212 must
-    // replace this with real per-ref error status lines. Stderr diagnostic is
-    // not asserted here but is load-bearing — do not drop it in refactors.
+    // replace this with real per-ref error status lines.
     expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("push rejected: offline");
   });
 
   test.todo(

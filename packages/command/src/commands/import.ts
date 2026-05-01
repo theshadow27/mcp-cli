@@ -239,6 +239,7 @@ export async function cmdImport(args: string[]): Promise<void> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
+      if (i + 1 >= args.length) throw new Error("--scope requires a value");
       scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
     } else if (arg === "--claude" || arg === "-c") {
       claude = true;
@@ -398,6 +399,7 @@ export async function cmdAddFromClaudeDesktop(
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
+      if (i + 1 >= args.length) throw new Error("--scope requires a value");
       scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
     } else if (arg === "--help" || arg === "-h") {
       console.log(`mcx add-from-claude-desktop — import servers from Claude Desktop

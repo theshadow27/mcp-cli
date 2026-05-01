@@ -840,7 +840,9 @@ describe("ClaudeServer", () => {
     const received: Array<{ src: string; event: string; category: string }> = [];
     server.onMonitorEvent = (input) => received.push(input);
 
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
+      server,
+    );
     handle({
       type: "monitor:event",
       input: { src: "daemon.claude-server", event: "session.result", category: "session", sessionId: "s1" },
@@ -856,7 +858,9 @@ describe("ClaudeServer", () => {
     db = new StateDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
+      server,
+    );
     expect(() => {
       handle({
         type: "monitor:event",
@@ -873,7 +877,9 @@ describe("ClaudeServer", () => {
     const received: Array<Record<string, unknown>> = [];
     server.onMonitorEvent = (input) => received.push(input);
 
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
+      server,
+    );
     handle({
       type: "monitor:event",
       input: {
@@ -1245,7 +1251,7 @@ describe("ClaudeServer connect timeout metric", () => {
     const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, () => neverConnect, silentLogger, 50, undefined, undefined, testMetrics);
 
-    await expect(server.start()).rejects.toThrow("MCP handshake timeout (10s)");
+    await expect(server.start()).rejects.toThrow("MCP handshake timeout (0.05s)");
     expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
@@ -1509,7 +1515,9 @@ describe("monitor event bridge integration", () => {
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
 
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
+      server,
+    );
 
     handle({
       type: "monitor:event",
@@ -1555,7 +1563,9 @@ describe("monitor event bridge integration", () => {
     const seqs: number[] = [];
     bus.subscribe((e) => seqs.push(e.seq));
 
-    const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
+    const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
+      server,
+    );
 
     for (let i = 0; i < 5; i++) {
       handle({

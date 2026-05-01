@@ -92,8 +92,10 @@ export function parseSharedSpawnArgs(
       }
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i];
-      if (!val) {
+      if (!val || val.startsWith("-")) {
         error = "--model requires a value";
+      } else if (val.toLowerCase() === "null" || val.toLowerCase() === "none" || val.toLowerCase() === "undefined") {
+        error = `--model "${val}" is not a valid model name (use: opus, sonnet, haiku, or a full model ID)`;
       } else {
         model = resolveModelName(val);
       }

@@ -6,7 +6,7 @@
  * outside the user's working directory (#1899).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
@@ -36,6 +36,11 @@ export function readFileWithLimit(path: string): string {
 
   if (!isPathAllowed(resolved)) {
     throw new Error(`Path "${path}" resolves to "${resolved}" which is outside the allowed directory (cwd)`);
+  }
+
+  const stat = statSync(resolved);
+  if (!stat.isFile()) {
+    throw new Error(`Path "${path}" is not a regular file`);
   }
 
   if (process.env.DEBUG) {

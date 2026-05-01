@@ -20,6 +20,7 @@ export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigSc
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
+      if (i + 1 >= args.length) throw new Error("--scope requires a value");
       scope = parseScope(args[++i], CONFIG_SCOPES);
     } else if (!arg.startsWith("-")) {
       positional.push(arg);

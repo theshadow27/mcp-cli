@@ -10,6 +10,7 @@
  * State writes: triage_scrutiny, triage_reasons.
  */
 import { defineAlias, z } from "mcp-cli";
+import { prList, spawn } from "./gh";
 import { runTriage } from "./triage-fn";
 
 defineAlias({
@@ -35,47 +36,19 @@ defineAlias({
     }
 
     return runTriage(input, work, {
-      findPr(branch: string): number | null {
-        const proc = Bun.spawnSync({
-          cmd: [
-            "gh",
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--json",
-            "number",
-            "-q",
-            ".[0].number",
-          ],
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        if (proc.exitCode !== 0) {
-          const err = new TextDecoder().decode(proc.stderr).trim();
-          throw new Error(`gh pr list failed (exit ${proc.exitCode}): ${err}`);
-        }
-        const out = new TextDecoder().decode(proc.stdout).trim();
+      async findPr(branch: string): Promise<number | null> {
+        const out = await prList({ head: branch, json: "number", jq: ".[0].number" });
         const n = Number.parseInt(out, 10);
         return Number.isFinite(n) ? n : null;
       },
-      runEstimate(prNumber: number) {
-        const proc = Bun.spawnSync({
-          cmd: [
-            "bun",
-            ".claude/skills/estimate/triage.ts",
-            "--pr",
-            String(prNumber),
-            "--json",
-          ],
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        if (proc.exitCode !== 0) {
-          const err = new TextDecoder().decode(proc.stderr);
-          throw new Error(`triage.ts failed: ${err}`);
+      async runEstimate(prNumber: number) {
+        const result = await spawn(
+          ["bun", ".claude/skills/estimate/triage.ts", "--pr", String(prNumber), "--json"],
+        );
+        if (result.exitCode !== 0) {
+          throw new Error(`triage.ts failed: ${result.stderr}`);
         }
-        return JSON.parse(new TextDecoder().decode(proc.stdout)) as {
+        return JSON.parse(result.stdout) as {
           scrutiny: "low" | "high";
           reasons: string[];
           metrics?: Record<string, unknown>;

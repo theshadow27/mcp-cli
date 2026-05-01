@@ -15,15 +15,16 @@
  * session ID after spawn; delete it on spawn failure so next entry re-spawns.
  */
 import { defineAlias, z } from "mcp-cli";
+import { prEdit } from "./gh";
 
 const REPAIR_ROUND_CAP = 3;
 
-function removeLabel(prNumber: number, label: string): void {
-  Bun.spawnSync({
-    cmd: ["gh", "pr", "edit", String(prNumber), "--remove-label", label],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function removeLabel(prNumber: number, label: string): Promise<void> {
+  try {
+    await prEdit(prNumber, ["--remove-label", label]);
+  } catch {
+    /* best-effort — label may already be absent */
+  }
 }
 
 const ProviderSchema = z
@@ -44,6 +45,7 @@ defineAlias({
     target: z.enum(["needs-attention"]).optional(),
     reason: z.string(),
     round: z.number(),
+    model: z.enum(["opus", "sonnet"]).optional(),
     command: z.array(z.string()).optional(),
     prompt: z.string().optional(),
     allowTools: z.array(z.string()).optional(),
@@ -65,10 +67,13 @@ defineAlias({
     const existingSession = await ctx.state.get<string>("repair_session_id");
     if (existingSession) {
       const round = (await ctx.state.get<number>("repair_round")) ?? 1;
+      const storedPrompt = await ctx.state.get<string>("repair_prompt");
       return {
         action: "in-flight" as const,
         reason: `repair session in flight (round ${round})`,
         round,
+        model: "opus" as const,
+        ...(storedPrompt ? { prompt: storedPrompt } : {}),
       };
     }
 
@@ -102,17 +107,20 @@ defineAlias({
     // Without this, qa sees the old qa:fail label and loops back to repair
     // instead of running a new QA session (sprint 36 hit this on #1412).
     await ctx.state.delete("qa_session_id");
-    removeLabel(work.prNumber, "qa:fail");
+    await removeLabel(work.prNumber, "qa:fail");
 
-    // Persist round and sentinel before returning. Orchestrator replaces
-    // repair_session_id with real session ID; deletes on spawn failure.
+    // Persist round, sentinel, and prompt before returning. The prompt is
+    // stored so in-flight re-entry can return it without recomputing state
+    // (repair_prompt is read in the in-flight guard above — see #1922).
     await ctx.state.set("repair_round", round);
+    await ctx.state.set("repair_prompt", prompt);
     await ctx.state.set("repair_session_id", `pending:${Date.now()}`);
 
     return {
       action: "spawn" as const,
       reason: `repair round ${round}, triggered by ${previous}`,
       round,
+      model: "opus" as const,
       command,
       prompt,
       allowTools,

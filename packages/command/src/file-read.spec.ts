@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { readFileWithLimit, resolveAtPath } from "./file-read";
@@ -94,6 +95,24 @@ describe("path containment guard", () => {
 
   test("non-existent path outside allowed dirs is caught before ENOENT", () => {
     expect(() => readFileWithLimit("/nonexistent/path/file.txt")).toThrow(/outside the allowed directory/);
+  });
+});
+
+describe("non-regular file guard", () => {
+  test("rejects FIFOs (named pipes)", () => {
+    const fifoPath = join(TMP, "test.fifo");
+    rmSync(fifoPath, { force: true });
+    const result = spawnSync("mkfifo", [fifoPath]);
+    if (result.status !== 0) return; // mkfifo unavailable — skip
+    try {
+      expect(() => readFileWithLimit(fifoPath)).toThrow(/not a regular file/);
+    } finally {
+      rmSync(fifoPath, { force: true });
+    }
+  });
+
+  test("rejects directories", () => {
+    expect(() => readFileWithLimit(TMP)).toThrow(/not a regular file/);
   });
 });
 

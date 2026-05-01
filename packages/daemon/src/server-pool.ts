@@ -344,9 +344,14 @@ export class ServerPool {
           // Cache stdio child PID at connect time so disconnect() can kill it
           // even if the transport's _process is cleared by a close event first.
           if (transport instanceof StdioClientTransport) {
-            conn.cachedChildPid = transport.pid;
-            conn.cachedChildPidStartTime =
-              conn.cachedChildPid != null ? getProcessStartTime(conn.cachedChildPid) : null;
+            const pid = transport.pid;
+            if (pid == null) {
+              this.logger.warn(
+                `[pool] Server "${name}": stdio child PID unavailable at connect time — process cleanup may be incomplete`,
+              );
+            }
+            conn.cachedChildPid = pid;
+            conn.cachedChildPidStartTime = pid != null ? getProcessStartTime(pid) : null;
           }
 
           // Detect server crashes / transport close to reset stale "connected" state
@@ -618,10 +623,16 @@ export class ServerPool {
 
     // Use the PID cached at connect time — avoids reading conn.transport.pid after
     // the transport's close event may have already cleared _process (setting pid → null).
-    // Fall back to reading the live transport PID for connections established before
-    // cachedChildPid was introduced (e.g. virtual servers or legacy code paths).
+    // Use !== undefined (not ??) so a cached null (process died before PID was readable)
+    // does NOT fall through to the live transport.pid read, which would also return null.
+    // undefined = PID was never cached (non-stdio or connection never established).
+    // null     = PID was cached but was null at cache time (process died during startup).
     const childPid =
-      conn.cachedChildPid ?? (conn.transport instanceof StdioClientTransport ? conn.transport.pid : null);
+      conn.cachedChildPid !== undefined
+        ? conn.cachedChildPid
+        : conn.transport instanceof StdioClientTransport
+          ? conn.transport.pid
+          : null;
     const pidStartTime =
       conn.cachedChildPidStartTime !== undefined
         ? conn.cachedChildPidStartTime
@@ -647,6 +658,8 @@ export class ServerPool {
     // Uses SIGTERM → poll → SIGKILL escalation with PID ownership verification.
     if (childPid != null) {
       await killPid(childPid, this.logger, { pidStartTime });
+    } else if (isStdioConfig(conn.resolved.config) && !conn.virtual) {
+      this.logger.warn(`[pool] Server "${name}": no PID available — cannot verify stdio child cleanup`);
     }
 
     conn.client = null;
