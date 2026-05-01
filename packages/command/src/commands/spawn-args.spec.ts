@@ -97,6 +97,11 @@ describe("parseSharedSpawnArgs", () => {
     expect(result.error).toMatch(/not a valid model name/);
   });
 
+  it("errors on --model followed by another flag (not silently accepted)", () => {
+    const result = parseSharedSpawnArgs(["--model", "--task", "x"]);
+    expect(result.error).toBe("--model requires a value");
+  });
+
   it("errors on empty --allow", () => {
     const result = parseSharedSpawnArgs(["--allow", "--task", "x"]);
     expect(result.error).toBe("--allow requires at least one tool pattern");
