@@ -64,6 +64,9 @@ if $has_source; then
   echo "  lint:shell..."
   bun run lint:shell
 
+  echo "  lint:args-bounds..."
+  bun run lint:args-bounds
+
   echo "  lint:timeouts..."
   bun run lint:timeouts
 
@@ -91,6 +94,9 @@ elif $has_config; then
 
   echo "  lint:shell..."
   bun run lint:shell
+
+  echo "  lint:args-bounds..."
+  bun run lint:args-bounds
 
   echo "  lint:timeouts..."
   bun run lint:timeouts
