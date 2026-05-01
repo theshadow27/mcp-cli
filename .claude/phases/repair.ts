@@ -20,7 +20,11 @@ import { prEdit } from "./gh";
 const REPAIR_ROUND_CAP = 3;
 
 async function removeLabel(prNumber: number, label: string): Promise<void> {
-  await prEdit(prNumber, ["--remove-label", label]);
+  try {
+    await prEdit(prNumber, ["--remove-label", label]);
+  } catch {
+    /* best-effort — label may already be absent */
+  }
 }
 
 const ProviderSchema = z

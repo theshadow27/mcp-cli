@@ -86,14 +86,23 @@ async function mergePr(prNumber: number): Promise<MergeResult> {
   const mergeResult = await prMerge(prNumber, ["--squash", "--delete-branch"]);
   if (mergeResult.exitCode !== 0) {
     const stderr = mergeResult.stderr;
-    if (/used by worktree|cannot delete branch.*checked out/i.test(stderr)) {
-      const stateOut = await prView(prNumber, "state", ".state");
-      if (stateOut === "MERGED") {
-        return {
-          ok: true,
-          prNumber,
-          localCleanup: "skipped: worktree holds branch (bye impl session to prune)",
-        };
+    // Signal kill (e.g. timeout SIGTERM exit 143) or worktree branch-delete
+    // failure may mean the merge actually succeeded on GitHub's side.
+    const maybeSucceeded =
+      /used by worktree|cannot delete branch.*checked out/i.test(stderr) ||
+      mergeResult.exitCode >= 128;
+    if (maybeSucceeded) {
+      try {
+        const stateOut = await prView(prNumber, "state", ".state");
+        if (stateOut === "MERGED") {
+          return {
+            ok: true,
+            prNumber,
+            localCleanup: "skipped: worktree holds branch (bye impl session to prune)",
+          };
+        }
+      } catch {
+        /* prView failed — fall through to error classification */
       }
     }
     if (/not mergeable|conflict/i.test(stderr)) {
@@ -193,13 +202,14 @@ defineAlias({
 
     await spawn(["git", "config", "core.bare", "false"]);
     const pull = await spawn(["git", "pull"], { timeoutMs: 60_000 });
+    const pullWarning = pull.exitCode !== 0 ? `git pull failed (exit ${pull.exitCode}): ${pull.stderr}` : undefined;
+    const localCleanup = [result.localCleanup, pullWarning].filter(Boolean).join("; ") || undefined;
 
     return {
       merged: true,
       prNumber: work.prNumber,
       issueNumber: work.issueNumber,
-      ...(result.localCleanup ? { localCleanup: result.localCleanup } : {}),
-      ...(pull.exitCode !== 0 ? { localCleanup: `git pull failed (exit ${pull.exitCode}): ${pull.stderr}` } : {}),
+      ...(localCleanup ? { localCleanup } : {}),
     };
   },
 });

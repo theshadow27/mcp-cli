@@ -14,32 +14,12 @@ export interface GhResult {
   exitCode: number;
 }
 
-const inflight = new Map<string, Promise<GhResult>>();
-
 export async function gh(
   args: string[],
-  opts?: { timeoutMs?: number; skipDedup?: boolean },
+  opts?: { timeoutMs?: number },
 ): Promise<GhResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const skipDedup = opts?.skipDedup ?? false;
-
-  const key = `${timeoutMs}\0${args.join("\0")}`;
-  if (!skipDedup) {
-    const existing = inflight.get(key);
-    if (existing) return existing;
-  }
-
-  const promise = runGh(args, timeoutMs);
-
-  if (!skipDedup) {
-    inflight.set(key, promise);
-    promise.then(
-      () => inflight.delete(key),
-      () => inflight.delete(key),
-    );
-  }
-
-  return promise;
+  return runGh(args, timeoutMs);
 }
 
 async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
@@ -48,7 +28,10 @@ async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
     stderr: "pipe",
   });
 
-  const timer = setTimeout(() => proc.kill(), timeoutMs);
+  const timer = setTimeout(() => {
+    proc.kill();
+    setTimeout(() => proc.kill(9), 5_000);
+  }, timeoutMs);
 
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -84,26 +67,30 @@ export async function prList(opts: { head?: string; json?: string; jq?: string }
 }
 
 export async function prEdit(prNumber: number, flags: string[]): Promise<void> {
-  await gh(["pr", "edit", String(prNumber), ...flags], { skipDedup: true });
+  const result = await gh(["pr", "edit", String(prNumber), ...flags]);
+  if (result.exitCode !== 0) {
+    throw new Error(`gh pr edit ${prNumber} failed (exit ${result.exitCode}): ${result.stderr}`);
+  }
 }
 
 export async function prMerge(prNumber: number, flags: string[]): Promise<GhResult> {
-  return gh(["pr", "merge", String(prNumber), ...flags], { skipDedup: true });
+  return gh(["pr", "merge", String(prNumber), ...flags]);
 }
 
-export async function prComment(prNumber: number, body: string): Promise<boolean> {
-  const result = await gh(["pr", "comment", String(prNumber), "--body", body], { skipDedup: true });
-  return result.exitCode === 0;
-}
-
-export function _inflightSize(): number {
-  return inflight.size;
+export async function prComment(prNumber: number, body: string): Promise<void> {
+  const result = await gh(["pr", "comment", String(prNumber), "--body", body]);
+  if (result.exitCode !== 0) {
+    throw new Error(`gh pr comment ${prNumber} failed (exit ${result.exitCode}): ${result.stderr}`);
+  }
 }
 
 export async function spawn(cmd: string[], opts?: { timeoutMs?: number }): Promise<GhResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), timeoutMs);
+  const timer = setTimeout(() => {
+    proc.kill();
+    setTimeout(() => proc.kill(9), 5_000);
+  }, timeoutMs);
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

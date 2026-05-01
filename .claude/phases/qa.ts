@@ -34,7 +34,11 @@ async function readQaLabels(prNumber: number): Promise<{ hasPass: boolean; hasFa
 }
 
 async function removeLabel(prNumber: number, label: string): Promise<void> {
-  await prEdit(prNumber, ["--remove-label", label]);
+  try {
+    await prEdit(prNumber, ["--remove-label", label]);
+  } catch {
+    /* best-effort — label may already be absent */
+  }
 }
 
 defineAlias({
