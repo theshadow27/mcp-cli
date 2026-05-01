@@ -2083,7 +2083,7 @@ function printClaudeUsage(): void {
   console.log(`mcx claude — manage Claude Code sessions
 
 Usage:
-  mcx claude spawn --task "description"    Start a new Claude session (non-blocking)
+  mcx claude spawn --task "description"    Start a new Claude session (returns immediately — do not background)
   mcx claude spawn --headed --task "desc"  Start Claude in a visible terminal tab
   mcx claude spawn "description"           Shorthand (positional task)
   mcx claude resume <worktree-or-branch>   Resume with conversation history (--continue)

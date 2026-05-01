@@ -3,7 +3,13 @@ import { registerHelp } from "./help";
 
 registerHelp("claude spawn", {
   name: "mcx claude spawn",
-  summary: "Start a new Claude Code session",
+  summary: "Start a new Claude Code session (returns immediately)",
+  notes: [
+    "NOTE: spawn returns immediately with the new session ID. The session runs",
+    "asynchronously in the daemon. Do not invoke this command via a background",
+    "runner — it is wasteful and clutters the audit trail. To block on",
+    "completion, use: mcx claude wait <session-id>",
+  ],
   usage: [
     'mcx claude spawn --task "description"',
     'mcx claude spawn --task "description" --allow Bash Read Write',

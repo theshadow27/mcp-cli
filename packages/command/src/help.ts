@@ -2,6 +2,7 @@ export interface CommandHelp {
   name: string;
   summary: string;
   usage: string[];
+  notes?: string[];
   options?: Array<[flag: string, description: string]>;
   examples?: string[];
 }
@@ -30,6 +31,14 @@ export function formatHelp(help: CommandHelp): string {
   const lines: string[] = [];
 
   lines.push(`${help.name} — ${help.summary}`);
+
+  if (help.notes && help.notes.length > 0) {
+    lines.push("");
+    for (const note of help.notes) {
+      lines.push(note);
+    }
+  }
+
   lines.push("");
   lines.push("Usage:");
   for (const u of help.usage) {
