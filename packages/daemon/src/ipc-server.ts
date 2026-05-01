@@ -47,11 +47,11 @@ import { EventHandlers } from "./handlers/event";
 import { MailHandlers } from "./handlers/mail";
 import { NoteHandlers } from "./handlers/note";
 import { ServeHandlers } from "./handlers/serve";
+import { StatusHandler } from "./handlers/status";
 import { TelemetryHandlers } from "./handlers/telemetry";
 import { ToolHandlers } from "./handlers/tool";
 import { WorkItemHandlers } from "./handlers/work-item";
 import { metrics } from "./metrics";
-import { getPortHolder } from "./port-holder";
 import type { ServerPool } from "./server-pool";
 
 // Re-export for backward compat with existing tests and external code.
@@ -78,7 +78,6 @@ export class IpcServer {
   private startedAt: number;
   private logger: Logger;
   private eventStream: EventStreamServer;
-  private serveHandlers: ServeHandlers;
 
   constructor(
     private pool: ServerPool,
@@ -117,7 +116,6 @@ export class IpcServer {
     const eventBus = opts.eventBus ?? null;
 
     this.eventStream = new EventStreamServer(eventBus, this.pool, this.logger, IpcServer.HEARTBEAT_INTERVAL_MS);
-    this.serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
 
     this.registerHandlers({
       aliasServer,
@@ -252,7 +250,17 @@ export class IpcServer {
     return this.eventStream.eventSubscriberCount;
   }
 
-  /** Test-mutable: patch before construction to change heartbeat cadence. */
+  /**
+   * Test-mutable statics.
+   *
+   * HEARTBEAT_INTERVAL_MS is owned here; patch it before constructing IpcServer and
+   * the value is forwarded to EventStreamServer at construction time.
+   *
+   * The remaining four (MAX_EVENT_BUS_SUBSCRIBERS, LIVE_BUFFER_MAX_ENTRIES,
+   * LIVE_BUFFER_MAX_BYTES, BACKFILL_BATCH_SIZE, BACKFILL_YIELD_FN) are proxy
+   * getter/setter pairs that read/write EventStreamServer's statics directly —
+   * mutating them takes effect immediately on any live instance.
+   */
   static HEARTBEAT_INTERVAL_MS = 30_000;
   static get MAX_EVENT_BUS_SUBSCRIBERS() {
     return EventStreamServer.MAX_EVENT_BUS_SUBSCRIBERS;
@@ -355,12 +363,13 @@ export class IpcServer {
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
   }): void {
+    const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
     new AuthHandlers(this.pool, this.logger).register(this.handlers);
     new AliasHandlers(this.db, deps.aliasServer, this.logger, deps.onAliasChanged ?? undefined).register(this.handlers);
     new WorkItemHandlers(deps.workItemDb, this.db, deps.resolveIssuePr, deps.loadManifestFn, this.logger).register(
       this.handlers,
     );
-    this.serveHandlers.register(this.handlers);
+    serveHandlers.register(this.handlers);
     new BudgetHandlers(this.db).register(this.handlers);
     new EventHandlers(deps.eventBus).register(this.handlers);
     new TelemetryHandlers(this.db).register(this.handlers);
@@ -368,6 +377,9 @@ export class IpcServer {
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
     new NoteHandlers(this.db).register(this.handlers);
     new ToolHandlers(this.pool, this.db, deps.aliasServer, this.daemonId, this.logger).register(this.handlers);
+    new StatusHandler(this.pool, this.db, serveHandlers, this.serveInstances, this.getWsPortInfo).register(
+      this.handlers,
+    );
 
     // -- Core infrastructure handlers --
 
@@ -376,39 +388,6 @@ export class IpcServer {
       time: Date.now(),
       protocolVersion: PROTOCOL_VERSION,
     }));
-
-    this.handlers.set("status", async (_params, _ctx) => {
-      const servers = this.pool.listServers();
-      const usageStats = this.db.getUsageStats();
-
-      for (const server of servers) {
-        const serverStats = usageStats.filter((s) => s.serverName === server.name);
-        if (serverStats.length > 0) {
-          server.callCount = serverStats.reduce((sum, s) => sum + s.callCount, 0);
-          server.errorCount = serverStats.reduce((sum, s) => sum + s.errorCount, 0);
-          const totalDuration = serverStats.reduce((sum, s) => sum + s.totalDurationMs, 0);
-          server.avgDurationMs = Math.round(totalDuration / server.callCount);
-        }
-      }
-
-      const wsPortInfo = this.getWsPortInfo?.();
-      const hasMismatch = wsPortInfo != null && wsPortInfo.actual != null && wsPortInfo.actual !== wsPortInfo.expected;
-      const wsPortHolder = hasMismatch ? await getPortHolder(wsPortInfo.expected) : null;
-      this.serveHandlers.pruneStaleInstances();
-      return {
-        pid: process.pid,
-        uptime: process.uptime(),
-        protocolVersion: PROTOCOL_VERSION,
-        daemonVersion: BUILD_VERSION,
-        servers,
-        dbPath: options.DB_PATH,
-        usageStats,
-        wsPort: wsPortInfo?.actual ?? null,
-        wsPortExpected: wsPortInfo?.expected,
-        wsPortHolder,
-        serveInstances: [...this.serveInstances.values()],
-      };
-    });
 
     this.handlers.set("listServers", async (_params, _ctx) => this.pool.listServers());
 
@@ -477,6 +456,14 @@ export class IpcServer {
       this.startDrainTimeout();
       return { ok: true };
     });
+
+    // Catch duplicate registrations (silently-overwritten handlers are invisible bugs).
+    const EXPECTED = 51;
+    if (this.handlers.size !== EXPECTED) {
+      throw new Error(
+        `Handler count mismatch after registration: expected ${EXPECTED}, got ${this.handlers.size}. A handler was duplicated or omitted.`,
+      );
+    }
   }
 }
 

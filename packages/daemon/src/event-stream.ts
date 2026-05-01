@@ -23,11 +23,14 @@ export class EventStreamServer {
   private static readonly EVENTBUS_SUB_TTL_MS = 10 * 60_000;
   /** Ring-buffer capacity for the fallback push path. */
   private static readonly EVENT_RING_CAPACITY = 256;
-  /** Max entries in the backfill liveBuffer (#1589). Test-mutable. */
+  /**
+   * Test-mutable statics — all four are proxied via static getter/setter pairs on IpcServer
+   * so that tests can patch IpcServer.X and have the change take effect without importing
+   * EventStreamServer directly.  If you rename or remove any of these, update the
+   * corresponding accessor on IpcServer as well.
+   */
   static LIVE_BUFFER_MAX_ENTRIES = 10_000;
-  /** Max bytes in the backfill liveBuffer (#1589). Test-mutable. */
   static LIVE_BUFFER_MAX_BYTES = 10 * 1024 * 1024;
-  /** Backfill batch size. Test-mutable. */
   static BACKFILL_BATCH_SIZE = 1000;
   /**
    * Optional async hook called at each backfill yield point.

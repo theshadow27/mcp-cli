@@ -3595,6 +3595,7 @@ describe("IpcServer HTTP transport", () => {
       Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
         value: origInterval ?? 30_000,
         configurable: true,
+        writable: true,
       });
     }
   });
