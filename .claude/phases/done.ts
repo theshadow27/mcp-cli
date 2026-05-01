@@ -189,11 +189,13 @@ defineAlias({
       "triage_reasons",
       "review_round",
       "repair_round",
+      "repair_prompt",
       "qa_fail_round",
       "previous_phase",
       "provider",
       "labels",
       "model",
+      "review_model",
     ]) {
       await ctx.state.delete(key);
     }
