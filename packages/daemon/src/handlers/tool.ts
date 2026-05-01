@@ -6,7 +6,7 @@ import {
   ListToolsParamsSchema,
   RestartServerParamsSchema,
 } from "@mcp-cli/core";
-import type { IpcMethod, Logger } from "@mcp-cli/core";
+import type { IpcMethod } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
 import type { StateDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
@@ -19,7 +19,6 @@ export class ToolHandlers {
     private db: StateDb,
     private aliasServer: AliasServer | null,
     private daemonId: string,
-    private logger: Logger,
   ) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {

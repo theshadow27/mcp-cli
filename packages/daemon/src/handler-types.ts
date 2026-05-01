@@ -1,5 +1,4 @@
 import type { LiveSpan } from "@mcp-cli/core";
-import type { IpcMethod } from "@mcp-cli/core";
 
 export interface RequestContext {
   span: LiveSpan;

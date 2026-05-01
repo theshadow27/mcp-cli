@@ -27,8 +27,8 @@ export class WorkItemHandlers {
 
   /**
    * Fire-and-forget: resolve PR number via GitHub API and update the work item.
-   * Handles UNIQUE constraint collisions by merging with an existing item that
-   * already tracks the same PR number.
+   * Handles UNIQUE constraint collisions by skipping if an item already
+   * tracks the same PR number.
    */
   private resolveAndUpdateWorkItem(itemId: string, issueNumber: number): void {
     if (!this.resolveIssuePr) return;

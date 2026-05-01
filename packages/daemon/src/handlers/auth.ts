@@ -1,15 +1,12 @@
 import { AuthStatusParamsSchema, IPC_ERROR, TriggerAuthParamsSchema } from "@mcp-cli/core";
-import type { IpcMethod, Logger, ServerAuthStatus } from "@mcp-cli/core";
+import type { IpcMethod, ServerAuthStatus } from "@mcp-cli/core";
 import { McpOAuthProvider } from "../auth/oauth-provider";
 import { runOAuthFlowWithDcrRetry } from "../auth/oauth-retry";
 import type { RequestHandler } from "../handler-types";
 import type { ServerPool } from "../server-pool";
 
 export class AuthHandlers {
-  constructor(
-    private pool: ServerPool,
-    private logger: Logger,
-  ) {}
+  constructor(private pool: ServerPool) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("triggerAuth", async (params, _ctx) => {

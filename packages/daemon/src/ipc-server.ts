@@ -19,7 +19,6 @@ import type {
   ServeInstanceInfo,
 } from "@mcp-cli/core";
 import {
-  BUILD_VERSION,
   GetDaemonLogsParamsSchema,
   GetLogsParamsSchema,
   IPC_ERROR,
@@ -256,7 +255,7 @@ export class IpcServer {
    * HEARTBEAT_INTERVAL_MS is owned here; patch it before constructing IpcServer and
    * the value is forwarded to EventStreamServer at construction time.
    *
-   * The remaining four (MAX_EVENT_BUS_SUBSCRIBERS, LIVE_BUFFER_MAX_ENTRIES,
+   * The remaining five (MAX_EVENT_BUS_SUBSCRIBERS, LIVE_BUFFER_MAX_ENTRIES,
    * LIVE_BUFFER_MAX_BYTES, BACKFILL_BATCH_SIZE, BACKFILL_YIELD_FN) are proxy
    * getter/setter pairs that read/write EventStreamServer's statics directly —
    * mutating them takes effect immediately on any live instance.
@@ -364,7 +363,7 @@ export class IpcServer {
     onAliasChanged: ((name: string) => void) | null;
   }): void {
     const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
-    new AuthHandlers(this.pool, this.logger).register(this.handlers);
+    new AuthHandlers(this.pool).register(this.handlers);
     new AliasHandlers(this.db, deps.aliasServer, this.logger, deps.onAliasChanged ?? undefined).register(this.handlers);
     new WorkItemHandlers(deps.workItemDb, this.db, deps.resolveIssuePr, deps.loadManifestFn, this.logger).register(
       this.handlers,
@@ -376,7 +375,7 @@ export class IpcServer {
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
     new NoteHandlers(this.db).register(this.handlers);
-    new ToolHandlers(this.pool, this.db, deps.aliasServer, this.daemonId, this.logger).register(this.handlers);
+    new ToolHandlers(this.pool, this.db, deps.aliasServer, this.daemonId).register(this.handlers);
     new StatusHandler(this.pool, this.db, serveHandlers, this.serveInstances, this.getWsPortInfo).register(
       this.handlers,
     );

@@ -33,7 +33,7 @@ const mockLogger = {
 
 function buildHandlers(pool = mockPool()): Map<IpcMethod, RequestHandler> {
   const map = new Map<IpcMethod, RequestHandler>();
-  new AuthHandlers(pool, mockLogger).register(map);
+  new AuthHandlers(pool).register(map);
   return map;
 }
 
