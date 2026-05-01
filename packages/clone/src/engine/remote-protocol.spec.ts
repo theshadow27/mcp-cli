@@ -208,6 +208,54 @@ describe("remote-protocol", () => {
     expect(output).toContain("listing-2");
   });
 
+  test("list error: calls onError with message and writes blank terminator", async () => {
+    const errors: string[] = [];
+    const handlers = makeHandlers({
+      list: async () => {
+        throw new Error("provider unreachable");
+      },
+    });
+    const stdin = streamFrom("list\n\n");
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
+    expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("list failed");
+    expect(errors[0]).toContain("provider unreachable");
+  });
+
+  test("import error: calls onError with message and writes done terminator", async () => {
+    const errors: string[] = [];
+    const handlers = makeHandlers({
+      handleImport: async () => {
+        throw new Error("import broken");
+      },
+    });
+    const stdin = streamFrom("import refs/heads/main\n\n");
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
+    expect(result()).toBe("done\n");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("import failed");
+    expect(errors[0]).toContain("import broken");
+  });
+
+  test("export error: calls onError with message and writes blank terminator", async () => {
+    const errors: string[] = [];
+    const handlers = makeHandlers({
+      handleExport: async () => {
+        throw new Error("push rejected: offline");
+      },
+    });
+    const stdin = streamFrom("export\nsome-data\n");
+    const { stream, result } = collectStream();
+    await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
+    expect(result()).toBe("\n");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("export failed");
+    expect(errors[0]).toContain("push rejected: offline");
+  });
+
   test("import followed by other command", async () => {
     let importedRefs: string[] = [];
     let listCalled = false;
