@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { _inflightSize, gh, spawn } from "../.claude/phases/gh";
 
+const hasGh = Bun.spawnSync(["which", "gh"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+
 describe("spawn — async subprocess wrapper", () => {
   test("captures stdout from a simple command", async () => {
     const result = await spawn(["echo", "hello"]);
@@ -21,7 +23,7 @@ describe("spawn — async subprocess wrapper", () => {
 });
 
 describe("gh — dedup", () => {
-  test("concurrent identical calls share one promise", async () => {
+  test.skipIf(!hasGh)("concurrent identical calls share one promise", async () => {
     const p1 = gh(["version"]);
     expect(_inflightSize()).toBe(1);
     const p2 = gh(["version"]);
@@ -33,7 +35,7 @@ describe("gh — dedup", () => {
     expect(_inflightSize()).toBe(0);
   });
 
-  test("skipDedup bypasses dedup", async () => {
+  test.skipIf(!hasGh)("skipDedup bypasses dedup", async () => {
     const p1 = gh(["version"], { skipDedup: true });
     const p2 = gh(["version"], { skipDedup: true });
     const [r1, r2] = await Promise.all([p1, p2]);
@@ -41,7 +43,7 @@ describe("gh — dedup", () => {
     expect(r2.exitCode).toBe(0);
   });
 
-  test("inflight map clears after resolution", async () => {
+  test.skipIf(!hasGh)("inflight map clears after resolution", async () => {
     await gh(["version"]);
     expect(_inflightSize()).toBe(0);
   });

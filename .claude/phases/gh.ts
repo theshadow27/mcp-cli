@@ -23,7 +23,7 @@ export async function gh(
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const skipDedup = opts?.skipDedup ?? false;
 
-  const key = args.join("\0");
+  const key = `${timeoutMs}\0${args.join("\0")}`;
   if (!skipDedup) {
     const existing = inflight.get(key);
     if (existing) return existing;

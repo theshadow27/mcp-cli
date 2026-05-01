@@ -39,6 +39,23 @@ async function mergePr(prNumber: number): Promise<MergeResult> {
     ]),
   ]);
 
+  if (labelOut.exitCode !== 0) {
+    return {
+      ok: false,
+      reason: "merge_failed",
+      nextAction: `gh pr view labels failed for PR #${prNumber}; check gh auth and retry`,
+      detail: labelOut.stderr,
+    };
+  }
+  if (ciOut.exitCode !== 0) {
+    return {
+      ok: false,
+      reason: "merge_failed",
+      nextAction: `gh pr view statusCheckRollup failed for PR #${prNumber}; check gh auth and retry`,
+      detail: ciOut.stderr,
+    };
+  }
+
   const labels = labelOut.stdout.split(/\r?\n/).map((l) => l.trim());
   if (!labels.includes("qa:pass")) {
     return {
@@ -175,13 +192,14 @@ defineAlias({
     }
 
     await spawn(["git", "config", "core.bare", "false"]);
-    await spawn(["git", "pull"]);
+    const pull = await spawn(["git", "pull"], { timeoutMs: 60_000 });
 
     return {
       merged: true,
       prNumber: work.prNumber,
       issueNumber: work.issueNumber,
       ...(result.localCleanup ? { localCleanup: result.localCleanup } : {}),
+      ...(pull.exitCode !== 0 ? { localCleanup: `git pull failed (exit ${pull.exitCode}): ${pull.stderr}` } : {}),
     };
   },
 });
