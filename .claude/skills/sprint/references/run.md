@@ -155,8 +155,8 @@ via `_work_items.work_items_update`.
 | `mcx tracked --json` | List all tracked items with PR/CI/review state |
 | `mcx tracked --phase impl` | Filter by phase |
 | `mcx untrack <number>` | Stop tracking |
-| `mcx monitor --subscribe session,work_item --json --max-events 1 --timeout 60` | Block for one enriched event (per-tick) |
-| `mcx monitor --subscribe session,work_item --json` | Long-lived stream (open at sprint start; tail) |
+| `Monitor` tool with `mcx monitor --subscribe session,work_item --json` (long-lived; **default**) | Push-shaped event stream — each ndjson line lands as an in-conversation notification |
+| `mcx monitor --subscribe session,work_item --json --max-events 1 --timeout 60` (Bash) | **Fallback only** — for harnesses without `Monitor` tool support (loses notifications, re-pays cache TTL each tick) |
 
 **`work_items_update` will best-effort auto-populate `branch` from
 `prNumber`** when `branch` is omitted (resolves via `gh`). Pass both
@@ -229,12 +229,33 @@ Acting on the monitor stream collapses that to ~1 lookup (the action). At
 15 sessions/sprint that is the difference between ~60 redundant tool calls
 per turn and ~1.
 
+**Open the stream once at sprint start via the `Monitor` tool** (Claude Code
+harness tool, `persistent: true`, timeout `1h`). Each stdout line arrives as
+an in-conversation notification — the orchestrator reacts when an event
+fires, with no polling and no cache-miss between ticks. The canonical
+command (filtered to load-bearing event types):
+
+```
+mcx monitor --subscribe session,work_item --json 2>&1 \
+  | grep -E --line-buffered '"event":"(session\.idle|session\.result|session\.permission_request|session\.stuck|ci\.finished|pr\.merge_state_changed|pr\.review_comment_posted|work_item\.phase_changed|cost\.|quota\.|daemon\.restarted|worker\.ratelimited)"'
+```
+
+Each notification carries one ndjson event; the per-event handling below
+runs once per notification.
+
+**Fallback (harnesses without `Monitor` tool support):** call `mcx monitor
+--subscribe session,work_item --json --max-events 1 --timeout 60` from a
+Bash subprocess each tick. Loses notification delivery and re-pays the
+5-min prompt-cache TTL on each fresh subprocess — strictly inferior to the
+`Monitor` tool, but functionally equivalent.
+
 ```
 while issues remain:
-  event = mcx monitor --subscribe session,work_item --json \
-                      --max-events 1 --timeout 60
-  # NOTE: --timeout is in *seconds* for monitor (was milliseconds for wait).
-  # Empty stdout on timeout is normal — fall through and re-enter the loop.
+  event = next notification from the Monitor stream
+          (or, in the fallback Bash form: mcx monitor --subscribe
+           session,work_item --json --max-events 1 --timeout 60)
+  # Empty event on timeout (fallback only) is normal — fall through and
+  # re-enter the loop.
 
   quota = mcx call _metrics quota_status     # see Quota gating
 
@@ -317,21 +338,6 @@ when `result.action == "goto"`, `mcx phase run <result.target>
 --work-item <item.id>`. (Triage uses the standard `action`/`target`
 schema since #1832 — no special-cased `decision` field, and triage itself
 consumes events through `ctx.waitForEvent` rather than its own polling.)
-
-**Long-lived alternative** — instead of `--max-events 1` per tick, open
-one stream at sprint start and tail it:
-
-```bash
-# Once at sprint start (kept alive, append-only):
-mcx monitor --subscribe session,work_item --json \
-  > /tmp/sprint-{N}-events.ndjson 2>&1 &
-# Each tick: read new lines since last cursor.
-```
-
-Pick the long-lived form when the orchestrator's harness can poll a
-file/pipe; pick `--max-events 1` per tick when each loop iteration is a
-fresh subprocess. The `mcx claude wait`-shaped per-tick form is the
-straight drop-in.
 
 **Key invariants** (orchestrator discipline, not enforced by scripts):
 - Use `mcx monitor` for orchestrator decisions; never `sleep`, and never
