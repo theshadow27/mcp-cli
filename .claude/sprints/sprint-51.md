@@ -46,7 +46,14 @@ work is one — `claude-patch` atomicity (#1827, the #1808 cluster).
 #1892, #1956, #1958, #1931+#1932, #1928
 
 ### Batch 3 (backfill)
-#1933, #1960, #1632+#1633, #1374, #1881
+#1933, #1960, #1632+#1633, #1374
+
+### Excluded (run-time, plan-time triage misses)
+
+- **#1881** — closed 2026-04-30 by user as already-done; sparse-array
+  index check landed inline in PR #1878 at `site-worker.ts:320`. Plan
+  was authored 2026-05-03 and missed the closure. Sprint target
+  reduced 15 → 14 PRs.
 
 ### Cross-issue dependencies (addBlockedBy edges)
 
