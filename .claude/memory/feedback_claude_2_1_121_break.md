@@ -1,31 +1,47 @@
 ---
 name: Claude 2.1.121 sdk-url break + workaround
-description: Anthropic added a 5-host allowlist on `--sdk-url` in claude 2.1.121 that breaks every mcx-spawned session. Workaround in place; do not blindly re-symlink.
+description: Anthropic added a 5-host allowlist on `--sdk-url` in claude 2.1.121 that breaks every mcx-spawned session. Pin via `claudeBinary` config; user's local PATH `claude` advances freely.
 type: feedback
 originSessionId: 8be6c24d-3c8c-419f-9862-e43e3b61a449
 ---
-**Rule:** If `mcx claude spawn` is producing sessions that immediately disconnect with `spawn exited`, do NOT just re-pin the symlink — verify the wrapper script + `chflags uchg` lock at `~/.local/bin/claude` is still intact first.
+**Rule:** mcx-spawned claude sessions must use a known-working pre-2.1.121 binary (currently 2.1.119). The user's interactive `~/.local/bin/claude` is a normal symlink that auto-updates — it does NOT serve mcx anymore.
 
 **Why:** Claude Code CLI 2.1.121 (build `16ffea72`, dropped 2026-04-27) added a runtime check that rejects `--sdk-url ws://localhost:...` with: *"host 'localhost' is not an approved Anthropic endpoint."* The check is a string-match against a 5-host allowlist (`api.anthropic.com`, `api-staging.anthropic.com`, `beacon.claude-ai.staging.ant.dev`, `claude.fedstart.com`, `claude-staging.fedstart.com`). This breaks every mcx session spawn, since mcx hosts its own WebSocket transport at `ws://localhost:<port>`. Filed as issue #1808 (the user is solving this in a parallel session — daemon-side wiring of a binary patcher + TLS listener).
 
+**Current pinning mechanism (sprint 51 plan, 2026-05-03):**
+
+mcx now resolves the spawn binary in this precedence order (see `packages/daemon/src/claude-session/binary-resolver.ts` and `packages/core/src/config.ts:101`):
+
+1. `MCX_CLAUDE_BINARY` env var (per-process override)
+2. `claudeBinary` config field in `~/.mcp-cli/config.json` ← **this is what's pinned now**
+3. `which claude` on PATH (fallback)
+
+The pinned config value is:
+```
+claudeBinary = ~/.local/share/mcp-cli-archive/claude-code/claude-2.1.119
+```
+
+The user's `~/.local/bin/claude` is now a normal symlink to `~/.local/share/claude/versions/<latest>` and auto-updates freely (interactive `claude` benefits from upstream bugfixes). The chflags-uchg wrapper-script approach was retired 2026-05-03 — no longer needed.
+
+**Archive integrity:**
+
+Five binaries at `~/.local/share/mcp-cli-archive/claude-code/` (2.1.114, 2.1.116, 2.1.117, 2.1.118, 2.1.119) are protected by `chflags uchg` against accidental `rm`. SHA-256 digests in the archive's `README.txt`:
+- `claude-2.1.119` → `31db3444309d5d0f8b85e8782e2dcd86f31f7e48c1a1e83d69b09268c7b4f9a2`
+
+The archive is OUTSIDE `~/.local/share/claude/versions/` (which Anthropic prunes — 2.1.119 was already pruned there as of 2026-05-03; the archive is the only surviving copy on this machine).
+
 **How to apply:**
 
-1. **Detection.** If sessions die in <1s with daemon log `Session <id> disconnected: spawn exited` and `Pruned dead session ... pid X no longer alive`, run `claude --version`. If it prints anything ≥ 2.1.120 and the user hasn't merged the #1808 wiring yet, the symlink got stomped.
-
-2. **Workaround.** The recovery is a wrapper script (NOT a symlink — Anthropic's auto-updater rewrites symlinks within minutes):
+1. **Detection.** If sessions die in <1s with daemon log `Session <id> disconnected: spawn exited` and `Pruned dead session ... pid X no longer alive`, run:
    ```sh
-   unlink ~/.local/bin/claude
-   cat > ~/.local/bin/claude <<'EOF'
-   #!/bin/sh
-   exec "$HOME/.local/share/mcp-cli-archive/claude-code/claude-2.1.119" "$@"
-   EOF
-   chmod +x ~/.local/bin/claude
-   chflags uchg ~/.local/bin/claude
+   mcx config get claude-binary           # should print archive path
+   "$(mcx config get claude-binary | awk -F= '{print $2}' | xargs)" --version
+   # → 2.1.119 (Claude Code)
    ```
-   The `chflags uchg` (user-immutable flag) is what stops the auto-updater from overwriting it. Two prior re-pin attempts during sprint 46 were stomped within minutes; the third attempt with `uchg` survived.
+   If `claudeBinary` is unset or stale, restore via `mcx config set claude-binary ~/.local/share/mcp-cli-archive/claude-code/claude-2.1.119` then `mcx shutdown && mcx status`.
 
-3. **Archive location.** Last-known-working binaries (2.1.114 through 2.1.119) are at `~/.local/share/mcp-cli-archive/claude-code/` with sha256s in the README. This directory is OUTSIDE `~/.local/share/claude/versions/` (which Anthropic prunes) and OUTSIDE the project's git tree.
+2. **If the archive copy is missing** (binary deleted despite uchg lock — extremely unlikely): the archive `README.txt` lists prior versions back to 2.1.114. Use the most recent surviving binary; update `claudeBinary` config; restart daemon.
 
-4. **Don't just unlock and re-symlink to the latest.** Even if the auto-updater installs 2.1.122+ and the host check is gone, mcx still won't work until the daemon-side wiring (#1808 components 4/6/7) lands. Until then, 2.1.119 is the only known-working version for autosprint use.
+3. **Don't re-pin `~/.local/bin/claude` to 2.1.119.** That was the old workaround. The current setup deliberately keeps the user's interactive `claude` advancing — config-based pinning is the supported path.
 
-5. **Do not file new issues** about this — the open #1808 already has the full reverse-engineering recon (allowlist verbatim from binary, no DNS, no integrity check, no env bypass). If something new breaks (e.g. 2.1.119 stops working too), comment on #1808.
+4. **Don't file new issues** about this — #1808 has the full reverse-engineering recon. If something new breaks (e.g. 2.1.119 stops working too), comment on #1808 and fall back to 2.1.118 from the archive.
