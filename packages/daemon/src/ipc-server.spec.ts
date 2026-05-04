@@ -3809,20 +3809,69 @@ describe("IpcServer HTTP transport", () => {
     // Disposing removes all entries from the active set immediately.
     expect(server.activeStreamCount).toBe(0);
 
-    // The stream should close cleanly (done=true) within a bounded timeout.
+    // Drain all chunks until EOF, bounded by 2s. Promise.race on each read prevents
+    // the test from hanging if the stream never closes.
+    let closed = false;
     const deadline = Date.now() + 2_000;
-    let done = false;
-    while (Date.now() < deadline) {
-      const result = await reader.read();
-      if (result.done) {
-        done = true;
-        break;
-      }
+    while (!closed && Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const chunk = await Promise.race([
+        reader.read(),
+        Bun.sleep(remaining).then(() => ({ done: true as const, value: undefined, timedOut: true })),
+      ]);
+      if ((chunk as { timedOut?: boolean }).timedOut) break;
+      if (chunk.done) closed = true;
     }
     reader.releaseLock();
     controller.abort();
 
-    expect(done).toBe(true);
+    expect(closed).toBe(true);
+  });
+
+  test("dispose() closes active /logs SSE streams (#1962)", async () => {
+    startServer();
+    if (!server) throw new Error("server not started");
+
+    // Emit a daemon log line so the stream has backfill data on connect.
+    // Without an immediate enqueue in start(), Bun defers the ReadableStream
+    // start() callback until a read is pending — the backfill ensures it runs
+    // eagerly so activeCleanups is populated before fetch() resolves.
+    console.error(`ipc-logs-dispose-test-${Date.now()}`);
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/logs?daemon=true", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+
+    await pollUntil(() => server?.activeStreamCount === 1);
+    expect(server.activeStreamCount).toBe(1);
+
+    const es = (server as unknown as { eventStream: EventStreamServer }).eventStream;
+    es.dispose();
+
+    expect(server.activeStreamCount).toBe(0);
+
+    // Drain all chunks until EOF, bounded by 2s.
+    let closed = false;
+    const deadline = Date.now() + 2_000;
+    while (!closed && Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const chunk = await Promise.race([
+        reader.read(),
+        Bun.sleep(remaining).then(() => ({ done: true as const, value: undefined, timedOut: true })),
+      ]);
+      if ((chunk as { timedOut?: boolean }).timedOut) break;
+      if (chunk.done) closed = true;
+    }
+    reader.releaseLock();
+    controller.abort();
+
+    expect(closed).toBe(true);
   });
 
   test("EventStreamServer.dispose() rejects new /events and /logs connections (#1962)", () => {
