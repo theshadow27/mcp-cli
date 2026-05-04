@@ -160,8 +160,9 @@ describe("partitionSitesForRunningBrowser — #1594", () => {
   });
 
   test("trailing-slash profileDir is treated as matching the normalized running profile — #1671", () => {
-    // resolveProfileDir always runs normalize(), but guard against any string-format
-    // difference (trailing sep, doubled sep) sneaking through from external callers.
+    // resolveProfileDir resolves profile paths before comparing them, but guard
+    // against equivalent string-format differences (trailing sep, doubled sep)
+    // sneaking through from external callers.
     const profileWithSlash = `${profile}/`;
     const { toOpen, profileMismatch } = partitionSitesForRunningBrowser(profile, new Set<string>(), [
       spec("owa", { profileDir: profileWithSlash }),
