@@ -42,6 +42,9 @@ export class EventStreamServer {
   private eventSubscribers = new Set<(event: Record<string, unknown>) => void>();
   private eventSeq = 0;
   private eventBusSubId: number | null = null;
+  private disposed = false;
+  /** Active stream cleanup+close callbacks registered for graceful shutdown (#1962). */
+  private readonly activeCleanups = new Set<() => void>();
 
   constructor(
     private readonly eventBus: EventBus | null,
@@ -68,12 +71,22 @@ export class EventStreamServer {
     }
   }
 
-  /** Unsubscribe from EventBus (call from IpcServer.stop()). */
+  /** Unsubscribe from EventBus and close all active streams (call from IpcServer.stop()). */
   dispose(): void {
+    this.disposed = true;
     if (this.eventBusSubId !== null && this.eventBus) {
       this.eventBus.unsubscribe(this.eventBusSubId);
       this.eventBusSubId = null;
     }
+    for (const fn of this.activeCleanups) {
+      fn();
+    }
+    this.activeCleanups.clear();
+  }
+
+  /** Number of active streams tracked for graceful shutdown (for testing). */
+  get activeStreamCount(): number {
+    return this.activeCleanups.size;
   }
 
   /**
@@ -115,6 +128,10 @@ export class EventStreamServer {
    *   since=<ts>     — only backfill lines after this timestamp (ms)
    */
   handleLogsSSE(url: URL): Response {
+    if (this.disposed) {
+      return new Response("daemon shutting down", { status: 503 });
+    }
+
     const serverName = url.searchParams.get("server");
     const isDaemon = url.searchParams.get("daemon") === "true";
     const lines = Number(url.searchParams.get("lines") ?? "50");
@@ -125,6 +142,7 @@ export class EventStreamServer {
     }
 
     let unsubscribe: (() => void) | undefined;
+    let disposeCleanup: (() => void) | undefined;
 
     const stream = new ReadableStream({
       start: (controller) => {
@@ -136,8 +154,20 @@ export class EventStreamServer {
           } catch {
             // Stream closed — clean up
             unsubscribe?.();
+            if (disposeCleanup) this.activeCleanups.delete(disposeCleanup);
           }
         };
+
+        disposeCleanup = () => {
+          unsubscribe?.();
+          unsubscribe = undefined;
+          try {
+            controller.close();
+          } catch {
+            // already closed
+          }
+        };
+        this.activeCleanups.add(disposeCleanup);
 
         // Backfill initial lines
         if (isDaemon) {
@@ -171,6 +201,7 @@ export class EventStreamServer {
       },
       cancel: () => {
         unsubscribe?.();
+        if (disposeCleanup) this.activeCleanups.delete(disposeCleanup);
       },
     });
 
@@ -205,6 +236,10 @@ export class EventStreamServer {
    *   responseTail=<sessionId> Include session.response chunks for this session only
    */
   handleEventsNDJSON(url: URL): Response {
+    if (this.disposed) {
+      return new Response("daemon shutting down", { status: 503 });
+    }
+
     const sinceParam = url.searchParams.get("since");
     let sinceSeq: number | null = null;
     if (sinceParam !== null) {
@@ -251,6 +286,7 @@ export class EventStreamServer {
 
       let subId: number | null = null;
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+      let disposeCleanupEb: (() => void) | undefined;
 
       const encoder = new TextEncoder();
       const subscriberGauge = metrics.gauge("mcpd_event_bus_subscribers");
@@ -265,12 +301,26 @@ export class EventStreamServer {
           clearInterval(heartbeatTimer);
           heartbeatTimer = undefined;
         }
+        if (disposeCleanupEb) {
+          this.activeCleanups.delete(disposeCleanupEb);
+          disposeCleanupEb = undefined;
+        }
       };
 
       const stream = new ReadableStream(
         {
           start: async (controller) => {
             controller.enqueue(encoder.encode("\n"));
+
+            disposeCleanupEb = () => {
+              cleanup();
+              try {
+                controller.close();
+              } catch {
+                // already closed
+              }
+            };
+            this.activeCleanups.add(disposeCleanupEb);
 
             let liveBuffer: Array<{ line: string; bytes: number; seq: number | undefined }> | null =
               sinceSeq !== null && eventLog ? [] : null;
@@ -442,6 +492,13 @@ export class EventStreamServer {
     }
 
     // ── Ring-buffer fallback path (direct pushEvent(), no EventBus) ──
+    if (this.eventSubscribers.size >= EventStreamServer.MAX_EVENT_BUS_SUBSCRIBERS) {
+      this.logger.warn(
+        `[events] ring-buffer subscriber limit reached (${EventStreamServer.MAX_EVENT_BUS_SUBSCRIBERS}), rejecting connection`,
+      );
+      return new Response("too many event stream subscribers", { status: 503 });
+    }
+
     const filter = buildEventFilter(url.searchParams);
     const fallbackResponseTail = url.searchParams.get("responseTail");
     const shouldDeliverFallback = (event: Record<string, unknown>) => {
@@ -459,6 +516,7 @@ export class EventStreamServer {
     let unsubscribe: (() => void) | undefined;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let lastWriteTime = Date.now();
+    let disposeCleanupRb: (() => void) | undefined;
 
     const encoder = new TextEncoder();
 
@@ -469,11 +527,25 @@ export class EventStreamServer {
         clearInterval(heartbeatTimer);
         heartbeatTimer = undefined;
       }
+      if (disposeCleanupRb) {
+        this.activeCleanups.delete(disposeCleanupRb);
+        disposeCleanupRb = undefined;
+      }
     };
 
     const stream = new ReadableStream({
       start: (controller) => {
         let highWaterMark = 0;
+
+        disposeCleanupRb = () => {
+          cleanup();
+          try {
+            controller.close();
+          } catch {
+            // already closed
+          }
+        };
+        this.activeCleanups.add(disposeCleanupRb);
 
         const flush = () => {
           if (!pending) return;
