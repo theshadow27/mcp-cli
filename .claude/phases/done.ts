@@ -84,7 +84,6 @@ defineAlias({
       await ctx.state.delete(key);
     }
 
-    await spawn(["git", "config", "core.bare", "false"]);
     const pull = await spawn(["git", "pull"], { timeoutMs: 60_000 });
     const pullWarning = pull.exitCode !== 0 ? `git pull failed (exit ${pull.exitCode}): ${pull.stderr}` : undefined;
     const localCleanup = [result.localCleanup, pullWarning].filter(Boolean).join("; ") || undefined;

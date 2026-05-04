@@ -933,13 +933,13 @@ describe("sweepCoreBare (#1330)", () => {
 
       expect(healed).toBe(1);
       expect(execCalls.some((c) => c.includes("--unset") && c.includes("core.bare"))).toBe(true);
-      expect(warnMessages.some((m) => m.includes("Healed core.bare=true"))).toBe(true);
+      expect(warnMessages.some((m) => m.includes("Removed core.bare key"))).toBe(true);
     } finally {
       db.close();
     }
   });
 
-  test("returns 0 when no repos need healing", () => {
+  test("returns 0 when core.bare key is already absent", () => {
     opts = testOptions();
     const repoDir = join(opts.dir, "sweep-clean");
     mkdirSync(repoDir, { recursive: true });
@@ -959,11 +959,49 @@ describe("sweepCoreBare (#1330)", () => {
         db,
         silentLogger,
         mockGitOps({
-          exec: () => ({ exitCode: 0, stdout: "false\n" }),
+          exec: () => ({ exitCode: 1, stdout: "" }),
         }),
       );
 
       expect(healed).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("removes core.bare=false too (eliminates flip target)", () => {
+    opts = testOptions();
+    const repoDir = join(opts.dir, "sweep-false");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
+
+    const db = new StateDb(opts.DB_PATH);
+    try {
+      db.upsertSession({
+        sessionId: "active",
+        pid: 99999,
+        model: "sonnet",
+        cwd: repoDir,
+        repoRoot: repoDir,
+      });
+
+      const execCalls: string[][] = [];
+      const healed = sweepCoreBare(
+        db,
+        silentLogger,
+        mockGitOps({
+          exec: (cmd: string[]) => {
+            execCalls.push(cmd);
+            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+              return { exitCode: 0, stdout: "false\n" };
+            }
+            return { exitCode: 0, stdout: "" };
+          },
+        }),
+      );
+
+      expect(healed).toBe(1);
+      expect(execCalls.some((c) => c.includes("--unset") && c.includes("core.bare"))).toBe(true);
     } finally {
       db.close();
     }
@@ -1067,7 +1105,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     }
   });
 
-  test("sweepCoreBare does not increment counter when nothing healed", () => {
+  test("sweepCoreBare does not increment counter when key already absent", () => {
     opts = testOptions();
     const repoDir = join(opts.dir, "counter-sweep-clean");
     mkdirSync(repoDir, { recursive: true });
@@ -1077,7 +1115,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     try {
       db.upsertSession({ sessionId: "s2", pid: 99999, model: "sonnet", cwd: repoDir, repoRoot: repoDir });
 
-      sweepCoreBare(db, silentLogger, mockGitOps({ exec: () => ({ exitCode: 0, stdout: "false\n" }) }));
+      sweepCoreBare(db, silentLogger, mockGitOps({ exec: () => ({ exitCode: 1, stdout: "" }) }));
 
       expect(metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).value()).toBe(0);
     } finally {

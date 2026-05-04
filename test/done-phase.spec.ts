@@ -136,7 +136,7 @@ describe("mergePr — success", () => {
     expect(capturedFlags).toEqual(["--squash", "--delete-branch"]);
   });
 
-  test("spawn called to reset core.bare before merge", async () => {
+  test("no pre-flight core.bare workaround (#1860)", async () => {
     const spawnCalls: string[][] = [];
     await mergePr(
       42,
@@ -147,7 +147,8 @@ describe("mergePr — success", () => {
         },
       }),
     );
-    expect(spawnCalls[0]).toEqual(["git", "config", "core.bare", "false"]);
+    const coreBareCall = spawnCalls.find((c) => c.includes("core.bare"));
+    expect(coreBareCall).toBeUndefined();
   });
 });
 

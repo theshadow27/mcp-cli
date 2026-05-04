@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExecFn, findGitRoot, fixCoreBare } from "./git";
+import { type ExecFn, ensureCoreBareUnset, findGitRoot, fixCoreBare } from "./git";
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
@@ -106,6 +106,93 @@ describe("fixCoreBare", () => {
 
       expect(result).toBe(false);
       expect(exec).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+});
+
+describe("ensureCoreBareUnset", () => {
+  test("removes core.bare when set to true", () => {
+    const cwd = makeFakeWorktree();
+    try {
+      const calls: string[][] = [];
+      const exec: ExecFn = mock((cmd: string[]) => {
+        calls.push(cmd);
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+          return { stdout: "true\n", exitCode: 0 };
+        }
+        return { stdout: "", exitCode: 0 };
+      });
+
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toEqual(["git", "-C", cwd, "config", "--unset", "core.bare"]);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  test("removes core.bare when set to false", () => {
+    const cwd = makeFakeWorktree();
+    try {
+      const calls: string[][] = [];
+      const exec: ExecFn = mock((cmd: string[]) => {
+        calls.push(cmd);
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+          return { stdout: "false\n", exitCode: 0 };
+        }
+        return { stdout: "", exitCode: 0 };
+      });
+
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toEqual(["git", "-C", cwd, "config", "--unset", "core.bare"]);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  test("returns false when key is already absent", () => {
+    const cwd = makeFakeWorktree();
+    try {
+      const exec: ExecFn = mock(() => ({ stdout: "", exitCode: 1 }));
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(exec).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  test("does nothing for bare repo (no .git entry)", () => {
+    const cwd = makeFakeBareRepo();
+    try {
+      const exec: ExecFn = mock(() => ({ stdout: "", exitCode: 0 }));
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(exec).toHaveBeenCalledTimes(0);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  test("falls back to setting false when unset fails on core.bare=true", () => {
+    const cwd = makeFakeWorktree();
+    try {
+      const calls: string[][] = [];
+      const exec: ExecFn = mock((cmd: string[]) => {
+        calls.push(cmd);
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset") && cmd.length === 5) {
+          return { stdout: "true\n", exitCode: 0 };
+        }
+        if (cmd.includes("--unset")) {
+          return { stdout: "", exitCode: 1 };
+        }
+        return { stdout: "", exitCode: 0 };
+      });
+
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(calls).toHaveLength(3);
+      expect(calls[2]).toEqual(["git", "-C", cwd, "config", "core.bare", "false"]);
     } finally {
       rmSync(cwd, { recursive: true });
     }

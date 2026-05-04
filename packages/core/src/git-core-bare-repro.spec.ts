@@ -244,4 +244,37 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("unset core.bare key survives worktree lifecycle (#1860)", () => {
+    const repo = initRepo();
+    try {
+      // Start by unsetting core.bare (the #1860 structural fix)
+      git(repo, "config", "--unset", "core.bare");
+      const { exitCode: readExit } = git(repo, "config", "core.bare");
+      expect(readExit).not.toBe(0); // key absent
+
+      // Run worktree lifecycle: the key should not be recreated
+      for (let i = 0; i < 10; i++) {
+        const branch = `lifecycle-${i}`;
+        const wtPath = join(repo, ".worktrees", branch);
+        git(repo, "worktree", "add", wtPath, "-b", branch, "HEAD");
+
+        // git operations in the worktree should not recreate core.bare on the parent
+        const wtStatus = git(wtPath, "status");
+        expect(wtStatus.exitCode).toBe(0);
+
+        git(repo, "worktree", "remove", wtPath);
+        git(repo, "branch", "-D", branch);
+
+        // Verify key is still absent after each cycle
+        const { exitCode } = git(repo, "config", "core.bare");
+        expect(exitCode).not.toBe(0);
+      }
+
+      // Final verification: git still works correctly
+      expect(git(repo, "rev-parse", "--is-inside-work-tree").stdout).toBe("true");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });

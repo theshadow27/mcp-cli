@@ -76,8 +76,6 @@ export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<Merg
     };
   }
 
-  await deps.spawn(["git", "config", "core.bare", "false"]);
-
   const mergeResult = await deps.prMerge(prNumber, ["--squash", "--delete-branch"]);
   if (mergeResult.exitCode !== 0) {
     const stderr = mergeResult.stderr;

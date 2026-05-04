@@ -50,6 +50,33 @@ export function isCoreBareSet(cwd: string, exec: ExecFn): boolean {
 }
 
 /**
+ * Remove the `core.bare` config key entirely, regardless of its current value.
+ *
+ * Git auto-detects bare status from the directory layout (.git dir = non-bare).
+ * An explicit `core.bare = false` is harmless but creates a key that COULD be
+ * flipped to `true` by an unknown external operation — the 47-sprint recurring
+ * bug. Removing the key eliminates the attack surface: if the key doesn't exist,
+ * nothing can flip it. See #1860.
+ *
+ * Returns true if the key was present and successfully removed.
+ */
+export function ensureCoreBareUnset(cwd: string, exec: ExecFn): boolean {
+  if (!existsSync(join(cwd, ".git"))) return false;
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "core.bare"]);
+  if (exitCode !== 0) return false; // key already absent
+  const value = stdout.trim();
+  const unset = exec(["git", "-C", cwd, "config", "--unset", "core.bare"]);
+  if (unset.exitCode === 0) return true;
+  // --unset can fail if the key was removed between read and unset (benign race)
+  if (value === "true") {
+    // Critical: core.bare=true and we failed to unset — this is the dangerous state.
+    // Fall back to setting false, which is strictly better than leaving true.
+    exec(["git", "-C", cwd, "config", "core.bare", "false"]);
+  }
+  return false;
+}
+
+/**
  * Environment for git repo-discovery commands: strip inherited GIT_DIR,
  * GIT_WORK_TREE, and GIT_COMMON_DIR so that the caller's git-hook environment
  * does not override filesystem-based discovery. findGitRoot is meant to
