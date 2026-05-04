@@ -193,3 +193,25 @@ minor-bump candidates.
     Run.md filter should swap to `session.permission_blocked`. **This
     is a meta change; apply via `meta/run-md-permission-blocked-filter`
     branch in Step 1a or defer to retro.**
+
+## Results
+
+- **Released**: v1.8.6
+- **PRs merged**: 9
+  - #1995 (#1973) fix(status): guard null extraUsage.utilization
+  - #1997 (#1974) fix(poller): closing-keyword filter for PR auto-binding
+  - #1999 (#1993) fix(repair): clear review_session_id on spawn
+  - #2001 (#1634) fix(test): replace Bun.sleep(0) with await on exitedPromise
+  - #1998 (#1860) fix(git): eliminate core.bare config key — **47-sprint epic**, closes #394 / #1206 / #1330
+  - #2004 (#1769) chore(sites): playwright.spec.ts comment correction
+  - #2000 (#1992) fix(done): always poll PR state on non-zero merge exit
+  - #2005 (#1647) test(sites): mkdtempSync + afterEach for resolve-playwright
+  - #2006 (#1684) fix(state): canonicalize agent_sessions.repo_root + v4 migration
+- **Issues closed**: 13 (9 via merged PRs + 4 already-done #1903/#1904/#1905/#1906)
+- **Issues routed to needs-attention**: 2 (#1980, #1987 — server-pool flakies; nerd-snipe agents stalled at 600s watchdog before reaching root cause; partial findings + bisect plan posted)
+- **New issues filed**: 4
+  - #1996 — `bun scripts/build.ts` stages npm/*/bin/.gitkeep deletions (hit every implementer this sprint)
+  - #2002 — meta: align run.md pre-flight with #1860 structural fix (split from #1998)
+  - #2007 — phase: scanReviewComments matches 🔴 in delta tables, blocks APPROVED reviews
+  - (#1996, #2002, #2007 above; plus needs-attention comments on #1980/#1987 = 2 trail entries, not new issues)
+- **Cost**: ~$28 in worker quota (impl + review + qa + nerd-snipes + repairs)
