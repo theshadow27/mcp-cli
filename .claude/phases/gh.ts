@@ -15,7 +15,7 @@ export interface GhResult {
 }
 
 /** A function with the same signature as the top-level `gh()` — injectable for tests. */
-export type GhRunner = (args: string[], opts?: { timeoutMs?: number }) => Promise<GhResult>;
+export type GhRunner = (args: string[], opts?: { timeoutMs?: number; sigkillDelayMs?: number }) => Promise<GhResult>;
 
 export async function gh(
   args: string[],
@@ -34,7 +34,7 @@ async function runGh(args: string[], timeoutMs: number, sigkillDelayMs: number):
 
   let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
-    proc.kill();
+    try { proc.kill(); } catch { /* already exited */ }
     sigkillTimer = setTimeout(() => {
       try { proc.kill(9); } catch { /* already exited */ }
     }, sigkillDelayMs);
@@ -121,7 +121,7 @@ export async function spawn(
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
   let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
-    proc.kill();
+    try { proc.kill(); } catch { /* already exited */ }
     sigkillTimer = setTimeout(() => {
       try { proc.kill(9); } catch { /* already exited */ }
     }, sigkillDelayMs);

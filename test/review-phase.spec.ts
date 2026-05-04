@@ -52,8 +52,8 @@ describe("scanReviewComments — parsing", () => {
   });
 
   test("sticky comment with no blockers → found: true, hasBlockers: false", async () => {
-    // Single newlines within block — split(/\n{2,}/) keeps it as one chunk
-    const comment = "## Adversarial Review\n✅ All good\n✅ Looks clean";
+    // Realistic format: blank line between header and body (as gh pr view --comments produces)
+    const comment = "## Adversarial Review\n\n✅ All good\n✅ Looks clean";
     const result = await scanReviewComments(100, {
       gh: async () => ok(comment),
     });
@@ -61,8 +61,8 @@ describe("scanReviewComments — parsing", () => {
   });
 
   test("sticky comment with 🔴 → hasBlockers: true", async () => {
-    // Single newlines within block so header + emoji are in the same chunk
-    const comment = "## Adversarial Review\n🔴 Critical issue found";
+    // Realistic format: blank line between header and emoji (real gh output format)
+    const comment = "## Adversarial Review\n\n🔴 Critical issue found";
     const result = await scanReviewComments(100, {
       gh: async () => ok(comment),
     });
@@ -70,9 +70,23 @@ describe("scanReviewComments — parsing", () => {
   });
 
   test("sticky comment with 🟡 → hasBlockers: true", async () => {
-    const comment = "## Adversarial Review\n🟡 Warning: edge case missed";
+    // Realistic format: blank line between header and emoji
+    const comment = "## Adversarial Review\n\n🟡 Warning: edge case missed";
     const result = await scanReviewComments(100, {
       gh: async () => ok(comment),
+    });
+    expect(result).toMatchObject({ found: true, hasBlockers: true });
+  });
+
+  test("realistic gh output: blank-line-separated header and emoji content", async () => {
+    // Mirrors real 'gh pr view --json comments -q .comments[].body' output where
+    // paragraphs within a comment are separated by blank lines. The header block
+    // and the 🔴 items are in different split-chunks, so a naive split(/\n{2,}/)
+    // approach (the old code) would return hasBlockers: false — this test documents
+    // that the fix (lastIndexOf) handles it correctly.
+    const body = "## Adversarial Review\n\n🔴 Missing null check in foo.ts line 42\n\n🟡 Consider extracting helper";
+    const result = await scanReviewComments(100, {
+      gh: async () => ok(body),
     });
     expect(result).toMatchObject({ found: true, hasBlockers: true });
   });
@@ -84,10 +98,10 @@ describe("scanReviewComments — parsing", () => {
     expect(result).toEqual({ found: false, hasBlockers: false, summary: "gh pr view failed" });
   });
 
-  test("picks most recent sticky comment (reversed find)", async () => {
-    // Two separate sticky comments separated by \n\n; most recent (last) is clean
-    // Single newlines within each block so header+emoji are in the same chunk
-    const body = ["## Adversarial Review\n🔴 Old blocker", "## Adversarial Review\n✅ All resolved"].join("\n\n");
+  test("picks most recent sticky comment (lastIndexOf)", async () => {
+    // Two adversarial review comments in output; the last one (most recent) is clean.
+    // Realistic format with blank lines between header and body paragraphs.
+    const body = "## Adversarial Review\n\n🔴 Old blocker\n\n## Adversarial Review\n\n✅ All resolved";
     const result = await scanReviewComments(100, {
       gh: async () => ok(body),
     });
@@ -105,6 +119,7 @@ describe("runReview — spawn path", () => {
 
   test("default model is sonnet when no plan entry", async () => {
     const result = await runReview({ provider: "claude" }, makeWork(), makeState(), makeDeps(), "__none__");
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("sonnet");
     }
@@ -118,6 +133,7 @@ describe("runReview — spawn path", () => {
       makeDeps({ findModelInSprintPlan: () => "sonnet" }),
       "/some/root",
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("opus");
     }
@@ -131,6 +147,7 @@ describe("runReview — spawn path", () => {
       makeDeps({ findModelInSprintPlan: () => "opus" }),
       "/some/root",
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("opus");
     }
@@ -151,6 +168,7 @@ describe("runReview — spawn path", () => {
       "__none__",
     );
     expect(planCalled).toBe(false);
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("sonnet");
     }
@@ -158,6 +176,7 @@ describe("runReview — spawn path", () => {
 
   test("command includes correct provider", async () => {
     const result = await runReview({ provider: "claude" }, makeWork(), makeState(), makeDeps(), "__none__");
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toContain("mcx");
       expect(result.command).toContain("claude");
@@ -167,6 +186,7 @@ describe("runReview — spawn path", () => {
 
   test("acp provider builds correct command", async () => {
     const result = await runReview({ provider: "acp:my-agent" }, makeWork(), makeState(), makeDeps(), "__none__");
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toEqual(expect.arrayContaining(["mcx", "acp", "spawn", "--agent", "my-agent"]));
     }
@@ -180,6 +200,7 @@ describe("runReview — spawn path", () => {
       makeDeps(),
       "__none__",
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.prompt).toContain("PR 42");
       expect(result.prompt).toContain("feat/foo");
@@ -227,6 +248,7 @@ describe("runReview — wait path", () => {
       makeDeps({ gh: async () => ok("comment without adversarial review") }),
       "__none__",
     );
+    expect(result.action).toBe("wait");
     if (result.action === "wait") {
       expect(result.model).toBe("opus");
     }
@@ -239,7 +261,7 @@ describe("runReview — goto qa (clean review)", () => {
       { provider: "claude" },
       makeWork(),
       makeState({ review_session_id: "sess_123", review_round: 1 }),
-      makeDeps({ gh: async () => ok("## Adversarial Review\n✅ All good") }),
+      makeDeps({ gh: async () => ok("## Adversarial Review\n\n✅ All good") }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
@@ -253,7 +275,7 @@ describe("runReview — goto repair (blockers present)", () => {
       { provider: "claude" },
       makeWork(),
       state,
-      makeDeps({ gh: async () => ok("## Adversarial Review\n🔴 Critical issue") }),
+      makeDeps({ gh: async () => ok("## Adversarial Review\n\n🔴 Critical issue") }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "repair" });
@@ -264,7 +286,7 @@ describe("runReview — goto repair (blockers present)", () => {
       { provider: "claude" },
       makeWork(),
       makeState({ review_session_id: "sess_123", review_round: REVIEW_ROUND_CAP }),
-      makeDeps({ gh: async () => ok("## Adversarial Review\n🔴 Still failing") }),
+      makeDeps({ gh: async () => ok("## Adversarial Review\n\n🔴 Still failing") }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
@@ -287,7 +309,7 @@ describe("runReview — goto repair (blockers present)", () => {
       { provider: "claude" },
       makeWork(),
       trackingState,
-      makeDeps({ gh: async () => ok("## Adversarial Review\n🔴 Issue") }),
+      makeDeps({ gh: async () => ok("## Adversarial Review\n\n🔴 Issue") }),
       "__none__",
     );
     expect(writes.review_round).toBe(2);

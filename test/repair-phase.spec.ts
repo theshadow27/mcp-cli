@@ -75,6 +75,7 @@ describe("runRepair — in-flight", () => {
       makeState({ repair_session_id: "sess_abc", repair_round: 2 }),
       makeDeps(),
     );
+    expect(result.action).toBe("in-flight");
     if (result.action === "in-flight") {
       expect(result.round).toBe(2);
       expect(result.model).toBe("opus");
@@ -88,6 +89,7 @@ describe("runRepair — in-flight", () => {
       makeState({ repair_session_id: "sess_abc", repair_round: 1, repair_prompt: "Fix PR #42" }),
       makeDeps(),
     );
+    expect(result.action).toBe("in-flight");
     if (result.action === "in-flight") {
       expect(result.prompt).toBe("Fix PR #42");
     }
@@ -115,6 +117,7 @@ describe("runRepair — cap exceeded", () => {
       makeState({ repair_round: REPAIR_ROUND_CAP }),
       makeDeps(),
     );
+    expect(result).toMatchObject({ action: "goto", target: "needs-attention" });
     if (result.action === "goto") {
       expect(result.round).toBe(REPAIR_ROUND_CAP);
     }
@@ -131,6 +134,7 @@ describe("runRepair — spawn path", () => {
 
   test("spawn result model is opus", async () => {
     const result = await runRepair({ provider: "claude" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("opus");
     }
@@ -143,6 +147,7 @@ describe("runRepair — spawn path", () => {
       makeState({ previous_phase: "review" }),
       makeDeps(),
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.prompt).toContain("adversarial review");
     }
@@ -150,6 +155,7 @@ describe("runRepair — spawn path", () => {
 
   test("previous_phase=qa → prompt references qa:fail", async () => {
     const result = await runRepair({ provider: "claude" }, makeWork(), makeState({ previous_phase: "qa" }), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.prompt).toContain("qa:fail");
     }
@@ -157,6 +163,7 @@ describe("runRepair — spawn path", () => {
 
   test("default previous_phase is review", async () => {
     const result = await runRepair({ provider: "claude" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.prompt).toContain("adversarial review");
     }
@@ -164,6 +171,7 @@ describe("runRepair — spawn path", () => {
 
   test("command uses --worktree when no worktree_path", async () => {
     const result = await runRepair({ provider: "claude" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toContain("--worktree");
     }
@@ -176,6 +184,7 @@ describe("runRepair — spawn path", () => {
       makeState({ worktree_path: "/tmp/my-worktree" }),
       makeDeps(),
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toContain("--cwd");
       expect(result.command).toContain("/tmp/my-worktree");
@@ -184,6 +193,7 @@ describe("runRepair — spawn path", () => {
 
   test("acp provider builds correct command", async () => {
     const result = await runRepair({ provider: "acp:my-agent" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toEqual(expect.arrayContaining(["mcx", "acp", "spawn", "--agent", "my-agent"]));
     }
@@ -240,6 +250,7 @@ describe("runRepair — spawn path", () => {
 
   test("spawn includes reason with previous phase and round", async () => {
     const result = await runRepair({ provider: "claude" }, makeWork(), makeState({ previous_phase: "qa" }), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.reason).toContain("round 1");
       expect(result.reason).toContain("qa");

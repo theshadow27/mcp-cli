@@ -40,8 +40,9 @@ export async function scanReviewComments(
 ): Promise<{ found: boolean; hasBlockers: boolean; summary: string }> {
   const result = await deps.gh(["pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"]);
   if (result.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
-  const sticky = result.stdout.split(/\n{2,}/).reverse().find((b) => b.includes("## Adversarial Review"));
-  if (!sticky) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
+  const lastIdx = result.stdout.lastIndexOf("## Adversarial Review");
+  if (lastIdx === -1) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
+  const sticky = result.stdout.slice(lastIdx);
   const hasBlockers = /🔴|🟡/.test(sticky);
   return { found: true, hasBlockers, summary: hasBlockers ? "blockers remain" : "all clear" };
 }

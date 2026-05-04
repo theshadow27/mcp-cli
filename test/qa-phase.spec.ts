@@ -94,6 +94,7 @@ describe("runQa — spawn path", () => {
 
   test("spawn result includes model=sonnet", async () => {
     const result = await runQa({ provider: "claude" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.model).toBe("sonnet");
     }
@@ -106,6 +107,7 @@ describe("runQa — spawn path", () => {
       makeState(),
       makeDeps(),
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.prompt).toContain("99");
       expect(result.prompt).toContain("PR 200");
@@ -114,6 +116,7 @@ describe("runQa — spawn path", () => {
 
   test("command uses --worktree when no worktree_path in state", async () => {
     const result = await runQa({ provider: "claude" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toContain("--worktree");
     }
@@ -126,6 +129,7 @@ describe("runQa — spawn path", () => {
       makeState({ worktree_path: "/tmp/my-worktree" }),
       makeDeps(),
     );
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toContain("--cwd");
       expect(result.command).toContain("/tmp/my-worktree");
@@ -134,6 +138,7 @@ describe("runQa — spawn path", () => {
 
   test("acp provider builds correct command", async () => {
     const result = await runQa({ provider: "acp:my-agent" }, makeWork(), makeState(), makeDeps());
+    expect(result.action).toBe("spawn");
     if (result.action === "spawn") {
       expect(result.command).toEqual(expect.arrayContaining(["mcx", "acp", "spawn", "--agent", "my-agent"]));
     }
@@ -245,6 +250,7 @@ describe("runQa — qa:fail verdict", () => {
       makeState({ qa_session_id: "sess_123", qa_fail_round: 1 }),
       makeDeps({ gh: async () => ok("qa:fail") }),
     );
+    expect(result).toMatchObject({ action: "goto", target: "repair" });
     if (result.action === "goto") {
       expect(result.round).toBe(2);
     }
