@@ -431,34 +431,33 @@ loop; until it lands, the orchestrator owns it.
 ### Flaky / CI-instability issues — nerd-snipe gate before impl
 
 `label:flaky` already routes to opus via `impl.ts:45`. That is **not
-enough** — sprint 47's deterministic post-#1835 coverage crash got opus,
-opus produced a CI-retry workaround, and the same retro acknowledged the
-workaround "hits on every sprint PR." The pattern: opus implements a
-fix-shaped patch around the symptom because nobody made it find the
-root cause first.
+enough** on its own — sprint 47's deterministic post-#1835 coverage
+crash got opus, opus produced a CI-retry workaround, and the same retro
+acknowledged the workaround "hits on every sprint PR." The pattern:
+opus implements a fix-shaped patch around the symptom because nobody
+made it find the root cause first.
 
-For any issue that is `label:flaky`, or whose body describes
-intermittent / deterministic CI failure without a clear test-code error,
-gate impl on a nerd-snipe pass:
+**The full rule (load-bearing) is in
+[`references/investigations.md`](investigations.md).** Read it before
+spawning anything for a flaky / recurring / intermittent issue. The
+short version:
 
-1. **Spawn `nerd-snipe` (opus) before phase=impl.** Brief: the repro,
-   the suspected commit range, prior diagnoses (especially any that
-   blamed upstream), and the constraint that the trail must land on the
-   issue.
-2. **Trail goes on the GitHub issue, not in the session.** nerd-snipe
-   posts its findings — timeline, bisect log, mechanism, fix plan — as
-   an issue comment. This is the mechanism that stops the next sprint
-   from re-running the same misdiagnosis.
-3. **Hard gate.** If nerd-snipe cannot identify *both* the root cause
-   and a concrete fix, do NOT advance the issue to phase=impl. Apply
-   `needs-attention` and surface in sprint review. "Spawn opus and hope"
-   is what got us into the loop.
-4. **Then phase=impl on opus**, with the issue-comment fix plan as the
-   spec. Adversarial review verifies the implementation matches the
-   documented mechanism, not just "tests pass now."
+1. Spawn the nerd-snipe via **`mcx claude spawn` with the persona
+   inlined** in the prompt (NOT `Agent({subagent_type: "nerd-snipe"})` —
+   that creates a sub-context the orchestrator can't observe; sprint 52
+   was bitten by exactly this on #1980 and #1987, see #2009).
+2. Worker posts findings as a GitHub issue comment (timeline + bisect +
+   mechanism + concrete fix plan).
+3. **Hard gate** — no root cause + concrete fix → `needs-attention`,
+   never spawn impl-on-hope.
+4. Then `phase=impl` on opus with the issue comment as the spec, plus
+   adversarial review verifying the impl matches the documented
+   mechanism (not just "tests pass now").
 
-See `.claude/memory/feedback_flaky_tests.md` for the rule and the
-sprint-47/#1870 incident that motivated it.
+The same gate applies to any non-flaky issue whose body describes a
+recurring symptom, an unclear failure mechanism, or a perf/security
+finding where the wrong fix masks the underlying exposure. See
+`investigations.md` for "when to apply" and the full spawn template.
 
 ### qa:pass + qa:fail dual-label invariant (orchestrator audit)
 
