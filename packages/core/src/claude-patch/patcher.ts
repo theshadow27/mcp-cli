@@ -134,6 +134,9 @@ function updateCurrentLink(linkPath: string, target: string): void {
     renameSync(tmp, linkPath);
   } catch {
     // Symlink may fail on some filesystems; fall back to a plain pointer file.
+    // Remove any partial symlink first — writeFileSync follows symlinks, so
+    // writing through a dangling symlink would corrupt the target binary.
+    rmSync(tmp, { force: true });
     writeFileSync(tmp, target, { mode: 0o644 });
     renameSync(tmp, linkPath);
   }
@@ -184,6 +187,9 @@ export async function defaultResignBinary(binPath: string, entitlementsPath: str
     ["--force", "--sign", "-", "--options=runtime", "--entitlements", entitlementsPath, binPath],
     { encoding: "utf-8", timeout: 30_000 },
   );
+  if (result.error) {
+    throw new Error(`codesign --force failed: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`codesign --force failed: ${result.stderr.trim() || `exit ${result.status}`}`);
   }
@@ -368,9 +374,12 @@ export async function updatePatchedClaude(
     throw new Error(`strategy ${strategy.id} validation failed: ${validation.reason}`);
   }
 
-  // Write the patched bytes, then re-sign.
-  deps.writeBytesAtomic(patchedPath, patched);
-  chmodSync(patchedPath, 0o755);
+  // Stage to a temporary path so a failed resign/smoke doesn't leave a
+  // broken binary at the published path (a concurrent reader could get a
+  // partial file during the window).
+  const stagingPath = `${patchedPath}.staging.${process.pid}`;
+  deps.writeBytesAtomic(stagingPath, patched);
+  chmodSync(stagingPath, 0o755);
 
   // Extract entitlements from the source (must be done before re-signing the copy,
   // since codesign reads them off the source's existing signature).
@@ -378,7 +387,10 @@ export async function updatePatchedClaude(
   const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
   writeFileSync(entPath, entitlements, { mode: 0o600 });
   try {
-    await deps.resignBinary(patchedPath, entPath);
+    await deps.resignBinary(stagingPath, entPath);
+  } catch (err) {
+    rmSync(stagingPath, { force: true });
+    throw err;
   } finally {
     try {
       rmSync(entPath, { force: true });
@@ -387,8 +399,16 @@ export async function updatePatchedClaude(
     }
   }
 
-  // Smoke test before publishing.
-  await deps.smokeTest(patchedPath);
+  // Smoke test the staging copy before promoting.
+  try {
+    await deps.smokeTest(stagingPath);
+  } catch (err) {
+    rmSync(stagingPath, { force: true });
+    throw err;
+  }
+
+  // Atomic rename from staging → published path.
+  renameSync(stagingPath, patchedPath);
 
   // Write metadata + update current link last (atomicity: if anything above
   // fails, the previous current link still points at the previous patched copy).
