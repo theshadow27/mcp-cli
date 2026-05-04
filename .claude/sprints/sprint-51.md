@@ -190,3 +190,28 @@ unless one of the medium picks expands. No minor-bump candidates.
   2.1.114–2.1.119 protected with `chflags uchg`. Memory updated:
   `feedback_claude_2_1_121_break.md`. Not a code change — purely
   orchestrator-side state.
+
+## Results
+
+- **Released**: v1.8.5 (patch — all small fixes + tests + refactors; one additive monitor event)
+- **PRs merged**: 12 — #1975 (#1827), #1976 (#1948), #1977 (#1936), #1979 (#1961+#1962), #1981 (#1892), #1982 (#1956), #1983 (#1931+#1932), #1984 (#1958), #1985 (#1632+#1633), #1986 (#1967+#1968+#1969), #1989 (#1933), #1990 (#1960)
+- **Issues closed**: 14 (12 via PR + #1928 already-fixed inline + #1374 already-tested inline)
+- **Issues dropped**: 1 (#1881 — closed 2026-04-30 inline in PR #1878 before plan was authored; missed by plan-time triage, recorded in Excluded section)
+- **New issues filed**:
+  - **#1973** — `mcx status` crashes on null `extraUsage.utilization` (DX papercut, pre-flight)
+  - **#1974** — work-item-poller auto-binds sprint-container PRs to every issue in the sprint (caused stale bindings on every `mcx track` during setup; cosmetic during impl, hazardous at retro auto-merge)
+  - **#1980** — flaky: server-pool `closeAll kills all stdio child processes` fails intermittently (blocked #1936 CI, filed by QA)
+  - **#1987** — flaky: server-pool disconnect/SIGTERM race (blocked #1892 CI, filed by QA)
+  - **#1991** — `scanReviewComments` parsing bug: header chunk isolation prevents 🔴 detection on real `gh pr view` output (review gate was decorative; root cause analysis from #1960 reviewer; **fixed inline in PR #1990 via `lastIndexOf + slice` rewrite** — issue can be closed)
+  - **#1992** — `done-fn.ts` `exitCode >= 128` SIGTERM detection misses Go-graceful-shutdown exits (pre-existing, filed by reviewer)
+  - **#1993** — `repair-fn.ts` `review_session_id` not cleared on repair spawn (pre-existing, filed by reviewer)
+
+### Round counts
+- **Repair rounds**: 4 — #1827 r1 (verify-only, sonnet), #1948 r1 (opus), #1961+#1962 r1 (sonnet, after QA r1 fail)
+- **Review rounds**: 2 on #1958, 2 on #1960 (both: round-1 ⚠️ + post-fix ✅ stickies)
+- **QA rounds**: 1 most issues; 2 on #1948, #1961+#1962, #1986, #1981, #1977, #1982 (latter 4 due to QA running before async writes were visible — read-after-write race pattern, see retro)
+- **CI re-runs**: 2 (both for unrelated flakies #1980 on PR #1977, #1987 on PR #1981)
+
+### Cost
+- **Total session cost** (sum of session $ at end-of-sprint): ≈$36 across 30+ sessions, dominated by the #1960 implementation ($6.37) and adversarial review ($2.80 + $2.54)
+- **Quota**: peak 5h utilization 96%, sonnet pool 13%; sprint completed inside one 5h window (started 19:50 EDT, ended 23:45 EDT)
