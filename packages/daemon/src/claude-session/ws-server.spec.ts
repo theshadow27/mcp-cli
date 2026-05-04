@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
-import { silentLogger } from "@mcp-cli/core";
+import { SESSION_PERMISSION_BLOCKED, SESSION_PERMISSION_REQUEST, silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn, WaitResult } from "./ws-server";
@@ -1609,6 +1609,86 @@ describe("ClaudeWsServer", () => {
     void server.bye("test-session");
 
     await expect(eventPromise).rejects.toThrow("Session ended by user");
+  });
+
+  // ── session.permission_blocked monitor event (#1948) ──
+
+  test("session.permission_blocked fires when strategy=delegate and tool not containment-denied", async () => {
+    const ms = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.onMonitorEvent = (e) => monitorEvents.push(e);
+    const port = await server.start();
+
+    server.prepareSession("perm-blocked-1", { prompt: "test", permissionStrategy: "delegate" });
+    server.spawnClaude("perm-blocked-1");
+
+    const ws = await connectMockClaude(port, "perm-blocked-1");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("perm-blocked-1"));
+      ws.send(canUseToolMessage("req-blocked-1"));
+      await pollUntil(() =>
+        server?.listSessions().some((s) => s.sessionId === "perm-blocked-1" && s.state === "waiting_permission"),
+      );
+
+      const blocked = monitorEvents.find((e) => e.event === SESSION_PERMISSION_BLOCKED);
+      expect(blocked).toBeDefined();
+      expect(blocked?.sessionId).toBe("perm-blocked-1");
+      expect(blocked?.toolName).toBe("Bash");
+      expect(blocked?.category).toBe("session");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("session.permission_blocked does not fire when strategy=auto", async () => {
+    const ms = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.onMonitorEvent = (e) => monitorEvents.push(e);
+    const port = await server.start();
+
+    server.prepareSession("perm-auto-1", { prompt: "test", permissionStrategy: "auto" });
+    server.spawnClaude("perm-auto-1");
+
+    const ws = await connectMockClaude(port, "perm-auto-1");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("perm-auto-1"));
+      ws.send(canUseToolMessage("req-auto-1"));
+      // Wait for permission_request monitor event (auto-approved)
+      await pollUntil(() => monitorEvents.some((e) => e.event === SESSION_PERMISSION_REQUEST));
+
+      expect(monitorEvents.some((e) => e.event === SESSION_PERMISSION_BLOCKED)).toBe(false);
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("session.permission_request still fires for all strategies (informational)", async () => {
+    const ms = mockSpawn();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    server.onMonitorEvent = (e) => monitorEvents.push(e);
+    const port = await server.start();
+
+    server.prepareSession("perm-req-1", { prompt: "test", permissionStrategy: "delegate" });
+    server.spawnClaude("perm-req-1");
+
+    const ws = await connectMockClaude(port, "perm-req-1");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("perm-req-1"));
+      ws.send(canUseToolMessage("req-req-1"));
+      await pollUntil(() =>
+        server?.listSessions().some((s) => s.sessionId === "perm-req-1" && s.state === "waiting_permission"),
+      );
+
+      expect(monitorEvents.some((e) => e.event === SESSION_PERMISSION_REQUEST)).toBe(true);
+    } finally {
+      ws.close();
+    }
   });
 
   test("bye returns worktree info", async () => {

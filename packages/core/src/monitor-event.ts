@@ -34,6 +34,7 @@ export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
 export const SESSION_RESULT = "session.result" as const;
 export const SESSION_RESPONSE = "session.response" as const;
 export const SESSION_PERMISSION_REQUEST = "session.permission_request" as const;
+export const SESSION_PERMISSION_BLOCKED = "session.permission_blocked" as const;
 export const SESSION_ENDED = "session.ended" as const;
 export const SESSION_DISCONNECTED = "session.disconnected" as const;
 export const SESSION_ERROR = "session.error" as const;
@@ -197,6 +198,11 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   },
 
   [SESSION_PERMISSION_REQUEST]: (e) => {
+    const tool = typeof e.toolName === "string" ? e.toolName : "";
+    return join(wi(e), sid(e), tool);
+  },
+
+  [SESSION_PERMISSION_BLOCKED]: (e) => {
     const tool = typeof e.toolName === "string" ? e.toolName : "";
     return join(wi(e), sid(e), tool);
   },

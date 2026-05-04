@@ -42,6 +42,7 @@ import {
   SESSION_ERROR,
   SESSION_IDLE,
   SESSION_MODEL_CHANGED,
+  SESSION_PERMISSION_BLOCKED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RESULT,
   SESSION_STUCK,
@@ -1976,6 +1977,13 @@ export class ClaudeWsServer {
     }
 
     if (session.router.strategy === "delegate") {
+      this.onMonitorEvent?.({
+        src: "daemon.claude-server",
+        event: SESSION_PERMISSION_BLOCKED,
+        category: "session",
+        sessionId,
+        toolName: request.tool_name,
+      });
       return;
     }
 
