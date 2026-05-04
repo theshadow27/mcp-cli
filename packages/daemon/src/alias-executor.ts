@@ -169,6 +169,7 @@ async function main(): Promise<void> {
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
+    repoRoot,
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };

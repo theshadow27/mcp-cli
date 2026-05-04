@@ -22,7 +22,7 @@
  * for a new round (so the handler spawns a fresh reviewer rather than reading
  * the previous reviewer's comment).
  */
-import { findModelInSprintPlan } from "@mcp-cli/core";
+import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 import { gh } from "./gh";
 
@@ -86,7 +86,10 @@ defineAlias({
       if (input.model) {
         model = input.model;
       } else {
-        const planModel = work.issueNumber != null ? findModelInSprintPlan(work.issueNumber, process.cwd()) : null;
+        const planModel =
+          work.issueNumber != null && ctx.repoRoot !== NO_REPO_ROOT
+            ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot)
+            : null;
         model = planModel ?? "sonnet";
       }
 
