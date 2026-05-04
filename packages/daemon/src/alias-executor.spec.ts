@@ -278,3 +278,63 @@ describe("alias-executor subprocess protocol", () => {
     expect(stderr).toContain("MORE NOISE");
   });
 });
+
+describe("alias-executor ctx.repoRoot (#1958)", () => {
+  test("ctx.repoRoot is populated from cwd via findGitRoot, not NO_REPO_ROOT", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "repo-root.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "repo-root",',
+        "  input: z.object({}).default({}),",
+        "  fn: (_input, ctx) => ({ repoRoot: ctx.repoRoot }),",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    // Pass the worktree as cwd — it is a real git repo so findGitRoot resolves it
+    const { stdout, exitCode } = await runExecutor({
+      bundledJs: js,
+      input: {},
+      isDefineAlias: true,
+      cwd: import.meta.dir,
+    });
+
+    expect(exitCode).toBe(0);
+    const { result } = JSON.parse(stdout) as { result: { repoRoot: string } };
+    expect(result.repoRoot).toBeTruthy();
+    expect(result.repoRoot).not.toBe("__none__");
+  });
+
+  test("ctx.repoRoot falls back to NO_REPO_ROOT when cwd is not in a git repo", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "repo-root-none.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "repo-root-none",',
+        "  input: z.object({}).default({}),",
+        "  fn: (_input, ctx) => ({ repoRoot: ctx.repoRoot }),",
+        "});",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    const { stdout, exitCode } = await runExecutor({
+      bundledJs: js,
+      input: {},
+      isDefineAlias: true,
+      cwd: dir, // tmpdir is not a git repo
+    });
+
+    expect(exitCode).toBe(0);
+    const { result } = JSON.parse(stdout) as { result: { repoRoot: string } };
+    expect(result.repoRoot).toBe("__none__");
+  });
+});

@@ -287,6 +287,7 @@ describe("bundleAlias", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        repoRoot: "__none__",
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -412,6 +413,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        repoRoot: "__none__",
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -452,6 +454,7 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          repoRoot: "__none__",
           signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
@@ -494,6 +497,7 @@ describe("executeAliasBundled", () => {
           state: stubState,
           globalState: stubState,
           workItem: null,
+          repoRoot: "__none__",
           signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
@@ -537,6 +541,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        repoRoot: "__none__",
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -577,6 +582,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        repoRoot: "__none__",
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -606,6 +612,7 @@ describe("executeAliasBundled", () => {
         state: stubState,
         globalState: stubState,
         workItem: null,
+        repoRoot: "__none__",
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");

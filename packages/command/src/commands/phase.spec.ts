@@ -2701,9 +2701,16 @@ phases:
       },
     );
 
-    expect(logs.length).toBeGreaterThan(0);
-    const parsed = JSON.parse(logs[0]);
-    expect(parsed.repoRoot).toBe(capturedRoot);
+    const jsonLog = logs.find((l) => {
+      try {
+        return JSON.parse(l).repoRoot !== undefined;
+      } catch {
+        return false;
+      }
+    });
+    expect(jsonLog).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: guarded by toBeDefined() above
+    expect(JSON.parse(jsonLog!).repoRoot).toBe(capturedRoot);
   }, 30_000);
 });
 

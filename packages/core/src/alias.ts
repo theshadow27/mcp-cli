@@ -151,9 +151,9 @@ export interface AliasContext {
    * Absolute path to the git repository root for the current invocation.
    * Resolved from the caller's cwd via findGitRoot, so it is correct even
    * when the alias or phase is invoked from a subdirectory. Falls back to
-   * NO_REPO_ROOT ("__no_repo__") when the caller is not inside a git repo.
+   * NO_REPO_ROOT ("__none__") when the caller is not inside a git repo.
    */
-  repoRoot?: string;
+  repoRoot: string;
   /**
    * Cancellation signal for this alias invocation. Fires on SIGINT, SIGTERM,
    * or daemon shutdown. Aliases that do long-running work should check this
