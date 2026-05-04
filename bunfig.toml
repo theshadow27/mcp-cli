@@ -6,4 +6,4 @@
 # configured threshold. This broke CI (see #1181).
 
 # Prune directories that should not be scanned for tests
-pathIgnorePatterns = ["scripts/**", ".claude/**", "dist/**", ".git-hooks/**"]
+pathIgnorePatterns = [".claude/**", "dist/**", ".git-hooks/**"]
