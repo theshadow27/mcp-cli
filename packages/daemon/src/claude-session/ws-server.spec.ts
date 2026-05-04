@@ -1628,13 +1628,12 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
       ws.send(systemInitMessage("perm-blocked-1"));
       ws.send(canUseToolMessage("req-blocked-1"));
-      await pollUntil(() =>
-        server?.listSessions().some((s) => s.sessionId === "perm-blocked-1" && s.state === "waiting_permission"),
-      );
+      await pollUntil(() => monitorEvents.some((e) => e.event === SESSION_PERMISSION_BLOCKED));
 
       const blocked = monitorEvents.find((e) => e.event === SESSION_PERMISSION_BLOCKED);
       expect(blocked).toBeDefined();
       expect(blocked?.sessionId).toBe("perm-blocked-1");
+      expect(blocked?.requestId).toBe("req-blocked-1");
       expect(blocked?.toolName).toBe("Bash");
       expect(blocked?.category).toBe("session");
     } finally {
@@ -1681,9 +1680,7 @@ describe("ClaudeWsServer", () => {
       await waitForMessage(ws);
       ws.send(systemInitMessage("perm-req-1"));
       ws.send(canUseToolMessage("req-req-1"));
-      await pollUntil(() =>
-        server?.listSessions().some((s) => s.sessionId === "perm-req-1" && s.state === "waiting_permission"),
-      );
+      await pollUntil(() => monitorEvents.some((e) => e.event === SESSION_PERMISSION_BLOCKED));
 
       expect(monitorEvents.some((e) => e.event === SESSION_PERMISSION_REQUEST)).toBe(true);
     } finally {

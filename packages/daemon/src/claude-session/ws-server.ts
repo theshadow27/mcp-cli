@@ -1982,6 +1982,7 @@ export class ClaudeWsServer {
         event: SESSION_PERMISSION_BLOCKED,
         category: "session",
         sessionId,
+        requestId,
         toolName: request.tool_name,
       });
       return;
