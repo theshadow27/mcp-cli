@@ -216,7 +216,7 @@ describe("runRepair — spawn path", () => {
     expect(String(writes.repair_session_id)).toMatch(/^pending:/);
   });
 
-  test("clears qa_session_id before spawning", async () => {
+  test("deletes qa_session_id on spawn", async () => {
     const deletedKeys: string[] = [];
     const state = makeState();
     const trackingState: RepairState = {
@@ -229,6 +229,21 @@ describe("runRepair — spawn path", () => {
     };
     await runRepair({ provider: "claude" }, makeWork(), trackingState, makeDeps());
     expect(deletedKeys).toContain("qa_session_id");
+  });
+
+  test("deletes review_session_id on spawn", async () => {
+    const deletedKeys: string[] = [];
+    const state = makeState({ review_session_id: "pending:999" });
+    const trackingState: RepairState = {
+      get: state.get,
+      set: state.set,
+      delete: async (key) => {
+        deletedKeys.push(key);
+        await state.delete(key);
+      },
+    };
+    await runRepair({ provider: "claude" }, makeWork(), trackingState, makeDeps());
+    expect(deletedKeys).toContain("review_session_id");
   });
 
   test("removes qa:fail label (best-effort)", async () => {

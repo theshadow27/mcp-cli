@@ -11,7 +11,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecFn } from "./git";
-import { fixCoreBare, isCoreBareSet } from "./git";
+import { ensureCoreBareUnset, isCoreBareSet } from "./git";
 import {
   buildHookEnv,
   hasWorktreeHooks,
@@ -146,8 +146,8 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
         `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
       );
     }
-    if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printInfo("Fixed core.bare=true after worktree add");
+    if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printInfo("Removed core.bare key after worktree add");
     }
     deps.printInfo(`Created worktree: ${worktreePath}`);
     return {
@@ -179,8 +179,8 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
       `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printInfo("Fixed core.bare=true after worktree add");
+  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printInfo("Removed core.bare key after worktree add");
   }
   deps.printInfo(`Created worktree: ${worktreePath}`);
   return {
@@ -282,8 +282,8 @@ function removeWorktreeWithVerification(
       `[shim] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printInfo("Fixed core.bare=true after worktree removal");
+  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printInfo("Removed core.bare key after worktree removal");
   }
 
   // Verify: directory must actually be gone
@@ -315,8 +315,8 @@ function removeWorktreeWithVerification(
       `[shim] core.bare flipped to true by: git worktree remove --force ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-    deps.printInfo("Fixed core.bare=true after worktree removal");
+  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+    deps.printInfo("Removed core.bare key after worktree removal");
   }
 
   if (!existsSync(worktreePath)) {
@@ -539,8 +539,8 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   // Individual per-removal fixes can be undone by subsequent removals in the
   // same batch. This ensures the repo is in a valid state when we return. #1206
   if (pruned > 0) {
-    if (fixCoreBare(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printInfo("Fixed core.bare=true after batch worktree prune");
+    if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+      deps.printInfo("Removed core.bare key after batch worktree prune");
     }
   }
 

@@ -176,9 +176,9 @@ describe("createWorktree", () => {
     );
   });
 
-  test("shimmed worktree: fixes core.bare=true after worktree add", () => {
+  test("shimmed worktree: removes core.bare key after worktree add", () => {
     tmpDir = makeTmpDir();
-    // Create .git dir so fixCoreBare detects a non-bare repo
+    // Create .git dir so ensureCoreBareUnset detects a non-bare repo
     mkdirSync(join(tmpDir, ".git"), { recursive: true });
 
     const execCalls: string[][] = [];
@@ -203,7 +203,7 @@ describe("createWorktree", () => {
     // Verify core.bare was checked both before and after worktree add
     const worktreeAddIdx = execCalls.findIndex((c) => c.includes("worktree") && c.includes("add"));
     const isCoreBareRead = (c: string[]) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset");
-    // There should be a read BEFORE the add (pre-probe) and one AFTER (post-probe / fixCoreBare)
+    // There should be a read BEFORE the add (pre-probe) and one AFTER (post-probe / ensureCoreBareUnset)
     expect(execCalls.slice(0, worktreeAddIdx).some(isCoreBareRead)).toBe(true);
     const coreBareReadAfterIdx = execCalls.findIndex((c, i) => i > worktreeAddIdx && isCoreBareRead(c));
     expect(coreBareReadAfterIdx).toBeGreaterThan(worktreeAddIdx);
@@ -213,7 +213,7 @@ describe("createWorktree", () => {
     expect(coreBareFixIdx).toBeGreaterThan(coreBareReadAfterIdx);
 
     // Should log the fix (via printInfo, not printError)
-    expect(deps.printInfo).toHaveBeenCalledWith("Fixed core.bare=true after worktree add");
+    expect(deps.printInfo).toHaveBeenCalledWith("Removed core.bare key after worktree add");
   });
 
   test("branchPrefix: false creates with raw branch name", () => {
@@ -686,10 +686,10 @@ describe("pruneWorktrees", () => {
     expect(result.skippedUnmerged).toEqual(["claude/feat-wip"]);
   });
 
-  test("batch guard: calls fixCoreBare after pruning when core.bare=true on last removal", async () => {
+  test("batch guard: calls ensureCoreBareUnset after pruning when core.bare=true on last removal", async () => {
     // Simulate the recurrence bug: individual per-removal fix runs but a subsequent
     // removal flips core.bare back to true. The final batch guard should catch it.
-    // fixCoreBare guards against non-existent repos via existsSync(.git), so we need
+    // ensureCoreBareUnset guards against non-existent repos via existsSync(.git), so we need
     // a real temp dir with a .git marker.
     const repoRoot = makeTmpDir();
     try {

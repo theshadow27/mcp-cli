@@ -205,6 +205,40 @@ export class StateDb {
       })();
       version = 3;
     }
+
+    if (version < 4) {
+      // Canonicalize agent_sessions rows written with symlink repo_root (#1684).
+      const hasAgentSessions =
+        (this.db
+          .query<{ n: number }, []>(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='agent_sessions'",
+          )
+          .get()?.n ?? 0) > 0;
+      const symRows = hasAgentSessions
+        ? this.db
+            .query<{ repo_root: string }, []>(
+              "SELECT DISTINCT repo_root FROM agent_sessions WHERE repo_root IS NOT NULL",
+            )
+            .all()
+        : [];
+      const updates = symRows
+        .map(({ repo_root }) => {
+          try {
+            const canonical = resolveRealpath(resolve(repo_root));
+            return canonical !== repo_root ? { old: repo_root, canonical } : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((u): u is { old: string; canonical: string } => u !== null);
+      this.db.transaction(() => {
+        for (const { old, canonical } of updates) {
+          this.db.run("UPDATE agent_sessions SET repo_root = ? WHERE repo_root = ?", [canonical, old]);
+        }
+        this.setSchemaVersion(CONSUMER, 4);
+      })();
+      version = 4;
+    }
   }
 
   private applyV1Schema(): void {

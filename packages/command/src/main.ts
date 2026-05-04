@@ -773,9 +773,8 @@ function printQuotaStatus(quota: QuotaStatusResult | null): void {
     console.log(`  7d opus:    ${quota.sevenDayOpus.utilization}% used`);
   }
   if (quota.extraUsage) {
-    console.log(
-      `  Extra:      ${quota.extraUsage.utilization.toFixed(1)}% ($${quota.extraUsage.usedCredits} / $${quota.extraUsage.monthlyLimit})`,
-    );
+    const util = quota.extraUsage.utilization != null ? `${quota.extraUsage.utilization.toFixed(1)}%` : "0%";
+    console.log(`  Extra:      ${util} ($${quota.extraUsage.usedCredits} / $${quota.extraUsage.monthlyLimit})`);
   }
   if (quota.lastError) {
     console.error(`  Last error: ${quota.lastError}`);

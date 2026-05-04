@@ -58,6 +58,23 @@ describe("parseUsageResponse", () => {
     expect(result.fiveHour).toEqual({ utilization: 10, resetsAt: "2026-04-08T12:00:00Z" });
     expect(result.sevenDay).toBeNull();
   });
+
+  test("preserves null utilization in extra_usage (zero credits used)", () => {
+    const result = parseUsageResponse({
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 50000,
+        used_credits: 0,
+        utilization: null,
+      },
+    });
+    expect(result.extraUsage).toEqual({
+      isEnabled: true,
+      monthlyLimit: 50000,
+      usedCredits: 0,
+      utilization: null,
+    });
+  });
 });
 
 describe("QuotaPoller", () => {

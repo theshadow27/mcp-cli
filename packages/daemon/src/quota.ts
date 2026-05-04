@@ -27,8 +27,8 @@ export interface ExtraUsageBucket {
   isEnabled: boolean;
   monthlyLimit: number;
   usedCredits: number;
-  /** Percentage of extra usage budget consumed (0-100). */
-  utilization: number;
+  /** Percentage of extra usage budget consumed (0-100). Null when usedCredits is 0. */
+  utilization: number | null;
 }
 
 /** Parsed quota status from the usage endpoint. */
@@ -52,7 +52,7 @@ interface RawUsageResponse {
     is_enabled: boolean;
     monthly_limit: number;
     used_credits: number;
-    utilization: number;
+    utilization: number | null;
   } | null;
 }
 
@@ -62,7 +62,10 @@ function parseBucket(raw: { utilization: number; resets_at: string } | null | un
 }
 
 function parseExtraUsage(
-  raw: { is_enabled: boolean; monthly_limit: number; used_credits: number; utilization: number } | null | undefined,
+  raw:
+    | { is_enabled: boolean; monthly_limit: number; used_credits: number; utilization: number | null }
+    | null
+    | undefined,
 ): ExtraUsageBucket | null {
   if (!raw) return null;
   return {

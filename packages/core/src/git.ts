@@ -13,12 +13,9 @@ export interface ExecResult {
 export type ExecFn = (cmd: string[]) => ExecResult;
 
 /**
- * After `git worktree remove`, git can sometimes flip `core.bare = true`
- * on the main repository (especially under heavy concurrent worktree
- * create/remove cycles). This breaks all subsequent git operations.
- *
- * Call this after every successful `git worktree remove` to detect and
- * fix the issue. See https://github.com/theshadow27/mcp-cli/issues/394
+ * @deprecated Use {@link ensureCoreBareUnset} — it removes the key regardless
+ * of value, eliminating the attack surface entirely. This function only reacts
+ * to `core.bare=true` and ignores `false`. See #1860.
  */
 export function fixCoreBare(cwd: string, exec: ExecFn): boolean {
   // Only touch non-bare repos — a legitimate bare repo has no .git directory.
@@ -47,6 +44,36 @@ export function isCoreBareSet(cwd: string, exec: ExecFn): boolean {
   if (!existsSync(join(cwd, ".git"))) return false;
   const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "core.bare"]);
   return exitCode === 0 && stdout.trim() === "true";
+}
+
+/**
+ * Remove the `core.bare` config key entirely, regardless of its current value.
+ *
+ * Git auto-detects bare status from the directory layout (.git dir = non-bare).
+ * An explicit `core.bare = false` is harmless but creates a key that COULD be
+ * flipped to `true` by an unknown external operation — the 47-sprint recurring
+ * bug. Removing the key eliminates the attack surface: if the key doesn't exist,
+ * nothing can flip it. See #1860.
+ *
+ * Returns true if the key was present and successfully removed.
+ */
+export function ensureCoreBareUnset(cwd: string, exec: ExecFn): boolean {
+  if (!existsSync(join(cwd, ".git"))) return false;
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "--local", "core.bare"]);
+  if (exitCode !== 0) return false; // key already absent
+  const unset = exec(["git", "-C", cwd, "config", "--local", "--unset", "core.bare"]);
+  if (unset.exitCode === 0) return true;
+  // --unset failed. Re-read to distinguish "key gone (benign race)" from
+  // "key still present (real failure)". Without this re-read the fallback
+  // would recreate the key, defeating the structural fix.
+  const recheck = exec(["git", "-C", cwd, "config", "--local", "core.bare"]);
+  if (recheck.exitCode !== 0) return true; // key gone — race resolved
+  // Key stubbornly present (locked file, permission issue, etc.).
+  // Last resort: ensure it's at least "false" so git ops don't break.
+  if (recheck.stdout.trim() !== "false") {
+    exec(["git", "-C", cwd, "config", "--local", "core.bare", "false"]);
+  }
+  return false;
 }
 
 /**
