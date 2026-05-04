@@ -9,7 +9,7 @@ import {
   type WorkerServerDescriptor,
 } from "./abstract-worker-server";
 import { StateDb } from "./db/state";
-import type { MetricsCollector } from "./metrics";
+import { MetricsCollector } from "./metrics";
 import type { WorkerClientTransport } from "./worker-transport";
 
 // ── Minimal concrete subclass ──
@@ -103,7 +103,7 @@ function makeServer<T extends StubWorkerServer>(
     extraOpts?.clientFactory ?? instantClient,
     silentLogger,
     undefined,
-    undefined,
+    new MetricsCollector(),
     extraOpts?.workerFactory ?? mockWorkerFactory(),
   );
 }
@@ -316,7 +316,7 @@ describe("AbstractWorkerServer", () => {
       const spy = makeServer(SpyWorkerServer, db);
       server = spy;
       // Default captureOrphanedSessions returns a copy of activeSessions
-      // (leave captureOrphanReturn as null so super() is called)
+      // (leave captureOrphanReturn as undefined so super() is called)
 
       await server.start();
 
@@ -354,7 +354,7 @@ describe("AbstractWorkerServer", () => {
       }
     });
 
-    test("default branch in handleWorkerEvent does not throw for unrecognised types", () => {
+    test("default branch in handleWorkerEvent does not throw for unrecognized types", () => {
       using opts = testOptions();
       db = new StateDb(opts.DB_PATH);
       server = makeServer(StubWorkerServer, db);
