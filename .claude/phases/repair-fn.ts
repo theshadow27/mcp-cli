@@ -76,7 +76,9 @@ export async function runRepair(
   const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
   const command = [...cmdBase, ...worktreeFlags, "--model", "opus", "-t", prompt, "--allow", ...allowTools];
 
+  // Clear both phase sentinels so review re-entry always spawns fresh rather than reading a stale pending:* id.
   await state.delete("qa_session_id");
+  await state.delete("review_session_id");
   try {
     await deps.prEdit(work.prNumber, ["--remove-label", "qa:fail"]);
   } catch {
