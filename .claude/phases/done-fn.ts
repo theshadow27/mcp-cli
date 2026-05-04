@@ -81,23 +81,7 @@ export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<Merg
   const mergeResult = await deps.prMerge(prNumber, ["--squash", "--delete-branch"]);
   if (mergeResult.exitCode !== 0) {
     const stderr = mergeResult.stderr;
-    // Always poll PR state on any failure — gh (Go binary) may exit 1 after
-    // SIGTERM when the HTTP request already completed server-side.
-    try {
-      const stateOut = await deps.prView(prNumber, "state", ".state");
-      if (stateOut === "MERGED") {
-        const worktreeHeld = /used by worktree|cannot delete branch.*checked out/i.test(stderr);
-        return {
-          ok: true,
-          prNumber,
-          localCleanup: worktreeHeld
-            ? "skipped: worktree holds branch (bye impl session to prune)"
-            : "recovered via state poll",
-        };
-      }
-    } catch {
-      /* prView failed — fall through to error classification */
-    }
+    // Classify deterministic failures first — no API round-trip needed.
     if (/not mergeable|conflict/i.test(stderr)) {
       return {
         ok: false,
@@ -113,6 +97,25 @@ export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<Merg
         nextAction: "inspect branch-protection required checks; re-run the missing check",
         detail: stderr,
       };
+    }
+    // Outcome unknown — poll state. gh (Go binary) may exit 1 after SIGTERM
+    // when the HTTP request already completed server-side. In all interrupt
+    // cases --delete-branch never finishes client-side, so always signal that
+    // cleanup is incomplete regardless of the specific error.
+    try {
+      const stateOut = await deps.prView(prNumber, "state", ".state");
+      if (stateOut === "MERGED") {
+        const worktreeHeld = /used by worktree|cannot delete branch.*checked out/i.test(stderr);
+        return {
+          ok: true,
+          prNumber,
+          localCleanup: worktreeHeld
+            ? "skipped: worktree holds branch (bye impl session to prune)"
+            : "branch delete incomplete: gh interrupted before client-side cleanup; prune impl branch manually",
+        };
+      }
+    } catch {
+      /* prView failed — fall through to merge_failed */
     }
     return {
       ok: false,
