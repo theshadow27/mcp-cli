@@ -1,5 +1,6 @@
+import { resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
-import { consoleLogger } from "@mcp-cli/core";
+import { consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
@@ -351,6 +352,9 @@ export abstract class AbstractWorkerServer {
   protected handleProviderEvent(_event: unknown): void {}
 
   protected processSessionUpsert(session: DbUpsertSession): DbUpsertSession {
+    if (session.repoRoot) {
+      session.repoRoot = resolveRealpath(resolve(session.repoRoot));
+    }
     return session;
   }
   protected onSessionCost(_event: DbCost): void {}

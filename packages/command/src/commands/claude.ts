@@ -24,6 +24,7 @@ import {
   parseWorktreeList,
   readWorktreeConfig,
   resolveModelName,
+  resolveRealpath,
   resolveWorktreePath,
   updatePatchedClaude,
 } from "@mcp-cli/core";
@@ -169,7 +170,8 @@ function getGitRoot(): string | null {
     // Resolve to the parent to get the repo root
     const resolved = resolve(commonDir);
     // If it ends with .git, take the parent; otherwise it's already the repo root
-    return resolved.endsWith(".git") ? dirname(resolved) : resolved;
+    const root = resolved.endsWith(".git") ? dirname(resolved) : resolved;
+    return resolveRealpath(root);
   } catch {
     return null;
   }

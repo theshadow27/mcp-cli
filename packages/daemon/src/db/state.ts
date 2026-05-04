@@ -221,17 +221,19 @@ export class StateDb {
             )
             .all()
         : [];
-      const toUpdate = symRows.filter(({ repo_root }) => {
-        try {
-          return resolveRealpath(resolve(repo_root)) !== repo_root;
-        } catch {
-          return false;
-        }
-      });
+      const updates = symRows
+        .map(({ repo_root }) => {
+          try {
+            const canonical = resolveRealpath(resolve(repo_root));
+            return canonical !== repo_root ? { old: repo_root, canonical } : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((u): u is { old: string; canonical: string } => u !== null);
       this.db.transaction(() => {
-        for (const { repo_root } of toUpdate) {
-          const canonical = resolveRealpath(resolve(repo_root));
-          this.db.run("UPDATE agent_sessions SET repo_root = ? WHERE repo_root = ?", [canonical, repo_root]);
+        for (const { old, canonical } of updates) {
+          this.db.run("UPDATE agent_sessions SET repo_root = ? WHERE repo_root = ?", [canonical, old]);
         }
         this.setSchemaVersion(CONSUMER, 4);
       })();
