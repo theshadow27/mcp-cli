@@ -7,15 +7,17 @@
  * This causes subtle bugs where missing required flags go undetected.
  *
  * A line is considered SAFE if ANY of the following hold:
- *   0. Inline suppression: the line ends with `// lint-allow-args-bounds: <reason>`
+ *   0. Inline suppression: the line contains `// lint-allow-args-bounds: <reason>`
  *      (non-empty reason required to prevent lazy suppression)
  *   1. Null coalescing immediately after args[++i]:  args[++i] ??
  *   2. Truthy pre-check: current or any of the preceding 6 lines contains args[i + 1]
  *      in a boolean context (`&& args[i + 1]`, `if (args[i + 1]`, etc.)
  *   3. Explicit bounds comparison on the current line or in the preceding 6 lines:
- *      `i + 1 <|<=|>|>= args.length`, `i <|<= args.length - 1`, or the reversed
- *      forms — inline comments stripped first so `// i + 1 < args.length` is not
- *      treated as a guard
+ *      `i + 1 <|<=|>|>= args.length`, `i < args.length - 1` (strict less-than only),
+ *      or the reversed forms — inline comments stripped first so
+ *      `// i + 1 < args.length` is not treated as a guard.
+ *      Note: `i <= args.length - 1` (≡ `i < args.length`) is NOT safe because
+ *      `args[++i]` accesses index `i + 1`, which may equal `args.length`.
  *   4. Post-check on the assigned variable: the line assigns args[++i] to a
  *      variable, and one of the next 2 lines checks that variable with
  *      `!varName`, `varName === undefined`, `varName === null`, or
@@ -46,8 +48,10 @@ const BOUNDS_EXPR = /\bi\s*\+\s*1\s*[<>]=?\s*args\.length\b|\bargs\.length\s*[<>
 /**
  * Matches algebraically equivalent forms: `i < args.length - 1` or `args.length - 1 > i`.
  * These are not caught by BOUNDS_EXPR because they lack the `i + 1` token.
+ * Only strict `<`/`>` — `i <= args.length - 1` is NOT safe because it allows
+ * i === args.length - 1, where args[++i] === args[args.length] === undefined.
  */
-const BOUNDS_EXPR_ALT = /\bi\b\s*[<>]=?\s*args\.length\s*-\s*1\b|\bargs\.length\s*-\s*1\s*[<>]=?\s*\bi\b/;
+const BOUNDS_EXPR_ALT = /\bi\b\s*<\s*args\.length\s*-\s*1\b|\bargs\.length\s*-\s*1\s*>\s*\bi\b/;
 
 /** Inline suppression marker. Requires a non-empty reason after the colon. */
 const LINT_ALLOW = /\/\/\s*lint-allow-args-bounds:\s*\S/;
@@ -77,9 +81,12 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
   // Rule 2: truthy pre-check — current or any of the preceding 6 lines uses args[i + 1]
   // as a guard in a boolean context. 6-line lookback handles multi-line `if` blocks where
   // the guard sits 2+ lines above the access.
-  // Two forms: boolean-context marker before the access (`&& args[i+1]`, `if (... args[i+1]`),
-  // or the access before a trailing operator (`args[i+1] &&`) used in multi-line if blocks.
-  const TRUTHY_PRE_CHECK = /(?:&&|\|\||if\s*\(|while\s*\()[^)]*args\[i\s*\+\s*1\]|args\[i\s*\+\s*1\]\s*(?:&&|\|\|)/;
+  // Two forms:
+  //   a) boolean-context marker before the access: `&& args[i+1]`, `if (... args[i+1]`
+  //   b) access is first token on line followed by `&&` or `||`, as in multi-line if blocks:
+  //      `  args[i + 1] &&` — the leading whitespace-only constraint prevents matching
+  //      `const x = args[i + 1] && y` where the access is a RHS read, not a guard.
+  const TRUTHY_PRE_CHECK = /(?:&&|\|\||if\s*\(|while\s*\()[^)]*args\[i\s*\+\s*1\]|^\s*args\[i\s*\+\s*1\]\s*(?:&&|\|\|)/;
   const lookbackR2 = Math.max(0, lineIdx - 6);
   for (let j = lookbackR2; j <= lineIdx; j++) {
     if (TRUTHY_PRE_CHECK.test(lines[j])) return true;

@@ -46,6 +46,19 @@ describe("check-args-bounds isSafe()", () => {
       const lines = ["  // TODO: add i + 1 < args.length check here", "  val = args[++i];"];
       expect(isSafe(lines, 1)).toBe(false);
     });
+
+    test("RHS args[i+1] && expression is not a guard (Rule 2 trailing-operator requires first token)", () => {
+      // `const x = args[i + 1] && y` reads args[i+1] into x — no guard on i+1 for the later access
+      const lines = ["  const x = args[i + 1] && someCondition;", "  val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
+
+    test("i <= args.length - 1 is not safe (off-by-one: allows i === args.length - 1)", () => {
+      // i <= args.length - 1 ≡ i < args.length, so i may equal args.length - 1,
+      // making args[++i] === args[args.length] === undefined.
+      const lines = ["  if (i <= args.length - 1) {", "    val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
   });
 
   describe("safe cases", () => {
@@ -145,11 +158,6 @@ describe("check-args-bounds isSafe()", () => {
 
     test("args.length - 1 > i guard on preceding line", () => {
       const lines = ["  if (args.length - 1 > i) {", "    val = args[++i];"];
-      expect(isSafe(lines, 1)).toBe(true);
-    });
-
-    test("i <= args.length - 1 guard on preceding line", () => {
-      const lines = ["  if (i <= args.length - 1) {", "    val = args[++i];"];
       expect(isSafe(lines, 1)).toBe(true);
     });
 
