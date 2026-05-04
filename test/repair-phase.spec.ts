@@ -231,6 +231,21 @@ describe("runRepair — spawn path", () => {
     expect(deletedKeys).toContain("qa_session_id");
   });
 
+  test("clears review_session_id before spawning", async () => {
+    const deletedKeys: string[] = [];
+    const state = makeState({ review_session_id: "pending:999" });
+    const trackingState: RepairState = {
+      get: state.get,
+      set: state.set,
+      delete: async (key) => {
+        deletedKeys.push(key);
+        await state.delete(key);
+      },
+    };
+    await runRepair({ provider: "claude" }, makeWork(), trackingState, makeDeps());
+    expect(deletedKeys).toContain("review_session_id");
+  });
+
   test("removes qa:fail label (best-effort)", async () => {
     const editCalls: Array<{ prNumber: number; flags: string[] }> = [];
     await runRepair(

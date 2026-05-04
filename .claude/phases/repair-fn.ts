@@ -77,6 +77,7 @@ export async function runRepair(
   const command = [...cmdBase, ...worktreeFlags, "--model", "opus", "-t", prompt, "--allow", ...allowTools];
 
   await state.delete("qa_session_id");
+  await state.delete("review_session_id");
   try {
     await deps.prEdit(work.prNumber, ["--remove-label", "qa:fail"]);
   } catch {
