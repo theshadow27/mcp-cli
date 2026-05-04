@@ -21,7 +21,7 @@
  * session ID after spawn; write worktree_path once the worktree is known;
  * delete session_id on spawn failure so next entry re-spawns cleanly.
  */
-import { findModelInSprintPlan } from "@mcp-cli/core";
+import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 
 type Provider = "claude" | "copilot" | "gemini" | `acp:${string}`;
@@ -100,7 +100,8 @@ defineAlias({
       if (stateModel === "opus" || stateModel === "sonnet") {
         model = stateModel;
       } else {
-        const planModel = findModelInSprintPlan(work.issueNumber, process.cwd());
+        const planModel =
+          ctx.repoRoot !== NO_REPO_ROOT ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot) : null;
         model = planModel ?? pickModel(input.labels);
       }
     }

@@ -69,6 +69,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
       globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
       workItem: null,
+      repoRoot,
       signal: controller.signal,
       waitForEvent: createWaitForEvent({ signal: controller.signal }),
     };

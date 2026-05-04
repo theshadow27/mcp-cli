@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
@@ -1891,6 +1891,53 @@ describe("StateDb", () => {
         .get("state")?.version;
       expect(version).toBe(3);
       db.close();
+    });
+
+    test("legacy DB with symlink repo_root gets canonicalized on first open (#1892)", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Create a real dir and a symlink to it. Use mkdtempSync for a unique base
+      // to avoid collisions when tests run in parallel.
+      const realDir = mkdtempSync(join(tmpdir(), "mcp-cli-real-"));
+      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      symlinkSync(realDir, symlinkDir);
+
+      try {
+        const canonical = realpathSync(symlinkDir);
+
+        // Build a legacy DB (tool_cache present, no schema_versions row).
+        const { Database } = require("bun:sqlite");
+        const raw = new Database(p, { create: true });
+        raw.exec("PRAGMA journal_mode = WAL");
+        raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
+        // alias_state must exist for the v3 step to find rows.
+        raw.exec(
+          "CREATE TABLE alias_state (repo_root TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (repo_root, namespace, key))",
+        );
+        raw.run("INSERT INTO alias_state (repo_root, namespace, key, value_json) VALUES (?, ?, ?, ?)", [
+          symlinkDir,
+          "ns",
+          "k",
+          '"val"',
+        ]);
+        raw.close();
+
+        // First open: legacy detection stamps at v2, then v3 runs and canonicalizes.
+        const db = new StateDb(p);
+        // Row should now be accessible under the canonical (real) path.
+        expect(db.getAliasState(canonical, "ns", "k")).toBe("val");
+        // Symlink path should no longer have a row.
+        expect(db.getAliasState(symlinkDir, "ns", "k")).toBeUndefined();
+        db.close();
+      } finally {
+        try {
+          unlinkSync(symlinkDir);
+        } catch {
+          // ignore
+        }
+        rmSync(realDir, { recursive: true, force: true });
+      }
     });
 
     test("legacy DB missing tables gets them created (handles half-migrated DBs from old try/catch failures)", () => {

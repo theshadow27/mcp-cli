@@ -887,6 +887,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     state: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     workItem: null,
+    repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
@@ -1264,6 +1265,7 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
+    repoRoot,
     signal: phaseController.signal,
     waitForEvent: createWaitForEvent({ signal: phaseController.signal }),
   };

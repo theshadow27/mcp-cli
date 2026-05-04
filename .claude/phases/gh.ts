@@ -6,6 +6,7 @@
  */
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_SIGKILL_DELAY_MS = 5_000;
 
 export interface GhResult {
   stdout: string;
@@ -13,15 +14,19 @@ export interface GhResult {
   exitCode: number;
 }
 
+/** A function with the same signature as the top-level `gh()` — injectable for tests. */
+export type GhRunner = (args: string[], opts?: { timeoutMs?: number; sigkillDelayMs?: number }) => Promise<GhResult>;
+
 export async function gh(
   args: string[],
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; sigkillDelayMs?: number },
 ): Promise<GhResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return runGh(args, timeoutMs);
+  const sigkillDelayMs = opts?.sigkillDelayMs ?? DEFAULT_SIGKILL_DELAY_MS;
+  return runGh(args, timeoutMs, sigkillDelayMs);
 }
 
-async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
+async function runGh(args: string[], timeoutMs: number, sigkillDelayMs: number): Promise<GhResult> {
   const proc = Bun.spawn(["gh", ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -29,10 +34,10 @@ async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
 
   let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
-    proc.kill();
+    try { proc.kill(); } catch { /* already exited */ }
     sigkillTimer = setTimeout(() => {
       try { proc.kill(9); } catch { /* already exited */ }
-    }, 5_000);
+    }, sigkillDelayMs);
   }, timeoutMs);
 
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -47,55 +52,79 @@ async function runGh(args: string[], timeoutMs: number): Promise<GhResult> {
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
-export async function prView(prNumber: number, fields: string, jqExpr?: string): Promise<string> {
+export async function prView(
+  prNumber: number,
+  fields: string,
+  jqExpr?: string,
+  _gh: GhRunner = gh,
+): Promise<string> {
   const args = ["pr", "view", String(prNumber), "--json", fields];
   if (jqExpr) args.push("-q", jqExpr);
-  const result = await gh(args);
+  const result = await _gh(args);
   if (result.exitCode !== 0) {
     throw new Error(`gh pr view ${prNumber} failed (exit ${result.exitCode}): ${result.stderr}`);
   }
   return result.stdout;
 }
 
-export async function prList(opts: { head?: string; json?: string; jq?: string }): Promise<string> {
+export async function prList(
+  opts: { head?: string; json?: string; jq?: string },
+  _gh: GhRunner = gh,
+): Promise<string> {
   const args = ["pr", "list"];
   if (opts.head) args.push("--head", opts.head);
   if (opts.json) args.push("--json", opts.json);
   if (opts.jq) args.push("-q", opts.jq);
-  const result = await gh(args);
+  const result = await _gh(args);
   if (result.exitCode !== 0) {
     throw new Error(`gh pr list failed (exit ${result.exitCode}): ${result.stderr}`);
   }
   return result.stdout;
 }
 
-export async function prEdit(prNumber: number, flags: string[]): Promise<void> {
-  const result = await gh(["pr", "edit", String(prNumber), ...flags]);
+export async function prEdit(
+  prNumber: number,
+  flags: string[],
+  _gh: GhRunner = gh,
+): Promise<void> {
+  const result = await _gh(["pr", "edit", String(prNumber), ...flags]);
   if (result.exitCode !== 0) {
     throw new Error(`gh pr edit ${prNumber} failed (exit ${result.exitCode}): ${result.stderr}`);
   }
 }
 
-export async function prMerge(prNumber: number, flags: string[]): Promise<GhResult> {
-  return gh(["pr", "merge", String(prNumber), ...flags]);
+export async function prMerge(
+  prNumber: number,
+  flags: string[],
+  _gh: GhRunner = gh,
+): Promise<GhResult> {
+  return _gh(["pr", "merge", String(prNumber), ...flags]);
 }
 
-export async function prComment(prNumber: number, body: string): Promise<void> {
-  const result = await gh(["pr", "comment", String(prNumber), "--body", body]);
+export async function prComment(
+  prNumber: number,
+  body: string,
+  _gh: GhRunner = gh,
+): Promise<void> {
+  const result = await _gh(["pr", "comment", String(prNumber), "--body", body]);
   if (result.exitCode !== 0) {
     throw new Error(`gh pr comment ${prNumber} failed (exit ${result.exitCode}): ${result.stderr}`);
   }
 }
 
-export async function spawn(cmd: string[], opts?: { timeoutMs?: number }): Promise<GhResult> {
+export async function spawn(
+  cmd: string[],
+  opts?: { timeoutMs?: number; sigkillDelayMs?: number },
+): Promise<GhResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const sigkillDelayMs = opts?.sigkillDelayMs ?? DEFAULT_SIGKILL_DELAY_MS;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
   let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
-    proc.kill();
+    try { proc.kill(); } catch { /* already exited */ }
     sigkillTimer = setTimeout(() => {
       try { proc.kill(9); } catch { /* already exited */ }
-    }, 5_000);
+    }, sigkillDelayMs);
   }, timeoutMs);
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),

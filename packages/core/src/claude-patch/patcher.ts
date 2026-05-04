@@ -134,6 +134,9 @@ function updateCurrentLink(linkPath: string, target: string): void {
     renameSync(tmp, linkPath);
   } catch {
     // Symlink may fail on some filesystems; fall back to a plain pointer file.
+    // Remove any partial symlink first — writeFileSync follows symlinks, so
+    // writing through a dangling symlink would corrupt the target binary.
+    rmSync(tmp, { force: true });
     writeFileSync(tmp, target, { mode: 0o644 });
     renameSync(tmp, linkPath);
   }
@@ -184,6 +187,9 @@ export async function defaultResignBinary(binPath: string, entitlementsPath: str
     ["--force", "--sign", "-", "--options=runtime", "--entitlements", entitlementsPath, binPath],
     { encoding: "utf-8", timeout: 30_000 },
   );
+  if (result.error) {
+    throw new Error(`codesign --force failed: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`codesign --force failed: ${result.stderr.trim() || `exit ${result.status}`}`);
   }
@@ -368,27 +374,32 @@ export async function updatePatchedClaude(
     throw new Error(`strategy ${strategy.id} validation failed: ${validation.reason}`);
   }
 
-  // Write the patched bytes, then re-sign.
-  deps.writeBytesAtomic(patchedPath, patched);
-  chmodSync(patchedPath, 0o755);
-
-  // Extract entitlements from the source (must be done before re-signing the copy,
-  // since codesign reads them off the source's existing signature).
-  const entitlements = await deps.extractEntitlements(sourcePath);
-  const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
-  writeFileSync(entPath, entitlements, { mode: 0o600 });
+  // Stage to a temporary path so any failure (entitlements extraction,
+  // resign, smoke test, or final promote) doesn't leave a broken binary
+  // at the published path or an orphaned staging file.
+  const stagingPath = `${patchedPath}.staging.${process.pid}`;
+  deps.writeBytesAtomic(stagingPath, patched);
+  chmodSync(stagingPath, 0o755);
   try {
-    await deps.resignBinary(patchedPath, entPath);
-  } finally {
+    const entitlements = await deps.extractEntitlements(sourcePath);
+    const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
+    writeFileSync(entPath, entitlements, { mode: 0o600 });
     try {
-      rmSync(entPath, { force: true });
-    } catch {
-      // ignore
+      await deps.resignBinary(stagingPath, entPath);
+    } finally {
+      try {
+        rmSync(entPath, { force: true });
+      } catch {
+        // ignore
+      }
     }
-  }
 
-  // Smoke test before publishing.
-  await deps.smokeTest(patchedPath);
+    await deps.smokeTest(stagingPath);
+    renameSync(stagingPath, patchedPath);
+  } catch (err) {
+    rmSync(stagingPath, { force: true });
+    throw err;
+  }
 
   // Write metadata + update current link last (atomicity: if anything above
   // fails, the previous current link still points at the previous patched copy).

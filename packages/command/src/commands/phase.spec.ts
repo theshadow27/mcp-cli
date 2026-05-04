@@ -2642,6 +2642,78 @@ defineAlias(({ z }) => ({
   }, 30_000);
 });
 
+describe("executePhase passes ctx.repoRoot from findGitRoot (#1958)", () => {
+  const repoRootAlias = `
+import { defineAlias } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "check-repo-root",
+  description: "returns ctx.repoRoot",
+  input: z.object({}).default({}),
+  output: z.object({ repoRoot: z.string().optional() }),
+  fn: async (_input, ctx) => ({ repoRoot: ctx.repoRoot }),
+}));
+`.trim();
+
+  const manifestSimple = `
+runsOn: main
+initial: check-repo-root
+phases:
+  check-repo-root:
+    source: ./check-repo-root.ts
+    next: []
+`.trim();
+
+  test("ctx.repoRoot equals findGitRoot result, not process.cwd()", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifestSimple);
+    writeFileSync(join(dir, "check-repo-root.ts"), repoRootAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    const capturedRoot = "/fake/repo/root";
+    const logs: string[] = [];
+    await executePhase(
+      ["check-repo-root"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: (m) => logs.push(m),
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      {
+        ipcCall: (async (method: string) => {
+          if (method === "getWorkItem") return null;
+          if (method === "aliasStateGet") return { value: undefined };
+          if (method === "aliasStateSet") return { ok: true };
+          if (method === "aliasStateAll") return { entries: {} };
+          return null;
+        }) as unknown as typeof import("@mcp-cli/core").ipcCall,
+        exec: (cmd) => {
+          if (cmd.includes("rev-parse") && cmd.includes("--is-inside-work-tree"))
+            return { stdout: "true", exitCode: 0 };
+          if (cmd.includes("symbolic-ref")) return { stdout: "main\n", exitCode: 0 };
+          return { stdout: "", exitCode: 0 };
+        },
+        findGitRoot: () => capturedRoot,
+        now: () => new Date("2026-04-14T00:00:00Z"),
+      },
+    );
+
+    const jsonLog = logs.find((l) => {
+      try {
+        return JSON.parse(l).repoRoot !== undefined;
+      } catch {
+        return false;
+      }
+    });
+    expect(jsonLog).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: guarded by toBeDefined() above
+    expect(JSON.parse(jsonLog!).repoRoot).toBe(capturedRoot);
+  }, 30_000);
+});
+
 describe("auto-detects --from for repair↔qa cycles without explicit flag (#1746)", () => {
   const stubAlias = `
 import { defineAlias, z } from "mcp-cli";

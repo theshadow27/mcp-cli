@@ -5143,3 +5143,35 @@ describe("cmdClaude routing — CLAUDE_ONLY_SUBCOMMANDS regression", () => {
     }
   });
 });
+
+// ── DI threading for status (#1933) ──
+
+describe("cmdClaude status — DI threading", () => {
+  const FAKE_SESSION = {
+    sessionId: "ccc11111-aaaa-bbbb-cccc-dddddddddddd",
+    name: "Alice",
+    state: "idle",
+    model: "claude-opus-4",
+    cost: 0,
+    tokens: 0,
+    numTurns: 0,
+    cwd: "/repo",
+    worktree: null,
+    repoRoot: null,
+    createdAt: Date.now(),
+  };
+
+  test("injected callTool is used for status subcommand via cmdClaude with deps", async () => {
+    const callTool = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult([FAKE_SESSION]);
+      return toolResult([]);
+    });
+    const deps = makeDeps({ callTool });
+    await cmdClaude(["status", "ccc11111"], deps);
+    expect(callTool).toHaveBeenCalledWith("claude_session_list", {});
+    expect(callTool).toHaveBeenCalledWith("claude_transcript", {
+      sessionId: FAKE_SESSION.sessionId,
+      limit: 150,
+    });
+  });
+});
