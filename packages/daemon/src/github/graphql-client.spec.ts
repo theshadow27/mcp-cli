@@ -4,6 +4,7 @@ import {
   clearTokenCache,
   fetchTrackedPRs,
   getGhToken,
+  isSprintContainerPR,
   parseRemoteUrl,
   pickBestLinkedPR,
   resolveNumber,
@@ -457,17 +458,42 @@ describe("resolveNumber", () => {
     expect(result).toEqual({ isPR: true, prNumber: 42 });
   });
 
-  test("resolves linked PR from issue via ConnectedEvent", async () => {
+  test("resolves linked PR from issue via closedByPullRequestsReferences (closing keyword)", async () => {
     const body = {
       data: {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
+            closedByPullRequestsReferences: {
+              nodes: [{ number: 99, state: "OPEN", title: "fix: something", headRefName: "fix/issue-50" }],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 99 });
+  });
+
+  test("resolves linked PR from issue via ConnectedEvent when no closing PRs", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            closedByPullRequestsReferences: { nodes: [] },
             timelineItems: {
               nodes: [
                 {
                   __typename: "ConnectedEvent",
-                  subject: { __typename: "PullRequest", number: 99 },
+                  subject: {
+                    __typename: "PullRequest",
+                    number: 99,
+                    title: "fix: something",
+                    headRefName: "fix/issue-50",
+                  },
                 },
               ],
             },
@@ -480,27 +506,23 @@ describe("resolveNumber", () => {
     expect(result).toEqual({ isPR: false, prNumber: 99 });
   });
 
-  test("resolves linked PR from issue via CrossReferencedEvent", async () => {
+  test("bare mention (CrossReferencedEvent) is NOT used for binding", async () => {
+    // CrossReferencedEvent is no longer in the query — bare mentions must not bind.
+    // Simulate an issue with only timeline items and no closing PRs.
     const body = {
       data: {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
-            timelineItems: {
-              nodes: [
-                {
-                  __typename: "CrossReferencedEvent",
-                  source: { __typename: "PullRequest", number: 77 },
-                },
-              ],
-            },
+            closedByPullRequestsReferences: { nodes: [] },
+            timelineItems: { nodes: [] },
           },
         },
       },
     };
 
     const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
-    expect(result).toEqual({ isPR: false, prNumber: 77 });
+    expect(result).toEqual({ isPR: false, prNumber: null });
   });
 
   test("returns null prNumber when issue has no linked PR", async () => {
@@ -509,6 +531,7 @@ describe("resolveNumber", () => {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
+            closedByPullRequestsReferences: { nodes: [] },
             timelineItems: { nodes: [] },
           },
         },
@@ -545,18 +568,15 @@ describe("resolveNumber", () => {
     );
   });
 
-  test("ignores non-PR timeline events", async () => {
+  test("ignores non-PR connected events", async () => {
     const body = {
       data: {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
+            closedByPullRequestsReferences: { nodes: [] },
             timelineItems: {
               nodes: [
-                {
-                  __typename: "CrossReferencedEvent",
-                  source: { __typename: "Issue", number: 55 },
-                },
                 {
                   __typename: "ConnectedEvent",
                   subject: { __typename: "Issue", number: 66 },
@@ -572,24 +592,19 @@ describe("resolveNumber", () => {
     expect(result).toEqual({ isPR: false, prNumber: null });
   });
 
-  test("prefers open PR over closed when multiple linked", async () => {
+  test("prefers open closing-PR over closed closing-PR", async () => {
     const body = {
       data: {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
-            timelineItems: {
+            closedByPullRequestsReferences: {
               nodes: [
-                {
-                  __typename: "ConnectedEvent",
-                  subject: { __typename: "PullRequest", number: 100, state: "CLOSED" },
-                },
-                {
-                  __typename: "ConnectedEvent",
-                  subject: { __typename: "PullRequest", number: 105, state: "OPEN" },
-                },
+                { number: 100, state: "CLOSED", title: "fix: old", headRefName: "fix/old" },
+                { number: 105, state: "OPEN", title: "fix: new", headRefName: "fix/new" },
               ],
             },
+            timelineItems: { nodes: [] },
           },
         },
       },
@@ -599,21 +614,80 @@ describe("resolveNumber", () => {
     expect(result).toEqual({ isPR: false, prNumber: 105 });
   });
 
-  test("picks highest-numbered PR when all same state", async () => {
+  test("picks highest-numbered closing-PR when all same state", async () => {
     const body = {
       data: {
         repository: {
           issueOrPullRequest: {
             __typename: "Issue",
+            closedByPullRequestsReferences: {
+              nodes: [
+                { number: 100, state: "CLOSED", title: "fix: first attempt", headRefName: "fix/attempt-1" },
+                { number: 110, state: "CLOSED", title: "fix: second attempt", headRefName: "fix/attempt-2" },
+              ],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 110 });
+  });
+
+  test("skips sprint container PR in closedByPullRequestsReferences", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            closedByPullRequestsReferences: {
+              nodes: [
+                // sprint container — must be skipped
+                { number: 1972, state: "OPEN", title: "sprint(51): sprint-50 ratchet", headRefName: "sprint-51" },
+                // real fix PR — must be chosen
+                { number: 1963, state: "OPEN", title: "fix: actual fix", headRefName: "fix/real-fix" },
+              ],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 1963 });
+  });
+
+  test("skips sprint container PR in ConnectedEvent fallback", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            closedByPullRequestsReferences: { nodes: [] },
             timelineItems: {
               nodes: [
                 {
                   __typename: "ConnectedEvent",
-                  subject: { __typename: "PullRequest", number: 100, state: "CLOSED" },
+                  subject: {
+                    __typename: "PullRequest",
+                    number: 1972,
+                    state: "OPEN",
+                    title: "sprint(51): ratchet",
+                    headRefName: "sprint-51",
+                  },
                 },
                 {
-                  __typename: "CrossReferencedEvent",
-                  source: { __typename: "PullRequest", number: 110, state: "CLOSED" },
+                  __typename: "ConnectedEvent",
+                  subject: {
+                    __typename: "PullRequest",
+                    number: 1963,
+                    state: "OPEN",
+                    title: "fix: real",
+                    headRefName: "fix/real",
+                  },
                 },
               ],
             },
@@ -623,7 +697,72 @@ describe("resolveNumber", () => {
     };
 
     const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
-    expect(result).toEqual({ isPR: false, prNumber: 110 });
+    expect(result).toEqual({ isPR: false, prNumber: 1963 });
+  });
+
+  test("returns null when only sprint container PRs are linked", async () => {
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            closedByPullRequestsReferences: {
+              nodes: [{ number: 1972, state: "OPEN", title: "sprint(51): ratchet", headRefName: "sprint-51" }],
+            },
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ConnectedEvent",
+                  subject: {
+                    __typename: "PullRequest",
+                    number: 1946,
+                    state: "MERGED",
+                    title: "sprint(50): ratchet",
+                    headRefName: "sprint-50",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: null });
+  });
+
+  test("closing-PR takes priority over ConnectedEvent-only PR", async () => {
+    // If both closing PRs and connected PRs exist, only closing PRs are used
+    const body = {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            closedByPullRequestsReferences: {
+              nodes: [{ number: 200, state: "OPEN", title: "fix: closes", headRefName: "fix/closes" }],
+            },
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ConnectedEvent",
+                  subject: {
+                    __typename: "PullRequest",
+                    number: 999,
+                    state: "OPEN",
+                    title: "wip: other",
+                    headRefName: "wip/other",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const result = await resolveNumber(repo, 50, { getToken: mockGetToken, fetch: mockFetch(body) });
+    expect(result).toEqual({ isPR: false, prNumber: 200 });
   });
 });
 
@@ -661,5 +800,43 @@ describe("pickBestLinkedPR", () => {
         { number: 20, state: "CLOSED" },
       ]),
     ).toBe(30);
+  });
+});
+
+// ---------- isSprintContainerPR ----------
+
+describe("isSprintContainerPR", () => {
+  test("detects sprint container by title prefix", () => {
+    expect(isSprintContainerPR({ title: "sprint(51): ratchet", headRefName: "fix/something" })).toBe(true);
+    expect(isSprintContainerPR({ title: "sprint(1): first sprint", headRefName: "feat/something" })).toBe(true);
+  });
+
+  test("detects sprint container by branch name", () => {
+    expect(isSprintContainerPR({ title: "some title", headRefName: "sprint-51" })).toBe(true);
+    expect(isSprintContainerPR({ title: "some title", headRefName: "sprint-1" })).toBe(true);
+  });
+
+  test("rejects normal PRs", () => {
+    expect(isSprintContainerPR({ title: "fix: resolve issue #50", headRefName: "fix/issue-50" })).toBe(false);
+    expect(isSprintContainerPR({ title: "feat: new feature", headRefName: "feat/cool-thing" })).toBe(false);
+  });
+
+  test("handles missing title or branch", () => {
+    expect(isSprintContainerPR({ headRefName: "sprint-51" })).toBe(true);
+    expect(isSprintContainerPR({ title: "sprint(51): ratchet" })).toBe(true);
+    expect(isSprintContainerPR({})).toBe(false);
+  });
+
+  test("does not match sprint- prefix in non-branch-root position", () => {
+    expect(isSprintContainerPR({ headRefName: "fix/sprint-related-fix" })).toBe(false);
+  });
+
+  test("does not match sprint-N-suffix branches (e.g. sprint-51-fix)", () => {
+    expect(isSprintContainerPR({ headRefName: "sprint-51-fix" })).toBe(false);
+    expect(isSprintContainerPR({ headRefName: "sprint-51-hotfix" })).toBe(false);
+  });
+
+  test("does not match sprint(N): in non-title-start position", () => {
+    expect(isSprintContainerPR({ title: "fix: closes sprint(50): issue" })).toBe(false);
   });
 });

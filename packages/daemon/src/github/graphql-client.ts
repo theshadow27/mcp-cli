@@ -400,14 +400,19 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
       __typename
       ... on PullRequest { number }
       ... on Issue {
-        timelineItems(itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT], first: 50) {
+        closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
+          nodes {
+            number
+            state
+            title
+            headRefName
+          }
+        }
+        timelineItems(itemTypes: [CONNECTED_EVENT], first: 50) {
           nodes {
             __typename
             ... on ConnectedEvent {
-              subject { __typename ... on PullRequest { number state } }
-            }
-            ... on CrossReferencedEvent {
-              source { __typename ... on PullRequest { number state } }
+              subject { __typename ... on PullRequest { number state title headRefName } }
             }
           }
         }
@@ -416,16 +421,37 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
   }
 }`;
 
+interface RawLinkedPR {
+  number?: number;
+  state?: string;
+  title?: string;
+  headRefName?: string;
+}
+
 interface RawTimelineNode {
   __typename?: string;
-  subject?: { __typename?: string; number?: number; state?: string };
-  source?: { __typename?: string; number?: number; state?: string };
+  subject?: { __typename?: string; number?: number; state?: string; title?: string; headRefName?: string };
 }
 
 interface RawIssueOrPR {
   __typename?: string;
   number?: number;
+  closedByPullRequestsReferences?: { nodes?: RawLinkedPR[] };
   timelineItems?: { nodes?: RawTimelineNode[] };
+}
+
+/**
+ * Returns true for sprint container PRs, which list all sprint issue numbers in their
+ * body for context — they must not be used as auto-binding signals even when they mention
+ * an issue number.
+ *
+ * A PR is a sprint container when its title matches `sprint(N):` or its branch matches
+ * `sprint-N` (where N is one or more digits).
+ */
+export function isSprintContainerPR(pr: { title?: string; headRefName?: string }): boolean {
+  if (pr.title && /^sprint\(\d+\):/.test(pr.title)) return true;
+  if (pr.headRefName && /^sprint-\d+$/.test(pr.headRefName)) return true;
+  return false;
 }
 
 /**
@@ -468,19 +494,34 @@ export async function resolveNumber(repo: RepoInfo, number: number, opts?: Fetch
     return { isPR: true, prNumber: node.number ?? number };
   }
 
-  // It's an issue — collect all linked PRs from timeline, then pick the best one
-  const timelineNodes = node.timelineItems?.nodes ?? [];
+  // It's an issue. Collect linked PRs in priority order:
+  //   1. closedByPullRequestsReferences — PRs with closing keywords (fixes/closes/resolves #N).
+  //      These are the authoritative signal and are what GitHub uses for auto-close on merge.
+  //   2. ConnectedEvent — explicitly linked via GitHub UI (sidebar "Linked issues").
+  //
+  // CrossReferencedEvent (bare mentions) is intentionally excluded: sprint container PRs list
+  // every issue number in their body, which caused spurious auto-bindings (#1974).
   const linkedPRs: Array<{ number: number; state: string }> = [];
-  for (const tNode of timelineNodes) {
-    if (tNode.__typename === "ConnectedEvent" && tNode.subject?.__typename === "PullRequest" && tNode.subject.number) {
-      linkedPRs.push({ number: tNode.subject.number, state: tNode.subject.state ?? "UNKNOWN" });
+
+  // Primary: closing-keyword PRs (belt: also skip sprint containers as belt-and-suspenders)
+  for (const pr of node.closedByPullRequestsReferences?.nodes ?? []) {
+    if (pr.number && !isSprintContainerPR(pr)) {
+      linkedPRs.push({ number: pr.number, state: pr.state ?? "UNKNOWN" });
     }
-    if (
-      tNode.__typename === "CrossReferencedEvent" &&
-      tNode.source?.__typename === "PullRequest" &&
-      tNode.source.number
-    ) {
-      linkedPRs.push({ number: tNode.source.number, state: tNode.source.state ?? "UNKNOWN" });
+  }
+
+  // Secondary: explicitly connected PRs — only consulted when no closing PRs were found
+  if (linkedPRs.length === 0) {
+    for (const tNode of node.timelineItems?.nodes ?? []) {
+      if (
+        tNode.__typename === "ConnectedEvent" &&
+        tNode.subject?.__typename === "PullRequest" &&
+        tNode.subject.number
+      ) {
+        if (!isSprintContainerPR(tNode.subject)) {
+          linkedPRs.push({ number: tNode.subject.number, state: tNode.subject.state ?? "UNKNOWN" });
+        }
+      }
     }
   }
 
