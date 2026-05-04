@@ -81,24 +81,22 @@ export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<Merg
   const mergeResult = await deps.prMerge(prNumber, ["--squash", "--delete-branch"]);
   if (mergeResult.exitCode !== 0) {
     const stderr = mergeResult.stderr;
-    // Signal kill (e.g. timeout SIGTERM exit 143) or worktree branch-delete
-    // failure may mean the merge actually succeeded on GitHub's side.
-    const maybeSucceeded =
-      /used by worktree|cannot delete branch.*checked out/i.test(stderr) ||
-      mergeResult.exitCode >= 128;
-    if (maybeSucceeded) {
-      try {
-        const stateOut = await deps.prView(prNumber, "state", ".state");
-        if (stateOut === "MERGED") {
-          return {
-            ok: true,
-            prNumber,
-            localCleanup: "skipped: worktree holds branch (bye impl session to prune)",
-          };
-        }
-      } catch {
-        /* prView failed — fall through to error classification */
+    // Always poll PR state on any failure — gh (Go binary) may exit 1 after
+    // SIGTERM when the HTTP request already completed server-side.
+    try {
+      const stateOut = await deps.prView(prNumber, "state", ".state");
+      if (stateOut === "MERGED") {
+        const worktreeHeld = /used by worktree|cannot delete branch.*checked out/i.test(stderr);
+        return {
+          ok: true,
+          prNumber,
+          localCleanup: worktreeHeld
+            ? "skipped: worktree holds branch (bye impl session to prune)"
+            : "recovered via state poll",
+        };
       }
+    } catch {
+      /* prView failed — fall through to error classification */
     }
     if (/not mergeable|conflict/i.test(stderr)) {
       return {
