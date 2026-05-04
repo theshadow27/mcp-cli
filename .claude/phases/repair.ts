@@ -16,16 +16,7 @@
  */
 import { defineAlias, z } from "mcp-cli";
 import { prEdit } from "./gh";
-
-const REPAIR_ROUND_CAP = 3;
-
-async function removeLabel(prNumber: number, label: string): Promise<void> {
-  try {
-    await prEdit(prNumber, ["--remove-label", label]);
-  } catch {
-    /* best-effort — label may already be absent */
-  }
-}
+import { runRepair } from "./repair-fn";
 
 const ProviderSchema = z
   .string()
@@ -63,67 +54,11 @@ defineAlias({
       );
     }
 
-    // In-flight guard — repair session already running; don't spawn a second.
-    const existingSession = await ctx.state.get<string>("repair_session_id");
-    if (existingSession) {
-      const round = (await ctx.state.get<number>("repair_round")) ?? 1;
-      const storedPrompt = await ctx.state.get<string>("repair_prompt");
-      return {
-        action: "in-flight" as const,
-        reason: `repair session in flight (round ${round})`,
-        round,
-        model: "opus" as const,
-        ...(storedPrompt ? { prompt: storedPrompt } : {}),
-      };
-    }
-
-    const prevRound = (await ctx.state.get<number>("repair_round")) ?? 0;
-    const round = prevRound + 1;
-    if (round > REPAIR_ROUND_CAP) {
-      return {
-        action: "goto" as const,
-        target: "needs-attention" as const,
-        reason: `repair cap (${REPAIR_ROUND_CAP}) exceeded — escalating`,
-        round: prevRound,
-      };
-    }
-
-    const previous = ((await ctx.state.get<string>("previous_phase")) ?? "review") as "review" | "qa";
-    const worktreePath = await ctx.state.get<string>("worktree_path");
-
-    const prompt =
-      previous === "qa"
-        ? `Repair PR #${work.prNumber}. Read the qa:fail comment: gh pr view ${work.prNumber} --comments. Address every blocker. Push to existing branch.`
-        : `Repair PR #${work.prNumber}. Read the adversarial review sticky comment: gh pr view ${work.prNumber} --comments. Fix all 🔴 and 🟡. Push to existing branch.`;
-
-    const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
-    const cmdBase = input.provider.startsWith("acp:")
-      ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
-      : ["mcx", input.provider, "spawn"];
-    const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
-    const command = [...cmdBase, ...worktreeFlags, "--model", "opus", "-t", prompt, "--allow", ...allowTools];
-
-    // Clear stale QA state so the qa phase re-spawns fresh after repair.
-    // Without this, qa sees the old qa:fail label and loops back to repair
-    // instead of running a new QA session (sprint 36 hit this on #1412).
-    await ctx.state.delete("qa_session_id");
-    await removeLabel(work.prNumber, "qa:fail");
-
-    // Persist round, sentinel, and prompt before returning. The prompt is
-    // stored so in-flight re-entry can return it without recomputing state
-    // (repair_prompt is read in the in-flight guard above — see #1922).
-    await ctx.state.set("repair_round", round);
-    await ctx.state.set("repair_prompt", prompt);
-    await ctx.state.set("repair_session_id", `pending:${Date.now()}`);
-
-    return {
-      action: "spawn" as const,
-      reason: `repair round ${round}, triggered by ${previous}`,
-      round,
-      model: "opus" as const,
-      command,
-      prompt,
-      allowTools,
-    };
+    return runRepair(
+      input,
+      { id: work.id, prNumber: work.prNumber },
+      ctx.state,
+      { prEdit },
+    );
   },
 });

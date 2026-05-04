@@ -16,8 +16,7 @@
  */
 import { defineAlias, z } from "mcp-cli";
 import { gh, prEdit } from "./gh";
-
-const QA_FAIL_CAP = 2;
+import { runQa } from "./qa-fn";
 
 const ProviderSchema = z
   .string()
@@ -25,21 +24,6 @@ const ProviderSchema = z
     (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
     { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
   );
-
-async function readQaLabels(prNumber: number): Promise<{ hasPass: boolean; hasFail: boolean }> {
-  const result = await gh(["pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"]);
-  if (result.exitCode !== 0) return { hasPass: false, hasFail: false };
-  const names = new Set(result.stdout.split(/\r?\n/).map((l) => l.trim()));
-  return { hasPass: names.has("qa:pass"), hasFail: names.has("qa:fail") };
-}
-
-async function removeLabel(prNumber: number, label: string): Promise<void> {
-  try {
-    await prEdit(prNumber, ["--remove-label", label]);
-  } catch {
-    /* best-effort — label may already be absent */
-  }
-}
 
 defineAlias({
   name: "phase-qa",
@@ -72,66 +56,11 @@ defineAlias({
       );
     }
 
-    const sessionId = await ctx.state.get<string>("qa_session_id");
-
-    const qaModel = "sonnet" as const;
-    const qaPrompt = `/qa ${work.issueNumber} (PR ${work.prNumber}, branch ${work.branch})`;
-
-    if (!sessionId) {
-      const worktreePath = await ctx.state.get<string>("worktree_path");
-      const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
-      const cmdBase = input.provider.startsWith("acp:")
-        ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
-        : ["mcx", input.provider, "spawn"];
-      const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
-      const command = [...cmdBase, ...worktreeFlags, "--model", qaModel, "-t", qaPrompt, "--allow", ...allowTools];
-      // Write sentinel before returning — prevents re-spawn on retry.
-      // Orchestrator replaces with real session ID after spawn.
-      await ctx.state.set("qa_session_id", `pending:${Date.now()}`);
-      return {
-        action: "spawn" as const,
-        reason: "qa session starting",
-        model: qaModel,
-        command,
-        prompt: qaPrompt,
-        allowTools,
-      };
-    }
-
-    const { hasPass, hasFail } = await readQaLabels(work.prNumber);
-    if (!hasPass && !hasFail) {
-      return { action: "wait" as const, reason: "qa:pass / qa:fail label not set yet", model: qaModel, prompt: qaPrompt };
-    }
-
-    // Label hygiene: pass is the authoritative verdict when both are present
-    // (the most recent QA round set it). Strip the stale counterpart on
-    // every verdict so merge gates can trust "pass xor fail" (see #1303).
-    if (hasPass) {
-      if (hasFail) await removeLabel(work.prNumber, "qa:fail");
-      return { action: "goto" as const, target: "done" as const, reason: "qa:pass → done", model: qaModel, prompt: qaPrompt };
-    }
-    // hasFail only — no stale pass possible (we would have returned above).
-
-    const round = ((await ctx.state.get<number>("qa_fail_round")) ?? 0) + 1;
-    if (round > QA_FAIL_CAP) {
-      return {
-        action: "goto" as const,
-        target: "needs-attention" as const,
-        reason: `qa fail cap (${QA_FAIL_CAP}) exceeded — escalating`,
-        round: round - 1,
-        model: qaModel,
-        prompt: qaPrompt,
-      };
-    }
-    await ctx.state.set("qa_fail_round", round);
-    await ctx.state.set("previous_phase", "qa");
-    return {
-      action: "goto" as const,
-      target: "repair" as const,
-      reason: `qa:fail round ${round} → repair`,
-      round,
-      model: qaModel,
-      prompt: qaPrompt,
-    };
+    return runQa(
+      input,
+      { id: work.id, prNumber: work.prNumber, branch: work.branch, issueNumber: work.issueNumber },
+      ctx.state,
+      { gh, prEdit },
+    );
   },
 });

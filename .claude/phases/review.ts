@@ -25,8 +25,7 @@
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 import { gh } from "./gh";
-
-const REVIEW_ROUND_CAP = 2;
+import { runReview } from "./review-fn";
 
 const ProviderSchema = z
   .string()
@@ -34,15 +33,6 @@ const ProviderSchema = z
     (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
     { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
   );
-
-async function scanReviewComments(prNumber: number): Promise<{ found: boolean; hasBlockers: boolean; summary: string }> {
-  const result = await gh(["pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"]);
-  if (result.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
-  const sticky = result.stdout.split(/\n{2,}/).reverse().find((b) => b.includes("## Adversarial Review"));
-  if (!sticky) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
-  const hasBlockers = /🔴|🟡/.test(sticky);
-  return { found: true, hasBlockers, summary: hasBlockers ? "blockers remain" : "all clear" };
-}
 
 defineAlias({
   name: "phase-review",
@@ -75,73 +65,12 @@ defineAlias({
       );
     }
 
-    const round = (await ctx.state.get<number>("review_round")) ?? 1;
-    const sessionId = await ctx.state.get<string>("review_session_id");
-
-    // No session yet → spawn one.
-    if (!sessionId) {
-      // Model resolution: explicit input → sprint plan → default sonnet.
-      // Mirrors impl.ts so plan-mandated opus picks get opus reviewers too.
-      let model: "opus" | "sonnet";
-      if (input.model) {
-        model = input.model;
-      } else {
-        const planModel =
-          work.issueNumber != null && ctx.repoRoot !== NO_REPO_ROOT
-            ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot)
-            : null;
-        model = planModel ?? "sonnet";
-      }
-
-      const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
-      const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})`;
-      const cmdBase = input.provider.startsWith("acp:")
-        ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
-        : ["mcx", input.provider, "spawn"];
-      const command = [...cmdBase, "--worktree", "--model", model, "-t", prompt, "--allow", ...allowTools];
-      // Persist round counter, model, and sentinel before returning — re-entry
-      // returns "wait" (not a new spawn) until the orchestrator clears
-      // review_session_id. Storing model lets wait/goto return it for safe
-      // single-call extraction by the orchestrator (see #1922).
-      await ctx.state.set("review_round", round);
-      await ctx.state.set("review_model", model);
-      await ctx.state.set("review_session_id", `pending:${Date.now()}`);
-      return {
-        action: "spawn" as const,
-        reason: `review round ${round} starting`,
-        round,
-        command,
-        prompt,
-        allowTools,
-        model,
-      };
-    }
-
-    // Session exists — check PR for sticky comment.
-    // Read stored model so all return paths include it (see #1922).
-    const storedModel = (await ctx.state.get<string>("review_model")) as "opus" | "sonnet" | null;
-    const scan = await scanReviewComments(work.prNumber);
-    if (!scan.found) {
-      return { action: "wait" as const, reason: scan.summary, round, ...(storedModel ? { model: storedModel } : {}) };
-    }
-
-    if (!scan.hasBlockers) {
-      return { action: "goto" as const, target: "qa" as const, reason: "review clean → qa", round, ...(storedModel ? { model: storedModel } : {}) };
-    }
-
-    // Blockers present. Cap exceeded → hand off to qa instead of looping.
-    if (round >= REVIEW_ROUND_CAP) {
-      return {
-        action: "goto" as const,
-        target: "qa" as const,
-        reason: `review round cap (${REVIEW_ROUND_CAP}) reached; deferring remaining items to qa`,
-        round,
-        ...(storedModel ? { model: storedModel } : {}),
-      };
-    }
-
-    await ctx.state.set("review_round", round + 1);
-    await ctx.state.set("previous_phase", "review");
-    return { action: "goto" as const, target: "repair" as const, reason: "blockers remain → repair", round, ...(storedModel ? { model: storedModel } : {}) };
+    return runReview(
+      input,
+      { id: work.id, prNumber: work.prNumber, branch: work.branch, issueNumber: work.issueNumber ?? null },
+      ctx.state,
+      { gh, findModelInSprintPlan },
+      ctx.repoRoot ?? NO_REPO_ROOT,
+    );
   },
 });
