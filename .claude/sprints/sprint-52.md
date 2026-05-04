@@ -1,6 +1,6 @@
 # Sprint 52
 
-> Planned 2026-05-04 00:00 EDT. Started 2026-05-04 00:13 EDT. Target: 11 PRs (15 work items; 4 bundled).
+> Planned 2026-05-04 00:00 EDT. Started 2026-05-04 00:13 EDT. Ended 2026-05-04 05:23 EDT. Target: 11 PRs (15 work items; 4 bundled). Result: 9 PRs merged + 4 already-done closures + 2 needs-attention.
 
 ## Goal
 
