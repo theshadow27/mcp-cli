@@ -48,8 +48,8 @@ import {
   WORK_ITEMS_SERVER_NAME,
   auditRuntimePermissions,
   consoleLogger,
+  ensureCoreBareUnset,
   ensureStateDir,
-  fixCoreBare,
   generateSpanId,
   isCoreBareSet,
   loadManifest,
@@ -162,11 +162,12 @@ function defaultGitOps(): PruneGitOps {
 }
 
 /**
- * Preflight: scan repo roots known to the daemon and unset `core.bare=true`
- * wherever it's stuck. Catches drift from external tools (e.g. `gh pr merge
- * --delete-branch`) that flip the bit outside our worktree shim. See #1330.
+ * Preflight: scan repo roots known to the daemon and remove the `core.bare`
+ * config key entirely. An explicit `core.bare = false` is harmless but creates
+ * a key that COULD be flipped to `true` by an unknown external operation.
+ * Removing the key eliminates the attack surface. See #1860.
  *
- * Returns the number of repos that were healed.
+ * Returns the number of repos where the key was removed.
  */
 export function sweepCoreBare(
   db: StateDb,
@@ -185,8 +186,8 @@ export function sweepCoreBare(
       else if (s.cwd) roots.add(s.cwd);
     }
     for (const root of roots) {
-      if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
-        logger.warn(`[mcpd] Healed core.bare=true on ${root} (sweep) — see #1330`);
+      if (ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd))) {
+        logger.warn(`[mcpd] Removed core.bare key from ${root} (sweep) — see #1860`);
         metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).inc();
         healed++;
       }
@@ -243,8 +244,8 @@ export function pruneOrphanedWorktrees(
             `[mcpd] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
           );
         }
-        if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
-          logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
+        if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
+          logger.warn("[mcpd] Removed core.bare key after worktree removal");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
         affectedRepoRoots.add(repoRoot);
@@ -260,7 +261,7 @@ export function pruneOrphanedWorktrees(
               logger.warn(
                 `[mcpd] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`,
               );
-              if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
+              if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
                 metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).inc();
               }
             }
@@ -274,8 +275,8 @@ export function pruneOrphanedWorktrees(
       // Final guard: check core.bare after all removals complete. Individual
       // per-removal fixes can be undone by subsequent removals. #1206
       for (const root of affectedRepoRoots) {
-        if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
-          logger.warn("[mcpd] Fixed core.bare=true after batch worktree prune");
+        if (ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd))) {
+          logger.warn("[mcpd] Removed core.bare key after batch worktree prune");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
       }
