@@ -16,8 +16,8 @@
  * backoff) described in test/CLAUDE.md.
  *
  * Detection uses parenthesis-depth tracking so nested parens in callbacks do
- * not cause false negatives.  Multi-line setTimeout calls (args split across
- * lines) are not detected — in practice all banned patterns appear on one line.
+ * not cause false negatives, including arrow-function callbacks and setTimeout
+ * calls whose arguments span multiple lines.
  *
  * Usage:  bun scripts/check-test-timeouts.ts
  *
@@ -33,8 +33,36 @@ const SCRIPTS_DIR = new URL("../scripts/", import.meta.url).pathname;
 const TEST_DIR = new URL("../test/", import.meta.url).pathname;
 
 /**
- * Returns true if the line contains a setTimeout call whose last argument is a
- * plain numeric literal (e.g. 50, 1_000), catching fixed-delay usages.
+ * Extracts the delay (2nd positional argument) from a pre-extracted argument
+ * string of a setTimeout call.  Returns the trimmed delay text, or null when
+ * fewer than two arguments are present.
+ *
+ * setTimeout(fn, delay, ...rest) — delay is always arg[1] regardless of arity;
+ * checking the *last* argument misidentifies setTimeout(fn, 50, arg) as clean.
+ */
+function extractDelayArg(args: string): string | null {
+  let depth = 0;
+  let firstComma = -1;
+  let secondComma = -1;
+  for (let j = 0; j < args.length; j++) {
+    const c = args[j];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      if (firstComma === -1) firstComma = j;
+      else {
+        secondComma = j;
+        break;
+      }
+    }
+  }
+  if (firstComma === -1) return null;
+  return args.slice(firstComma + 1, secondComma === -1 ? undefined : secondComma).trim();
+}
+
+/**
+ * Returns true if the line contains a setTimeout call whose second argument
+ * (the delay) is a plain numeric literal (e.g. 50, 1_000).
  *
  * Uses paren-depth tracking to extract the full argument list so that nested
  * parens in arrow-function callbacks (like `setTimeout(() => r(null), 50)`)
@@ -57,22 +85,9 @@ export function hasFixedDelay(line: string): boolean {
 
     if (depth === 0) {
       const args = line.slice(parenOpen + 1, i - 1);
-
-      // Find the last top-level comma to isolate the delay argument.
-      let argDepth = 0;
-      let lastComma = -1;
-      for (let j = 0; j < args.length; j++) {
-        const c = args[j];
-        if (c === "(" || c === "[" || c === "{") argDepth++;
-        else if (c === ")" || c === "]" || c === "}") argDepth--;
-        else if (c === "," && argDepth === 0) lastComma = j;
-      }
-
-      if (lastComma !== -1) {
-        const lastArg = args.slice(lastComma + 1).trim();
-        // Match pure numeric literals (digits and underscores, must start with digit).
-        if (/^[0-9][0-9_]*$/.test(lastArg)) return true;
-      }
+      const delayArg = extractDelayArg(args);
+      // Match pure numeric literals (digits and underscores, must start with digit).
+      if (delayArg !== null && /^[0-9][0-9_]*$/.test(delayArg)) return true;
     }
 
     match = re.exec(line);
@@ -86,6 +101,41 @@ interface Violation {
   text: string;
 }
 
+/**
+ * Scans a full file's content for setTimeout calls with fixed numeric delays,
+ * tracking parenthesis depth across newlines so multi-line calls are caught.
+ * Returns one entry per violation with a 1-based line number and the trimmed
+ * text of the line where the setTimeout keyword appears.
+ */
+export function findViolations(content: string): Array<{ line: number; text: string }> {
+  const results: Array<{ line: number; text: string }> = [];
+  const lines = content.split("\n");
+  const re = /\bsetTimeout\s*\(/g;
+
+  for (let match = re.exec(content); match !== null; match = re.exec(content)) {
+    const parenOpen = match.index + match[0].length - 1;
+
+    let depth = 1;
+    let i = parenOpen + 1;
+    while (i < content.length && depth > 0) {
+      if (content[i] === "(") depth++;
+      else if (content[i] === ")") depth--;
+      i++;
+    }
+
+    if (depth !== 0) continue;
+
+    const args = content.slice(parenOpen + 1, i - 1);
+    const delayArg = extractDelayArg(args);
+    if (delayArg === null || !/^[0-9][0-9_]*$/.test(delayArg)) continue;
+
+    const lineNum = content.slice(0, match.index).split("\n").length;
+    results.push({ line: lineNum, text: lines[lineNum - 1].trim() });
+  }
+
+  return results;
+}
+
 async function scanDir(dir: string): Promise<Violation[]> {
   const violations: Violation[] = [];
   const glob = new Glob("**/*.spec.ts");
@@ -96,12 +146,9 @@ async function scanDir(dir: string): Promise<Violation[]> {
 
     const absPath = `${dir}${relPath}`;
     const content = await Bun.file(absPath).text();
-    const lines = content.split("\n");
 
-    for (let i = 0; i < lines.length; i++) {
-      if (hasFixedDelay(lines[i])) {
-        violations.push({ file: absPath, line: i + 1, text: lines[i].trim() });
-      }
+    for (const { line, text } of findViolations(content)) {
+      violations.push({ file: absPath, line, text });
     }
   }
 
