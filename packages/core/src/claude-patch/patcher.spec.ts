@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex } from "../manifest-lock";
@@ -187,10 +187,55 @@ describe("updatePatchedClaude", () => {
         throw new Error("simulated smoke test failure");
       },
     });
-    expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/smoke/);
+    await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/smoke/);
     // No metadata or current link should exist after a failed smoke.
     expect(existsSync(join(storeDir, "current"))).toBe(false);
     expect(existsSync(join(storeDir, "2.1.121.meta.json"))).toBe(false);
+    // Staging file should be cleaned up on smoke failure.
+    const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
+    expect(stagingFiles).toHaveLength(0);
+  });
+
+  test("smoke test failure does not corrupt an existing patched binary", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const deps = makeFakeDeps();
+    // First patch succeeds.
+    await updatePatchedClaude({ sourcePath, storeDir }, deps);
+    const goodBytes = readFileSync(join(storeDir, "2.1.121.patched"));
+
+    // Second run with failing smoke — force to bypass idempotency check.
+    deps.smokeTest = async () => {
+      throw new Error("simulated smoke test failure");
+    };
+    await expect(updatePatchedClaude({ sourcePath, storeDir, force: true }, deps)).rejects.toThrow(/smoke/);
+
+    // The published binary must still be the good copy from the first run.
+    const afterBytes = readFileSync(join(storeDir, "2.1.121.patched"));
+    expect(Buffer.compare(goodBytes, afterBytes)).toBe(0);
+  });
+
+  test("resign failure does not leave a staging file", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const deps = makeFakeDeps({
+      resignBinary: async () => {
+        throw new Error("simulated resign failure");
+      },
+    });
+    await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/resign/);
+    const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
+    expect(stagingFiles).toHaveLength(0);
+  });
+
+  test("entitlements extraction failure does not leave a staging file", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const deps = makeFakeDeps({
+      extractEntitlements: async () => {
+        throw new Error("simulated entitlements failure");
+      },
+    });
+    await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/entitlements/);
+    const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
+    expect(stagingFiles).toHaveLength(0);
   });
 });
 
