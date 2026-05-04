@@ -315,7 +315,7 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
       break;
     case "status": {
       const { cmdAgent } = await import("./agent");
-      await cmdAgent(["claude", sub, ...subArgs]);
+      await cmdAgent(["claude", sub, ...subArgs], d);
       break;
     }
     default:
