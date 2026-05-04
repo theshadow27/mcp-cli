@@ -249,6 +249,10 @@ export class IpcServer {
     return this.eventStream.eventSubscriberCount;
   }
 
+  get activeStreamCount(): number {
+    return this.eventStream.activeStreamCount;
+  }
+
   /**
    * Test-mutable statics.
    *

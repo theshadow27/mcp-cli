@@ -11,6 +11,7 @@ import { installDaemonLogCapture } from "./daemon-log";
 import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
+import { EventStreamServer } from "./event-stream";
 import { IpcServer } from "./ipc-server";
 import { metrics } from "./metrics";
 
@@ -3748,6 +3749,97 @@ describe("IpcServer HTTP transport", () => {
 
     expect(buffer).not.toContain("session.response");
     expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: rejects connection when subscriber cap is reached (#1961)", async () => {
+    startServer();
+    if (!server) throw new Error("server not started");
+
+    const controllers: AbortController[] = [];
+    const limit = IpcServer.MAX_EVENT_BUS_SUBSCRIBERS;
+
+    // Fill up to the cap
+    for (let i = 0; i < limit; i++) {
+      const c = new AbortController();
+      controllers.push(c);
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: c.signal,
+      } as RequestInit);
+      expect(res.status).toBe(200);
+    }
+
+    await pollUntil(() => server?.eventSubscriberCount === limit);
+
+    // One more should be rejected
+    const overflow = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+    } as RequestInit);
+    expect(overflow.status).toBe(503);
+
+    // Clean up
+    for (const c of controllers) c.abort();
+    await pollUntil(() => server?.eventSubscriberCount === 0);
+  });
+
+  test("dispose() closes active ring-buffer /events streams (#1962)", async () => {
+    startServer();
+    if (!server) throw new Error("server not started");
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+
+    await pollUntil(() => server?.activeStreamCount === 1);
+    expect(server.activeStreamCount).toBe(1);
+
+    // Dispose just the EventStreamServer — the Bun HTTP server stays up so we
+    // can verify the stream terminates cleanly without an abrupt socket close.
+    const es = (server as unknown as { eventStream: EventStreamServer }).eventStream;
+    es.dispose();
+
+    // Disposing removes all entries from the active set immediately.
+    expect(server.activeStreamCount).toBe(0);
+
+    // The stream should close cleanly (done=true) within a bounded timeout.
+    const deadline = Date.now() + 2_000;
+    let done = false;
+    while (Date.now() < deadline) {
+      const result = await reader.read();
+      if (result.done) {
+        done = true;
+        break;
+      }
+    }
+    reader.releaseLock();
+    controller.abort();
+
+    expect(done).toBe(true);
+  });
+
+  test("EventStreamServer.dispose() rejects new /events and /logs connections (#1962)", () => {
+    // Direct unit test — no network needed.
+    const es = new (
+      EventStreamServer as unknown as new (
+        ...args: unknown[]
+      ) => { dispose(): void; handleEventsNDJSON(u: URL): Response; handleLogsSSE(u: URL): Response }
+    )(null, mockPool(), silentLogger, 30_000);
+
+    es.dispose();
+
+    const eventsRes = es.handleEventsNDJSON(new URL("http://localhost/events"));
+    expect(eventsRes.status).toBe(503);
+
+    const logsRes = es.handleLogsSSE(new URL("http://localhost/logs?daemon=true"));
+    expect(logsRes.status).toBe(503);
   });
 });
 
