@@ -109,7 +109,11 @@ export class StateDb {
         // Existing DB — run schema DDL idempotently to recover any tables the old
         // try/catch code silently failed to create (e.g. copilot_comment_state).
         this.applyV1Schema();
-        version = 3;
+        // Stamp at v2 (not v3) so the v3 symlink-canonicalization step runs on first
+        // open of any legacy DB — fixes the regression introduced by #1887 where
+        // legacy DBs were stamped directly at v3, bypassing the canonicalization that
+        // previously ran unconditionally on every boot (#1892).
+        version = 2;
       } else {
         // Fresh DB, or ancient DB that only has claude_sessions.
         // Rename claude_sessions → agent_sessions before v1 creates the table fresh.
