@@ -172,8 +172,17 @@ gh pr merge "$SPRINT_PR" --squash --delete-branch --auto
 # (b) Wait for merge
 until [ "$(gh pr view "$SPRINT_PR" --json state -q .state)" = "MERGED" ]; do sleep 30; done
 
-# (c) Pull main into the orchestrator's main checkout to capture the squashed sha
+# (c) Pull main into the orchestrator's main checkout to capture the squashed sha.
+#     Remove the staged plan file first — `plan.md` Step 6a kept an uncommitted
+#     copy in main checkout so phase scripts could read it during run, but the
+#     squash merge brings in the now-tracked version, and `git pull --ff-only`
+#     aborts on the untracked-would-be-overwritten conflict. Without this,
+#     `MERGED_SHA` resolves to the pre-merge HEAD and the tag lands at the
+#     wrong commit (sprint 51 retro hit this — caught + retagged before any
+#     consumer pulled, but only because `git rev-parse HEAD` was sanity-checked
+#     against the expected squashed sha).
 git checkout main
+rm -f .claude/sprints/sprint-{N}.md
 git pull --ff-only
 MERGED_SHA=$(git rev-parse HEAD)
 
