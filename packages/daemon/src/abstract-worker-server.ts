@@ -501,9 +501,9 @@ export abstract class AbstractWorkerServer {
       case "ready":
         break;
       case "db:upsert": {
+        const processed = this.processSessionUpsert(event.session);
         this.activeSessions.add(event.session.sessionId);
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
-        const processed = this.processSessionUpsert(event.session);
         const { pidStartTime: pst, ...sessionRest } = processed;
         const upsertData: typeof sessionRest & { pidStartTime?: number } = { ...sessionRest };
         if (pst != null) upsertData.pidStartTime = pst;
