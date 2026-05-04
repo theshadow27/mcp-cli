@@ -796,8 +796,8 @@ describe("pruneOrphanedWorktrees", () => {
     pruneOrphanedWorktrees(db, silentLogger, mockGitOps());
   });
 
-  test("batch guard: calls fixCoreBare after all removals when core.bare=true (#1206)", () => {
-    // fixCoreBare guards against non-existent repos via existsSync(.git), so we
+  test("batch guard: calls ensureCoreBareUnset after all removals (#1206)", () => {
+    // ensureCoreBareUnset guards against non-existent repos via existsSync(.git), so we
     // need a real temp dir with a .git marker for the repoRoot.
     opts = testOptions();
     const repoDir = join(opts.dir, "repo-batch-guard");
@@ -1183,17 +1183,11 @@ describe("mcpd_core_bare_healed_total counter", () => {
       });
       db.endSession("ended-bd");
 
-      // Simulate: core.bare is fine before/after worktree remove, but flips after branch delete,
-      // then fixCoreBare succeeds (unset returns exitCode 0).
-      // Non-unset config core.bare call sequence:
-      //   1: isCoreBareSet(bareBeforeRemove)  → false
-      //   2: isCoreBareSet(bareAfterRemove)   → false
-      //   3: fixCoreBare (post-remove check)  → false (no heal)
-      //   4: isCoreBareSet(bareBeforeBranch)  → false
-      //   5: isCoreBareSet(bareAfterBranch)   → true  (flip detected)
-      //   6: fixCoreBare (branch_delete heal) → true  (heals, increments branch_delete)
-      //   7: fixCoreBare (batch guard)        → false (already healed)
-      let callCount = 0;
+      // Simulate: core.bare key is absent initially, then flips to true after
+      // branch delete. ensureCoreBareUnset removes any value, so the mock must
+      // be stateful — after a successful --unset, subsequent reads return absent.
+      let coreBareValue: string | null = null; // null = absent
+      let branchDeleted = false;
       pruneOrphanedWorktrees(
         db,
         silentLogger,
@@ -1202,17 +1196,28 @@ describe("mcpd_core_bare_healed_total counter", () => {
           status: () => ({ exitCode: 0, stdout: "" }),
           showBranch: () => ({ exitCode: 0, stdout: "feat/bd-branch" }),
           removeWorktree: () => ({ exitCode: 0 }),
-          deleteBranch: () => ({ exitCode: 0 }),
+          deleteBranch: () => {
+            branchDeleted = true;
+            coreBareValue = "true"; // flip happens on branch delete
+            return { exitCode: 0, stdout: "" };
+          },
           exec: (cmd: string[]) => {
-            if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
-              callCount++;
-              return { exitCode: 0, stdout: callCount === 5 || callCount === 6 ? "true\n" : "false\n" };
+            if (cmd.includes("config") && cmd.includes("core.bare")) {
+              if (cmd.includes("--unset")) {
+                coreBareValue = null;
+                return { exitCode: 0, stdout: "" };
+              }
+              if (coreBareValue !== null) {
+                return { exitCode: 0, stdout: `${coreBareValue}\n` };
+              }
+              return { exitCode: 1, stdout: "" }; // key absent
             }
             return { exitCode: 0, stdout: "" };
           },
         }),
       );
 
+      expect(branchDeleted).toBe(true);
       expect(metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).value()).toBe(1);
       expect(metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).value()).toBe(0);
     } finally {

@@ -50,7 +50,6 @@ import {
   consoleLogger,
   ensureCoreBareUnset,
   ensureStateDir,
-  fixCoreBare,
   generateSpanId,
   isCoreBareSet,
   loadManifest,
@@ -245,8 +244,8 @@ export function pruneOrphanedWorktrees(
             `[mcpd] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
           );
         }
-        if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
-          logger.warn("[mcpd] Fixed core.bare=true after worktree removal");
+        if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
+          logger.warn("[mcpd] Removed core.bare key after worktree removal");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
         affectedRepoRoots.add(repoRoot);
@@ -262,7 +261,7 @@ export function pruneOrphanedWorktrees(
               logger.warn(
                 `[mcpd] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`,
               );
-              if (fixCoreBare(repoRoot, (cmd) => gitOps.exec(cmd))) {
+              if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
                 metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).inc();
               }
             }
@@ -276,8 +275,8 @@ export function pruneOrphanedWorktrees(
       // Final guard: check core.bare after all removals complete. Individual
       // per-removal fixes can be undone by subsequent removals. #1206
       for (const root of affectedRepoRoots) {
-        if (fixCoreBare(root, (cmd) => gitOps.exec(cmd))) {
-          logger.warn("[mcpd] Fixed core.bare=true after batch worktree prune");
+        if (ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd))) {
+          logger.warn("[mcpd] Removed core.bare key after batch worktree prune");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
         }
       }
