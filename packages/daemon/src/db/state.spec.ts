@@ -1848,13 +1848,13 @@ describe("StateDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 3", () => {
+    test("fresh DB sets schema version to 4", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(3);
+      expect(version).toBe(4);
       db.close();
     });
 
@@ -1869,7 +1869,7 @@ describe("StateDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(3);
+      expect(version).toBe(4);
       db2.close();
     });
 
@@ -1889,7 +1889,7 @@ describe("StateDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(3);
+      expect(version).toBe(4);
       db.close();
     });
 
@@ -1929,6 +1929,65 @@ describe("StateDb", () => {
         expect(db.getAliasState(canonical, "ns", "k")).toBe("val");
         // Symlink path should no longer have a row.
         expect(db.getAliasState(symlinkDir, "ns", "k")).toBeUndefined();
+        db.close();
+      } finally {
+        try {
+          unlinkSync(symlinkDir);
+        } catch {
+          // ignore
+        }
+        rmSync(realDir, { recursive: true, force: true });
+      }
+    });
+
+    test("agent_sessions with symlink repo_root gets canonicalized on first open (#1684)", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      const realDir = mkdtempSync(join(tmpdir(), "mcp-cli-real-"));
+      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      symlinkSync(realDir, symlinkDir);
+
+      try {
+        const canonical = realpathSync(symlinkDir);
+
+        // Build a DB at version 3 with an agent_sessions row using the symlink path.
+        const raw = new Database(p, { create: true });
+        raw.exec("PRAGMA journal_mode = WAL");
+        raw.exec(`
+          CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS agent_sessions (
+            session_id TEXT PRIMARY KEY,
+            name TEXT,
+            provider TEXT NOT NULL DEFAULT 'claude',
+            pid INTEGER,
+            pid_start_time INTEGER,
+            state TEXT NOT NULL DEFAULT 'connecting',
+            model TEXT,
+            cwd TEXT,
+            worktree TEXT,
+            repo_root TEXT,
+            total_cost REAL NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            spawned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            ended_at TEXT
+          );
+          INSERT INTO schema_versions (name, version) VALUES ('state', 3);
+        `);
+        raw.run("INSERT INTO agent_sessions (session_id, state, repo_root) VALUES (?, ?, ?)", [
+          "test-session-1",
+          "ended",
+          symlinkDir,
+        ]);
+        raw.close();
+
+        // Open: v4 migration should canonicalize the repo_root.
+        const db = new StateDb(p);
+        // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+        const row = db["db"]
+          .query<{ repo_root: string }, [string]>("SELECT repo_root FROM agent_sessions WHERE session_id = ?")
+          .get("test-session-1");
+        expect(row?.repo_root).toBe(canonical);
         db.close();
       } finally {
         try {
@@ -1985,12 +2044,12 @@ describe("StateDb", () => {
       const p = tmpDb();
       paths.push(p);
 
-      // Open fresh DB — migrations run v0→v3, schema_version lands at 3.
+      // Open fresh DB — migrations run v0→v4, schema_version lands at 4.
       const db1 = new StateDb(p);
 
       // Downgrade schema_version to 1 and insert a trailing-slash row while the
       // DB is still open — accessing db1's raw handle avoids opening a second
-      // StateDb (which would re-run migrate() and reset version back to 3).
+      // StateDb (which would re-run migrate() and reset version back to 4).
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const raw = db1["db"];
       raw.run("UPDATE schema_versions SET version = 1 WHERE name = 'state'");
@@ -2127,7 +2186,7 @@ describe("StateDb", () => {
       const seed = new Database(p, { create: true });
       seed.exec("PRAGMA journal_mode = WAL");
       seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
-      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('state', 3)");
+      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('state', 4)");
       seed.close();
       // The second process (this StateDb call) must not throw a UNIQUE constraint error.
       expect(() => new StateDb(p)).not.toThrow();
