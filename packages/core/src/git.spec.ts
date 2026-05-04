@@ -175,24 +175,52 @@ describe("ensureCoreBareUnset", () => {
     }
   });
 
-  test("falls back to setting false when unset fails on core.bare=true", () => {
+  test("falls back to setting false when unset fails and re-read confirms true", () => {
     const cwd = makeFakeWorktree();
     try {
       const calls: string[][] = [];
       const exec: ExecFn = mock((cmd: string[]) => {
         calls.push(cmd);
+        // Both reads return true (key stubbornly present)
         if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset") && cmd.length === 5) {
           return { stdout: "true\n", exitCode: 0 };
         }
         if (cmd.includes("--unset")) {
           return { stdout: "", exitCode: 1 };
         }
+        // fallback set
         return { stdout: "", exitCode: 0 };
       });
 
       expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
-      expect(calls).toHaveLength(3);
-      expect(calls[2]).toEqual(["git", "-C", cwd, "config", "core.bare", "false"]);
+      expect(calls).toHaveLength(4);
+      expect(calls[2]).toEqual(["git", "-C", cwd, "config", "core.bare"]); // re-read
+      expect(calls[3]).toEqual(["git", "-C", cwd, "config", "core.bare", "false"]); // fallback
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  test("no fallback when unset fails but re-read shows key gone (benign race)", () => {
+    const cwd = makeFakeWorktree();
+    try {
+      const calls: string[][] = [];
+      let readCount = 0;
+      const exec: ExecFn = mock((cmd: string[]) => {
+        calls.push(cmd);
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset") && cmd.length === 5) {
+          readCount++;
+          if (readCount === 1) return { stdout: "true\n", exitCode: 0 }; // initial read
+          return { stdout: "", exitCode: 1 }; // re-read: key gone
+        }
+        if (cmd.includes("--unset")) {
+          return { stdout: "", exitCode: 1 }; // unset fails (race)
+        }
+        return { stdout: "", exitCode: 0 };
+      });
+
+      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(calls).toHaveLength(3); // read, unset, re-read — no fallback set
     } finally {
       rmSync(cwd, { recursive: true });
     }

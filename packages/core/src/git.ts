@@ -67,10 +67,12 @@ export function ensureCoreBareUnset(cwd: string, exec: ExecFn): boolean {
   const value = stdout.trim();
   const unset = exec(["git", "-C", cwd, "config", "--unset", "core.bare"]);
   if (unset.exitCode === 0) return true;
-  // --unset can fail if the key was removed between read and unset (benign race)
-  if (value === "true") {
-    // Critical: core.bare=true and we failed to unset — this is the dangerous state.
-    // Fall back to setting false, which is strictly better than leaving true.
+  // --unset failed. Re-read to distinguish "key gone (benign race)" from
+  // "key still present (real failure)". Without this re-read the fallback
+  // would recreate the key, defeating the structural fix.
+  const recheck = exec(["git", "-C", cwd, "config", "core.bare"]);
+  if (recheck.exitCode !== 0) return true; // key gone — race resolved
+  if (recheck.stdout.trim() === "true") {
     exec(["git", "-C", cwd, "config", "core.bare", "false"]);
   }
   return false;
