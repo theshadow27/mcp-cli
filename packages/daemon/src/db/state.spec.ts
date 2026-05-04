@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
@@ -1897,10 +1897,10 @@ describe("StateDb", () => {
       const p = tmpDb();
       paths.push(p);
 
-      // Create a real dir and a symlink to it.
-      const realDir = join(tmpdir(), `mcp-cli-real-${Date.now()}`);
-      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}`);
-      mkdirSync(realDir, { recursive: true });
+      // Create a real dir and a symlink to it. Use mkdtempSync for a unique base
+      // to avoid collisions when tests run in parallel.
+      const realDir = mkdtempSync(join(tmpdir(), "mcp-cli-real-"));
+      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       symlinkSync(realDir, symlinkDir);
 
       try {
@@ -1936,11 +1936,7 @@ describe("StateDb", () => {
         } catch {
           // ignore
         }
-        try {
-          unlinkSync(realDir);
-        } catch {
-          // ignore — rmdir not needed for test correctness
-        }
+        rmSync(realDir, { recursive: true, force: true });
       }
     });
 
