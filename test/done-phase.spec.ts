@@ -154,33 +154,80 @@ describe("mergePr — success", () => {
 // ── Merge failure classification ──
 
 describe("mergePr — merge failure paths", () => {
-  test("conflict error → conflicts", async () => {
-    const result = await mergePr(100, makeDeps({ prMerge: async () => fail("Pull Request is not mergeable") }));
+  test("conflict error → conflicts (no prView call)", async () => {
+    let prViewCalled = false;
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => fail("Pull Request is not mergeable"),
+        prView: async () => {
+          prViewCalled = true;
+          return "MERGED";
+        },
+      }),
+    );
     expect(result).toMatchObject({ ok: false, reason: "conflicts" });
     if (!result.ok) expect(result.detail).toContain("not mergeable");
+    expect(prViewCalled).toBe(false);
   });
 
-  test("'conflict' keyword → conflicts", async () => {
-    const result = await mergePr(100, makeDeps({ prMerge: async () => fail("merge conflict detected") }));
+  test("'conflict' keyword → conflicts (no prView call)", async () => {
+    let prViewCalled = false;
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => fail("merge conflict detected"),
+        prView: async () => {
+          prViewCalled = true;
+          return "MERGED";
+        },
+      }),
+    );
     expect(result).toMatchObject({ ok: false, reason: "conflicts" });
+    expect(prViewCalled).toBe(false);
   });
 
-  test("required check error → missing_required_check", async () => {
-    const result = await mergePr(100, makeDeps({ prMerge: async () => fail("required check 'CI' has not passed") }));
+  test("required check error → missing_required_check (no prView call)", async () => {
+    let prViewCalled = false;
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => fail("required check 'CI' has not passed"),
+        prView: async () => {
+          prViewCalled = true;
+          return "MERGED";
+        },
+      }),
+    );
     expect(result).toMatchObject({ ok: false, reason: "missing_required_check" });
+    expect(prViewCalled).toBe(false);
   });
 
-  test("required status error → missing_required_check", async () => {
-    const result = await mergePr(100, makeDeps({ prMerge: async () => fail("Required status check not passing") }));
+  test("required status error → missing_required_check (no prView call)", async () => {
+    let prViewCalled = false;
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => fail("Required status check not passing"),
+        prView: async () => {
+          prViewCalled = true;
+          return "MERGED";
+        },
+      }),
+    );
     expect(result).toMatchObject({ ok: false, reason: "missing_required_check" });
+    expect(prViewCalled).toBe(false);
   });
 
   test("generic failure → merge_failed", async () => {
-    const result = await mergePr(100, makeDeps({ prMerge: async () => fail("something unexpected") }));
+    const result = await mergePr(
+      100,
+      makeDeps({ prMerge: async () => fail("something unexpected"), prView: async () => "OPEN" }),
+    );
     expect(result).toMatchObject({ ok: false, reason: "merge_failed" });
   });
 
-  test("SIGTERM exit code (143) → check PR state, if MERGED → ok", async () => {
+  test("SIGTERM exit code (143) → poll state, if MERGED → ok with cleanup signal", async () => {
     const result = await mergePr(
       100,
       makeDeps({
@@ -188,9 +235,31 @@ describe("mergePr — merge failure paths", () => {
         prView: async () => "MERGED",
       }),
     );
-    // exitCode >= 128 triggers the maybeSucceeded path which always sets localCleanup
     expect(result).toMatchObject({ ok: true, prNumber: 100 });
-    if (result.ok) expect(result.localCleanup).toContain("worktree");
+    if (result.ok) expect(result.localCleanup).toContain("branch delete incomplete");
+  });
+
+  test("Go graceful SIGTERM (exit 1) → poll state, if MERGED → ok with cleanup signal", async () => {
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
+        prView: async () => "MERGED",
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, prNumber: 100 });
+    if (result.ok) expect(result.localCleanup).toContain("branch delete incomplete");
+  });
+
+  test("Go graceful SIGTERM (exit 1) + PR not merged → merge_failed", async () => {
+    const result = await mergePr(
+      100,
+      makeDeps({
+        prMerge: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
+        prView: async () => "OPEN",
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: "merge_failed" });
   });
 
   test("worktree branch error → check PR state, if MERGED → ok with localCleanup", async () => {
