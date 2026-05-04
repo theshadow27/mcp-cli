@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -132,7 +132,15 @@ describe("resolvePlaywright", () => {
 });
 
 describe("_resolveBunBinary", () => {
-  const vendorDir = join(tmpdir(), "mcx-playwright-test-vendor");
+  let vendorDir: string;
+
+  beforeEach(() => {
+    vendorDir = mkdtempSync(join(tmpdir(), "mcx-playwright-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(vendorDir, { recursive: true, force: true });
+  });
 
   test("finds bun on PATH in test environment", () => {
     // bun is executing these tests, so Bun.which must resolve it
@@ -188,7 +196,15 @@ describe("_resolveBunBinary", () => {
 });
 
 describe("_defaultInstall", () => {
-  const vendorDir = join(tmpdir(), "mcx-playwright-test-vendor");
+  let vendorDir: string;
+
+  beforeEach(() => {
+    vendorDir = mkdtempSync(join(tmpdir(), "mcx-playwright-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(vendorDir, { recursive: true, force: true });
+  });
 
   test("wraps spawn ENOENT with Install manually message and preserves cause", async () => {
     // Use a path that cannot be a valid executable so Bun.spawn throws ENOENT.
