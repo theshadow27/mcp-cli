@@ -358,6 +358,38 @@ describe("walkTranscript", () => {
     expect(src?.reads).toBe(0);
   });
 
+  test("Write uses UTF-8 byte count not JS string length for non-ASCII content", () => {
+    // "café" is 4 JS chars but 5 UTF-8 bytes (é = 2 bytes)
+    const entries = [makeAssistantMsg([makeToolUse("Write", { file_path: "/src/foo.ts", content: "café" })])];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.writes).toBe(5);
+  });
+
+  test("MultiEdit accumulates line counts from edits array", () => {
+    const entries = [
+      makeAssistantMsg([
+        makeToolUse("MultiEdit", {
+          file_path: "/src/foo.ts",
+          edits: [
+            { old_string: "a", new_string: "x\ny\nz" }, // 3 lines
+            { old_string: "b", new_string: "p\nq" }, // 2 lines
+          ],
+        }),
+      ]),
+    ];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.writes).toBe(5); // 3 + 2, not 1
+  });
+
+  test("MultiEdit with empty edits array contributes 0 to footprint", () => {
+    const entries = [makeAssistantMsg([makeToolUse("MultiEdit", { file_path: "/src/foo.ts", edits: [] })])];
+    const stats = walkTranscript(entries);
+    const src = stats.directoryFootprint.find((e) => e.dir === "/src");
+    expect(src?.writes).toBe(0);
+  });
+
   test("aggregates Bash commands by first token", () => {
     const entries = [
       makeAssistantMsg([makeToolUse("Bash", { command: "bun test foo.spec.ts" })]),

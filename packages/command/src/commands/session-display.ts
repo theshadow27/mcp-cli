@@ -92,7 +92,7 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
             dirReads.set(d, (dirReads.get(d) ?? 0) + lines);
           } else if (name === "Write" && typeof input.file_path === "string") {
             const d = dirname(input.file_path);
-            const bytes = typeof input.content === "string" ? input.content.length : 0;
+            const bytes = typeof input.content === "string" ? new TextEncoder().encode(input.content).byteLength : 0;
             dirWrites.set(d, (dirWrites.get(d) ?? 0) + bytes);
           } else if (name === "Edit" && typeof input.file_path === "string") {
             const d = dirname(input.file_path);
@@ -100,7 +100,13 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
             dirWrites.set(d, (dirWrites.get(d) ?? 0) + lines);
           } else if (name === "MultiEdit" && typeof input.file_path === "string") {
             const d = dirname(input.file_path);
-            dirWrites.set(d, (dirWrites.get(d) ?? 0) + 1);
+            const lines = Array.isArray(input.edits)
+              ? (input.edits as Array<Record<string, unknown>>).reduce(
+                  (sum, e) => sum + (typeof e.new_string === "string" ? e.new_string.split("\n").length : 0),
+                  0,
+                )
+              : 0;
+            dirWrites.set(d, (dirWrites.get(d) ?? 0) + lines);
           } else if (name === "Bash" && typeof input.command === "string") {
             const firstToken = input.command.trim().split(/\s+/)[0] || "bash";
             const existing = cmdMap.get(firstToken);
