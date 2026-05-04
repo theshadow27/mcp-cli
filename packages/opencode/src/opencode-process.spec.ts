@@ -167,7 +167,7 @@ describe("OpenCodeProcess", () => {
 
   test("onExit callback fires when process exits", async () => {
     let exitCode: unknown = null;
-    const { spawnFn } = mockSpawn({ exitCode: 0 });
+    const { spawnFn, result } = mockSpawn({ exitCode: 0 });
     const proc = new OpenCodeProcess({
       cwd: "/tmp",
       spawnFn,
@@ -177,8 +177,9 @@ describe("OpenCodeProcess", () => {
     });
 
     await proc.spawn();
-    // Flush microtask queue so the .then() reaction on exited fires.
-    await Promise.resolve();
+    // Await the same promise the process monitors so our continuation is enqueued
+    // after the .then() reaction in spawn() — deterministic regardless of microtask depth.
+    await result.exited;
     expect(exitCode).toBe(0);
     expect(proc.exited).toBe(true);
     expect(proc.alive).toBe(false);
@@ -216,8 +217,9 @@ describe("OpenCodeProcess", () => {
 
     // Trigger exit
     resolveExited(0);
-    // Flush microtask queue so the .then() reaction on exited fires.
-    await Promise.resolve();
+    // Await the same promise the process monitors so our continuation is enqueued
+    // after the .then() reaction in spawn() — deterministic regardless of microtask depth.
+    await exitedPromise;
     // Promise only resolves once, so verify the guard works
     expect(callCount).toBe(1);
   });
