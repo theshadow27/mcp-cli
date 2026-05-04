@@ -249,8 +249,8 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
     const repo = initRepo();
     try {
       // Start by unsetting core.bare (the #1860 structural fix)
-      git(repo, "config", "--unset", "core.bare");
-      const { exitCode: readExit } = git(repo, "config", "core.bare");
+      git(repo, "config", "--local", "--unset", "core.bare");
+      const { exitCode: readExit } = git(repo, "config", "--local", "core.bare");
       expect(readExit).not.toBe(0); // key absent
 
       // Run worktree lifecycle: the key should not be recreated
@@ -266,8 +266,8 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
         git(repo, "worktree", "remove", wtPath);
         git(repo, "branch", "-D", branch);
 
-        // Verify key is still absent after each cycle
-        const { exitCode } = git(repo, "config", "core.bare");
+        // Verify local key is still absent after each cycle
+        const { exitCode } = git(repo, "config", "--local", "core.bare");
         expect(exitCode).not.toBe(0);
       }
 

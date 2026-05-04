@@ -59,19 +59,19 @@ export function isCoreBareSet(cwd: string, exec: ExecFn): boolean {
  */
 export function ensureCoreBareUnset(cwd: string, exec: ExecFn): boolean {
   if (!existsSync(join(cwd, ".git"))) return false;
-  const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "core.bare"]);
+  const { stdout, exitCode } = exec(["git", "-C", cwd, "config", "--local", "core.bare"]);
   if (exitCode !== 0) return false; // key already absent
-  const unset = exec(["git", "-C", cwd, "config", "--unset", "core.bare"]);
+  const unset = exec(["git", "-C", cwd, "config", "--local", "--unset", "core.bare"]);
   if (unset.exitCode === 0) return true;
   // --unset failed. Re-read to distinguish "key gone (benign race)" from
   // "key still present (real failure)". Without this re-read the fallback
   // would recreate the key, defeating the structural fix.
-  const recheck = exec(["git", "-C", cwd, "config", "core.bare"]);
+  const recheck = exec(["git", "-C", cwd, "config", "--local", "core.bare"]);
   if (recheck.exitCode !== 0) return true; // key gone — race resolved
   // Key stubbornly present (locked file, permission issue, etc.).
   // Last resort: ensure it's at least "false" so git ops don't break.
   if (recheck.stdout.trim() !== "false") {
-    exec(["git", "-C", cwd, "config", "core.bare", "false"]);
+    exec(["git", "-C", cwd, "config", "--local", "core.bare", "false"]);
   }
   return false;
 }
