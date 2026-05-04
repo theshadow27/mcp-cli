@@ -22,7 +22,7 @@
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
 - [Phase run no --dry-run](feedback_phase_run_no_dry_run.md) — per-tick `mcx phase run <phase> --work-item` without --dry-run; never skip `impl` run (writes transition log + state)
 - [Quota end-of-block](feedback_quota_end_of_block.md) — 80% impl-freeze is for early/mid block; near quota reset, fire for effect so long as work won't overrun
-- [Claude 2.1.121 sdk-url break](feedback_claude_2_1_121_break.md) — chflags-uchg shim at ~/.local/bin/claude → 2.1.119; archive at ~/.local/share/mcp-cli-archive/; #1808 tracks fix
+- [Claude 2.1.121 sdk-url break](feedback_claude_2_1_121_break.md) — pinned via `claudeBinary` config → archive 2.1.119 (chflags-uchg locked); user's PATH `claude` symlink auto-updates freely; #1808 tracks fix
 - [Don't touch parallel #1808 worktrees](feedback_parallel_p1_session.md) — user runs #1808 in a direct claude session; never blanket-prune; don't bye sessions you didn't spawn
 - [Verify auto-merge actually fired](feedback_verify_merge_actually_fired.md) — after qa:pass + `gh pr merge --auto`, poll until state=MERGED; QA verdict + auto-merge queue ≠ proof of merge
 - [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
