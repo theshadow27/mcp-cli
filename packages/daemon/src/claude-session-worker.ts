@@ -14,6 +14,7 @@
  *   { type: "db:end", sessionId }
  */
 
+import { resolve } from "node:path";
 import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
@@ -21,6 +22,7 @@ import {
   type SessionInfo,
   type WorkItemEvent,
   resolveModelName,
+  resolveRealpath,
   silentLogger,
   startSpan,
 } from "@mcp-cli/core";
@@ -192,6 +194,9 @@ export async function handlePrompt(
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
 
+    const rawRepoRoot = args.repoRoot as string | undefined;
+    const canonicalRepoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : undefined;
+
     let sessionName: string;
     try {
       sessionName = server.prepareSession(sessionId, {
@@ -204,7 +209,7 @@ export async function handlePrompt(
         worktree: args.worktree as string | undefined,
         model: args.model ? resolveModelName(args.model as string) : undefined,
         resumeSessionId: args.resumeSessionId as string | undefined,
-        repoRoot: args.repoRoot as string | undefined,
+        repoRoot: canonicalRepoRoot,
       });
     } catch (err) {
       return {
@@ -222,7 +227,7 @@ export async function handlePrompt(
         state: "connecting",
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,
-        repoRoot: args.repoRoot as string | undefined,
+        repoRoot: canonicalRepoRoot,
       },
     });
 
