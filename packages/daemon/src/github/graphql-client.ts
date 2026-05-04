@@ -400,7 +400,7 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
       __typename
       ... on PullRequest { number }
       ... on Issue {
-        closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+        closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
           nodes {
             number
             state
@@ -408,7 +408,7 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
             headRefName
           }
         }
-        timelineItems(itemTypes: [CONNECTED_EVENT], first: 20) {
+        timelineItems(itemTypes: [CONNECTED_EVENT], first: 50) {
           nodes {
             __typename
             ... on ConnectedEvent {
@@ -450,7 +450,7 @@ interface RawIssueOrPR {
  */
 export function isSprintContainerPR(pr: { title?: string; headRefName?: string }): boolean {
   if (pr.title && /^sprint\(\d+\):/.test(pr.title)) return true;
-  if (pr.headRefName && /^sprint-\d+/.test(pr.headRefName)) return true;
+  if (pr.headRefName && /^sprint-\d+$/.test(pr.headRefName)) return true;
   return false;
 }
 

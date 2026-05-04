@@ -831,6 +831,11 @@ describe("isSprintContainerPR", () => {
     expect(isSprintContainerPR({ headRefName: "fix/sprint-related-fix" })).toBe(false);
   });
 
+  test("does not match sprint-N-suffix branches (e.g. sprint-51-fix)", () => {
+    expect(isSprintContainerPR({ headRefName: "sprint-51-fix" })).toBe(false);
+    expect(isSprintContainerPR({ headRefName: "sprint-51-hotfix" })).toBe(false);
+  });
+
   test("does not match sprint(N): in non-title-start position", () => {
     expect(isSprintContainerPR({ title: "fix: closes sprint(50): issue" })).toBe(false);
   });
