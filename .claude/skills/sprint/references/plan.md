@@ -216,6 +216,15 @@ Rules:
    definitions across concurrent sessions (observed in sprint 32 when `/qa`
    and a docs PR both edited `run.md`). If an issue is pure meta, defer it
    to retro or a user-led cleanup pass.
+6. **Flaky / recurring / unclear-mechanism issues need a nerd-snipe gate
+   before impl** — see [`references/investigations.md`](investigations.md).
+   The gate is mandatory and uses a specific spawn shape (`mcx claude
+   spawn` with persona inlined, NOT the Agent tool / `subagent_type` —
+   see #2009 for the sprint-52 incident that locked this in). Mark such
+   issues `high` scrutiny in the plan table even if the eventual fix is
+   small; the gate's hard-fail outcome is `needs-attention`, which the
+   planner needs to be willing to accept (sprint 52 paid 2 slots for
+   this on #1980 and #1987).
 
 Split picks into:
 - **Goal issues** (10-12): aligned with the sprint thesis

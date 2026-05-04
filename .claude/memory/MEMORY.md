@@ -16,7 +16,7 @@
 - [ScheduleWakeup is blind polling](feedback_schedulewakeup_orchestration.md) — during sprint orchestration use `mcx claude wait`, not ScheduleWakeup
 - [Background-task notifications work](feedback_background_task_notify.md) — workers "waiting for notification" is correct; ask duration, don't prescribe polling
 - [Don't bye spikes](feedback_dont_bye_spikes.md) — keep exploratory sessions alive for follow-up questions
-- [Flaky test handling](feedback_flaky_tests.md) — nerd-snipe BEFORE impl, trail on issue; no root cause + plan = needs-attention, not "spawn opus and hope"
+- [Flaky test handling](feedback_flaky_tests.md) — stub pointer; canonical rule lives in repo at `.claude/skills/sprint/references/investigations.md` (load-bearing — `mcx claude spawn`, NOT Agent tool, see #2009)
 - [Orchestrator context rot](feedback_context_rot.md) — long-running orchestrators degrade at ~300k tokens; verify "done" claims with a probe
 - [Bulk reads + serialized cascades](feedback_sprint_bulk_and_cascade.md) — no `for` loops for status (use bulk jq), single-pointer update-branch cascades (avoid N² CI)
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
@@ -32,7 +32,7 @@
 - **Meta files (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`, `.gitignore`) are orchestrator + retro only.** Never spawn a worker to modify them during a sprint. Sprint 32 had two PRs touching `run.md` in parallel and the orchestrator read inconsistent versions for ~20 minutes. Meta changes go through the retro + next-plan workflow.
 - Never use `git worktree remove --force` — let the safety check catch uncommitted work.
 - `mcx claude ls` and `wait` filter by current repo; use `--all` for cross-repo view.
-- Recurring: `core.bare=true` flips mid-operation (#1206/#1243/#1330) — hot-patch with `git config core.bare false` before git ops until sticky fix lands.
+- `core.bare` arc closed in sprint 52 / #1860 / PR #1998 — `ensureCoreBareUnset()` removes the key entirely; daemon sweep deletes both true/false. Pre-flight invariant: `git config --local core.bare` should exit non-zero (key absent). The `git config core.bare false` hot-patch is no longer needed.
 
 ## Skills
 - `/sprint` — lifecycle: plan, run, review, retro. Detailed rules in `.claude/skills/sprint/references/*.md`.
