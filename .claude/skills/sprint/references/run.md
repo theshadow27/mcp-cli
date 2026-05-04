@@ -110,7 +110,7 @@ bun run build                          # compile latest binaries
 mcx claude ls --all --short 2>/dev/null # verify no sessions active across repos before restart
 mcx shutdown                           # stop the stale daemon
 mcx status                             # auto-starts the daemon with new binary
-git config core.bare                   # should exit non-zero (key absent) — see #1860
+git config --get core.bare             # MUST be "false" — see note below
 mcx phase install                      # ensure phase lockfile matches sources
 git fetch origin main \
   && git log HEAD ^origin/main --oneline   # MUST be empty
@@ -126,10 +126,10 @@ before starting the new sprint.
 Only restart when no sessions are active — restarting kills running
 sessions, including from a concurrent sprint in another repo.
 
-**`core.bare` key should be absent**: the daemon's 30s sweep removes the
-`core.bare` config key entirely (#1860). Without the key, git auto-detects
-from the directory layout and nothing can flip the value. If `git config
-core.bare` exits 0, run `git config --unset core.bare` to remove it.
+**`core.bare=true` recurrence**: some worktree operation flips
+`core.bare` to `true` on the main checkout. Hot-patch with
+`git config core.bare false` before every batch of git operations.
+Pre-flight + post-`bye` check until the sticky fix lands.
 
 **Run all sprint commands from within the project root.** `mcx claude ls`,
 `mcx claude wait`, and `mcx monitor` scope to the current repo's git root —
