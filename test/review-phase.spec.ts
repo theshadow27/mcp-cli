@@ -107,6 +107,79 @@ describe("scanReviewComments — parsing", () => {
     });
     expect(result).toMatchObject({ found: true, hasBlockers: false });
   });
+
+  // ── verdict-line heuristic (#2007 fix) ──
+
+  test("✅ APPROVED verdict + 🔴 in delta-table rows → no blockers", async () => {
+    // Real-world false positive from PR #1998 / #2006: reviewer writes
+    // `✅ **APPROVED**` near the top, then a delta table where each row
+    // references its prior 🔴/🟡 alongside ✅ Fixed. Old regex flagged
+    // every approved sticky as blocked.
+    const body = [
+      "## Adversarial Review",
+      "",
+      "### Verdict",
+      "✅ **APPROVED** — all blockers resolved.",
+      "",
+      "| # | Previous Issue | Status |",
+      "|---|----------------|--------|",
+      "| 1 | 🔴 Read-side regression | ✅ Fixed in ad84422 |",
+      "| 2 | 🟡 Migration TOCTOU | ✅ Fixed in ad84422 |",
+    ].join("\n");
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: false });
+    expect(result.summary).toContain("approved");
+  });
+
+  test("⚠️ Changes Requested verdict → blockers regardless of delta table", async () => {
+    const body = [
+      "## Adversarial Review",
+      "",
+      "### Verdict",
+      "⚠️ **Changes Requested** — 1 new finding.",
+      "",
+      "| # | Previous Issue | Status |",
+      "|---|----------------|--------|",
+      "| 1 | 🔴 Old issue | ✅ Fixed |",
+      "",
+      "🔴 New finding: missing null check in foo.ts:42",
+    ].join("\n");
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: true });
+  });
+
+  test("no verdict line + naked 🔴 → blockers", async () => {
+    const body = "## Adversarial Review\n\n🔴 Critical issue, unresolved";
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: true });
+  });
+
+  test("no verdict line + 🔴 paired with same-line ✅ Fixed → no blockers", async () => {
+    // Reviewer omitted explicit verdict line but every emoji is paired
+    // with a resolution marker on the same line.
+    const body =
+      "## Adversarial Review\n\n- 🔴 Read-side regression: ✅ Fixed in abc123\n- 🟡 Test gap: ✅ Resolved by adding spec";
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: false });
+  });
+
+  test("no verdict line + 🔴 with same-line 'fixed' word → no blockers", async () => {
+    const body = "## Adversarial Review\n\nThe original 🔴 finding was fixed in commit deadbeef.";
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: false });
+  });
+
+  test("no verdict line + 🔴 same-line 'fixed' AND naked 🔴 elsewhere → blockers", async () => {
+    const body = [
+      "## Adversarial Review",
+      "",
+      "Prior 🔴 issue was fixed in abc123.",
+      "",
+      "🔴 But a new finding: missing test coverage.",
+    ].join("\n");
+    const result = await scanReviewComments(100, { gh: async () => ok(body) });
+    expect(result).toMatchObject({ found: true, hasBlockers: true });
+  });
 });
 
 // ── runReview — first entry (no session) ──

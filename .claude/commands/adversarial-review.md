@@ -38,6 +38,15 @@ major refactor, >50% of files changed are new files not touched in the original 
 ```
 ## Adversarial Review (Delta)
 
+### Updated Verdict
+✅ **APPROVED** — all blockers resolved. (or)
+⚠️ **Changes Requested** — N blockers remain.
+
+(Place the verdict line FIRST. The phase-script scanner anchors on
+`✅ APPROVED` / `⚠️ Changes Requested` to decide whether to advance the
+PR. If you write the verdict as the last line, scanners that truncate
+on long stickies may miss it.)
+
 ### Changes Since Last Review
 
 | # | Previous Issue | Status | Notes |
@@ -45,15 +54,19 @@ major refactor, >50% of files changed are new files not touched in the original 
 | 1 | 🔴 <original issue title> | ✅ Fixed in <sha> | <brief note> |
 | 2 | 🟡 <original issue title> | ⏳ Not addressed | <quote original concern> |
 
+**Format requirement for delta-table rows**: when referencing a prior
+🔴/🟡, place a resolution marker (✅, the word "Fixed", "Resolved",
+"Addressed", "Reverted", or "N/A") on the **same line / table row**.
+The phase scanner treats a 🔴/🟡 paired with a same-line resolution
+token as historical, not blocking. A 🔴 alone on a line means "still
+blocking" — only use that for unresolved findings.
+
 ### New Issues
 Only issues introduced by the new commits. Same severity format (🔴/🟡/🔵).
 If none: "No new issues introduced."
 
 ### Suggested Automation
 If any new findings could be a lint rule or test pattern, note them here.
-
-### Updated Verdict
-Based on the current state of ALL issues (resolved + remaining + new).
 ```
 
 ## Focus Areas
@@ -87,9 +100,13 @@ If any findings could be caught by a new lint rule or test pattern, note them he
 with enough detail to file an issue.
 
 ### Verdict
-- ✅ **Approve** — no blocking issues
+- ✅ **APPROVED** — no blocking issues
 - ⚠️ **Changes Requested** — blocking issues found
 - ℹ️ **Comment** — suggestions only, non-blocking
+
+(Place the verdict near the **top** of the comment. The phase-script
+scanner uses the verdict line as the primary signal; tables and prose
+below it are interpreted in light of it.)
 ```
 
 ## Posting the Review (Sticky Comment)
