@@ -315,8 +315,8 @@ export interface QuotaExtraUsage {
   isEnabled: boolean;
   monthlyLimit: number;
   usedCredits: number;
-  /** Percentage of extra usage budget consumed (0-100). */
-  utilization: number;
+  /** Percentage of extra usage budget consumed (0-100). Null when usedCredits is 0. */
+  utilization: number | null;
 }
 
 export interface QuotaStatusResult {
