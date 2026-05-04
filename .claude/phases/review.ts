@@ -86,7 +86,7 @@ defineAlias({
       if (input.model) {
         model = input.model;
       } else {
-        const planModel = work.issueNumber != null ? findModelInSprintPlan(work.issueNumber, process.cwd()) : null;
+        const planModel = work.issueNumber != null ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot ?? process.cwd()) : null;
         model = planModel ?? "sonnet";
       }
 

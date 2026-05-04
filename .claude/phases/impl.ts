@@ -100,7 +100,7 @@ defineAlias({
       if (stateModel === "opus" || stateModel === "sonnet") {
         model = stateModel;
       } else {
-        const planModel = findModelInSprintPlan(work.issueNumber, process.cwd());
+        const planModel = findModelInSprintPlan(work.issueNumber, ctx.repoRoot ?? process.cwd());
         model = planModel ?? pickModel(input.labels);
       }
     }

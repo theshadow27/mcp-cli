@@ -1264,6 +1264,7 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
+    repoRoot,
     signal: phaseController.signal,
     waitForEvent: createWaitForEvent({ signal: phaseController.signal }),
   };
