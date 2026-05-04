@@ -34,6 +34,20 @@ export type ReviewResult =
   | { action: "wait"; reason: string; round: number; model?: "opus" | "sonnet" }
   | { action: "goto"; target: "repair" | "qa"; reason: string; round: number; model?: "opus" | "sonnet" };
 
+// ── verdict heuristic (#2007) ──
+// Layered match: explicit verdict line wins; if absent, fall back to
+// "naked" 🔴/🟡 — emoji on a line that does NOT also carry a resolution
+// marker (✅ / fixed / resolved / addressed / reverted / n/a). Surveyed
+// across 200 merged PRs (49 with stickies, 38 approved): the prior
+// `/🔴|🟡/.test()` regex flagged 38 of 38 approved PRs as blocked
+// because reviewers reference past 🔴/🟡 in delta tables alongside
+// ✅ Fixed in <sha>. The verdict-line check eliminates that whole
+// false-positive class; the same-line-resolution fallback handles
+// stickies the reviewer wrote without an explicit verdict header.
+const VERDICT_APPROVED_RE = /✅\s*\*?\*?\s*(approved|approve)\b/i;
+const VERDICT_CHANGES_RE = /(⚠️|🟡|🔴)\s*\*?\*?\s*changes\s*requested/i;
+const RESOLVED_TOKEN_RE = /(✅|☑|\bfixed\b|\bresolved\b|\baddressed\b|\breverted\b|\bn\/a\b|\bnot applicable\b|\bwon[''']t fix\b)/i;
+
 export async function scanReviewComments(
   prNumber: number,
   deps: Pick<ReviewDeps, "gh">,
@@ -43,8 +57,28 @@ export async function scanReviewComments(
   const lastIdx = result.stdout.lastIndexOf("## Adversarial Review");
   if (lastIdx === -1) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
   const sticky = result.stdout.slice(lastIdx);
-  const hasBlockers = /🔴|🟡/.test(sticky);
-  return { found: true, hasBlockers, summary: hasBlockers ? "blockers remain" : "all clear" };
+  const lines = sticky.split("\n");
+  for (const line of lines) {
+    if (VERDICT_APPROVED_RE.test(line)) {
+      return { found: true, hasBlockers: false, summary: "verdict: approved" };
+    }
+    if (VERDICT_CHANGES_RE.test(line)) {
+      return { found: true, hasBlockers: true, summary: "verdict: changes requested" };
+    }
+  }
+  // No explicit verdict line — fall back to naked-emoji scan.
+  let nakedRed = 0;
+  let nakedYellow = 0;
+  for (const line of lines) {
+    if (!/🔴|🟡/.test(line)) continue;
+    if (RESOLVED_TOKEN_RE.test(line)) continue; // same-line resolution marker
+    nakedRed += (line.match(/🔴/g) ?? []).length;
+    nakedYellow += (line.match(/🟡/g) ?? []).length;
+  }
+  if (nakedRed + nakedYellow > 0) {
+    return { found: true, hasBlockers: true, summary: `blockers remain (🔴×${nakedRed}, 🟡×${nakedYellow}, no verdict line)` };
+  }
+  return { found: true, hasBlockers: false, summary: "all clear" };
 }
 
 export async function runReview(
