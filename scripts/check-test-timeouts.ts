@@ -16,8 +16,8 @@
  * backoff) described in test/CLAUDE.md.
  *
  * Detection uses parenthesis-depth tracking so nested parens in callbacks do
- * not cause false negatives.  Multi-line setTimeout calls (args split across
- * lines) are not detected — in practice all banned patterns appear on one line.
+ * not cause false negatives, including arrow-function callbacks and setTimeout
+ * calls whose arguments span multiple lines.
  *
  * Usage:  bun scripts/check-test-timeouts.ts
  *
@@ -86,6 +86,53 @@ interface Violation {
   text: string;
 }
 
+/**
+ * Scans a full file's content for setTimeout calls with fixed numeric delays,
+ * tracking parenthesis depth across newlines so multi-line calls are caught.
+ * Returns one entry per violation with a 1-based line number and the trimmed
+ * text of the line where the setTimeout keyword appears.
+ */
+export function findViolations(content: string): Array<{ line: number; text: string }> {
+  const results: Array<{ line: number; text: string }> = [];
+  const lines = content.split("\n");
+  const re = /\bsetTimeout\s*\(/g;
+
+  for (let match = re.exec(content); match !== null; match = re.exec(content)) {
+    const parenOpen = match.index + match[0].length - 1;
+
+    let depth = 1;
+    let i = parenOpen + 1;
+    while (i < content.length && depth > 0) {
+      if (content[i] === "(") depth++;
+      else if (content[i] === ")") depth--;
+      i++;
+    }
+
+    if (depth !== 0) continue;
+
+    const args = content.slice(parenOpen + 1, i - 1);
+
+    let argDepth = 0;
+    let lastComma = -1;
+    for (let j = 0; j < args.length; j++) {
+      const c = args[j];
+      if (c === "(" || c === "[" || c === "{") argDepth++;
+      else if (c === ")" || c === "]" || c === "}") argDepth--;
+      else if (c === "," && argDepth === 0) lastComma = j;
+    }
+
+    if (lastComma === -1) continue;
+
+    const lastArg = args.slice(lastComma + 1).trim();
+    if (!/^[0-9][0-9_]*$/.test(lastArg)) continue;
+
+    const lineNum = content.slice(0, match.index).split("\n").length;
+    results.push({ line: lineNum, text: lines[lineNum - 1].trim() });
+  }
+
+  return results;
+}
+
 async function scanDir(dir: string): Promise<Violation[]> {
   const violations: Violation[] = [];
   const glob = new Glob("**/*.spec.ts");
@@ -96,12 +143,9 @@ async function scanDir(dir: string): Promise<Violation[]> {
 
     const absPath = `${dir}${relPath}`;
     const content = await Bun.file(absPath).text();
-    const lines = content.split("\n");
 
-    for (let i = 0; i < lines.length; i++) {
-      if (hasFixedDelay(lines[i])) {
-        violations.push({ file: absPath, line: i + 1, text: lines[i].trim() });
-      }
+    for (const { line, text } of findViolations(content)) {
+      violations.push({ file: absPath, line, text });
     }
   }
 

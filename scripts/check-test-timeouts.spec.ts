@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasFixedDelay } from "./check-test-timeouts";
+import { findViolations, hasFixedDelay } from "./check-test-timeouts";
 
 /**
  * Unit tests for the setTimeout lint rule's detection logic.
@@ -43,4 +43,63 @@ describe("check-test-timeouts hasFixedDelay", () => {
       expect(hasFixedDelay(line)).toBe(false);
     });
   }
+});
+
+describe("check-test-timeouts findViolations (multi-line)", () => {
+  test("catches single-line setTimeout(r, 50)", () => {
+    const content = "await new Promise((r) => setTimeout(r, 50));";
+    const vs = findViolations(content);
+    expect(vs).toHaveLength(1);
+    expect(vs[0].line).toBe(1);
+  });
+
+  test("catches setTimeout split across lines (delay on its own line)", () => {
+    const content = `await new Promise((r) =>
+  setTimeout(
+    r,
+    50
+  )
+);`;
+    const vs = findViolations(content);
+    expect(vs).toHaveLength(1);
+    expect(vs[0].line).toBe(2);
+  });
+
+  test("catches setTimeout with arrow-fn callback split across lines", () => {
+    const content = `new Promise((r) =>
+  setTimeout(() => r(null), 50)
+);`;
+    const vs = findViolations(content);
+    expect(vs).toHaveLength(1);
+    expect(vs[0].line).toBe(2);
+  });
+
+  test("does not flag setTimeout with a variable delay spanning lines", () => {
+    const content = `setTimeout(
+  r,
+  POLL_INTERVAL
+);`;
+    expect(findViolations(content)).toHaveLength(0);
+  });
+
+  test("does not flag single-arg setTimeout spanning lines", () => {
+    const content = `setTimeout(
+  fn
+);`;
+    expect(findViolations(content)).toHaveLength(0);
+  });
+
+  test("reports correct line numbers for multiple violations in one file", () => {
+    const content = `// line 1
+setTimeout(r, 50);
+// line 3
+setTimeout(
+  fn,
+  100
+);`;
+    const vs = findViolations(content);
+    expect(vs).toHaveLength(2);
+    expect(vs[0].line).toBe(2);
+    expect(vs[1].line).toBe(4);
+  });
 });
