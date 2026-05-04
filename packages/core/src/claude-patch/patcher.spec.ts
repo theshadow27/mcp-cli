@@ -225,6 +225,18 @@ describe("updatePatchedClaude", () => {
     const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
     expect(stagingFiles).toHaveLength(0);
   });
+
+  test("entitlements extraction failure does not leave a staging file", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const deps = makeFakeDeps({
+      extractEntitlements: async () => {
+        throw new Error("simulated entitlements failure");
+      },
+    });
+    await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/entitlements/);
+    const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
+    expect(stagingFiles).toHaveLength(0);
+  });
 });
 
 describe("readCurrentPatchedMeta", () => {
