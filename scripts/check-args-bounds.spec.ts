@@ -46,6 +46,19 @@ describe("check-args-bounds isSafe()", () => {
       const lines = ["  // TODO: add i + 1 < args.length check here", "  val = args[++i];"];
       expect(isSafe(lines, 1)).toBe(false);
     });
+
+    test("RHS args[i+1] && expression is not a guard (Rule 2 trailing-operator requires first token)", () => {
+      // `const x = args[i + 1] && y` reads args[i+1] into x — no guard on i+1 for the later access
+      const lines = ["  const x = args[i + 1] && someCondition;", "  val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
+
+    test("i <= args.length - 1 is not safe (off-by-one: allows i === args.length - 1)", () => {
+      // i <= args.length - 1 ≡ i < args.length, so i may equal args.length - 1,
+      // making args[++i] === args[args.length] === undefined.
+      const lines = ["  if (i <= args.length - 1) {", "    val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(false);
+    });
   });
 
   describe("safe cases", () => {
@@ -116,6 +129,62 @@ describe("check-args-bounds isSafe()", () => {
       // Rule 3 must include the current line (j <= lineIdx) to catch this pattern
       const lines = ["  val = i + 1 < args.length ? args[++i] : null;"];
       expect(isSafe(lines, 0)).toBe(true);
+    });
+
+    // Rule 2 extension: multi-line if block (issue #1967)
+    test("truthy pre-check 3 lines above (multi-line if block)", () => {
+      const lines = ["  if (", "    args[i + 1] &&", "    someCondition", "  ) {", "    val = args[++i];"];
+      expect(isSafe(lines, 4)).toBe(true);
+    });
+
+    test("truthy pre-check exactly 6 lines above (boundary)", () => {
+      const lines = [
+        "  if (args[i + 1] &&",
+        "    a &&",
+        "    b &&",
+        "    c &&",
+        "    d) {",
+        "  // comment",
+        "    val = args[++i];",
+      ];
+      expect(isSafe(lines, 6)).toBe(true);
+    });
+
+    // Rule 3 extension: algebraic equivalents (issue #1969)
+    test("i < args.length - 1 guard on preceding line", () => {
+      const lines = ["  if (i < args.length - 1) {", "    val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(true);
+    });
+
+    test("args.length - 1 > i guard on preceding line", () => {
+      const lines = ["  if (args.length - 1 > i) {", "    val = args[++i];"];
+      expect(isSafe(lines, 1)).toBe(true);
+    });
+
+    // Escape hatch (issue #1968)
+    test("inline suppression with reason", () => {
+      const lines = ["  val = args[++i]; // lint-allow-args-bounds: helper verifies bounds internally"];
+      expect(isSafe(lines, 0)).toBe(true);
+    });
+
+    test("inline suppression with reason in comment-only position", () => {
+      const lines = ["  val = customHelper(args, ++i); // lint-allow-args-bounds: wrapper checks bounds"];
+      // ACCESS_PATTERN won't match this (no args[++i]) but isSafe should still return true
+      // because the marker is present (defensive: safe if called)
+      expect(isSafe(lines, 0)).toBe(true);
+    });
+  });
+
+  describe("suppression escape hatch violations", () => {
+    test("bare suppression marker without reason is not a guard", () => {
+      // No text after the colon — should NOT be treated as suppressed
+      const lines = ["  val = args[++i]; // lint-allow-args-bounds:"];
+      expect(isSafe(lines, 0)).toBe(false);
+    });
+
+    test("suppression marker with only whitespace after colon is not a guard", () => {
+      const lines = ["  val = args[++i]; // lint-allow-args-bounds:   "];
+      expect(isSafe(lines, 0)).toBe(false);
     });
   });
 });
