@@ -290,6 +290,17 @@ export function pruneOrphanedWorktrees(
 /** Per-phase timeout for shutdown steps (ms). Prevents any single phase from hanging the process. */
 const SHUTDOWN_PHASE_TIMEOUT_MS = 5_000;
 
+/**
+ * Tighter timeout for `awaitPendingServers`. We don't actually need to wait
+ * for in-flight virtual server startups during shutdown — abandoning them
+ * is fine because the rest of the shutdown sequence tears down DB/IPC/pool
+ * regardless. The previous 5s budget meant SIGTERM during a slow startup
+ * (e.g. ws-server port retry) blocked exit by up to 5s. The new ws-server
+ * retry schedule maxes out around 1.55s, so 2s gives normal startups room
+ * to finish without making SIGTERM feel hung.
+ */
+const SHUTDOWN_PENDING_TIMEOUT_MS = 2_000;
+
 /** Race a promise against a deadline. Returns "timeout" if the deadline is reached. */
 async function withPhaseTimeout<T>(
   promise: Promise<T>,
@@ -1114,10 +1125,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       } catch (err) {
         logger.error(`[mcpd] Error stopping IPC server: ${err}`);
       }
-      // Wait for any in-progress virtual server startups before stopping them
+      // Wait briefly for any in-progress virtual server startups before stopping
+      // them. Don't block shutdown on slow startups — the subsequent
+      // server.stop() calls handle the in-flight case, and dropping the wait
+      // means SIGTERM exits promptly even if a worker is mid-port-retry.
       let phase = performance.now();
       try {
-        await withPhaseTimeout(pool.awaitPendingServers(), SHUTDOWN_PHASE_TIMEOUT_MS, "awaitPendingServers", logger);
+        await withPhaseTimeout(pool.awaitPendingServers(), SHUTDOWN_PENDING_TIMEOUT_MS, "awaitPendingServers", logger);
       } catch (err) {
         logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
       }

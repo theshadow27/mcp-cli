@@ -453,8 +453,12 @@ export class ClaudeWsServer {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
-    this.portRetryCount = deps?.portRetryCount ?? 10;
-    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 500;
+    // 5 attempts with exponential backoff (50/100/200/400/800ms = 1550ms total),
+    // down from 10×500ms = 5000ms. The previous default was the dominant tax on
+    // every daemon spawn whenever port 19275 was held by another daemon —
+    // it contributed ~94s to the test suite via daemon-integration.spec.ts.
+    this.portRetryCount = deps?.portRetryCount ?? 5;
+    this.portRetryDelayMs = deps?.portRetryDelayMs ?? 50;
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
     this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
@@ -506,8 +510,9 @@ export class ClaudeWsServer {
 
   /** Start the WebSocket server. Returns the assigned port.
    *  If `port` is provided and non-zero, tries that port first;
-   *  retries up to MAX_PORT_RETRIES times with backoff before falling back
-   *  to a random OS-assigned port on EADDRINUSE. */
+   *  retries up to portRetryCount times with exponential backoff
+   *  (portRetryDelayMs × 2^attempt) before falling back to a random
+   *  OS-assigned port on EADDRINUSE. */
   async start(port?: number): Promise<number> {
     const requestedPort = port ?? 0;
 
@@ -519,7 +524,10 @@ export class ClaudeWsServer {
         } catch (err) {
           if (!isAddrInUse(err)) throw err;
           if (attempt < this.portRetryCount) {
-            await Bun.sleep(this.portRetryDelayMs);
+            // Exponential backoff bounded by portRetryDelayMs × 2^attempt.
+            // With defaults (50ms × {1,2,4,8,16}) total wait is ~1.55s for
+            // 5 attempts vs the previous fixed 5×500ms = 2.5s schedule.
+            await Bun.sleep(this.portRetryDelayMs * 2 ** attempt);
             continue;
           }
           // All retries exhausted — fall back to random port
