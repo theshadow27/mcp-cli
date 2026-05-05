@@ -24,10 +24,16 @@ Read `references/why-this-works.md` first. Then proceed.
 4. Read `references/iteration.md` — set expectations and plan for improvement
 5. Execute the kickoff checklist at the end of `references/iteration.md`
 
+**Migrating an existing sprint skill** (e.g. one written ~20 sprints ago that
+hasn't kept pace with the current `mcx` CLI): read `references/upgrading-30-50.md`
+instead. It has the diagnostic walk + S/M/L upgrade buckets so you can stage
+the migration without rebuilding from scratch.
+
 ## Arguments
 
 - `/bootstrap-sprint <path>` — target project directory (required)
 - `/bootstrap-sprint <path> --explore-only` — run discovery, report findings, don't write skills yet
+- `/bootstrap-sprint <path> --upgrade` — audit an existing sprint skill against `references/upgrading-30-50.md` and propose staged migration buckets
 
 ## Rules
 
