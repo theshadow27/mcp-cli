@@ -58,6 +58,14 @@ export async function startTestDaemon(
   // Write servers.json so daemon has config to load
   writeFileSync(join(dir, "servers.json"), JSON.stringify({ mcpServers: servers }));
 
+  // Force a random WebSocket port. Without this, every test daemon tries to bind
+  // DEFAULT_CLAUDE_WS_PORT (19275) and — when the user's dev daemon or another
+  // test daemon already holds it — burns multi-second port retries in ws-server
+  // before falling back. Multiplied across ~22 daemon spawns in
+  // daemon-integration.spec.ts that's tens of seconds of test wall time.
+  // Production keeps the well-known port; only test daemons opt in to wsPort: 0.
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ wsPort: 0 }));
+
   const proc = Bun.spawn(["bun", resolve("packages/daemon/src/main.ts")], {
     stdout: "ignore",
     stderr: "pipe",
