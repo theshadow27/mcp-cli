@@ -453,10 +453,12 @@ export class ClaudeWsServer {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
     this.logger = deps?.logger ?? consoleLogger;
-    // 5 attempts with exponential backoff (50/100/200/400/800ms = 1550ms total),
-    // down from 10×500ms = 5000ms. The previous default was the dominant tax on
-    // every daemon spawn whenever port 19275 was held by another daemon —
-    // it contributed ~94s to the test suite via daemon-integration.spec.ts.
+    // 5 retries with exponential backoff (50/100/200/400/800ms = 1550ms total
+    // across 5 sleeps; the loop also performs 1 initial attempt for 6 binds in
+    // the worst case). Down from 10 retries × 500ms = 5000ms. The previous
+    // default was the dominant tax on every daemon spawn whenever port 19275
+    // was held by another daemon — it contributed ~94s to the test suite via
+    // daemon-integration.spec.ts.
     this.portRetryCount = deps?.portRetryCount ?? 5;
     this.portRetryDelayMs = deps?.portRetryDelayMs ?? 50;
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
@@ -525,8 +527,8 @@ export class ClaudeWsServer {
           if (!isAddrInUse(err)) throw err;
           if (attempt < this.portRetryCount) {
             // Exponential backoff bounded by portRetryDelayMs × 2^attempt.
-            // With defaults (50ms × {1,2,4,8,16}) total wait is ~1.55s for
-            // 5 attempts vs the previous fixed 5×500ms = 2.5s schedule.
+            // With defaults (50ms × {1,2,4,8,16}) total wait is ~1.55s across
+            // 5 retries, vs the previous fixed 10×500ms = 5s schedule.
             await Bun.sleep(this.portRetryDelayMs * 2 ** attempt);
             continue;
           }
