@@ -313,9 +313,17 @@ export class ClaudeServer extends AbstractWorkerServer {
       if (row.state === "ended") return false;
       if (row.pid != null) {
         if (row.pidStartTime != null) {
-          if (!isOurProcess(row.pid, row.pidStartTime)) {
+          const ownership = isOurProcess(row.pid, row.pidStartTime);
+          if (ownership === false) {
             this.logger.warn(
-              `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is dead or recycled`,
+              `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} has been recycled`,
+            );
+            this.db.endSession(row.sessionId);
+            return false;
+          }
+          if (ownership === null && !isProcessAlive(row.pid)) {
+            this.logger.warn(
+              `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} is no longer alive`,
             );
             this.db.endSession(row.sessionId);
             return false;

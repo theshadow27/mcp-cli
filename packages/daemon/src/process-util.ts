@@ -73,8 +73,9 @@ export async function killPid(
 
   // Verify PID ownership before sending signals
   if (opts?.pidStartTime != null) {
-    if (!isOurProcess(pid, opts.pidStartTime)) {
-      logger.warn(`[process] PID ${pid} has been recycled — skipping kill`);
+    const ownership = isOurProcess(pid, opts.pidStartTime);
+    if (ownership === false) {
+      logger.warn(`[process] PID ${pid} has been recycled (start time mismatch) — skipping kill`);
       return;
     }
   }

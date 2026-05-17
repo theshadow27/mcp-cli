@@ -17,7 +17,7 @@ import { isOurProcess as defaultIsOurProcess } from "./process-identity";
 
 interface ReaperDeps {
   /** Injectable for testing — defaults to the real isOurProcess. */
-  isOurProcess?: (pid: number, storedStartTimeMs: number) => boolean;
+  isOurProcess?: (pid: number, storedStartTimeMs: number) => boolean | null;
 }
 
 /**
@@ -47,14 +47,23 @@ export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger
     }
 
     if (pidStartTime != null) {
-      // We have a stored start time — verify PID ownership
-      if (checkIsOurProcess(pid, pidStartTime)) {
-        // Process is alive and matches — preserve for restoreActiveSessions
+      const ownership = checkIsOurProcess(pid, pidStartTime);
+      if (ownership === true) {
         logger.info(`[mcpd] Preserving active session ${sessionId} (pid ${pid} still alive)`);
         continue;
       }
-      // PID is dead or recycled — clean up DB record
-      logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is dead or recycled`);
+      if (ownership === null) {
+        // Can't verify via start time (ps failed) — fall back to bare liveness check
+        try {
+          process.kill(pid, 0);
+          logger.info(`[mcpd] Preserving active session ${sessionId} (pid ${pid} alive, ownership uncertain)`);
+          continue;
+        } catch {
+          logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is no longer alive`);
+        }
+      } else {
+        logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is dead or recycled`);
+      }
     } else {
       // Legacy session without start time — check bare liveness
       try {
