@@ -228,4 +228,15 @@ describe("prepareNpm", () => {
 
     expect(logs.some((l) => l.includes("version 0.11.0"))).toBe(true);
   });
+
+  test("recreates .gitkeep in each platform bin dir after copying binaries", () => {
+    const { deps, written } = makeDeps();
+    prepareNpm(["--version", "1.0.0"], deps);
+
+    for (const platform of PLATFORMS) {
+      const gitkeepKey = [...written.keys()].find((k) => k.includes(`npm/${platform.dir}/bin/.gitkeep`));
+      expect(gitkeepKey).toBeDefined();
+      expect(written.get(gitkeepKey as string)).toBe("");
+    }
+  });
 });
