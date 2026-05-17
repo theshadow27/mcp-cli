@@ -137,10 +137,12 @@ describe("release workflow job ordering", () => {
   });
 });
 
-describe("prepare-npm.ts removes .gitkeep", () => {
-  test("script imports unlinkSync for .gitkeep cleanup", () => {
+describe("prepare-npm.ts .gitkeep handling", () => {
+  test("script recreates .gitkeep after copying binaries (not deletes)", () => {
     const script = readFileSync(resolve(ROOT, "scripts/prepare-npm.ts"), "utf-8");
-    expect(script).toContain("unlinkSync");
+    // Verify .gitkeep is referenced and restored via writeFile, not deleted via unlinkSync
     expect(script).toContain(".gitkeep");
+    expect(script).toContain('writeFile(gitkeep, "")');
+    expect(script).not.toContain("unlinkSync(gitkeep)");
   });
 });
