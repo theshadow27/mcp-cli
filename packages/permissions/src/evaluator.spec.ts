@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type PermissionRequest, evaluate } from "./evaluator";
-import type { PermissionRule } from "./rule";
+import { type PermissionRule, isBareMcpServerPattern } from "./rule";
 
 function req(toolName: string, input: Record<string, unknown> = {}): PermissionRequest {
   return { toolName, input };
@@ -498,6 +498,16 @@ describe("evaluate", () => {
     ];
     expect(evaluate(rules, req("mcp__puppeteer__screenshot")).allow).toBe(true);
     expect(evaluate(rules, req("mcp__puppeteer__navigate")).allow).toBe(false);
+  });
+
+  test("mcp__* is not a bare server pattern (it is a tool wildcard)", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__*", action: "allow" }];
+    // mcp__* is handled by isToolWildcard, not isBareMcpServerPattern
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+
+    // Direct contract test on the exported helper
+    expect(isBareMcpServerPattern("mcp__*")).toBe(false);
   });
 
   test("bare server does not match adjacent server prefix", () => {

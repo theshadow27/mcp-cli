@@ -74,7 +74,7 @@ export function isToolWildcard(tool: string): boolean {
 export function isBareMcpServerPattern(tool: string): boolean {
   if (!tool.startsWith("mcp__")) return false;
   const rest = tool.slice(5); // strip "mcp__"
-  return rest.length > 0 && !rest.includes("__");
+  return rest.length > 0 && !rest.includes("__") && !rest.includes("*");
 }
 
 /**
