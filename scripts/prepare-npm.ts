@@ -84,7 +84,6 @@ export function prepareNpm(args: string[], deps: PrepareNpmDeps = defaultDeps): 
     }
 
     // Restore .gitkeep so the tracked file is not left as a staged deletion.
-    // The .npmignore in each platform package excludes it from published tarballs.
     const gitkeep = resolve(`npm/${platform.dir}/bin/.gitkeep`);
     d.writeFile(gitkeep, "");
   }
