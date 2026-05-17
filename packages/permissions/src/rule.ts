@@ -54,6 +54,30 @@ export function isToolWildcard(tool: string): boolean {
 }
 
 /**
+ * Check if a tool name is a bare MCP server pattern (server-wide wildcard without `__*`).
+ *
+ * Claude Code documents two equivalent ways to allow all tools from an MCP server:
+ * `mcp__server` (bare) and `mcp__server__*`. This function detects the bare form.
+ *
+ * Rules:
+ * - Must start with "mcp__"
+ * - Server name (the part after "mcp__") must be non-empty
+ * - Must not contain "__" in the server name segment (that would make it exact or `__*`)
+ *
+ * Examples:
+ * - "mcp__puppeteer"             → true  (server-wide wildcard, equivalent to mcp__puppeteer__*)
+ * - "mcp__claude_ai_Google_Drive"→ true  (single underscores in server name are fine)
+ * - "mcp__"                      → false (no server name)
+ * - "mcp__echo__echo"            → false (has tool segment → exact match)
+ * - "mcp__atlassian__*"          → false (handled by isToolWildcard)
+ */
+export function isBareMcpServerPattern(tool: string): boolean {
+  if (!tool.startsWith("mcp__")) return false;
+  const rest = tool.slice(5); // strip "mcp__"
+  return rest.length > 0 && !rest.includes("__");
+}
+
+/**
  * Convert a tool wildcard pattern to the prefix for `startsWith` matching.
  * Only call this when `isToolWildcard()` returns true.
  *

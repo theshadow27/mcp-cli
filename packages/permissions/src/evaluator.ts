@@ -12,6 +12,7 @@ import { matchBashCommand } from "./bash-matcher";
 import { matchFilePath } from "./file-matcher";
 import {
   type PermissionRule,
+  isBareMcpServerPattern,
   isToolWildcard,
   isWildcardPattern,
   parsePattern,
@@ -56,9 +57,12 @@ function extractFilePath(input: Record<string, unknown>): string | null {
 function matchesRule(rule: PermissionRule, request: PermissionRequest): boolean {
   const { tool, argPattern } = parsePattern(rule.tool);
 
-  // Tool name matching: exact or tool-wildcard (__*)
+  // Tool name matching: exact, tool-wildcard (__*), or bare MCP server pattern
   if (isToolWildcard(tool)) {
     if (!request.toolName.startsWith(toToolPrefix(tool))) return false;
+  } else if (isBareMcpServerPattern(tool)) {
+    // "mcp__server" is equivalent to "mcp__server__*" — prefix-match with "__" appended
+    if (!request.toolName.startsWith(`${tool}__`)) return false;
   } else {
     if (tool !== request.toolName) return false;
   }
