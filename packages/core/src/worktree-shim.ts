@@ -146,8 +146,11 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
         `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
       );
     }
-    if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+    const addResult2 = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+    if (addResult2 === "removed") {
       deps.printInfo("Removed core.bare key after worktree add");
+    } else if (addResult2 === "fallback") {
+      deps.printError("[shim] core.bare key could not be removed after worktree add — set to false as fallback");
     }
     deps.printInfo(`Created worktree: ${worktreePath}`);
     return {
@@ -179,8 +182,11 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
       `[shim] core.bare flipped to true by: git worktree add ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+  const addResult4 = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+  if (addResult4 === "removed") {
     deps.printInfo("Removed core.bare key after worktree add");
+  } else if (addResult4 === "fallback") {
+    deps.printError("[shim] core.bare key could not be removed after worktree add — set to false as fallback");
   }
   deps.printInfo(`Created worktree: ${worktreePath}`);
   return {
@@ -282,8 +288,11 @@ function removeWorktreeWithVerification(
       `[shim] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+  const removeResult1 = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+  if (removeResult1 === "removed") {
     deps.printInfo("Removed core.bare key after worktree removal");
+  } else if (removeResult1 === "fallback") {
+    deps.printError("[shim] core.bare key could not be removed after worktree removal — set to false as fallback");
   }
 
   // Verify: directory must actually be gone
@@ -315,8 +324,11 @@ function removeWorktreeWithVerification(
       `[shim] core.bare flipped to true by: git worktree remove --force ${worktreePath} (repo=${repoRoot}) — see #1330`,
     );
   }
-  if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+  const removeResult2 = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+  if (removeResult2 === "removed") {
     deps.printInfo("Removed core.bare key after worktree removal");
+  } else if (removeResult2 === "fallback") {
+    deps.printError("[shim] core.bare key could not be removed after worktree removal — set to false as fallback");
   }
 
   if (!existsSync(worktreePath)) {
@@ -539,8 +551,13 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   // Individual per-removal fixes can be undone by subsequent removals in the
   // same batch. This ensures the repo is in a valid state when we return. #1206
   if (pruned > 0) {
-    if (ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd))) {
+    const batchResult = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+    if (batchResult === "removed") {
       deps.printInfo("Removed core.bare key after batch worktree prune");
+    } else if (batchResult === "fallback") {
+      deps.printError(
+        "[shim] core.bare key could not be removed after batch worktree prune — set to false as fallback",
+      );
     }
   }
 

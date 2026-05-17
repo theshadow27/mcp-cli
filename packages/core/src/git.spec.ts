@@ -125,7 +125,7 @@ describe("ensureCoreBareUnset", () => {
         return { stdout: "", exitCode: 0 };
       });
 
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("removed");
       expect(calls).toHaveLength(2);
       expect(calls[1]).toEqual(["git", "-C", cwd, "config", "--local", "--unset", "core.bare"]);
     } finally {
@@ -145,7 +145,7 @@ describe("ensureCoreBareUnset", () => {
         return { stdout: "", exitCode: 0 };
       });
 
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("removed");
       expect(calls).toHaveLength(2);
       expect(calls[1]).toEqual(["git", "-C", cwd, "config", "--local", "--unset", "core.bare"]);
     } finally {
@@ -153,29 +153,29 @@ describe("ensureCoreBareUnset", () => {
     }
   });
 
-  test("returns false when key is already absent", () => {
+  test("returns absent when key is already absent", () => {
     const cwd = makeFakeWorktree();
     try {
       const exec: ExecFn = mock(() => ({ stdout: "", exitCode: 1 }));
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("absent");
       expect(exec).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(cwd, { recursive: true });
     }
   });
 
-  test("does nothing for bare repo (no .git entry)", () => {
+  test("returns absent for bare repo (no .git entry)", () => {
     const cwd = makeFakeBareRepo();
     try {
       const exec: ExecFn = mock(() => ({ stdout: "", exitCode: 0 }));
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("absent");
       expect(exec).toHaveBeenCalledTimes(0);
     } finally {
       rmSync(cwd, { recursive: true });
     }
   });
 
-  test("falls back to setting false when unset fails and re-read confirms true", () => {
+  test("returns fallback when unset fails and re-read confirms key still present", () => {
     const cwd = makeFakeWorktree();
     try {
       const calls: string[][] = [];
@@ -188,7 +188,7 @@ describe("ensureCoreBareUnset", () => {
         return { stdout: "", exitCode: 0 }; // fallback set
       });
 
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(false);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("fallback");
       expect(calls).toHaveLength(4);
       expect(calls[2]).toEqual(["git", "-C", cwd, "config", "--local", "core.bare"]); // re-read
       expect(calls[3]).toEqual(["git", "-C", cwd, "config", "--local", "core.bare", "false"]); // fallback
@@ -197,7 +197,7 @@ describe("ensureCoreBareUnset", () => {
     }
   });
 
-  test("no fallback when unset fails but re-read shows key gone (benign race)", () => {
+  test("returns removed when unset fails but re-read shows key gone (benign race)", () => {
     const cwd = makeFakeWorktree();
     try {
       const calls: string[][] = [];
@@ -215,7 +215,7 @@ describe("ensureCoreBareUnset", () => {
         return { stdout: "", exitCode: 0 };
       });
 
-      expect(ensureCoreBareUnset(cwd, exec)).toBe(true);
+      expect(ensureCoreBareUnset(cwd, exec)).toBe("removed");
       expect(calls).toHaveLength(3); // read, unset, re-read — no fallback set
     } finally {
       rmSync(cwd, { recursive: true });
