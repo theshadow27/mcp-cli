@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type PermissionRequest, evaluate } from "./evaluator";
-import type { PermissionRule } from "./rule";
+import { type PermissionRule, isBareMcpServerPattern } from "./rule";
 
 function req(toolName: string, input: Record<string, unknown> = {}): PermissionRequest {
   return { toolName, input };
@@ -457,6 +457,64 @@ describe("evaluate", () => {
     expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__authenticate")).allow).toBe(true);
     expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__list_files")).allow).toBe(true);
     expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+  });
+
+  // ── Bare MCP server pattern (mcp__server without __*) ──
+
+  test("mcp__server matches every tool from that server", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__puppeteer", action: "allow" }];
+    expect(evaluate(rules, req("mcp__puppeteer__navigate")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__puppeteer__screenshot")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+    expect(evaluate(rules, req("Read")).allow).toBe(false);
+  });
+
+  test("mcp__server and mcp__server__* produce identical results", () => {
+    const bare: PermissionRule[] = [{ tool: "mcp__atlassian", action: "allow" }];
+    const starred: PermissionRule[] = [{ tool: "mcp__atlassian__*", action: "allow" }];
+    const tools = ["mcp__atlassian__search", "mcp__atlassian__get_issue", "mcp__echo__echo", "Read"];
+    for (const tool of tools) {
+      expect(evaluate(bare, req(tool)).allow).toBe(evaluate(starred, req(tool)).allow);
+    }
+  });
+
+  test("mcp__ alone (no server name) does not match anything", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__", action: "allow" }];
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(false);
+  });
+
+  test("multi-underscore server names work with bare form", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__claude_ai_Google_Drive", action: "allow" }];
+    expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__authenticate")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__claude_ai_Google_Drive__list_files")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(false);
+  });
+
+  test("bare server allow + specific tool deny (first-deny-wins)", () => {
+    const rules: PermissionRule[] = [
+      { tool: "mcp__puppeteer", action: "allow" },
+      { tool: "mcp__puppeteer__navigate", action: "deny" },
+    ];
+    expect(evaluate(rules, req("mcp__puppeteer__screenshot")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__puppeteer__navigate")).allow).toBe(false);
+  });
+
+  test("mcp__* is not a bare server pattern (it is a tool wildcard)", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__*", action: "allow" }];
+    // mcp__* is handled by isToolWildcard, not isBareMcpServerPattern
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
+    expect(evaluate(rules, req("mcp__atlassian__search")).allow).toBe(true);
+
+    // Direct contract test on the exported helper
+    expect(isBareMcpServerPattern("mcp__*")).toBe(false);
+  });
+
+  test("bare server does not match adjacent server prefix", () => {
+    const rules: PermissionRule[] = [{ tool: "mcp__echo", action: "allow" }];
+    // "mcp__echoextra__tool" starts with "mcp__echo" but not "mcp__echo__"
+    expect(evaluate(rules, req("mcp__echoextra__tool")).allow).toBe(false);
+    expect(evaluate(rules, req("mcp__echo__echo")).allow).toBe(true);
   });
 
   test("bare * in tool name is not a wildcard (literal exact match)", () => {

@@ -19,22 +19,29 @@ Rules use the `Tool(pattern)` format from Claude Code's settings:
 "Bash(ls /foo/*)"            → exact: the * is a bash glob, NOT a wildcard
 "Read(src/**/*.ts)"          → file glob: matches TypeScript files in src/
 "mcp__echo__echo"            → MCP tool name (exact match)
-"mcp__atlassian__*"          → MCP tool wildcard: all tools from atlassian server
+"mcp__atlassian__*"          → MCP tool wildcard: all tools from atlassian server (with __*)
+"mcp__atlassian"             → MCP server wildcard: all tools from atlassian server (bare form, equivalent to mcp__atlassian__*)
 "mcp__*"                     → MCP tool wildcard: all tools from any MCP server
 ```
+
+Both `mcp__server` and `mcp__server__*` are equivalent server-wide wildcards — they match identically. The bare form mirrors Claude Code's documented syntax; use whichever you copy from the docs.
 
 ### Wildcard Markers
 
 **`:*` is the argument wildcard.** Bare `*` in a Bash argument pattern is a valid bash glob character (like `ls /foo/*`) and is treated as literal. The `:*` suffix is Claude Code's native format meaning "this prefix with any arguments".
 
-**`__*` is the tool-name wildcard.** Appending `__*` to an MCP tool prefix matches all tools whose name starts with that prefix. This maps to MCP's `mcp__server__tool` naming convention:
+**`__*` or bare server name are the tool-name wildcards.** Two equivalent forms match all tools from an MCP server:
 
-- `mcp__atlassian__*` → allows every tool from the `atlassian` MCP server
+- `mcp__atlassian__*` — explicit wildcard suffix (Claude Code docs form 1)
+- `mcp__atlassian` — bare server name, no suffix (Claude Code docs form 2)
+
+Both produce identical evaluation results. The bare form is recognized when the pattern starts with `mcp__`, has a non-empty server name, and contains no `__` in the server segment.
+
 - `mcp__*` → allows every MCP tool from any server
 
-Only the `__*` suffix triggers prefix matching on tool names. A bare `*` at any other position (e.g., `Read*`) is not a wildcard and will only match the literal tool name `"Read*"` (which no real tool is named).
+Only `__*` or a bare `mcp__<server>` pattern trigger prefix matching on tool names. A bare `*` at any other position (e.g., `Read*`) is not a wildcard and will only match the literal tool name `"Read*"` (which no real tool is named).
 
-Deny rules with `__*` wildcards work symmetrically — a server-level deny (`mcp__atlassian__*`) combined with a broader allow (`mcp__*`) will block all atlassian tools via the standard first-deny-wins logic.
+Deny rules with server wildcards work symmetrically — a server-level deny (`mcp__atlassian__*` or `mcp__atlassian`) combined with a broader allow (`mcp__*`) will block all atlassian tools via the standard first-deny-wins logic.
 
 ### Evaluation Semantics
 
