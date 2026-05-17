@@ -581,6 +581,50 @@ describe("cmdMonitor", () => {
     expect(exitCalls).toEqual([0]);
   });
 
+  test("--timeout aborts never-resolving stream and exits 0", async () => {
+    let abortCalled = false;
+    let resolveStream: (() => void) | undefined;
+
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+
+    const exitCalls: number[] = [];
+    let capturedTimerFn: (() => void) | undefined;
+
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: hangingStream(),
+        abort: () => {
+          abortCalled = true;
+          resolveStream?.();
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+      createTimeout: (fn, _ms) => {
+        capturedTimerFn = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor(["--timeout", "1"], deps);
+    capturedTimerFn?.();
+    await promise;
+
+    expect(abortCalled).toBe(true);
+    expect(exitCalls).toEqual([0]);
+  });
+
   test("non-EPIPE stdout errors do not trigger finish", async () => {
     let capturedErrHandler: ((err: Error) => void) | undefined;
     const exitCalls: number[] = [];
