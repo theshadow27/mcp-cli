@@ -20,11 +20,14 @@ import {
   validateManifest,
 } from "@mcp-cli/core";
 import {
+  type AdvanceChainEntry,
+  type AdvanceResult,
   type PhaseInstallDeps,
   buildPhaseList,
   buildPhaseShow,
   checkStateSubset,
   cmdPhase,
+  cmdPhaseAdvance,
   detectDrift,
   executePhase,
   explainTransition,
@@ -32,6 +35,7 @@ import {
   formatDriftWarning,
   formatPhaseTable,
   formatTransitionLog,
+  parsePhaseAdvanceArgs,
   parsePhaseExecuteArgs,
   parsePhaseLogArgs,
   parsePhaseRunArgs,
@@ -2912,5 +2916,413 @@ describe("spawnExec (#1408)", () => {
   test("returns exitCode=1 for failing process", () => {
     const result = spawnExec(["false"]);
     expect(result.exitCode).toBe(1);
+  });
+});
+
+// ── parsePhaseAdvanceArgs ──────────────────────────────────────────────────
+
+describe("parsePhaseAdvanceArgs (#1944)", () => {
+  test("parses --work-item flag", () => {
+    expect(parsePhaseAdvanceArgs(["--work-item", "#42"])).toEqual({ workItemId: "#42" });
+  });
+
+  test("parses --work-item= form", () => {
+    expect(parsePhaseAdvanceArgs(["--work-item=#42"])).toEqual({ workItemId: "#42" });
+  });
+
+  test("throws when --work-item is missing", () => {
+    expect(() => parsePhaseAdvanceArgs([])).toThrow("Usage: mcx phase advance --work-item <id>");
+  });
+
+  test("throws when --work-item has no value", () => {
+    expect(() => parsePhaseAdvanceArgs(["--work-item"])).toThrow("--work-item requires an id");
+  });
+
+  test("throws on unknown flag", () => {
+    expect(() => parsePhaseAdvanceArgs(["--work-item", "#1", "--bogus"])).toThrow("unknown flag: --bogus");
+  });
+});
+
+// ── cmdPhaseAdvance integration ────────────────────────────────────────────
+
+describe("cmdPhaseAdvance — action-chain dispatch (#1944)", () => {
+  let advDir: string;
+
+  const advManifestYaml = `
+initial: impl
+phases:
+  impl:
+    source: ./impl.ts
+    next: [triage, qa, needs-attention]
+  triage:
+    source: ./triage.ts
+    next: [impl, qa, needs-attention]
+  qa:
+    source: ./qa.ts
+    next: [done, needs-attention]
+  needs-attention:
+    source: ./na.ts
+    next: [impl, done]
+  done:
+    source: ./done.ts
+    next: []
+`.trim();
+
+  const stubSource = (name: string) =>
+    `import { defineAlias, z } from "mcp-cli";\ndefineAlias(({ z }) => ({ name: ${JSON.stringify(name)}, description: "d", input: z.object({}).optional(), fn: async () => {} }));\n`;
+
+  beforeEach(async () => {
+    out = [];
+    err = [];
+    advDir = mkdtempSync(join(tmpdir(), "mcx-advance-"));
+    writeFileSync(join(advDir, ".mcx.yaml"), advManifestYaml);
+    for (const [file, name] of [
+      ["impl.ts", "impl"],
+      ["triage.ts", "triage"],
+      ["qa.ts", "qa"],
+      ["na.ts", "needs-attention"],
+      ["done.ts", "done"],
+    ] as [string, string][]) {
+      writeFileSync(join(advDir, file), stubSource(name));
+    }
+    const { deps } = makeDriftDeps(advDir);
+    await cmdPhase(["install"], deps);
+  });
+
+  afterEach(() => {
+    rmSync(advDir, { recursive: true, force: true });
+  });
+
+  function makeWorkItem(phase: string) {
+    return {
+      id: "#42",
+      issueNumber: 42,
+      prNumber: null,
+      branch: "feat/42",
+      prState: null,
+      prUrl: null,
+      ciStatus: "none",
+      ciRunId: null,
+      ciSummary: null,
+      reviewStatus: "pending",
+      phase,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  function makeExecDeps(
+    actionOutputs: Record<string, unknown>[],
+    opts: {
+      spawnOutput?: string;
+      spawnExitCode?: number;
+      stateSetIsError?: boolean;
+      stateSetThrows?: boolean;
+      workItemPhase?: string;
+    } = {},
+  ) {
+    const {
+      spawnOutput = JSON.stringify({ sessionId: "session-abc12345-xyz" }),
+      spawnExitCode = 0,
+      stateSetIsError = false,
+      stateSetThrows = false,
+      workItemPhase = "impl",
+    } = opts;
+
+    let callIdx = 0;
+    const outputs = actionOutputs;
+
+    return {
+      deps: {
+        cwd: () => advDir,
+        log: (m: string) => out.push(m),
+        logError: (m: string) => err.push(m),
+        exit: (code: number): never => {
+          throw new ExitCapture(code);
+        },
+        executeAliasBundled: async () => {
+          const output = outputs[callIdx++] ?? { action: "wait" };
+          return output;
+        },
+      } as Partial<PhaseInstallDeps>,
+      execDeps: {
+        ipcCall: (async (method: string, params?: unknown) => {
+          const p = params as Record<string, unknown> | undefined;
+          if (method === "getWorkItem") return makeWorkItem(workItemPhase);
+          if (method === "callTool" && (p as { tool?: string } | undefined)?.tool === "phase_state_set") {
+            if (stateSetThrows) throw new Error("state_set network error");
+            return stateSetIsError ? { isError: true, content: ["failed"] } : { content: [] };
+          }
+          return null;
+        }) as unknown as typeof import("@mcp-cli/core").ipcCall,
+        exec: (cmd: string[]) => {
+          if (cmd.includes("--is-inside-work-tree")) return { stdout: "true\n", exitCode: 0 };
+          if (cmd.includes("symbolic-ref")) return { stdout: "main\n", exitCode: 0 };
+          if (cmd.includes("--is-bare-repository")) return { stdout: "false\n", exitCode: 0 };
+          // Spawn command (mcx claude spawn ...)
+          return { stdout: spawnOutput, exitCode: spawnExitCode };
+        },
+        findGitRoot: () => advDir,
+        now: () => new Date(),
+        readCliConfig: () => ({}),
+      },
+    };
+  }
+
+  class ExitCapture extends Error {
+    constructor(public readonly code: number) {
+      super(`exit(${code})`);
+    }
+  }
+
+  let out: string[];
+  let err: string[];
+
+  async function runAdvance(
+    workItemId: string,
+    actionOutputs: Record<string, unknown>[],
+    advOpts: Parameters<typeof makeExecDeps>[1] = {},
+  ): Promise<{ out: string[]; err: string[]; exitCode: number | null }> {
+    const { deps, execDeps } = makeExecDeps(actionOutputs, advOpts);
+    let exitCode: number | null = null;
+    await cmdPhaseAdvance(["--work-item", workItemId], deps, execDeps).catch((e) => {
+      if (e instanceof ExitCapture) exitCode = e.code;
+      else throw e;
+    });
+    return { out, err, exitCode };
+  }
+
+  test("wait action — exits 0 and prints chain JSON", async () => {
+    const { out: o, err: e, exitCode } = await runAdvance("#42", [{ action: "wait" }]);
+    expect(exitCode).toBeNull();
+    const result = JSON.parse(o[0]) as AdvanceResult;
+    expect(result.workItemId).toBe("#42");
+    expect(result.chain).toHaveLength(1);
+    expect(result.chain[0]).toEqual({ phase: "impl", action: "wait" });
+    expect(result.final.action).toBe("wait");
+    expect(e.some((l) => l.includes("wait"))).toBe(true);
+  });
+
+  test("in-flight action — exits 0 and includes sessionId", async () => {
+    const { out: o, exitCode } = await runAdvance("#42", [
+      { action: "in-flight", sessionId: "existing-session-id-xyz" },
+    ]);
+    expect(exitCode).toBeNull();
+    const result = JSON.parse(o[0]) as AdvanceResult;
+    expect(result.final.action).toBe("in-flight");
+    expect(result.final.sessionId).toBe("existing-session-id-xyz");
+  });
+
+  test("in-flight without sessionId — exits 0", async () => {
+    const { out: o, exitCode } = await runAdvance("#42", [{ action: "in-flight" }]);
+    expect(exitCode).toBeNull();
+    const result = JSON.parse(o[0]) as AdvanceResult;
+    expect(result.final.action).toBe("in-flight");
+    expect(result.final.sessionId).toBeUndefined();
+  });
+
+  test("goto then wait — chain of 2", async () => {
+    const {
+      out: o,
+      err: e,
+      exitCode,
+    } = await runAdvance("#42", [{ action: "goto", target: "triage" }, { action: "wait" }], { workItemPhase: "impl" });
+    expect(exitCode).toBeNull();
+    const result = JSON.parse(o[0]) as AdvanceResult;
+    expect(result.chain).toHaveLength(2);
+    expect(result.chain[0]).toEqual({ phase: "impl", action: "goto", target: "triage" });
+    expect(result.chain[1]).toEqual({ phase: "triage", action: "wait" });
+    expect(result.final.phase).toBe("triage");
+    expect(e.some((l) => l.includes("impl → triage (goto)"))).toBe(true);
+  });
+
+  test("goto then spawn — records sessionId via state_set", async () => {
+    const spawnOutput = JSON.stringify({ sessionId: "new-session-uuid-12345678" });
+    const {
+      out: o,
+      err: e,
+      exitCode,
+    } = await runAdvance(
+      "#42",
+      [
+        { action: "goto", target: "qa" },
+        { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run qa"] },
+      ],
+      { workItemPhase: "impl", spawnOutput },
+    );
+    expect(exitCode).toBeNull();
+    const result = JSON.parse(o[0]) as AdvanceResult;
+    expect(result.chain).toHaveLength(2);
+    expect(result.chain[1].action).toBe("spawn");
+    expect(result.chain[1].sessionId).toBe("new-session-uuid-12345678");
+    expect(result.final.phase).toBe("qa");
+    expect(e.some((l) => l.includes("qa: spawned"))).toBe(true);
+  });
+
+  test("spawn on impl — state key is session_id (not impl_session_id)", async () => {
+    let capturedKey: string | undefined;
+    const { deps, execDeps } = makeExecDeps([
+      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"] },
+    ]);
+    const origIpc = execDeps.ipcCall;
+    execDeps.ipcCall = (async (method: string, params?: unknown) => {
+      const p = params as { tool?: string; arguments?: { key?: string } } | undefined;
+      if (method === "callTool" && p?.tool === "phase_state_set") {
+        capturedKey = p.arguments?.key;
+      }
+      return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
+    }) as unknown as typeof import("@mcp-cli/core").ipcCall;
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    expect(capturedKey).toBe("session_id");
+  });
+
+  test("spawn on qa — state key is qa_session_id", async () => {
+    // Prime the log so impl→qa is committed, allowing qa self-loop (idempotent re-entry).
+    appendTransitionLog(transitionLogPath(advDir), {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(transitionLogPath(advDir), {
+      ts: "2026-01-01T00:00:01Z",
+      workItemId: "#42",
+      from: "impl",
+      to: "qa",
+      status: "committed",
+    });
+    let capturedKey: string | undefined;
+    const { deps, execDeps } = makeExecDeps(
+      [{ action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run qa"] }],
+      { workItemPhase: "qa" },
+    );
+    const origIpc = execDeps.ipcCall;
+    execDeps.ipcCall = (async (method: string, params?: unknown) => {
+      const p = params as { tool?: string; arguments?: { key?: string } } | undefined;
+      if (method === "callTool" && p?.tool === "phase_state_set") {
+        capturedKey = p.arguments?.key;
+      }
+      return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
+    }) as unknown as typeof import("@mcp-cli/core").ipcCall;
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    expect(capturedKey).toBe("qa_session_id");
+  });
+
+  test("phase can override state key via stateKey field", async () => {
+    let capturedKey: string | undefined;
+    const { deps, execDeps } = makeExecDeps([
+      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"], stateKey: "custom_key" },
+    ]);
+    const origIpc = execDeps.ipcCall;
+    execDeps.ipcCall = (async (method: string, params?: unknown) => {
+      const p = params as { tool?: string; arguments?: { key?: string } } | undefined;
+      if (method === "callTool" && p?.tool === "phase_state_set") {
+        capturedKey = p.arguments?.key;
+      }
+      return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
+    }) as unknown as typeof import("@mcp-cli/core").ipcCall;
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    expect(capturedKey).toBe("custom_key");
+  });
+
+  test("spawn fails — exits non-zero, no phase_state_set called", async () => {
+    let stateSetCalled = false;
+    const { deps, execDeps } = makeExecDeps(
+      [{ action: "spawn", command: ["mcx", "claude", "spawn", "--task", "fail"] }],
+      { spawnExitCode: 1, spawnOutput: "connection refused" },
+    );
+    const origIpc = execDeps.ipcCall;
+    execDeps.ipcCall = (async (method: string, params?: unknown) => {
+      const p = params as { tool?: string } | undefined;
+      if (method === "callTool" && p?.tool === "phase_state_set") {
+        stateSetCalled = true;
+      }
+      return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
+    }) as unknown as typeof import("@mcp-cli/core").ipcCall;
+    let exitCode: number | null = null;
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch((e) => {
+      if (e instanceof ExitCapture) exitCode = e.code;
+      else throw e;
+    });
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(stateSetCalled).toBe(false);
+  });
+
+  test("spawn succeeds but phase_state_set fails — exits non-zero, sessionId in stderr", async () => {
+    const {
+      out: o,
+      err: e,
+      exitCode,
+    } = await runAdvance("#42", [{ action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"] }], {
+      stateSetIsError: true,
+    });
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    // sessionId must be visible in stderr for manual recovery
+    expect(e.some((l) => l.includes("session-abc12345-xyz"))).toBe(true);
+    expect(e.some((l) => l.includes("CRITICAL"))).toBe(true);
+  });
+
+  test("phase_state_set throws — exits non-zero, sessionId in stderr", async () => {
+    const { err: e, exitCode } = await runAdvance(
+      "#42",
+      [{ action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"] }],
+      { stateSetThrows: true },
+    );
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("session-abc12345-xyz"))).toBe(true);
+  });
+
+  test("unknown action — exits non-zero with informative message", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "reboot" }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("unknown action") && l.includes("reboot"))).toBe(true);
+  });
+
+  test("cycle — 8 iterations triggers cap, exits 2", async () => {
+    // A→B→A→B... cycle: alternating goto, never settles
+    const cycleOutputs = Array.from({ length: 10 }, (_, i) =>
+      i % 2 === 0 ? { action: "goto", target: "triage" } : { action: "goto", target: "impl" },
+    );
+    const { err: e, exitCode } = await runAdvance("#42", cycleOutputs, { workItemPhase: "impl" });
+    expect(exitCode).toBe(2);
+    expect(e.some((l) => l.includes("cap hit"))).toBe(true);
+  });
+
+  test("missing --work-item — exits 1 with usage message", async () => {
+    const { err: e, exitCode } = await runAdvance("", [], {});
+    // The advance fn is called with no args in this case - test direct
+    const errs: string[] = [];
+    let code: number | null = null;
+    await cmdPhaseAdvance(
+      [],
+      {
+        cwd: () => advDir,
+        log: () => {},
+        logError: (m) => errs.push(m),
+        exit: (c): never => {
+          code = c;
+          throw new ExitCapture(c);
+        },
+      },
+      {
+        ipcCall: (async (_method: string) => null) as unknown as typeof import("@mcp-cli/core").ipcCall,
+        exec: () => ({ stdout: "", exitCode: 0 }),
+        findGitRoot: () => advDir,
+        now: () => new Date(),
+        readCliConfig: () => ({}),
+      },
+    ).catch(() => {});
+    expect(code as unknown as number).toBe(1);
+    expect(errs.some((m) => m.includes("Usage"))).toBe(true);
+  });
+
+  test("help text includes advance subcommand", async () => {
+    const { out: o } = await catchExit(() => cmdPhase(["--help"]));
+    expect(o).toContain("advance");
   });
 });
