@@ -3825,6 +3825,133 @@ describe("IpcServer HTTP transport", () => {
     expect(buffer).toContain("session.result");
   });
 
+  test("ring-buffer: backfill session.response excluded by default (no responseTail) (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    // Pre-populate the log directly — no EventBus, so ring-buffer path is used
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: backfill session.response included when responseTail matches (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0&responseTail=s1", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: backfill session.response excluded when responseTail is different session (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0&responseTail=other-session", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
   test("ring-buffer: rejects connection when subscriber cap is reached (#1961)", async () => {
     startServer();
     if (!server) throw new Error("server not started");
