@@ -414,7 +414,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       const exported: unknown = require(wigglePath);
       const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
       if (typeof wiggleFn !== "function") throw new Error(`wiggle module at '${wigglePath}' must export a function`);
-      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
+      return this.withPage(siteName, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
     }
 
     if (spec?.wiggleSrc) {
@@ -425,7 +425,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       const exported: unknown = mod.exports;
       const wiggleFn = ((exported as Record<string, unknown>)?.default ?? exported) as unknown;
       if (typeof wiggleFn !== "function") throw new Error(`embedded wiggle for '${siteName}' must export a function`);
-      return this.withPage(site, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
+      return this.withPage(siteName, (page) => (wiggleFn as (page: Page) => Promise<string[]>)(page));
     }
 
     return ["no-wiggle-configured"];
