@@ -3212,7 +3212,7 @@ phases:
   test("phase can override state key via stateKey field", async () => {
     let capturedKey: string | undefined;
     const { deps, execDeps } = makeExecDeps([
-      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"], stateKey: "custom_key" },
+      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"], stateKey: "custom_session_id" },
     ]);
     const origIpc = execDeps.ipcCall;
     execDeps.ipcCall = (async (method: string, params?: unknown) => {
@@ -3223,7 +3223,7 @@ phases:
       return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
     }) as unknown as typeof import("@mcp-cli/core").ipcCall;
     await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
-    expect(capturedKey).toBe("custom_key");
+    expect(capturedKey).toBe("custom_session_id");
   });
 
   test("spawn fails — exits non-zero, no phase_state_set called", async () => {
@@ -3324,5 +3324,88 @@ phases:
   test("help text includes advance subcommand", async () => {
     const { out: o } = await catchExit(() => cmdPhase(["--help"]));
     expect(o).toContain("advance");
+  });
+
+  test("goto without target — exits non-zero with informative message", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "goto" }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("goto") && l.includes("without a target"))).toBe(true);
+  });
+
+  test("goto to self — exits non-zero with handler-bug message", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "goto", target: "impl" }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("goto-to-self"))).toBe(true);
+  });
+
+  test("spawn with empty command array — exits non-zero", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "spawn", command: [] }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("without a command"))).toBe(true);
+  });
+
+  test("spawn with non-mcx command root — exits non-zero", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "spawn", command: ["bash", "-c", "echo bad"] }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("bash") && l.includes("only"))).toBe(true);
+  });
+
+  test("in-flight with pending sentinel — exits non-zero with orphan warning", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [{ action: "in-flight", sessionId: "pending:1716000000000" }]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("pending:") && l.includes("orphan"))).toBe(true);
+  });
+
+  test("stateKey with forbidden pattern — exits non-zero", async () => {
+    const { err: e, exitCode } = await runAdvance("#42", [
+      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "x"], stateKey: "branch" },
+    ]);
+    expect(exitCode).not.toBe(null);
+    expect(exitCode).not.toBe(0);
+    expect(e.some((l) => l.includes("stateKey") && l.includes("branch"))).toBe(true);
+  });
+
+  test("spawn success echoes sessionId to stderr before phase_state_set", async () => {
+    const events: Array<{ type: "log" | "state_set" }> = [];
+    const { deps, execDeps } = makeExecDeps([
+      { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"] },
+    ]);
+    const origIpc = execDeps.ipcCall;
+    execDeps.ipcCall = (async (method: string, params?: unknown) => {
+      const p = params as { tool?: string } | undefined;
+      if (method === "callTool" && p?.tool === "phase_state_set") {
+        events.push({ type: "state_set" });
+      }
+      return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
+    }) as unknown as typeof import("@mcp-cli/core").ipcCall;
+    await cmdPhaseAdvance(
+      ["--work-item", "#42"],
+      {
+        ...deps,
+        logError: (m) => {
+          if (m.includes("session-abc12345-xyz")) events.push({ type: "log" });
+        },
+      },
+      execDeps,
+    ).catch(() => {});
+    const logIdx = events.findIndex((e) => e.type === "log");
+    const stateSetIdx = events.findIndex((e) => e.type === "state_set");
+    expect(logIdx).not.toBe(-1);
+    expect(stateSetIdx).not.toBe(-1);
+    expect(logIdx).toBeLessThan(stateSetIdx);
+  });
+
+  test("cap hit — error message names stranded phase", async () => {
+    const cycleOutputs = Array.from({ length: 10 }, (_, i) =>
+      i % 2 === 0 ? { action: "goto", target: "triage" } : { action: "goto", target: "impl" },
+    );
+    const { err: e, exitCode } = await runAdvance("#42", cycleOutputs, { workItemPhase: "impl" });
+    expect(exitCode).toBe(2);
+    expect(e.some((l) => l.includes("stranded"))).toBe(true);
   });
 });

@@ -1425,18 +1425,21 @@ export async function cmdPhaseAdvance(
     d.exit(1);
   }
 
-  assertNoDrift(d);
-
   const chain: AdvanceChainEntry[] = [];
   let currentPhase: string = workItem.phase;
 
   for (let i = 0; i < ADVANCE_MAX_ITERATIONS; i++) {
-    let capturedOutput: string | null = null;
+    // Re-check drift on every iteration: a phase handler has full shell/MCP
+    // access and could trigger `phase install`, invalidating the lockfile
+    // before the next executePhase call.
+    assertNoDrift(d);
+
+    const logCaptures: string[] = [];
 
     const captureDeps: Partial<PhaseInstallDeps> = {
       ...deps,
       log: (msg: string) => {
-        capturedOutput = msg;
+        logCaptures.push(msg);
       },
       exit: (code: number): never => {
         throw new PhaseAdvanceExitError(code);
@@ -1451,6 +1454,19 @@ export async function cmdPhaseAdvance(
         d.exit(err.code);
       }
       throw err;
+    }
+
+    // Use the last log call that parses as JSON — guards against any future
+    // preamble logs being added to executePhase without breaking capture.
+    let capturedOutput: string | null = null;
+    for (let j = logCaptures.length - 1; j >= 0; j--) {
+      try {
+        JSON.parse(logCaptures[j]);
+        capturedOutput = logCaptures[j];
+        break;
+      } catch {
+        // not JSON, keep scanning backwards
+      }
     }
 
     let output: Record<string, unknown>;
@@ -1474,6 +1490,15 @@ export async function cmdPhaseAdvance(
 
     if (action === "in-flight") {
       const sessionId = output.sessionId as string | undefined;
+      // A pending:* sentinel means the phase handler wrote its spawn marker but
+      // the orchestrator never replaced it with a real session ID (phase_state_set
+      // failed on a prior run). The session may be running as an orphan.
+      if (sessionId?.startsWith("pending:")) {
+        d.logError(
+          `phase "${currentPhase}" returned in-flight with a pending sentinel (${sessionId}) — a previous spawn may have succeeded but the session ID was not recorded. Check for orphan sessions with \`mcx claude ls --all\`, then either record the real sessionId with \`mcx call _work_items phase_state_set\` or clear the sentinel to allow re-spawn.`,
+        );
+        d.exit(1);
+      }
       const entry: AdvanceChainEntry = {
         phase: currentPhase,
         action: "in-flight",
@@ -1492,6 +1517,12 @@ export async function cmdPhaseAdvance(
         d.logError(`phase "${currentPhase}" returned "goto" without a target`);
         d.exit(1);
       }
+      if (target === currentPhase) {
+        d.logError(
+          `phase "${currentPhase}" returned goto-to-self — this is a handler bug, not a cycle. Check the phase script.`,
+        );
+        d.exit(1);
+      }
       const entry: AdvanceChainEntry = { phase: currentPhase, action: "goto", target };
       chain.push(entry);
       d.logError(`${currentPhase} → ${target} (goto)`);
@@ -1503,6 +1534,23 @@ export async function cmdPhaseAdvance(
       const command = output.command as string[] | undefined;
       if (!command || !Array.isArray(command) || command.length === 0) {
         d.logError(`phase "${currentPhase}" returned "spawn" without a command`);
+        d.exit(1);
+      }
+      if (command[0] !== "mcx") {
+        d.logError(
+          `phase "${currentPhase}" returned "spawn" with an unexpected command root "${command[0]}" — only "mcx" commands are allowed`,
+        );
+        d.exit(1);
+      }
+
+      const rawStateKey = output.stateKey as string | undefined;
+      const derivedStateKey = currentPhase === "impl" ? "session_id" : `${currentPhase}_session_id`;
+      const stateKey = rawStateKey ?? derivedStateKey;
+      const stateKeyPattern = /^([a-z][a-z0-9]*_)?session_id$/;
+      if (!stateKeyPattern.test(stateKey)) {
+        d.logError(
+          `phase "${currentPhase}" returned stateKey "${stateKey}" which does not match the required pattern (e.g. "session_id", "qa_session_id")`,
+        );
         d.exit(1);
       }
 
@@ -1522,11 +1570,13 @@ export async function cmdPhaseAdvance(
         d.exit(1);
       }
 
-      const stateKey =
-        (output.stateKey as string | undefined) ??
-        (currentPhase === "impl" ? "session_id" : `${currentPhase}_session_id`);
+      // Echo sessionId to stderr immediately so it is visible even if the
+      // phase_state_set call below fails and the recovery hint is malformed.
+      d.logError(`${currentPhase}: spawn succeeded — sessionId=${sessionId}`);
 
       const repoRoot = ex.findGitRoot(d.cwd()) ?? d.cwd();
+      const recoverPayload = JSON.stringify({ workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot });
+      const recoverCmd = `mcx call _work_items phase_state_set '${recoverPayload.replace(/'/g, "'\\''")}'`;
       try {
         const setResult = (await ex.ipcCall("callTool", {
           server: "_work_items",
@@ -1538,17 +1588,13 @@ export async function cmdPhaseAdvance(
           d.logError(
             `CRITICAL: spawn succeeded (sessionId=${sessionId}) but phase_state_set failed: ${JSON.stringify(setResult.content ?? setResult)}`,
           );
-          d.logError(
-            `To recover: mcx call _work_items phase_state_set '{"workItemId":"${opts.workItemId}","key":"${stateKey}","value":"${sessionId}","repoRoot":"${repoRoot}"}'`,
-          );
+          d.logError(`To recover: ${recoverCmd}`);
           d.exit(1);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         d.logError(`CRITICAL: spawn succeeded (sessionId=${sessionId}) but phase_state_set failed: ${msg}`);
-        d.logError(
-          `To recover: mcx call _work_items phase_state_set '{"workItemId":"${opts.workItemId}","key":"${stateKey}","value":"${sessionId}","repoRoot":"${repoRoot}"}'`,
-        );
+        d.logError(`To recover: ${recoverCmd}`);
         d.exit(1);
       }
 
@@ -1566,10 +1612,12 @@ export async function cmdPhaseAdvance(
     d.exit(1);
   }
 
-  // Hard cap hit — dump the chain to stderr for debugging
+  // Hard cap hit — work item is stranded at the current phase with no session.
   const chainStr = chain.map((e) => `${e.phase}(${e.action}${e.target ? `→${e.target}` : ""})`).join(" | ");
   d.logError(
-    `phase advance cap hit (${ADVANCE_MAX_ITERATIONS} iterations): possible cycle in phase graph\nchain: ${chainStr}`,
+    `phase advance cap hit (${ADVANCE_MAX_ITERATIONS} iterations): possible cycle in phase graph\n` +
+      `work item "${opts.workItemId}" is stranded at phase "${currentPhase}" — manual intervention required\n` +
+      `chain: ${chainStr}`,
   );
   d.exit(2);
 }
