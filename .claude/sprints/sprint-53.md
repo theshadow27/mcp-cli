@@ -39,6 +39,13 @@ and a deliberate cluster of test back-fills (#1759, #1754, #1565,
 15 work items. 2 high (opus), 3 medium (sonnet), 10 low (sonnet) — a
 deliberate skew toward small wins after sprint 52's opus-heavy profile.
 
+## Excluded (amended at run start)
+
+- **#1948** — already merged at sprint-52 close (PR #1976, 2026-05-04 02:19 UTC). Plan-time triage missed this because the merge landed ~12h before plan finalization. Removed from Batch 1.
+- **#1933** — already merged at sprint-52 close (PR #1989, 2026-05-04 02:55 UTC). Same root cause. Removed from Batch 2.
+
+Net: 13 work items (2 opus / 11 sonnet). 4 remaining in Batch 1: #1980, #1996, #2003, #1944.
+
 ## Batch Plan
 
 ### Batch 1 (immediate)
