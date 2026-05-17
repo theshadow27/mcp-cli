@@ -105,6 +105,14 @@ gets one fewer dialect to learn.
   heuristic is the kind of multi-line context that a pure regex can't
   express. This wants a `check` rule with a small scanning helper, not
   a `pattern` rule.
+- **Sprint guidance update.** After this lands, existing
+  `// lint-allow-args-bounds: <reason>` comments that the codemod
+  missed (e.g. inside string literals, in branches not yet rebased)
+  will silently fail to suppress. Implementer / repairer workers
+  trained on the old syntax will burn cycles. Add a one-liner to
+  `run.md`: "args-bounds suppression syntax is `// dotw-ignore
+  args-bounds: <reason>`; the old `// lint-allow-args-bounds` form is
+  inert."
 
 ### 2c. session-teardown → rule
 
@@ -166,6 +174,15 @@ chain in `.git-hooks/pre-commit` for a single
 **Why a separate PR.** Behavior change. The hook works today; cutting
 over invites surprise if any step list disagrees with what the hook
 ran. Best to land it when the lists are obviously equivalent.
+
+**Sprint guidance update.** This is the moment workers stop seeing
+stderr-with-100-lines on failure and start seeing a one-line
+"full logs: build/am-i-done-<ts>.txt" pointer. Repair workers that
+read only the orchestrator's truncated error will miss the actual
+failure. Update `run.md` (or wherever the repair playbook lives) to
+read the log file path out of the pre-commit failure and pass it to
+the repair worker. Also note: the file is deleted on success, so a
+later passing run won't leave a stale artifact.
 
 ---
 
