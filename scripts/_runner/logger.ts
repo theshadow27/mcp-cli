@@ -18,7 +18,8 @@
  *     warn/error to stderr so the user still knows when something broke.
  */
 
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { type WriteStream, createWriteStream, mkdirSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { Logger } from "./types";
@@ -78,19 +79,32 @@ export interface AiFileLogger extends Logger {
 }
 
 /**
- * Returns a logger that writes ANSI-stripped output to a timestamped file
- * under build/. warn/error are also mirrored to stderr so the human/agent
- * gets a real-time signal that something is going wrong, but info/debug
- * are file-only — that's where the bulk of the volume hides.
+ * Returns a logger that streams ANSI-stripped output to a timestamped
+ * file under build/. warn/error are also mirrored to stderr so the
+ * human/agent gets a real-time signal that something is going wrong,
+ * but info/debug are file-only — that's where the bulk of the volume
+ * hides.
+ *
+ * The stream is opened eagerly (not buffered until finalize) so SIGINT,
+ * OOM, or any non-graceful exit still leaves the partial log on disk.
+ * That's the failure mode where you most need the trace, so the file
+ * has to exist before the crash, not after.
  */
 export function createAiFileLogger(repoRoot: string): AiFileLogger {
   const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").split("Z")[0];
   const path = join(repoRoot, "build", `am-i-done-${ts}.txt`);
-  const lines: string[] = [];
+
+  mkdirSync(dirname(path), { recursive: true });
+  const stream: WriteStream = createWriteStream(path, { encoding: "utf8" });
 
   const write = (level: string, args: unknown[]) => {
-    lines.push(`[${level}] ${format(args).replace(ANSI, "")}`);
+    stream.write(`[${level}] ${format(args).replace(ANSI, "")}\n`);
   };
+
+  const closeStream = (): Promise<void> =>
+    new Promise((res) => {
+      stream.end(() => res());
+    });
 
   return {
     path,
@@ -105,16 +119,13 @@ export function createAiFileLogger(repoRoot: string): AiFileLogger {
       console.error(...a);
     },
     finalize: async (success) => {
-      if (success) {
-        try {
-          await unlink(path);
-        } catch {
-          /* file may not exist if nothing was written */
-        }
-        return;
+      await closeStream();
+      if (!success) return;
+      try {
+        await unlink(path);
+      } catch {
+        /* file may have been removed externally */
       }
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, `${lines.join("\n")}\n`, "utf8");
     },
   };
 }

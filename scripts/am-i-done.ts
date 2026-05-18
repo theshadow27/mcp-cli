@@ -60,7 +60,7 @@ const LINT_CHECK: Step = {
 
 const ARGS_BOUNDS: Step = {
   name: "args-bounds",
-  description: "args[++i] requires a bounds check or // lint-allow-args-bounds reason",
+  description: "post-increment arg-array access requires bounds check or suppression comment",
   command: "bun scripts/check-args-bounds.ts",
 };
 

@@ -31,40 +31,69 @@ export interface RunRulesOptions {
   showAll?: boolean;
 }
 
+export interface MalformedTodo {
+  file: string;
+  line: number;
+  ruleId: string;
+}
+
+export interface RunRulesResult {
+  violations: Violation[];
+  malformedTodos: MalformedTodo[];
+  unknownRule: boolean;
+  durationMs: number;
+}
+
 export async function runRules(
   opts: RunRulesOptions,
   logger: Pick<Console, "info" | "warn" | "error">,
-): Promise<{
-  violations: Violation[];
-  durationMs: number;
-}> {
+): Promise<RunRulesResult> {
   const t0 = Date.now();
   const rules = opts.ruleId ? RULES.filter((r) => r.id === opts.ruleId) : RULES;
   if (opts.ruleId && rules.length === 0) {
     logger.error(`rule '${opts.ruleId}' not registered. known: ${RULES.map((r) => r.id).join(", ")}`);
-    return { violations: [], durationMs: 0 };
+    return { violations: [], malformedTodos: [], unknownRule: true, durationMs: 0 };
   }
 
   const files = await loadFiles({ repoRoot: REPO_ROOT, filter: opts.filter });
   const violations: Violation[] = [];
+  const malformedTodos: MalformedTodo[] = [];
   for (const file of files.values()) {
     for (const rule of rules) {
       const raw = evaluateRule(rule, file, files);
       for (const v of raw) {
         const s = checkSuppression(file.content, v.line, rule.id);
-        if (s.suppressed && !s.todoWithoutIssue) continue;
+        if (s.suppressed) {
+          // A malformed dotw-todo (missing #NNN) is itself the problem — surface
+          // it once as a malformed-suppression note, not as the underlying rule.
+          // Phase 4's meta-rule will promote this to a hard failure.
+          if (s.todoWithoutIssue) malformedTodos.push({ file: file.relPath, line: v.line, ruleId: rule.id });
+          continue;
+        }
         violations.push({ ...v, rule });
       }
     }
   }
 
-  return { violations, durationMs: Date.now() - t0 };
+  return { violations, malformedTodos, unknownRule: false, durationMs: Date.now() - t0 };
+}
+
+function reportMalformedTodos(malformedTodos: MalformedTodo[], logger: Pick<Console, "warn">): void {
+  if (malformedTodos.length === 0) return;
+  logger.warn(
+    `\n⚠ ${malformedTodos.length} malformed dotw-todo comment${malformedTodos.length === 1 ? "" : "s"} (missing #<issue>):`,
+  );
+  for (const t of malformedTodos) logger.warn(`  ${t.file}:${t.line}  (rule: ${t.ruleId})`);
+  logger.warn("  expected: // dotw-todo <rule-id>: <description> — fix in #NNN");
+  logger.warn("  these currently suppress the underlying violation; Phase 4 promotes them to errors");
 }
 
 /** Step adapter — lets am-i-done.ts run the rule engine in-process. */
 export const doingItWrongStep: ScriptFunction = async ({ logger }) => {
-  const { violations } = await runRules({}, logger);
+  const { violations, malformedTodos, unknownRule } = await runRules({}, logger);
   reportViolations(violations, { logger, showAll: false });
+  reportMalformedTodos(malformedTodos, logger);
+  if (unknownRule) return { success: false, error: "unknown rule" };
   return { success: violations.length === 0, error: violations.length ? `${violations.length} violations` : undefined };
 };
 
@@ -80,10 +109,11 @@ async function main(argv: string[]): Promise<void> {
     filter: filterIdx >= 0 ? argv[filterIdx + 1] : undefined,
     showAll: argv.includes("--all"),
   };
-  const { violations, durationMs } = await runRules(opts, console);
-  reportViolations(violations, { logger: console, showAll: opts.showAll });
-  console.info(`\nchecked ${RULES.length} rule${RULES.length === 1 ? "" : "s"} in ${durationMs}ms`);
-  process.exit(violations.length === 0 ? 0 : 1);
+  const result = await runRules(opts, console);
+  reportViolations(result.violations, { logger: console, showAll: opts.showAll });
+  reportMalformedTodos(result.malformedTodos, console);
+  console.info(`\nchecked ${RULES.length} rule${RULES.length === 1 ? "" : "s"} in ${result.durationMs}ms`);
+  process.exit(result.unknownRule || result.violations.length > 0 ? 1 : 0);
 }
 
 if (import.meta.main) {
