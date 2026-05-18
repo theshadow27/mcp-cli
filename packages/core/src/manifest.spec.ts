@@ -629,6 +629,33 @@ describe("state field object form (#2019)", () => {
     ).toThrow(/conflicts with built-in CLI flag/);
   });
 
+  test("rejects repeatable on non-string type", () => {
+    for (const type of ["number", "boolean", "enum[a,b,c]"]) {
+      expect(() =>
+        validateManifest(
+          {
+            initial: "a",
+            state: { field: { type, track: true, repeatable: true } },
+            phases: { a: { source: "./a.ts" } },
+          },
+          "/tmp/x",
+        ),
+      ).toThrow(/repeatable.*string/i);
+    }
+  });
+
+  test("allows repeatable on string type", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { tags: { type: "string", track: true, repeatable: true } },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(typeof m.state?.tags).toBe("object");
+  });
+
   test("allows reserved name when not trackable", () => {
     const m = validateManifest(
       {

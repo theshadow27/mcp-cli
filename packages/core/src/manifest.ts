@@ -72,6 +72,14 @@ export const StateFieldObjectSchema = z
       return true;
     },
     { message: "default value does not match declared type" },
+  )
+  .refine(
+    (f) => {
+      if (!f.repeatable) return true;
+      const raw = f.type.endsWith("?") ? f.type.slice(0, -1) : f.type;
+      return raw === "string";
+    },
+    { message: "repeatable is only valid for string fields (values are stored as comma-joined strings)" },
   );
 
 export type StateFieldObject = z.infer<typeof StateFieldObjectSchema>;
