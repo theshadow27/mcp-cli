@@ -12,6 +12,8 @@
 
 import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
+import type { AutomationDefinition } from "./automation";
+import { defineAutomation } from "./automation";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -160,6 +162,7 @@ export const stripMcpCliImport = stripModuleSyntax;
 /** Internal result from evalBundledJs — alias def plus any monitor definitions. */
 interface EvalResult {
   aliasDef: AliasDefinition | null;
+  automationDef: AutomationDefinition | null;
   monitorDefs: MonitorAliasDefinition[];
 }
 
@@ -188,6 +191,7 @@ async function evalBundledJs(
   const coreBarrel = await import("./index");
 
   let aliasDef: AliasDefinition | null = null;
+  let automationDef: AutomationDefinition | null = null;
   const monitorDefs: MonitorAliasDefinition[] = [];
 
   const injected = {
@@ -197,6 +201,10 @@ async function evalBundledJs(
       } else {
         aliasDef = defOrFactory;
       }
+    },
+    defineAutomation: (def: AutomationDefinition) => {
+      automationDef = def;
+      return def;
     },
     defineMonitor: (def: MonitorAliasDefinition<AliasMonitorEventInput>) => {
       monitorDefs.push(def);
@@ -210,7 +218,7 @@ async function evalBundledJs(
     parsePythonRepr,
   };
 
-  const code = `const { defineAlias, defineMonitor, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
+  const code = `const { defineAlias, defineAutomation, defineMonitor, z, mcp, args, file, json, parsePythonRepr } = __mcp_inject__;\n${stripped}`;
   const fn = new AsyncFunction("__mcp_inject__", "__mcp_core__", code);
 
   if (timeoutMs !== undefined) {
@@ -225,7 +233,7 @@ async function evalBundledJs(
     await fn(injected, coreBarrel);
   }
 
-  return { aliasDef, monitorDefs };
+  return { aliasDef, automationDef, monitorDefs };
 }
 
 /**

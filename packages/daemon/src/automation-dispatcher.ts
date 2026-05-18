@@ -43,6 +43,7 @@ export class AutomationDispatcher {
   private auditRing: AutomationAuditEntry[] = [];
   private auditHead = 0;
   private auditCount = 0;
+  private auditTotal = 0;
   private repoRoot: string;
   private eventBus: EventBus;
   private getWorkItemOverrides: (workItemId: string) => string | undefined;
@@ -192,6 +193,7 @@ export class AutomationDispatcher {
       durationMs,
     };
 
+    this.auditTotal++;
     if (this.auditCount < AUDIT_RING_CAPACITY) {
       this.auditRing.push(entry);
       this.auditCount++;
@@ -220,9 +222,10 @@ export class AutomationDispatcher {
   getAuditLog(moduleName?: string, limit = 50): AutomationLogEntry[] {
     const entries: AutomationAuditEntry[] = [];
     const n = Math.min(this.auditCount, AUDIT_RING_CAPACITY);
+    const wrapped = this.auditTotal > AUDIT_RING_CAPACITY;
 
     for (let i = 0; i < n; i++) {
-      const idx = this.auditCount <= AUDIT_RING_CAPACITY ? i : (this.auditHead + i) % AUDIT_RING_CAPACITY;
+      const idx = wrapped ? (this.auditHead + i) % AUDIT_RING_CAPACITY : i;
       const entry = this.auditRing[idx];
       if (moduleName && entry.module !== moduleName) continue;
       entries.push(entry);

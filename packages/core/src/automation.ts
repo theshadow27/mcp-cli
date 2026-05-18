@@ -68,7 +68,7 @@ export const AutomationModuleDefSchema = z
   .object({
     source: z.string().min(1, "module source must be a non-empty string"),
     on: z.array(AutomationEventNameSchema).min(1, "module must subscribe to at least one event"),
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().optional(),
   })
   .strict();
 
@@ -156,7 +156,7 @@ export function parseAutomationOverrides(csv: string | undefined | null): Map<st
 
 export function isModuleEnabledForItem(
   moduleName: string,
-  moduleEnabled: boolean,
+  moduleEnabled: boolean | undefined,
   preset: AutomationPreset,
   overrides: Map<string, boolean>,
 ): boolean {

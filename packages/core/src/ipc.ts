@@ -450,6 +450,8 @@ export const TrackWorkItemParamsSchema = z
     initialPhase: z.string().optional(),
     /** Absolute path to the repo root; used server-side to locate a .mcx manifest for initialPhase validation. */
     repoRoot: z.string().optional(),
+    /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). */
+    automationOverrides: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",

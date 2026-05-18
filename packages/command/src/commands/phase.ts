@@ -49,6 +49,7 @@ import {
   createMcpProxy,
   createWaitForEvent,
   executeAliasBundled,
+  expandPreset,
   extractMetadata,
   findGitRoot,
   hashFileSync,
@@ -239,12 +240,14 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
       }
 
       const rel = relative(cwd, resolvedAbs).split("\\").join("/");
+      const presetDefaults = expandPreset(manifest.automation?.preset ?? "supervised");
+      const resolvedEnabled = mod.enabled ?? presetDefaults[name] ?? false;
       automations.push({
         name,
         resolvedPath: rel === "" ? "." : rel,
         contentHash,
         events: [...mod.on],
-        enabled: mod.enabled,
+        enabled: resolvedEnabled,
       });
     }
   }

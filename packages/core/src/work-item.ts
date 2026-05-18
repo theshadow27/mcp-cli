@@ -38,6 +38,7 @@ export interface WorkItem {
   reviewStatus: ReviewStatus;
   mergeStateStatus: MergeStateStatus | null;
   phase: WorkItemPhase;
+  automationOverrides: string | null;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -133,6 +134,7 @@ export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
     reviewStatus: "none",
     mergeStateStatus: null,
     phase: phase ?? "impl",
+    automationOverrides: null,
     createdAt: now,
     updatedAt: now,
     version: 1,

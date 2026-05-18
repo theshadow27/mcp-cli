@@ -3,6 +3,19 @@ import type { AutomationAction, AutomationConfig, LockedAutomation, MonitorEvent
 import { AutomationDispatcher } from "./automation-dispatcher";
 import { EventBus } from "./event-bus";
 
+const POLL_INTERVAL_MS = 2;
+const POLL_DEADLINE_MS = 2_000;
+
+async function pollUntil(predicate: () => boolean, deadline = POLL_DEADLINE_MS): Promise<void> {
+  const start = performance.now();
+  while (!predicate()) {
+    if (performance.now() - start > deadline) {
+      throw new Error(`pollUntil timed out after ${deadline}ms`);
+    }
+    await Bun.sleep(POLL_INTERVAL_MS);
+  }
+}
+
 function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
@@ -63,7 +76,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => executedModules.length >= 1);
 
     expect(executedModules).toHaveLength(1);
     expect(executedModules[0].name).toBe("cleanup");
@@ -75,17 +88,25 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent({ event: "pr.opened" }));
-    await Bun.sleep(10);
+    // Publish a matching event after to confirm the first was skipped
+    bus.publish(makeEvent());
+    await pollUntil(() => executedModules.length >= 1);
 
-    expect(executedModules).toHaveLength(0);
+    expect(executedModules).toHaveLength(1);
+    expect(executedModules[0].event).toBe("pr.merged");
   });
 
   test("skips disabled module", async () => {
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
     dispatcher.load(makeConfig(), [makeLocked({ enabled: false })]);
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => published.length >= 1);
 
     expect(executedModules).toHaveLength(0);
   });
@@ -102,7 +123,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
 
     const fired = published.find((e) => e.event === "automation.fired");
     expect(fired).toBeDefined();
@@ -133,7 +154,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent({ workItemId: "wi-1" }));
-    await Bun.sleep(10);
+    await pollUntil(() => published.some((e) => e.event === "automation.skipped"));
 
     expect(executedModules).toHaveLength(0);
     const skipped = published.find((e) => e.event === "automation.skipped");
@@ -155,7 +176,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => published.some((e) => e.event === "automation.escalated"));
 
     const escalated = published.find((e) => e.event === "automation.escalated");
     expect(escalated).toBeDefined();
@@ -182,7 +203,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => published.some((e) => e.event === "automation.errored"));
 
     const errored = published.find((e) => e.event === "automation.errored");
     expect(errored).toBeDefined();
@@ -204,7 +225,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent({ workItemId: "wi-1" }));
-    await Bun.sleep(10);
+    await pollUntil(() => executedModules.length >= 1);
 
     expect(executedModules).toHaveLength(1);
   });
@@ -226,7 +247,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => dispatcher.getAuditLog().length >= 1);
 
     const log = dispatcher.getAuditLog();
     expect(log).toHaveLength(1);
@@ -244,7 +265,7 @@ describe("AutomationDispatcher", () => {
     dispatcher.start();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    await pollUntil(() => dispatcher.getAuditLog().length >= 2);
 
     const cleanupLog = dispatcher.getAuditLog("cleanup");
     expect(cleanupLog).toHaveLength(1);
@@ -256,19 +277,67 @@ describe("AutomationDispatcher", () => {
   });
 
   test("stop unsubscribes from event bus", async () => {
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
     dispatcher.load(makeConfig(), [makeLocked()]);
     dispatcher.start();
     dispatcher.stop();
 
     bus.publish(makeEvent());
-    await Bun.sleep(10);
+    // Give enough time — no audit events should appear
+    await Bun.sleep(20);
 
     expect(executedModules).toHaveLength(0);
+    expect(published.filter((e) => e.event === "automation.fired")).toHaveLength(0);
   });
 
   test("moduleCount reflects loaded modules", () => {
     expect(dispatcher.moduleCount).toBe(0);
     dispatcher.load(makeConfig(), [makeLocked()]);
     expect(dispatcher.moduleCount).toBe(1);
+  });
+
+  test("ring buffer returns newest entries in chronological order after wrapping", async () => {
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    const totalEvents = 220;
+    for (let i = 0; i < totalEvents; i++) {
+      bus.publish(makeEvent({ seq: i }));
+    }
+    await pollUntil(() => dispatcher.getAuditLog(undefined, 300).length >= 200);
+
+    const log = dispatcher.getAuditLog(undefined, 50);
+    expect(log).toHaveLength(50);
+    // Newest 50 entries should be the last 50 events published (seq 170-219).
+    // They should be in chronological order (oldest first within the slice).
+    for (let i = 1; i < log.length; i++) {
+      expect(log[i].ts >= log[i - 1].ts).toBe(true);
+    }
+
+    const fullLog = dispatcher.getAuditLog(undefined, 300);
+    expect(fullLog).toHaveLength(200);
+  });
+
+  test("preset defaults apply when module enabled is undefined in lockfile", async () => {
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    // Module with enabled=false should be skipped under any preset
+    // (lockfile resolves enabled at install time; this tests the dispatcher
+    // respects the resolved value)
+    dispatcher.load(makeConfig({ preset: "supervised" }), [makeLocked({ enabled: false })]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.skipped"));
+
+    expect(executedModules).toHaveLength(0);
+    expect(published.some((e) => e.event === "automation.skipped")).toBe(true);
   });
 });

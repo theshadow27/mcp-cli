@@ -241,6 +241,7 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     reviewStatus: "none",
     mergeStateStatus: null,
     phase: "impl",
+    automationOverrides: null,
     createdAt: "2026-04-10T00:00:00Z",
     updatedAt: "2026-04-10T00:00:00Z",
     version: 1,

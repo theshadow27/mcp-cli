@@ -62,9 +62,10 @@ export async function cmdAutomation(args: string[], deps?: Partial<AutomationDep
     }
     await cmdShow(repoRoot, name, d);
   } else if (sub === "log") {
-    const name = args[1];
     const limitIdx = args.indexOf("--limit");
     const limit = limitIdx >= 0 ? Number.parseInt(args[limitIdx + 1], 10) : undefined;
+    const firstPositional = args[1];
+    const name = firstPositional && !firstPositional.startsWith("--") ? firstPositional : undefined;
     await cmdLog(repoRoot, name, limit, d);
   } else {
     d.logError(`Unknown subcommand: ${sub}`);

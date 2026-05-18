@@ -32,12 +32,12 @@ describe("AutomationModuleDefSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  test("defaults enabled to true", () => {
+  test("enabled is undefined when omitted", () => {
     const result = AutomationModuleDefSchema.parse({
       source: "./bind.ts",
       on: ["pr.opened"],
     });
-    expect(result.enabled).toBe(true);
+    expect(result.enabled).toBeUndefined();
   });
 
   test("rejects empty source", () => {

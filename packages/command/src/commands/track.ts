@@ -48,6 +48,16 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
   const initialPhase = manifest?.initial;
 
+  const automationIdx = args.indexOf("--automation");
+  let automationOverrides: string | undefined;
+  if (automationIdx >= 0) {
+    automationOverrides = args[automationIdx + 1];
+    if (!automationOverrides || automationOverrides.startsWith("--")) {
+      printError("--automation requires a value (e.g. merge=false,bind=true)");
+      return deps.exit(1);
+    }
+  }
+
   if (args[0] === "--branch") {
     const branch = args[1];
     if (!branch) {
@@ -58,6 +68,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       const item = await deps.ipcCall("trackWorkItem", {
         branch,
         ...(initialPhase ? { initialPhase } : {}),
+        ...(automationOverrides ? { automationOverrides } : {}),
         repoRoot: cwd,
       });
       console.error(`Tracking branch ${branch} (${item.id})`);
@@ -68,9 +79,15 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     return;
   }
 
-  const num = Number(args[0]);
-  if (!Number.isInteger(num) || num <= 0) {
-    printError(`Invalid number: ${args[0]}`);
+  const skipIndices = new Set<number>();
+  if (automationIdx >= 0) {
+    skipIndices.add(automationIdx);
+    skipIndices.add(automationIdx + 1);
+  }
+  const firstPositional = args.find((_, i) => !skipIndices.has(i) && !args[i].startsWith("--"));
+  const num = Number(firstPositional);
+  if (!firstPositional || !Number.isInteger(num) || num <= 0) {
+    printError(`Invalid number: ${firstPositional ?? args[0]}`);
     return deps.exit(1);
   }
 
@@ -78,6 +95,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     const item = await deps.ipcCall("trackWorkItem", {
       number: num,
       ...(initialPhase ? { initialPhase } : {}),
+      ...(automationOverrides ? { automationOverrides } : {}),
       repoRoot: cwd,
     });
     console.error(`Tracking #${num} (${item.id})`);
@@ -256,19 +274,19 @@ function printTrackHelp(): void {
   console.log(`mcx track — work item tracking
 
 Usage:
-  mcx track <number>           Track an issue/PR by number
-  mcx track --branch <name>    Track a branch (PR may not exist yet)
-  mcx untrack <number>         Stop tracking by number
-  mcx untrack --branch <name>  Stop tracking by branch
-  mcx tracked                  List all tracked work items
-  mcx tracked --json           Machine-readable output
-  mcx tracked --phase <phase>  Filter by phase (impl, review, repair, qa, done)
+  mcx track <number>                        Track an issue/PR by number
+  mcx track --branch <name>                 Track a branch (PR may not exist yet)
+  mcx track <number> --automation <csv>     Set per-item automation overrides
+  mcx untrack <number>                      Stop tracking by number
+  mcx untrack --branch <name>               Stop tracking by branch
+  mcx tracked                               List all tracked work items
+  mcx tracked --json                        Machine-readable output
+  mcx tracked --phase <phase>               Filter by phase (impl, review, repair, qa, done)
 
 Examples:
   mcx track 1135
   mcx track --branch feat/new-feature
+  mcx track 1135 --automation merge=false,bind=true
   mcx untrack 1135
-  mcx untrack --branch feat/new-feature
-  mcx tracked
   mcx tracked --json`);
 }

@@ -37,6 +37,7 @@ import {
   DAEMON_READY_SIGNAL,
   DAEMON_RESTARTED,
   DEFAULT_CLAUDE_WS_PORT,
+  LOCKFILE_NAME,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
   MOCK_SERVER_NAME,
@@ -54,6 +55,7 @@ import {
   isCoreBareSet,
   loadManifest,
   options,
+  parseLockfile,
   pruneExpiredCache,
   readCliConfig,
   readWorktreeConfig,
@@ -62,6 +64,7 @@ import {
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { AutomationDispatcher } from "./automation-dispatcher";
 import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
@@ -654,6 +657,39 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     logger.info("[mcpd] Session metrics aggregator started");
   }
 
+  // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
+  let automationDispatcher: AutomationDispatcher | null = null;
+  {
+    const workItemDb = new WorkItemDb(db.getDatabase());
+    const manifestResult = loadManifest(process.cwd());
+    if (manifestResult?.manifest?.automation) {
+      const lockfilePath = join(process.cwd(), LOCKFILE_NAME);
+      let automations: import("@mcp-cli/core").LockedAutomation[] = [];
+      try {
+        const lockText = readFileSync(lockfilePath, "utf-8");
+        const lock = parseLockfile(lockText);
+        automations = lock.automations ?? [];
+      } catch {
+        logger.warn("[mcpd] Automation configured but no lockfile found — run `mcx phase install`");
+      }
+      if (automations.length > 0) {
+        automationDispatcher = new AutomationDispatcher({
+          eventBus: mailEventBus,
+          repoRoot: process.cwd(),
+          getWorkItemOverrides: (workItemId) => {
+            const item = workItemDb.getWorkItem(workItemId);
+            return item?.automationOverrides ?? undefined;
+          },
+        });
+        automationDispatcher.load(manifestResult.manifest.automation, automations);
+        automationDispatcher.start();
+        logger.info(
+          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"})`,
+        );
+      }
+    }
+  }
+
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     daemonId,
@@ -697,6 +733,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         logger.error(`[mcpd] Monitor restart for "${name}" failed: ${err}`);
       });
     },
+    automationDispatcher: automationDispatcher ?? undefined,
   });
   ipcServer.start();
 

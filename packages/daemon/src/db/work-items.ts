@@ -65,6 +65,7 @@ interface WorkItemRow {
   ci_summary: string | null;
   review_status: string;
   merge_state_status: string | null;
+  automation_overrides: string | null;
   phase: string;
   created_at: string;
   updated_at: string;
@@ -86,6 +87,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     reviewStatus: row.review_status as ReviewStatus,
     mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
     phase: row.phase as WorkItemPhase,
+    automationOverrides: row.automation_overrides ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     version: row.version,
@@ -244,6 +246,11 @@ export class WorkItemDb {
       })();
       version = 6;
     }
+    if (version < 7) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN automation_overrides TEXT");
+      this.setSchemaVersion(CONSUMER, 7);
+      version = 7;
+    }
   }
 
   private setSchemaVersion(name: string, version: number): void {
@@ -335,6 +342,7 @@ export class WorkItemDb {
           ["ciSummary", "ci_summary"],
           ["reviewStatus", "review_status"],
           ["mergeStateStatus", "merge_state_status"],
+          ["automationOverrides", "automation_overrides"],
           ["phase", "phase"],
         ];
 
