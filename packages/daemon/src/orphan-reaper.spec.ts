@@ -161,4 +161,28 @@ describe("reapOrphanedSessions", () => {
 
     expect(result).toBe(0);
   });
+
+  test("null ownership + alive PID → session preserved (ownership uncertain)", () => {
+    const db = createDb();
+    db.upsertSession({ sessionId: "sess-null-alive", state: "running", pid: process.pid, pidStartTime: 1000000 });
+
+    const { logger, messages } = capturingLogger();
+    const result = reapOrphanedSessions(db, logger, { isOurProcess: () => null });
+
+    expect(result).toBe(0);
+    expect(db.listSessions(true)).toHaveLength(1);
+    expect(messages.some((m) => m.level === "info" && String(m.args[0]).includes("ownership uncertain"))).toBe(true);
+  });
+
+  test("null ownership + dead PID → session cleaned up", () => {
+    const db = createDb();
+    db.upsertSession({ sessionId: "sess-null-dead", state: "running", pid: 88888, pidStartTime: 1000000 });
+
+    const { logger, messages } = capturingLogger();
+    const result = reapOrphanedSessions(db, logger, { isOurProcess: () => null });
+
+    expect(result).toBe(1);
+    expect(db.listSessions(true)).toHaveLength(0);
+    expect(messages.some((m) => m.level === "warn" && String(m.args[0]).includes("no longer alive"))).toBe(true);
+  });
 });
