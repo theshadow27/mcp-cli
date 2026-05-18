@@ -205,6 +205,7 @@ describe("AcpSession (with fake ACP agent)", () => {
   test("approve() responds to pending permission and resumes session", async () => {
     const { session, events } = makeSession({ agent: "permission" });
 
+    const resultPromise = session.waitForResult(10000);
     await session.start();
     await waitFor(() => events.some((e) => e.type === "session:permission_request"));
 
@@ -214,19 +215,23 @@ describe("AcpSession (with fake ACP agent)", () => {
     );
     if (!permEvent) throw new Error("Expected permission_request event");
 
-    const resultPromise = session.waitForResult(10000);
-    session.approve(permEvent.request.requestId);
+    try {
+      session.approve(permEvent.request.requestId);
 
-    expect(session.currentState).toBe("active");
-    expect(session.getInfo().pendingPermissions).toBe(0);
+      expect(session.currentState).toBe("active");
+      expect(session.getInfo().pendingPermissions).toBe(0);
 
-    const result = await resultPromise;
-    expect(result.type).toBe("session:result");
+      const result = await resultPromise;
+      expect(result.type).toBe("session:result");
+    } finally {
+      session.terminate();
+    }
   });
 
   test("deny() responds to pending permission and resumes session", async () => {
     const { session, events } = makeSession({ agent: "permission" });
 
+    const resultPromise = session.waitForResult(10000);
     await session.start();
     await waitFor(() => events.some((e) => e.type === "session:permission_request"));
 
@@ -236,13 +241,16 @@ describe("AcpSession (with fake ACP agent)", () => {
     );
     if (!permEvent) throw new Error("Expected permission_request event");
 
-    const resultPromise = session.waitForResult(10000);
-    session.deny(permEvent.request.requestId);
+    try {
+      session.deny(permEvent.request.requestId);
 
-    expect(session.currentState).toBe("active");
+      expect(session.currentState).toBe("active");
 
-    const result = await resultPromise;
-    expect(result.type).toBe("session:result");
+      const result = await resultPromise;
+      expect(result.type).toBe("session:result");
+    } finally {
+      session.terminate();
+    }
   });
 
   test("send() starts a follow-up prompt after first completes", async () => {
