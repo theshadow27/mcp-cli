@@ -1548,15 +1548,18 @@ describe("mcx claude ls", () => {
     } finally {
       console.error = origErr;
     }
-  });
+  }, 2000);
 
-  test("--all --short with sessions outputs compact one-line-per-session", async () => {
+  test("--all --short with sessions bypasses repo-root filter and outputs compact lines", async () => {
     const sessions = [
       { ...SESSION_LIST[0], repoRoot: "/repo/a" },
       { ...SESSION_LIST[1], repoRoot: "/repo/b" },
     ];
     const deps = makeDeps({
       callTool: mock(async () => toolResult(sessions)),
+      // Non-null getGitRoot so the non-all path would scope by /repo/a;
+      // --all must still call with {} (no repoRoot filter).
+      getGitRoot: mock(() => "/repo/a"),
     });
 
     const logSpy = mock(() => {});
@@ -1564,7 +1567,9 @@ describe("mcx claude ls", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["ls", "--all", "--short"], deps);
+      // Bypass verified: no repoRoot or scopeRoot in the call args
       expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      // Short formatter: one line per session, no header
       expect(logSpy.mock.calls.length).toBe(2);
       const line1 = (logSpy.mock.calls[0] as string[])[0];
       expect(line1).toContain("abc12345");
