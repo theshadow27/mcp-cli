@@ -121,6 +121,6 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(0, "127.0.0.1", () => {
   const addr = httpServer.address();
   if (addr && typeof addr === "object") {
-    console.log(addr.port);
+    process.stdout.write(`${addr.port}\n`);
   }
 });
