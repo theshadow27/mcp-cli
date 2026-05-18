@@ -64,6 +64,9 @@ function initGitRepo(): void {
   const env = cleanEnv();
   const gitOpts = { cwd: repoDir, stdio: "pipe" as const, env };
   execSync("git init", gitOpts);
+  // Prevent inheriting core.hooksPath from the parent repo's config; temp repos
+  // have no hook structure and would trigger the parent pre-commit hook otherwise.
+  execSync("git config core.hooksPath ''", gitOpts);
   execSync("git config user.name Test", gitOpts);
   execSync("git config user.email test@test.com", gitOpts);
   writeFileSync(join(repoDir, ".gitignore"), ".clone/\n");
