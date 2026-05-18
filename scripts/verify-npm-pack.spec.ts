@@ -76,8 +76,8 @@ describe("platform package npm pack structure", () => {
         cpu: string[];
       };
 
-      test("files field is exactly ['bin/']", () => {
-        expect(pkg.files).toEqual(["bin/"]);
+      test("files field lists exact binaries (no .gitkeep)", () => {
+        expect(pkg.files).toEqual(["bin/mcx", "bin/mcpd", "bin/mcpctl"]);
       });
 
       test("has correct os and cpu selectors", () => {
