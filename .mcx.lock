@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "manifestHash": "54c18f54a04e93dc4e8a4326450571a9f2b8a32d01c89049edf0d0430cc67c3f",
+  "manifestHash": "a8f3d40dea451f0d2aa9eb6473f5972b4e0ad9d67a968ad55a1e5fbd04f4e548",
   "phases": [
     {
       "name": "done",
@@ -43,6 +43,17 @@
       "resolvedPath": ".claude/phases/triage.ts",
       "contentHash": "14efba6a38d9b84f65bd4d0ff33772b3fe5eac029e8235d2cdf656602b7b2df9",
       "schemaHash": "03a042ac366a29c9f33de68cf1b24300bc899126e4084a4fa1303247afbc772c"
+    }
+  ],
+  "automations": [
+    {
+      "name": "cleanup",
+      "resolvedPath": ".claude/automation/cleanup.ts",
+      "contentHash": "605790118bd7c1465949f4c0cf9c7c125be97af1da7aa140a4a3b8829a4221c1",
+      "events": [
+        "pr.merged"
+      ],
+      "enabled": true
     }
   ]
 }

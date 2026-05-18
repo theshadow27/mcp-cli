@@ -486,4 +486,201 @@ describe("AutomationDispatcher", () => {
 
     defaultDispatcher.stop();
   });
+
+  // ── Action execution (#2020) ──
+
+  test("bye-and-untrack action calls actionExecutor.byeAndUntrack", async () => {
+    const byeCalls: Array<{ workItemId: string; sessionIds: string[] }> = [];
+    executeResult = { action: "bye-and-untrack", sessionIds: ["sess-1", "sess-2"] };
+
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      resolveWorkItemId: () => "#42",
+      actionExecutor: {
+        async byeAndUntrack(workItemId, sessionIds) {
+          byeCalls.push({ workItemId, sessionIds });
+        },
+      },
+      executeModule: async (mod, event) => {
+        executedModules.push({ name: mod.name, event: event.event });
+        return executeResult;
+      },
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent({ prNumber: 42 }));
+    await pollUntil(() => byeCalls.length >= 1);
+
+    expect(byeCalls).toHaveLength(1);
+    expect(byeCalls[0].workItemId).toBe("#42");
+    expect(byeCalls[0].sessionIds).toEqual(["sess-1", "sess-2"]);
+  });
+
+  test("bye-and-untrack is no-op without workItemId", async () => {
+    const byeCalls: Array<{ workItemId: string; sessionIds: string[] }> = [];
+    executeResult = { action: "bye-and-untrack", sessionIds: ["sess-1"] };
+
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      actionExecutor: {
+        async byeAndUntrack(workItemId, sessionIds) {
+          byeCalls.push({ workItemId, sessionIds });
+        },
+      },
+      executeModule: async (mod, event) => {
+        executedModules.push({ name: mod.name, event: event.event });
+        return executeResult;
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+
+    expect(byeCalls).toHaveLength(0);
+  });
+
+  test("fired audit event includes sessionIds for bye-and-untrack", async () => {
+    executeResult = { action: "bye-and-untrack", sessionIds: ["sess-a", "sess-b"] };
+
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      resolveWorkItemId: () => "#99",
+      actionExecutor: { async byeAndUntrack() {} },
+      executeModule: async (mod, event) => {
+        executedModules.push({ name: mod.name, event: event.event });
+        return executeResult;
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent({ prNumber: 99 }));
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+
+    const fired = published.find((e) => e.event === "automation.fired");
+    expect(fired?.sessionIds).toEqual(["sess-a", "sess-b"]);
+    expect(fired?.actionType).toBe("bye-and-untrack");
+  });
+
+  test("none action does not call actionExecutor", async () => {
+    const byeCalls: string[] = [];
+    executeResult = { action: "none", reason: "nothing to do" };
+
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      actionExecutor: {
+        async byeAndUntrack() {
+          byeCalls.push("called");
+        },
+      },
+      executeModule: async (mod, event) => {
+        executedModules.push({ name: mod.name, event: event.event });
+        return executeResult;
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+
+    expect(byeCalls).toHaveLength(0);
+  });
+
+  // ── ctx.workItem and ctx.state in default executor (#2020) ──
+
+  test("default executor populates ctx.workItem from getWorkItem callback", async () => {
+    const fixtureDir = import.meta.dir;
+
+    const d = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: fixtureDir,
+      resolveWorkItemId: () => "#55",
+      getWorkItem: (id) => {
+        if (id === "#55") return { id: "#55", issueNumber: 55, prNumber: 100, branch: "feat/x", phase: "qa" };
+        return null;
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((e) => published.push(e));
+
+    d.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/workitem-echo-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
+    d.start();
+
+    bus.publish(makeEvent({ prNumber: 100 }));
+    await pollUntil(() => published.some((e) => e.event === "test.workitem"));
+
+    const emitted = published.find((e) => e.event === "test.workitem");
+    expect(emitted).toBeDefined();
+    expect(emitted?.workItemId).toBe("#55");
+    expect(emitted?.phase).toBe("qa");
+    expect(emitted?.prNumber).toBe(100);
+    d.stop();
+  });
+
+  test("default executor populates ctx.state from getWorkItemState callback", async () => {
+    const fixtureDir = import.meta.dir;
+
+    const d = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: fixtureDir,
+      resolveWorkItemId: () => "#77",
+      getWorkItemState: (id) => {
+        if (id === "#77") return { session_id: "sess-1", qa_session_id: "sess-2" };
+        return {};
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((e) => published.push(e));
+
+    d.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/state-echo-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
+    d.start();
+
+    bus.publish(makeEvent({ prNumber: 77 }));
+    await pollUntil(() => published.some((e) => e.event === "test.state"));
+
+    const emitted = published.find((e) => e.event === "test.state");
+    expect(emitted).toBeDefined();
+    expect(emitted?.stateKeys).toEqual(["qa_session_id", "session_id"]);
+    expect(emitted?.stateSnapshot).toEqual({ session_id: "sess-1", qa_session_id: "sess-2" });
+    d.stop();
+  });
 });

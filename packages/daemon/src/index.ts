@@ -24,7 +24,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -59,6 +59,7 @@ import {
   pruneExpiredCache,
   readCliConfig,
   readWorktreeConfig,
+  resolveRealpath,
   resolveWorktreePath,
   sha256Hex,
   tryFlockExclusive,
@@ -691,10 +692,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
+      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
-          repoRoot: process.cwd(),
+          repoRoot: automationRepoRoot,
           getWorkItemOverrides: (workItemId) => {
             const item = workItemDb.getWorkItem(workItemId);
             return item?.automationOverrides ?? undefined;
@@ -707,6 +709,54 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           getWorkItemByIssue: (issueNumber) => workItemDb.getWorkItemByIssue(issueNumber),
           updateWorkItem: (id, patch) => {
             workItemDb.updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
+          },
+          getWorkItem: (workItemId) => {
+            const item = workItemDb.getWorkItem(workItemId);
+            if (!item) return null;
+            return {
+              id: item.id,
+              issueNumber: item.issueNumber,
+              prNumber: item.prNumber,
+              branch: item.branch,
+              phase: item.phase,
+            };
+          },
+          getWorkItemState: (workItemId) => {
+            return db.listAliasState(automationRepoRoot, `workitem:${workItemId}`);
+          },
+          actionExecutor: {
+            async byeAndUntrack(workItemId, sessionIds) {
+              const byeResults = await Promise.allSettled(
+                sessionIds.map(async (sid) => {
+                  try {
+                    await pool.callTool(CLAUDE_SERVER_NAME, "claude_bye", {
+                      sessionId: sid,
+                      message: "automation cleanup: PR merged",
+                    });
+                  } catch (err) {
+                    logger.warn(
+                      `[automation] claude_bye failed for ${sid}: ${err instanceof Error ? err.message : String(err)} — ending in DB`,
+                    );
+                    db.endSession(sid);
+                  }
+                }),
+              );
+              for (let i = 0; i < byeResults.length; i++) {
+                if (byeResults[i].status === "rejected") {
+                  logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
+                }
+              }
+              try {
+                workItemDb.updateWorkItem(workItemId, { phase: "done" });
+              } catch {
+                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
+              }
+              try {
+                workItemDb.deleteWorkItem(workItemId);
+              } catch {
+                logger.warn(`[automation] failed to untrack ${workItemId}`);
+              }
+            },
           },
         });
         automationDispatcher.load(manifestResult.manifest.automation, automations);

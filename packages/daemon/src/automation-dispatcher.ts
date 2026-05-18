@@ -13,6 +13,8 @@
 
 import { resolve } from "node:path";
 import type {
+  AliasStateAccessor,
+  AliasWorkItemInfo,
   AutomationAction,
   AutomationAuditEntry,
   AutomationConfig,
@@ -41,6 +43,10 @@ interface RegisteredModule {
   config: Record<string, unknown>;
 }
 
+export interface ActionExecutor {
+  byeAndUntrack(workItemId: string, sessionIds: string[]): Promise<void>;
+}
+
 export class AutomationDispatcher {
   private modules = new Map<string, RegisteredModule>();
   private preset: AutomationPreset = "supervised";
@@ -56,6 +62,9 @@ export class AutomationDispatcher {
   private getWorkItemByBranch: (branch: string) => WorkItem | null;
   private getWorkItemByIssue: (issueNumber: number) => WorkItem | null;
   private updateWorkItem: (workItemId: string, patch: Record<string, unknown>) => void;
+  private getWorkItem: (workItemId: string) => AliasWorkItemInfo | null;
+  private getWorkItemState: (workItemId: string) => Record<string, unknown>;
+  private actionExecutor: ActionExecutor | null;
   private executeModule: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
 
   constructor(opts: {
@@ -66,6 +75,9 @@ export class AutomationDispatcher {
     getWorkItemByBranch?: (branch: string) => WorkItem | null;
     getWorkItemByIssue?: (issueNumber: number) => WorkItem | null;
     updateWorkItem?: (workItemId: string, patch: Record<string, unknown>) => void;
+    getWorkItem?: (workItemId: string) => AliasWorkItemInfo | null;
+    getWorkItemState?: (workItemId: string) => Record<string, unknown>;
+    actionExecutor?: ActionExecutor;
     executeModule?: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
   }) {
     this.eventBus = opts.eventBus;
@@ -75,6 +87,9 @@ export class AutomationDispatcher {
     this.getWorkItemByBranch = opts.getWorkItemByBranch ?? (() => null);
     this.getWorkItemByIssue = opts.getWorkItemByIssue ?? (() => null);
     this.updateWorkItem = opts.updateWorkItem ?? (() => {});
+    this.getWorkItem = opts.getWorkItem ?? (() => null);
+    this.getWorkItemState = opts.getWorkItemState ?? (() => ({}));
+    this.actionExecutor = opts.actionExecutor ?? null;
     this.executeModule = opts.executeModule ?? this.defaultExecuteModule.bind(this);
   }
 
@@ -163,8 +178,8 @@ export class AutomationDispatcher {
           outcome = "fired";
         }
 
-        if (action.action === "set-state") {
-          this.updateWorkItem(action.workItemId, action.patch);
+        if (outcome === "fired" && action.action !== "none") {
+          await this.executeActionSideEffects(action, workItemId, mod.name);
         }
       } catch (err) {
         outcome = "errored";
@@ -179,6 +194,7 @@ export class AutomationDispatcher {
         error,
         durationMs,
         ...(action.action === "escalate" && { reason: action.reason }),
+        ...(action.action === "bye-and-untrack" && { sessionIds: action.sessionIds }),
       });
     }
   }
@@ -284,6 +300,54 @@ export class AutomationDispatcher {
     return this.preset;
   }
 
+  private async executeActionSideEffects(
+    action: AutomationAction,
+    workItemId: string | undefined,
+    moduleName: string,
+  ): Promise<void> {
+    switch (action.action) {
+      case "set-state": {
+        this.updateWorkItem(action.workItemId, action.patch);
+        break;
+      }
+      case "bye-and-untrack": {
+        if (!this.actionExecutor) return;
+        if (!workItemId) {
+          console.warn(`[automation:${moduleName}] bye-and-untrack requires a work item, but none resolved`);
+          return;
+        }
+        await this.actionExecutor.byeAndUntrack(workItemId, action.sessionIds);
+        break;
+      }
+    }
+  }
+
+  private buildStateAccessor(workItemId: string | undefined): AliasStateAccessor {
+    if (!workItemId) {
+      return {
+        get: async () => undefined,
+        set: async () => {
+          throw new Error("state.set not available: no work item resolved");
+        },
+        delete: async () => {
+          throw new Error("state.delete not available: no work item resolved");
+        },
+        all: async () => ({}),
+      };
+    }
+    const snapshot = this.getWorkItemState(workItemId);
+    return {
+      get: async <T = unknown>(key: string) => snapshot[key] as T | undefined,
+      set: async () => {
+        throw new Error("state.set is read-only in automation context");
+      },
+      delete: async () => {
+        throw new Error("state.delete is read-only in automation context");
+      },
+      all: async () => ({ ...snapshot }),
+    };
+  }
+
   private async defaultExecuteModule(mod: RegisteredModule, event: MonitorEvent): Promise<AutomationAction> {
     const absPath = resolve(this.repoRoot, mod.resolvedPath);
     let exported: Record<string, unknown>;
@@ -300,20 +364,19 @@ export class AutomationDispatcher {
       throw new Error(`module "${mod.name}" has no default export with an fn() handler`);
     }
 
+    const workItemId = this.resolveWorkItemIdFromEvent(event);
+    const workItem = workItemId ? this.getWorkItem(workItemId) : null;
+
     const ctx: AutomationContext = {
       mcp: new Proxy({} as AutomationContext["mcp"], {
         get: (_, prop) => {
           throw new Error(`mcp.${String(prop)} is not available in automation context`);
         },
       }),
-      state: new Proxy({} as AutomationContext["state"], {
-        get: (_, prop) => {
-          throw new Error(`state.${String(prop)} is not available in automation context`);
-        },
-      }),
+      state: this.buildStateAccessor(workItemId),
       repoRoot: this.repoRoot,
       signal: AbortSignal.timeout(MODULE_TIMEOUT_MS),
-      workItem: null,
+      workItem,
       config: mod.config,
       findWorkItemByBranch: (branch: string) => this.getWorkItemByBranch(branch),
       findWorkItemByIssue: (issueNumber: number) => this.getWorkItemByIssue(issueNumber),
