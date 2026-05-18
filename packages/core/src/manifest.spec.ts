@@ -524,6 +524,46 @@ describe("state field object form (#2019)", () => {
     const field = m.state?.level;
     expect(typeof field).toBe("object");
   });
+
+  test("rejects malformed enum lists (empty values, leading/trailing commas)", () => {
+    for (const bad of ["enum[a,,b]", "enum[,a,b]", "enum[a,b,]", "enum[,]", "enum[]"]) {
+      expect(() =>
+        validateManifest(
+          {
+            initial: "a",
+            state: { level: { type: bad, track: true } },
+            phases: { a: { source: "./a.ts" } },
+          },
+          "/tmp/x",
+        ),
+      ).toThrow(ManifestError);
+    }
+  });
+
+  test("rejects trackable state key with hyphens", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { "my-field": { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/hyphens/);
+  });
+
+  test("allows hyphens in non-trackable state keys", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { "my-field": "string?" },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(m.state?.["my-field"]).toBe("string?");
+  });
 });
 
 describe("parseEnumValues", () => {

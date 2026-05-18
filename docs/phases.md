@@ -66,8 +66,10 @@ Phase names and state keys must match `^[a-z][a-z0-9_-]{0,63}$`. The phase
 graph may contain cycles (review → repair → review is legal); only
 unreachable-from-initial phases are rejected.
 
-State types are `string`, `number`, `boolean`, each optionally suffixed
-with `?` (e.g. `string?`). Runtime enforcement is wired in #1286.
+Bare state types are `string`, `number`, `boolean`, each optionally
+suffixed with `?` (e.g. `string?`). The object form (see below) also
+accepts `enum[val1,val2,...]` with optional `?`. Runtime enforcement is
+wired in #1286.
 
 ### Trackable metadata fields
 

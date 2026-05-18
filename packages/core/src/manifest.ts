@@ -37,7 +37,7 @@ export const STATE_TYPE_RE = /^(string|number|boolean)\??$/;
  * Extended type pattern that also accepts `enum[val1,val2,...]` with optional `?`.
  * Used in the object-form state field declaration (#2019).
  */
-export const EXTENDED_TYPE_RE = /^(string|number|boolean|enum\[[a-z0-9_,-]+\])\??$/;
+export const EXTENDED_TYPE_RE = /^(string|number|boolean|enum\[[a-z0-9_]+(?:,[a-z0-9_]+)*\])\??$/;
 
 /**
  * Object form for state field declarations (#2019). Fields with `track: true`
@@ -335,6 +335,17 @@ export function validateManifest(raw: unknown, path: string): Manifest {
       `unreachable phase${unreachable.length > 1 ? "s" : ""} from initial "${manifest.initial}": ${unreachable.join(", ")}`,
       path,
     );
+  }
+
+  if (manifest.state) {
+    for (const [key, field] of Object.entries(manifest.state)) {
+      if (typeof field === "object" && field.track && key.includes("-")) {
+        throw new ManifestError(
+          `trackable state key "${key}" contains hyphens; use underscores instead (CLI flags normalize --${key} to "${key.replace(/-/g, "_")}", making this field unreachable)`,
+          path,
+        );
+      }
+    }
   }
 
   return manifest;
