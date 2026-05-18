@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
+import { emitMailEvent, pollMailUntil } from "./mail-wait";
 import "../help-claude";
 import {
   DEFAULT_TIMEOUT_MS,
@@ -195,51 +196,6 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
 }
 
 // ── Helpers ──
-
-/**
- * Poll for unread mail addressed to `recipient` until one arrives or the
- * deadline expires. Non-consuming — does not markRead, so the caller can
- * still read the message via `mcx mail -u <recipient>` afterward.
- *
- * `afterMs` is a `Date.now()` snapshot taken before polling begins. Only
- * mail with `createdAt` strictly after that timestamp is surfaced, so
- * pre-existing unread messages do not cause false-positive wakeups.
- *
- * Transient `pollMail` errors (IPC blips, daemon restart) are swallowed
- * and retried until the deadline; a single network hiccup will not kill
- * the entire wait.
- */
-async function pollMailUntil(
-  d: Pick<AgentDeps, "pollMail">,
-  recipient: string,
-  timeoutMs: number,
-  afterMs: number,
-  pollIntervalMs = 2000,
-): Promise<MailMessage | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let msg: MailMessage | null = null;
-    try {
-      msg = await d.pollMail(recipient);
-    } catch {
-      // Transient IPC error — continue polling until deadline
-    }
-    if (msg && new Date(msg.createdAt).getTime() > afterMs) return msg;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    await Bun.sleep(Math.min(pollIntervalMs, remaining));
-  }
-  return null;
-}
-
-function emitMailEvent(msg: MailMessage, short: boolean, d: Pick<AgentDeps, "log">): void {
-  if (short) {
-    const subj = msg.subject ?? "(no subject)";
-    d.log(`mail ${msg.id} ${msg.sender} ${subj}`);
-    return;
-  }
-  d.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
-}
 
 /** Check if an error indicates the daemon is not running (ECONNREFUSED/ENOENT). */
 function isDaemonUnavailable(err: unknown): boolean {
@@ -1090,7 +1046,7 @@ async function agentWait(
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
     if (winner.kind === "mail" && winner.message) {
-      emitMailEvent(winner.message, short, d);
+      emitMailEvent(winner.message, short, d, false);
       return;
     }
     result = winner.kind === "session" ? winner.result : await waitPromise;
