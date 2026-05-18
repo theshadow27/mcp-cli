@@ -1534,6 +1534,47 @@ describe("mcx claude ls", () => {
     }
   });
 
+  test("--all --short with empty result set exits immediately (regression #2025)", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult([])),
+    });
+
+    const errSpy = mock(() => {});
+    const origErr = console.error;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["ls", "--all", "--short"], deps);
+      expect(errSpy).toHaveBeenCalledWith("No active sessions.");
+    } finally {
+      console.error = origErr;
+    }
+  });
+
+  test("--all --short with sessions outputs compact one-line-per-session", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--all", "--short"], deps);
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(logSpy.mock.calls.length).toBe(2);
+      const line1 = (logSpy.mock.calls[0] as string[])[0];
+      expect(line1).toContain("abc12345");
+      const line2 = (logSpy.mock.calls[1] as string[])[0];
+      expect(line2).toContain("def67890");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("shows all sessions when not in a git repo", async () => {
     const sessions = [
       { ...SESSION_LIST[0], repoRoot: "/repo/a" },
