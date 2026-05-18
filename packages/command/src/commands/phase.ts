@@ -248,6 +248,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
         contentHash,
         events: [...mod.on],
         enabled: resolvedEnabled,
+        ...(mod.config && Object.keys(mod.config).length > 0 ? { config: mod.config } : {}),
       });
     }
   }

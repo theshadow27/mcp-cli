@@ -9,6 +9,7 @@
 import { z } from "zod";
 import type { AliasContext } from "./alias";
 import type { MonitorEvent } from "./monitor-event";
+import type { WorkItem } from "./work-item";
 
 /**
  * Valid event names that automation modules can subscribe to.
@@ -69,6 +70,7 @@ export const AutomationModuleDefSchema = z
     source: z.string().min(1, "module source must be a non-empty string"),
     on: z.array(AutomationEventNameSchema).min(1, "module must subscribe to at least one event"),
     enabled: z.boolean().optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
@@ -88,7 +90,7 @@ export type AutomationConfig = z.infer<typeof AutomationConfigSchema>;
 export type AutomationAction =
   | { action: "none"; reason: string }
   | { action: "bye-and-untrack"; sessionIds: string[] }
-  | { action: "set-state"; patch: Record<string, unknown> }
+  | { action: "set-state"; workItemId: string; patch: Record<string, unknown> }
   | { action: "emit-event"; event: { event: string; category: string; [key: string]: unknown } }
   | { action: "shell"; cmd: string; args: string[] }
   | { action: "escalate"; reason: string; payload?: unknown };
@@ -120,6 +122,9 @@ export interface AutomationContext extends Pick<AliasContext, "mcp" | "state" | 
     error(msg: string): void;
   };
   emit(event: { event: string; category: string; [key: string]: unknown }): void;
+  findWorkItemByBranch(branch: string): WorkItem | null;
+  findWorkItemByIssue(issueNumber: number): WorkItem | null;
+  config: Record<string, unknown>;
 }
 
 export interface AutomationDefinition {

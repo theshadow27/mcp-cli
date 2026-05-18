@@ -171,3 +171,55 @@ To add automation to your project:
 
 See also: [phases.md](phases.md) for the manifest and lockfile system that
 automation builds on.
+
+## Worked example: bind module
+
+The **bind** module auto-attaches a PR number and branch to a tracked work
+item when a `pr.opened` event fires. It is the second reference module
+(after cleanup) and ships as #2021.
+
+### How it works
+
+1. A `pr.opened` event arrives with `prNumber` and `branch`.
+2. The module looks up work items by branch (direct match).
+3. If no direct match and `branchPattern` is configured, it extracts an
+   issue number from the branch name via a named capture group `(?<issue>\d+)`
+   and looks up by issue number.
+4. If a matching unbound item is found, it returns `set-state` with
+   `{ prNumber, branch }`.
+5. If the item already has a `prNumber`, the module no-ops (idempotent).
+
+### Manifest
+
+```yaml
+automation:
+  preset: semi-auto   # bind on by default
+
+  modules:
+    bind:
+      source: ./.claude/automation/bind.ts
+      on: [pr.opened]
+      # Optional: extract issue number from branch naming convention
+      config:
+        branchPattern: '^(?:feat|fix)/issue-(?<issue>\d+)-'
+```
+
+### Per-item override
+
+```bash
+mcx track 1234 --automation bind=false   # skip auto-bind for this item
+```
+
+### Context methods used
+
+The bind module uses two context methods introduced alongside the module:
+
+- `ctx.findWorkItemByBranch(branch)` — look up a work item by its branch field
+- `ctx.findWorkItemByIssue(issueNumber)` — look up a work item by issue number
+- `ctx.config` — module-specific config from the manifest (e.g., `branchPattern`)
+
+### Module config
+
+Modules can declare a `config:` bag in the manifest. The config is
+passed through the lockfile and available as `ctx.config` at runtime.
+Config is a flat `Record<string, unknown>` — keep it simple.
