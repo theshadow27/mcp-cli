@@ -66,8 +66,50 @@ Phase names and state keys must match `^[a-z][a-z0-9_-]{0,63}$`. The phase
 graph may contain cycles (review → repair → review is legal); only
 unreachable-from-initial phases are rejected.
 
-State types are `string`, `number`, `boolean`, each optionally suffixed
-with `?` (e.g. `string?`). Runtime enforcement is wired in #1286.
+Bare state types are `string`, `number`, `boolean`, each optionally
+suffixed with `?` (e.g. `string?`). The object form (see below) also
+accepts `enum[val1,val2,...]` with optional `?`. Runtime enforcement is
+wired in #1286.
+
+### Trackable metadata fields
+
+State fields can use an object form to declare CLI-settable metadata
+(`track: true`). These fields are exposed as `mcx track --<key>` flags
+and included in `mcx tracked --json` output under a `state` key.
+
+```yaml
+state:
+  session_id: string?          # bare type — handler-only, not CLI-settable
+  scrutiny:                    # object form — CLI-settable
+    type: enum[low,medium,high]
+    track: true
+    default: medium
+  bundled_with:
+    type: string
+    track: true
+    repeatable: true           # multiple --bundled-with flags → comma-joined
+```
+
+| Property | Type | Default | Meaning |
+|----------|------|---------|---------|
+| `type` | string | (required) | `string`, `number`, `boolean`, or `enum[val1,val2,...]`, optionally `?` |
+| `track` | boolean | `false` | Expose as `mcx track --<key>` flag |
+| `repeatable` | boolean | `false` | Allow multiple flags; values comma-joined |
+| `default` | string/number/boolean | none | Applied on track when flag is omitted |
+| `required` | boolean | `false` | Fail `mcx track` if flag is missing and no default |
+
+Usage:
+
+```bash
+mcx track 1234 --scrutiny high
+mcx track 1234 --bundled-with 1235 --bundled-with 1236
+mcx track --help                   # lists project-declared metadata fields
+mcx tracked --json                 # output includes state.scrutiny, etc.
+```
+
+Phase handlers read metadata via `ctx.state.get("scrutiny")` — same
+accessor as any other state key. The only difference is that trackable
+fields can be set at tracking time from the CLI.
 
 ## Phase source URIs
 
