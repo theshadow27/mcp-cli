@@ -2656,18 +2656,13 @@ describe("claudeWait --mail-to", () => {
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
       pollMail: mock(async (recipient: string) => (recipient === "orchestrator" ? newMail : null)),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
-    } finally {
-      console.log = origLog;
-    }
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
     // First call is the header line, second is the JSON payload
     const header = String((logSpy.mock.calls as unknown[][])[0][0]);
     expect(header).toContain("event=mail");
@@ -2691,6 +2686,7 @@ describe("claudeWait --mail-to", () => {
       read: false,
       createdAt: new Date(Date.now() - 60_000).toISOString(),
     };
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(async () =>
         toolResult({
@@ -2699,15 +2695,9 @@ describe("claudeWait --mail-to", () => {
         }),
       ),
       pollMail: mock(async () => staleMail),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
-    } finally {
-      console.log = origLog;
-    }
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
     const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
     expect(output).not.toContain('"source": "mail"');
   });
@@ -2725,21 +2715,16 @@ describe("claudeWait --mail-to", () => {
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
     let calls = 0;
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
       pollMail: mock(async () => {
         if (calls++ === 0) throw new Error("ECONNREFUSED");
         return newMail;
       }),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
-    } finally {
-      console.log = origLog;
-    }
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
     // First call is the header line, second is the JSON payload
     const header = String((logSpy.mock.calls as unknown[][])[0][0]);
     expect(header).toContain("event=mail");

@@ -45,6 +45,7 @@ import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
+import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
 
@@ -1749,56 +1750,6 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, error };
 }
 
-/**
- * Poll for unread mail addressed to `recipient` until one arrives or the
- * deadline expires. Non-consuming — does not markRead, so the caller can
- * still read the message via `mcx mail -u <recipient>` afterward.
- *
- * `afterMs` is a `Date.now()` snapshot taken before polling begins. Only
- * mail with `createdAt` strictly after that timestamp is surfaced, so
- * pre-existing unread messages do not cause false-positive wakeups.
- *
- * Transient `pollMail` errors (IPC blips, daemon restart) are swallowed
- * and retried until the deadline; a single network hiccup will not kill
- * the entire wait.
- *
- * Returns the message, or null on timeout.
- */
-async function pollMailUntil(
-  d: Pick<ClaudeDeps, "pollMail">,
-  recipient: string,
-  timeoutMs: number,
-  afterMs: number,
-  pollIntervalMs = 2000,
-): Promise<MailMessage | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let msg: MailMessage | null = null;
-    try {
-      msg = await d.pollMail(recipient);
-    } catch {
-      // Transient IPC error — continue polling until deadline
-    }
-    if (msg && new Date(msg.createdAt).getTime() > afterMs) return msg;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    await Bun.sleep(Math.min(pollIntervalMs, remaining));
-  }
-  return null;
-}
-
-function emitMailEvent(msg: MailMessage, short: boolean): void {
-  if (short) {
-    const subj = msg.subject ?? "(no subject)";
-    console.log(`mail ${msg.id} ${msg.sender} ${subj}`);
-    return;
-  }
-  const headerParts = ["event=mail", `id=${msg.id}`];
-  if (msg.sender) headerParts.push(`sender=${msg.sender}`);
-  console.log(headerParts.join(" ").slice(0, 120));
-  console.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
-}
-
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   const parsed = parseWaitArgs(args);
 
@@ -1862,7 +1813,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
     if (winner.kind === "mail" && winner.message) {
-      emitMailEvent(winner.message, parsed.short);
+      emitMailEvent(winner.message, parsed.short, d);
       return;
     }
     // Mail poll returned null (timed out) or session already won the race.
