@@ -1,6 +1,6 @@
 # Sprint 53
 
-> Planned 2026-05-04 10:25 EDT. Started 2026-05-17 18:22 EST. Target: 15 PRs.
+> Planned 2026-05-04 10:25 EDT. Started 2026-05-17 18:22 EST. Ended 2026-05-17 19:34 EST. Target: 15 PRs. Merged: 12 + 1 already-done.
 
 ## Goal
 
@@ -38,6 +38,14 @@ and a deliberate cluster of test back-fills (#1759, #1754, #1565,
 
 15 work items. 2 high (opus), 3 medium (sonnet), 10 low (sonnet) — a
 deliberate skew toward small wins after sprint 52's opus-heavy profile.
+
+## Excluded (amended at run start)
+
+- **#1948** — already merged at sprint-52 close (PR #1976, 2026-05-04 02:19 UTC). Plan-time triage missed this because the merge landed ~12h before plan finalization. Removed from Batch 1.
+- **#1933** — already merged at sprint-52 close (PR #1989, 2026-05-04 02:55 UTC). Same root cause. Removed from Batch 2.
+- **#1645** — already-done discovered at run-time (PR #1641 secondary squash addressed it 2026-04-23). Worker self-detected and closed the issue. Removed from Batch 2.
+
+Net: 12 work items (2 opus / 10 sonnet). 4 remaining in Batch 1: #1980, #1996, #2003, #1944.
 
 ## Batch Plan
 
@@ -216,3 +224,29 @@ call to retro.
 10. **Plan-time triage step**: every issue verified open + reproducible
     before slotting. Caught zero already-done this sprint, but the
     discipline matters more in long sprints.
+
+## Results
+
+- **Released**: v1.8.7 (patch — feature add `mcx phase advance` is a
+  subcommand, not new top-level)
+- **PRs merged**: 12 (#2026, #2027, #2028, #2029, #2030, #2031, #2032,
+  #2033, #2035, #2038, #2039, #2041)
+- **Issues closed**: 13 (12 fixed + #1645 already-done detected at
+  run-time)
+- **Issues dropped**: 2 (#1948, #1933 — both merged in sprint-52 close
+  ~12h before plan finalization; plan-time triage missed them)
+- **New issues filed**: 3+ (issue #2025 — `mcx claude ls --all --short`
+  hang, #2040 — test coverage gap for the #1980 null paths, plus
+  several Copilot follow-ups discovered during repair)
+- **Repair rounds**: 4 (round-1 each on #1703 — Copilot caught real
+  bug; #1996 — Copilot caught .npmignore precedence bug; #1944 —
+  reviewer self-repair (9 fixes) then sonnet round 2 for remaining
+  slice() guard; #1980 — QA caught wrong root cause from nerd-snipe,
+  opus added identity-based test assertion)
+- **Carry-over**: PR #2037 (user-pushed mid-sprint — am-i-done MVP)
+  remained with user at sprint close.
+- **Wall-clock**: 72 minutes start to last merge (18:22 → 19:34 EST)
+- **Flake-induced CI rounds**: Every single PR that landed before
+  #2038 (the #1980 fix) hit the `#940` flake at least once and
+  required a CI rerun. The flake was the dominant sprint bottleneck —
+  see Retro.
