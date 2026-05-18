@@ -53,7 +53,7 @@ const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?
  */
 const TIMING_EXCLUSIONS: Record<string, string> = {
   "test/daemon-integration.spec.ts":
-    "Full daemon lifecycle integration tests (~12s post wsPort fix; ~22 daemon spawns)",
+    "Full daemon lifecycle integration tests (~12s; P1 idle-timeout burns 4s alone; P5b/P5c share daemons post #2014)",
   "test/stress.spec.ts": "Stress tests spawning real CLI processes",
   "test/transport-errors.spec.ts": "Live daemon transport error integration tests",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",

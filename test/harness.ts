@@ -4,7 +4,7 @@
  * Spawns real daemon processes in isolated temp directories
  * via the MCP_CLI_DIR env var override.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
@@ -212,6 +212,36 @@ export function echoSseServerConfig(port: number): ServerConfig {
     type: "sse",
     url: `http://127.0.0.1:${port}/sse`,
   };
+}
+
+/**
+ * Merge a single server into the daemon's servers.json without clobbering sibling entries.
+ * Polls listServers() until the new entry appears (or timeout throws).
+ */
+export async function addServer(d: TestDaemon, name: string, config: ServerConfig): Promise<void> {
+  const configPath = join(d.dir, "servers.json");
+  const current = JSON.parse(readFileSync(configPath, "utf-8")) as { mcpServers: ServerConfigMap };
+  current.mcpServers[name] = config;
+  writeFileSync(configPath, JSON.stringify(current));
+  await pollUntil(async () => {
+    const res = await rpc(d.socketPath, "listServers");
+    return (res.result as Array<{ name: string }>).some((s) => s.name === name);
+  }, 10_000);
+}
+
+/**
+ * Remove a single server from the daemon's servers.json.
+ * Polls listServers() until the entry disappears (or timeout throws).
+ */
+export async function removeServer(d: TestDaemon, name: string): Promise<void> {
+  const configPath = join(d.dir, "servers.json");
+  const current = JSON.parse(readFileSync(configPath, "utf-8")) as { mcpServers: ServerConfigMap };
+  delete current.mcpServers[name];
+  writeFileSync(configPath, JSON.stringify(current));
+  await pollUntil(async () => {
+    const res = await rpc(d.socketPath, "listServers");
+    return !(res.result as Array<{ name: string }>).some((s) => s.name === name);
+  }, 10_000);
 }
 
 /** Send an IPC RPC request directly to a daemon's Unix socket */
