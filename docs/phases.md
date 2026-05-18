@@ -66,8 +66,50 @@ Phase names and state keys must match `^[a-z][a-z0-9_-]{0,63}$`. The phase
 graph may contain cycles (review → repair → review is legal); only
 unreachable-from-initial phases are rejected.
 
-State types are `string`, `number`, `boolean`, each optionally suffixed
-with `?` (e.g. `string?`). Runtime enforcement is wired in #1286.
+Bare state types are `string`, `number`, `boolean`, each optionally
+suffixed with `?` (e.g. `string?`). The object form (see below) also
+accepts `enum[val1,val2,...]` with optional `?`. Runtime enforcement is
+wired in #1286.
+
+### Trackable metadata fields
+
+State fields can use an object form to declare CLI-settable metadata
+(`track: true`). These fields are exposed as `mcx track --<key>` flags
+and included in `mcx tracked --json` output under a `state` key.
+
+```yaml
+state:
+  session_id: string?          # bare type — handler-only, not CLI-settable
+  scrutiny:                    # object form — CLI-settable
+    type: enum[low,medium,high]
+    track: true
+    default: medium
+  bundled_with:
+    type: string
+    track: true
+    repeatable: true           # multiple --bundled-with flags → comma-joined
+```
+
+| Property | Type | Default | Meaning |
+|----------|------|---------|---------|
+| `type` | string | (required) | `string`, `number`, `boolean`, or `enum[val1,val2,...]`, optionally `?` |
+| `track` | boolean | `false` | Expose as `mcx track --<key>` flag |
+| `repeatable` | boolean | `false` | Allow multiple flags; values comma-joined |
+| `default` | string/number/boolean | none | Applied on track when flag is omitted |
+| `required` | boolean | `false` | Fail `mcx track` if flag is missing and no default |
+
+Usage:
+
+```bash
+mcx track 1234 --scrutiny high
+mcx track 1234 --bundled-with 1235 --bundled-with 1236
+mcx track --help                   # lists project-declared metadata fields
+mcx tracked --json                 # output includes state.scrutiny, etc.
+```
+
+Phase handlers read metadata via `ctx.state.get("scrutiny")` — same
+accessor as any other state key. The only difference is that trackable
+fields can be set at tracking time from the CLI.
 
 ## Phase source URIs
 
@@ -84,6 +126,105 @@ Planned (parsed today, install deferred):
 
 Remote sources always carry an inline `sha256` pin — no unpinned network
 fetches.
+
+## The `mcp-cli` virtual package
+
+The `import { defineAlias, z } from "mcp-cli"` in every phase script refers
+to a **virtual package** — it is resolved at runtime by the `mcx` binary and
+is not published to npm. There is no package to install:
+
+```bash
+bun add mcp-cli       # 404 — no published package
+bun add @theshadow27/mcp-cli  # wrong — unrelated; the import still won't resolve
+```
+
+`mcx phase install` (and the runtime that evaluates handlers) injects the
+module into Bun's module registry before executing the script, so the import
+resolves correctly during `mcx phase run` regardless of what is in
+`node_modules`.
+
+### Getting type safety and LSP support
+
+Because there is no package on disk, `bun typecheck` and your editor will
+report `error TS2307: Cannot find module 'mcp-cli'` unless you give the
+TypeScript toolchain a declaration to work with. Two approaches:
+
+**Option A — ambient `.d.ts` (recommended, zero config)**
+
+Drop this file into your phase directory:
+
+```typescript
+// .claude/phases/mcp-cli.d.ts
+declare module "mcp-cli" {
+  import type { ZodObject, ZodType, ZodRawShape } from "zod/v4";
+
+  export const z: typeof import("zod/v4").z;
+
+  export interface AliasStateAccessor {
+    get<T = unknown>(key: string): Promise<T | undefined>;
+    set(key: string, value: unknown): Promise<void>;
+    delete(key: string): Promise<void>;
+    all(): Promise<Record<string, unknown>>;
+  }
+
+  export interface AliasWorkItemInfo {
+    id: string;
+    issueNumber: number | null;
+    prNumber: number | null;
+    branch: string | null;
+    phase: string;
+  }
+
+  export type McpProxy = Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
+
+  export interface AliasContext {
+    mcp: McpProxy;
+    args: Record<string, string>;
+    file: (path: string) => Promise<string>;
+    json: (path: string) => Promise<unknown>;
+    cache: <T>(key: string, producer: () => T | Promise<T>, opts?: { prefix?: string; ttl?: number }) => Promise<T>;
+    state: AliasStateAccessor;
+    globalState: AliasStateAccessor;
+    workItem: AliasWorkItemInfo | null;
+    repoRoot: string;
+    signal: AbortSignal;
+  }
+
+  export interface AliasDefinition<I = unknown, O = unknown> {
+    name: string;
+    description?: string;
+    input?: ZodType<I>;
+    output?: ZodType<O>;
+    fn: (input: I, ctx: AliasContext) => O | Promise<O>;
+  }
+
+  export function defineAlias<I, O>(def: AliasDefinition<I, O>): AliasDefinition<I, O>;
+}
+```
+
+No `tsconfig.json` changes needed as long as the file sits next to your phase
+scripts — TypeScript's module resolver picks it up automatically.
+
+**Option B — `tsconfig.json` path alias**
+
+If you have a checkout of mcp-cli locally (or depend on `@theshadow27/mcp-cli`
+as a dev dependency), add a `paths` entry so the compiler resolves the import
+to the real source:
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "paths": {
+      "mcp-cli": ["./node_modules/@theshadow27/mcp-cli/packages/core/src"]
+    }
+  },
+  "include": [".claude/phases/**/*.ts"]
+}
+```
+
+Option A is lighter and self-contained; Option B gives you exact types as the
+library evolves (at the cost of a dev dependency and keeping the path current).
 
 ## Phase handler API
 
@@ -162,8 +303,11 @@ are self-contained. To adapt them for another project:
    `/qa`) and the provider list you support
 3. Adjust the triage script path in `triage.ts` if your project doesn't have
    `.claude/skills/estimate/triage.ts` — or vendor that script too
-4. Run `mcx phase install` to generate `.mcx.lock`
-5. `mcx phase list` to verify all phases resolve cleanly
+4. Drop a `mcp-cli.d.ts` ambient declaration into `.claude/phases/` (see
+   [The `mcp-cli` virtual package](#the-mcp-cli-virtual-package) above) so
+   `bun typecheck` and your LSP don't report `TS2307` on the import
+5. Run `mcx phase install` to generate `.mcx.lock`
+6. `mcx phase list` to verify all phases resolve cleanly
 
 The round caps (review ≤ 2, repair ≤ 3, qa:fail ≤ 2) live in each script's
 constant — bump them if your project's quality bar tolerates more loops.

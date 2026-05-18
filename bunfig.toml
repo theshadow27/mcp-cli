@@ -5,5 +5,9 @@
 # when coverage is collected on files with 0% coverage, even without a
 # configured threshold. This broke CI (see #1181).
 
+# Pin NO_COLOR=1 before any module loads so ANSI codes never leak into
+# assertions when bun test runs under a PTY. See #2016.
+preload = ["./test/preload-no-color.ts"]
+
 # Prune directories that should not be scanned for tests
 pathIgnorePatterns = [".claude/**", "dist/**", ".git-hooks/**"]

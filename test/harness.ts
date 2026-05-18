@@ -4,7 +4,7 @@
  * Spawns real daemon processes in isolated temp directories
  * via the MCP_CLI_DIR env var override.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
@@ -168,20 +168,28 @@ export async function startMockServer(scriptPath: string): Promise<MockServer> {
     reader.read(),
     Bun.sleep(10_000).then(() => ({ value: undefined, done: true as const, timeout: true as const })),
   ]);
+
+  // Decode BEFORE releasing the reader lock. Bun may reuse the underlying
+  // ArrayBuffer once the lock is released, making the Uint8Array stale.
+  const portLine = readResult.value
+    ? new TextDecoder()
+        .decode(readResult.value)
+        .replace(new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g"), "")
+        .trim()
+    : undefined;
   reader.releaseLock();
 
-  const value = readResult.value;
-  if (!value) {
+  if (!portLine) {
     proc.kill();
     const stderr = await new Response(proc.stderr).text();
     const reason = "timeout" in readResult ? "timed out waiting for port" : "no output";
     throw new Error(`Mock server failed to start (${reason}): ${stderr}`);
   }
 
-  const port = Number(new TextDecoder().decode(value).trim());
+  const port = Number(portLine);
   if (!port || Number.isNaN(port)) {
     proc.kill();
-    throw new Error(`Mock server printed invalid port: ${new TextDecoder().decode(value)}`);
+    throw new Error(`Mock server printed invalid port: ${JSON.stringify(portLine)}`);
   }
 
   return {
@@ -212,6 +220,36 @@ export function echoSseServerConfig(port: number): ServerConfig {
     type: "sse",
     url: `http://127.0.0.1:${port}/sse`,
   };
+}
+
+/**
+ * Merge a single server into the daemon's servers.json without clobbering sibling entries.
+ * Polls listServers() until the new entry appears (or timeout throws).
+ */
+export async function addServer(d: TestDaemon, name: string, config: ServerConfig): Promise<void> {
+  const configPath = join(d.dir, "servers.json");
+  const current = JSON.parse(readFileSync(configPath, "utf-8")) as { mcpServers: ServerConfigMap };
+  current.mcpServers[name] = config;
+  writeFileSync(configPath, JSON.stringify(current));
+  await pollUntil(async () => {
+    const res = await rpc(d.socketPath, "listServers");
+    return (res.result as Array<{ name: string }>).some((s) => s.name === name);
+  }, 10_000);
+}
+
+/**
+ * Remove a single server from the daemon's servers.json.
+ * Polls listServers() until the entry disappears (or timeout throws).
+ */
+export async function removeServer(d: TestDaemon, name: string): Promise<void> {
+  const configPath = join(d.dir, "servers.json");
+  const current = JSON.parse(readFileSync(configPath, "utf-8")) as { mcpServers: ServerConfigMap };
+  delete current.mcpServers[name];
+  writeFileSync(configPath, JSON.stringify(current));
+  await pollUntil(async () => {
+    const res = await rpc(d.socketPath, "listServers");
+    return !(res.result as Array<{ name: string }>).some((s) => s.name === name);
+  }, 10_000);
 }
 
 /** Send an IPC RPC request directly to a daemon's Unix socket */

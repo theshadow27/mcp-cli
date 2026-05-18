@@ -28,6 +28,18 @@ export const LockedPhaseSchema = z
   .strict();
 export type LockedPhase = z.infer<typeof LockedPhaseSchema>;
 
+export const LockedAutomationSchema = z
+  .object({
+    name: z.string(),
+    resolvedPath: z.string(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    events: z.array(z.string()),
+    enabled: z.boolean(),
+    config: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export type LockedAutomation = z.infer<typeof LockedAutomationSchema>;
+
 export const LockfileSchema = z
   .object({
     version: z.literal(LOCKFILE_VERSION),
@@ -35,6 +47,8 @@ export const LockfileSchema = z
     manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
     /** Phases, sorted alphabetically by name. */
     phases: z.array(LockedPhaseSchema),
+    /** Automation modules, sorted alphabetically by name. Optional for backward compat. */
+    automations: z.array(LockedAutomationSchema).optional(),
   })
   .strict();
 export type Lockfile = z.infer<typeof LockfileSchema>;
@@ -69,6 +83,9 @@ export function serializeLockfile(lock: Lockfile): string {
   const sorted: Lockfile = {
     ...lock,
     phases: [...lock.phases].sort((a, b) => a.name.localeCompare(b.name)),
+    ...(lock.automations && {
+      automations: [...lock.automations].sort((a, b) => a.name.localeCompare(b.name)),
+    }),
   };
   return `${JSON.stringify(sorted, null, 2)}\n`;
 }

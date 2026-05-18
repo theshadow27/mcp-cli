@@ -4,7 +4,7 @@
   "description": "mcp-cli native binaries for Linux x64",
   "os": ["linux"],
   "cpu": ["x64"],
-  "files": ["bin/"],
+  "files": ["bin/mcx", "bin/mcpd", "bin/mcpctl"],
   "publishConfig": {
     "access": "public"
   }

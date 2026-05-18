@@ -76,6 +76,7 @@ export class ClaudeServer extends AbstractWorkerServer {
   private wsPort: number | null = null;
   private readonly configuredWsPort?: number;
   private readonly getProcessStartTimeFn: (pid: number) => number | null;
+  private readonly isOurProcessFn: (pid: number, storedStartTimeMs: number) => boolean | null;
   private readonly sessionPids = new Map<string, number>();
   private readonly sessionPidStartTimes = new Map<string, number>();
   private readonly sessionLastCost = new Map<string, number>();
@@ -96,10 +97,12 @@ export class ClaudeServer extends AbstractWorkerServer {
     configuredWsPort?: number,
     getProcessStartTimeFn: (pid: number) => number | null = defaultGetProcessStartTime,
     metricsCollector?: MetricsCollector,
+    isOurProcessFn: (pid: number, storedStartTimeMs: number) => boolean | null = isOurProcess,
   ) {
     super(db, daemonId, clientFactory, logger, handshakeTimeoutMs, metricsCollector);
     this.configuredWsPort = configuredWsPort;
     this.getProcessStartTimeFn = getProcessStartTimeFn;
+    this.isOurProcessFn = isOurProcessFn;
     this.daemonSpan = startSpan("mcpd");
   }
 
@@ -129,6 +132,8 @@ export class ClaudeServer extends AbstractWorkerServer {
         category: "work_item",
       };
       if ("prNumber" in event) input.prNumber = event.prNumber;
+      if ("branch" in event) input.branch = event.branch;
+      if ("base" in event) input.base = event.base;
       if ("failedJob" in event) input.failedJob = event.failedJob;
       if ("reviewer" in event) input.reviewer = event.reviewer;
       if ("itemId" in event) input.workItemId = event.itemId;
@@ -313,7 +318,7 @@ export class ClaudeServer extends AbstractWorkerServer {
       if (row.state === "ended") return false;
       if (row.pid != null) {
         if (row.pidStartTime != null) {
-          const ownership = isOurProcess(row.pid, row.pidStartTime);
+          const ownership = this.isOurProcessFn(row.pid, row.pidStartTime);
           if (ownership === false) {
             this.logger.warn(
               `[claude-server] Skipping restore of session ${row.sessionId} — pid ${row.pid} has been recycled`,

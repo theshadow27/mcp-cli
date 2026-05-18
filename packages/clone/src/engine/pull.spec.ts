@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,6 +64,10 @@ function initGitRepo(): void {
   const env = cleanEnv();
   const gitOpts = { cwd: repoDir, stdio: "pipe" as const, env };
   execSync("git init", gitOpts);
+  // Guard against a global/system core.hooksPath (e.g. set by the prepare script
+  // in a CI or developer environment) triggering hooks in temp repos that have no
+  // hook structure. argv form avoids shell quoting so the empty string is portable.
+  execFileSync("git", ["config", "core.hooksPath", ""], gitOpts);
   execSync("git config user.name Test", gitOpts);
   execSync("git config user.email test@test.com", gitOpts);
   writeFileSync(join(repoDir, ".gitignore"), ".clone/\n");

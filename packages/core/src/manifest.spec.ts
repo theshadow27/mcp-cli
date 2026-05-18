@@ -6,13 +6,17 @@ import {
   DEFAULT_RUNS_ON,
   MANIFEST_FILENAMES,
   ManifestError,
+  coerceTrackValue,
   detectCycles,
   findManifest,
+  getTrackableFields,
   isPhaseInCycle,
   loadManifest,
+  parseEnumValues,
   parseManifestText,
   resolveRunsOn,
   validateManifest,
+  validateTrackValue,
 } from "./manifest";
 
 let dir: string;
@@ -445,5 +449,325 @@ describe("isPhaseInCycle", () => {
     expect(isPhaseInCycle(m, "done")).toBe(false);
     expect(isPhaseInCycle(m, "review")).toBe(true);
     expect(isPhaseInCycle(m, "repair")).toBe(true);
+  });
+});
+
+describe("state field object form (#2019)", () => {
+  test("accepts object-form state with track flag", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: {
+          scrutiny: { type: "enum[low,medium,high]", track: true, default: "medium" },
+          session_id: "string?",
+        },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(typeof m.state?.scrutiny).toBe("object");
+    expect(m.state?.session_id).toBe("string?");
+  });
+
+  test("accepts repeatable and required flags", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: {
+          bundled_with: { type: "string", track: true, repeatable: true },
+          priority: { type: "string", track: true, required: true },
+        },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    const field = m.state?.bundled_with;
+    expect(typeof field).toBe("object");
+    if (typeof field === "object") expect(field.repeatable).toBe(true);
+  });
+
+  test("rejects unknown keys in state field object (strict)", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { scrutiny: { type: "enum[low,medium,high]", track: true, bogus: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("rejects invalid type in state field object", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { scrutiny: { type: "banana", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("accepts enum type with optional suffix", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { level: { type: "enum[a,b,c]?", track: true } },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    const field = m.state?.level;
+    expect(typeof field).toBe("object");
+  });
+
+  test("rejects malformed enum lists (empty values, leading/trailing commas)", () => {
+    for (const bad of ["enum[a,,b]", "enum[,a,b]", "enum[a,b,]", "enum[,]", "enum[]"]) {
+      expect(() =>
+        validateManifest(
+          {
+            initial: "a",
+            state: { level: { type: bad, track: true } },
+            phases: { a: { source: "./a.ts" } },
+          },
+          "/tmp/x",
+        ),
+      ).toThrow(ManifestError);
+    }
+  });
+
+  test("rejects trackable state key with hyphens", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { "my-field": { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/hyphens/);
+  });
+
+  test("allows hyphens in non-trackable state keys", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { "my-field": "string?" },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(m.state?.["my-field"]).toBe("string?");
+  });
+
+  test("rejects invalid enum default at parse time", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { scrutiny: { type: "enum[low,medium,high]", track: true, default: "catastrophic" } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("rejects non-number default for number type at parse time", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { count: { type: "number", track: true, default: "not-a-number" } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("accepts valid enum default at parse time", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { scrutiny: { type: "enum[low,medium,high]", track: true, default: "medium" } },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(typeof m.state?.scrutiny).toBe("object");
+  });
+
+  test("rejects reserved trackable field name 'phase'", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { phase: { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/conflicts with built-in CLI flag/);
+  });
+
+  test("rejects reserved trackable field name 'json'", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { json: { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/conflicts with built-in CLI flag/);
+  });
+
+  test("rejects repeatable on non-string type", () => {
+    for (const type of ["number", "boolean", "enum[a,b,c]"]) {
+      expect(() =>
+        validateManifest(
+          {
+            initial: "a",
+            state: { field: { type, track: true, repeatable: true } },
+            phases: { a: { source: "./a.ts" } },
+          },
+          "/tmp/x",
+        ),
+      ).toThrow(/repeatable.*string/i);
+    }
+  });
+
+  test("allows repeatable on string type", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { tags: { type: "string", track: true, repeatable: true } },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(typeof m.state?.tags).toBe("object");
+  });
+
+  test("allows reserved name when not trackable", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { phase: "string?" },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(m.state?.phase).toBe("string?");
+  });
+});
+
+describe("parseEnumValues", () => {
+  test("extracts values from enum type", () => {
+    expect(parseEnumValues("enum[low,medium,high]")).toEqual(["low", "medium", "high"]);
+  });
+
+  test("extracts values from optional enum type", () => {
+    expect(parseEnumValues("enum[a,b]?")).toEqual(["a", "b"]);
+  });
+
+  test("returns null for non-enum types", () => {
+    expect(parseEnumValues("string")).toBeNull();
+    expect(parseEnumValues("number?")).toBeNull();
+  });
+});
+
+describe("getTrackableFields", () => {
+  test("extracts only fields with track: true", () => {
+    const fields = getTrackableFields({
+      scrutiny: { type: "enum[low,medium,high]", track: true, default: "medium" },
+      session_id: "string?",
+      bundled_with: { type: "string", track: true, repeatable: true },
+    });
+    expect(fields).toHaveLength(2);
+    expect(fields.map((f) => f.key)).toEqual(["scrutiny", "bundled_with"]);
+  });
+
+  test("returns empty array for undefined state", () => {
+    expect(getTrackableFields(undefined)).toEqual([]);
+  });
+
+  test("returns empty array when no fields have track: true", () => {
+    expect(getTrackableFields({ session_id: "string?" })).toEqual([]);
+  });
+
+  test("parses enum field correctly", () => {
+    const fields = getTrackableFields({
+      level: { type: "enum[low,high]", track: true },
+    });
+    expect(fields[0].baseType).toBe("enum");
+    expect(fields[0].enumValues).toEqual(["low", "high"]);
+  });
+});
+
+describe("validateTrackValue", () => {
+  test("accepts valid enum value", () => {
+    const field = getTrackableFields({ s: { type: "enum[a,b,c]", track: true } })[0];
+    expect(validateTrackValue(field, "a")).toBeNull();
+    expect(validateTrackValue(field, "b")).toBeNull();
+  });
+
+  test("rejects invalid enum value", () => {
+    const field = getTrackableFields({ s: { type: "enum[a,b,c]", track: true } })[0];
+    expect(validateTrackValue(field, "z")).toContain("invalid value");
+  });
+
+  test("accepts any string for string type", () => {
+    const field = getTrackableFields({ s: { type: "string", track: true } })[0];
+    expect(validateTrackValue(field, "anything")).toBeNull();
+  });
+
+  test("validates number type", () => {
+    const field = getTrackableFields({ n: { type: "number", track: true } })[0];
+    expect(validateTrackValue(field, "42")).toBeNull();
+    expect(validateTrackValue(field, "abc")).toContain("expected a number");
+  });
+
+  test("rejects empty string for number type", () => {
+    const field = getTrackableFields({ n: { type: "number", track: true } })[0];
+    expect(validateTrackValue(field, "")).toContain("expected a number");
+    expect(validateTrackValue(field, "  ")).toContain("expected a number");
+  });
+
+  test("validates boolean type", () => {
+    const field = getTrackableFields({ b: { type: "boolean", track: true } })[0];
+    expect(validateTrackValue(field, "true")).toBeNull();
+    expect(validateTrackValue(field, "false")).toBeNull();
+    expect(validateTrackValue(field, "yes")).toContain("expected");
+  });
+});
+
+describe("coerceTrackValue", () => {
+  test("coerces number", () => {
+    const field = getTrackableFields({ n: { type: "number", track: true } })[0];
+    expect(coerceTrackValue(field, "42")).toBe(42);
+  });
+
+  test("coerces boolean", () => {
+    const field = getTrackableFields({ b: { type: "boolean", track: true } })[0];
+    expect(coerceTrackValue(field, "true")).toBe(true);
+    expect(coerceTrackValue(field, "false")).toBe(false);
+  });
+
+  test("keeps string as-is", () => {
+    const field = getTrackableFields({ s: { type: "string", track: true } })[0];
+    expect(coerceTrackValue(field, "hello")).toBe("hello");
+  });
+
+  test("keeps enum as string", () => {
+    const field = getTrackableFields({ e: { type: "enum[a,b]", track: true } })[0];
+    expect(coerceTrackValue(field, "a")).toBe("a");
   });
 });

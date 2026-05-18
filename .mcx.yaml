@@ -25,6 +25,8 @@ state:
   provider: string?
   labels: string?
   model: string?
+  scrutiny:     { type: "enum[low,medium,high]", track: true, default: medium }
+  bundled_with: { type: string, track: true, repeatable: true }
 
 phases:
   impl:
@@ -54,3 +56,10 @@ phases:
   needs-attention:
     source: ./.claude/phases/needs-attention.ts
     next: []
+
+automation:
+  preset: semi-auto
+  modules:
+    cleanup:
+      source: ./.claude/automation/cleanup.ts
+      on: [pr.merged]

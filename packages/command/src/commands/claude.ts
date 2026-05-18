@@ -45,6 +45,7 @@ import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
+import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
 
@@ -1749,53 +1750,6 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, error };
 }
 
-/**
- * Poll for unread mail addressed to `recipient` until one arrives or the
- * deadline expires. Non-consuming — does not markRead, so the caller can
- * still read the message via `mcx mail -u <recipient>` afterward.
- *
- * `afterMs` is a `Date.now()` snapshot taken before polling begins. Only
- * mail with `createdAt` strictly after that timestamp is surfaced, so
- * pre-existing unread messages do not cause false-positive wakeups.
- *
- * Transient `pollMail` errors (IPC blips, daemon restart) are swallowed
- * and retried until the deadline; a single network hiccup will not kill
- * the entire wait.
- *
- * Returns the message, or null on timeout.
- */
-async function pollMailUntil(
-  d: Pick<ClaudeDeps, "pollMail">,
-  recipient: string,
-  timeoutMs: number,
-  afterMs: number,
-  pollIntervalMs = 2000,
-): Promise<MailMessage | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    let msg: MailMessage | null = null;
-    try {
-      msg = await d.pollMail(recipient);
-    } catch {
-      // Transient IPC error — continue polling until deadline
-    }
-    if (msg && new Date(msg.createdAt).getTime() > afterMs) return msg;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    await Bun.sleep(Math.min(pollIntervalMs, remaining));
-  }
-  return null;
-}
-
-function emitMailEvent(msg: MailMessage, short: boolean): void {
-  if (short) {
-    const subj = msg.subject ?? "(no subject)";
-    console.log(`mail ${msg.id} ${msg.sender} ${subj}`);
-    return;
-  }
-  console.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
-}
-
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   const parsed = parseWaitArgs(args);
 
@@ -1859,7 +1813,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
     if (winner.kind === "mail" && winner.message) {
-      emitMailEvent(winner.message, parsed.short);
+      emitMailEvent(winner.message, parsed.short, d, true);
       return;
     }
     // Mail poll returned null (timed out) or session already won the race.
@@ -1894,10 +1848,13 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     data = { event: data, sessions: [] };
   }
 
-  // Apply repo/scope filtering to unified { event?, sessions } shape
+  // Apply repo/scope filtering to unified { event?, sessions } shape.
+  // Guard: if data has BOTH sessions and events, the cursor branch below must win —
+  // events live in the events array, not in unified.event, so formatWaitHeader
+  // would incorrectly emit event=timeout for the unified branch.
   const activeFilter = scopeFilter ?? repoFilter;
   const filterLabel = scopeFilter ? "other scopes" : "other repos";
-  if (data && typeof data === "object" && "sessions" in data) {
+  if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
       event?: Record<string, unknown>;
@@ -1934,6 +1891,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       }
     }
     if (!parsed.short) {
+      console.log(formatWaitHeader(unified));
       console.log(JSON.stringify(unified, null, 2));
       if (activeFilter && unified.sessions.length === 0) {
         const origData = JSON.parse(text);
@@ -1994,6 +1952,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     }
     if (!parsed.short) {
       waitResult.events = events;
+      console.log(formatWaitCursorHeader(waitResult));
       console.log(JSON.stringify(waitResult, null, 2));
       if (events.length === 0 && totalEventsBeforeFilter > 0) {
         console.error(
@@ -2021,6 +1980,74 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
 
   // Unrecognized shape — pass through
   console.log(text);
+}
+
+// ── Wait header formatters ──
+
+function buildWaitHeaderParts(
+  eventType: string,
+  sessionId?: string,
+  workItem?: string,
+  pr?: number | string,
+  cost?: number,
+  turns?: number,
+): string {
+  const parts: string[] = [`event=${eventType}`];
+  if (sessionId) parts.push(`session=${sessionId}`);
+  if (workItem) parts.push(`workItem=${workItem}`);
+  if (pr !== undefined) parts.push(`pr=${typeof pr === "number" ? `#${pr}` : pr}`);
+  if (cost !== undefined && cost > 0) parts.push(`cost=${cost.toFixed(2)}`);
+  if (turns !== undefined) parts.push(`turns=${turns}`);
+  return parts.join(" ").slice(0, 120);
+}
+
+export function formatWaitHeader(unified: {
+  source?: string;
+  event?: Record<string, unknown>;
+  workItemEvent?: Record<string, unknown>;
+  sessions: Array<Record<string, unknown>>;
+}): string {
+  if (unified.source === "work_item" && unified.workItemEvent) {
+    const wie = unified.workItemEvent;
+    const type = (wie.type as string) ?? "unknown";
+    const prNumber = wie.prNumber as number | undefined;
+    return buildWaitHeaderParts(`work_item:${type}`, undefined, undefined, prNumber);
+  }
+  if (unified.event) {
+    const evt = unified.event;
+    const eventType = (evt.event as string) ?? "session:result";
+    const sessionId = evt.sessionId ? String(evt.sessionId).slice(0, 8) : undefined;
+    const sessionSnap = evt.session as Record<string, unknown> | undefined;
+    const workItem = (evt.workItem as string | undefined) ?? (sessionSnap?.workItem as string | undefined);
+    const pr = (evt.pr ?? sessionSnap?.pr) as number | undefined;
+    const cost = evt.cost as number | undefined;
+    const turns = evt.numTurns as number | undefined;
+    return buildWaitHeaderParts(eventType, sessionId, workItem, pr, cost, turns);
+  }
+  return "event=timeout";
+}
+
+export function formatWaitCursorHeader(result: {
+  seq: number;
+  events: Array<Record<string, unknown>>;
+}): string {
+  const first = result.events[0];
+  if (!first) return "event=timeout";
+  const eventType = (first.event as string) ?? "session:result";
+  const session = first.session as Record<string, unknown> | undefined;
+  const sessionId = (first.sessionId ?? session?.sessionId) as string | undefined;
+  const workItem = (first.workItem ?? session?.workItem) as string | undefined;
+  const pr = (first.pr ?? session?.pr) as number | undefined;
+  const cost = (first.cost ?? session?.cost) as number | undefined;
+  const turns = (first.numTurns ?? session?.numTurns) as number | undefined;
+  return buildWaitHeaderParts(
+    eventType,
+    sessionId ? String(sessionId).slice(0, 8) : undefined,
+    workItem ? String(workItem) : undefined,
+    pr,
+    cost,
+    turns,
+  );
 }
 
 // Re-export parseWorktreeList from the shim for backward compatibility

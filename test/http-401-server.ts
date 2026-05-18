@@ -12,4 +12,4 @@ const server = Bun.serve({
 });
 
 // Print port for the test to read
-console.log(server.port);
+process.stdout.write(`${server.port}\n`);

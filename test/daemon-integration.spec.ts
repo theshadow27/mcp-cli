@@ -477,49 +477,45 @@ describe("P5: Error scenarios", () => {
 
 // ---------------------------------------------------------------------------
 // P5b: Error scenario edge cases (#117)
+// Shared daemon: all server configs known at beforeAll time — pre-configure to
+// avoid hot-reload latency. Unique names guarantee test isolation.
 // ---------------------------------------------------------------------------
 describe("P5b: Error scenario edge cases", () => {
-  let daemon: TestDaemon | undefined;
+  let daemon: TestDaemon;
+  let authServer: MockServer;
 
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
-  });
-
-  test("HTTP 401 error suggests 'mcx auth' in the error message", async () => {
-    // Start a local HTTP server that always returns 401, using harness for proper cleanup
-    const authServer = await startMockServer("test/http-401-server.ts");
-    try {
-      daemon = await startTestDaemon({
-        authfail: { type: "http", url: `http://127.0.0.1:${authServer.port}/mcp` },
-      });
-
-      // Trigger a connection attempt — the 401 should produce an auth hint
-      const res = await rpc(daemon.socketPath, "listTools", { server: "authfail" });
-      expect(res.error).toBeDefined();
-      expect(res.error?.message).toContain("auth");
-      expect(res.error?.message).toContain("mcx auth");
-
-      // Verify lastError also contains the hint
-      const list = await rpc(daemon.socketPath, "listServers");
-      const server = (list.result as Array<{ name: string; lastError?: string }>).find((s) => s.name === "authfail");
-      expect(server?.lastError).toContain("mcx auth");
-    } finally {
-      await authServer.kill();
-    }
-  });
-
-  test("callTool with short timeout returns clear timeout error", async () => {
+  beforeAll(async () => {
+    authServer = await startMockServer("test/http-401-server.ts");
     daemon = await startTestDaemon({
+      authfail: { type: "http", url: `http://127.0.0.1:${authServer.port}/mcp` },
       slow: {
         command: "bun",
         args: [resolve("test/slow-echo-server.ts")],
         env: { SLOW_MS: "10000" },
       },
+      crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
     });
+  });
 
+  afterAll(async () => {
+    await daemon?.kill();
+    await authServer?.kill();
+  });
+
+  test("HTTP 401 error suggests 'mcx auth' in the error message", async () => {
+    // Trigger a connection attempt — the 401 should produce an auth hint
+    const res = await rpc(daemon.socketPath, "listTools", { server: "authfail" });
+    expect(res.error).toBeDefined();
+    expect(res.error?.message).toContain("auth");
+    expect(res.error?.message).toContain("mcx auth");
+
+    // Verify lastError also contains the hint
+    const list = await rpc(daemon.socketPath, "listServers");
+    const server = (list.result as Array<{ name: string; lastError?: string }>).find((s) => s.name === "authfail");
+    expect(server?.lastError).toContain("mcx auth");
+  });
+
+  test("callTool with short timeout returns clear timeout error", async () => {
     // Ensure server is connected first
     const tools = await rpc(daemon.socketPath, "listTools", { server: "slow" });
     expect(tools.error).toBeUndefined();
@@ -538,10 +534,6 @@ describe("P5b: Error scenario edge cases", () => {
   });
 
   test("server that fails to start produces actionable error via callTool", async () => {
-    daemon = await startTestDaemon({
-      crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
-    });
-
     // callTool against a server that crashes on startup
     const res = await rpc(daemon.socketPath, "callTool", {
       server: "crasher",
@@ -571,8 +563,8 @@ describe("P3b: HTTP transport end-to-end", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
-    await mockServer.kill();
+    await daemon?.kill();
+    await mockServer?.kill();
   });
 
   test("listTools returns echo server tools via HTTP transport", async () => {
@@ -635,8 +627,8 @@ describe("P3c: SSE transport end-to-end", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
-    await mockServer.kill();
+    await daemon?.kill();
+    await mockServer?.kill();
   });
 
   test("listTools returns echo server tools via SSE transport", async () => {
@@ -688,23 +680,24 @@ describe("P3c: SSE transport end-to-end", () => {
 
 // ---------------------------------------------------------------------------
 // P5c: HTTP/SSE transport error scenarios (#115)
+// Shared daemon: both dead-endpoint configs known at beforeAll time — pre-configure
+// to avoid hot-reload latency. Unique names guarantee test isolation.
 // ---------------------------------------------------------------------------
 describe("P5c: Transport connection error scenarios", () => {
-  let daemon: TestDaemon | undefined;
+  let daemon: TestDaemon;
 
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.kill();
-      daemon = undefined;
-    }
+  beforeAll(async () => {
+    daemon = await startTestDaemon({
+      deadhttp: { type: "http", url: "http://127.0.0.1:1/mcp" },
+      deadsse: { type: "sse", url: "http://127.0.0.1:1/sse" },
+    });
+  });
+
+  afterAll(async () => {
+    await daemon.kill();
   });
 
   test("HTTP connection refused returns clear error", async () => {
-    // Point at a port with nothing listening
-    daemon = await startTestDaemon({
-      deadhttp: { type: "http", url: "http://127.0.0.1:1/mcp" },
-    });
-
     const res = await rpc(daemon.socketPath, "listTools", { server: "deadhttp" });
     expect(res.error).toBeDefined();
     // Error should mention connection or the URL
@@ -717,10 +710,6 @@ describe("P5c: Transport connection error scenarios", () => {
   });
 
   test("SSE connection refused returns clear error", async () => {
-    daemon = await startTestDaemon({
-      deadsse: { type: "sse", url: "http://127.0.0.1:1/sse" },
-    });
-
     const res = await rpc(daemon.socketPath, "listTools", { server: "deadsse" });
     expect(res.error).toBeDefined();
     const msg = res.error?.message?.toLowerCase() ?? "";

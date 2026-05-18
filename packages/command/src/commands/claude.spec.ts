@@ -17,6 +17,8 @@ import {
   defaultGetPrStatus,
   extractIssueNumber,
   formatQuotaBanner,
+  formatWaitCursorHeader,
+  formatWaitHeader,
   parseApproveArgs,
   parseDenyArgs,
   parseDiffShortstat,
@@ -1534,6 +1536,52 @@ describe("mcx claude ls", () => {
     }
   });
 
+  test("--all --short with empty result set exits immediately (regression #2025)", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult([])),
+    });
+
+    const errSpy = mock(() => {});
+    const origErr = console.error;
+    console.error = errSpy;
+    try {
+      await cmdClaude(["ls", "--all", "--short"], deps);
+      expect(errSpy).toHaveBeenCalledWith("No active sessions.");
+    } finally {
+      console.error = origErr;
+    }
+  }, 2000);
+
+  test("--all --short with sessions bypasses repo-root filter and outputs compact lines", async () => {
+    const sessions = [
+      { ...SESSION_LIST[0], repoRoot: "/repo/a" },
+      { ...SESSION_LIST[1], repoRoot: "/repo/b" },
+    ];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      // Non-null getGitRoot so the non-all path would scope by /repo/a;
+      // --all must still call with {} (no repoRoot filter).
+      getGitRoot: mock(() => "/repo/a"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls", "--all", "--short"], deps);
+      // Bypass verified: no repoRoot or scopeRoot in the call args
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      // Short formatter: one line per session, no header
+      expect(logSpy.mock.calls.length).toBe(2);
+      const line1 = (logSpy.mock.calls[0] as string[])[0];
+      expect(line1).toContain("abc12345");
+      const line2 = (logSpy.mock.calls[1] as string[])[0];
+      expect(line2).toContain("def67890");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("shows all sessions when not in a git repo", async () => {
     const sessions = [
       { ...SESSION_LIST[0], repoRoot: "/repo/a" },
@@ -2654,20 +2702,19 @@ describe("claudeWait --mail-to", () => {
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
       pollMail: mock(async (recipient: string) => (recipient === "orchestrator" ? newMail : null)),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
-    } finally {
-      console.log = origLog;
-    }
-    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
-    const parsed = JSON.parse(output);
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    // First call is the header line, second is the JSON payload
+    const header = String((logSpy.mock.calls as unknown[][])[0][0]);
+    expect(header).toContain("event=mail");
+    expect(header).toContain("id=42");
+    const jsonLine = String((logSpy.mock.calls as unknown[][])[1][0]);
+    const parsed = JSON.parse(jsonLine);
     expect(parsed.source).toBe("mail");
     expect(parsed.mail.id).toBe(42);
     expect(deps.pollMail).toHaveBeenCalledWith("orchestrator");
@@ -2685,6 +2732,7 @@ describe("claudeWait --mail-to", () => {
       read: false,
       createdAt: new Date(Date.now() - 60_000).toISOString(),
     };
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(async () =>
         toolResult({
@@ -2693,15 +2741,9 @@ describe("claudeWait --mail-to", () => {
         }),
       ),
       pollMail: mock(async () => staleMail),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
-    } finally {
-      console.log = origLog;
-    }
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "100"], deps);
     const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
     expect(output).not.toContain('"source": "mail"');
   });
@@ -2719,25 +2761,138 @@ describe("claudeWait --mail-to", () => {
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
     let calls = 0;
+    const logSpy = mock(() => {});
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
       pollMail: mock(async () => {
         if (calls++ === 0) throw new Error("ECONNREFUSED");
         return newMail;
       }),
+      log: logSpy,
     });
-    const origLog = console.log;
-    const logSpy = mock(() => {});
-    console.log = logSpy;
-    try {
-      await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
-    } finally {
-      console.log = origLog;
-    }
-    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
-    const parsed = JSON.parse(output);
+    await cmdClaude(["wait", "--mail-to", "orchestrator", "--timeout", "5000"], deps);
+    // First call is the header line, second is the JSON payload
+    const header = String((logSpy.mock.calls as unknown[][])[0][0]);
+    expect(header).toContain("event=mail");
+    expect(header).toContain("id=77");
+    const jsonLine = String((logSpy.mock.calls as unknown[][])[1][0]);
+    const parsed = JSON.parse(jsonLine);
     expect(parsed.source).toBe("mail");
     expect(parsed.mail.id).toBe(77);
+  });
+});
+
+// ── formatWaitHeader unit tests ──
+
+describe("formatWaitHeader", () => {
+  test("session:result event with all fields", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "dca8b240-1111-2222-3333-444444444444",
+        event: "session:result",
+        cost: 2.0,
+        numTurns: 25,
+        workItem: "#1441",
+      },
+      sessions: [],
+    });
+    expect(header).toBe("event=session:result session=dca8b240 workItem=#1441 cost=2.00 turns=25");
+  });
+
+  test("session:result with PR number", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "abc12345-0000-0000-0000-000000000000",
+        event: "session:result",
+        cost: 0.5,
+        numTurns: 10,
+        pr: 99,
+      },
+      sessions: [],
+    });
+    expect(header).toContain("event=session:result");
+    expect(header).toContain("session=abc12345");
+    expect(header).toContain("pr=#99");
+    expect(header).toContain("cost=0.50");
+    expect(header).toContain("turns=10");
+  });
+
+  test("timeout (no event)", () => {
+    const header = formatWaitHeader({ sessions: [] });
+    expect(header).toBe("event=timeout");
+  });
+
+  test("work_item event", () => {
+    const header = formatWaitHeader({
+      source: "work_item",
+      workItemEvent: { type: "pr.merged", prNumber: 42 },
+      sessions: [],
+    });
+    expect(header).toBe("event=work_item:pr.merged pr=#42");
+  });
+
+  test("zero cost omitted", () => {
+    const header = formatWaitHeader({
+      event: { sessionId: "abc12345", event: "session:result", cost: 0, numTurns: 1 },
+      sessions: [],
+    });
+    expect(header).not.toContain("cost=");
+    expect(header).toContain("turns=1");
+  });
+
+  test("header capped at 120 chars", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "a".repeat(40),
+        event: "session:result:very:long:event:name:that:overflows",
+        cost: 99.99,
+        numTurns: 9999,
+        workItem: `#${"9".repeat(60)}`,
+      },
+      sessions: [],
+    });
+    expect(header.length).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("formatWaitCursorHeader", () => {
+  test("first event fields extracted", () => {
+    const header = formatWaitCursorHeader({
+      seq: 5,
+      events: [
+        {
+          sessionId: "abc12345-0000-0000-0000-000000000000",
+          event: "session:result",
+          cost: 1.5,
+          numTurns: 7,
+        },
+      ],
+    });
+    expect(header).toBe("event=session:result session=abc12345 cost=1.50 turns=7");
+  });
+
+  test("empty events array returns timeout", () => {
+    const header = formatWaitCursorHeader({ seq: 0, events: [] });
+    expect(header).toBe("event=timeout");
+  });
+
+  test("extracts session fields from nested session object", () => {
+    const header = formatWaitCursorHeader({
+      seq: 3,
+      events: [
+        {
+          event: "session:result",
+          session: {
+            sessionId: "def67890-0000-0000-0000-000000000000",
+            cost: 0.25,
+            numTurns: 3,
+          },
+        },
+      ],
+    });
+    expect(header).toContain("session=def67890");
+    expect(header).toContain("cost=0.25");
+    expect(header).toContain("turns=3");
   });
 });
 
@@ -2823,8 +2978,10 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
-      // Output should contain the unified JSON with sessions
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      // First line is the header, second line is JSON
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toBe("event=timeout");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       expect(parsed.sessions).toHaveLength(2);
       expect(parsed.sessions[0].sessionId).toBe(SESSION_LIST[0].sessionId);
@@ -2844,7 +3001,11 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      // First line is the header, second line is JSON
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc123");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       expect(parsed.event.sessionId).toBe("abc123");
       expect(parsed.event.event).toBe("session:result");
@@ -3225,7 +3386,7 @@ describe("mcx claude wait", () => {
     }
   });
 
-  test("bare event from old daemon prints JSON without --short", async () => {
+  test("bare event from old daemon prints header then JSON without --short", async () => {
     const bareEvent = {
       sessionId: "abc12345",
       event: "session:result",
@@ -3239,7 +3400,10 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc12345");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       // Normalized to unified shape
       expect(parsed.event.sessionId).toBe("abc12345");
@@ -3249,7 +3413,7 @@ describe("mcx claude wait", () => {
     }
   });
 
-  test("bare session array from old daemon prints JSON without --short", async () => {
+  test("bare session array from old daemon prints header then JSON without --short", async () => {
     const callTool = mock(async () => toolResult(SESSION_LIST));
     const deps = makeDeps({ callTool });
 
@@ -3258,11 +3422,46 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toBe("event=timeout");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       // Normalized to unified shape
       expect(parsed.sessions).toHaveLength(2);
       expect(parsed.event).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shape with both sessions and events routes to cursor formatter (not event=timeout)", async () => {
+    // Daemon returns { sessions, events } when --any --after wins via session event.
+    // The sessions branch must not consume this shape — events branch handles it.
+    const mixedResult = {
+      sessions: SESSION_LIST,
+      seq: 3,
+      events: [
+        {
+          sessionId: "abc12345-0000-0000-0000-000000000000",
+          event: "session:result",
+          cost: 0.5,
+          numTurns: 4,
+        },
+      ],
+    };
+    const callTool = mock(async () => toolResult(mixedResult));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--after", "0"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      // Must use cursor formatter — NOT event=timeout from unified branch
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc12345");
+      expect(header).not.toBe("event=timeout");
     } finally {
       console.log = origLog;
     }

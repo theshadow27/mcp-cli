@@ -502,6 +502,58 @@ describe("ClaudeServer", () => {
     server = undefined; // prevent double stop
   });
 
+  // ── restoreActiveSessions — null ownership paths ──
+
+  test("restoreActiveSessions: null ownership + dead PID → session ended", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(
+      db,
+      undefined,
+      undefined,
+      silentLogger,
+      10_000,
+      undefined,
+      undefined,
+      undefined,
+      () => null,
+    );
+
+    db.upsertSession({ sessionId: "restore-null-dead", state: "running", pid: 88888, pidStartTime: 1000000 });
+
+    const restore = (server as unknown as { restoreActiveSessions: () => void }).restoreActiveSessions.bind(server);
+    restore();
+
+    const row = db.getSession("restore-null-dead");
+    expect(row?.state).toBe("ended");
+    expect(row?.endedAt).not.toBeNull();
+  });
+
+  test("restoreActiveSessions: null ownership + alive PID → session preserved", () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new ClaudeServer(
+      db,
+      undefined,
+      undefined,
+      silentLogger,
+      10_000,
+      undefined,
+      undefined,
+      undefined,
+      () => null,
+    );
+
+    db.upsertSession({ sessionId: "restore-null-alive", state: "running", pid: process.pid, pidStartTime: 1000000 });
+
+    const restore = (server as unknown as { restoreActiveSessions: () => void }).restoreActiveSessions.bind(server);
+    restore();
+
+    const row = db.getSession("restore-null-alive");
+    expect(row?.state).not.toBe("ended");
+    expect(row?.endedAt).toBeNull();
+  });
+
   // ── Crash recovery ──
 
   test("handleWorkerCrash ends orphaned sessions after successful restart", async () => {
