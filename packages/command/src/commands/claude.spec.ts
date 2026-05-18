@@ -17,6 +17,8 @@ import {
   defaultGetPrStatus,
   extractIssueNumber,
   formatQuotaBanner,
+  formatWaitCursorHeader,
+  formatWaitHeader,
   parseApproveArgs,
   parseDenyArgs,
   parseDiffShortstat,
@@ -2741,6 +2743,120 @@ describe("claudeWait --mail-to", () => {
   });
 });
 
+// ── formatWaitHeader unit tests ──
+
+describe("formatWaitHeader", () => {
+  test("session:result event with all fields", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "dca8b240-1111-2222-3333-444444444444",
+        event: "session:result",
+        cost: 2.0,
+        numTurns: 25,
+        workItem: "#1441",
+      },
+      sessions: [],
+    });
+    expect(header).toBe("event=session:result session=dca8b240 workItem=#1441 cost=2.00 turns=25");
+  });
+
+  test("session:result with PR number", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "abc12345-0000-0000-0000-000000000000",
+        event: "session:result",
+        cost: 0.5,
+        numTurns: 10,
+        pr: 99,
+      },
+      sessions: [],
+    });
+    expect(header).toContain("event=session:result");
+    expect(header).toContain("session=abc12345");
+    expect(header).toContain("pr=#99");
+    expect(header).toContain("cost=0.50");
+    expect(header).toContain("turns=10");
+  });
+
+  test("timeout (no event)", () => {
+    const header = formatWaitHeader({ sessions: [] });
+    expect(header).toBe("event=timeout");
+  });
+
+  test("work_item event", () => {
+    const header = formatWaitHeader({
+      source: "work_item",
+      workItemEvent: { type: "pr.merged", prNumber: 42 },
+      sessions: [],
+    });
+    expect(header).toBe("event=work_item:pr.merged pr=#42");
+  });
+
+  test("zero cost omitted", () => {
+    const header = formatWaitHeader({
+      event: { sessionId: "abc12345", event: "session:result", cost: 0, numTurns: 1 },
+      sessions: [],
+    });
+    expect(header).not.toContain("cost=");
+    expect(header).toContain("turns=1");
+  });
+
+  test("header capped at 120 chars", () => {
+    const header = formatWaitHeader({
+      event: {
+        sessionId: "a".repeat(40),
+        event: "session:result:very:long:event:name:that:overflows",
+        cost: 99.99,
+        numTurns: 9999,
+        workItem: `#${"9".repeat(60)}`,
+      },
+      sessions: [],
+    });
+    expect(header.length).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("formatWaitCursorHeader", () => {
+  test("first event fields extracted", () => {
+    const header = formatWaitCursorHeader({
+      seq: 5,
+      events: [
+        {
+          sessionId: "abc12345-0000-0000-0000-000000000000",
+          event: "session:result",
+          cost: 1.5,
+          numTurns: 7,
+        },
+      ],
+    });
+    expect(header).toBe("event=session:result session=abc12345 cost=1.50 turns=7");
+  });
+
+  test("empty events array returns timeout", () => {
+    const header = formatWaitCursorHeader({ seq: 0, events: [] });
+    expect(header).toBe("event=timeout");
+  });
+
+  test("extracts session fields from nested session object", () => {
+    const header = formatWaitCursorHeader({
+      seq: 3,
+      events: [
+        {
+          event: "session:result",
+          session: {
+            sessionId: "def67890-0000-0000-0000-000000000000",
+            cost: 0.25,
+            numTurns: 3,
+          },
+        },
+      ],
+    });
+    expect(header).toContain("session=def67890");
+    expect(header).toContain("cost=0.25");
+    expect(header).toContain("turns=3");
+  });
+});
+
 // ── wait ──
 
 describe("mcx claude wait", () => {
@@ -2823,8 +2939,10 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
-      // Output should contain the unified JSON with sessions
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      // First line is the header, second line is JSON
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toBe("event=timeout");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       expect(parsed.sessions).toHaveLength(2);
       expect(parsed.sessions[0].sessionId).toBe(SESSION_LIST[0].sessionId);
@@ -2844,7 +2962,11 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      // First line is the header, second line is JSON
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc123");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       expect(parsed.event.sessionId).toBe("abc123");
       expect(parsed.event.event).toBe("session:result");
@@ -3225,7 +3347,7 @@ describe("mcx claude wait", () => {
     }
   });
 
-  test("bare event from old daemon prints JSON without --short", async () => {
+  test("bare event from old daemon prints header then JSON without --short", async () => {
     const bareEvent = {
       sessionId: "abc12345",
       event: "session:result",
@@ -3239,7 +3361,10 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc12345");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       // Normalized to unified shape
       expect(parsed.event.sessionId).toBe("abc12345");
@@ -3249,7 +3374,7 @@ describe("mcx claude wait", () => {
     }
   });
 
-  test("bare session array from old daemon prints JSON without --short", async () => {
+  test("bare session array from old daemon prints header then JSON without --short", async () => {
     const callTool = mock(async () => toolResult(SESSION_LIST));
     const deps = makeDeps({ callTool });
 
@@ -3258,7 +3383,9 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
-      const output = (logSpy.mock.calls[0] as string[])[0];
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      expect(header).toBe("event=timeout");
+      const output = (logSpy.mock.calls[1] as string[])[0];
       const parsed = JSON.parse(output);
       // Normalized to unified shape
       expect(parsed.sessions).toHaveLength(2);
