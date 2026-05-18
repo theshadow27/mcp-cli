@@ -1,6 +1,6 @@
 # Sprint 54
 
-> Planned 2026-05-17 19:53 EST. Started 2026-05-17 21:19 EST. Target: 15 PRs.
+> Planned 2026-05-17 19:53 EST. Started 2026-05-17 21:19 EST. Ended 2026-05-18 00:20 EST. Duration 3h01m. Target: 15 PRs. Merged: 15. **100% target hit.**
 
 ## Goal
 
@@ -255,3 +255,60 @@ flakes land, patch (v1.8.8). Defer the call to retro.
 11. **Use the `Monitor` harness tool, not raw Bash `mcx monitor`**.
 12. **Plan-time triage step** caught 1 already-done (#1928) + 1 dup
     (#1686) at sprint-54 plan time. The discipline is working.
+
+## Results
+
+**15/15 merged in 3h01m wall.** Heaviest sprint to date — 1 epic, 2 flake
+nerd-snipe gates, 2 concrete modules proving the framework, plus 10
+fallout/DX items.
+
+| # | PR | Phase outcome | Notes |
+|---|-----|---------------|-------|
+| 2016 | #2046 | direct (sonnet) | colorState TTY flake — fastest at ~12 min |
+| 2017 | #2045 | direct (sonnet) | docs-only |
+| 1224 | #2044 | direct (sonnet) | pull.spec hooksPath — Copilot caught the Windows-portability `execFileSync` swap |
+| 2036 | #2047 | direct (sonnet) | npm files manifest — Copilot drove the BINARIES.map(...) abstraction |
+| 2040 | #2048 | direct (sonnet) | null-ownership coverage |
+| 2025 | #2050 | direct (sonnet) | claude-ls hang — root cause was the stale binary from sprint start |
+| 1395 | #2054 | direct (sonnet) | dedupe + 1 review round (includeHeader default) + 1 Copilot round (rebase header behavior) |
+| 1605 | #2049 | direct (sonnet) | wait header — 1 Copilot round (shape routing + mail path) |
+| 2014 | #2057 | direct (sonnet) | share-daemon refactor |
+| **2015** | #2059 | **nerd-snipe gate** (opus) + **review caught wrong root cause** | nerd-snipe theory: Uint8Array buffer reuse after releaseLock. Adversarial reviewer ran the test, **proved the theory wrong**, found the actual cause: ANSI color codes in `console.log(port)` under TTY. Reviewer self-repaired (`process.stdout.write` + ANSI strip). Cost: ~$8. **Best gate save of the sprint.** |
+| **1978** | #2053 | **nerd-snipe gate** (opus) + adversarial review approve | Clean gate hit. Race in `AcpSession.spec.ts` where `waitForResult` registered AFTER `session:result` could fire. 100% deterministic local repro. Cost: ~$1.8 nerd-snipe + ~$0.6 impl. Closed the 47-sprint flake-cluster's last AcpSession leg. |
+| **2018** | #2056 | **2× review + 2× repair** (opus, $30+) | Framework epic. Round 1 review found 6 dead-code blockers (preset, dispatcher not instantiated, defineAutomation not in virtual module, mcx track --automation absent, ring-buffer wrap, docs missing). Round 2 review approved blocker fixes but found 5 new (Copilot piled on 11 more). Round 2 repair wired actual handler execution. QA verified end-to-end. **Most opus-intensive PR ever.** |
+| 2019 | #2064 | review self-repair + 1 QA fail/round-2 | Schema extension. Round 1 QA caught `repeatable: true` permitted on non-string types. Single `.refine()` fix. |
+| 2021 | #2066 | review self-repair + 1 dispatcher gap | Reviewer found `set-state` action was dead code in dispatcher. Self-repaired by wiring `updateWorkItem` callback. Framework-bug-found-via-module. |
+| 2020 | #2065 | review self-repair + 1 dispatcher gap + rebase | Same shape as #2021 but for `bye-and-untrack`. Routed through `claude_bye` for real SIGTERM. Plus rebase after #2066 merged. Final merge. |
+
+### Pipeline math
+
+- **Total opus spend** (rough): nerd-snipes $4.5 + #2018 framework $30 + #1978 impl $0.6 + #2015 impl $0.6 + reviewer self-repairs ~$8 = ~$45 opus
+- **Sonnet spend**: lots of small QA/impl runs, ~$15
+- **Quota**: 5-hour hit 100% mid-#2018-repair. User explicitly approved overage to land the chain.
+- **Sessions spawned**: ~25 across the sprint. Daemon restarted once mid-sprint to pick up post-#2019 schema (cost: 4 in-flight sessions killed, but all had pushed their work).
+
+### Gate validation
+
+- **Nerd-snipe gate (#1978)**: clean PASS. Root cause + repro + concrete fix. Adversarial review verified mechanism matches impl.
+- **Nerd-snipe gate (#2015)**: the gate caught what the gate is FOR — adversarial reviewer rejected the nerd-snipe's theory after running tests locally. New mechanism identified + fix landed. This is exactly the "verify mechanism, not just tests pass" rule paying off.
+- **Framework adversarial review (#2018)**: 2 rounds × 6 blockers + 5 blockers caught real dead code (preset, dispatcher init, docs gap, virtual-module export, track flag, ring buffer). Without the gate, all 6 would have shipped as ghost-features.
+- **Module reviewer comparison (#2020 vs #2021)**: the plan's risk-watch worked — both modules found the SAME framework gap (action executor was a stub). Both reviewers self-repaired by wiring the gap. Surface in retro: framework #2018 should have shipped these executors; we landed them via module PRs which is technically scope-creep but pragmatic given the time.
+
+## Excluded
+
+None this sprint — all 15 picks landed.
+
+## Follow-ups filed during sprint
+
+- #2052 — pre-existing `waitForEvent` gap in type stubs (filed by #2017 QA)
+- #2055 — Bun segfault when running both worker-heavy spec files together (filed by #2040 QA — user's reported segfault from earlier in the session)
+- #2060, #2061, #2062 — non-blocking follow-ups from #1395 QA (didn't capture titles inline)
+
+## Carry-forward for retro
+
+1. **The framework executor pattern** — #2018 shipped declarative action shapes (`set-state`, `bye-and-untrack`) without executors. Module PRs (#2021, #2020) had to add the executors themselves. Sprint 55 should land a framework patch ensuring all action types declared in the schema have a real executor or are removed.
+2. **Daemon restart mid-sprint** — #2019 merging required a daemon restart to pick up the new manifest schema. The restart killed 4 in-flight sessions. Acceptable here (work was pushed) but a schema-affecting PR landing mid-sprint should either pre-flight a restart window or use a more permissive parser.
+3. **Per-action tool-permission requests** — multiple workers asked for `Edit`/`Write`/`Bash` per-action despite `--allow Read Glob Grep Write Edit Bash` at spawn. The allowlist may not be propagating, or the daemon's permission router has a per-call gate. File an issue.
+4. **Quota pause + user override pattern** — see `~/.claude/.../memory/feedback_quota_pause_with_override.md`. At 100% 5-hour, the orchestrator paused; user explicitly approved overage to land the automation chain. The default (pause) is correct; the override is real cost.
+5. **Nerd-snipe theory wrong but adversarial review catches it** — #2015 was the marquee gate validation this sprint. Reviewers running tests locally against the proposed fix > trusting the diagnosis.
+6. **Reviewer self-repair worked 4× this sprint** (#1395 round 1, #2018 round 1, #2018 round 2, #2019, #2020 partial). Significant compounding savings vs spawning fresh opus repair.
