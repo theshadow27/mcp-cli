@@ -1489,7 +1489,7 @@ export async function cmdPhaseAdvance(
     }
 
     if (action === "in-flight") {
-      const sessionId = output.sessionId as string | undefined;
+      const sessionId = typeof output.sessionId === "string" ? output.sessionId : undefined;
       // A pending:* sentinel means the phase handler wrote its spawn marker but
       // the orchestrator never replaced it with a real session ID (phase_state_set
       // failed on a prior run). The session may be running as an orphan.
@@ -1512,7 +1512,7 @@ export async function cmdPhaseAdvance(
     }
 
     if (action === "goto") {
-      const target = output.target as string | undefined;
+      const target = typeof output.target === "string" ? output.target : undefined;
       if (!target) {
         d.logError(`phase "${currentPhase}" returned "goto" without a target`);
         d.exit(1);
@@ -1531,7 +1531,7 @@ export async function cmdPhaseAdvance(
     }
 
     if (action === "spawn") {
-      const command = output.command as string[] | undefined;
+      const command = Array.isArray(output.command) ? (output.command as string[]) : undefined;
       if (!command || !Array.isArray(command) || command.length === 0) {
         d.logError(`phase "${currentPhase}" returned "spawn" without a command`);
         d.exit(1);
@@ -1543,7 +1543,7 @@ export async function cmdPhaseAdvance(
         d.exit(1);
       }
 
-      const rawStateKey = output.stateKey as string | undefined;
+      const rawStateKey = typeof output.stateKey === "string" ? output.stateKey : undefined;
       const derivedStateKey = currentPhase === "impl" ? "session_id" : `${currentPhase}_session_id`;
       const stateKey = rawStateKey ?? derivedStateKey;
       const stateKeyPattern = /^([a-z][a-z0-9]*_)?session_id$/;
@@ -1562,8 +1562,8 @@ export async function cmdPhaseAdvance(
 
       let sessionId: string;
       try {
-        const parsed = JSON.parse(spawnResult.stdout.trim()) as { sessionId?: string };
-        if (!parsed.sessionId) throw new Error("no sessionId in output");
+        const parsed = JSON.parse(spawnResult.stdout.trim()) as Record<string, unknown>;
+        if (typeof parsed.sessionId !== "string" || !parsed.sessionId) throw new Error("no sessionId in output");
         sessionId = parsed.sessionId;
       } catch {
         d.logError(`failed to parse sessionId from spawn output: ${spawnResult.stdout.trim()}`);
