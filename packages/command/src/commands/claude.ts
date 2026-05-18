@@ -1793,6 +1793,9 @@ function emitMailEvent(msg: MailMessage, short: boolean): void {
     console.log(`mail ${msg.id} ${msg.sender} ${subj}`);
     return;
   }
+  const headerParts = ["event=mail", `id=${msg.id}`];
+  if (msg.sender) headerParts.push(`sender=${msg.sender}`);
+  console.log(headerParts.join(" ").slice(0, 120));
   console.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
 }
 
@@ -1894,10 +1897,13 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     data = { event: data, sessions: [] };
   }
 
-  // Apply repo/scope filtering to unified { event?, sessions } shape
+  // Apply repo/scope filtering to unified { event?, sessions } shape.
+  // Guard: if data has BOTH sessions and events, the cursor branch below must win —
+  // events live in the events array, not in unified.event, so formatWaitHeader
+  // would incorrectly emit event=timeout for the unified branch.
   const activeFilter = scopeFilter ?? repoFilter;
   const filterLabel = scopeFilter ? "other scopes" : "other repos";
-  if (data && typeof data === "object" && "sessions" in data) {
+  if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
       event?: Record<string, unknown>;
@@ -1934,6 +1940,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       }
     }
     if (!parsed.short) {
+      console.log(formatWaitHeader(unified));
       console.log(JSON.stringify(unified, null, 2));
       if (activeFilter && unified.sessions.length === 0) {
         const origData = JSON.parse(text);
@@ -1994,6 +2001,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     }
     if (!parsed.short) {
       waitResult.events = events;
+      console.log(formatWaitCursorHeader(waitResult));
       console.log(JSON.stringify(waitResult, null, 2));
       if (events.length === 0 && totalEventsBeforeFilter > 0) {
         console.error(
@@ -2021,6 +2029,74 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
 
   // Unrecognized shape — pass through
   console.log(text);
+}
+
+// ── Wait header formatters ──
+
+function buildWaitHeaderParts(
+  eventType: string,
+  sessionId?: string,
+  workItem?: string,
+  pr?: number | string,
+  cost?: number,
+  turns?: number,
+): string {
+  const parts: string[] = [`event=${eventType}`];
+  if (sessionId) parts.push(`session=${sessionId}`);
+  if (workItem) parts.push(`workItem=${workItem}`);
+  if (pr !== undefined) parts.push(`pr=${typeof pr === "number" ? `#${pr}` : pr}`);
+  if (cost !== undefined && cost > 0) parts.push(`cost=${cost.toFixed(2)}`);
+  if (turns !== undefined) parts.push(`turns=${turns}`);
+  return parts.join(" ").slice(0, 120);
+}
+
+export function formatWaitHeader(unified: {
+  source?: string;
+  event?: Record<string, unknown>;
+  workItemEvent?: Record<string, unknown>;
+  sessions: Array<Record<string, unknown>>;
+}): string {
+  if (unified.source === "work_item" && unified.workItemEvent) {
+    const wie = unified.workItemEvent;
+    const type = (wie.type as string) ?? "unknown";
+    const prNumber = wie.prNumber as number | undefined;
+    return buildWaitHeaderParts(`work_item:${type}`, undefined, undefined, prNumber);
+  }
+  if (unified.event) {
+    const evt = unified.event;
+    const eventType = (evt.event as string) ?? "session:result";
+    const sessionId = evt.sessionId ? String(evt.sessionId).slice(0, 8) : undefined;
+    const sessionSnap = evt.session as Record<string, unknown> | undefined;
+    const workItem = (evt.workItem as string | undefined) ?? (sessionSnap?.workItem as string | undefined);
+    const pr = (evt.pr ?? sessionSnap?.pr) as number | undefined;
+    const cost = evt.cost as number | undefined;
+    const turns = evt.numTurns as number | undefined;
+    return buildWaitHeaderParts(eventType, sessionId, workItem, pr, cost, turns);
+  }
+  return "event=timeout";
+}
+
+export function formatWaitCursorHeader(result: {
+  seq: number;
+  events: Array<Record<string, unknown>>;
+}): string {
+  const first = result.events[0];
+  if (!first) return "event=timeout";
+  const eventType = (first.event as string) ?? "session:result";
+  const session = first.session as Record<string, unknown> | undefined;
+  const sessionId = (first.sessionId ?? session?.sessionId) as string | undefined;
+  const workItem = (first.workItem ?? session?.workItem) as string | undefined;
+  const pr = (first.pr ?? session?.pr) as number | undefined;
+  const cost = (first.cost ?? session?.cost) as number | undefined;
+  const turns = (first.numTurns ?? session?.numTurns) as number | undefined;
+  return buildWaitHeaderParts(
+    eventType,
+    sessionId ? String(sessionId).slice(0, 8) : undefined,
+    workItem ? String(workItem) : undefined,
+    pr,
+    cost,
+    turns,
+  );
 }
 
 // Re-export parseWorktreeList from the shim for backward compatibility
