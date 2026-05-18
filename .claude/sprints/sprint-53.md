@@ -1,6 +1,6 @@
 # Sprint 53
 
-> Planned 2026-05-04 10:25 EDT. Started 2026-05-17 18:22 EST. Target: 15 PRs.
+> Planned 2026-05-04 10:25 EDT. Started 2026-05-17 18:22 EST. Ended 2026-05-17 19:34 EST. Target: 15 PRs. Merged: 12 + 1 already-done.
 
 ## Goal
 
