@@ -26,6 +26,7 @@
 - [Don't touch parallel #1808 worktrees](feedback_parallel_p1_session.md) — user runs #1808 in a direct claude session; never blanket-prune; don't bye sessions you didn't spawn
 - [Verify auto-merge actually fired](feedback_verify_merge_actually_fired.md) — after qa:pass + `gh pr merge --auto`, poll until state=MERGED; QA verdict + auto-merge queue ≠ proof of merge
 - [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
+- [Worktree hooksPath inheritance](feedback_worktree_hookspath_inheritance.md) — mcp-cli base repo's local core.hooksPath is absolute; worktrees inherit it and pre-commit silently no-ops. Set `git config core.hooksPath .git-hooks` after creating any new worktree.
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
