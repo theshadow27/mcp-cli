@@ -7,11 +7,6 @@
     "exactOptionalPropertyTypes": false,
     "types": ["bun"]
   },
-  "include": [
-    "_runner/**/*.ts",
-    "rules/**/*.ts",
-    "am-i-done.ts",
-    "doing-it-wrong.ts"
-  ],
+  "include": ["_runner/**/*.ts", "rules/**/*.ts", "am-i-done.ts", "doing-it-wrong.ts"],
   "exclude": ["node_modules", "rules/fixtures/**"]
 }

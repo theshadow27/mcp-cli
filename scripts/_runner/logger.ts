@@ -23,11 +23,12 @@ import { dirname, join } from "node:path";
 
 import type { Logger } from "./types";
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are exactly what we're stripping
 const ANSI = /\x1b\[[0-9;]*m/g;
 
 function format(args: unknown[]): string {
   return args
-    .map((a) => (typeof a === "string" ? a : a instanceof Error ? a.stack ?? a.message : JSON.stringify(a)))
+    .map((a) => (typeof a === "string" ? a : a instanceof Error ? (a.stack ?? a.message) : JSON.stringify(a)))
     .join(" ");
 }
 
@@ -52,9 +53,11 @@ export interface CaptureLogger extends Logger {
  */
 export function createCaptureLogger(): CaptureLogger {
   const buffer: Array<{ level: keyof Logger; args: unknown[] }> = [];
-  const push = (level: keyof Logger) => (...args: unknown[]) => {
-    buffer.push({ level, args });
-  };
+  const push =
+    (level: keyof Logger) =>
+    (...args: unknown[]) => {
+      buffer.push({ level, args });
+    };
   return {
     debug: push("debug"),
     info: push("info"),
@@ -111,7 +114,7 @@ export function createAiFileLogger(repoRoot: string): AiFileLogger {
         return;
       }
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, lines.join("\n") + "\n", "utf8");
+      await writeFile(path, `${lines.join("\n")}\n`, "utf8");
     },
   };
 }

@@ -27,9 +27,9 @@
  * shape the rule will actually see.
  */
 
-import { Glob } from "bun";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Glob } from "bun";
 
 import type { FileMeta } from "./file-loader";
 

@@ -36,7 +36,7 @@ export type StepResult = {
   error?: string;
 };
 
-export type ScriptFunction = (opts: StepOptions) => Promise<StepResult | boolean | void>;
+export type ScriptFunction = (opts: StepOptions) => Promise<StepResult | boolean | undefined>;
 
 export interface Step {
   /** Human-readable label shown in progress output. */

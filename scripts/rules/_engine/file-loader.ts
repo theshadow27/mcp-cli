@@ -12,9 +12,9 @@
  * keeps cold-run time predictable.
  */
 
-import { Glob } from "bun";
 import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { Glob } from "bun";
 
 export interface FileMeta {
   /** Absolute path on disk. */

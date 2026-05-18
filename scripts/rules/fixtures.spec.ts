@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { loadAllFixtures } from "./_engine/fixture-loader";
 import { evaluateRule } from "./_engine/rule";
 import { checkSuppression } from "./_engine/suppression";
-import { findRule, RULES } from "./index";
+import { RULES, findRule } from "./index";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures");
 

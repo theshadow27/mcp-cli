@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadFiles } from "./rules/_engine/file-loader";
 import { reportViolations } from "./rules/_engine/reporter";
-import { evaluateRule, type Violation } from "./rules/_engine/rule";
+import { type Violation, evaluateRule } from "./rules/_engine/rule";
 import { checkSuppression } from "./rules/_engine/suppression";
 import { RULES } from "./rules/index";
 
@@ -31,7 +31,10 @@ export interface RunRulesOptions {
   showAll?: boolean;
 }
 
-export async function runRules(opts: RunRulesOptions, logger: Pick<Console, "info" | "warn" | "error">): Promise<{
+export async function runRules(
+  opts: RunRulesOptions,
+  logger: Pick<Console, "info" | "warn" | "error">,
+): Promise<{
   violations: Violation[];
   durationMs: number;
 }> {
@@ -67,7 +70,7 @@ export const doingItWrongStep: ScriptFunction = async ({ logger }) => {
 
 async function main(argv: string[]): Promise<void> {
   if (argv.includes("--list")) {
-    process.stdout.write(RULES.map((r) => `${r.id}\t${r.scold}`).join("\n") + "\n");
+    process.stdout.write(`${RULES.map((r) => `${r.id}\t${r.scold}`).join("\n")}\n`);
     return;
   }
   const ruleIdx = argv.indexOf("--rule");

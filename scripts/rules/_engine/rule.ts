@@ -23,9 +23,7 @@
 
 import type { FileMeta } from "./file-loader";
 
-export interface Violated {
-  (line: number, column: number, snippet: string): void;
-}
+export type Violated = (line: number, column: number, snippet: string) => void;
 
 export interface RuleContext {
   file: FileMeta;
@@ -98,10 +96,11 @@ function runPatternRule(rule: PatternRule, file: FileMeta, violated: Violated): 
   for (const [i, line] of lines.entries()) {
     if (rule.except?.some((s) => line.includes(s))) continue;
     pattern.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = pattern.exec(line)) !== null) {
+    let m: RegExpExecArray | null = pattern.exec(line);
+    while (m !== null) {
       violated(i + 1, m.index + 1, line.trim());
       if (m.index === pattern.lastIndex) pattern.lastIndex++; // zero-width safety
+      m = pattern.exec(line);
     }
   }
 }
