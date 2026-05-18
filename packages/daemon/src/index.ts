@@ -661,7 +661,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   let automationDispatcher: AutomationDispatcher | null = null;
   {
     const workItemDb = new WorkItemDb(db.getDatabase());
-    const manifestResult = loadManifest(process.cwd());
+    let manifestResult: ReturnType<typeof loadManifest> | null = null;
+    try {
+      manifestResult = loadManifest(process.cwd());
+    } catch (err) {
+      logger.warn(`[mcpd] Failed to load manifest for automation: ${err} — skipping`);
+    }
     if (manifestResult?.manifest?.automation) {
       const lockfilePath = join(process.cwd(), LOCKFILE_NAME);
       let automations: import("@mcp-cli/core").LockedAutomation[] = [];
@@ -1155,6 +1160,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
+      automationDispatcher?.stop();
       eventLog.stopPruning();
       quotaPoller.stop();
       budgetWatcher.dispose();

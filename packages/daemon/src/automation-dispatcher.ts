@@ -121,15 +121,16 @@ export class AutomationDispatcher {
       let error: string | null = null;
 
       try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         action = await Promise.race([
           this.executeModule(mod, event),
-          new Promise<never>((_, reject) =>
-            setTimeout(
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
               () => reject(new Error(`module "${mod.name}" timed out after ${MODULE_TIMEOUT_MS}ms`)),
               MODULE_TIMEOUT_MS,
-            ),
-          ),
-        ]);
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
 
         if (action.action === "escalate") {
           outcome = "escalated";

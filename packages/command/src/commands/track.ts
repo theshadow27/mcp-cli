@@ -58,9 +58,10 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     }
   }
 
-  if (args[0] === "--branch") {
-    const branch = args[1];
-    if (!branch) {
+  const branchIdx = args.indexOf("--branch");
+  if (branchIdx >= 0) {
+    const branch = args[branchIdx + 1];
+    if (!branch || branch.startsWith("--")) {
       printError("Usage: mcx track --branch <name>");
       return deps.exit(1);
     }

@@ -486,6 +486,7 @@ declare module "mcp-cli" {
   export function file(path: string): Promise<string>;
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
+  export function defineAutomation(def: unknown): unknown;
   export interface AliasMonitorEventInput {
     event: string;
     category?: string;
