@@ -1,6 +1,11 @@
 /**
  * IPC handlers for automation module introspection.
  *
+ * Limitation: the daemon currently manages a single AutomationDispatcher
+ * bound to the repo root it was started from. The repoRoot parameter is
+ * parsed but not yet used for per-repo dispatcher resolution — callers
+ * from a different repo will see the startup-directory dispatcher's data.
+ *
  * #2018
  */
 
@@ -13,7 +18,7 @@ export class AutomationHandlers {
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("listAutomation", async (params) => {
-      const _parsed = ListAutomationParamsSchema.parse(params);
+      ListAutomationParamsSchema.parse(params);
       if (!this.dispatcher) {
         return { modules: [], preset: "supervised" };
       }

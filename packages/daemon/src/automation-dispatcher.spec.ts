@@ -340,4 +340,150 @@ describe("AutomationDispatcher", () => {
     expect(executedModules).toHaveLength(0);
     expect(published.some((e) => e.event === "automation.skipped")).toBe(true);
   });
+
+  test("skipped audit entries use skipReason instead of error", async () => {
+    dispatcher.load(makeConfig(), [makeLocked({ enabled: false })]);
+    dispatcher.start();
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.skipped"));
+
+    const log = dispatcher.getAuditLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].outcome).toBe("skipped");
+    expect(log[0].skipReason).toBe("disabled by config or override");
+    expect(log[0].error).toBeNull();
+  });
+
+  test("resolves workItemId from prNumber via resolveWorkItemId", async () => {
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      getWorkItemOverrides: (workItemId) => {
+        if (workItemId === "#42") return "cleanup=false";
+        return undefined;
+      },
+      resolveWorkItemId: (prNumber) => {
+        if (prNumber === 42) return "#42";
+        return undefined;
+      },
+      executeModule: async (mod, event) => {
+        executedModules.push({ name: mod.name, event: event.event });
+        return executeResult;
+      },
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent({ prNumber: 42 }));
+    await pollUntil(() => published.some((e) => e.event === "automation.skipped"));
+
+    expect(executedModules).toHaveLength(0);
+    const skipped = published.find((e) => e.event === "automation.skipped");
+    expect(skipped).toBeDefined();
+  });
+
+  test("default executor loads and calls module from resolvedPath", async () => {
+    const fixtureDir = import.meta.dir;
+    const defaultDispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: fixtureDir,
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    defaultDispatcher.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/echo-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
+    defaultDispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+
+    const fired = published.find((e) => e.event === "automation.fired");
+    expect(fired).toBeDefined();
+    expect(fired?.actionType).toBe("none");
+
+    const log = defaultDispatcher.getAuditLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].outcome).toBe("fired");
+
+    defaultDispatcher.stop();
+  });
+
+  test("default executor emits errored when module has no fn export", async () => {
+    const fixtureDir = import.meta.dir;
+    const defaultDispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: fixtureDir,
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    defaultDispatcher.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/bad-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
+    defaultDispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.errored"));
+
+    const errored = published.find((e) => e.event === "automation.errored");
+    expect(errored).toBeDefined();
+    expect(errored?.error).toContain("no default export with an fn()");
+
+    defaultDispatcher.stop();
+  });
+
+  test("default executor emits errored when module file is missing", async () => {
+    const defaultDispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/nonexistent/path",
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    defaultDispatcher.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "does-not-exist.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
+    defaultDispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.errored"));
+
+    const errored = published.find((e) => e.event === "automation.errored");
+    expect(errored).toBeDefined();
+    expect(errored?.error).toContain("failed to load");
+
+    defaultDispatcher.stop();
+  });
 });

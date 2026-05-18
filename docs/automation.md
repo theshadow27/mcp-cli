@@ -25,7 +25,7 @@ automation:
 
     merge:
       source: ./.claude/automation/merge.ts
-      on: [pr.label_added, ci.finished]
+      on: [pr.merge_state_changed, ci.finished]
       enabled: false
 ```
 
@@ -42,7 +42,7 @@ Module names must match `^[a-z][a-z0-9_-]{0,63}$`.
 
 ### Valid events
 
-`pr.opened`, `pr.pushed`, `pr.merged`, `pr.closed`, `pr.label_added`,
+`pr.opened`, `pr.pushed`, `pr.merged`, `pr.closed`, `pr.merge_state_changed`,
 `pr.review_comment_posted`, `checks.started`, `checks.passed`, `checks.failed`,
 `ci.started`, `ci.running`, `ci.finished`, `review.approved`,
 `review.changes_requested`, `review.commented`, `phase.changed`,

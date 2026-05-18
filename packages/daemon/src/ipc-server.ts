@@ -476,7 +476,7 @@ export class IpcServer {
     });
 
     // Catch duplicate registrations (silently-overwritten handlers are invisible bugs).
-    const EXPECTED = 51;
+    const EXPECTED = 53;
     if (this.handlers.size !== EXPECTED) {
       throw new Error(
         `Handler count mismatch after registration: expected ${EXPECTED}, got ${this.handlers.size}. A handler was duplicated or omitted.`,

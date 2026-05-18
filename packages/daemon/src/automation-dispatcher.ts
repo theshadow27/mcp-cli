@@ -11,10 +11,13 @@
  * #2018
  */
 
+import { resolve } from "node:path";
 import type {
   AutomationAction,
   AutomationAuditEntry,
   AutomationConfig,
+  AutomationContext,
+  AutomationDefinition,
   AutomationLogEntry,
   AutomationModuleInfo,
   AutomationOutcome,
@@ -47,18 +50,21 @@ export class AutomationDispatcher {
   private repoRoot: string;
   private eventBus: EventBus;
   private getWorkItemOverrides: (workItemId: string) => string | undefined;
+  private resolveWorkItemId: (prNumber: number) => string | undefined;
   private executeModule: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
 
   constructor(opts: {
     eventBus: EventBus;
     repoRoot: string;
     getWorkItemOverrides?: (workItemId: string) => string | undefined;
+    resolveWorkItemId?: (prNumber: number) => string | undefined;
     executeModule?: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
   }) {
     this.eventBus = opts.eventBus;
     this.repoRoot = opts.repoRoot;
     this.getWorkItemOverrides = opts.getWorkItemOverrides ?? (() => undefined);
-    this.executeModule = opts.executeModule ?? defaultExecuteModule;
+    this.resolveWorkItemId = opts.resolveWorkItemId ?? (() => undefined);
+    this.executeModule = opts.executeModule ?? this.defaultExecuteModule.bind(this);
   }
 
   load(config: AutomationConfig, locked: LockedAutomation[]): void {
@@ -102,16 +108,23 @@ export class AutomationDispatcher {
     }
   }
 
+  private resolveWorkItemIdFromEvent(event: MonitorEvent): string | undefined {
+    if (typeof event.workItemId === "string") return event.workItemId;
+    if (typeof event.prNumber === "number") return this.resolveWorkItemId(event.prNumber);
+    return undefined;
+  }
+
   private async onEvent(event: MonitorEvent): Promise<void> {
     for (const mod of this.modules.values()) {
       if (!mod.events.has(event.event)) continue;
 
-      const workItemId = typeof event.workItemId === "string" ? event.workItemId : undefined;
+      const workItemId = this.resolveWorkItemIdFromEvent(event);
       const overrides = parseAutomationOverrides(workItemId ? this.getWorkItemOverrides(workItemId) : undefined);
 
       if (!isModuleEnabledForItem(mod.name, mod.enabled, this.preset, overrides)) {
-        this.recordAudit(mod.name, "skipped", event.event, workItemId, null, "disabled by config or override", 0);
-        this.emitAuditEvent(mod.name, "skipped", event, { reason: "disabled by config or override" });
+        const skipReason = "disabled by config or override";
+        this.recordAudit(mod.name, "skipped", event.event, workItemId, null, null, skipReason, 0);
+        this.emitAuditEvent(mod.name, "skipped", event, { skipReason });
         continue;
       }
 
@@ -144,7 +157,7 @@ export class AutomationDispatcher {
       }
 
       const durationMs = Math.round(performance.now() - start);
-      this.recordAudit(mod.name, outcome, event.event, workItemId, action, error, durationMs);
+      this.recordAudit(mod.name, outcome, event.event, workItemId, action, error, null, durationMs);
       this.emitAuditEvent(mod.name, outcome, event, {
         actionType: action.action,
         error,
@@ -181,6 +194,7 @@ export class AutomationDispatcher {
     workItemId: string | undefined,
     action: AutomationAction | null,
     error: string | null,
+    skipReason: string | null,
     durationMs: number,
   ): void {
     const entry: AutomationAuditEntry = {
@@ -190,6 +204,7 @@ export class AutomationDispatcher {
       workItemId,
       action,
       error,
+      skipReason,
       ts: new Date().toISOString(),
       durationMs,
     };
@@ -239,6 +254,7 @@ export class AutomationDispatcher {
       workItemId: e.workItemId,
       actionType: e.action?.action ?? null,
       error: e.error,
+      skipReason: e.skipReason,
       ts: e.ts,
       durationMs: e.durationMs,
     }));
@@ -251,11 +267,53 @@ export class AutomationDispatcher {
   get currentPreset(): AutomationPreset {
     return this.preset;
   }
-}
 
-async function defaultExecuteModule(module: RegisteredModule, _event: MonitorEvent): Promise<AutomationAction> {
-  return {
-    action: "none",
-    reason: `module "${module.name}" loaded but no concrete handler registered (framework-only)`,
-  };
+  private async defaultExecuteModule(mod: RegisteredModule, event: MonitorEvent): Promise<AutomationAction> {
+    const absPath = resolve(this.repoRoot, mod.resolvedPath);
+    let exported: Record<string, unknown>;
+    try {
+      exported = await import(absPath);
+    } catch (err) {
+      throw new Error(
+        `failed to load "${mod.name}" from ${mod.resolvedPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const def = exported.default as AutomationDefinition | undefined;
+    if (!def || typeof def.fn !== "function") {
+      throw new Error(`module "${mod.name}" has no default export with an fn() handler`);
+    }
+
+    const ctx: AutomationContext = {
+      mcp: new Proxy({} as AutomationContext["mcp"], {
+        get: (_, prop) => {
+          throw new Error(`mcp.${String(prop)} is not available in automation context`);
+        },
+      }),
+      state: new Proxy({} as AutomationContext["state"], {
+        get: (_, prop) => {
+          throw new Error(`state.${String(prop)} is not available in automation context`);
+        },
+      }),
+      repoRoot: this.repoRoot,
+      signal: AbortSignal.timeout(MODULE_TIMEOUT_MS),
+      workItem: null,
+      logger: {
+        info: (msg: string) => console.log(`[automation:${mod.name}] ${msg}`),
+        warn: (msg: string) => console.warn(`[automation:${mod.name}] ${msg}`),
+        error: (msg: string) => console.error(`[automation:${mod.name}] ${msg}`),
+      },
+      emit: (evt) => {
+        const { event: evtName, category: evtCategory, ...rest } = evt;
+        this.eventBus.publish({
+          src: `automation:${mod.name}`,
+          event: evtName,
+          category: evtCategory as "automation",
+          ...rest,
+        });
+      },
+    };
+
+    return def.fn(event, ctx);
+  }
 }

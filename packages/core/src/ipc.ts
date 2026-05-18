@@ -450,8 +450,28 @@ export const TrackWorkItemParamsSchema = z
     initialPhase: z.string().optional(),
     /** Absolute path to the repo root; used server-side to locate a .mcx manifest for initialPhase validation. */
     repoRoot: z.string().optional(),
-    /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). */
-    automationOverrides: z.string().optional(),
+    /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). Each entry must be name=true or name=false. */
+    automationOverrides: z
+      .string()
+      .refine(
+        (csv) => {
+          if (!csv) return true;
+          for (const part of csv.split(",")) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+            const eqIdx = trimmed.indexOf("=");
+            if (eqIdx < 0) return false;
+            const value = trimmed
+              .slice(eqIdx + 1)
+              .trim()
+              .toLowerCase();
+            if (value !== "true" && value !== "false") return false;
+          }
+          return true;
+        },
+        { message: "automationOverrides must be CSV of name=true|false pairs (e.g. 'cleanup=false,bind=true')" },
+      )
+      .optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -555,7 +575,7 @@ export interface ListAutomationResult {
 export const GetAutomationLogParamsSchema = z.object({
   repoRoot: z.string().min(1),
   module: z.string().optional(),
-  limit: z.number().optional(),
+  limit: z.number().int().min(1).max(200).optional(),
 });
 
 export interface AutomationLogEntry {
@@ -565,6 +585,7 @@ export interface AutomationLogEntry {
   workItemId: string | undefined;
   actionType: string | null;
   error: string | null;
+  skipReason: string | null;
   ts: string;
   durationMs: number;
 }

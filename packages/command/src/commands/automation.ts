@@ -10,13 +10,7 @@
  */
 
 import { findGitRoot } from "@mcp-cli/core";
-import type {
-  AutomationLogEntry,
-  AutomationModuleInfo,
-  GetAutomationLogResult,
-  ListAutomationResult,
-} from "@mcp-cli/core";
-import { printError } from "../output";
+import type { AutomationModuleInfo, GetAutomationLogResult, ListAutomationResult } from "@mcp-cli/core";
 
 export interface AutomationDeps {
   ipcCall: <T>(method: string, params?: unknown) => Promise<T>;
@@ -63,7 +57,16 @@ export async function cmdAutomation(args: string[], deps?: Partial<AutomationDep
     await cmdShow(repoRoot, name, d);
   } else if (sub === "log") {
     const limitIdx = args.indexOf("--limit");
-    const limit = limitIdx >= 0 ? Number.parseInt(args[limitIdx + 1], 10) : undefined;
+    let limit: number | undefined;
+    if (limitIdx >= 0) {
+      const raw = args[limitIdx + 1];
+      const parsed = Number.parseInt(raw, 10);
+      if (!raw || Number.isNaN(parsed) || parsed < 1) {
+        d.logError(`--limit requires a positive integer, got: ${raw ?? "(missing)"}`);
+        d.exit(1);
+      }
+      limit = parsed;
+    }
     const firstPositional = args[1];
     const name = firstPositional && !firstPositional.startsWith("--") ? firstPositional : undefined;
     await cmdLog(repoRoot, name, limit, d);
@@ -137,8 +140,9 @@ async function cmdLog(
     const wi = entry.workItemId ? ` wi:${entry.workItemId}` : "";
     const action = entry.actionType ? ` → ${entry.actionType}` : "";
     const err = entry.error ? ` error: ${entry.error}` : "";
+    const skip = entry.skipReason ? ` skip: ${entry.skipReason}` : "";
     d.log(
-      `[${ts}] ${entry.module}  ${entry.outcome}  trigger:${entry.event}${wi}${action}  ${entry.durationMs}ms${err}`,
+      `[${ts}] ${entry.module}  ${entry.outcome}  trigger:${entry.event}${wi}${action}  ${entry.durationMs}ms${err}${skip}`,
     );
   }
 }

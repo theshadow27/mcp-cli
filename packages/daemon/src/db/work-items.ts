@@ -265,8 +265,8 @@ export class WorkItemDb {
     const id = item.id ?? randomUUIDv7();
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)`,
+        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, automation_overrides, phase)
+         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $automation_overrides, $phase)`,
       )
       .run({
         $id: id,
@@ -280,6 +280,7 @@ export class WorkItemDb {
         $ci_summary: item.ciSummary ?? null,
         $review_status: item.reviewStatus ?? "none",
         $merge_state_status: item.mergeStateStatus ?? null,
+        $automation_overrides: item.automationOverrides ?? null,
         $phase: item.phase ?? "impl",
       });
 

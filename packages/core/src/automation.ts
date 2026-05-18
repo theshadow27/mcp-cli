@@ -19,7 +19,7 @@ export const AUTOMATION_EVENT_NAMES = [
   "pr.pushed",
   "pr.merged",
   "pr.closed",
-  "pr.label_added",
+  "pr.merge_state_changed",
   "pr.review_comment_posted",
   "checks.started",
   "checks.passed",
@@ -177,6 +177,7 @@ export interface AutomationAuditEntry {
   workItemId: string | undefined;
   action: AutomationAction | null;
   error: string | null;
+  skipReason: string | null;
   ts: string;
   durationMs: number;
 }

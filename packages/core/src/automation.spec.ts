@@ -26,7 +26,7 @@ describe("AutomationModuleDefSchema", () => {
   test("accepts multiple events", () => {
     const result = AutomationModuleDefSchema.safeParse({
       source: "./merge.ts",
-      on: ["pr.label_added", "ci.finished"],
+      on: ["pr.merge_state_changed", "ci.finished"],
       enabled: false,
     });
     expect(result.success).toBe(true);
@@ -87,7 +87,7 @@ describe("AutomationConfigSchema", () => {
         },
         merge: {
           source: "./merge.ts",
-          on: ["ci.finished", "pr.label_added"],
+          on: ["ci.finished", "pr.merge_state_changed"],
           enabled: false,
         },
       },

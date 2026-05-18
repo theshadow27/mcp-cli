@@ -60,6 +60,7 @@ import {
   readCliConfig,
   readWorktreeConfig,
   resolveWorktreePath,
+  sha256Hex,
   tryFlockExclusive,
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
@@ -673,9 +674,22 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       try {
         const lockText = readFileSync(lockfilePath, "utf-8");
         const lock = parseLockfile(lockText);
+        const currentManifestHash = sha256Hex(readFileSync(manifestResult.path, "utf-8"));
+        if (lock.manifestHash !== currentManifestHash) {
+          logger.warn(
+            `[mcpd] Lockfile manifest hash mismatch (locked: ${lock.manifestHash.slice(0, 8)}… vs current: ${currentManifestHash.slice(0, 8)}…) — run \`mcx phase install\``,
+          );
+        }
         automations = lock.automations ?? [];
-      } catch {
-        logger.warn("[mcpd] Automation configured but no lockfile found — run `mcx phase install`");
+      } catch (err) {
+        const isEnoent = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
+        if (isEnoent) {
+          logger.warn("[mcpd] Automation configured but no lockfile found — run `mcx phase install`");
+        } else {
+          logger.warn(
+            `[mcpd] Automation configured but lockfile is corrupt: ${err instanceof Error ? err.message : String(err)} — run \`mcx phase install\``,
+          );
+        }
       }
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
@@ -684,6 +698,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           getWorkItemOverrides: (workItemId) => {
             const item = workItemDb.getWorkItem(workItemId);
             return item?.automationOverrides ?? undefined;
+          },
+          resolveWorkItemId: (prNumber) => {
+            const item = workItemDb.getWorkItemByPr(prNumber);
+            return item?.id ?? undefined;
           },
         });
         automationDispatcher.load(manifestResult.manifest.automation, automations);
