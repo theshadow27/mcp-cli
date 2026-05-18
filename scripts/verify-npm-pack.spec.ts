@@ -77,7 +77,7 @@ describe("platform package npm pack structure", () => {
       };
 
       test("files field lists exact binaries (no .gitkeep)", () => {
-        expect(pkg.files).toEqual(["bin/mcx", "bin/mcpd", "bin/mcpctl"]);
+        expect(pkg.files).toEqual(BINARIES.map((b) => `bin/${b}`));
       });
 
       test("has correct os and cpu selectors", () => {
