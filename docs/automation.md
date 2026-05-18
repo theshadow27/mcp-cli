@@ -91,11 +91,11 @@ Every handler returns a structured action:
 | `shell` | `{ action: "shell", cmd: string, args: string[] }` | Daemon executes a shell command |
 | `escalate` | `{ action: "escalate", reason: string, payload? }` | Emits `automation.escalated` event for orchestrator |
 
-> **Note:** Action execution is deferred to individual module PRs (#2020, #2021).
-> The framework records actions in the audit log but does not yet execute
-> side effects (`bye-and-untrack`, `set-state`, `shell`, etc.). The `escalate`
-> action emits its audit event immediately. The `shell` action type will
-> require an allowlist/security model before the executor ships.
+> **Note:** The `bye-and-untrack` action is fully executed (#2020). Other
+> action types (`set-state`, `shell`) are recorded in the audit log but do
+> not yet execute side effects. The `escalate` action emits its audit event
+> immediately. The `shell` action type will require an allowlist/security
+> model before the executor ships.
 
 ## Slider presets
 
@@ -168,6 +168,56 @@ To add automation to your project:
 4. Start daemon — modules activate automatically
 5. Use `mcx automation list` to verify
 6. Set per-item overrides with `mcx track <n> --automation <csv>`
+
+## Worked example: cleanup module (#2020)
+
+The `cleanup` module fires on `pr.merged`, verifies the merge via `mergeSha`,
+collects all `*_session_id` keys from the work item state, and returns
+`bye-and-untrack`. The daemon then ends each session, sets phase to `done`,
+and untracks the work item.
+
+```typescript
+import { defineAutomation } from "mcp-cli";
+
+const SESSION_KEY_PATTERN = /session_id$/;
+
+export default defineAutomation({
+  name: "cleanup",
+  events: ["pr.merged"],
+  fn: async (event, ctx) => {
+    if (typeof event.mergeSha !== "string" || !event.mergeSha) {
+      return { action: "none", reason: "missing mergeSha" };
+    }
+
+    const state = await ctx.state.all();
+    const sessionIds: string[] = [];
+    for (const [key, value] of Object.entries(state)) {
+      if (SESSION_KEY_PATTERN.test(key) && typeof value === "string" && value.length > 0) {
+        if (!value.startsWith("pending:")) sessionIds.push(value);
+      }
+    }
+
+    if (sessionIds.length === 0) {
+      return { action: "none", reason: "no session IDs in state" };
+    }
+
+    return { action: "bye-and-untrack", sessionIds };
+  },
+});
+```
+
+**Verification logic:** The module checks `mergeSha` is present and non-empty.
+The `pr.merged` event is only emitted by the work-item poller after the GitHub
+API confirms `state === "MERGED"`. Auto-merge queued ≠ proof of merge — the
+poller is the verification gate, and `mergeSha` is the proof.
+
+**Per-work-item override:** To prevent cleanup on a specific item:
+
+```bash
+mcx track 1234 --automation cleanup=false
+```
+
+**Preset defaults:** Cleanup is enabled in `semi-auto` and `autonomous` presets.
 
 See also: [phases.md](phases.md) for the manifest and lockfile system that
 automation builds on.

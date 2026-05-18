@@ -708,6 +708,41 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           updateWorkItem: (id, patch) => {
             workItemDb.updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
           },
+          getWorkItem: (workItemId) => {
+            const item = workItemDb.getWorkItem(workItemId);
+            if (!item) return null;
+            return {
+              id: item.id,
+              issueNumber: item.issueNumber,
+              prNumber: item.prNumber,
+              branch: item.branch,
+              phase: item.phase,
+            };
+          },
+          getWorkItemState: (workItemId) => {
+            return db.listAliasState(process.cwd(), workItemId);
+          },
+          actionExecutor: {
+            async byeAndUntrack(workItemId, sessionIds) {
+              for (const sid of sessionIds) {
+                try {
+                  db.endSession(sid);
+                } catch {
+                  logger.warn(`[automation] failed to end session ${sid}`);
+                }
+              }
+              try {
+                workItemDb.updateWorkItem(workItemId, { phase: "done" });
+              } catch {
+                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
+              }
+              try {
+                workItemDb.deleteWorkItem(workItemId);
+              } catch {
+                logger.warn(`[automation] failed to untrack ${workItemId}`);
+              }
+            },
+          },
         });
         automationDispatcher.load(manifestResult.manifest.automation, automations);
         automationDispatcher.start();
