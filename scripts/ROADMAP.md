@@ -44,7 +44,7 @@ preserving orchestrator context budget on failure.
 
 **Not done in this branch (deliberate):**
 
-- Migrating the other six `check-*.ts` scripts — each is its own PR
+- Migrating the other five `check-*.ts` scripts — each is its own PR
   (see Phase 2). Behavior is unchanged: every existing pre-commit step
   still runs, the rule engine is just a new step alongside them.
 - Wiring `am-i-done --pre-commit` into the pre-commit hook. The hook

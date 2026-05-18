@@ -63,6 +63,11 @@ export async function loadFiles({ repoRoot, roots, filter }: LoadOptions): Promi
       // Fixtures intentionally contain the shapes rules detect; they're
       // exercised through the fixture-loader path, not the production scan.
       if (rel.includes("rules/fixtures/") || rel.endsWith(".fixture.ts") || rel.endsWith(".fixture.tsx")) continue;
+      // Rule definitions document the very patterns they detect (regex
+      // literals, scold strings, example snippets in JSDoc). Scanning
+      // them means rules silently flag themselves. Engine internals
+      // (`scripts/rules/_engine/`) stay in scope — they're product code.
+      if (rel.endsWith(".rule.ts") || rel.endsWith(".rule.tsx")) continue;
       const abs = join(cwd, rel);
       const repoRel = relative(repoRoot, abs);
       if (filter && !repoRel.includes(filter)) continue;

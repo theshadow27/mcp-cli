@@ -58,8 +58,11 @@ export async function runRules(
   const files = await loadFiles({ repoRoot: REPO_ROOT, filter: opts.filter });
   const violations: Violation[] = [];
   const malformedTodos: MalformedTodo[] = [];
-  for (const file of files.values()) {
-    for (const rule of rules) {
+  // Iterate rules at the outer level so violations[] (and the reporter's
+  // grouping) come out in RULES registration order — independent of glob
+  // iteration order on the file scan.
+  for (const rule of rules) {
+    for (const file of files.values()) {
       const raw = evaluateRule(rule, file, files);
       for (const v of raw) {
         const s = checkSuppression(file.content, v.line, rule.id);

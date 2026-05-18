@@ -17,8 +17,12 @@
 import type { ExecutionContext } from "./types";
 
 export function detectContext(env: Record<string, string | undefined> = process.env): ExecutionContext {
-  if (env.GITHUB_ACTIONS || env.CI) return "ci";
+  // AI vars take priority over CI: an agent-driven workflow (e.g. Claude
+  // Action) sets both, and the file-logger context-preservation behaviour
+  // is the whole reason this project tracks audience. Set MCP_CLI_AI=0
+  // (or leave AI vars unset) to opt back into the CI streaming path.
   if (env.CLAUDECODE || env.AGENT || env.MCP_CLI_AI) return "ai";
+  if (env.GITHUB_ACTIONS || env.CI) return "ci";
   const shell = env.SHELL?.split("/").pop() ?? "";
   if (["sh", "bash", "zsh"].includes(shell)) return "sh";
   return "unknown";
