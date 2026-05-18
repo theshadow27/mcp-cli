@@ -711,6 +711,11 @@ export async function cmdPhase(
       return;
     }
 
+    if (sub === "advance") {
+      await cmdPhaseAdvance(args.slice(1), d, execDeps);
+      return;
+    }
+
     if (sub === "run") {
       const argv = args.slice(1);
       assertNoDrift(d);
@@ -1350,6 +1355,273 @@ export async function executePhase(
   }
 }
 
+// ── phase advance ──────────────────────────────────────────────────────────
+
+export function parsePhaseAdvanceArgs(args: string[]): { workItemId: string } {
+  let workItemId: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--work-item") {
+      workItemId = args[++i] ?? null;
+      if (!workItemId) throw new Error("--work-item requires an id");
+    } else if (a.startsWith("--work-item=")) {
+      workItemId = a.slice("--work-item=".length);
+      if (!workItemId) throw new Error("--work-item requires an id");
+    } else {
+      throw new Error(`unknown flag: ${a}`);
+    }
+  }
+  if (!workItemId) throw new Error("Usage: mcx phase advance --work-item <id>");
+  return { workItemId };
+}
+
+export interface AdvanceChainEntry {
+  phase: string;
+  action: string;
+  target?: string;
+  sessionId?: string;
+}
+
+export interface AdvanceResult {
+  workItemId: string;
+  chain: AdvanceChainEntry[];
+  final: AdvanceChainEntry;
+}
+
+const ADVANCE_MAX_ITERATIONS = 8;
+
+class PhaseAdvanceExitError extends Error {
+  constructor(public readonly code: number) {
+    super(`phase exited with code ${code}`);
+  }
+}
+
+export async function cmdPhaseAdvance(
+  args: string[],
+  deps: Partial<PhaseInstallDeps>,
+  execDeps?: Partial<PhaseExecuteDeps>,
+): Promise<void> {
+  const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
+  const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+
+  let opts: { workItemId: string };
+  try {
+    opts = parsePhaseAdvanceArgs(args);
+  } catch (err) {
+    d.logError(err instanceof Error ? err.message : String(err));
+    d.exit(1);
+  }
+
+  let workItem: WorkItem;
+  try {
+    const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
+    if (!wi) {
+      d.logError(`work item "${opts.workItemId}" not found`);
+      d.exit(1);
+    }
+    workItem = wi;
+  } catch (err) {
+    d.logError(`failed to fetch work item "${opts.workItemId}": ${err instanceof Error ? err.message : String(err)}`);
+    d.exit(1);
+  }
+
+  const chain: AdvanceChainEntry[] = [];
+  let currentPhase: string = workItem.phase;
+
+  for (let i = 0; i < ADVANCE_MAX_ITERATIONS; i++) {
+    // Re-check drift on every iteration: a phase handler has full shell/MCP
+    // access and could trigger `phase install`, invalidating the lockfile
+    // before the next executePhase call.
+    assertNoDrift(d);
+
+    const logCaptures: string[] = [];
+
+    const captureDeps: Partial<PhaseInstallDeps> = {
+      ...deps,
+      log: (msg: string) => {
+        logCaptures.push(msg);
+      },
+      exit: (code: number): never => {
+        throw new PhaseAdvanceExitError(code);
+      },
+    };
+
+    try {
+      await executePhase([currentPhase, "--work-item", opts.workItemId], captureDeps, execDeps);
+    } catch (err) {
+      if (err instanceof PhaseAdvanceExitError) {
+        d.logError(`phase "${currentPhase}" failed (exit ${err.code})`);
+        d.exit(err.code);
+      }
+      throw err;
+    }
+
+    // Use the last log call that parses as JSON — guards against any future
+    // preamble logs being added to executePhase without breaking capture.
+    let capturedOutput: string | null = null;
+    for (let j = logCaptures.length - 1; j >= 0; j--) {
+      try {
+        JSON.parse(logCaptures[j]);
+        capturedOutput = logCaptures[j];
+        break;
+      } catch {
+        // not JSON, keep scanning backwards
+      }
+    }
+
+    let output: Record<string, unknown>;
+    try {
+      output = capturedOutput ? (JSON.parse(capturedOutput) as Record<string, unknown>) : {};
+    } catch {
+      d.logError(`phase "${currentPhase}" returned non-JSON output: ${capturedOutput}`);
+      d.exit(1);
+    }
+
+    const action = output.action as string | undefined;
+
+    if (action === "wait") {
+      const entry: AdvanceChainEntry = { phase: currentPhase, action: "wait" };
+      chain.push(entry);
+      d.logError(`${currentPhase}: wait`);
+      const result: AdvanceResult = { workItemId: opts.workItemId, chain, final: entry };
+      d.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (action === "in-flight") {
+      const sessionId = typeof output.sessionId === "string" ? output.sessionId : undefined;
+      // A pending:* sentinel means the phase handler wrote its spawn marker but
+      // the orchestrator never replaced it with a real session ID (phase_state_set
+      // failed on a prior run). The session may be running as an orphan.
+      if (sessionId?.startsWith("pending:")) {
+        d.logError(
+          `phase "${currentPhase}" returned in-flight with a pending sentinel (${sessionId}) — a previous spawn may have succeeded but the session ID was not recorded. Check for orphan sessions with \`mcx claude ls --all\`, then either record the real sessionId with \`mcx call _work_items phase_state_set\` or clear the sentinel to allow re-spawn.`,
+        );
+        d.exit(1);
+      }
+      const entry: AdvanceChainEntry = {
+        phase: currentPhase,
+        action: "in-flight",
+        ...(sessionId && { sessionId }),
+      };
+      chain.push(entry);
+      d.logError(`${currentPhase}: in-flight${sessionId ? ` (${sessionId.slice(0, 8)})` : ""}`);
+      const result: AdvanceResult = { workItemId: opts.workItemId, chain, final: entry };
+      d.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (action === "goto") {
+      const target = typeof output.target === "string" ? output.target : undefined;
+      if (!target) {
+        d.logError(`phase "${currentPhase}" returned "goto" without a target`);
+        d.exit(1);
+      }
+      if (target === currentPhase) {
+        d.logError(
+          `phase "${currentPhase}" returned goto-to-self — this is a handler bug, not a cycle. Check the phase script.`,
+        );
+        d.exit(1);
+      }
+      const entry: AdvanceChainEntry = { phase: currentPhase, action: "goto", target };
+      chain.push(entry);
+      d.logError(`${currentPhase} → ${target} (goto)`);
+      currentPhase = target;
+      continue;
+    }
+
+    if (action === "spawn") {
+      const command = Array.isArray(output.command) ? (output.command as string[]) : undefined;
+      if (!command || !Array.isArray(command) || command.length === 0) {
+        d.logError(`phase "${currentPhase}" returned "spawn" without a command`);
+        d.exit(1);
+      }
+      if (command[0] !== "mcx") {
+        d.logError(
+          `phase "${currentPhase}" returned "spawn" with an unexpected command root "${command[0]}" — only "mcx" commands are allowed`,
+        );
+        d.exit(1);
+      }
+
+      const rawStateKey = typeof output.stateKey === "string" ? output.stateKey : undefined;
+      const derivedStateKey = currentPhase === "impl" ? "session_id" : `${currentPhase}_session_id`;
+      const stateKey = rawStateKey ?? derivedStateKey;
+      const stateKeyPattern = /^([a-z][a-z0-9]*_)?session_id$/;
+      if (!stateKeyPattern.test(stateKey)) {
+        d.logError(
+          `phase "${currentPhase}" returned stateKey "${stateKey}" which does not match the required pattern (e.g. "session_id", "qa_session_id")`,
+        );
+        d.exit(1);
+      }
+
+      const spawnResult = ex.exec(command);
+      if (spawnResult.exitCode !== 0) {
+        d.logError(`spawn command failed (exit ${spawnResult.exitCode ?? "signal"}): ${spawnResult.stdout.trim()}`);
+        d.exit(spawnResult.exitCode !== null ? spawnResult.exitCode : 1);
+      }
+
+      let sessionId: string;
+      try {
+        const parsed = JSON.parse(spawnResult.stdout.trim()) as Record<string, unknown>;
+        if (typeof parsed.sessionId !== "string" || !parsed.sessionId) throw new Error("no sessionId in output");
+        sessionId = parsed.sessionId;
+      } catch {
+        d.logError(`failed to parse sessionId from spawn output: ${spawnResult.stdout.trim()}`);
+        d.exit(1);
+      }
+
+      // Echo sessionId to stderr immediately so it is visible even if the
+      // phase_state_set call below fails and the recovery hint is malformed.
+      d.logError(`${currentPhase}: spawn succeeded — sessionId=${sessionId}`);
+
+      const repoRoot = ex.findGitRoot(d.cwd()) ?? d.cwd();
+      const recoverPayload = JSON.stringify({ workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot });
+      const recoverCmd = `mcx call _work_items phase_state_set '${recoverPayload.replace(/'/g, "'\\''")}'`;
+      try {
+        const setResult = (await ex.ipcCall("callTool", {
+          server: "_work_items",
+          tool: "phase_state_set",
+          arguments: { workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot },
+        })) as { isError?: boolean; content?: unknown } | null;
+
+        if (setResult?.isError) {
+          d.logError(
+            `CRITICAL: spawn succeeded (sessionId=${sessionId}) but phase_state_set failed: ${JSON.stringify(setResult.content ?? setResult)}`,
+          );
+          d.logError(`To recover: ${recoverCmd}`);
+          d.exit(1);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        d.logError(`CRITICAL: spawn succeeded (sessionId=${sessionId}) but phase_state_set failed: ${msg}`);
+        d.logError(`To recover: ${recoverCmd}`);
+        d.exit(1);
+      }
+
+      const entry: AdvanceChainEntry = { phase: currentPhase, action: "spawn", sessionId };
+      chain.push(entry);
+      d.logError(`${currentPhase}: spawned ${sessionId.slice(0, 8)}`);
+      const result: AdvanceResult = { workItemId: opts.workItemId, chain, final: entry };
+      d.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    d.logError(
+      `phase "${currentPhase}" returned unknown action: "${action ?? "(none)"}". Expected: wait, in-flight, goto, spawn`,
+    );
+    d.exit(1);
+  }
+
+  // Hard cap hit — work item is stranded at the current phase with no session.
+  const chainStr = chain.map((e) => `${e.phase}(${e.action}${e.target ? `→${e.target}` : ""})`).join(" | ");
+  d.logError(
+    `phase advance cap hit (${ADVANCE_MAX_ITERATIONS} iterations): possible cycle in phase graph\n` +
+      `work item "${opts.workItemId}" is stranded at phase "${currentPhase}" — manual intervention required\n` +
+      `chain: ${chainStr}`,
+  );
+  d.exit(2);
+}
+
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
 
@@ -1387,6 +1659,12 @@ Subcommands:
 
   mcx phase why <from> <to> [--json]
       Explain whether a transition is legal, via direct edge or shortest path.
+
+  mcx phase advance --work-item <id>
+      Run the work item's current phase, follow action chain (goto / spawn),
+      and stop at the first wait / in-flight. Single command replaces the
+      5-step orchestrator sequence of phase run + update + spawn + state_set.
+      Exits 0 on wait/in-flight/spawn; exits 2 on cycle cap (8 iterations).
 
   mcx phase log [--work-item <id>] [--forced-only] [--json]
       Print transitions from .mcx/transitions.jsonl, newest first.
