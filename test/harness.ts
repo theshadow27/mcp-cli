@@ -171,7 +171,12 @@ export async function startMockServer(scriptPath: string): Promise<MockServer> {
 
   // Decode BEFORE releasing the reader lock. Bun may reuse the underlying
   // ArrayBuffer once the lock is released, making the Uint8Array stale.
-  const portLine = readResult.value ? new TextDecoder().decode(readResult.value).trim() : undefined;
+  const portLine = readResult.value
+    ? new TextDecoder()
+        .decode(readResult.value)
+        .replace(new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g"), "")
+        .trim()
+    : undefined;
   reader.releaseLock();
 
   if (!portLine) {

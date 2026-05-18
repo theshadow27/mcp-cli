@@ -498,8 +498,8 @@ describe("P5b: Error scenario edge cases", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
-    await authServer.kill();
+    await daemon?.kill();
+    await authServer?.kill();
   });
 
   test("HTTP 401 error suggests 'mcx auth' in the error message", async () => {
