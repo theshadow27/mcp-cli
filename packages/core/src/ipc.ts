@@ -67,7 +67,9 @@ export type IpcMethod =
   | "aliasStateAll"
   | "getBudgetConfig"
   | "setBudgetConfig"
-  | "publishEvent";
+  | "publishEvent"
+  | "listAutomation"
+  | "getAutomationLog";
 
 // -- Request/Response --
 
@@ -528,6 +530,47 @@ export interface PublishEventResult {
   seq: number;
 }
 
+// -- Automation schemas (#2018) --
+
+export const ListAutomationParamsSchema = z.object({
+  repoRoot: z.string().min(1),
+});
+
+export interface AutomationModuleInfo {
+  name: string;
+  resolvedPath: string;
+  contentHash: string;
+  events: string[];
+  enabled: boolean;
+  recentFires: number;
+}
+
+export interface ListAutomationResult {
+  modules: AutomationModuleInfo[];
+  preset: string;
+}
+
+export const GetAutomationLogParamsSchema = z.object({
+  repoRoot: z.string().min(1),
+  module: z.string().optional(),
+  limit: z.number().optional(),
+});
+
+export interface AutomationLogEntry {
+  module: string;
+  outcome: string;
+  event: string;
+  workItemId: string | undefined;
+  actionType: string | null;
+  error: string | null;
+  ts: string;
+  durationMs: number;
+}
+
+export interface GetAutomationLogResult {
+  entries: AutomationLogEntry[];
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -744,6 +787,8 @@ export interface IpcMethodResult {
   getBudgetConfig: BudgetConfig;
   setBudgetConfig: { ok: true };
   publishEvent: PublishEventResult;
+  listAutomation: ListAutomationResult;
+  getAutomationLog: GetAutomationLogResult;
 }
 
 // -- Error codes --

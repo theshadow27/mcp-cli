@@ -27,6 +27,7 @@ import {
   GLOBAL_STATE_NAMESPACE,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
+  type LockedAutomation,
   type LockedPhase,
   type Lockfile,
   type Manifest,
@@ -211,6 +212,43 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     });
   }
 
+  const automations: LockedAutomation[] = [];
+  if (manifest.automation?.modules) {
+    const moduleNames = Object.keys(manifest.automation.modules).sort();
+    for (const name of moduleNames) {
+      const mod = manifest.automation.modules[name];
+      let resolvedAbs: string;
+      try {
+        resolvedAbs = resolvePhaseSource(mod.source, cwd);
+      } catch (err) {
+        errors.push(`automation "${name}": ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      let contentHash: string;
+      try {
+        contentHash = deps.hashFileSync(resolvedAbs);
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException;
+        if (e?.code === "ENOENT") {
+          errors.push(`automation "${name}": source ${mod.source} not found`);
+        } else {
+          errors.push(`automation "${name}": cannot read ${mod.source}: ${e?.message ?? String(err)}`);
+        }
+        continue;
+      }
+
+      const rel = relative(cwd, resolvedAbs).split("\\").join("/");
+      automations.push({
+        name,
+        resolvedPath: rel === "" ? "." : rel,
+        contentHash,
+        events: [...mod.on],
+        enabled: mod.enabled,
+      });
+    }
+  }
+
   if (errors.length > 0) {
     errors.sort();
     throw new ManifestError(errors.join("\n"), manifestPath);
@@ -220,6 +258,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     version: LOCKFILE_VERSION,
     manifestHash,
     phases,
+    ...(automations.length > 0 && { automations }),
   };
 
   return { manifest, manifestPath, lockfile, warnings };
@@ -611,6 +650,14 @@ export async function cmdPhase(
       d.log(`Installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
       for (const p of result.lockfile.phases) {
         d.log(`  ${p.name}  ${p.resolvedPath}  ${p.contentHash.slice(0, 12)}`);
+      }
+      if (result.lockfile.automations && result.lockfile.automations.length > 0) {
+        const aCount = result.lockfile.automations.length;
+        d.log(`Installed ${aCount} automation module${aCount === 1 ? "" : "s"}`);
+        for (const a of result.lockfile.automations) {
+          const status = a.enabled ? "on" : "off";
+          d.log(`  ${a.name}  ${a.resolvedPath}  [${status}]  events: ${a.events.join(", ")}`);
+        }
       }
       for (const w of result.warnings) {
         d.logError(`  ⚠ ${w}`);

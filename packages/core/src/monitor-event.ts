@@ -25,6 +25,7 @@ export const MONITOR_CATEGORIES = [
   "gc",
   "cost",
   "quota",
+  "automation",
 ] as const;
 
 export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
@@ -111,6 +112,13 @@ export const DAEMON_CONFIG_RELOADED = "daemon.config_reloaded" as const;
 // ── GC event names (#1586) ──
 
 export const GC_PRUNED = "gc.pruned" as const;
+
+// ── Automation event names (#2018) ──
+
+export const AUTOMATION_FIRED = "automation.fired" as const;
+export const AUTOMATION_SKIPPED = "automation.skipped" as const;
+export const AUTOMATION_ERRORED = "automation.errored" as const;
+export const AUTOMATION_ESCALATED = "automation.escalated" as const;
 
 // ── Heartbeat ──
 
@@ -419,6 +427,31 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const br = Array.isArray(e.branches) ? `${(e.branches as string[]).length}br` : "";
     const reason = typeof e.reason === "string" ? e.reason : "";
     return join(wt, br, reason);
+  },
+
+  [AUTOMATION_FIRED]: (e) => {
+    const mod = typeof e.module === "string" ? e.module : "";
+    const act = typeof e.actionType === "string" ? e.actionType : "";
+    const dur = typeof e.durationMs === "number" ? `${e.durationMs}ms` : "";
+    return join(wi(e), mod, act, dur);
+  },
+
+  [AUTOMATION_SKIPPED]: (e) => {
+    const mod = typeof e.module === "string" ? e.module : "";
+    const reason = typeof e.reason === "string" ? cap(e.reason, 60) : "";
+    return join(wi(e), mod, reason);
+  },
+
+  [AUTOMATION_ERRORED]: (e) => {
+    const mod = typeof e.module === "string" ? e.module : "";
+    const err = typeof e.error === "string" ? cap(e.error, 60) : "";
+    return join(wi(e), mod, err);
+  },
+
+  [AUTOMATION_ESCALATED]: (e) => {
+    const mod = typeof e.module === "string" ? e.module : "";
+    const reason = typeof e.reason === "string" ? cap(e.reason, 60) : "";
+    return join(wi(e), mod, reason);
   },
 
   [HEARTBEAT]: (e) => `seq:${e.seq}`,

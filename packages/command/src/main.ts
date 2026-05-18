@@ -31,6 +31,7 @@ import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
+import { cmdAutomation } from "./commands/automation";
 import { cmdClaude } from "./commands/claude";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
@@ -305,6 +306,10 @@ async function main(): Promise<void> {
         await cmdPhase(phaseArgs);
         break;
       }
+
+      case "automation":
+        await cmdAutomation(cleanArgs.slice(1));
+        break;
 
       case "auth":
         await cmdAuth(cleanArgs.slice(1));
@@ -944,6 +949,7 @@ Aliases:
 
 Utility:
   mcx search/install/update           Registry search and install
+  mcx automation <subcommand>          Introspect automation modules
   mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx monitor [flags]                 Stream unified daemon events (--json for NDJSON)
   mcx logs <server> [-f]              View server stderr
