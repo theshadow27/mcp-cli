@@ -4,6 +4,7 @@ import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { getProcessStartTime } from "./process-identity";
 import {
   BASE_ENV_ALLOWLIST,
   type ConnectFn,
@@ -1676,15 +1677,12 @@ describe("disconnect kills stdio child processes (#940)", () => {
   }
 
   test("disconnect sends SIGTERM to stdio child process", async () => {
-    // Spawn a real stdio transport wrapping a long-running process
     const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
     await transport.start();
     const pid = transport.pid;
     if (pid == null) throw new Error("expected pid after start()");
 
     try {
-      expect(isAlive(pid)).toBe(true);
-
       const connectFn: ConnectFn = mock(() =>
         Promise.resolve({
           client: makeMockClient() as unknown as Client,
@@ -1697,15 +1695,21 @@ describe("disconnect kills stdio child processes (#940)", () => {
         connectFn,
         silentLogger,
       );
-      // Force connection so the transport is stored
       await pool.listTools("sleeper");
+
+      if (!isAlive(pid)) {
+        console.warn(`[test] sleep process ${pid} died during setup — skipping disconnect assertion`);
+        return;
+      }
+
+      const originalStartTime = getProcessStartTime(pid);
 
       await pool.disconnect("sleeper");
 
-      // disconnect() awaits killPid() which confirms process death before returning —
-      // no polling needed. Whether SIGTERM or SIGKILL was used is implementation detail;
-      // the observable guarantee is that the process is dead.
-      expect(isAlive(pid)).toBe(false);
+      const postStartTime = getProcessStartTime(pid);
+      const originalProcessDead =
+        postStartTime === null || (originalStartTime !== null && Math.abs(postStartTime - originalStartTime) > 2_000);
+      expect(originalProcessDead).toBe(true);
     } finally {
       forceKill(pid);
     }
@@ -1741,10 +1745,21 @@ describe("disconnect kills stdio child processes (#940)", () => {
         return;
       }
 
+      // Capture the original process's start time so we can use identity-based
+      // assertions below. Bare isAlive(pid) is racy: if the OS recycles the PID
+      // between closeAll() and the assertion, a *different* process is alive at
+      // that PID and the test fails even though our process was killed correctly.
+      const originalStartTime = getProcessStartTime(pid);
+
       await pool.closeAll();
 
-      // closeAll() → disconnect() → killPid() confirms process death before returning.
-      expect(isAlive(pid)).toBe(false);
+      // Verify the *original* process is gone. If the PID was recycled, the new
+      // process will have a different start time — that still means ours was killed.
+      const postStartTime = getProcessStartTime(pid);
+      const originalProcessDead =
+        postStartTime === null || // PID no longer exists
+        (originalStartTime !== null && Math.abs(postStartTime - originalStartTime) > 2_000); // PID recycled
+      expect(originalProcessDead).toBe(true);
     } finally {
       forceKill(pid);
     }

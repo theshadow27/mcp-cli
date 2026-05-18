@@ -36,6 +36,7 @@ export interface MonitorDeps {
   exit: (code: number) => never;
   onSigint: (fn: () => void) => void;
   onStdoutError: (fn: (err: Error) => void) => void;
+  createTimeout?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 }
 
 const defaultDeps: MonitorDeps = {
@@ -240,7 +241,9 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
   };
 
   if (parsed.timeout !== undefined) {
-    timeoutId = setTimeout(() => finish(0), parsed.timeout * 1000);
+    timeoutId = (d.createTimeout ?? setTimeout)(() => finish(0), parsed.timeout * 1000) as ReturnType<
+      typeof setTimeout
+    >;
   }
 
   d.onSigint(() => finish(0));

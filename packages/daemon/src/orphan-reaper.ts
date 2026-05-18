@@ -15,9 +15,19 @@ import { consoleLogger } from "@mcp-cli/core";
 import type { StateDb } from "./db/state";
 import { isOurProcess as defaultIsOurProcess } from "./process-identity";
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return true;
+    return false;
+  }
+}
+
 interface ReaperDeps {
   /** Injectable for testing — defaults to the real isOurProcess. */
-  isOurProcess?: (pid: number, storedStartTimeMs: number) => boolean;
+  isOurProcess?: (pid: number, storedStartTimeMs: number) => boolean | null;
 }
 
 /**
@@ -47,25 +57,27 @@ export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger
     }
 
     if (pidStartTime != null) {
-      // We have a stored start time — verify PID ownership
-      if (checkIsOurProcess(pid, pidStartTime)) {
-        // Process is alive and matches — preserve for restoreActiveSessions
+      const ownership = checkIsOurProcess(pid, pidStartTime);
+      if (ownership === true) {
         logger.info(`[mcpd] Preserving active session ${sessionId} (pid ${pid} still alive)`);
         continue;
       }
-      // PID is dead or recycled — clean up DB record
-      logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is dead or recycled`);
+      if (ownership === null) {
+        if (isProcessAlive(pid)) {
+          logger.info(`[mcpd] Preserving active session ${sessionId} (pid ${pid} alive, ownership uncertain)`);
+          continue;
+        }
+        logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is no longer alive`);
+      } else {
+        logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is dead or recycled`);
+      }
     } else {
       // Legacy session without start time — check bare liveness
-      try {
-        process.kill(pid, 0); // signal 0 = existence check, no kill
-        // Process is alive — preserve it
+      if (isProcessAlive(pid)) {
         logger.info(`[mcpd] Preserving active session ${sessionId} (pid ${pid} still alive, no start time)`);
         continue;
-      } catch {
-        // Process is dead — clean up
-        logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is no longer alive`);
       }
+      logger.warn(`[mcpd] Cleaning up stale session ${sessionId} — pid ${pid} is no longer alive`);
     }
 
     db.endSession(sessionId);

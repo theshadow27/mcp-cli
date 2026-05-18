@@ -4,6 +4,7 @@ export {
   toArgPrefix,
   isWildcardPattern,
   isToolWildcard,
+  isBareMcpServerPattern,
   toToolPrefix,
   type PermissionRule,
   type ParsedPattern,

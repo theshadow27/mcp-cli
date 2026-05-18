@@ -36,6 +36,7 @@ import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import type { EventBus } from "./event-bus";
+import type { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
 import type { RequestContext, RequestHandler } from "./handler-types";
 import { AliasHandlers } from "./handlers/alias";
@@ -97,6 +98,7 @@ export class IpcServer {
       resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
       loadManifest?: (repoRoot: string) => Manifest | null;
       eventBus?: EventBus;
+      eventLog?: EventLog;
       onAliasChanged?: (name: string) => void;
     },
   ) {
@@ -113,8 +115,15 @@ export class IpcServer {
 
     const workItemDb = new WorkItemDb(this.db.getDatabase());
     const eventBus = opts.eventBus ?? null;
+    const eventLog = opts.eventLog ?? null;
 
-    this.eventStream = new EventStreamServer(eventBus, this.pool, this.logger, IpcServer.HEARTBEAT_INTERVAL_MS);
+    this.eventStream = new EventStreamServer(
+      eventBus,
+      this.pool,
+      this.logger,
+      IpcServer.HEARTBEAT_INTERVAL_MS,
+      eventLog,
+    );
 
     this.registerHandlers({
       aliasServer,

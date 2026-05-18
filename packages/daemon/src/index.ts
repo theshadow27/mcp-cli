@@ -186,10 +186,15 @@ export function sweepCoreBare(
       else if (s.cwd) roots.add(s.cwd);
     }
     for (const root of roots) {
-      if (ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd))) {
+      const sweepResult = ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd));
+      if (sweepResult === "removed") {
         logger.warn(`[mcpd] Removed core.bare key from ${root} (sweep) — see #1860`);
         metrics.counter("mcpd_core_bare_healed_total", { source: "sweep" }).inc();
         healed++;
+      } else if (sweepResult === "fallback") {
+        logger.warn(
+          `[mcpd] core.bare key could not be removed from ${root} (sweep) — set to false as fallback — see #1860`,
+        );
       }
     }
   } catch (err) {
@@ -244,9 +249,12 @@ export function pruneOrphanedWorktrees(
             `[mcpd] core.bare flipped to true by: git worktree remove ${worktreePath} (repo=${repoRoot}) — see #1330`,
           );
         }
-        if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
+        const removeResult = ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd));
+        if (removeResult === "removed") {
           logger.warn("[mcpd] Removed core.bare key after worktree removal");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
+        } else if (removeResult === "fallback") {
+          logger.warn("[mcpd] core.bare key could not be removed after worktree removal — set to false as fallback");
         }
         affectedRepoRoots.add(repoRoot);
         pruned++;
@@ -261,8 +269,11 @@ export function pruneOrphanedWorktrees(
               logger.warn(
                 `[mcpd] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`,
               );
-              if (ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd))) {
+              const branchDeleteResult = ensureCoreBareUnset(repoRoot, (cmd) => gitOps.exec(cmd));
+              if (branchDeleteResult === "removed") {
                 metrics.counter("mcpd_core_bare_healed_total", { source: "branch_delete" }).inc();
+              } else if (branchDeleteResult === "fallback") {
+                logger.warn("[mcpd] core.bare key could not be removed after branch delete — set to false as fallback");
               }
             }
             logger.info(`[mcpd] Deleted branch: ${branch} (merged)`);
@@ -275,9 +286,14 @@ export function pruneOrphanedWorktrees(
       // Final guard: check core.bare after all removals complete. Individual
       // per-removal fixes can be undone by subsequent removals. #1206
       for (const root of affectedRepoRoots) {
-        if (ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd))) {
+        const batchResult = ensureCoreBareUnset(root, (cmd) => gitOps.exec(cmd));
+        if (batchResult === "removed") {
           logger.warn("[mcpd] Removed core.bare key after batch worktree prune");
           metrics.counter("mcpd_core_bare_healed_total", { source: "worktree_remove" }).inc();
+        } else if (batchResult === "fallback") {
+          logger.warn(
+            "[mcpd] core.bare key could not be removed after batch worktree prune — set to false as fallback",
+          );
         }
       }
       logger.info(`[mcpd] Pruned ${pruned} orphaned worktree${pruned === 1 ? "" : "s"}`);
@@ -289,6 +305,17 @@ export function pruneOrphanedWorktrees(
 
 /** Per-phase timeout for shutdown steps (ms). Prevents any single phase from hanging the process. */
 const SHUTDOWN_PHASE_TIMEOUT_MS = 5_000;
+
+/**
+ * Tighter timeout for `awaitPendingServers`. We don't actually need to wait
+ * for in-flight virtual server startups during shutdown — abandoning them
+ * is fine because the rest of the shutdown sequence tears down DB/IPC/pool
+ * regardless. The previous 5s budget meant SIGTERM during a slow startup
+ * (e.g. ws-server port retry) blocked exit by up to 5s. The new ws-server
+ * retry schedule maxes out around 1.55s, so 2s gives normal startups room
+ * to finish without making SIGTERM feel hung.
+ */
+const SHUTDOWN_PENDING_TIMEOUT_MS = 2_000;
 
 /** Race a promise against a deadline. Returns "timeout" if the deadline is reached. */
 async function withPhaseTimeout<T>(
@@ -1114,10 +1141,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       } catch (err) {
         logger.error(`[mcpd] Error stopping IPC server: ${err}`);
       }
-      // Wait for any in-progress virtual server startups before stopping them
+      // Wait briefly for any in-progress virtual server startups before stopping
+      // them. Don't block shutdown on slow startups — the subsequent
+      // server.stop() calls handle the in-flight case, and dropping the wait
+      // means SIGTERM exits promptly even if a worker is mid-port-retry.
       let phase = performance.now();
       try {
-        await withPhaseTimeout(pool.awaitPendingServers(), SHUTDOWN_PHASE_TIMEOUT_MS, "awaitPendingServers", logger);
+        await withPhaseTimeout(pool.awaitPendingServers(), SHUTDOWN_PENDING_TIMEOUT_MS, "awaitPendingServers", logger);
       } catch (err) {
         logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
       }

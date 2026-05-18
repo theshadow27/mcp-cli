@@ -36,14 +36,11 @@ const PER_FILE_TIME_BUDGET_MS = 5_000;
  * Uses sequential sum (not parallel wall time) for reproducibility across machines.
  * Ratchet this down as optimizations land. Warns but never blocks commits.
  *
- * Parallel wall time (measured at concurrency=14 on 14-core Apple Silicon):
- *   ~100s for all 159 files, ~65s for 153 non-excluded files.
- *   The #690 target of <25s parallel wall time is infeasible with the current
- *   test count (~153 non-excluded files). Each file has ~200-300ms of Bun
- *   process startup overhead alone. Achieving <25s would require either:
- *   (a) an in-process test runner (no per-file subprocess), or
- *   (b) reducing to ~80 test files via aggressive consolidation.
- *   Neither is justified given that parallel wall time is not user-facing.
+ * Parallel wall time on 16-core Apple Silicon (post wsPort + --parallel fixes):
+ *   ~16s for the full suite. The previous "~100s parallel wall is the floor"
+ *   conclusion was wrong — it didn't account for the 5s WS-port retry tax that
+ *   daemon-integration.spec.ts paid on every spawn. The earlier "infeasible
+ *   <25s" comment in this file was based on that bug. See PR description.
  */
 const AGGREGATE_TIME_BUDGET_MS = 39_000;
 
@@ -55,7 +52,8 @@ const PROFILE_CONCURRENCY = Math.max(4, Math.min(navigator.hardwareConcurrency ?
  * These are intentionally slow integration/stress tests that spawn real daemons.
  */
 const TIMING_EXCLUSIONS: Record<string, string> = {
-  "test/daemon-integration.spec.ts": "Full daemon lifecycle integration tests",
+  "test/daemon-integration.spec.ts":
+    "Full daemon lifecycle integration tests (~12s post wsPort fix; ~22 daemon spawns)",
   "test/stress.spec.ts": "Stress tests spawning real CLI processes",
   "test/transport-errors.spec.ts": "Live daemon transport error integration tests",
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
@@ -220,7 +218,14 @@ const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles, ...RUN1_DAEMON_UNI
 
 const testStart = Date.now();
 
-// Run 1: non-daemon tests with --coverage (produces the coverage table we parse)
+// Run 1: non-daemon tests with --coverage (produces the coverage table we parse).
+// NOTE: --parallel cannot be combined with --coverage — Bun's parallel workers
+// each emit their own coverage table and `bun test` reports only the worker
+// that finishes last, attributing 0 lines/funcs to files exercised in other
+// workers. That made global line coverage drop from 93.94% to 87.49% with
+// 35 files falsely flagged below the 80% per-file floor. The dev `bun test`
+// command uses --parallel for speed (no --coverage there), and this script
+// stays sequential for accurate coverage aggregation.
 const proc1 = Bun.spawn(["bun", "test", "--coverage", ...nonDaemonPaths], {
   stdout: "pipe",
   stderr: "pipe",
@@ -246,10 +251,15 @@ if (skipRun2) {
   const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
     .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
     .map((f) => `test/${f}`);
-  const proc2 = Bun.spawn(["bun", "test", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
+  // and ws-server's port-retry tax has been reduced (see ws-server.ts).
+  const proc2 = Bun.spawn(
+    ["bun", "test", "--parallel", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
 
   // Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
   // rather than blocking pre-commit indefinitely. 300s is generous enough for

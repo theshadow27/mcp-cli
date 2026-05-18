@@ -101,8 +101,8 @@ describe("isOurProcess", () => {
     expect(isOurProcess(process.pid, startTime as number)).toBe(true);
   });
 
-  test("returns false for a dead PID", () => {
-    expect(isOurProcess(2147483647, Date.now())).toBe(false);
+  test("returns null for a dead PID (indeterminate — ps fails)", () => {
+    expect(isOurProcess(2147483647, Date.now())).toBeNull();
   });
 
   test("returns false when start time doesn't match (simulates PID reuse)", () => {

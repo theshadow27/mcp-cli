@@ -382,6 +382,22 @@ describe("extractMetadata", () => {
     const { js } = await bundleAlias(scriptPath);
     await expect(extractMetadata(js)).rejects.toThrow("did not call defineAlias");
   });
+
+  test("rejects with 'Alias eval timed out' when timeout fires", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "hang.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "await new Promise(() => {});",
+        "defineAlias({ name: 'hang', description: 'forever', input: z.object({}), fn: () => {} });",
+      ].join("\n"),
+    );
+
+    const { js } = await bundleAlias(scriptPath);
+    await expect(extractMetadata(js, 1)).rejects.toThrow("Alias eval timed out");
+  });
 });
 
 describe("executeAliasBundled", () => {

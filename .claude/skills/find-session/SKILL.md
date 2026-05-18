@@ -1,10 +1,10 @@
 ---
-description: Full-text search of Claude Code session histories to find and resume past conversations. Use when user says "find session", "search sessions", "find that conversation where", or wants to locate a previous Claude session.
+description: Full-text search of Claude Code session histories to find and resume past conversations. Use when user says "find session", "search sessions", "find that conversation where", "what were my last sessions", or wants to locate a previous Claude session.
 ---
 
 # Find Session Skill
 
-Search through Claude Code session history files (JSONL) to find past conversations by keyword, then summarize and rank matches for easy resumption.
+Search through Claude Code session history files (JSONL) to find past conversations by keyword OR by recency, then summarize and rank matches for easy resumption.
 
 ## When to Use
 
@@ -12,9 +12,17 @@ Trigger when the user:
 - Wants to find a past conversation ("find the session where we discussed X")
 - Can't remember which window had a specific discussion
 - Wants to resume work from a previous session
+- Wants to see their most recent sessions ("what were my last N sessions", "what was I working on yesterday")
 - Says `/find-session`
 
-## Workflow
+## Two Search Modes
+
+- **Keyword search** (`search-sessions.ts`) — for "find the session about X". See [Workflow: Keyword Search](#workflow-keyword-search) below.
+- **Recency listing** (`recent-sessions.ts`) — for "what were my last N sessions". See [Workflow: Recency Listing](#workflow-recency-listing) below.
+
+Pick based on whether the user has a topic in mind or just wants a chronological list.
+
+## Workflow: Keyword Search
 
 ### Step 1: Extract Keywords
 
@@ -128,8 +136,40 @@ Then create a condensed context document that could be used to resume this work 
 
 Then display the condensed context to the user and suggest they can copy it as the opening message of a new `claude` session.
 
+## Workflow: Recency Listing
+
+For "what were my last N sessions" / "what was I working on yesterday" / "ghostty crashed, where did I leave off":
+
+### Step 1: Run the Recency Script
+
+```bash
+.claude/skills/find-session/scripts/recent-sessions.ts [--limit N] [--by user|assistant|any|mtime] [--project-filter SUBSTR] [--json]
+```
+
+Defaults: `--limit 10`, `--by user`.
+
+**IMPORTANT — do not use `ls -t`, `find -newer`, or `stat mtime` for this.** File mtime is unreliable: Claude often holds the JSONL handle open while the session is "live" and the OS only stamps mtime when the handle closes (e.g. when the terminal crashes or quits). A whole batch of unrelated sessions can end up with the same mtime hours after you actually engaged with them. Always use the in-file message timestamps via this script.
+
+The output shows three timestamps side by side so the gap is visible:
+
+```
+last user        | last asst        | mtime            | msgs | project / session
+2026-05-09 09:21 | 2026-05-09 00:21 | 2026-05-09 09:21 |  219 | /path/to/project
+                 |                  |                  |      |   resume: claude --resume <id>
+```
+
+A user timestamp much later than the assistant timestamp means the user sent a message that was never answered (likely a crash mid-turn). An mtime much later than both means the file was just held open — the session wasn't actually active then.
+
+### Step 2: Summarize with Parallel Agents
+
+Same pattern as keyword search: launch parallel Haiku agents (one per session) running `extract-messages.ts` to summarize each. For "where did I leave off" framing, ask the agent specifically for the **final state / what was unfinished**, not just a generic summary.
+
+### Step 3: Present and Offer Follow-up
+
+Use the same table + resume-command format as keyword search.
+
 ## Formatting Notes
 
-- Clean up project dir names: strip the `-Users-user-name-github-` prefix and replace `-` with `/` for readability
+- Clean up project dir names: strip the `-Users-user-name-github-` prefix and replace `-` with `/` for readability (the recency script already does this when `cwd` is present in the JSONL)
 - Truncate summaries to ~100 chars in the table, show full text below if needed
 - If no results found, suggest alternative keywords or broader search terms

@@ -93,4 +93,27 @@ describe("CredentialVault", () => {
     const v = new CredentialVault();
     expect(v.pickCredentialFor("https://x", "GET", [], "demo")).toBeNull();
   });
+
+  test("pickCredentialFor excludes listed bearer tokens", () => {
+    const v = new CredentialVault();
+    const tokenA = makeJwt({ aud: "https://a.example/", iat: 100 });
+    const tokenB = makeJwt({ aud: "https://b.example/", iat: 200 });
+    v.noteRequest("demo", req("https://a.example/v1", "GET", tokenA));
+    v.noteRequest("demo", req("https://b.example/v1", "GET", tokenB));
+
+    // Without exclusion, b.example wins (higher iat).
+    expect(v.pickCredentialFor("https://target.example/v1", "GET", [], "demo")?.aud).toBe("https://b.example/");
+
+    // Excluding tokenB falls back to tokenA.
+    const pick = v.pickCredentialFor("https://target.example/v1", "GET", [], "demo", {
+      excludeBearers: [tokenB],
+    });
+    expect(pick?.aud).toBe("https://a.example/");
+
+    // Excluding both returns null.
+    const none = v.pickCredentialFor("https://target.example/v1", "GET", [], "demo", {
+      excludeBearers: [tokenA, tokenB],
+    });
+    expect(none).toBeNull();
+  });
 });

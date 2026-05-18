@@ -91,9 +91,10 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     } catch {
       // Wiggle is advisory — don't fail the retry just because wiggle failed.
     }
+    const failedBearer = pick.bearer;
     const fresh = aud
-      ? (vault.getAll(site).find((c) => c.aud === aud) ?? null)
-      : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site);
+      ? (vault.getAll(site).find((c) => c.aud === aud && c.bearer !== failedBearer) ?? null)
+      : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site, { excludeBearers: [failedBearer] });
     if (fresh) {
       usedAud = fresh.aud;
       merged = mergeHeaders(fresh.headers, fresh.bearer, resolved.headers);

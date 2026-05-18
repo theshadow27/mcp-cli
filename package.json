@@ -30,7 +30,7 @@
     "lint:timeouts": "bun scripts/check-test-timeouts.ts",
     "lint:teardown": "bun scripts/check-session-teardown.ts",
     "check:phase-drift": "bun scripts/check-phase-drift.ts",
-    "test": "bun install && bun test",
+    "test": "bun install && bun test --parallel",
     "test:coverage": "bun scripts/check-coverage.ts",
     "dev:daemon": "bun packages/daemon/src/main.ts",
     "dev:mcx": "bun packages/command/src/main.ts",

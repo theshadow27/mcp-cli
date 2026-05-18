@@ -2646,6 +2646,80 @@ describe("IpcServer HTTP transport", () => {
       }
     });
 
+    test("since=<M>: backfill M+1..N then live N+1 arrives; abort cleans up active stream (#1572)", async () => {
+      const db = new Database(":memory:");
+      const eventLog = new EventLog(db);
+      const bus = new EventBus(eventLog);
+      socketPath = tmpSocket();
+
+      // Pre-populate N=5 events (seq 1..5) before the server starts
+      for (let i = 0; i < 5; i++) {
+        bus.publish({ src: "test", event: "session.result", category: "session", sessionId: `s${i}` });
+      }
+
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events?since=2", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // Read until all 3 backfill events (seq 3,4,5) arrive
+      let buffer = "";
+      const deadline1 = Date.now() + 2_000;
+      while (Date.now() < deadline1) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.split("\n").filter((l) => l.startsWith("{")).length >= 3) break;
+      }
+
+      // Publish a live event — should arrive as seq 6 (N+1)
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 99 });
+
+      const deadline2 = Date.now() + 2_000;
+      while (Date.now() < deadline2) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes("pr.merged")) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      // Assert: backfill seq 3,4,5 + live seq 6 — no gaps, no duplicates
+      const events = buffer
+        .split("\n")
+        .filter((l) => l.startsWith("{"))
+        .map((l) => JSON.parse(l) as { seq: number; event: string });
+
+      expect(events.length).toBe(4);
+      expect(events[0]?.seq).toBe(3);
+      expect(events[1]?.seq).toBe(4);
+      expect(events[2]?.seq).toBe(5);
+      expect(events[3]?.seq).toBe(6);
+      expect(events[3]?.event).toBe("pr.merged");
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i]?.seq).toBe((events[i - 1]?.seq as number) + 1);
+      }
+
+      // Assert: stream cleanup — the active stream entry is removed after abort
+      await pollUntil(() => server?.activeStreamCount === 0);
+      expect(server?.activeStreamCount).toBe(0);
+    });
+
     test("fresh EventLog, no backfill: live events arrive with monotonic seq starting at 1", async () => {
       const db = new Database(":memory:");
       const eventLog = new EventLog(db);
@@ -3734,6 +3808,133 @@ describe("IpcServer HTTP transport", () => {
     if (!server) throw new Error("server not started");
     server.pushEvent({ event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
     server.pushEvent({ event: "session.result", category: "session", sessionId: "s1" });
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: backfill session.response excluded by default (no responseTail) (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    // Pre-populate the log directly — no EventBus, so ring-buffer path is used
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).not.toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: backfill session.response included when responseTail matches (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hello" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0&responseTail=s1", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("session.result")) break;
+    }
+
+    controller.abort();
+    reader.releaseLock();
+
+    expect(buffer).toContain("session.response");
+    expect(buffer).toContain("session.result");
+  });
+
+  test("ring-buffer: backfill session.response excluded when responseTail is different session (#1759)", async () => {
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    socketPath = tmpSocket();
+    server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+      ...opts(),
+      eventLog,
+    });
+    server.start(socketPath);
+
+    const tempBus = new EventBus(eventLog);
+    tempBus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "secret" });
+    tempBus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
+
+    const controller = new AbortController();
+    const res = await fetch("http://localhost/events?since=0&responseTail=other-session", {
+      method: "GET",
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit);
+
+    expect(res.status).toBe(200);
+    if (!res.body) throw new Error("Expected response body");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
 
     let buffer = "";
     const deadline = Date.now() + 2_000;

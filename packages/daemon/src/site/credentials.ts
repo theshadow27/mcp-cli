@@ -103,8 +103,10 @@ export class CredentialVault {
     targetMethod = "GET",
     audHints: string[] = [],
     site?: string,
+    opts?: { excludeBearers?: string[] },
   ): Credential | null {
-    const all = this.getAll(site);
+    const excludedBearers = new Set(opts?.excludeBearers ?? []);
+    const all = this.getAll(site).filter((c) => !excludedBearers.has(c.bearer));
     if (all.length === 0) return null;
 
     let target: URL;

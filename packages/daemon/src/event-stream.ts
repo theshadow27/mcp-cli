@@ -10,6 +10,7 @@
 import type { Logger } from "@mcp-cli/core";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { EventBus } from "./event-bus";
+import type { EventLog } from "./event-log";
 import { buildEventFilter } from "./ipc-filter";
 import { metrics } from "./metrics";
 import type { ServerPool } from "./server-pool";
@@ -51,6 +52,7 @@ export class EventStreamServer {
     private readonly pool: ServerPool,
     private readonly logger: Logger,
     private readonly heartbeatIntervalMs = 30_000,
+    private readonly explicitEventLog: EventLog | null = null,
   ) {
     if (eventBus) {
       this.eventSeq = eventBus.currentSeq;
@@ -249,7 +251,7 @@ export class EventStreamServer {
       }
       sinceSeq = parsed;
     }
-    const eventLog = this.eventBus?.eventLog ?? null;
+    const eventLog = this.eventBus?.eventLog ?? this.explicitEventLog ?? null;
 
     const prRaw = url.searchParams.get("pr");
     if (prRaw !== null && !(Number.isInteger(Number(prRaw)) && Number(prRaw) >= 1)) {

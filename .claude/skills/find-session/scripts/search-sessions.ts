@@ -131,6 +131,7 @@ interface Candidate {
   matchedTerms: string[];
   matchedPhrases: string[];
   mtime: number;
+  lastUserTs: number | null;
   isFindSessionSelfRef: boolean;
 }
 
@@ -200,6 +201,7 @@ async function main() {
         const lines = raw.split("\n");
         const textParts: string[] = [];
         let isFindSessionSelfRef = false;
+        let lastUserTs: number | null = null;
 
         for (const line of lines) {
           if (!line) continue;
@@ -209,6 +211,11 @@ async function main() {
           if (role === "user" || role === "assistant") {
             const text = extractText(obj);
             textParts.push(text);
+
+            if (role === "user" && obj.timestamp) {
+              const t = Date.parse(obj.timestamp);
+              if (!isNaN(t)) lastUserTs = t / 1000;
+            }
 
             if (
               role === "user" &&
@@ -242,7 +249,7 @@ async function main() {
         let mtime: number;
         try { mtime = (await stat(path)).mtimeMs / 1000; } catch { return null; }
 
-        return { path, project, tf, docLen: tokens.length, matchedTerms, matchedPhrases, mtime, isFindSessionSelfRef };
+        return { path, project, tf, docLen: tokens.length, matchedTerms, matchedPhrases, mtime, lastUserTs, isFindSessionSelfRef };
       })
     );
 
@@ -290,8 +297,10 @@ async function main() {
     // Self-reference penalty
     if (c.isFindSessionSelfRef) score *= 0.1;
 
-    // Recency boost (20% of signal)
-    const ageWeeks = Math.max((now - c.mtime) / 604800, 0.1);
+    // Recency boost — prefer last user-message timestamp over file mtime so
+    // mass file-handle closes (reboot, crash) don't all look "recent".
+    const recencyTs = c.lastUserTs ?? c.mtime;
+    const ageWeeks = Math.max((now - recencyTs) / 604800, 0.1);
     const recency = 1.0 / (1.0 + Math.log(ageWeeks + 1));
     score = score * (0.8 + 0.2 * recency);
 
@@ -306,6 +315,10 @@ async function main() {
       score: Math.round(score * 100) / 100,
       mtime: c.mtime,
       mtime_human: new Date(c.mtime * 1000).toISOString().slice(0, 16).replace("T", " "),
+      last_user_ts: c.lastUserTs,
+      last_user_human: c.lastUserTs
+        ? new Date(c.lastUserTs * 1000).toISOString().slice(0, 16).replace("T", " ")
+        : null,
       self_ref_penalized: c.isFindSessionSelfRef,
     };
   });

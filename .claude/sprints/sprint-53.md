@@ -43,8 +43,9 @@ deliberate skew toward small wins after sprint 52's opus-heavy profile.
 
 - **#1948** — already merged at sprint-52 close (PR #1976, 2026-05-04 02:19 UTC). Plan-time triage missed this because the merge landed ~12h before plan finalization. Removed from Batch 1.
 - **#1933** — already merged at sprint-52 close (PR #1989, 2026-05-04 02:55 UTC). Same root cause. Removed from Batch 2.
+- **#1645** — already-done discovered at run-time (PR #1641 secondary squash addressed it 2026-04-23). Worker self-detected and closed the issue. Removed from Batch 2.
 
-Net: 13 work items (2 opus / 11 sonnet). 4 remaining in Batch 1: #1980, #1996, #2003, #1944.
+Net: 12 work items (2 opus / 10 sonnet). 4 remaining in Batch 1: #1980, #1996, #2003, #1944.
 
 ## Batch Plan
 
