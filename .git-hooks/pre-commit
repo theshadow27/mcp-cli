@@ -61,8 +61,8 @@ if $has_source; then
   echo "  lint..."
   bun run lint:check
 
-  echo "  lint:shell..."
-  bun run lint:shell
+  echo "  doing-it-wrong (rule: shell-injection)..."
+  bun run doing-it-wrong --rule shell-injection
 
   echo "  lint:args-bounds..."
   bun run lint:args-bounds
@@ -92,8 +92,8 @@ elif $has_config; then
   echo "  lint..."
   bun run lint:check
 
-  echo "  lint:shell..."
-  bun run lint:shell
+  echo "  doing-it-wrong (rule: shell-injection)..."
+  bun run doing-it-wrong --rule shell-injection
 
   echo "  lint:args-bounds..."
   bun run lint:args-bounds
