@@ -64,10 +64,10 @@ describe("pollMailUntil", () => {
 // ── emitMailEvent ──
 
 describe("emitMailEvent", () => {
-  test("emits header then JSON when short=false (includeHeader=true, default)", () => {
+  test("emits header then JSON when short=false and includeHeader=true", () => {
     const msg = makeMail({ id: 99, sender: "alice" });
     const logSpy = mock((..._args: unknown[]) => {});
-    emitMailEvent(msg, false, { log: logSpy });
+    emitMailEvent(msg, false, { log: logSpy }, true);
     expect(logSpy).toHaveBeenCalledTimes(2);
     const header = String((logSpy.mock.calls[0] as unknown[])[0]);
     expect(header).toContain("event=mail");
@@ -78,10 +78,10 @@ describe("emitMailEvent", () => {
     expect(parsed.mail.id).toBe(99);
   });
 
-  test("emits JSON only when short=false and includeHeader=false", () => {
+  test("emits JSON only when short=false (includeHeader=false, default)", () => {
     const msg = makeMail({ id: 99, sender: "alice" });
     const logSpy = mock((..._args: unknown[]) => {});
-    emitMailEvent(msg, false, { log: logSpy }, false);
+    emitMailEvent(msg, false, { log: logSpy });
     expect(logSpy).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(String((logSpy.mock.calls[0] as unknown[])[0]));
     expect(parsed.source).toBe("mail");
@@ -108,7 +108,7 @@ describe("emitMailEvent", () => {
   test("long format handles subject:null without crashing", () => {
     const msg = makeMail({ id: 5, sender: "dan", subject: null });
     const logSpy = mock((..._args: unknown[]) => {});
-    emitMailEvent(msg, false, { log: logSpy });
+    emitMailEvent(msg, false, { log: logSpy }, true);
     expect(logSpy).toHaveBeenCalledTimes(2);
     const parsed = JSON.parse(String((logSpy.mock.calls[1] as unknown[])[0]));
     expect(parsed.mail.id).toBe(5);

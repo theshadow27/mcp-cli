@@ -42,7 +42,7 @@ export function emitMailEvent(
   msg: MailMessage,
   short: boolean,
   d: { log: (...args: unknown[]) => void },
-  includeHeader = true,
+  includeHeader = false,
 ): void {
   if (short) {
     const subj = msg.subject ?? "(no subject)";

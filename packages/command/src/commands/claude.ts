@@ -1813,7 +1813,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
     if (winner.kind === "mail" && winner.message) {
-      emitMailEvent(winner.message, parsed.short, d);
+      emitMailEvent(winner.message, parsed.short, d, true);
       return;
     }
     // Mail poll returned null (timed out) or session already won the race.
