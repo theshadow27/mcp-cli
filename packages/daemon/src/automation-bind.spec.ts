@@ -142,18 +142,23 @@ describe("bind automation module", () => {
   });
 
   test("direct branch match takes priority over branchPattern", async () => {
-    const branchItem = makeWorkItem({ id: "#200", prNumber: null, branch: "feat/issue-100-foo" });
+    const branchItem = makeWorkItem({ id: "#200", prNumber: 999, branch: "feat/issue-100-foo" });
     const issueItem = makeWorkItem({ id: "#100", prNumber: null });
+    let issueQueryCalled = false;
     const ctx = makeCtx({
       config: { branchPattern: "^feat/issue-(?<issue>\\d+)-" },
       findWorkItemByBranch: (b) => (b === "feat/issue-100-foo" ? branchItem : null),
-      findWorkItemByIssue: (n) => (n === 100 ? issueItem : null),
+      findWorkItemByIssue: (n) => {
+        issueQueryCalled = true;
+        return n === 100 ? issueItem : null;
+      },
     });
 
-    const result = (await bindModule.fn(makeEvent(), ctx)) as { action: string; patch: Record<string, unknown> };
+    const result = await bindModule.fn(makeEvent(), ctx);
 
-    expect(result.action).toBe("set-state");
-    expect(result.patch.prNumber).toBe(42);
+    expect(result.action).toBe("none");
+    expect((result as { reason: string }).reason).toContain("already bound to PR #999");
+    expect(issueQueryCalled).toBe(false);
   });
 
   describe("integration with dispatcher", () => {
