@@ -37,6 +37,7 @@ import {
   DAEMON_READY_SIGNAL,
   DAEMON_RESTARTED,
   DEFAULT_CLAUDE_WS_PORT,
+  LOCKFILE_NAME,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
   MOCK_SERVER_NAME,
@@ -54,14 +55,17 @@ import {
   isCoreBareSet,
   loadManifest,
   options,
+  parseLockfile,
   pruneExpiredCache,
   readCliConfig,
   readWorktreeConfig,
   resolveWorktreePath,
+  sha256Hex,
   tryFlockExclusive,
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
+import { AutomationDispatcher } from "./automation-dispatcher";
 import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
@@ -654,6 +658,61 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     logger.info("[mcpd] Session metrics aggregator started");
   }
 
+  // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
+  let automationDispatcher: AutomationDispatcher | null = null;
+  {
+    const workItemDb = new WorkItemDb(db.getDatabase());
+    let manifestResult: ReturnType<typeof loadManifest> | null = null;
+    try {
+      manifestResult = loadManifest(process.cwd());
+    } catch (err) {
+      logger.warn(`[mcpd] Failed to load manifest for automation: ${err} — skipping`);
+    }
+    if (manifestResult?.manifest?.automation) {
+      const lockfilePath = join(process.cwd(), LOCKFILE_NAME);
+      let automations: import("@mcp-cli/core").LockedAutomation[] = [];
+      try {
+        const lockText = readFileSync(lockfilePath, "utf-8");
+        const lock = parseLockfile(lockText);
+        const currentManifestHash = sha256Hex(readFileSync(manifestResult.path, "utf-8"));
+        if (lock.manifestHash !== currentManifestHash) {
+          logger.warn(
+            `[mcpd] Lockfile manifest hash mismatch (locked: ${lock.manifestHash.slice(0, 8)}… vs current: ${currentManifestHash.slice(0, 8)}…) — run \`mcx phase install\``,
+          );
+        }
+        automations = lock.automations ?? [];
+      } catch (err) {
+        const isEnoent = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
+        if (isEnoent) {
+          logger.warn("[mcpd] Automation configured but no lockfile found — run `mcx phase install`");
+        } else {
+          logger.warn(
+            `[mcpd] Automation configured but lockfile is corrupt: ${err instanceof Error ? err.message : String(err)} — run \`mcx phase install\``,
+          );
+        }
+      }
+      if (automations.length > 0) {
+        automationDispatcher = new AutomationDispatcher({
+          eventBus: mailEventBus,
+          repoRoot: process.cwd(),
+          getWorkItemOverrides: (workItemId) => {
+            const item = workItemDb.getWorkItem(workItemId);
+            return item?.automationOverrides ?? undefined;
+          },
+          resolveWorkItemId: (prNumber) => {
+            const item = workItemDb.getWorkItemByPr(prNumber);
+            return item?.id ?? undefined;
+          },
+        });
+        automationDispatcher.load(manifestResult.manifest.automation, automations);
+        automationDispatcher.start();
+        logger.info(
+          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"})`,
+        );
+      }
+    }
+  }
+
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
     daemonId,
@@ -697,6 +756,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         logger.error(`[mcpd] Monitor restart for "${name}" failed: ${err}`);
       });
     },
+    automationDispatcher: automationDispatcher ?? undefined,
   });
   ipcServer.start();
 
@@ -1118,6 +1178,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
+      automationDispatcher?.stop();
       eventLog.stopPruning();
       quotaPoller.stop();
       budgetWatcher.dispose();

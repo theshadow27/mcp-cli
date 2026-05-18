@@ -352,7 +352,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(6);
+      expect(row?.version).toBe(7);
     });
 
     test("does not touch PRAGMA user_version (leaves it free for other consumers)", () => {
@@ -376,7 +376,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(6);
+      expect(row?.version).toBe(7);
     });
 
     test("legacy v1 DB (work_items table, no transitions table) seeds at 1 then upgrades to 2", () => {
@@ -410,7 +410,7 @@ describe("WorkItemDb", () => {
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(seeded?.version).toBe(6);
+      expect(seeded?.version).toBe(7);
 
       // v2 transitions table now exists
       const hasTransitions = raw
@@ -444,7 +444,7 @@ describe("WorkItemDb", () => {
       const row = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
-      expect(row?.version).toBe(6);
+      expect(row?.version).toBe(7);
 
       // And the tables actually got created (regression for the PRAGMA-fallback bug)
       const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
@@ -783,7 +783,7 @@ describe("WorkItemDb", () => {
       const seed = new Database(p, { create: true });
       seed.exec("PRAGMA journal_mode = WAL");
       seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
-      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('work_items', 6)");
+      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('work_items', 7)");
       seed.close();
       // The second process (this WorkItemDb call) must not throw a UNIQUE constraint error.
       const db2 = new Database(p, { create: true });

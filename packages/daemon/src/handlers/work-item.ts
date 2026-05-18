@@ -57,7 +57,7 @@ export class WorkItemHandlers {
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("trackWorkItem", async (params, _ctx) => {
-      const { number, branch, initialPhase, repoRoot } = TrackWorkItemParamsSchema.parse(params);
+      const { number, branch, initialPhase, repoRoot, automationOverrides } = TrackWorkItemParamsSchema.parse(params);
 
       // Validate initialPhase server-side when a manifest is available (#1351).
       // When no manifest is present (repoRoot absent or manifest missing), accept any string.
@@ -78,15 +78,22 @@ export class WorkItemHandlers {
       if (number) {
         const existing = this.workItemDb.getWorkItemByIssue(number) ?? this.workItemDb.getWorkItem(`#${number}`);
         if (existing) {
-          // Backfill: if prNumber is null, kick off background re-resolution
           if (existing.prNumber === null && this.resolveIssuePr) {
             this.resolveAndUpdateWorkItem(existing.id, number);
+          }
+          if (automationOverrides !== undefined) {
+            return this.workItemDb.updateWorkItem(existing.id, { automationOverrides });
           }
           return existing;
         }
       } else if (branch) {
         const existing = this.workItemDb.getWorkItemByBranch(branch);
-        if (existing) return existing;
+        if (existing) {
+          if (automationOverrides !== undefined) {
+            return this.workItemDb.updateWorkItem(existing.id, { automationOverrides });
+          }
+          return existing;
+        }
       }
 
       // Create the item immediately (non-blocking) so the caller isn't waiting on GitHub
@@ -97,6 +104,7 @@ export class WorkItemHandlers {
         prNumber: null,
         branch: branch ?? null,
         ...(initialPhase ? { phase: initialPhase as WorkItemPhase } : {}),
+        ...(automationOverrides ? { automationOverrides } : {}),
       });
 
       // Fire-and-forget: resolve PR number in the background

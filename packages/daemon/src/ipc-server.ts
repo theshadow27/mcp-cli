@@ -32,6 +32,7 @@ import {
 } from "@mcp-cli/core";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
+import type { AutomationDispatcher } from "./automation-dispatcher";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
@@ -41,6 +42,7 @@ import { EventStreamServer } from "./event-stream";
 import type { RequestContext, RequestHandler } from "./handler-types";
 import { AliasHandlers } from "./handlers/alias";
 import { AuthHandlers } from "./handlers/auth";
+import { AutomationHandlers } from "./handlers/automation";
 import { BudgetHandlers } from "./handlers/budget";
 import { ConfigHandlers } from "./handlers/config";
 import { EventHandlers } from "./handlers/event";
@@ -100,6 +102,7 @@ export class IpcServer {
       eventBus?: EventBus;
       eventLog?: EventLog;
       onAliasChanged?: (name: string) => void;
+      automationDispatcher?: AutomationDispatcher;
     },
   ) {
     this.daemonId = opts.daemonId;
@@ -132,6 +135,7 @@ export class IpcServer {
       resolveIssuePr: opts.resolveIssuePr ?? null,
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
+      automationDispatcher: opts.automationDispatcher ?? null,
     });
     this.db.pruneExpiredAliases();
   }
@@ -374,6 +378,7 @@ export class IpcServer {
     resolveIssuePr: ((n: number) => Promise<{ prNumber: number | null }>) | null;
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
+    automationDispatcher: AutomationDispatcher | null;
   }): void {
     const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
     new AuthHandlers(this.pool).register(this.handlers);
@@ -384,6 +389,7 @@ export class IpcServer {
     serveHandlers.register(this.handlers);
     new BudgetHandlers(this.db).register(this.handlers);
     new EventHandlers(deps.eventBus).register(this.handlers);
+    new AutomationHandlers(deps.automationDispatcher).register(this.handlers);
     new TelemetryHandlers(this.db).register(this.handlers);
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
@@ -470,7 +476,7 @@ export class IpcServer {
     });
 
     // Catch duplicate registrations (silently-overwritten handlers are invisible bugs).
-    const EXPECTED = 51;
+    const EXPECTED = 53;
     if (this.handlers.size !== EXPECTED) {
       throw new Error(
         `Handler count mismatch after registration: expected ${EXPECTED}, got ${this.handlers.size}. A handler was duplicated or omitted.`,

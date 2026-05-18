@@ -65,6 +65,7 @@ interface WorkItemRow {
   ci_summary: string | null;
   review_status: string;
   merge_state_status: string | null;
+  automation_overrides: string | null;
   phase: string;
   created_at: string;
   updated_at: string;
@@ -86,6 +87,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     reviewStatus: row.review_status as ReviewStatus,
     mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
     phase: row.phase as WorkItemPhase,
+    automationOverrides: row.automation_overrides ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     version: row.version,
@@ -244,6 +246,11 @@ export class WorkItemDb {
       })();
       version = 6;
     }
+    if (version < 7) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN automation_overrides TEXT");
+      this.setSchemaVersion(CONSUMER, 7);
+      version = 7;
+    }
   }
 
   private setSchemaVersion(name: string, version: number): void {
@@ -258,8 +265,8 @@ export class WorkItemDb {
     const id = item.id ?? randomUUIDv7();
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)`,
+        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, automation_overrides, phase)
+         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $automation_overrides, $phase)`,
       )
       .run({
         $id: id,
@@ -273,6 +280,7 @@ export class WorkItemDb {
         $ci_summary: item.ciSummary ?? null,
         $review_status: item.reviewStatus ?? "none",
         $merge_state_status: item.mergeStateStatus ?? null,
+        $automation_overrides: item.automationOverrides ?? null,
         $phase: item.phase ?? "impl",
       });
 
@@ -335,6 +343,7 @@ export class WorkItemDb {
           ["ciSummary", "ci_summary"],
           ["reviewStatus", "review_status"],
           ["mergeStateStatus", "merge_state_status"],
+          ["automationOverrides", "automation_overrides"],
           ["phase", "phase"],
         ];
 

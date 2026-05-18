@@ -8,6 +8,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { AutomationConfigSchema } from "./automation";
 
 /** Recognized manifest filenames, in load-preference order. */
 export const MANIFEST_FILENAMES = [".mcx.yaml", ".mcx.yml", ".mcx.json"] as const;
@@ -105,6 +106,7 @@ export const ManifestSchema = z
     state: ManifestStateSchema.optional(),
     initial: identifier("initial"),
     phases: z.record(identifier("phase name"), PhaseDefSchema),
+    automation: AutomationConfigSchema.optional(),
   })
   .strict();
 

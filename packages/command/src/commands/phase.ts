@@ -27,6 +27,7 @@ import {
   GLOBAL_STATE_NAMESPACE,
   LOCKFILE_NAME,
   LOCKFILE_VERSION,
+  type LockedAutomation,
   type LockedPhase,
   type Lockfile,
   type Manifest,
@@ -48,6 +49,7 @@ import {
   createMcpProxy,
   createWaitForEvent,
   executeAliasBundled,
+  expandPreset,
   extractMetadata,
   findGitRoot,
   hashFileSync,
@@ -211,6 +213,45 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     });
   }
 
+  const automations: LockedAutomation[] = [];
+  if (manifest.automation?.modules) {
+    const moduleNames = Object.keys(manifest.automation.modules).sort();
+    for (const name of moduleNames) {
+      const mod = manifest.automation.modules[name];
+      let resolvedAbs: string;
+      try {
+        resolvedAbs = resolvePhaseSource(mod.source, cwd);
+      } catch (err) {
+        errors.push(`automation "${name}": ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      let contentHash: string;
+      try {
+        contentHash = deps.hashFileSync(resolvedAbs);
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException;
+        if (e?.code === "ENOENT") {
+          errors.push(`automation "${name}": source ${mod.source} not found`);
+        } else {
+          errors.push(`automation "${name}": cannot read ${mod.source}: ${e?.message ?? String(err)}`);
+        }
+        continue;
+      }
+
+      const rel = relative(cwd, resolvedAbs).split("\\").join("/");
+      const presetDefaults = expandPreset(manifest.automation?.preset ?? "supervised");
+      const resolvedEnabled = mod.enabled ?? presetDefaults[name] ?? false;
+      automations.push({
+        name,
+        resolvedPath: rel === "" ? "." : rel,
+        contentHash,
+        events: [...mod.on],
+        enabled: resolvedEnabled,
+      });
+    }
+  }
+
   if (errors.length > 0) {
     errors.sort();
     throw new ManifestError(errors.join("\n"), manifestPath);
@@ -220,6 +261,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     version: LOCKFILE_VERSION,
     manifestHash,
     phases,
+    ...(automations.length > 0 && { automations }),
   };
 
   return { manifest, manifestPath, lockfile, warnings };
@@ -382,7 +424,15 @@ export function phaseRun(
   return { manifest, forced: decision.forced, from: decision.from };
 }
 
-export type DriftKind = "manifest" | "phase-source" | "phase-missing" | "phase-extra" | "corrupt-lockfile";
+export type DriftKind =
+  | "manifest"
+  | "phase-source"
+  | "phase-missing"
+  | "phase-extra"
+  | "automation-source"
+  | "automation-missing"
+  | "automation-extra"
+  | "corrupt-lockfile";
 
 export interface DriftDeps {
   loadManifest: typeof loadManifest;
@@ -497,6 +547,57 @@ export function detectDrift(deps: DriftDeps): DriftResult {
     }
   }
 
+  const lockedAutomations = lock.automations ?? [];
+  const lockedAutoByName = new Map<string, LockedAutomation>();
+  for (const a of lockedAutomations) lockedAutoByName.set(a.name, a);
+
+  const manifestAutoModules = manifest.automation?.modules ?? {};
+  const manifestAutoNames = new Set(Object.keys(manifestAutoModules));
+
+  for (const locked of lockedAutomations) {
+    if (!manifestAutoNames.has(locked.name)) {
+      entries.push({
+        kind: "automation-extra",
+        path: locked.resolvedPath,
+        expected: "(not in manifest)",
+        actual: `automation "${locked.name}" in lockfile`,
+      });
+      continue;
+    }
+    const abs = resolvePath(cwd, locked.resolvedPath);
+    let actualHash: string;
+    try {
+      actualHash = deps.hashFileSync(abs);
+    } catch {
+      entries.push({
+        kind: "automation-source",
+        path: locked.resolvedPath,
+        expected: locked.contentHash,
+        actual: "(file missing)",
+      });
+      continue;
+    }
+    if (actualHash !== locked.contentHash) {
+      entries.push({
+        kind: "automation-source",
+        path: locked.resolvedPath,
+        expected: locked.contentHash,
+        actual: actualHash,
+      });
+    }
+  }
+
+  for (const name of manifestAutoNames) {
+    if (!lockedAutoByName.has(name)) {
+      entries.push({
+        kind: "automation-missing",
+        path: manifestAutoModules[name].source,
+        expected: `"${name}"`,
+        actual: "(not installed)",
+      });
+    }
+  }
+
   if (entries.length === 0) return { status: "ok" };
   entries.sort((a, b) => a.path.localeCompare(b.path));
   return { status: "drift", entries };
@@ -512,17 +613,20 @@ export function formatDriftWarning(entries: DriftEntry[]): string {
     .map((e) => {
       switch (e.kind) {
         case "manifest":
-        case "phase-source": {
+        case "phase-source":
+        case "automation-source": {
           const exp = shortHash(e.expected);
           const act = shortHash(e.actual);
           return `  ${e.path.padEnd(width)}  locked ${exp} → ${act}`;
         }
-        case "phase-missing": {
-          const detail = e.expected || "phase in manifest";
+        case "phase-missing":
+        case "automation-missing": {
+          const detail = e.expected || "entry in manifest";
           return `  ${e.path.padEnd(width)}  [NOT INSTALLED] — ${detail} but missing from lockfile`;
         }
-        case "phase-extra": {
-          const detail = e.actual || "phase in lockfile";
+        case "phase-extra":
+        case "automation-extra": {
+          const detail = e.actual || "entry in lockfile";
           return `  ${e.path.padEnd(width)}  [STALE LOCK ENTRY] — ${detail} but removed from manifest`;
         }
         case "corrupt-lockfile": {
@@ -611,6 +715,14 @@ export async function cmdPhase(
       d.log(`Installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
       for (const p of result.lockfile.phases) {
         d.log(`  ${p.name}  ${p.resolvedPath}  ${p.contentHash.slice(0, 12)}`);
+      }
+      if (result.lockfile.automations && result.lockfile.automations.length > 0) {
+        const aCount = result.lockfile.automations.length;
+        d.log(`Installed ${aCount} automation module${aCount === 1 ? "" : "s"}`);
+        for (const a of result.lockfile.automations) {
+          const status = a.enabled ? "on" : "off";
+          d.log(`  ${a.name}  ${a.resolvedPath}  [${status}]  events: ${a.events.join(", ")}`);
+        }
       }
       for (const w of result.warnings) {
         d.logError(`  ⚠ ${w}`);
