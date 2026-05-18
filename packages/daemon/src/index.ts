@@ -691,10 +691,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
+      const automationRepoRoot = process.cwd();
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
-          repoRoot: process.cwd(),
+          repoRoot: automationRepoRoot,
           getWorkItemOverrides: (workItemId) => {
             const item = workItemDb.getWorkItem(workItemId);
             return item?.automationOverrides ?? undefined;
@@ -720,21 +721,27 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             };
           },
           getWorkItemState: (workItemId) => {
-            return db.listAliasState(process.cwd(), `workitem:${workItemId}`);
+            return db.listAliasState(automationRepoRoot, `workitem:${workItemId}`);
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {
-              for (const sid of sessionIds) {
-                try {
-                  db.endSession(sid);
-                } catch {
-                  logger.warn(`[automation] failed to end session ${sid}`);
+              const byeResults = await Promise.allSettled(
+                sessionIds.map(async (sid) => {
+                  try {
+                    await pool.callTool(CLAUDE_SERVER_NAME, "claude_bye", {
+                      sessionId: sid,
+                      message: "automation cleanup: PR merged",
+                    });
+                  } catch {
+                    // Session may have already exited — mark ended in DB as fallback
+                    db.endSession(sid);
+                  }
+                }),
+              );
+              for (let i = 0; i < byeResults.length; i++) {
+                if (byeResults[i].status === "rejected") {
+                  logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
                 }
-              }
-              try {
-                workItemDb.updateWorkItem(workItemId, { phase: "done" });
-              } catch {
-                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
               }
               try {
                 workItemDb.deleteWorkItem(workItemId);

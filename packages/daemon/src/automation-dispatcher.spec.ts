@@ -650,7 +650,7 @@ describe("AutomationDispatcher", () => {
     d.stop();
   });
 
-  test("default executor provides read-only ctx.state from getWorkItemState", async () => {
+  test("default executor populates ctx.state from getWorkItemState callback", async () => {
     const fixtureDir = import.meta.dir;
 
     const d = new AutomationDispatcher({
@@ -664,18 +664,23 @@ describe("AutomationDispatcher", () => {
     });
 
     const published: MonitorEvent[] = [];
-    bus.subscribe((e) => {
-      if (e.event.startsWith("automation.")) published.push(e);
-    });
+    bus.subscribe((e) => published.push(e));
 
-    d.load(makeConfig(), [makeLocked({ resolvedPath: "test-fixtures/echo-automation.ts", events: ["pr.merged"] })]);
+    d.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/state-echo-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
     d.start();
 
     bus.publish(makeEvent({ prNumber: 77 }));
-    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+    await pollUntil(() => published.some((e) => e.event === "test.state"));
 
-    const fired = published.find((e) => e.event === "automation.fired");
-    expect(fired).toBeDefined();
+    const emitted = published.find((e) => e.event === "test.state");
+    expect(emitted).toBeDefined();
+    expect(emitted?.stateKeys).toEqual(["qa_session_id", "session_id"]);
+    expect(emitted?.stateSnapshot).toEqual({ session_id: "sess-1", qa_session_id: "sess-2" });
     d.stop();
   });
 });
