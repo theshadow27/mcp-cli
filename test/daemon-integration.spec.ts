@@ -563,8 +563,8 @@ describe("P3b: HTTP transport end-to-end", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
-    await mockServer.kill();
+    await daemon?.kill();
+    await mockServer?.kill();
   });
 
   test("listTools returns echo server tools via HTTP transport", async () => {
@@ -627,8 +627,8 @@ describe("P3c: SSE transport end-to-end", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
-    await mockServer.kill();
+    await daemon?.kill();
+    await mockServer?.kill();
   });
 
   test("listTools returns echo server tools via SSE transport", async () => {

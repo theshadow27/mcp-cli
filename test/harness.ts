@@ -168,20 +168,23 @@ export async function startMockServer(scriptPath: string): Promise<MockServer> {
     reader.read(),
     Bun.sleep(10_000).then(() => ({ value: undefined, done: true as const, timeout: true as const })),
   ]);
+
+  // Decode BEFORE releasing the reader lock. Bun may reuse the underlying
+  // ArrayBuffer once the lock is released, making the Uint8Array stale.
+  const portLine = readResult.value ? new TextDecoder().decode(readResult.value).trim() : undefined;
   reader.releaseLock();
 
-  const value = readResult.value;
-  if (!value) {
+  if (!portLine) {
     proc.kill();
     const stderr = await new Response(proc.stderr).text();
     const reason = "timeout" in readResult ? "timed out waiting for port" : "no output";
     throw new Error(`Mock server failed to start (${reason}): ${stderr}`);
   }
 
-  const port = Number(new TextDecoder().decode(value).trim());
+  const port = Number(portLine);
   if (!port || Number.isNaN(port)) {
     proc.kill();
-    throw new Error(`Mock server printed invalid port: ${new TextDecoder().decode(value)}`);
+    throw new Error(`Mock server printed invalid port: ${JSON.stringify(portLine)}`);
   }
 
   return {
