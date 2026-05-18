@@ -720,7 +720,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             };
           },
           getWorkItemState: (workItemId) => {
-            return db.listAliasState(process.cwd(), workItemId);
+            return db.listAliasState(process.cwd(), `workitem:${workItemId}`);
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {

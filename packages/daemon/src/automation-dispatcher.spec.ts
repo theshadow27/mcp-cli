@@ -615,9 +615,8 @@ describe("AutomationDispatcher", () => {
 
   // ── ctx.workItem and ctx.state in default executor (#2020) ──
 
-  test("default executor provides ctx.workItem from getWorkItem callback", async () => {
+  test("default executor populates ctx.workItem from getWorkItem callback", async () => {
     const fixtureDir = import.meta.dir;
-    const capturedCtx: { workItem: unknown } | null = null;
 
     const d = new AutomationDispatcher({
       eventBus: bus,
@@ -627,32 +626,27 @@ describe("AutomationDispatcher", () => {
         if (id === "#55") return { id: "#55", issueNumber: 55, prNumber: 100, branch: "feat/x", phase: "qa" };
         return null;
       },
-      executeModule: async (_mod, _event) => {
-        return { action: "none", reason: "ok" };
-      },
     });
-
-    // Override to capture context — use a custom executor that delegates
-    const origExecute = (d as unknown as { defaultExecuteModule: (typeof d)["executeModule"] }).defaultExecuteModule;
-    (d as unknown as { executeModule: (typeof d)["executeModule"] }).executeModule = async (mod, event) => {
-      // We can't capture ctx directly from the default executor, so just verify
-      // the getWorkItem callback was wired. We'll rely on the echo-automation
-      // test fixture for full integration testing.
-      return origExecute.call(d, mod, event);
-    };
 
     const published: MonitorEvent[] = [];
-    bus.subscribe((e) => {
-      if (e.event.startsWith("automation.")) published.push(e);
-    });
+    bus.subscribe((e) => published.push(e));
 
-    d.load(makeConfig(), [makeLocked({ resolvedPath: "test-fixtures/echo-automation.ts", events: ["pr.merged"] })]);
+    d.load(makeConfig(), [
+      makeLocked({
+        resolvedPath: "test-fixtures/workitem-echo-automation.ts",
+        events: ["pr.merged"],
+      }),
+    ]);
     d.start();
 
     bus.publish(makeEvent({ prNumber: 100 }));
-    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+    await pollUntil(() => published.some((e) => e.event === "test.workitem"));
 
-    expect(published.find((e) => e.event === "automation.fired")).toBeDefined();
+    const emitted = published.find((e) => e.event === "test.workitem");
+    expect(emitted).toBeDefined();
+    expect(emitted?.workItemId).toBe("#55");
+    expect(emitted?.phase).toBe("qa");
+    expect(emitted?.prNumber).toBe(100);
     d.stop();
   });
 
