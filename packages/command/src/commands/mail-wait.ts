@@ -38,14 +38,21 @@ export async function pollMailUntil(
   return null;
 }
 
-export function emitMailEvent(msg: MailMessage, short: boolean, d: { log: (...args: unknown[]) => void }): void {
+export function emitMailEvent(
+  msg: MailMessage,
+  short: boolean,
+  d: { log: (...args: unknown[]) => void },
+  includeHeader = true,
+): void {
   if (short) {
     const subj = msg.subject ?? "(no subject)";
     d.log(`mail ${msg.id} ${msg.sender} ${subj}`);
     return;
   }
-  const headerParts = ["event=mail", `id=${msg.id}`];
-  if (msg.sender) headerParts.push(`sender=${msg.sender}`);
-  d.log(headerParts.join(" ").slice(0, 120));
+  if (includeHeader) {
+    const headerParts = ["event=mail", `id=${msg.id}`];
+    if (msg.sender) headerParts.push(`sender=${msg.sender}`);
+    d.log(headerParts.join(" ").slice(0, 120));
+  }
   d.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
 }

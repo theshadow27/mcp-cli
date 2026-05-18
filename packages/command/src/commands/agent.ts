@@ -1046,7 +1046,7 @@ async function agentWait(
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
     if (winner.kind === "mail" && winner.message) {
-      emitMailEvent(winner.message, short, d);
+      emitMailEvent(winner.message, short, d, false);
       return;
     }
     result = winner.kind === "session" ? winner.result : await waitPromise;

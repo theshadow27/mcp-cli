@@ -64,7 +64,7 @@ describe("pollMailUntil", () => {
 // ── emitMailEvent ──
 
 describe("emitMailEvent", () => {
-  test("emits header then JSON when short=false", () => {
+  test("emits header then JSON when short=false (includeHeader=true, default)", () => {
     const msg = makeMail({ id: 99, sender: "alice" });
     const logSpy = mock((..._args: unknown[]) => {});
     emitMailEvent(msg, false, { log: logSpy });
@@ -74,6 +74,16 @@ describe("emitMailEvent", () => {
     expect(header).toContain("id=99");
     expect(header).toContain("sender=alice");
     const parsed = JSON.parse(String((logSpy.mock.calls[1] as unknown[])[0]));
+    expect(parsed.source).toBe("mail");
+    expect(parsed.mail.id).toBe(99);
+  });
+
+  test("emits JSON only when short=false and includeHeader=false", () => {
+    const msg = makeMail({ id: 99, sender: "alice" });
+    const logSpy = mock((..._args: unknown[]) => {});
+    emitMailEvent(msg, false, { log: logSpy }, false);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(String((logSpy.mock.calls[0] as unknown[])[0]));
     expect(parsed.source).toBe("mail");
     expect(parsed.mail.id).toBe(99);
   });
