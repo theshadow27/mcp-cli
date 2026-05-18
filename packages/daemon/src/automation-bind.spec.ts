@@ -60,7 +60,9 @@ describe("bind automation module", () => {
     const result = await bindModule.fn(makeEvent(), ctx);
 
     expect(result.action).toBe("set-state");
-    expect((result as { patch: Record<string, unknown> }).patch).toEqual({
+    const setState = result as { workItemId: string; patch: Record<string, unknown> };
+    expect(setState.workItemId).toBe("#100");
+    expect(setState.patch).toEqual({
       prNumber: 42,
       branch: "feat/issue-100-foo",
     });
@@ -122,7 +124,9 @@ describe("bind automation module", () => {
     const result = await bindModule.fn(makeEvent({ branch: "feat/issue-100-widget" }), ctx);
 
     expect(result.action).toBe("set-state");
-    expect((result as { patch: Record<string, unknown> }).patch).toEqual({
+    const setState = result as { workItemId: string; patch: Record<string, unknown> };
+    expect(setState.workItemId).toBe("#100");
+    expect(setState.patch).toEqual({
       prNumber: 42,
       branch: "feat/issue-100-widget",
     });
@@ -139,6 +143,22 @@ describe("bind automation module", () => {
 
     expect(result.action).toBe("none");
     expect((result as { reason: string }).reason).toContain("no tracked item");
+  });
+
+  test("invalid branchPattern regex logs warning and falls through", async () => {
+    const warnings: string[] = [];
+    const ctx = makeCtx({
+      config: { branchPattern: "[invalid(" },
+      findWorkItemByBranch: () => null,
+      findWorkItemByIssue: () => null,
+      logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+    });
+
+    const result = await bindModule.fn(makeEvent(), ctx);
+
+    expect(result.action).toBe("none");
+    expect((result as { reason: string }).reason).toContain("no tracked item");
+    expect(warnings.some((w) => w.includes("invalid branchPattern regex"))).toBe(true);
   });
 
   test("direct branch match takes priority over branchPattern", async () => {
@@ -213,6 +233,57 @@ describe("bind automation module", () => {
       expect(fired).toBeDefined();
       expect(fired?.module).toBe("bind");
       expect(fired?.actionType).toBe("set-state");
+
+      dispatcher.stop();
+    });
+
+    test("dispatcher applies set-state patch via updateWorkItem", async () => {
+      const { AutomationDispatcher } = await import("./automation-dispatcher");
+      const item = makeWorkItem({ prNumber: null });
+      const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+
+      const dispatcher = new AutomationDispatcher({
+        eventBus: bus,
+        repoRoot: import.meta.dir,
+        getWorkItemByBranch: (branch) => (branch === "feat/issue-100-foo" ? item : null),
+        getWorkItemByIssue: () => null,
+        updateWorkItem: (id, patch) => {
+          updates.push({ id, patch });
+        },
+        executeModule: async (_mod, event) => {
+          const ctx = makeCtx({
+            findWorkItemByBranch: (b) => (b === "feat/issue-100-foo" ? item : null),
+          });
+          return bindModule.fn(event, ctx);
+        },
+      });
+
+      const published: MonitorEvent[] = [];
+      bus.subscribe((event) => {
+        if (event.event.startsWith("automation.")) published.push(event);
+      });
+
+      dispatcher.load({ preset: "semi-auto", modules: {} }, [
+        {
+          name: "bind",
+          resolvedPath: ".claude/automation/bind.ts",
+          contentHash: "a".repeat(64),
+          events: ["pr.opened"],
+          enabled: true,
+        },
+      ]);
+      dispatcher.start();
+
+      bus.publish(makeEvent());
+
+      const start = performance.now();
+      while (!published.some((e) => e.event === "automation.fired") && performance.now() - start < 2_000) {
+        await Bun.sleep(2);
+      }
+
+      expect(updates).toHaveLength(1);
+      expect(updates[0].id).toBe("#100");
+      expect(updates[0].patch).toEqual({ prNumber: 42, branch: "feat/issue-100-foo" });
 
       dispatcher.stop();
     });

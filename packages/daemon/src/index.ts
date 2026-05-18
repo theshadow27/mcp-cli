@@ -705,6 +705,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           },
           getWorkItemByBranch: (branch) => workItemDb.getWorkItemByBranch(branch),
           getWorkItemByIssue: (issueNumber) => workItemDb.getWorkItemByIssue(issueNumber),
+          updateWorkItem: (id, patch) => {
+            workItemDb.updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
+          },
         });
         automationDispatcher.load(manifestResult.manifest.automation, automations);
         automationDispatcher.start();

@@ -16,12 +16,16 @@ export default defineAutomation({
     if (!item) {
       const pattern = ctx.config.branchPattern;
       if (typeof pattern === "string") {
-        const match = new RegExp(pattern).exec(branch);
-        if (match?.groups?.issue) {
-          const issueNumber = Number.parseInt(match.groups.issue, 10);
-          if (!Number.isNaN(issueNumber)) {
-            item = ctx.findWorkItemByIssue(issueNumber);
+        try {
+          const match = new RegExp(pattern).exec(branch);
+          if (match?.groups?.issue) {
+            const issueNumber = Number.parseInt(match.groups.issue, 10);
+            if (!Number.isNaN(issueNumber)) {
+              item = ctx.findWorkItemByIssue(issueNumber);
+            }
           }
+        } catch {
+          ctx.logger.warn(`invalid branchPattern regex: ${pattern}`);
         }
       }
     }
@@ -38,6 +42,7 @@ export default defineAutomation({
 
     return {
       action: "set-state",
+      workItemId: item.id,
       patch: { prNumber, branch },
     };
   },

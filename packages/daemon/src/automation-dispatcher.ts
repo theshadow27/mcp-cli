@@ -55,6 +55,7 @@ export class AutomationDispatcher {
   private resolveWorkItemId: (prNumber: number) => string | undefined;
   private getWorkItemByBranch: (branch: string) => WorkItem | null;
   private getWorkItemByIssue: (issueNumber: number) => WorkItem | null;
+  private updateWorkItem: (workItemId: string, patch: Record<string, unknown>) => void;
   private executeModule: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
 
   constructor(opts: {
@@ -64,6 +65,7 @@ export class AutomationDispatcher {
     resolveWorkItemId?: (prNumber: number) => string | undefined;
     getWorkItemByBranch?: (branch: string) => WorkItem | null;
     getWorkItemByIssue?: (issueNumber: number) => WorkItem | null;
+    updateWorkItem?: (workItemId: string, patch: Record<string, unknown>) => void;
     executeModule?: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
   }) {
     this.eventBus = opts.eventBus;
@@ -72,6 +74,7 @@ export class AutomationDispatcher {
     this.resolveWorkItemId = opts.resolveWorkItemId ?? (() => undefined);
     this.getWorkItemByBranch = opts.getWorkItemByBranch ?? (() => null);
     this.getWorkItemByIssue = opts.getWorkItemByIssue ?? (() => null);
+    this.updateWorkItem = opts.updateWorkItem ?? (() => {});
     this.executeModule = opts.executeModule ?? this.defaultExecuteModule.bind(this);
   }
 
@@ -158,6 +161,10 @@ export class AutomationDispatcher {
           outcome = "escalated";
         } else {
           outcome = "fired";
+        }
+
+        if (action.action === "set-state") {
+          this.updateWorkItem(action.workItemId, action.patch);
         }
       } catch (err) {
         outcome = "errored";

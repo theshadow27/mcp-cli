@@ -90,7 +90,7 @@ export type AutomationConfig = z.infer<typeof AutomationConfigSchema>;
 export type AutomationAction =
   | { action: "none"; reason: string }
   | { action: "bye-and-untrack"; sessionIds: string[] }
-  | { action: "set-state"; patch: Record<string, unknown> }
+  | { action: "set-state"; workItemId: string; patch: Record<string, unknown> }
   | { action: "emit-event"; event: { event: string; category: string; [key: string]: unknown } }
   | { action: "shell"; cmd: string; args: string[] }
   | { action: "escalate"; reason: string; payload?: unknown };
