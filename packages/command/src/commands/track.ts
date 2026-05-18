@@ -43,8 +43,8 @@ const defaultDeps: TrackDeps = {
   loadManifest: tryLoadManifest,
 };
 
-/** Built-in flags that are not metadata fields. */
-const BUILTIN_FLAGS = new Set(["--branch", "--automation", "--help", "-h"]);
+/** Built-in flags that are not metadata fields (covers both cmdTrack and cmdTracked). */
+const BUILTIN_FLAGS = new Set(["--branch", "--automation", "--help", "-h", "--phase", "--json"]);
 
 /**
  * Parse metadata flags from args based on trackable fields declared in manifest.
@@ -204,12 +204,34 @@ async function persistMetadata(
   metadata: Map<string, string | number | boolean>,
   trackableFields: TrackableField[],
 ): Promise<void> {
+  if (metadata.size === 0 && !trackableFields.some((f) => f.defaultValue !== undefined)) return;
+  const ns = `workitem:${workItemId}`;
+  let existingState: Record<string, unknown> = {};
+  try {
+    const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot, namespace: ns });
+    existingState = entries;
+  } catch {
+    // No existing state — all defaults are safe to apply.
+  }
   for (const field of trackableFields) {
-    const value = metadata.get(field.key) ?? field.defaultValue;
-    if (value !== undefined) {
-      const ns = `workitem:${workItemId}`;
-      await deps.ipcCall("aliasStateSet", { repoRoot, namespace: ns, key: field.key, value });
+    const explicit = metadata.get(field.key);
+    if (explicit !== undefined) {
+      await deps.ipcCall("aliasStateSet", { repoRoot, namespace: ns, key: field.key, value: explicit });
+    } else if (field.defaultValue !== undefined && !(field.key in existingState)) {
+      await deps.ipcCall("aliasStateSet", { repoRoot, namespace: ns, key: field.key, value: field.defaultValue });
     }
+  }
+}
+
+async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string): Promise<void> {
+  const ns = `workitem:${workItemId}`;
+  try {
+    const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot: cwd, namespace: ns });
+    for (const key of Object.keys(entries)) {
+      await deps.ipcCall("aliasStateDelete", { repoRoot: cwd, namespace: ns, key });
+    }
+  } catch {
+    // Best-effort — don't fail untrack if cleanup fails.
   }
 }
 
@@ -223,6 +245,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     return;
   }
 
+  const cwd = (deps.cwd ?? (() => process.cwd()))();
+
   if (args[0].startsWith("branch:")) {
     const branch = args[0].slice("branch:".length);
     if (!branch) {
@@ -232,6 +256,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     try {
       const result = await deps.ipcCall("untrackWorkItem", { branch });
       if (result.deleted) {
+        await cleanupMetadata(deps, cwd, `branch:${branch}`);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -252,6 +277,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     try {
       const result = await deps.ipcCall("untrackWorkItem", { branch });
       if (result.deleted) {
+        await cleanupMetadata(deps, cwd, `branch:${branch}`);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -273,6 +299,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
   try {
     const result = await deps.ipcCall("untrackWorkItem", { number: num });
     if (result.deleted) {
+      await cleanupMetadata(deps, cwd, `#${num}`);
       console.error(`Untracked #${num}`);
     } else {
       console.error(`#${num} was not tracked`);

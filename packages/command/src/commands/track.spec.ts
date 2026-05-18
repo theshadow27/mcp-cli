@@ -129,6 +129,17 @@ describe("parseMetadataFlags", () => {
     expect(metadata.has("branch")).toBe(false);
   });
 
+  test("skips --phase and --json flags", () => {
+    const { metadata, errors } = parseMetadataFlags(
+      ["42", "--phase", "impl", "--json", "--scrutiny", "low"],
+      [enumField],
+    );
+    expect(errors).toHaveLength(0);
+    expect(metadata.get("scrutiny")).toBe("low");
+    expect(metadata.has("phase")).toBe(false);
+    expect(metadata.has("json")).toBe(false);
+  });
+
   test("errors on missing required field", () => {
     const { errors } = parseMetadataFlags(["42"], [requiredField]);
     expect(errors).toHaveLength(1);
@@ -571,6 +582,7 @@ describe("formatWorkItemRow", () => {
         const deps: TrackDeps = {
           ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
             if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateAll") return { entries: {} } as IpcMethodResult[M];
             if (method === "aliasStateSet") {
               stateCalls.push({ method, params: params as Record<string, unknown> });
               return { ok: true } as IpcMethodResult[M];
@@ -659,6 +671,7 @@ describe("formatWorkItemRow", () => {
         const deps: TrackDeps = {
           ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
             if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateAll") return { entries: {} } as IpcMethodResult[M];
             if (method === "aliasStateSet") {
               const p = params as Record<string, unknown>;
               stateCalls.push({ key: p.key as string, value: p.value });
@@ -680,7 +693,48 @@ describe("formatWorkItemRow", () => {
       expect(stateCalls[0].value).toBe("1001,1002");
     });
 
-    test("cmdTrack persists default value when field not provided", async () => {
+    test("cmdTrack re-track preserves prior metadata (does not overwrite with defaults)", async () => {
+      const item = makeWorkItem({ id: "#42" });
+      const stateCalls: Array<{ key: string; value: unknown }> = [];
+
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true, default: medium }',
+        "  bundled_with: { type: string, track: true, repeatable: true }",
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await withManifestDir(MANIFEST_YAML, (dir) => {
+        const deps: TrackDeps = {
+          ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+            if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateAll") return { entries: { scrutiny: "high" } } as IpcMethodResult[M];
+            if (method === "aliasStateSet") {
+              const p = params as Record<string, unknown>;
+              stateCalls.push({ key: p.key as string, value: p.value });
+              return { ok: true } as IpcMethodResult[M];
+            }
+            throw new Error(`Unexpected IPC call: ${method}`);
+          },
+          exit: (code: number): never => {
+            throw new ExitError(code);
+          },
+          loadManifest: realManifestLoader,
+          cwd: () => dir,
+        };
+        return cmdTrack(["42", "--bundled-with", "1001"], deps);
+      });
+
+      expect(stateCalls).toHaveLength(1);
+      expect(stateCalls[0].key).toBe("bundled_with");
+      expect(stateCalls[0].value).toBe("1001");
+    });
+
+    test("cmdTrack persists default value on first track (no existing state)", async () => {
       const item = makeWorkItem({ id: "#42" });
       const stateCalls: Array<{ key: string; value: unknown }> = [];
 
@@ -698,6 +752,7 @@ describe("formatWorkItemRow", () => {
         const deps: TrackDeps = {
           ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
             if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateAll") return { entries: {} } as IpcMethodResult[M];
             if (method === "aliasStateSet") {
               const p = params as Record<string, unknown>;
               stateCalls.push({ key: p.key as string, value: p.value });

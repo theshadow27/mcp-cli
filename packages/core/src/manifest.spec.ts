@@ -564,6 +564,82 @@ describe("state field object form (#2019)", () => {
     );
     expect(m.state?.["my-field"]).toBe("string?");
   });
+
+  test("rejects invalid enum default at parse time", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { scrutiny: { type: "enum[low,medium,high]", track: true, default: "catastrophic" } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("rejects non-number default for number type at parse time", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { count: { type: "number", track: true, default: "not-a-number" } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(ManifestError);
+  });
+
+  test("accepts valid enum default at parse time", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { scrutiny: { type: "enum[low,medium,high]", track: true, default: "medium" } },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(typeof m.state?.scrutiny).toBe("object");
+  });
+
+  test("rejects reserved trackable field name 'phase'", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { phase: { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/conflicts with built-in CLI flag/);
+  });
+
+  test("rejects reserved trackable field name 'json'", () => {
+    expect(() =>
+      validateManifest(
+        {
+          initial: "a",
+          state: { json: { type: "string", track: true } },
+          phases: { a: { source: "./a.ts" } },
+        },
+        "/tmp/x",
+      ),
+    ).toThrow(/conflicts with built-in CLI flag/);
+  });
+
+  test("allows reserved name when not trackable", () => {
+    const m = validateManifest(
+      {
+        initial: "a",
+        state: { phase: "string?" },
+        phases: { a: { source: "./a.ts" } },
+      },
+      "/tmp/x",
+    );
+    expect(m.state?.phase).toBe("string?");
+  });
 });
 
 describe("parseEnumValues", () => {
@@ -630,6 +706,12 @@ describe("validateTrackValue", () => {
     const field = getTrackableFields({ n: { type: "number", track: true } })[0];
     expect(validateTrackValue(field, "42")).toBeNull();
     expect(validateTrackValue(field, "abc")).toContain("expected a number");
+  });
+
+  test("rejects empty string for number type", () => {
+    const field = getTrackableFields({ n: { type: "number", track: true } })[0];
+    expect(validateTrackValue(field, "")).toContain("expected a number");
+    expect(validateTrackValue(field, "  ")).toContain("expected a number");
   });
 
   test("validates boolean type", () => {

@@ -49,14 +49,30 @@ export const StateFieldObjectSchema = z
       .string()
       .regex(
         EXTENDED_TYPE_RE,
-        'type must be "string", "number", "boolean", or "enum[val1,val2,...]", optionally suffixed with "?"',
+        'type must be "string", "number", "boolean", or "enum[val1,val2,...]" (lowercase only), optionally suffixed with "?"',
       ),
     track: z.boolean().optional(),
     repeatable: z.boolean().optional(),
     default: z.union([z.string(), z.number(), z.boolean()]).optional(),
     required: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (f) => {
+      if (f.default === undefined) return true;
+      const optional = f.type.endsWith("?");
+      const raw = optional ? f.type.slice(0, -1) : f.type;
+      if (raw.startsWith("enum[")) {
+        const values = raw.slice(5, -1).split(",");
+        return values.includes(String(f.default));
+      }
+      if (raw === "number") return typeof f.default === "number" || !Number.isNaN(Number(f.default));
+      if (raw === "boolean")
+        return f.default === true || f.default === false || f.default === "true" || f.default === "false";
+      return true;
+    },
+    { message: "default value does not match declared type" },
+  );
 
 export type StateFieldObject = z.infer<typeof StateFieldObjectSchema>;
 
@@ -121,7 +137,7 @@ export function validateTrackValue(field: TrackableField, value: string): string
       }
       return null;
     case "number":
-      if (Number.isNaN(Number(value))) {
+      if (value.trim() === "" || Number.isNaN(Number(value))) {
         return `invalid value "${value}" for ${field.key}; expected a number`;
       }
       return null;
@@ -337,13 +353,22 @@ export function validateManifest(raw: unknown, path: string): Manifest {
     );
   }
 
+  const RESERVED_TRACK_NAMES = new Set(["branch", "automation", "help", "phase", "json"]);
   if (manifest.state) {
     for (const [key, field] of Object.entries(manifest.state)) {
-      if (typeof field === "object" && field.track && key.includes("-")) {
-        throw new ManifestError(
-          `trackable state key "${key}" contains hyphens; use underscores instead (CLI flags normalize --${key} to "${key.replace(/-/g, "_")}", making this field unreachable)`,
-          path,
-        );
+      if (typeof field === "object" && field.track) {
+        if (key.includes("-")) {
+          throw new ManifestError(
+            `trackable state key "${key}" contains hyphens; use underscores instead (CLI flags normalize --${key} to "${key.replace(/-/g, "_")}", making this field unreachable)`,
+            path,
+          );
+        }
+        if (RESERVED_TRACK_NAMES.has(key)) {
+          throw new ManifestError(
+            `trackable state key "${key}" conflicts with built-in CLI flag --${key}; choose a different name`,
+            path,
+          );
+        }
       }
     }
   }
