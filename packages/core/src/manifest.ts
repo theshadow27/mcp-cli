@@ -33,6 +33,122 @@ const identifier = (role: string) =>
  */
 export const STATE_TYPE_RE = /^(string|number|boolean)\??$/;
 
+/**
+ * Extended type pattern that also accepts `enum[val1,val2,...]` with optional `?`.
+ * Used in the object-form state field declaration (#2019).
+ */
+export const EXTENDED_TYPE_RE = /^(string|number|boolean|enum\[[a-z0-9_,-]+\])\??$/;
+
+/**
+ * Object form for state field declarations (#2019). Fields with `track: true`
+ * are exposed as `mcx track --<key>` CLI flags.
+ */
+export const StateFieldObjectSchema = z
+  .object({
+    type: z
+      .string()
+      .regex(
+        EXTENDED_TYPE_RE,
+        'type must be "string", "number", "boolean", or "enum[val1,val2,...]", optionally suffixed with "?"',
+      ),
+    track: z.boolean().optional(),
+    repeatable: z.boolean().optional(),
+    default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+    required: z.boolean().optional(),
+  })
+  .strict();
+
+export type StateFieldObject = z.infer<typeof StateFieldObjectSchema>;
+
+/** A state field is either a bare type string or an object with metadata. */
+export type StateFieldValue = string | StateFieldObject;
+
+/** Parsed trackable field metadata for CLI consumption. */
+export interface TrackableField {
+  key: string;
+  baseType: "string" | "number" | "boolean" | "enum";
+  optional: boolean;
+  enumValues: string[] | null;
+  repeatable: boolean;
+  required: boolean;
+  defaultValue: string | number | boolean | undefined;
+}
+
+/** Extract enum values from a type string like `enum[low,medium,high]`. */
+export function parseEnumValues(typeStr: string): string[] | null {
+  const m = typeStr.match(/^enum\[([^\]]+)\]\??$/);
+  return m ? m[1].split(",") : null;
+}
+
+/** Parse a state field (string or object form) into base type info. */
+function parseBaseType(field: StateFieldValue): { baseType: string; optional: boolean; typeStr: string } {
+  const typeStr = typeof field === "string" ? field : field.type;
+  const optional = typeStr.endsWith("?");
+  const raw = optional ? typeStr.slice(0, -1) : typeStr;
+  const baseType = raw.startsWith("enum[") ? "enum" : raw;
+  return { baseType, optional, typeStr };
+}
+
+/** Extract all fields with `track: true` from a manifest state section. */
+export function getTrackableFields(state: ManifestState | undefined): TrackableField[] {
+  if (!state) return [];
+  const fields: TrackableField[] = [];
+  for (const [key, field] of Object.entries(state)) {
+    if (typeof field !== "object" || !field.track) continue;
+    const { baseType, optional, typeStr } = parseBaseType(field);
+    fields.push({
+      key,
+      baseType: baseType as TrackableField["baseType"],
+      optional,
+      enumValues: parseEnumValues(typeStr),
+      repeatable: field.repeatable ?? false,
+      required: field.required ?? false,
+      defaultValue: field.default,
+    });
+  }
+  return fields;
+}
+
+/**
+ * Validate a CLI-provided value against a trackable field's type.
+ * Returns null on success, or an error message string.
+ */
+export function validateTrackValue(field: TrackableField, value: string): string | null {
+  switch (field.baseType) {
+    case "enum":
+      if (!field.enumValues?.includes(value)) {
+        return `invalid value "${value}" for ${field.key}; expected one of: ${field.enumValues?.join(", ")}`;
+      }
+      return null;
+    case "number":
+      if (Number.isNaN(Number(value))) {
+        return `invalid value "${value}" for ${field.key}; expected a number`;
+      }
+      return null;
+    case "boolean":
+      if (value !== "true" && value !== "false") {
+        return `invalid value "${value}" for ${field.key}; expected "true" or "false"`;
+      }
+      return null;
+    case "string":
+      return null;
+    default:
+      return `unknown type "${field.baseType}" for ${field.key}`;
+  }
+}
+
+/** Coerce a validated CLI string value to the appropriate JS type. */
+export function coerceTrackValue(field: TrackableField, value: string): string | number | boolean {
+  switch (field.baseType) {
+    case "number":
+      return Number(value);
+    case "boolean":
+      return value === "true";
+    default:
+      return value;
+  }
+}
+
 /** A single phase definition. */
 export const PhaseDefSchema = z
   .object({
@@ -71,13 +187,16 @@ export const ManifestWorktreeSchema = z
 export type ManifestWorktree = z.infer<typeof ManifestWorktreeSchema>;
 
 /**
- * Shared state schema declaration. Keys are identifiers; values are type
- * strings from STATE_TYPE_RE. Execution-time Zod conversion is deferred; see
- * epic #1286.
+ * Shared state schema declaration. Keys are identifiers; values are either
+ * bare type strings (string?, number, boolean?) or object declarations with
+ * extended metadata ({type, track, repeatable, default, required}).
  */
 export const ManifestStateSchema = z.record(
   identifier("state key"),
-  z.string().regex(STATE_TYPE_RE, 'state value must be "string", "number", "boolean", optionally suffixed with "?"'),
+  z.union([
+    z.string().regex(STATE_TYPE_RE, 'state value must be "string", "number", "boolean", optionally suffixed with "?"'),
+    StateFieldObjectSchema,
+  ]),
 );
 export type ManifestState = z.infer<typeof ManifestStateSchema>;
 

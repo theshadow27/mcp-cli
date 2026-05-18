@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { IpcMethod, IpcMethodResult, Manifest, WorkItem } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem } from "@mcp-cli/core";
 import { loadManifest } from "@mcp-cli/core";
 import type { TrackDeps } from "./track";
-import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow } from "./track";
+import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow, parseMetadataFlags } from "./track";
 
 class ExitError extends Error {
   code: number;
@@ -57,6 +57,109 @@ function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
     ...overrides,
   };
 }
+
+describe("parseMetadataFlags", () => {
+  const enumField: TrackableField = {
+    key: "scrutiny",
+    baseType: "enum",
+    optional: false,
+    enumValues: ["low", "medium", "high"],
+    repeatable: false,
+    required: false,
+    defaultValue: undefined,
+  };
+
+  const repeatableField: TrackableField = {
+    key: "bundled_with",
+    baseType: "string",
+    optional: false,
+    enumValues: null,
+    repeatable: true,
+    required: false,
+    defaultValue: undefined,
+  };
+
+  const requiredField: TrackableField = {
+    key: "priority",
+    baseType: "string",
+    optional: false,
+    enumValues: null,
+    repeatable: false,
+    required: true,
+    defaultValue: undefined,
+  };
+
+  test("parses valid enum value", () => {
+    const { metadata, errors } = parseMetadataFlags(["42", "--scrutiny", "high"], [enumField]);
+    expect(errors).toHaveLength(0);
+    expect(metadata.get("scrutiny")).toBe("high");
+  });
+
+  test("rejects invalid enum value", () => {
+    const { errors } = parseMetadataFlags(["42", "--scrutiny", "extreme"], [enumField]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("extreme");
+    expect(errors[0]).toContain("low, medium, high");
+  });
+
+  test("collects repeatable values into comma-joined string", () => {
+    const { metadata, errors } = parseMetadataFlags(
+      ["42", "--bundled-with", "100", "--bundled-with", "200"],
+      [repeatableField],
+    );
+    expect(errors).toHaveLength(0);
+    expect(metadata.get("bundled_with")).toBe("100,200");
+  });
+
+  test("rejects unknown flags when trackable fields exist", () => {
+    const { errors } = parseMetadataFlags(["42", "--bogus", "val"], [enumField]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("unknown metadata flag");
+  });
+
+  test("ignores unknown flags when no trackable fields", () => {
+    const { errors } = parseMetadataFlags(["42", "--bogus", "val"], []);
+    expect(errors).toHaveLength(0);
+  });
+
+  test("skips built-in flags", () => {
+    const { metadata, errors } = parseMetadataFlags(["42", "--branch", "feat/x", "--scrutiny", "low"], [enumField]);
+    expect(errors).toHaveLength(0);
+    expect(metadata.get("scrutiny")).toBe("low");
+    expect(metadata.has("branch")).toBe(false);
+  });
+
+  test("errors on missing required field", () => {
+    const { errors } = parseMetadataFlags(["42"], [requiredField]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("required");
+    expect(errors[0]).toContain("priority");
+  });
+
+  test("converts hyphens to underscores in flag names", () => {
+    const { metadata, errors } = parseMetadataFlags(["42", "--bundled-with", "100"], [repeatableField]);
+    expect(errors).toHaveLength(0);
+    expect(metadata.has("bundled_with")).toBe(true);
+  });
+
+  test("errors when flag has no value", () => {
+    const { errors } = parseMetadataFlags(["42", "--scrutiny"], [enumField]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("requires a value");
+  });
+
+  test("marks consumed indices correctly", () => {
+    const { consumed } = parseMetadataFlags(
+      ["42", "--scrutiny", "high", "--bundled-with", "100"],
+      [enumField, repeatableField],
+    );
+    expect(consumed.has(0)).toBe(false);
+    expect(consumed.has(1)).toBe(true);
+    expect(consumed.has(2)).toBe(true);
+    expect(consumed.has(3)).toBe(true);
+    expect(consumed.has(4)).toBe(true);
+  });
+});
 
 describe("cmdTrack", () => {
   test("tracks a number", async () => {
@@ -448,6 +551,214 @@ describe("formatWorkItemRow", () => {
       }
       expect(captured).toEqual({ phase: "impl" });
       expect(errs.some((e) => e.includes('phase "impl" is not declared'))).toBe(true);
+    });
+
+    test("cmdTrack persists metadata via aliasStateSet", async () => {
+      const item = makeWorkItem({ id: "#42" });
+      const stateCalls: Array<{ method: string; params: unknown }> = [];
+
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await withManifestDir(MANIFEST_YAML, (dir) => {
+        const deps: TrackDeps = {
+          ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+            if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateSet") {
+              stateCalls.push({ method, params: params as Record<string, unknown> });
+              return { ok: true } as IpcMethodResult[M];
+            }
+            throw new Error(`Unexpected IPC call: ${method}`);
+          },
+          exit: (code: number): never => {
+            throw new ExitError(code);
+          },
+          loadManifest: realManifestLoader,
+          cwd: () => dir,
+        };
+        return cmdTrack(["42", "--scrutiny", "high"], deps);
+      });
+
+      expect(stateCalls).toHaveLength(1);
+      expect(stateCalls[0].params).toEqual({
+        repoRoot: expect.any(String),
+        namespace: "workitem:#42",
+        key: "scrutiny",
+        value: "high",
+      });
+    });
+
+    test("cmdTrack rejects invalid enum value", async () => {
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await expect(
+        withManifestDir(MANIFEST_YAML, (dir) => {
+          const deps: TrackDeps = {
+            ...makeDeps({ trackWorkItem: () => makeWorkItem() }),
+            loadManifest: realManifestLoader,
+            cwd: () => dir,
+          };
+          return cmdTrack(["42", "--scrutiny", "extreme"], deps);
+        }),
+      ).rejects.toThrow("exit(1)");
+    });
+
+    test("cmdTrack rejects unknown metadata flag when trackable fields exist", async () => {
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await expect(
+        withManifestDir(MANIFEST_YAML, (dir) => {
+          const deps: TrackDeps = {
+            ...makeDeps({ trackWorkItem: () => makeWorkItem() }),
+            loadManifest: realManifestLoader,
+            cwd: () => dir,
+          };
+          return cmdTrack(["42", "--nonexistent", "val"], deps);
+        }),
+      ).rejects.toThrow("exit(1)");
+    });
+
+    test("cmdTrack handles repeatable fields", async () => {
+      const item = makeWorkItem({ id: "#42" });
+      const stateCalls: Array<{ key: string; value: unknown }> = [];
+
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        "  bundled_with: { type: string, track: true, repeatable: true }",
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await withManifestDir(MANIFEST_YAML, (dir) => {
+        const deps: TrackDeps = {
+          ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+            if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateSet") {
+              const p = params as Record<string, unknown>;
+              stateCalls.push({ key: p.key as string, value: p.value });
+              return { ok: true } as IpcMethodResult[M];
+            }
+            throw new Error(`Unexpected IPC call: ${method}`);
+          },
+          exit: (code: number): never => {
+            throw new ExitError(code);
+          },
+          loadManifest: realManifestLoader,
+          cwd: () => dir,
+        };
+        return cmdTrack(["42", "--bundled-with", "1001", "--bundled-with", "1002"], deps);
+      });
+
+      expect(stateCalls).toHaveLength(1);
+      expect(stateCalls[0].key).toBe("bundled_with");
+      expect(stateCalls[0].value).toBe("1001,1002");
+    });
+
+    test("cmdTrack persists default value when field not provided", async () => {
+      const item = makeWorkItem({ id: "#42" });
+      const stateCalls: Array<{ key: string; value: unknown }> = [];
+
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true, default: medium }',
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      await withManifestDir(MANIFEST_YAML, (dir) => {
+        const deps: TrackDeps = {
+          ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+            if (method === "trackWorkItem") return item as IpcMethodResult[M];
+            if (method === "aliasStateSet") {
+              const p = params as Record<string, unknown>;
+              stateCalls.push({ key: p.key as string, value: p.value });
+              return { ok: true } as IpcMethodResult[M];
+            }
+            throw new Error(`Unexpected IPC call: ${method}`);
+          },
+          exit: (code: number): never => {
+            throw new ExitError(code);
+          },
+          loadManifest: realManifestLoader,
+          cwd: () => dir,
+        };
+        return cmdTrack(["42"], deps);
+      });
+
+      expect(stateCalls).toHaveLength(1);
+      expect(stateCalls[0].key).toBe("scrutiny");
+      expect(stateCalls[0].value).toBe("medium");
+    });
+
+    test("cmdTracked --json includes state for trackable fields", async () => {
+      const items = [makeWorkItem({ id: "#42" })];
+
+      const MANIFEST_YAML = [
+        "version: 1",
+        "initial: plan",
+        "state:",
+        '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+        "phases:",
+        "  plan: { source: ./p.ts, next: [build] }",
+        "  build: { source: ./b.ts }",
+      ].join("\n");
+
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (msg: string) => logs.push(msg);
+      try {
+        await withManifestDir(MANIFEST_YAML, (dir) => {
+          const deps: TrackDeps = {
+            ipcCall: async <M extends IpcMethod>(method: M, _params?: unknown): Promise<IpcMethodResult[M]> => {
+              if (method === "listWorkItems") return items as IpcMethodResult[M];
+              if (method === "aliasStateAll")
+                return { entries: { scrutiny: "high", session_id: "sess-1" } } as IpcMethodResult[M];
+              throw new Error(`Unexpected IPC call: ${method}`);
+            },
+            exit: (code: number): never => {
+              throw new ExitError(code);
+            },
+            loadManifest: realManifestLoader,
+            cwd: () => dir,
+          };
+          return cmdTracked(["--json"], deps);
+        });
+      } finally {
+        console.log = origLog;
+      }
+
+      const parsed = JSON.parse(logs.join(""));
+      expect(parsed[0].state).toEqual({ scrutiny: "high" });
+      expect(parsed[0].state.session_id).toBeUndefined();
     });
   });
 });
