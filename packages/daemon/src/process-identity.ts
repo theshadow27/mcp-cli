@@ -109,11 +109,11 @@ export function getProcessStartTimesBatch(pids: number[]): Map<number, number> {
  * @param pid - The process ID to check
  * @param storedStartTimeMs - The epoch ms start time recorded when the session was created
  * @param toleranceMs - Tolerance for start time comparison (default 2s, accounts for rounding)
- * @returns true if the PID belongs to our original process, false if recycled or dead
+ * @returns true if confirmed ours, false if confirmed recycled (start time mismatch), null if indeterminate (ps failed or process dead)
  */
-export function isOurProcess(pid: number, storedStartTimeMs: number, toleranceMs = 2_000): boolean {
+export function isOurProcess(pid: number, storedStartTimeMs: number, toleranceMs = 2_000): boolean | null {
   const currentStartTime = getProcessStartTime(pid);
-  if (currentStartTime === null) return false; // process is dead
+  if (currentStartTime === null) return null;
   return Math.abs(currentStartTime - storedStartTimeMs) <= toleranceMs;
 }
 
