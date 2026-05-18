@@ -24,6 +24,7 @@ import type {
   AutomationPreset,
   LockedAutomation,
   MonitorEvent,
+  WorkItem,
 } from "@mcp-cli/core";
 import { isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
@@ -37,6 +38,7 @@ interface RegisteredModule {
   contentHash: string;
   events: Set<string>;
   enabled: boolean;
+  config: Record<string, unknown>;
 }
 
 export class AutomationDispatcher {
@@ -51,6 +53,8 @@ export class AutomationDispatcher {
   private eventBus: EventBus;
   private getWorkItemOverrides: (workItemId: string) => string | undefined;
   private resolveWorkItemId: (prNumber: number) => string | undefined;
+  private getWorkItemByBranch: (branch: string) => WorkItem | null;
+  private getWorkItemByIssue: (issueNumber: number) => WorkItem | null;
   private executeModule: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
 
   constructor(opts: {
@@ -58,12 +62,16 @@ export class AutomationDispatcher {
     repoRoot: string;
     getWorkItemOverrides?: (workItemId: string) => string | undefined;
     resolveWorkItemId?: (prNumber: number) => string | undefined;
+    getWorkItemByBranch?: (branch: string) => WorkItem | null;
+    getWorkItemByIssue?: (issueNumber: number) => WorkItem | null;
     executeModule?: (module: RegisteredModule, event: MonitorEvent) => Promise<AutomationAction>;
   }) {
     this.eventBus = opts.eventBus;
     this.repoRoot = opts.repoRoot;
     this.getWorkItemOverrides = opts.getWorkItemOverrides ?? (() => undefined);
     this.resolveWorkItemId = opts.resolveWorkItemId ?? (() => undefined);
+    this.getWorkItemByBranch = opts.getWorkItemByBranch ?? (() => null);
+    this.getWorkItemByIssue = opts.getWorkItemByIssue ?? (() => null);
     this.executeModule = opts.executeModule ?? this.defaultExecuteModule.bind(this);
   }
 
@@ -78,6 +86,7 @@ export class AutomationDispatcher {
         contentHash: entry.contentHash,
         events: new Set(entry.events),
         enabled: entry.enabled,
+        config: entry.config ?? {},
       });
     }
   }
@@ -298,6 +307,9 @@ export class AutomationDispatcher {
       repoRoot: this.repoRoot,
       signal: AbortSignal.timeout(MODULE_TIMEOUT_MS),
       workItem: null,
+      config: mod.config,
+      findWorkItemByBranch: (branch: string) => this.getWorkItemByBranch(branch),
+      findWorkItemByIssue: (issueNumber: number) => this.getWorkItemByIssue(issueNumber),
       logger: {
         info: (msg: string) => console.log(`[automation:${mod.name}] ${msg}`),
         warn: (msg: string) => console.warn(`[automation:${mod.name}] ${msg}`),

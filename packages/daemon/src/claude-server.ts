@@ -132,6 +132,8 @@ export class ClaudeServer extends AbstractWorkerServer {
         category: "work_item",
       };
       if ("prNumber" in event) input.prNumber = event.prNumber;
+      if ("branch" in event) input.branch = event.branch;
+      if ("base" in event) input.base = event.base;
       if ("failedJob" in event) input.failedJob = event.failedJob;
       if ("reviewer" in event) input.reviewer = event.reviewer;
       if ("itemId" in event) input.workItemId = event.itemId;

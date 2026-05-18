@@ -703,6 +703,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             const item = workItemDb.getWorkItemByPr(prNumber);
             return item?.id ?? undefined;
           },
+          getWorkItemByBranch: (branch) => workItemDb.getWorkItemByBranch(branch),
+          getWorkItemByIssue: (issueNumber) => workItemDb.getWorkItemByIssue(issueNumber),
         });
         automationDispatcher.load(manifestResult.manifest.automation, automations);
         automationDispatcher.start();

@@ -35,6 +35,7 @@ export const LockedAutomationSchema = z
     contentHash: z.string().regex(/^[a-f0-9]{64}$/),
     events: z.array(z.string()),
     enabled: z.boolean(),
+    config: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 export type LockedAutomation = z.infer<typeof LockedAutomationSchema>;
