@@ -1793,6 +1793,9 @@ function emitMailEvent(msg: MailMessage, short: boolean): void {
     console.log(`mail ${msg.id} ${msg.sender} ${subj}`);
     return;
   }
+  const headerParts = ["event=mail", `id=${msg.id}`];
+  if (msg.sender) headerParts.push(`sender=${msg.sender}`);
+  console.log(headerParts.join(" ").slice(0, 120));
   console.log(JSON.stringify({ source: "mail", mail: msg }, null, 2));
 }
 
@@ -1894,10 +1897,13 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     data = { event: data, sessions: [] };
   }
 
-  // Apply repo/scope filtering to unified { event?, sessions } shape
+  // Apply repo/scope filtering to unified { event?, sessions } shape.
+  // Guard: if data has BOTH sessions and events, the cursor branch below must win —
+  // events live in the events array, not in unified.event, so formatWaitHeader
+  // would incorrectly emit event=timeout for the unified branch.
   const activeFilter = scopeFilter ?? repoFilter;
   const filterLabel = scopeFilter ? "other scopes" : "other repos";
-  if (data && typeof data === "object" && "sessions" in data) {
+  if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
       event?: Record<string, unknown>;

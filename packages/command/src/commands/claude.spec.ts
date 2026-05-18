@@ -2668,8 +2668,12 @@ describe("claudeWait --mail-to", () => {
     } finally {
       console.log = origLog;
     }
-    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
-    const parsed = JSON.parse(output);
+    // First call is the header line, second is the JSON payload
+    const header = String((logSpy.mock.calls as unknown[][])[0][0]);
+    expect(header).toContain("event=mail");
+    expect(header).toContain("id=42");
+    const jsonLine = String((logSpy.mock.calls as unknown[][])[1][0]);
+    const parsed = JSON.parse(jsonLine);
     expect(parsed.source).toBe("mail");
     expect(parsed.mail.id).toBe(42);
     expect(deps.pollMail).toHaveBeenCalledWith("orchestrator");
@@ -2736,8 +2740,12 @@ describe("claudeWait --mail-to", () => {
     } finally {
       console.log = origLog;
     }
-    const output = (logSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join("\n");
-    const parsed = JSON.parse(output);
+    // First call is the header line, second is the JSON payload
+    const header = String((logSpy.mock.calls as unknown[][])[0][0]);
+    expect(header).toContain("event=mail");
+    expect(header).toContain("id=77");
+    const jsonLine = String((logSpy.mock.calls as unknown[][])[1][0]);
+    const parsed = JSON.parse(jsonLine);
     expect(parsed.source).toBe("mail");
     expect(parsed.mail.id).toBe(77);
   });
@@ -3390,6 +3398,39 @@ describe("mcx claude wait", () => {
       // Normalized to unified shape
       expect(parsed.sessions).toHaveLength(2);
       expect(parsed.event).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("shape with both sessions and events routes to cursor formatter (not event=timeout)", async () => {
+    // Daemon returns { sessions, events } when --any --after wins via session event.
+    // The sessions branch must not consume this shape — events branch handles it.
+    const mixedResult = {
+      sessions: SESSION_LIST,
+      seq: 3,
+      events: [
+        {
+          sessionId: "abc12345-0000-0000-0000-000000000000",
+          event: "session:result",
+          cost: 0.5,
+          numTurns: 4,
+        },
+      ],
+    };
+    const callTool = mock(async () => toolResult(mixedResult));
+    const deps = makeDeps({ callTool });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["wait", "--after", "0"], deps);
+      const header = (logSpy.mock.calls[0] as string[])[0];
+      // Must use cursor formatter — NOT event=timeout from unified branch
+      expect(header).toContain("event=session:result");
+      expect(header).toContain("session=abc12345");
+      expect(header).not.toBe("event=timeout");
     } finally {
       console.log = origLog;
     }
