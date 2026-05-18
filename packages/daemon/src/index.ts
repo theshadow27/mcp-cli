@@ -24,7 +24,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -59,6 +59,7 @@ import {
   pruneExpiredCache,
   readCliConfig,
   readWorktreeConfig,
+  resolveRealpath,
   resolveWorktreePath,
   sha256Hex,
   tryFlockExclusive,
@@ -691,7 +692,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      const automationRepoRoot = process.cwd();
+      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
@@ -732,8 +733,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                       sessionId: sid,
                       message: "automation cleanup: PR merged",
                     });
-                  } catch {
-                    // Session may have already exited — mark ended in DB as fallback
+                  } catch (err) {
+                    logger.warn(
+                      `[automation] claude_bye failed for ${sid}: ${err instanceof Error ? err.message : String(err)} — ending in DB`,
+                    );
                     db.endSession(sid);
                   }
                 }),
@@ -742,6 +745,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 if (byeResults[i].status === "rejected") {
                   logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
                 }
+              }
+              try {
+                workItemDb.updateWorkItem(workItemId, { phase: "done" });
+              } catch {
+                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
               }
               try {
                 workItemDb.deleteWorkItem(workItemId);

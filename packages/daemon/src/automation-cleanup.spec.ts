@@ -42,6 +42,9 @@ function makeCtx(stateData: Record<string, unknown> = {}): AutomationContext {
     repoRoot: "/test/repo",
     signal: AbortSignal.timeout(30_000),
     workItem: { id: "#42", issueNumber: 42, prNumber: 42, branch: "feat/test", phase: "qa" },
+    config: {},
+    findWorkItemByBranch: () => null,
+    findWorkItemByIssue: () => null,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     emit: () => {},
   };
