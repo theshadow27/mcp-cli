@@ -207,6 +207,47 @@ describe("WorkItemDb", () => {
       const db = createDb();
       expect(db.listWorkItems()).toEqual([]);
     });
+
+    test("excludeArchived hides done items updated more than 7 days ago", () => {
+      const db = createDb();
+      db.createWorkItem({ issueNumber: 1, phase: "impl" });
+      const stale = db.createWorkItem({ issueNumber: 2, phase: "done" });
+      db.createWorkItem({ issueNumber: 3, phase: "done" });
+
+      // Back-date one done item to >7 days ago via raw SQL
+      const rawDb: Database = (db as unknown as { db: Database }).db;
+      rawDb.prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = ?").run(stale.id);
+
+      const active = db.listWorkItems({ excludeArchived: true });
+      expect(active.map((i) => i.issueNumber)).not.toContain(2);
+      // issue 3 is done but updated recently — should still appear
+      expect(active.map((i) => i.issueNumber)).toContain(3);
+      expect(active.map((i) => i.issueNumber)).toContain(1);
+    });
+
+    test("excludeArchived combined with phase filter", () => {
+      const db = createDb();
+      db.createWorkItem({ issueNumber: 1, phase: "done" });
+      const stale = db.createWorkItem({ issueNumber: 2, phase: "done" });
+
+      const rawDb: Database = (db as unknown as { db: Database }).db;
+      rawDb.prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = ?").run(stale.id);
+
+      const items = db.listWorkItems({ phase: "done", excludeArchived: true });
+      expect(items).toHaveLength(1);
+      expect(items[0].issueNumber).toBe(1);
+    });
+
+    test("excludeArchived=false includes stale done items", () => {
+      const db = createDb();
+      const item = db.createWorkItem({ issueNumber: 1, phase: "done" });
+
+      const rawDb: Database = (db as unknown as { db: Database }).db;
+      rawDb.prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = ?").run(item.id);
+
+      const all = db.listWorkItems({ excludeArchived: false });
+      expect(all).toHaveLength(1);
+    });
   });
 
   describe("getWorkItemByPr", () => {
