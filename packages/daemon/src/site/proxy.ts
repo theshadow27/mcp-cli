@@ -78,7 +78,9 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site);
 
   if (!pick) {
-    throw new Error(`No credentials available for site '${site}'. Run 'mcx site browser ${site}' and complete login.`);
+    throw new Error(
+      `No credentials available for site '${site}'. Run 'mcx site browser ${site}' to start a browser session (if you have previously authenticated, login is usually not required — your browser profile is preserved on disk).`,
+    );
   }
 
   let usedAud = pick.aud;
