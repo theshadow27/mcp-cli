@@ -14,6 +14,7 @@ import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
 import type { AutomationDefinition } from "./automation";
 import { defineAutomation } from "./automation";
+import { MONITOR_CATEGORIES } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -487,8 +488,9 @@ declare module "mcp-cli" {
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
   export function defineAutomation(def: unknown): unknown;
+  export type MonitorCategory = ${MONITOR_CATEGORIES.map((c) => `'${c}'`).join(" | ")};
   export interface EventFilterSpec {
-    subscribe?: string[];
+    subscribe?: MonitorCategory[];
     type?: string | string[];
     session?: string;
     pr?: number;
@@ -501,7 +503,7 @@ declare module "mcp-cli" {
     ts: string;
     src: string;
     event: string;
-    category: string;
+    category: MonitorCategory;
     workItemId?: string;
     sessionId?: string;
     prNumber?: number;
@@ -512,6 +514,7 @@ declare module "mcp-cli" {
     args: Record<string, string>;
     file: (path: string) => Promise<string>;
     json: (path: string) => Promise<unknown>;
+    cache: <T>(key: string, producer: () => T | Promise<T>, opts?: { prefix?: string; ttl?: number }) => Promise<T>;
     state: { get<T = unknown>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void>; all(): Promise<Record<string, unknown>> };
     globalState: { get<T = unknown>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void>; all(): Promise<Record<string, unknown>> };
     workItem: { id: string; issueNumber: number | null; prNumber: number | null; branch: string | null; phase: string } | null;
