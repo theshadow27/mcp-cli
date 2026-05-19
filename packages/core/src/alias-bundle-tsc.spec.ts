@@ -70,8 +70,7 @@ describe("validateFreeformTsc", () => {
     const result = await validateFreeformTsc(scriptPath);
 
     expect(result.timedOut).toBe(false);
-    const waitErrors = result.warnings.filter((w) => w.includes("waitForEvent"));
-    expect(waitErrors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
   }, 15_000);
 
   test("respects timeout", async () => {
