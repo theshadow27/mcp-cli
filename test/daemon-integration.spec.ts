@@ -251,7 +251,7 @@ describe("P3: Stdio transport end-to-end", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
+    await daemon?.kill();
   });
 
   test("listTools returns echo server tools", async () => {
@@ -312,7 +312,7 @@ describe("P4: Concurrent operations", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
+    await daemon?.kill();
   });
 
   test("parallel callTool requests return correct isolated results", async () => {
@@ -423,7 +423,7 @@ describe("P5: Error scenarios", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
+    await daemon?.kill();
   });
 
   test("callTool to non-existent server returns error", async () => {
@@ -694,7 +694,7 @@ describe("P5c: Transport connection error scenarios", () => {
   });
 
   afterAll(async () => {
-    await daemon.kill();
+    await daemon?.kill();
   });
 
   test("HTTP connection refused returns clear error", async () => {
