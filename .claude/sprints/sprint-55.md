@@ -68,6 +68,8 @@ Land the sprint-54 fallout cluster: bun-floor bump, manifest hardening, mail-wai
 ## Excluded (with reason)
 
 - **#2074** — marked `needs-clarification`; user MRE never landed before Batch 2 start, per the special gate.
+- **#2069** (dispatcher tests) — quota at 100% after recovery cascade; deferred to sprint 56. #2073's PR #2080 (refactor) merged with adequate test coverage from the refactor PR itself; #2069's separate test PR is incremental polish.
+- **#2022** (merge module) — quota at 100% after recovery cascade; deferred to sprint 56. Plan/research from Iris's session preserved in transcript at `~/.claude/projects/<encoded>/b0d897fc-0355-4688-918d-914efc9b2b59.jsonl` — next sprint can fast-track via `mcx claude resume` since the worktree is intact.
 
 ## Crash recovery snapshot (2026-05-18 ~22:55 local)
 
@@ -93,6 +95,29 @@ Land the sprint-54 fallout cluster: bun-floor bump, manifest hardening, mail-wai
 - #2058 (Kurt, flaky verification triage — just spawned)
 
 **Likely contributor to OOM**: stale `mcx tracked` DB carried 40+ done items from old sprints. Cleanup deferred — file as a sprint-56 chore so it doesn't repeat.
+
+## Post-recovery resolution (2026-05-18 ~23:35 local)
+
+User suggested the **WIP-commit hack** to bypass `mcx claude resume`'s false-positive merge check (filed as #2082). All 8 dead workers' worktrees survived on disk — created a synthetic WIP commit on each branch (real files for 4 with uncommitted work, `--allow-empty` for 4 pristine), then `mcx claude resume <worktree>` restored conversation history for each.
+
+**Recovered + landed (all 6 resumed sessions completed cleanly):**
+- #2052 → PR #2085 merged (ambient types + waitForEvent stubs, plus #2088 filed for docs/phases template gap, plus #2089/#2090-ish followups for stub completeness)
+- #2060 cluster → PR #2087 merged (mail-wait abort signal + ProtocolMismatch re-throw + NaN guard, closes #2061, #2062)
+- #2071 → PR #2084 merged (site browser auto-restart, Copilot's docstring/lock-scope findings addressed inline)
+- #2075 → PR #2086 merged (manifest schema version check; #2090 filed for 3 post-merge polish nits)
+- #2073 → PR #2080 merged (final fix added runtime category guard + audited-action capture for errored audits; June's self-repair commit `0a8ccba` + Hank's QA-repair both landed)
+- #2058 → closed by Frank's verification (5/5 bun-test runs clean under 1.3.14, 36,335 test executions, 0 failures)
+
+**Quota gate hit immediately after #2080 merged**: 5-hour utilization 100%. #2069 and #2022 deferred to sprint 56 — see Excluded above for rationale and worktree-restart path.
+
+## Sprint 55 final scorecard
+
+**Merged**: 9 PRs (#2077 #2078 #2079 #2080 #2081 #2084 #2085 #2086 #2087) + 3 closed-as-already-fixed (#2055 #2058 #2067 #2068)
+**Goal hit**: framework refactor #2073 + 2 modules-from-sprint-54 patched + bun bump + mail-wait cluster + manifest hardening — yes
+**3rd consumer (#2022 merge module)**: deferred to sprint 56, plan + research intact in transcript
+**Excluded**: #2074 (no MRE), #2069 + #2022 (quota)
+**Issues filed during sprint**: #2082 (mcx claude resume merge-check false positive), #2088 (docs/phases template gap from #2052 OOS), #2090 (manifest version check polish nits)
+**Outage**: 1× system OOM (Ghostty 458GB) mid-run; full recovery via user-suggested WIP-commit hack — became the load-bearing pattern for the second half of the sprint
 
 ## Context
 
