@@ -67,7 +67,32 @@ Land the sprint-54 fallout cluster: bun-floor bump, manifest hardening, mail-wai
 
 ## Excluded (with reason)
 
-None at plan time — board was triaged into Sprint 55 picks above, deferrals into sprint 56, or already-closed.
+- **#2074** — marked `needs-clarification`; user MRE never landed before Batch 2 start, per the special gate.
+
+## Crash recovery snapshot (2026-05-18 ~22:55 local)
+
+**System OOM mid-sprint** — Ghostty reported 458 GB RAM use, all worker sessions disconnected. Sprint paused. State as of crash:
+
+**Merged (5 PRs + 3 closed-as-already-fixed):**
+- PR #2077 → #2072 (bun bump 1.3.14, also closed #2055 + #2068 as fixed-upstream after re-test loop)
+- PR #2078 → #2051 (PTY test job)
+- PR #2079 → #2063 (afterAll guards)
+- PR #2081 → #2042 (mcx gc `+` prefix parse)
+- (no PR) → #2067 (closed by worker: already shipped in PR #2064)
+
+**Open PR (work survived on remote, repair in-flight when crash hit):**
+- PR #2080 → #2073 (action executor refactor). Adversarial review found 1 blocker (`as "automation"` cast not in MONITOR_CATEGORIES) + 2 should-fix (rest-spread override, dead `escalate` case). Copilot inline flagged same blocker plus "satisfies never is compile-time only — need runtime throw in default". June (reviewer self-repair) had just been sent the repair instructions when crash hit. **No repair commits pushed.**
+
+**Lost (worktree-only work, no remote push):**
+- #2052 (Eve, ambient types waitForEvent) — small edit, full restart trivial
+- #2060 (Frank, mail-wait cluster lead — bundles #2061/#2062) — significant work lost
+- #2071 (Hank, site browser sleep)
+- #2075 (Dave, manifest schema reload, unblocked from #2067 mid-sprint)
+- #2069 (Carol, dispatcher tests — was blocked on #2073 landing first)
+- #2022 (Iris, merge module — had presented plan, not yet implementing)
+- #2058 (Kurt, flaky verification triage — just spawned)
+
+**Likely contributor to OOM**: stale `mcx tracked` DB carried 40+ done items from old sprints. Cleanup deferred — file as a sprint-56 chore so it doesn't repeat.
 
 ## Context
 
