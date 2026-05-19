@@ -101,7 +101,7 @@ async function snapshotBrowser(): Promise<BrowserEngine | null> {
   return withBrowserLock(async () => {
     resetIfBrowserDied();
     return browser;
-  });
+  }, "snapshotBrowser");
 }
 
 // ── Lazy browser load ──
@@ -383,7 +383,7 @@ async function tryAutoRestartBrowser(): Promise<boolean> {
     for (const s of configs) sitesOpenInBrowser.add(s.name);
 
     return { eng, configs };
-  });
+  }, "tryAutoRestartBrowser");
 
   if (locked === false) return false;
   if (locked === null) return true; // another concurrent call already restarted; skip wiggle
@@ -461,7 +461,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
     lastBrowserSession = { engine, siteNames: sites.map((s) => s.name) };
 
     return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
-  });
+  }, "handleBrowserStart");
 }
 
 async function handleDisconnect(): Promise<ToolResult> {
@@ -474,7 +474,7 @@ async function handleDisconnect(): Promise<ToolResult> {
     sitesOpenInBrowser.clear();
     lastBrowserSession = null; // intentional stop — don't auto-restart on next call
     return ok({ ok: true });
-  });
+  }, "handleDisconnect");
 }
 
 function handleSniff(args: Record<string, unknown>): ToolResult {

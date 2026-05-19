@@ -82,7 +82,8 @@ const TOOLS = [
   },
   {
     name: "work_items_list",
-    description: "List all tracked work items. Optionally filter by phase.",
+    description:
+      "List all tracked work items. Optionally filter by phase. Stale done items (phase=done, not updated in more than 7 days) are hidden by default; pass include_archived=false to suppress them explicitly, or omit/true to see everything.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -90,6 +91,11 @@ const TOOLS = [
           type: "string",
           enum: ["impl", "review", "repair", "qa", "done"],
           description: "Filter by pipeline phase",
+        },
+        include_archived: {
+          type: "boolean",
+          description:
+            "When false, hide stale done items (phase=done, not updated in more than 7 days). Default: true (show all).",
         },
       },
     },
@@ -344,8 +350,13 @@ export class WorkItemsServer {
 
           case "work_items_list": {
             const phase = a.phase !== undefined ? String(a.phase) : undefined;
-            const items = this.workItemDb.listWorkItems(phase ? { phase } : undefined);
-            return { content: [{ type: "text" as const, text: JSON.stringify({ items, count: items.length }) }] };
+            // Only filter when caller explicitly opts out of archived items (include_archived === false).
+            const excludeArchived = a.include_archived === false;
+            const items = this.workItemDb.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
+            const hiddenCount = excludeArchived ? this.workItemDb.countArchivedWorkItems() : 0;
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ items, count: items.length, hiddenCount }) }],
+            };
           }
 
           case "work_items_get": {

@@ -1,20 +1,45 @@
+interface BrowserLockOptions {
+  /** Emit a warning when a caller waits at least this long for the lock. Default: 200ms. Use 0 to warn on any contention. */
+  warnThresholdMs?: number;
+  /** Override the warning sink. Default: console.warn. Injected for testing. */
+  warn?: (msg: string) => void;
+}
+
 /**
  * Creates a serial async mutex. All callers queue behind the previous holder;
  * no two calls execute concurrently. The lock is released in `finally` so
  * throws still unblock waiting callers.
+ *
+ * Emits a structured warning when a caller waits at least `warnThresholdMs`
+ * (default 200ms) so contention is visible in the daemon log without a code
+ * change to reproduce. Set `warnThresholdMs: 0` to warn on any contention.
  */
-export function createBrowserLock() {
+export function createBrowserLock(options: BrowserLockOptions = {}) {
+  const { warnThresholdMs = 200, warn = (msg: string) => console.warn(msg) } = options;
   let lock: Promise<void> = Promise.resolve();
-  return async function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
+  // Tracks callers currently inside withBrowserLock (holding or waiting). Used to
+  // distinguish genuine contention (queueSize > 0 on entry) from the initial
+  // resolved-promise await that every first caller goes through.
+  let queueSize = 0;
+  return async function withBrowserLock<T>(fn: () => Promise<T>, label?: string): Promise<T> {
+    const contended = queueSize > 0;
+    queueSize++;
     const prev = lock;
     let release!: () => void;
     lock = new Promise<void>((r) => {
       release = r;
     });
     try {
+      const start = performance.now();
       await prev;
+      const waited = performance.now() - start;
+      if (contended && waited >= warnThresholdMs) {
+        const callerSuffix = label ? ` (caller: ${label})` : "";
+        warn(`[site-worker] browser-lock: waiting ${Math.round(waited)}ms for lock${callerSuffix}`);
+      }
       return await fn();
     } finally {
+      queueSize--;
       release();
     }
   };

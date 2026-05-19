@@ -274,7 +274,10 @@ export class CopilotPoller {
         try {
           const result = await this.fetchRepoCommentsFn(repo, since, token);
           inlineByPr = groupCommentsByPr(result.comments);
-          if (result.rateLimitLow) anyRateLimitLow = true;
+          if (result.rateLimitLow) {
+            anyRateLimitLow = true;
+            this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+          }
           repoPollTs = preFetchTs;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

@@ -4272,6 +4272,17 @@ describe("parseResumeArgs", () => {
     expect(result.target).toBe("my-wt");
   });
 
+  test("parses --force flag", () => {
+    const result = parseResumeArgs(["my-wt", "--force"]);
+    expect(result.force).toBe(true);
+    expect(result.target).toBe("my-wt");
+  });
+
+  test("defaults force to false", () => {
+    const result = parseResumeArgs(["my-wt"]);
+    expect(result.force).toBe(false);
+  });
+
   test("parses second positional as session ID", () => {
     const result = parseResumeArgs(["my-wt", "abc-session-uuid"]);
     expect(result.target).toBe("my-wt");
@@ -4455,7 +4466,7 @@ describe("cmdClaude resume", () => {
     expect(errOutput).toContain("already has an active session");
   });
 
-  test("skips already-merged branches", async () => {
+  test("skips already-merged branches with commits ahead", async () => {
     const wtPath = `${worktreeParent}/claude-merged`;
     const exec = mock((cmd: string[]) => {
       if (cmd.includes("worktree") && cmd.includes("list")) {
@@ -4468,6 +4479,9 @@ describe("cmdClaude resume", () => {
       if (cmd.includes("--merged")) {
         return { stdout: "  main\n  feat/issue-5-done\n", stderr: "", exitCode: 0 };
       }
+      if (cmd.includes("rev-list") && cmd.includes("--count")) {
+        return { stdout: "3\n", stderr: "", exitCode: 0 };
+      }
       return { stdout: "", stderr: "", exitCode: 0 };
     });
     const callTool = mock(async (tool: string) => {
@@ -4479,6 +4493,66 @@ describe("cmdClaude resume", () => {
     await cmdClaude(["resume", "claude-merged"], deps);
     const errOutput = printError.mock.calls.map((c: unknown[]) => c[0]).join("\n");
     expect(errOutput).toContain("already merged into main");
+  });
+
+  test("resumes merged branch with zero commits ahead (review/QA worktree)", async () => {
+    const wtPath = `${worktreeParent}/claude-review`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/worktree-claude-review\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n  worktree-claude-review\n", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("rev-list") && cmd.includes("--count")) {
+        return { stdout: "0\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-session-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-review"], deps);
+    const errOutput = (deps.printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).not.toContain("already merged");
+    expect(callTool).toHaveBeenCalledWith("claude_prompt", expect.objectContaining({ resumeSessionId: "continue" }));
+  });
+
+  test("--force bypasses merge check on truly-merged branch", async () => {
+    const wtPath = `${worktreeParent}/claude-force`;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("worktree") && cmd.includes("list")) {
+        return {
+          stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${wtPath}\nHEAD def\nbranch refs/heads/feat/issue-99-done\n`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      if (cmd.includes("--merged")) {
+        return { stdout: "  main\n  feat/issue-99-done\n", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("rev-list") && cmd.includes("--count")) {
+        return { stdout: "5\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, _args: Record<string, unknown>) => {
+      if (tool === "claude_session_list") return toolResult([]);
+      if (tool === "claude_prompt") return toolResult({ sessionId: "new-session-id", seq: 1 });
+      return toolResult({});
+    });
+    const deps = makeDeps({ exec, callTool });
+    await cmdClaude(["resume", "claude-force", "--force"], deps);
+    const errOutput = (deps.printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0]).join("\n");
+    expect(errOutput).not.toContain("already merged");
+    expect(callTool).toHaveBeenCalledWith("claude_prompt", expect.objectContaining({ resumeSessionId: "continue" }));
   });
 
   test("default resume restores conversation history via resumeSessionId", async () => {

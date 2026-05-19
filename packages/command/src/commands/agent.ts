@@ -1173,6 +1173,8 @@ interface AgentResumeArgs {
   sessionId: string | undefined;
   all: boolean;
   fresh: boolean;
+  /** Bypass the branch-merged pre-flight check. */
+  force: boolean;
   allow: string[];
   model: string | undefined;
   wait: boolean;
@@ -1183,6 +1185,7 @@ interface AgentResumeArgs {
 export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
   let all = false;
   let fresh = false;
+  let force = false;
   let wait = false;
   let timeout: number | undefined;
   let model: string | undefined;
@@ -1196,6 +1199,8 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
       all = true;
     } else if (arg === "--fresh") {
       fresh = true;
+    } else if (arg === "--force") {
+      force = true;
     } else if (arg === "--wait") {
       wait = true;
     } else if (arg === "--timeout" || arg === "-t") {
@@ -1230,10 +1235,10 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--model M] [--allow tools...]\n       mcx agent <provider> resume --all";
+      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
   }
 
-  return { target, sessionId, all, fresh, allow, model, wait, timeout, error };
+  return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
 }
 
 async function agentResume(
@@ -1352,9 +1357,11 @@ async function resumeAgentWorktree(
     d.printError(`Warning: worktree at ${wt.path} has detached HEAD — skipping merge check`);
   }
 
-  // Check if branch is already merged into the default branch
+  // Check if branch is already merged into the default branch.
+  // Skip when --force is set or when the branch has zero commits ahead
+  // (review/QA/pre-commit worktrees that are trivially "merged").
   const defaultBranch = getDefaultBranch(d, wt.path);
-  if (branch) {
+  if (branch && !parsed.force) {
     const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
       "git",
       "-C",
@@ -1366,10 +1373,21 @@ async function resumeAgentWorktree(
     if (mergedExit === 0) {
       const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
       if (mergedBranches.includes(branch)) {
-        d.printError(
-          `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
-        );
-        return true;
+        const { stdout: countOutput } = d.exec([
+          "git",
+          "-C",
+          wt.path,
+          "rev-list",
+          "--count",
+          `${defaultBranch}..${branch}`,
+        ]);
+        const commitsAhead = Number.parseInt(countOutput.trim(), 10) || 0;
+        if (commitsAhead > 0) {
+          d.printError(
+            `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
+          );
+          return true;
+        }
       }
     }
   }

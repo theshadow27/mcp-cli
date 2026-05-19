@@ -242,9 +242,15 @@ export type ManifestState = z.infer<typeof ManifestStateSchema>;
  */
 export const DEFAULT_RUNS_ON = "main";
 
+/**
+ * Manifest schema version this binary was compiled against. A manifest with
+ * `version > MANIFEST_SCHEMA_VERSION` requires a newer binary.
+ */
+export const MANIFEST_SCHEMA_VERSION = 1;
+
 export const ManifestSchema = z
   .object({
-    version: z.number().int().min(1).default(1),
+    version: z.number().int().min(1).default(MANIFEST_SCHEMA_VERSION),
     runsOn: z.string().min(1).optional(),
     worktree: ManifestWorktreeSchema.optional(),
     state: ManifestStateSchema.optional(),
@@ -272,13 +278,7 @@ export class ManifestError extends Error {
   }
 }
 
-/**
- * Manifest schema version this binary was compiled against. A manifest with
- * `version > MANIFEST_SCHEMA_VERSION` requires a newer binary.
- */
-export const MANIFEST_SCHEMA_VERSION = 1;
-
-/** Thrown when the manifest declares a schema version the running daemon doesn't support. */
+/** Thrown when the manifest declares a schema version the running binary doesn't support. */
 export class ManifestVersionError extends ManifestError {
   constructor(
     public readonly manifestVersion: number,
@@ -286,7 +286,7 @@ export class ManifestVersionError extends ManifestError {
     path: string,
   ) {
     super(
-      `manifest schema version ${manifestVersion} requires a newer mcx binary (this daemon supports up to version ${supportedVersion}). To update: bun run build && mcx shutdown && mcx status`,
+      `manifest schema version ${manifestVersion} requires a newer mcx binary (this binary supports up to version ${supportedVersion}). To update: bun run build && mcx shutdown && mcx status`,
       path,
     );
     this.name = "ManifestVersionError";
@@ -295,7 +295,8 @@ export class ManifestVersionError extends ManifestError {
 
 /**
  * Find the first matching manifest in `dir`, in preference order.
- * Returns absolute path or null. Does not stat — callers handle ENOENT.
+ * Returns absolute path or null.
+ * Throws on non-absence errors (EACCES, EPERM, ESTALE, etc.).
  */
 export function findManifest(dir: string): string | null {
   for (const name of MANIFEST_FILENAMES) {

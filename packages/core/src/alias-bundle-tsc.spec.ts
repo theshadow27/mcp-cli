@@ -73,6 +73,76 @@ describe("validateFreeformTsc", () => {
     expect(result.warnings).toHaveLength(0);
   }, 15_000);
 
+  test("AliasContext.cache, repoRoot, signal resolve without type error", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "ctx-fields.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias } from "mcp-cli";',
+        "defineAlias({",
+        "  name: 'test',",
+        "  fn: async (_input: unknown, ctx: import('mcp-cli').AliasContext) => {",
+        "    const v = await ctx.cache('k', () => 42);",
+        "    const r: string = ctx.repoRoot;",
+        "    const s: AbortSignal = ctx.signal;",
+        "    return { v, r, s };",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = await validateFreeformTsc(scriptPath);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.warnings).toHaveLength(0);
+  }, 15_000);
+
+  test("EventFilterSpec.subscribe rejects invalid category literal", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "bad-category.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias } from "mcp-cli";',
+        "defineAlias({",
+        "  name: 'test',",
+        "  fn: async (_input: unknown, ctx: import('mcp-cli').AliasContext) => {",
+        "    return ctx.waitForEvent({ subscribe: ['not-a-real-category'] });",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = await validateFreeformTsc(scriptPath);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings.some((w) => w.includes("TS"))).toBe(true);
+  }, 15_000);
+
+  test("EventFilterSpec.subscribe accepts valid MonitorCategory", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "valid-category.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias } from "mcp-cli";',
+        "defineAlias({",
+        "  name: 'test',",
+        "  fn: async (_input: unknown, ctx: import('mcp-cli').AliasContext) => {",
+        "    return ctx.waitForEvent({ subscribe: ['session', 'ci'] });",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = await validateFreeformTsc(scriptPath);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.warnings).toHaveLength(0);
+  }, 15_000);
+
   test("respects timeout", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "timeout-test.ts");

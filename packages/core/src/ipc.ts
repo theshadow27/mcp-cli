@@ -491,6 +491,11 @@ export const UntrackWorkItemParamsSchema = z
 export const ListWorkItemsParamsSchema = z.object({
   /** Filter by phase. */
   phase: z.string().optional(),
+  /**
+   * When false, hide stale done items (phase=done, not updated in more than 7 days).
+   * Unset or true: show all items. Only `mcx tracked` passes false to opt in to filtering.
+   */
+  includeArchived: z.boolean().optional(),
 });
 
 export const GetWorkItemParamsSchema = z
@@ -801,7 +806,7 @@ export interface IpcMethodResult {
   deleteNote: { ok: true; deleted: boolean };
   trackWorkItem: WorkItem;
   untrackWorkItem: { ok: true; deleted: boolean };
-  listWorkItems: WorkItem[];
+  listWorkItems: { items: WorkItem[]; hiddenCount: number };
   getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;
   aliasStateSet: AliasStateSetResult;

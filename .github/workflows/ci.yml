@@ -15,17 +15,71 @@ concurrency:
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
+  # Detect whether this PR touches only docs (*.md, .claude/**).
+  # Config files (*.json, .github/**, scripts/**, .git-hooks/**) and all source
+  # code are NOT docs-only. push-to-main and workflow_dispatch events are never
+  # docs-only. Sets output docs_only=true to let check/coverage/build skip work.
+  #
+  # Security: the file list is read from the GitHub API (origin's view), not from
+  # the PR's checkout. The classification logic is inlined here so a malicious PR
+  # cannot modify .git-hooks/classify.sh to force docs_only=true and bypass CI.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate --jq '.[].filename' 2>/dev/null)
+          if [ $? -ne 0 ] || [ -z "$changed" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          docs_only=true
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              *.md | .claude/*) ;;
+              *) docs_only=false; break ;;
+            esac
+          done <<< "$changed"
+          if [ "$docs_only" = "true" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "Docs-only PR — check/coverage/build will be skipped"
+            printf '%s\n' "Changed files:" "$changed"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     runs-on: ubuntu-latest
+    needs: [detect]
     steps:
+      - name: Skip (docs-only PR)
+        if: needs.detect.outputs.docs_only == 'true'
+        run: echo "Docs-only PR — skipping check"
       - uses: actions/checkout@v6
+        if: needs.detect.outputs.docs_only != 'true'
       - uses: oven-sh/setup-bun@v2
+        if: needs.detect.outputs.docs_only != 'true'
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run lint:check
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun install --frozen-lockfile
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun run typecheck
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun run lint:check
       - name: Phase drift guard
+        if: needs.detect.outputs.docs_only != 'true'
         run: bun run check:phase-drift
       # Split daemon tests into a separate invocation to avoid a non-deterministic
       # Bun v1.3.11 segfault that triggers when daemon worker-thread tests run in
@@ -36,6 +90,7 @@ jobs:
       # non-zero exit as a pass when "^ 0 fail$" appears in the output. Real test
       # failures always produce a non-zero fail count line instead.
       - name: Test (non-daemon)
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
           bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts 2>&1 | tee /tmp/test_non_daemon.txt
@@ -49,6 +104,7 @@ jobs:
             exit $code
           fi
       - name: Test (daemon)
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
           bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts 2>&1 | tee /tmp/test_daemon.txt
@@ -74,7 +130,7 @@ jobs:
             exit $code
           fi
       - name: Upload test logs
-        if: always()
+        if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: bun-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -84,12 +140,19 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    needs: [detect]
     steps:
+      - name: Skip (docs-only PR)
+        if: needs.detect.outputs.docs_only == 'true'
+        run: echo "Docs-only PR — skipping coverage"
       - uses: actions/checkout@v6
+        if: needs.detect.outputs.docs_only != 'true'
       - uses: oven-sh/setup-bun@v2
+        if: needs.detect.outputs.docs_only != 'true'
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun install --frozen-lockfile
       # Enforces per-file + global coverage thresholds from scripts/check-coverage.ts.
       # Same command the pre-commit hook runs; --ci forces the full daemon run.
       # Backstops the coverage ratchet against PRs merged without pre-commit hooks
@@ -102,6 +165,7 @@ jobs:
       # accomplished nothing. The "PASS: All coverage thresholds met" / "0 fail"
       # passthroughs cover the legitimate post-test exit-1 case from #1419.
       - name: Coverage thresholds
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
           bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_out.txt
@@ -133,7 +197,7 @@ jobs:
             exit $code
           fi
       - name: Upload coverage logs
-        if: always()
+        if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: bun-coverage-logs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -143,20 +207,28 @@ jobs:
 
   pty-test:
     runs-on: ubuntu-latest
-    needs: check
+    needs: [check, detect]
     steps:
+      - name: Skip (docs-only PR)
+        if: needs.detect.outputs.docs_only == 'true'
+        run: echo "Docs-only PR — skipping pty-test"
       - uses: actions/checkout@v6
+        if: needs.detect.outputs.docs_only != 'true'
       - uses: oven-sh/setup-bun@v2
+        if: needs.detect.outputs.docs_only != 'true'
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun install --frozen-lockfile
       - name: Install unbuffer (expect)
+        if: needs.detect.outputs.docs_only != 'true'
         run: sudo apt-get install -y expect
       # Run historically PTY-sensitive spec files under a real PTY via unbuffer.
       # These tests failed in #2016 when stdout.isTTY was true and color codes
       # leaked into assertions. The NO_COLOR preload (bunfig.toml) makes this
       # pass today; this job catches regressions if the preload is ever removed.
       - name: Test (PTY — TTY-sensitive files)
+        if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
           unbuffer bun test packages/command/src/commands/claude.spec.ts packages/control/src/components/metrics-panel.spec.ts 2>&1 | tee /tmp/test_pty.txt
@@ -170,7 +242,7 @@ jobs:
             exit $code
           fi
       - name: Upload PTY test logs
-        if: always()
+        if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: bun-pty-test-logs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -180,16 +252,25 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: check
+    needs: [check, detect]
     steps:
+      - name: Skip (docs-only PR)
+        if: needs.detect.outputs.docs_only == 'true'
+        run: echo "Docs-only PR — skipping build"
       - uses: actions/checkout@v6
+        if: needs.detect.outputs.docs_only != 'true'
       - uses: oven-sh/setup-bun@v2
+        if: needs.detect.outputs.docs_only != 'true'
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun scripts/build.ts
-      - run: ls -lh dist/
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun install --frozen-lockfile
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: bun scripts/build.ts
+      - if: needs.detect.outputs.docs_only != 'true'
+        run: ls -lh dist/
       - name: Playwright resolver binary smoke test
+        if: needs.detect.outputs.docs_only != 'true'
         timeout-minutes: 5
         run: |
           set +e

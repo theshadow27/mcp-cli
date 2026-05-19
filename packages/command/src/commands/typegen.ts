@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { type JsonSchema, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
+import { type JsonSchema, MONITOR_CATEGORIES, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
 import { printError } from "../output";
 
 /** Higher limits than default for declaration files — we want full detail. */
@@ -65,8 +65,9 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "    branch: string | null;",
     "    phase: string;",
     "  }",
+    `  type MonitorCategory = ${MONITOR_CATEGORIES.map((c) => `'${c}'`).join(" | ")};`,
     "  interface EventFilterSpec {",
-    "    subscribe?: string[];",
+    "    subscribe?: MonitorCategory[];",
     "    type?: string | string[];",
     "    session?: string;",
     "    pr?: number;",
@@ -79,7 +80,7 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "    ts: string;",
     "    src: string;",
     "    event: string;",
-    "    category: string;",
+    "    category: MonitorCategory;",
     "    workItemId?: string;",
     "    sessionId?: string;",
     "    prNumber?: number;",
@@ -90,9 +91,12 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "    args: Record<string, string>;",
     "    file: (path: string) => Promise<string>;",
     "    json: (path: string) => Promise<unknown>;",
+    "    cache: <T>(key: string, producer: () => T | Promise<T>, opts?: { prefix?: string; ttl?: number }) => Promise<T>;",
     "    state: AliasStateAccessor;",
     "    globalState: AliasStateAccessor;",
     "    workItem: AliasWorkItemInfo | null;",
+    "    repoRoot: string;",
+    "    signal: AbortSignal;",
     "    waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;",
     "  }",
     "  interface AliasDefinition<I = unknown, O = unknown> {",

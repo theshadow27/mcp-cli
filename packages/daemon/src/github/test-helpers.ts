@@ -10,7 +10,8 @@ export function createCopilotStateDb(db: Database) {
       seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
       seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
       last_sticky_body_hash  TEXT,
-      last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+      last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now')),
+      repo_poll_ts           TEXT
     )
   `);
 
@@ -63,16 +64,18 @@ export function createCopilotStateDb(db: Database) {
     },
     getLastRepoPollTs(): string | null {
       const row = db
-        .query<{ last_poll_ts: string }, []>("SELECT last_poll_ts FROM copilot_comment_state WHERE pr_number = 0")
+        .query<{ repo_poll_ts: string | null }, []>(
+          "SELECT repo_poll_ts FROM copilot_comment_state WHERE pr_number = 0",
+        )
         .get();
-      return row?.last_poll_ts ?? null;
+      return row?.repo_poll_ts ?? null;
     },
     updateLastRepoPollTs(isoTs: string): void {
       db.query(
-        `INSERT INTO copilot_comment_state (pr_number, last_poll_ts)
+        `INSERT INTO copilot_comment_state (pr_number, repo_poll_ts)
          VALUES (0, ?)
          ON CONFLICT(pr_number) DO UPDATE SET
-           last_poll_ts = excluded.last_poll_ts`,
+           repo_poll_ts = excluded.repo_poll_ts`,
       ).run(isoTs);
     },
   };
