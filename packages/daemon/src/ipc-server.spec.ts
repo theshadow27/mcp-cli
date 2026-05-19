@@ -3287,7 +3287,7 @@ describe("IpcServer HTTP transport", () => {
         expect(gapLines[0]?.dropped as number).toBeGreaterThan(0);
         expect(gapLines[0]?.firstDroppedSeq).toBeDefined();
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
-        expect(typeof gapLines[0]?.ts).toBe("number");
+        expect(typeof gapLines[0]?.ts).toBe("string");
       } finally {
         restore();
       }
@@ -3318,7 +3318,7 @@ describe("IpcServer HTTP transport", () => {
         expect(gapLines[0]?.dropped as number).toBeGreaterThan(0);
         expect(gapLines[0]?.firstDroppedSeq).toBeDefined();
         expect(gapLines[0]?.lastDroppedSeq).toBeDefined();
-        expect(typeof gapLines[0]?.ts).toBe("number");
+        expect(typeof gapLines[0]?.ts).toBe("string");
       } finally {
         restore();
       }

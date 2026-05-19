@@ -432,7 +432,11 @@ export class EventStreamServer {
               liveBuffer = null;
 
               if (liveBufferDropped > 0) {
-                const gap: Record<string, unknown> = { t: "gap", dropped: liveBufferDropped, ts: Date.now() };
+                const gap: Record<string, unknown> = {
+                  t: "gap",
+                  dropped: liveBufferDropped,
+                  ts: new Date().toISOString(),
+                };
                 if (firstDroppedSeq !== undefined) gap.firstDroppedSeq = firstDroppedSeq;
                 if (lastDroppedSeq !== undefined) gap.lastDroppedSeq = lastDroppedSeq;
                 try {
