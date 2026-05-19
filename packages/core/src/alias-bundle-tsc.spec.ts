@@ -98,7 +98,7 @@ describe("validateFreeformTsc", () => {
     expect(result.warnings).toHaveLength(0);
   }, 15_000);
 
-  test("EventFilterSpec.subscribe rejects invalid category", async () => {
+  test("EventFilterSpec.subscribe rejects invalid category literal", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "bad-category.ts");
     writeFileSync(
@@ -108,7 +108,7 @@ describe("validateFreeformTsc", () => {
         "defineAlias({",
         "  name: 'test',",
         "  fn: async (_input: unknown, ctx: import('mcp-cli').AliasContext) => {",
-        "    return ctx.waitForEvent({ subscribe: ['not-a-real-category' as any] });",
+        "    return ctx.waitForEvent({ subscribe: ['not-a-real-category'] });",
         "  },",
         "});",
       ].join("\n"),
@@ -117,7 +117,8 @@ describe("validateFreeformTsc", () => {
     const result = await validateFreeformTsc(scriptPath);
 
     expect(result.timedOut).toBe(false);
-    // 'as any' suppresses; confirm the field itself parses fine and valid values work
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings.some((w) => w.includes("TS"))).toBe(true);
   }, 15_000);
 
   test("EventFilterSpec.subscribe accepts valid MonitorCategory", async () => {

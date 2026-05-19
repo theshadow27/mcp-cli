@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { type JsonSchema, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
+import { type JsonSchema, MONITOR_CATEGORIES, type ToolInfo, ipcCall, jsonSchemaToTs, options } from "@mcp-cli/core";
 import { printError } from "../output";
 
 /** Higher limits than default for declaration files — we want full detail. */
@@ -65,7 +65,7 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "    branch: string | null;",
     "    phase: string;",
     "  }",
-    "  type MonitorCategory = 'session' | 'work_item' | 'ci' | 'copilot' | 'review' | 'issue' | 'mail' | 'heartbeat' | 'worker' | 'daemon' | 'gc' | 'cost' | 'quota' | 'automation';",
+    `  type MonitorCategory = ${MONITOR_CATEGORIES.map((c) => `'${c}'`).join(" | ")};`,
     "  interface EventFilterSpec {",
     "    subscribe?: MonitorCategory[];",
     "    type?: string | string[];",

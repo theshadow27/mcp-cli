@@ -14,6 +14,7 @@ import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
 import type { AutomationDefinition } from "./automation";
 import { defineAutomation } from "./automation";
+import { MONITOR_CATEGORIES } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
@@ -487,7 +488,7 @@ declare module "mcp-cli" {
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
   export function defineAutomation(def: unknown): unknown;
-  export type MonitorCategory = 'session' | 'work_item' | 'ci' | 'copilot' | 'review' | 'issue' | 'mail' | 'heartbeat' | 'worker' | 'daemon' | 'gc' | 'cost' | 'quota' | 'automation';
+  export type MonitorCategory = ${MONITOR_CATEGORIES.map((c) => `'${c}'`).join(" | ")};
   export interface EventFilterSpec {
     subscribe?: MonitorCategory[];
     type?: string | string[];
