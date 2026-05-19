@@ -1848,13 +1848,13 @@ describe("StateDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 4", () => {
+    test("fresh DB sets schema version to 5", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(4);
+      expect(version).toBe(5);
       db.close();
     });
 
@@ -1869,7 +1869,7 @@ describe("StateDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(4);
+      expect(version).toBe(5);
       db2.close();
     });
 
@@ -1889,7 +1889,7 @@ describe("StateDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(4);
+      expect(version).toBe(5);
       db.close();
     });
 
@@ -2147,6 +2147,76 @@ describe("StateDb", () => {
       expect(cols).toContain("seen_pr_comment_ids");
       expect(cols).toContain("seen_issue_comment_ids");
       expect(cols).toContain("last_sticky_body_hash");
+      expect(cols).toContain("repo_poll_ts");
+      db.close();
+    });
+
+    test("getLastRepoPollTs returns null when no sentinel row exists", () => {
+      const db = createDb();
+      expect(db.getLastRepoPollTs()).toBeNull();
+      db.close();
+    });
+
+    test("updateLastRepoPollTs / getLastRepoPollTs round-trips ISO-8601 timestamp", () => {
+      const db = createDb();
+      const ts = "2026-04-27T22:37:26.000Z";
+      db.updateLastRepoPollTs(ts);
+      expect(db.getLastRepoPollTs()).toBe(ts);
+      db.close();
+    });
+
+    test("updateLastRepoPollTs overwrites previous value", () => {
+      const db = createDb();
+      db.updateLastRepoPollTs("2026-04-27T00:00:00.000Z");
+      db.updateLastRepoPollTs("2026-05-01T12:00:00.000Z");
+      expect(db.getLastRepoPollTs()).toBe("2026-05-01T12:00:00.000Z");
+      db.close();
+    });
+
+    test("sentinel row repo_poll_ts does not bleed into per-PR last_poll_ts (#1792)", () => {
+      const db = createDb();
+      const ts = "2026-04-27T22:37:26.000Z";
+      db.updateLastRepoPollTs(ts);
+
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const row = db["db"]
+        .query<{ repo_poll_ts: string | null; last_poll_ts: string }, []>(
+          "SELECT repo_poll_ts, last_poll_ts FROM copilot_comment_state WHERE pr_number = 0",
+        )
+        .get();
+      expect(row?.repo_poll_ts).toBe(ts);
+      // last_poll_ts for sentinel row is the SQLite datetime default, not the ISO string
+      expect(row?.last_poll_ts).not.toBe(ts);
+      db.close();
+    });
+
+    test("v5 migration adds repo_poll_ts to pre-existing copilot_comment_state", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Simulate a pre-v5 DB with a sentinel row in copilot_comment_state using last_poll_ts
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec(`
+        CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+        CREATE TABLE copilot_comment_state (
+          pr_number              INTEGER PRIMARY KEY,
+          seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
+          seen_review_ids        TEXT NOT NULL DEFAULT '[]',
+          seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
+          seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
+          last_sticky_body_hash  TEXT,
+          last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO schema_versions (name, version) VALUES ('state', 4);
+        INSERT INTO copilot_comment_state (pr_number, last_poll_ts) VALUES (0, '2026-04-27T22:37:26.000Z');
+      `);
+      raw.close();
+
+      const db = new StateDb(p);
+      // Migration should have run and migrated last_poll_ts → repo_poll_ts for sentinel row
+      expect(db.getLastRepoPollTs()).toBe("2026-04-27T22:37:26.000Z");
       db.close();
     });
   });
