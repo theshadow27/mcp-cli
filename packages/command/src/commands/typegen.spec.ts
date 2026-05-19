@@ -116,4 +116,11 @@ describe("generateDeclarations", () => {
     const dts = generateDeclarations([tool("s", "t", {})]);
     expect(dts).toEndWith("\n");
   });
+
+  test("AliasContext includes waitForEvent", () => {
+    const dts = generateDeclarations([tool("s", "t", {})]);
+    expect(dts).toContain("waitForEvent(filter: EventFilterSpec");
+    expect(dts).toContain("interface EventFilterSpec");
+    expect(dts).toContain("interface MonitorEvent");
+  });
 });

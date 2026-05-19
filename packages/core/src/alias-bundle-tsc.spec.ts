@@ -50,6 +50,29 @@ describe("validateFreeformTsc", () => {
     expect(importErrors).toHaveLength(0);
   }, 15_000);
 
+  test("AliasContext.waitForEvent resolves without type error", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "wait-for-event.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias } from "mcp-cli";',
+        "defineAlias({",
+        "  name: 'test',",
+        "  fn: async (_input: unknown, ctx: import('mcp-cli').AliasContext) => {",
+        "    const ev = await ctx.waitForEvent({ type: 'session.result' });",
+        "    return ev.event;",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = await validateFreeformTsc(scriptPath);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.warnings).toHaveLength(0);
+  }, 15_000);
+
   test("respects timeout", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "timeout-test.ts");
