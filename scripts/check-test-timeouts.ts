@@ -27,8 +27,8 @@
  * Usage:  bun scripts/check-test-timeouts.ts
  *
  * Exit codes:
- *   0 — no violations found
- *   1 — violations found
+ *   0 — no violations found (or Bun.sleep count at/below ratchet baseline)
+ *   1 — setTimeout violations found, or Bun.sleep count exceeds baseline
  */
 
 import { Glob } from "bun";
@@ -148,31 +148,11 @@ export function findViolations(content: string): Array<{ line: number; text: str
 
 /**
  * Returns true if the line contains a Bun.sleep call whose argument is a
- * plain numeric literal (e.g. 50, 1_000).  Named constants and variables are
- * allowed since they can represent configurable intervals.
+ * plain numeric literal (e.g. 50, 1_000).  Delegates to findBunSleepViolations
+ * to keep the detection logic in one place.
  */
 export function hasBunSleep(line: string): boolean {
-  const re = /\bBun\.sleep\s*\(/g;
-  let match = re.exec(line);
-  while (match !== null) {
-    const parenOpen = match.index + match[0].length - 1;
-
-    let depth = 1;
-    let i = parenOpen + 1;
-    while (i < line.length && depth > 0) {
-      if (line[i] === "(") depth++;
-      else if (line[i] === ")") depth--;
-      i++;
-    }
-
-    if (depth === 0) {
-      const arg = line.slice(parenOpen + 1, i - 1).trim();
-      if (/^[0-9][0-9_]*$/.test(arg)) return true;
-    }
-
-    match = re.exec(line);
-  }
-  return false;
+  return findBunSleepViolations(line).length > 0;
 }
 
 /**
