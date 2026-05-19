@@ -58,6 +58,16 @@ The following were flagged as sprint-56 candidates but verification shows they'r
 - #2058 (flaky 3 tests during #2050 QA — closed after Bun 1.3.14 bump)
 - #2034 (flaky server-pool disconnect SIGTERM — fixed by #2041)
 - #2042 (mcx gc `+` prefix parsing — closed in sprint 55)
+- #2025 (claude ls --all --short empty hang — closed 2026-05-18 via PR #2050; planner missed it)
+- #2040 (orphan-reaper/null-ownership coverage — closed 2026-05-18 via PR #2048; planner missed it)
+- #2017 (mcp-cli virtual package docs — closed 2026-05-18 via PR #2045; planner missed it)
+
+These three were detected at run-start by `mcx phase run impl` returning
+"work item not found" / state "done". The plan listed them because the
+planner ran ~24h earlier than the run-start and didn't re-verify GitHub
+state immediately before execution. Sprint scope is therefore 13 issues
+(not 16). Removed from active list; #2082 is now unblocked (#2025 dep
+already satisfied).
 
 ## Excluded (and why)
 
