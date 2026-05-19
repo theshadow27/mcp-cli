@@ -660,6 +660,26 @@ describe("AutomationDispatcher", () => {
     expect(errored?.error).toContain("not-a-real-category");
   });
 
+  test("automation.errored preserves original actionType when side effects throw", async () => {
+    executeResult = {
+      action: "emit-event",
+      event: { event: "custom.notify", category: "not-a-real-category", detail: "hello" },
+    };
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event === "automation.errored") published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.length > 0);
+
+    expect(published[0]?.actionType).toBe("emit-event");
+  });
+
   // ── shell action (#2073) ──
 
   test("shell action errors with not-implemented message", async () => {

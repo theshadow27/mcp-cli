@@ -158,6 +158,7 @@ export class AutomationDispatcher {
 
       const start = performance.now();
       let action: AutomationAction;
+      let auditedAction: AutomationAction | undefined;
       let outcome: AutomationOutcome;
       let error: string | null = null;
 
@@ -172,6 +173,8 @@ export class AutomationDispatcher {
             );
           }),
         ]).finally(() => clearTimeout(timer));
+
+        auditedAction = action;
 
         if (action.action === "escalate") {
           outcome = "escalated";
@@ -188,14 +191,15 @@ export class AutomationDispatcher {
         action = { action: "none", reason: `error: ${error}` };
       }
 
+      const reportedAction = auditedAction ?? action;
       const durationMs = Math.round(performance.now() - start);
-      this.recordAudit(mod.name, outcome, event.event, workItemId, action, error, null, durationMs);
+      this.recordAudit(mod.name, outcome, event.event, workItemId, reportedAction, error, null, durationMs);
       this.emitAuditEvent(mod.name, outcome, event, {
-        actionType: action.action,
+        actionType: reportedAction.action,
         error,
         durationMs,
-        ...(action.action === "escalate" && { reason: action.reason }),
-        ...(action.action === "bye-and-untrack" && { sessionIds: action.sessionIds }),
+        ...(reportedAction.action === "escalate" && { reason: reportedAction.reason }),
+        ...(reportedAction.action === "bye-and-untrack" && { sessionIds: reportedAction.sessionIds }),
       });
     }
   }
