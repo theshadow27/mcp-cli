@@ -29,7 +29,7 @@ import type {
   MonitorEvent,
   WorkItem,
 } from "@mcp-cli/core";
-import { isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
+import { MONITOR_CATEGORIES, isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
 
 const AUDIT_RING_CAPACITY = 200;
@@ -327,6 +327,11 @@ export class AutomationDispatcher {
       }
       case "emit-event": {
         const { event: evtName, category: evtCategory, ...rest } = action.event;
+        if (!MONITOR_CATEGORIES.includes(evtCategory as MonitorCategory)) {
+          throw new Error(
+            `emit-event: invalid category "${evtCategory}" — must be one of: ${MONITOR_CATEGORIES.join(", ")}`,
+          );
+        }
         this.eventBus.publish({
           ...rest,
           src: `automation:${moduleName}`,

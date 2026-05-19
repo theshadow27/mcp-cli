@@ -637,6 +637,29 @@ describe("AutomationDispatcher", () => {
     expect(emitted?.detail).toBe("hello");
   });
 
+  test("emit-event action errors on invalid category", async () => {
+    executeResult = {
+      action: "emit-event",
+      event: { event: "custom.notify", category: "not-a-real-category", detail: "hello" },
+    };
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.errored"));
+
+    const errored = published.find((e) => e.event === "automation.errored");
+    expect(errored).toBeDefined();
+    expect(errored?.error).toContain("invalid category");
+    expect(errored?.error).toContain("not-a-real-category");
+  });
+
   // ── shell action (#2073) ──
 
   test("shell action errors with not-implemented message", async () => {
