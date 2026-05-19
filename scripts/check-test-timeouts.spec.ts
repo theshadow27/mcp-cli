@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findViolations, hasFixedDelay } from "./check-test-timeouts";
+import { findBunSleepViolations, findViolations, hasBunSleep, hasFixedDelay } from "./check-test-timeouts";
 
 // Shared matrices — exercised by both hasFixedDelay (per-line) and
 // findViolations (whole-content) so the production scan path is covered.
@@ -26,7 +26,6 @@ const shouldNotMatch = [
   'expect.poll(() => value).toBe("done")',
   "someTimeout(r, 50)", // not setTimeout
   "nosetTimeout(r, 50)", // word boundary guard
-  "await Bun.sleep(50)", // Bun.sleep is the accepted form
   "setTimeout(fn, TIMEOUT, 50)", // 3-arg form: delay (2nd arg) is named constant
 ];
 
@@ -114,5 +113,93 @@ setTimeout(
     expect(vs).toHaveLength(2);
     expect(vs[0].line).toBe(2);
     expect(vs[1].line).toBe(4);
+  });
+});
+
+// --- Bun.sleep detection ---
+
+const bunSleepShouldMatch = [
+  "await Bun.sleep(50)",
+  "await Bun.sleep(100)",
+  "Bun.sleep(0)",
+  "Bun.sleep(1_000)",
+  "  Bun.sleep(200)  ",
+  "// Bun.sleep(50)", // comment lines are flagged — no comment-stripping
+];
+
+const bunSleepShouldNotMatch = [
+  "await Bun.sleep(ms)", // parameterized — acceptable
+  "await Bun.sleep(intervalMs)", // named variable
+  "await Bun.sleep(POLL_INTERVAL_MS)", // named constant
+  "await Bun.sleep(remaining)", // variable
+  "await Bun.sleep(delayMs)", // parameter name
+  "noBun.sleep(50)", // word boundary guard
+  "Promise.race([waitForMsg(), Bun.sleep(remaining).then(() => null)])", // variable arg
+];
+
+describe("check-test-timeouts hasBunSleep", () => {
+  for (const line of bunSleepShouldMatch) {
+    test(`flags: ${line.trim()}`, () => {
+      expect(hasBunSleep(line)).toBe(true);
+    });
+  }
+
+  for (const line of bunSleepShouldNotMatch) {
+    test(`allows: ${line.trim()}`, () => {
+      expect(hasBunSleep(line)).toBe(false);
+    });
+  }
+});
+
+describe("check-test-timeouts findBunSleepViolations (single-line equivalence)", () => {
+  for (const line of bunSleepShouldMatch) {
+    test(`flags: ${line.trim()}`, () => {
+      expect(findBunSleepViolations(line).length).toBeGreaterThan(0);
+    });
+  }
+
+  for (const line of bunSleepShouldNotMatch) {
+    test(`allows: ${line.trim()}`, () => {
+      expect(findBunSleepViolations(line)).toHaveLength(0);
+    });
+  }
+});
+
+describe("check-test-timeouts findBunSleepViolations (multi-line)", () => {
+  test("catches single-line Bun.sleep(50)", () => {
+    const content = "await Bun.sleep(50);";
+    const vs = findBunSleepViolations(content);
+    expect(vs).toHaveLength(1);
+    expect(vs[0].line).toBe(1);
+  });
+
+  test("catches Bun.sleep split across lines", () => {
+    const content = `await Bun.sleep(
+  100
+);`;
+    const vs = findBunSleepViolations(content);
+    expect(vs).toHaveLength(1);
+    expect(vs[0].line).toBe(1);
+  });
+
+  test("does not flag Bun.sleep with a variable argument", () => {
+    const content = "await Bun.sleep(intervalMs);";
+    expect(findBunSleepViolations(content)).toHaveLength(0);
+  });
+
+  test("reports correct line numbers for multiple Bun.sleep violations", () => {
+    const content = `// line 1
+await Bun.sleep(10);
+// line 3
+await Bun.sleep(50);`;
+    const vs = findBunSleepViolations(content);
+    expect(vs).toHaveLength(2);
+    expect(vs[0].line).toBe(2);
+    expect(vs[1].line).toBe(4);
+  });
+
+  test("does not flag Bun.sleep in Promise.race with variable arg", () => {
+    const content = "Promise.race([waitForMsg(), Bun.sleep(remaining).then(() => null)])";
+    expect(findBunSleepViolations(content)).toHaveLength(0);
   });
 });
