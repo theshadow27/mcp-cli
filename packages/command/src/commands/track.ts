@@ -21,7 +21,7 @@ import {
 } from "@mcp-cli/core";
 import { c, printError } from "../output";
 
-/** Load a manifest from the given directory, swallowing parse errors so they don't break CLI commands. */
+/** Load a manifest from the given directory, swallowing parse errors so they don't break CLI commands. Rethrows ManifestVersionError so callers can report version mismatches explicitly. */
 function tryLoadManifest(dir: string): Manifest | null {
   try {
     return loadManifest(dir)?.manifest ?? null;
