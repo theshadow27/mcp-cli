@@ -83,8 +83,10 @@ let lastBrowserSession: LastBrowserSession | null = null;
 
 /**
  * Whether an auto-restart should be attempted. Pure function for testability.
- * Auto-restart is warranted when a previous session existed but the browser
- * is now dead and the vault is empty (e.g. after system sleep).
+ * Returns true when a previous session exists and the vault is empty for the
+ * target site. Vault-empty is the observable proxy for "browser may have died"
+ * (e.g. after system sleep); browser liveness is not checked here.
+ * tryAutoRestartBrowser will no-op immediately if the browser is still alive.
  */
 export function shouldAutoRestart(session: LastBrowserSession | null, vaultEmpty: boolean): boolean {
   return session !== null && vaultEmpty;
@@ -341,50 +343,63 @@ function resetIfBrowserDied(): void {
  *
  * Called automatically from site_call when the browser has died and the vault
  * is empty — covers the common "laptop slept, Chrome was killed" case.
+ *
+ * Lock scope is intentionally limited to the start step. Wiggle runs outside
+ * the lock so the per-site 15s deadlines don't block unrelated browser ops
+ * (e.g. a concurrent site_disconnect or snapshotBrowser).
  */
 async function tryAutoRestartBrowser(): Promise<boolean> {
-  return withBrowserLock(async () => {
+  // Lock scope: browser global read-modify-write only. Values needed for the
+  // post-lock wiggle loop are returned from the callback so TypeScript can narrow them.
+  const locked = await withBrowserLock(async () => {
     resetIfBrowserDied();
-    if (browser) return true; // another concurrent call already restarted it
-    if (!lastBrowserSession) return false;
+    if (browser) return null; // another concurrent call already restarted it
+    if (!lastBrowserSession) return false as false;
 
     const { engine, siteNames } = lastBrowserSession;
-    const siteConfigs: SiteConfig[] = [];
+    const configs: SiteConfig[] = [];
     for (const name of siteNames) {
       const s = getSite(name);
-      if (s) siteConfigs.push(s);
+      if (s) configs.push(s);
     }
-    if (siteConfigs.length === 0) return false;
+    if (configs.length === 0) return false as false;
 
-    for (const s of siteConfigs) {
+    for (const s of configs) {
       sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
     }
 
     const eng = await loadBrowser(engine);
-    const specs = siteConfigs.map(siteSpecFor);
+    const specs = configs.map(siteSpecFor);
 
     try {
       await withDeadline(60_000, "browser auto-restart", eng.start(specs, sniffer.asEvents()));
     } catch {
       await withDeadline(5_000, "browser stop on failed auto-restart", eng.stop()).catch(() => {});
-      return false;
+      return false as false;
     }
 
     browser = eng;
     browserEngineName = engine;
-    for (const s of siteConfigs) sitesOpenInBrowser.add(s.name);
+    for (const s of configs) sitesOpenInBrowser.add(s.name);
 
-    // Wiggle to repopulate the credential vault from fresh page requests.
-    for (const s of siteConfigs) {
-      try {
-        await withDeadline(15_000, "wiggle on auto-restart", eng.wiggle(s.name));
-      } catch {
-        // Best-effort — vault may also repopulate from background page activity.
-      }
-    }
-
-    return true;
+    return { eng, configs };
   });
+
+  if (locked === false) return false;
+  if (locked === null) return true; // another concurrent call already restarted; skip wiggle
+
+  // Wiggle outside the lock — best-effort vault repopulation from fresh page requests.
+  // Per-site 15s deadlines don't block concurrent browser ops (snapshotBrowser, site_disconnect).
+  const { eng, configs } = locked;
+  for (const s of configs) {
+    try {
+      await withDeadline(15_000, "wiggle on auto-restart", eng.wiggle(s.name));
+    } catch {
+      // Best-effort — vault may also repopulate from background page activity.
+    }
+  }
+
+  return true;
 }
 
 const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";
