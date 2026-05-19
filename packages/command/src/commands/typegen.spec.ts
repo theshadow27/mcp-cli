@@ -123,4 +123,22 @@ describe("generateDeclarations", () => {
     expect(dts).toContain("interface EventFilterSpec");
     expect(dts).toContain("interface MonitorEvent");
   });
+
+  test("AliasContext includes cache, repoRoot, signal", () => {
+    const dts = generateDeclarations([tool("s", "t", {})]);
+    expect(dts).toContain("cache:");
+    expect(dts).toContain("repoRoot: string;");
+    expect(dts).toContain("signal: AbortSignal;");
+  });
+
+  test("EventFilterSpec.subscribe uses MonitorCategory", () => {
+    const dts = generateDeclarations([tool("s", "t", {})]);
+    expect(dts).toContain("type MonitorCategory =");
+    expect(dts).toContain("subscribe?: MonitorCategory[]");
+  });
+
+  test("MonitorEvent.category uses MonitorCategory", () => {
+    const dts = generateDeclarations([tool("s", "t", {})]);
+    expect(dts).toContain("category: MonitorCategory;");
+  });
 });
