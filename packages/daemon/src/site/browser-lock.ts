@@ -1,5 +1,5 @@
 interface BrowserLockOptions {
-  /** Emit a warning when a caller waits longer than this for the lock. Default: 200ms. */
+  /** Emit a warning when a caller waits at least this long for the lock. Default: 200ms. Use 0 to warn on any contention. */
   warnThresholdMs?: number;
   /** Override the warning sink. Default: console.warn. Injected for testing. */
   warn?: (msg: string) => void;
@@ -10,9 +10,9 @@ interface BrowserLockOptions {
  * no two calls execute concurrently. The lock is released in `finally` so
  * throws still unblock waiting callers.
  *
- * Emits a structured warning when a caller waits longer than `warnThresholdMs`
+ * Emits a structured warning when a caller waits at least `warnThresholdMs`
  * (default 200ms) so contention is visible in the daemon log without a code
- * change to reproduce.
+ * change to reproduce. Set `warnThresholdMs: 0` to warn on any contention.
  */
 export function createBrowserLock(options: BrowserLockOptions = {}) {
   const { warnThresholdMs = 200, warn = (msg: string) => console.warn(msg) } = options;
@@ -33,7 +33,7 @@ export function createBrowserLock(options: BrowserLockOptions = {}) {
       const start = performance.now();
       await prev;
       const waited = performance.now() - start;
-      if (contended && waited > warnThresholdMs) {
+      if (contended && waited >= warnThresholdMs) {
         const callerSuffix = label ? ` (caller: ${label})` : "";
         warn(`[site-worker] browser-lock: waiting ${Math.round(waited)}ms for lock${callerSuffix}`);
       }
