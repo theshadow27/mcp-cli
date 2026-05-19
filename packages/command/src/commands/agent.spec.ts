@@ -769,6 +769,17 @@ describe("parseAgentResumeArgs", () => {
     expect(result.error).toBeUndefined();
   });
 
+  test("parses --force flag", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--force"]);
+    expect(result.force).toBe(true);
+    expect(result.target).toBe("my-wt");
+  });
+
+  test("defaults force to false", () => {
+    const result = parseAgentResumeArgs(["my-wt"]);
+    expect(result.force).toBe(false);
+  });
+
   test("errors on --fresh with session ID", () => {
     const result = parseAgentResumeArgs(["my-wt", "session-abc", "--fresh"]);
     expect(result.error).toContain("--fresh cannot be combined");
@@ -876,7 +887,7 @@ describe("agent codex resume", () => {
     }
   });
 
-  test("skips merged branches with exit 1 in single-target mode", async () => {
+  test("skips merged branches with commits ahead in single-target mode", async () => {
     const deps = makeResumeDeps({
       exec: mock((cmd: string[]) => {
         const cmdStr = cmd.join(" ");
@@ -885,6 +896,9 @@ describe("agent codex resume", () => {
         }
         if (cmdStr.includes("branch --merged")) {
           return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+          return { stdout: "3\n", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "", exitCode: 0 };
       }),
@@ -893,7 +907,7 @@ describe("agent codex resume", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already merged"));
   });
 
-  test("skips merged branches without exit in --all mode", async () => {
+  test("skips merged branches with commits ahead without exit in --all mode", async () => {
     const deps = makeResumeDeps({
       exec: mock((cmd: string[]) => {
         const cmdStr = cmd.join(" ");
@@ -902,6 +916,9 @@ describe("agent codex resume", () => {
         }
         if (cmdStr.includes("branch --merged")) {
           return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+          return { stdout: "3\n", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "", exitCode: 0 };
       }),
@@ -916,6 +933,62 @@ describe("agent codex resume", () => {
         (c: unknown[]) => c[0] === "codex_prompt",
       );
       expect(promptCalls.length).toBe(0);
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("resumes merged branch with zero commits ahead (review/QA worktree)", async () => {
+    const deps = makeResumeDeps({
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+          return { stdout: "0\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("symbolic-ref")) {
+          return { stdout: "refs/heads/main\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1"], deps);
+      expect(deps.printError).not.toHaveBeenCalledWith(expect.stringContaining("already merged"));
+    } finally {
+      mc.restore();
+    }
+  });
+
+  test("--force bypasses merge check on truly-merged branch", async () => {
+    const deps = makeResumeDeps({
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+          return { stdout: "5\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("symbolic-ref")) {
+          return { stdout: "refs/heads/main\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+    });
+    const mc = mockConsole();
+    try {
+      await cmdAgent(["codex", "resume", "codex-wt1", "--force"], deps);
+      expect(deps.printError).not.toHaveBeenCalledWith(expect.stringContaining("already merged"));
     } finally {
       mc.restore();
     }
