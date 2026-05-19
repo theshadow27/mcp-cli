@@ -590,6 +590,8 @@ export interface ResumeArgs {
   all: boolean;
   /** Skip conversation history restoration, use git-context prompt instead. */
   fresh: boolean;
+  /** Bypass the branch-merged pre-flight check. */
+  force: boolean;
   allow: string[];
   model: string | undefined;
   wait: boolean;
@@ -600,6 +602,7 @@ export interface ResumeArgs {
 export function parseResumeArgs(args: string[]): ResumeArgs {
   let all = false;
   let fresh = false;
+  let force = false;
   let model: string | undefined;
   let wait = false;
   let timeout: number | undefined;
@@ -613,6 +616,8 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
       all = true;
     } else if (arg === "--fresh") {
       fresh = true;
+    } else if (arg === "--force") {
+      force = true;
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i];
       if (!val) {
@@ -648,10 +653,10 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--model M] [--allow tools...]\n       mcx claude resume --all";
+      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
-  return { target, sessionId, all, fresh, allow, model, wait, timeout, error };
+  return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
 }
 
 /** Extract issue number from branch name convention: feat/issue-N-slug, fix/issue-N-slug, etc. */
@@ -816,23 +821,38 @@ async function resumeWorktree(
 ): Promise<void> {
   const branch = wt.branch ?? "unknown";
 
-  // Check if branch is already merged into the default branch
-  const defaultBranch = getDefaultBranch(d, wt.path);
-  const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
-    "git",
-    "-C",
-    wt.path,
-    "branch",
-    "--merged",
-    defaultBranch,
-  ]);
-  if (mergedExit === 0) {
-    const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
-    if (mergedBranches.includes(branch)) {
-      d.printError(
-        `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx claude worktrees --prune" to clean up.`,
-      );
-      return;
+  // Check if branch is already merged into the default branch.
+  // Skip the check entirely when --force is set or when the branch has zero
+  // commits ahead (review/QA/pre-commit worktrees that are trivially "merged").
+  if (!parsed.force) {
+    const defaultBranch = getDefaultBranch(d, wt.path);
+    const { stdout: mergedOutput, exitCode: mergedExit } = d.exec([
+      "git",
+      "-C",
+      wt.path,
+      "branch",
+      "--merged",
+      defaultBranch,
+    ]);
+    if (mergedExit === 0) {
+      const mergedBranches = mergedOutput.split("\n").map((l) => l.trim().replace(/^\* /, ""));
+      if (mergedBranches.includes(branch)) {
+        const { stdout: countOutput } = d.exec([
+          "git",
+          "-C",
+          wt.path,
+          "rev-list",
+          "--count",
+          `${defaultBranch}..${branch}`,
+        ]);
+        const commitsAhead = Number.parseInt(countOutput.trim(), 10) || 0;
+        if (commitsAhead > 0) {
+          d.printError(
+            `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx claude worktrees --prune" to clean up.`,
+          );
+          return;
+        }
+      }
     }
   }
 
