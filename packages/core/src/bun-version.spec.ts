@@ -2,8 +2,8 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { MIN_BUN_VERSION, assertBunVersion } from "./bun-version";
 
 describe("assertBunVersion", () => {
-  it("MIN_BUN_VERSION is 1.2.18", () => {
-    expect(MIN_BUN_VERSION).toBe("1.2.18");
+  it("MIN_BUN_VERSION is 1.3.14", () => {
+    expect(MIN_BUN_VERSION).toBe("1.3.14");
   });
 
   it("does not exit when current Bun version meets the minimum", () => {
@@ -49,7 +49,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      // Any currently-shipping Bun (>=1.2.18) should satisfy a >=1.2.0 requirement
+      // Any currently-shipping Bun (>=1.3.14) should satisfy a >=1.2.0 requirement
       expect(() => assertBunVersion("1.2.0")).not.toThrow();
       expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
@@ -66,7 +66,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      expect(() => assertBunVersion("1.2.18", "1.2.17")).toThrow("process.exit called");
+      expect(() => assertBunVersion("1.3.14", "1.3.13")).toThrow("process.exit called");
       expect(exitSpy).toHaveBeenCalledWith(1);
     } finally {
       exitSpy.mockRestore();
@@ -81,7 +81,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      expect(() => assertBunVersion("1.2.18", "1.2.18")).not.toThrow();
+      expect(() => assertBunVersion("1.3.14", "1.3.14")).not.toThrow();
       expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
       exitSpy.mockRestore();
@@ -96,7 +96,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      expect(() => assertBunVersion("1.2.18", "1.2.18-canary.20250401")).not.toThrow();
+      expect(() => assertBunVersion("1.3.14", "1.3.14-canary.20250401")).not.toThrow();
       expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
       exitSpy.mockRestore();
@@ -111,7 +111,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      expect(() => assertBunVersion("1.2.18", "1.2.17-canary.20250401")).toThrow("process.exit called");
+      expect(() => assertBunVersion("1.3.14", "1.3.13-canary.20250401")).toThrow("process.exit called");
       expect(exitSpy).toHaveBeenCalledWith(1);
     } finally {
       exitSpy.mockRestore();

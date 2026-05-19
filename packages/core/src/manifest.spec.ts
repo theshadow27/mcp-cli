@@ -5,7 +5,9 @@ import { join } from "node:path";
 import {
   DEFAULT_RUNS_ON,
   MANIFEST_FILENAMES,
+  MANIFEST_SCHEMA_VERSION,
   ManifestError,
+  ManifestVersionError,
   coerceTrackValue,
   detectCycles,
   findManifest,
@@ -243,10 +245,42 @@ describe("validateManifest constraints", () => {
     }
   });
 
-  test("rejects wrong version literal", () => {
-    expect(() => validateManifest({ version: 2, initial: "a", phases: { a: { source: "./a.ts" } } }, "/tmp/x")).toThrow(
-      ManifestError,
+  test("rejects version above MANIFEST_SCHEMA_VERSION with ManifestVersionError", () => {
+    const futureVersion = MANIFEST_SCHEMA_VERSION + 1;
+    expect(() =>
+      validateManifest({ version: futureVersion, initial: "a", phases: { a: { source: "./a.ts" } } }, "/tmp/x"),
+    ).toThrow(ManifestVersionError);
+  });
+
+  test("ManifestVersionError carries version numbers and fix instructions", () => {
+    const futureVersion = MANIFEST_SCHEMA_VERSION + 1;
+    try {
+      validateManifest({ version: futureVersion, initial: "a", phases: { a: { source: "./a.ts" } } }, "/tmp/x");
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ManifestVersionError);
+      const e = err as ManifestVersionError;
+      expect(e.manifestVersion).toBe(futureVersion);
+      expect(e.supportedVersion).toBe(MANIFEST_SCHEMA_VERSION);
+      expect(e.message).toContain("bun run build");
+      expect(e.message).toContain("mcx shutdown");
+      expect(e.path).toBe("/tmp/x");
+    }
+  });
+
+  test("ManifestVersionError is a ManifestError subtype", () => {
+    const futureVersion = MANIFEST_SCHEMA_VERSION + 1;
+    expect(() =>
+      validateManifest({ version: futureVersion, initial: "a", phases: { a: { source: "./a.ts" } } }, "/tmp/x"),
+    ).toThrow(ManifestError);
+  });
+
+  test("accepts version equal to MANIFEST_SCHEMA_VERSION", () => {
+    const m = validateManifest(
+      { version: MANIFEST_SCHEMA_VERSION, initial: "a", phases: { a: { source: "./a.ts" } } },
+      "/tmp/x",
     );
+    expect(m.version).toBe(MANIFEST_SCHEMA_VERSION);
   });
 });
 

@@ -132,6 +132,30 @@ describe("runGc branches", () => {
     expect(d.errors.some((l) => l.includes("branches: deleted 1"))).toBe(true);
   });
 
+  test("strips + prefix from worktree-checked-out branches in git branch --merged output", async () => {
+    // git branch --merged uses '+ branch-name' for branches checked out in a worktree.
+    // The parser must strip the '+' or the branch name becomes '+ main' which fails deletion.
+    const responses = new Map<string, { stdout: string; stderr?: string; exitCode?: number }>();
+    // worktree-claude-abc is checked out in a secondary worktree, so git shows it with '+'
+    responses.set("git -C /repo worktree list --porcelain", {
+      stdout: "worktree /repo\nbranch refs/heads/main\n\nworktree /wt\nbranch refs/heads/worktree-claude-abc\n\n",
+    });
+    responses.set("git -C /repo symbolic-ref refs/remotes/origin/HEAD", { stdout: "refs/remotes/origin/main" });
+    responses.set("git -C /repo branch --merged main", { stdout: "+ main\n+ worktree-claude-abc\n  stale-feat\n" });
+    responses.set("git -C /repo branch --show-current", { stdout: "main" });
+    responses.set("git -C /repo fetch --prune", { stdout: "" });
+    responses.set("git -C /repo branch -d stale-feat", { stdout: "Deleted branch stale-feat", exitCode: 0 });
+
+    const d = makeDeps({ execResponses: responses });
+    await runGc({ dryRun: false, olderThanMs: 86_400_000, branchesOnly: true, worktreesOnly: false }, d);
+
+    // Should delete stale-feat, not attempt '+ main' or '+ worktree-claude-abc'
+    expect(d.execCalls.some((c) => c.join(" ") === "git -C /repo branch -d stale-feat")).toBe(true);
+    expect(d.execCalls.some((c) => c.join(" ").includes("+ "))).toBe(false);
+    expect(d.errors.some((l) => l.includes("branches: deleted 1"))).toBe(true);
+    expect(d.errors.some((l) => l.includes("failed"))).toBe(false);
+  });
+
   test("excludes default branch and current branch", async () => {
     const responses = new Map<string, { stdout: string; exitCode?: number }>();
     responses.set("git -C /repo worktree list --porcelain", { stdout: "" });
