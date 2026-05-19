@@ -11,6 +11,7 @@
 
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 import {
+  ManifestVersionError,
   WORK_ITEM_PHASES,
   coerceTrackValue,
   getTrackableFields,
@@ -24,7 +25,8 @@ import { c, printError } from "../output";
 function tryLoadManifest(dir: string): Manifest | null {
   try {
     return loadManifest(dir)?.manifest ?? null;
-  } catch {
+  } catch (err) {
+    if (err instanceof ManifestVersionError) throw err;
     return null;
   }
 }
