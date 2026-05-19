@@ -239,6 +239,36 @@ export class StateDb {
       })();
       version = 4;
     }
+
+    if (version < 5) {
+      // Add repo_poll_ts column to copilot_comment_state (#1792).
+      // Separates the repo-level poll watermark (ISO-8601, used as GitHub `since=`) from the
+      // per-PR last_poll_ts (SQLite datetime format), which previously shared the same column
+      // via a sentinel row (pr_number = 0).
+      const hasCopilotState =
+        (this.db
+          .query<{ n: number }, []>(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='copilot_comment_state'",
+          )
+          .get()?.n ?? 0) > 0;
+      this.db.transaction(() => {
+        if (hasCopilotState) {
+          const hasCol = (
+            this.db.prepare("PRAGMA table_info(copilot_comment_state)").all() as Array<{ name: string }>
+          ).some((r) => r.name === "repo_poll_ts");
+          if (!hasCol) {
+            this.db.exec("ALTER TABLE copilot_comment_state ADD COLUMN repo_poll_ts TEXT");
+          }
+          // Migrate: copy the sentinel row's last_poll_ts → repo_poll_ts.
+          // The sentinel row (pr_number = 0) holds the repo-level poll watermark in ISO-8601 format.
+          this.db.exec(
+            "UPDATE copilot_comment_state SET repo_poll_ts = last_poll_ts WHERE pr_number = 0 AND repo_poll_ts IS NULL",
+          );
+        }
+        this.setSchemaVersion(CONSUMER, 5);
+      })();
+      version = 5;
+    }
   }
 
   private applyV1Schema(): void {
@@ -417,7 +447,8 @@ export class StateDb {
         seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
         seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
         last_sticky_body_hash  TEXT,
-        last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+        last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now')),
+        repo_poll_ts           TEXT
       );
     `);
   }
@@ -1747,18 +1778,18 @@ export class StateDb {
 
   getLastRepoPollTs(): string | null {
     const row = this.db
-      .query<{ last_poll_ts: string }, []>("SELECT last_poll_ts FROM copilot_comment_state WHERE pr_number = 0")
+      .query<{ repo_poll_ts: string | null }, []>("SELECT repo_poll_ts FROM copilot_comment_state WHERE pr_number = 0")
       .get();
-    return row?.last_poll_ts ?? null;
+    return row?.repo_poll_ts ?? null;
   }
 
   updateLastRepoPollTs(isoTs: string): void {
     this.db
       .query(
-        `INSERT INTO copilot_comment_state (pr_number, last_poll_ts)
+        `INSERT INTO copilot_comment_state (pr_number, repo_poll_ts)
          VALUES (0, ?)
          ON CONFLICT(pr_number) DO UPDATE SET
-           last_poll_ts = excluded.last_poll_ts`,
+           repo_poll_ts = excluded.repo_poll_ts`,
       )
       .run(isoTs);
   }
