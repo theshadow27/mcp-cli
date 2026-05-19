@@ -81,6 +81,40 @@ already satisfied).
 - **#1750** (mcx claude bye flip default to keep) — `[BLOCKED on #1748 + #1749]` per title.
 - **#2074** (bug(spawn): per-action permission prompts) — labeled `needs-clarification`; skip per Rule 1.
 
+## Results
+
+- **Released**: v1.9.2 (release commit on sprint-56 branch; tag on merge of sprint container PR)
+- **PRs merged**: 13
+  - #2094 (#1361) fix(manifest): findManifest JSDoc
+  - #2095 (#1787) fix(monitor): gap control message ts field
+  - #2096 (#1791) perf(monitor): repo-scoped rate-limit warning
+  - #2097 (#1806) ci: skip check/coverage/build for docs-only PRs (CI security-hardened via inline classifier per Copilot review)
+  - #2099 (#2089) fix(types): AliasContext stubs + MonitorCategory derivation
+  - #2101 (#1325) perf(aliases): findGitRoot 3→2 spawns + process-local cache
+  - #2102 (#1673) fix(lint): Bun.sleep ratchet (baseline 138, blocking)
+  - #2104 (#2090) fix(manifest): post-merge polish from #2086 review
+  - #2105 (#2082) fix(resume): skip merge check when commits-ahead=0 + --force flag
+  - #2108 (#1792) refactor(db): repo_poll_ts column separation
+  - #2109 (#1707) feat(site): browser lock-contention warnings
+  - #2110 (#2091) feat(tracked): hide stale done items by default + --include-archived
+  - #2115 (#2088) docs(phases): add waitForEvent/EventFilterSpec/MonitorEvent to .d.ts template
+- **Issues closed**: 16 (13 PR fixes + 3 drive-by closures detected at run-start)
+- **Issues dropped**: 0 (all 16 planned issues addressed; the 3 drive-by closures saved spawning 3 redundant impl sessions)
+- **New issues filed during sprint**: 5
+  - #2098 (#1806 Part 2: skip Copilot review on docs-only) — deferred per design call in #2097
+  - #2103 (flaky server-pool.spec.ts disconnect/SIGTERM) — surfaced during #1791/#1325/#2082 QA; CI rerun cleared all three
+  - #2107 (security: classify.sh sourcing in #2097) — superseded by inline-classifier fix shipped in #2097 itself, can be closed as already-fixed
+  - #2111 (--force usage docs missing on resume) — superseded by Dave's followup commit in #2105, can be closed as already-fixed
+  - #2116 (docs/phases.md: post-merge cleanup from #2088 — MonitorCategory alias + waitForEvent table row) — Copilot findings posted ~2s after merge race
+- **Sprint duration**: ~78 min (02:13 → 03:31 local) — 12 parallel sonnet impls + 1 opus for #2082, aggressive parallelism enabled by user-granted quota-bypass authority
+
+### Notable interaction patterns
+
+- **Stale QA verdicts from race conditions**: #1787, #1806, #2082, #2091 each had qa:fail verdicts on pre-fix code while the impl was concurrently pushing the fix. Pattern: send the impl session back with the Copilot finding via `mcx claude send`, then bye the stale QA + respawn after the new commit lands. Cheaper than locking QA on Copilot-comment quiescence.
+- **Reviewer self-repair worked**: Quinn (opus reviewer for #1673) cleanly applied her own findings (ratchet baseline + helper-fn dedup) without spawning a fresh opus repair. 1.0–3.0 contained findings is the right size for self-repair; #2091 had 2 blockers + 2 should-fix + 3 Copilot inline overlaps and needed the original sonnet impl (Alice) to thread it through, not Quinn.
+- **#2103 flake** affected 3 PRs simultaneously (#1791, #1325, #2082) — CI rerun cleared all three without code change, confirming pre-existing flake. Did NOT triage to nerd-snipe per investigations.md gate because the user authorized quota-bypass for sprint completion; flake itself is now tracked separately for sprint 57.
+- **Drive-by closure detection at run-start**: 3 issues (#2025, #2040, #2017) had been closed via sprint-55 followup PRs in the ~24h between planner-run (00:47) and orchestrator-run (02:13). `mcx phase run impl --work-item '#X'` returned phase=done so the orchestrator caught them before spawning workers. Marked completed without effort, plan amended to record.
+
 ## Context
 
 Sprint 55 just shipped (commit 91ccfbf): automation framework refactor, manifest hardening + version-check, mail-wait recovery, merge module groundwork. Several follow-ups surfaced — type stubs that #2085 added but only partially documented (#2088, #2089), polish nits on the manifest version check (#2090), and one mcx-tracked papercut where merged work items linger (#2091). Two orchestrator-internal bugs (#2025, #2082) keep biting in pre-flight and OOM recovery. Sprint 56 is intentionally heavy-free so we can land the polish stack quickly and clear runway for ctx.gh + monitor work in sprint 57.
