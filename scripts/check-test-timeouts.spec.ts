@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findBunSleepViolations, findViolations, hasBunSleep, hasFixedDelay } from "./check-test-timeouts";
+import { BUN_SLEEP_BASELINE, findBunSleepViolations, findViolations, hasBunSleep, hasFixedDelay } from "./check-test-timeouts";
 
 // Shared matrices — exercised by both hasFixedDelay (per-line) and
 // findViolations (whole-content) so the production scan path is covered.
@@ -116,6 +116,13 @@ setTimeout(
   });
 });
 
+describe("check-test-timeouts BUN_SLEEP_BASELINE", () => {
+  test("baseline is a positive integer", () => {
+    expect(BUN_SLEEP_BASELINE).toBeGreaterThan(0);
+    expect(Number.isInteger(BUN_SLEEP_BASELINE)).toBe(true);
+  });
+});
+
 // --- Bun.sleep detection ---
 
 const bunSleepShouldMatch = [
@@ -125,6 +132,7 @@ const bunSleepShouldMatch = [
   "Bun.sleep(1_000)",
   "  Bun.sleep(200)  ",
   "// Bun.sleep(50)", // comment lines are flagged — no comment-stripping
+  "Promise.race([p, Bun.sleep(5000).then(() => null)])", // deadline pattern — intentionally flagged (#2100 remedy: name the constant)
 ];
 
 const bunSleepShouldNotMatch = [
@@ -135,6 +143,7 @@ const bunSleepShouldNotMatch = [
   "await Bun.sleep(delayMs)", // parameter name
   "noBun.sleep(50)", // word boundary guard
   "Promise.race([waitForMsg(), Bun.sleep(remaining).then(() => null)])", // variable arg
+  "await Bun.sleep(`${delay}`)", // template literal — not a numeric literal
 ];
 
 describe("check-test-timeouts hasBunSleep", () => {
