@@ -73,6 +73,23 @@ let browser: BrowserEngine | null = null;
 let browserEngineName: BrowserEngineName | null = null;
 const sitesOpenInBrowser = new Set<string>();
 
+export interface LastBrowserSession {
+  engine: BrowserEngineName;
+  /** Site names that were open in the browser. */
+  siteNames: string[];
+}
+
+let lastBrowserSession: LastBrowserSession | null = null;
+
+/**
+ * Whether an auto-restart should be attempted. Pure function for testability.
+ * Auto-restart is warranted when a previous session existed but the browser
+ * is now dead and the vault is empty (e.g. after system sleep).
+ */
+export function shouldAutoRestart(session: LastBrowserSession | null, vaultEmpty: boolean): boolean {
+  return session !== null && vaultEmpty;
+}
+
 // Serialises all operations that read-modify-write the `browser` module global,
 // preventing a concurrent observer handler from clearing the ref during start-up
 // (when browser is truthy but isRunning() is still false). See #1597.
@@ -235,8 +252,15 @@ function handleDescribe(args: Record<string, unknown>): ToolResult {
 }
 
 async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
-  const browserSnapshot = await snapshotBrowser();
+  let browserSnapshot = await snapshotBrowser();
   const site = requireSite(args.site as string);
+
+  // Auto-restart if the browser died (e.g. system sleep) and the vault is empty for this site.
+  // This avoids the confusing "No credentials available" error when the Chrome profile is intact.
+  if (shouldAutoRestart(lastBrowserSession, vault.getAll(site.name).length === 0)) {
+    const restarted = await tryAutoRestartBrowser();
+    if (restarted) browserSnapshot = await snapshotBrowser();
+  }
   const callName = args.call as string;
   const catalog = loadCatalog(site.name, site.seed ?? site.name);
   const call = catalog[callName];
@@ -310,6 +334,59 @@ function resetIfBrowserDied(): void {
   }
 }
 
+/**
+ * Silently restart the browser using the last known session config, then wiggle
+ * each site to repopulate the credential vault. Returns true if the browser
+ * started successfully (vault may still be empty if wiggle isn't configured).
+ *
+ * Called automatically from site_call when the browser has died and the vault
+ * is empty — covers the common "laptop slept, Chrome was killed" case.
+ */
+async function tryAutoRestartBrowser(): Promise<boolean> {
+  return withBrowserLock(async () => {
+    resetIfBrowserDied();
+    if (browser) return true; // another concurrent call already restarted it
+    if (!lastBrowserSession) return false;
+
+    const { engine, siteNames } = lastBrowserSession;
+    const siteConfigs: SiteConfig[] = [];
+    for (const name of siteNames) {
+      const s = getSite(name);
+      if (s) siteConfigs.push(s);
+    }
+    if (siteConfigs.length === 0) return false;
+
+    for (const s of siteConfigs) {
+      sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
+    }
+
+    const eng = await loadBrowser(engine);
+    const specs = siteConfigs.map(siteSpecFor);
+
+    try {
+      await withDeadline(60_000, "browser auto-restart", eng.start(specs, sniffer.asEvents()));
+    } catch {
+      await withDeadline(5_000, "browser stop on failed auto-restart", eng.stop()).catch(() => {});
+      return false;
+    }
+
+    browser = eng;
+    browserEngineName = engine;
+    for (const s of siteConfigs) sitesOpenInBrowser.add(s.name);
+
+    // Wiggle to repopulate the credential vault from fresh page requests.
+    for (const s of siteConfigs) {
+      try {
+        await withDeadline(15_000, "wiggle on auto-restart", eng.wiggle(s.name));
+      } catch {
+        // Best-effort — vault may also repopulate from background page activity.
+      }
+    }
+
+    return true;
+  });
+}
+
 const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";
 
 /** Validates and returns the `sites` argument as a dense, non-empty string array, or an error string. */
@@ -366,6 +443,7 @@ async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolRe
     browser = eng;
     browserEngineName = engine;
     for (const s of sites) sitesOpenInBrowser.add(s.name);
+    lastBrowserSession = { engine, siteNames: sites.map((s) => s.name) };
 
     return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
   });
@@ -379,6 +457,7 @@ async function handleDisconnect(): Promise<ToolResult> {
     browser = null;
     browserEngineName = null;
     sitesOpenInBrowser.clear();
+    lastBrowserSession = null; // intentional stop — don't auto-restart on next call
     return ok({ ok: true });
   });
 }
@@ -412,7 +491,13 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
 
 async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> {
   const snapshot = await snapshotBrowser();
-  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
+  if (!snapshot) {
+    return error(
+      lastBrowserSession
+        ? "Browser session was dropped (system sleep or crash). Run 'mcx site browser' to re-attach — login is usually not required as your browser profile is preserved on disk."
+        : "Browser is not running. Start it with site_browser_start.",
+    );
+  }
   const site = args.site as string | undefined;
   const touched = await snapshot.wiggle(site);
   return ok({ ok: true, touched });

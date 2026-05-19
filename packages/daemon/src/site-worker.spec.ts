@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseSitesArg } from "./site-worker";
+import { parseSitesArg, shouldAutoRestart } from "./site-worker";
+import type { LastBrowserSession } from "./site-worker";
 
 describe("parseSitesArg", () => {
   test("returns string array for valid non-empty dense array", () => {
@@ -47,5 +48,25 @@ describe("parseSitesArg", () => {
     const msg = parseSitesArg([]) as string;
     expect(msg).toContain("non-empty");
     expect(msg).toContain("sites");
+  });
+});
+
+describe("shouldAutoRestart", () => {
+  const session: LastBrowserSession = { engine: "playwright", siteNames: ["owa"] };
+
+  test("true when session exists and vault is empty", () => {
+    expect(shouldAutoRestart(session, true)).toBe(true);
+  });
+
+  test("false when no previous session", () => {
+    expect(shouldAutoRestart(null, true)).toBe(false);
+  });
+
+  test("false when vault is not empty (browser alive or tokens cached)", () => {
+    expect(shouldAutoRestart(session, false)).toBe(false);
+  });
+
+  test("false when both null session and vault not empty", () => {
+    expect(shouldAutoRestart(null, false)).toBe(false);
   });
 });
