@@ -1,6 +1,6 @@
 # Sprint 55
 
-> Planned 2026-05-18 08:30 local. Started 2026-05-18 09:34 local. Target: 17 issues / ~13 effective PRs (mail-wait + segfaults bundle).
+> Planned 2026-05-18 08:30 local. Started 2026-05-18 09:34 local. Ended 2026-05-18 23:36 local (quota gate; full wall ~5h with mid-run OOM + recovery). Target: 17 issues / ~13 effective PRs (mail-wait + segfaults bundle). Actual: 9 merged + 3 already-fixed + 2 deferred to s56 + 1 excluded (no MRE).
 
 ## Goal
 
