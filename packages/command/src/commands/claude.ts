@@ -653,7 +653,7 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--model M] [--allow tools...]\n       mcx claude resume --all";
+      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
   return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };

@@ -1235,7 +1235,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--model M] [--allow tools...]\n       mcx agent <provider> resume --all";
+      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
   }
 
   return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
