@@ -161,23 +161,60 @@ describe("WorkItemHandlers", () => {
       const { map } = buildHandlers();
       await invoke(map, "trackWorkItem")({ number: 1 }, ctx);
       await invoke(map, "trackWorkItem")({ number: 2 }, ctx);
-      const result = (await invoke(map, "listWorkItems")(undefined, ctx)) as Array<{ id: string }>;
-      expect(result.length).toBe(2);
+      const result = (await invoke(map, "listWorkItems")(undefined, ctx)) as {
+        items: Array<{ id: string }>;
+        hiddenCount: number;
+      };
+      expect(result.items.length).toBe(2);
+      expect(result.hiddenCount).toBe(0);
     });
 
     test("filters by phase", async () => {
       const { map } = buildHandlers();
       await invoke(map, "trackWorkItem")({ number: 1, initialPhase: "impl" }, ctx);
       await invoke(map, "trackWorkItem")({ number: 2, initialPhase: "review" }, ctx);
-      const result = (await invoke(map, "listWorkItems")({ phase: "review" }, ctx)) as Array<{ phase: string }>;
-      expect(result.length).toBe(1);
-      expect(result[0].phase).toBe("review");
+      const result = (await invoke(map, "listWorkItems")({ phase: "review" }, ctx)) as {
+        items: Array<{ phase: string }>;
+        hiddenCount: number;
+      };
+      expect(result.items.length).toBe(1);
+      expect(result.items[0].phase).toBe("review");
     });
 
     test("returns empty array when no items", async () => {
       const { map } = buildHandlers();
-      const result = (await invoke(map, "listWorkItems")(undefined, ctx)) as unknown[];
-      expect(result).toEqual([]);
+      const result = (await invoke(map, "listWorkItems")(undefined, ctx)) as { items: unknown[]; hiddenCount: number };
+      expect(result.items).toEqual([]);
+      expect(result.hiddenCount).toBe(0);
+    });
+
+    test("includeArchived=false sets excludeArchived, hiddenCount reflects stale done items", async () => {
+      const { map, workItemDb } = buildHandlers();
+      await invoke(map, "trackWorkItem")({ number: 1, initialPhase: "done" }, ctx);
+      // Back-date to simulate stale
+      (workItemDb as unknown as { db: import("bun:sqlite").Database }).db
+        .prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = '#1'")
+        .run();
+      const result = (await invoke(map, "listWorkItems")({ includeArchived: false }, ctx)) as {
+        items: unknown[];
+        hiddenCount: number;
+      };
+      expect(result.items).toHaveLength(0);
+      expect(result.hiddenCount).toBe(1);
+    });
+
+    test("includeArchived=true returns all items with hiddenCount=0", async () => {
+      const { map, workItemDb } = buildHandlers();
+      await invoke(map, "trackWorkItem")({ number: 1, initialPhase: "done" }, ctx);
+      (workItemDb as unknown as { db: import("bun:sqlite").Database }).db
+        .prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = '#1'")
+        .run();
+      const result = (await invoke(map, "listWorkItems")({ includeArchived: true }, ctx)) as {
+        items: unknown[];
+        hiddenCount: number;
+      };
+      expect(result.items).toHaveLength(1);
+      expect(result.hiddenCount).toBe(0);
     });
   });
 

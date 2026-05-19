@@ -353,9 +353,9 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const trackableFields = getTrackableFields(manifest?.state);
 
   try {
-    const items = await deps.ipcCall("listWorkItems", {
+    const { items, hiddenCount } = await deps.ipcCall("listWorkItems", {
       ...(phase ? { phase } : {}),
-      ...(includeArchived ? { includeArchived: true } : {}),
+      includeArchived,
     });
 
     if (jsonFlag) {
@@ -380,16 +380,26 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
         }),
       );
       console.log(JSON.stringify(annotatedItems, null, 2));
+      if (hiddenCount > 0) {
+        console.error(
+          `${hiddenCount} stale done item${hiddenCount === 1 ? "" : "s"} hidden (--include-archived to show)`,
+        );
+      }
       return;
     }
 
-    if (items.length === 0) {
+    if (items.length === 0 && hiddenCount === 0) {
       console.error("No tracked work items. Use `mcx track <number>` to start tracking.");
       return;
     }
 
     for (const item of items) {
       console.log(formatWorkItemRow(item));
+    }
+    if (hiddenCount > 0) {
+      console.error(
+        `${hiddenCount} stale done item${hiddenCount === 1 ? "" : "s"} hidden (--include-archived to show)`,
+      );
     }
   } catch (err) {
     printError(`Failed to list work items: ${err instanceof Error ? err.message : String(err)}`);

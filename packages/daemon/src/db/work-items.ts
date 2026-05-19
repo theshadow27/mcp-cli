@@ -437,6 +437,17 @@ export class WorkItemDb {
     return this.db.query<WorkItemRow, []>("SELECT * FROM work_items ORDER BY created_at").all().map(rowToWorkItem);
   }
 
+  /** Count items that listWorkItems would hide when excludeArchived=true. */
+  countArchivedWorkItems(): number {
+    return (
+      this.db
+        .query<{ n: number }, []>(
+          "SELECT COUNT(*) as n FROM work_items WHERE phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days')",
+        )
+        .get()?.n ?? 0
+    );
+  }
+
   getWorkItemByPr(prNumber: number): WorkItem | null {
     const row = this.db.query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE pr_number = ?").get(prNumber);
     return row ? rowToWorkItem(row) : null;

@@ -340,10 +340,14 @@ describe("cmdUntrack", () => {
   });
 });
 
+function makeListResult(items: WorkItem[], hiddenCount = 0) {
+  return { items, hiddenCount };
+}
+
 describe("cmdTracked", () => {
   test("outputs JSON with --json", async () => {
     const items = [makeWorkItem()];
-    const deps = makeDeps({ listWorkItems: items });
+    const deps = makeDeps({ listWorkItems: makeListResult(items) });
 
     const logs: string[] = [];
     const origLog = console.log;
@@ -361,7 +365,7 @@ describe("cmdTracked", () => {
 
   test("outputs table for human-readable", async () => {
     const items = [makeWorkItem(), makeWorkItem({ id: "#1120", prNumber: 1131, phase: "qa", ciStatus: "running" })];
-    const deps = makeDeps({ listWorkItems: items });
+    const deps = makeDeps({ listWorkItems: makeListResult(items) });
 
     const logs: string[] = [];
     const origLog = console.log;
@@ -377,8 +381,8 @@ describe("cmdTracked", () => {
     expect(logs[1]).toContain("#1120");
   });
 
-  test("shows empty message when no items", async () => {
-    const deps = makeDeps({ listWorkItems: [] });
+  test("shows empty message when no items and no hidden", async () => {
+    const deps = makeDeps({ listWorkItems: makeListResult([]) });
 
     const errors: string[] = [];
     const origErr = console.error;
@@ -392,25 +396,60 @@ describe("cmdTracked", () => {
     expect(errors[0]).toContain("No tracked work items");
   });
 
-  test("passes phase filter", async () => {
+  test("shows hidden hint on stderr when stale items are suppressed", async () => {
+    const deps = makeDeps({ listWorkItems: makeListResult([], 3) });
+
+    const errors: string[] = [];
+    const origErr = console.error;
+    console.error = (msg: string) => errors.push(msg);
+    try {
+      await cmdTracked([], deps);
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(errors.join("")).toContain("3 stale done items hidden (--include-archived to show)");
+  });
+
+  test("shows hidden hint after JSON output when stale items suppressed", async () => {
+    const deps = makeDeps({ listWorkItems: makeListResult([makeWorkItem()], 2) });
+
+    const errors: string[] = [];
+    const origErr = console.error;
+    console.error = (msg: string) => errors.push(msg);
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    try {
+      await cmdTracked(["--json"], deps);
+    } finally {
+      console.error = origErr;
+      console.log = origLog;
+    }
+
+    expect(logs.join("")).toContain("#1135");
+    expect(errors.join("")).toContain("2 stale done items hidden (--include-archived to show)");
+  });
+
+  test("passes phase filter with explicit includeArchived:false", async () => {
     let captured: unknown;
     const deps = makeDeps({
       listWorkItems: (params: unknown) => {
         captured = params;
-        return [];
+        return makeListResult([]);
       },
     });
 
     await cmdTracked(["--phase", "qa"], deps);
-    expect(captured).toEqual({ phase: "qa" });
+    expect(captured).toEqual({ phase: "qa", includeArchived: false });
   });
 
-  test("passes includeArchived when --include-archived flag is set", async () => {
+  test("passes includeArchived:true when --include-archived flag is set", async () => {
     let captured: unknown;
     const deps = makeDeps({
       listWorkItems: (params: unknown) => {
         captured = params;
-        return [];
+        return makeListResult([]);
       },
     });
 
@@ -418,17 +457,17 @@ describe("cmdTracked", () => {
     expect(captured).toEqual({ includeArchived: true });
   });
 
-  test("does not pass includeArchived when flag is absent", async () => {
+  test("passes includeArchived:false when flag is absent", async () => {
     let captured: unknown;
     const deps = makeDeps({
       listWorkItems: (params: unknown) => {
         captured = params;
-        return [];
+        return makeListResult([]);
       },
     });
 
     await cmdTracked([], deps);
-    expect(captured).toEqual({});
+    expect(captured).toEqual({ includeArchived: false });
   });
 
   test("combines --include-archived with --phase", async () => {
@@ -436,7 +475,7 @@ describe("cmdTracked", () => {
     const deps = makeDeps({
       listWorkItems: (params: unknown) => {
         captured = params;
-        return [];
+        return makeListResult([]);
       },
     });
 
@@ -562,7 +601,11 @@ describe("formatWorkItemRow", () => {
         await withManifestDir(
           "version: 1\ninitial: plan\nphases:\n  plan: { source: ./p.ts, next: [build] }\n  build: { source: ./b.ts }\n",
           (dir) => {
-            const deps = { ...makeDeps({ listWorkItems: items }), loadManifest: realManifestLoader, cwd: () => dir };
+            const deps = {
+              ...makeDeps({ listWorkItems: makeListResult(items) }),
+              loadManifest: realManifestLoader,
+              cwd: () => dir,
+            };
             return cmdTracked(["--json"], deps);
           },
         );
@@ -587,7 +630,7 @@ describe("formatWorkItemRow", () => {
               ...makeDeps({
                 listWorkItems: (params: unknown) => {
                   captured = params;
-                  return [];
+                  return makeListResult([]);
                 },
               }),
               loadManifest: realManifestLoader,
@@ -599,7 +642,7 @@ describe("formatWorkItemRow", () => {
       } finally {
         console.error = origErr;
       }
-      expect(captured).toEqual({ phase: "impl" });
+      expect(captured).toEqual({ phase: "impl", includeArchived: false });
       expect(errs.some((e) => e.includes('phase "impl" is not declared'))).toBe(true);
     });
 
@@ -833,7 +876,7 @@ describe("formatWorkItemRow", () => {
         await withManifestDir(MANIFEST_YAML, (dir) => {
           const deps: TrackDeps = {
             ipcCall: async <M extends IpcMethod>(method: M, _params?: unknown): Promise<IpcMethodResult[M]> => {
-              if (method === "listWorkItems") return items as IpcMethodResult[M];
+              if (method === "listWorkItems") return makeListResult(items as WorkItem[]) as IpcMethodResult[M];
               if (method === "aliasStateAll")
                 return { entries: { scrutiny: "high", session_id: "sess-1" } } as IpcMethodResult[M];
               throw new Error(`Unexpected IPC call: ${method}`);

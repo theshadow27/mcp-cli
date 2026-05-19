@@ -142,7 +142,12 @@ export class WorkItemHandlers {
 
     handlers.set("listWorkItems", async (params, _ctx) => {
       const { phase, includeArchived } = ListWorkItemsParamsSchema.parse(params ?? {});
-      return this.workItemDb.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived: !includeArchived });
+      // Only filter when caller explicitly opts in (includeArchived === false).
+      // Unset or true means show everything so callers like mcx claude ls are unaffected.
+      const excludeArchived = includeArchived === false;
+      const items = this.workItemDb.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
+      const hiddenCount = excludeArchived ? this.workItemDb.countArchivedWorkItems() : 0;
+      return { items, hiddenCount };
     });
 
     handlers.set("getWorkItem", async (params, _ctx) => {
