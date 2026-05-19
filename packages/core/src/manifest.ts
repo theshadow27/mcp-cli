@@ -227,8 +227,9 @@ export type ManifestState = z.infer<typeof ManifestStateSchema>;
 /**
  * Top-level manifest shape.
  *
- * `version` is a literal discriminator so a newer manifest against an older
- * `mcx` binary fails with a clear error instead of a generic "unknown key".
+ * `version` accepts any integer ≥ 1. If `version > MANIFEST_SCHEMA_VERSION`,
+ * `validateManifest` throws `ManifestVersionError` with an actionable message
+ * instead of a generic Zod error.
  *
  * The phase graph may contain cycles (e.g. review → repair → review); cycles
  * are intentional and part of the design. Only unreachable phases are
@@ -243,7 +244,7 @@ export const DEFAULT_RUNS_ON = "main";
 
 export const ManifestSchema = z
   .object({
-    version: z.literal(1).default(1),
+    version: z.number().int().min(1).default(1),
     runsOn: z.string().min(1).optional(),
     worktree: ManifestWorktreeSchema.optional(),
     state: ManifestStateSchema.optional(),
@@ -268,6 +269,27 @@ export class ManifestError extends Error {
   ) {
     super(message);
     this.name = "ManifestError";
+  }
+}
+
+/**
+ * Manifest schema version this binary was compiled against. A manifest with
+ * `version > MANIFEST_SCHEMA_VERSION` requires a newer binary.
+ */
+export const MANIFEST_SCHEMA_VERSION = 1;
+
+/** Thrown when the manifest declares a schema version the running daemon doesn't support. */
+export class ManifestVersionError extends ManifestError {
+  constructor(
+    public readonly manifestVersion: number,
+    public readonly supportedVersion: number,
+    path: string,
+  ) {
+    super(
+      `manifest schema version ${manifestVersion} requires a newer mcx binary (this daemon supports up to version ${supportedVersion}). To update: bun run build && mcx shutdown && mcx status`,
+      path,
+    );
+    this.name = "ManifestVersionError";
   }
 }
 
@@ -323,6 +345,10 @@ export function validateManifest(raw: unknown, path: string): Manifest {
     throw new ManifestError(`manifest validation failed:\n${lines.join("\n")}`, path);
   }
   const manifest = result.data;
+
+  if (manifest.version > MANIFEST_SCHEMA_VERSION) {
+    throw new ManifestVersionError(manifest.version, MANIFEST_SCHEMA_VERSION, path);
+  }
 
   const declared = new Set(Object.keys(manifest.phases));
   if (declared.size === 0) {

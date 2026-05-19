@@ -41,6 +41,7 @@ import {
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
   MOCK_SERVER_NAME,
+  ManifestVersionError,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
   PR_REVIEW_COMMENT_POSTED,
@@ -667,7 +668,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     try {
       manifestResult = loadManifest(process.cwd());
     } catch (err) {
-      logger.warn(`[mcpd] Failed to load manifest for automation: ${err} — skipping`);
+      if (err instanceof ManifestVersionError) {
+        logger.warn(`[mcpd] ${err.message}`);
+      } else {
+        logger.warn(`[mcpd] Failed to load manifest for automation: ${err} — skipping`);
+      }
     }
     if (manifestResult?.manifest?.automation) {
       const lockfilePath = join(process.cwd(), LOCKFILE_NAME);
@@ -1108,7 +1113,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             loadManifest: (repoRoot) => {
               try {
                 return loadManifest(repoRoot)?.manifest ?? null;
-              } catch {
+              } catch (err) {
+                if (err instanceof ManifestVersionError) throw err;
                 // Malformed manifest — behave as if absent so callers don't hard-fail.
                 return null;
               }
