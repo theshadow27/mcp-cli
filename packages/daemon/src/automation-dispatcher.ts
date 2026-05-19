@@ -25,6 +25,7 @@ import type {
   AutomationOutcome,
   AutomationPreset,
   LockedAutomation,
+  MonitorCategory,
   MonitorEvent,
   WorkItem,
 } from "@mcp-cli/core";
@@ -306,6 +307,8 @@ export class AutomationDispatcher {
     moduleName: string,
   ): Promise<void> {
     switch (action.action) {
+      // Defensive: escalate is gated out at the call site (outcome === "escalated"),
+      // but listed here so `satisfies never` stays exhaustive if the gate changes.
       case "none":
       case "escalate":
         break;
@@ -325,18 +328,20 @@ export class AutomationDispatcher {
       case "emit-event": {
         const { event: evtName, category: evtCategory, ...rest } = action.event;
         this.eventBus.publish({
+          ...rest,
           src: `automation:${moduleName}`,
           event: evtName,
-          category: evtCategory as "automation",
-          ...rest,
+          category: evtCategory as MonitorCategory,
         });
         break;
       }
       case "shell": {
         throw new Error(`action "shell" is not yet implemented — requires security allowlist (see #2073)`);
       }
-      default:
-        action satisfies never;
+      default: {
+        const _exhaustive: never = action;
+        throw new Error(`unknown automation action: ${(_exhaustive as { action: string }).action}`);
+      }
     }
   }
 
