@@ -405,6 +405,45 @@ describe("cmdTracked", () => {
     expect(captured).toEqual({ phase: "qa" });
   });
 
+  test("passes includeArchived when --include-archived flag is set", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      listWorkItems: (params: unknown) => {
+        captured = params;
+        return [];
+      },
+    });
+
+    await cmdTracked(["--include-archived"], deps);
+    expect(captured).toEqual({ includeArchived: true });
+  });
+
+  test("does not pass includeArchived when flag is absent", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      listWorkItems: (params: unknown) => {
+        captured = params;
+        return [];
+      },
+    });
+
+    await cmdTracked([], deps);
+    expect(captured).toEqual({});
+  });
+
+  test("combines --include-archived with --phase", async () => {
+    let captured: unknown;
+    const deps = makeDeps({
+      listWorkItems: (params: unknown) => {
+        captured = params;
+        return [];
+      },
+    });
+
+    await cmdTracked(["--phase", "done", "--include-archived"], deps);
+    expect(captured).toEqual({ phase: "done", includeArchived: true });
+  });
+
   test("rejects --phase with no value", async () => {
     const deps = makeDeps();
     await expect(cmdTracked(["--phase"], deps)).rejects.toThrow("exit(1)");

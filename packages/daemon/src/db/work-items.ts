@@ -416,11 +416,22 @@ export class WorkItemDb {
     })();
   }
 
-  listWorkItems(filter?: { phase?: string }): WorkItem[] {
+  listWorkItems(filter?: { phase?: string; excludeArchived?: boolean }): WorkItem[] {
+    const archiveClause = filter?.excludeArchived
+      ? "NOT (phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days'))"
+      : null;
+
     if (filter?.phase) {
+      const where = archiveClause ? `phase = ? AND ${archiveClause}` : "phase = ?";
       return this.db
-        .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE phase = ? ORDER BY created_at")
+        .query<WorkItemRow, [string]>(`SELECT * FROM work_items WHERE ${where} ORDER BY created_at`)
         .all(filter.phase)
+        .map(rowToWorkItem);
+    }
+    if (archiveClause) {
+      return this.db
+        .query<WorkItemRow, []>(`SELECT * FROM work_items WHERE ${archiveClause} ORDER BY created_at`)
+        .all()
         .map(rowToWorkItem);
     }
     return this.db.query<WorkItemRow, []>("SELECT * FROM work_items ORDER BY created_at").all().map(rowToWorkItem);

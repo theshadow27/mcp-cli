@@ -141,8 +141,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("listWorkItems", async (params, _ctx) => {
-      const { phase } = ListWorkItemsParamsSchema.parse(params ?? {});
-      return this.workItemDb.listWorkItems(phase ? { phase } : undefined);
+      const { phase, includeArchived } = ListWorkItemsParamsSchema.parse(params ?? {});
+      return this.workItemDb.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived: !includeArchived });
     });
 
     handlers.set("getWorkItem", async (params, _ctx) => {

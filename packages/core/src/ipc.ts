@@ -491,6 +491,11 @@ export const UntrackWorkItemParamsSchema = z
 export const ListWorkItemsParamsSchema = z.object({
   /** Filter by phase. */
   phase: z.string().optional(),
+  /**
+   * When true, include stale done items (phase=done, not updated in 7+ days).
+   * Default false: stale done items are hidden to keep output lean.
+   */
+  includeArchived: z.boolean().optional(),
 });
 
 export const GetWorkItemParamsSchema = z

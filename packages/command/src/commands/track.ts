@@ -46,7 +46,7 @@ const defaultDeps: TrackDeps = {
 };
 
 /** Built-in flags that are not metadata fields (covers both cmdTrack and cmdTracked). */
-const BUILTIN_FLAGS = new Set(["--branch", "--automation", "--help", "-h", "--phase", "--json"]);
+const BUILTIN_FLAGS = new Set(["--branch", "--automation", "--help", "-h", "--phase", "--json", "--include-archived"]);
 
 /**
  * Parse metadata flags from args based on trackable fields declared in manifest.
@@ -316,11 +316,12 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
 
 export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
   if (args[0] === "--help" || args[0] === "-h") {
-    console.log("Usage: mcx tracked [--json] [--phase <phase>]");
+    console.log("Usage: mcx tracked [--json] [--phase <phase>] [--include-archived]");
     return;
   }
 
   const jsonFlag = args.includes("--json");
+  const includeArchived = args.includes("--include-archived");
   const phaseIdx = args.indexOf("--phase");
   let phase: string | undefined;
   const cwd = (deps.cwd ?? (() => process.cwd()))();
@@ -352,7 +353,10 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const trackableFields = getTrackableFields(manifest?.state);
 
   try {
-    const items = await deps.ipcCall("listWorkItems", phase ? { phase } : {});
+    const items = await deps.ipcCall("listWorkItems", {
+      ...(phase ? { phase } : {}),
+      ...(includeArchived ? { includeArchived: true } : {}),
+    });
 
     if (jsonFlag) {
       const trackableKeys = new Set(trackableFields.map((f) => f.key));
@@ -443,9 +447,10 @@ function printTrackHelp(trackableFields: TrackableField[] = []): void {
     "  mcx track <number> --automation <csv>     Set per-item automation overrides",
     "  mcx untrack <number>                      Stop tracking by number",
     "  mcx untrack --branch <name>               Stop tracking by branch",
-    "  mcx tracked                               List all tracked work items",
+    "  mcx tracked                               List all tracked work items (stale done items hidden)",
     "  mcx tracked --json                        Machine-readable output",
     "  mcx tracked --phase <phase>               Filter by phase (impl, review, repair, qa, done)",
+    "  mcx tracked --include-archived            Include stale done items (phase=done, >7 days old)",
   ];
 
   if (trackableFields.length > 0) {
