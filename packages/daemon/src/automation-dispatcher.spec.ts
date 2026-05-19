@@ -613,6 +613,86 @@ describe("AutomationDispatcher", () => {
     expect(byeCalls).toHaveLength(0);
   });
 
+  // ── emit-event action (#2073) ──
+
+  test("emit-event action publishes to EventBus", async () => {
+    executeResult = {
+      action: "emit-event",
+      event: { event: "custom.notify", category: "automation", detail: "hello" },
+    };
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => published.push(event));
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "custom.notify"));
+
+    const emitted = published.find((e) => e.event === "custom.notify");
+    expect(emitted).toBeDefined();
+    expect(emitted?.category).toBe("automation");
+    expect(emitted?.src).toBe("automation:cleanup");
+    expect(emitted?.detail).toBe("hello");
+  });
+
+  // ── shell action (#2073) ──
+
+  test("shell action errors with not-implemented message", async () => {
+    executeResult = { action: "shell", cmd: "echo", args: ["hi"] };
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+
+    bus.publish(makeEvent());
+    await pollUntil(() => published.some((e) => e.event === "automation.errored"));
+
+    const errored = published.find((e) => e.event === "automation.errored");
+    expect(errored).toBeDefined();
+    expect(errored?.error).toContain("shell");
+    expect(errored?.error).toContain("not yet implemented");
+  });
+
+  // ── 3rd-module reference test (#2073) ──
+
+  test("a 3rd module returning set-state works without dispatcher changes", async () => {
+    const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+
+    dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: "/test/repo",
+      updateWorkItem: (id, patch) => patches.push({ id, patch }),
+      executeModule: async () => ({
+        action: "set-state",
+        workItemId: "#123",
+        patch: { mergeReady: true },
+      }),
+    });
+
+    const published: MonitorEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.event.startsWith("automation.")) published.push(event);
+    });
+
+    dispatcher.load(makeConfig(), [
+      makeLocked({ name: "merge", events: ["checks.passed"], resolvedPath: "./merge.ts" }),
+    ]);
+    dispatcher.start();
+
+    bus.publish(makeEvent({ event: "checks.passed" }));
+    await pollUntil(() => published.some((e) => e.event === "automation.fired"));
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0].id).toBe("#123");
+    expect(patches[0].patch).toEqual({ mergeReady: true });
+  });
+
   // ── ctx.workItem and ctx.state in default executor (#2020) ──
 
   test("default executor populates ctx.workItem from getWorkItem callback", async () => {

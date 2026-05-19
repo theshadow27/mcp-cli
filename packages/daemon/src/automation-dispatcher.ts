@@ -306,6 +306,9 @@ export class AutomationDispatcher {
     moduleName: string,
   ): Promise<void> {
     switch (action.action) {
+      case "none":
+      case "escalate":
+        break;
       case "set-state": {
         this.updateWorkItem(action.workItemId, action.patch);
         break;
@@ -319,6 +322,21 @@ export class AutomationDispatcher {
         await this.actionExecutor.byeAndUntrack(workItemId, action.sessionIds);
         break;
       }
+      case "emit-event": {
+        const { event: evtName, category: evtCategory, ...rest } = action.event;
+        this.eventBus.publish({
+          src: `automation:${moduleName}`,
+          event: evtName,
+          category: evtCategory as "automation",
+          ...rest,
+        });
+        break;
+      }
+      case "shell": {
+        throw new Error(`action "shell" is not yet implemented — requires security allowlist (see #2073)`);
+      }
+      default:
+        action satisfies never;
     }
   }
 
