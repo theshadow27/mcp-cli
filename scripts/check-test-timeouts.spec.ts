@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { BUN_SLEEP_BASELINE, findBunSleepViolations, findViolations, hasBunSleep, hasFixedDelay } from "./check-test-timeouts";
+import {
+  BUN_SLEEP_BASELINE,
+  findBunSleepViolations,
+  findViolations,
+  hasBunSleep,
+  hasFixedDelay,
+} from "./check-test-timeouts";
 
 // Shared matrices — exercised by both hasFixedDelay (per-line) and
 // findViolations (whole-content) so the production scan path is covered.

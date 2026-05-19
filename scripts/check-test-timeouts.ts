@@ -257,7 +257,9 @@ async function main(): Promise<void> {
     process.stderr.write("  Bad:   await Bun.sleep(50) // then assert\n");
     process.stderr.write("  Good:  inject FakeClock / use configurable delay param\n\n");
     if (isRegression) {
-      process.stderr.write(`  ❌ Regression: ${bunSleepViolations.length} > baseline ${BUN_SLEEP_BASELINE}. Fix new violations or update BUN_SLEEP_BASELINE.\n\n`);
+      process.stderr.write(
+        `  ❌ Regression: ${bunSleepViolations.length} > baseline ${BUN_SLEEP_BASELINE}. Fix new violations or update BUN_SLEEP_BASELINE.\n\n`,
+      );
     }
   }
 
