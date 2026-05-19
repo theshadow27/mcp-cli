@@ -25,10 +25,11 @@ import type {
   AutomationOutcome,
   AutomationPreset,
   LockedAutomation,
+  MonitorCategory,
   MonitorEvent,
   WorkItem,
 } from "@mcp-cli/core";
-import { isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
+import { MONITOR_CATEGORIES, isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
 
 const AUDIT_RING_CAPACITY = 200;
@@ -157,6 +158,7 @@ export class AutomationDispatcher {
 
       const start = performance.now();
       let action: AutomationAction;
+      let auditedAction: AutomationAction | undefined;
       let outcome: AutomationOutcome;
       let error: string | null = null;
 
@@ -171,6 +173,8 @@ export class AutomationDispatcher {
             );
           }),
         ]).finally(() => clearTimeout(timer));
+
+        auditedAction = action;
 
         if (action.action === "escalate") {
           outcome = "escalated";
@@ -187,14 +191,15 @@ export class AutomationDispatcher {
         action = { action: "none", reason: `error: ${error}` };
       }
 
+      const reportedAction = auditedAction ?? action;
       const durationMs = Math.round(performance.now() - start);
-      this.recordAudit(mod.name, outcome, event.event, workItemId, action, error, null, durationMs);
+      this.recordAudit(mod.name, outcome, event.event, workItemId, reportedAction, error, null, durationMs);
       this.emitAuditEvent(mod.name, outcome, event, {
-        actionType: action.action,
+        actionType: reportedAction.action,
         error,
         durationMs,
-        ...(action.action === "escalate" && { reason: action.reason }),
-        ...(action.action === "bye-and-untrack" && { sessionIds: action.sessionIds }),
+        ...(reportedAction.action === "escalate" && { reason: reportedAction.reason }),
+        ...(reportedAction.action === "bye-and-untrack" && { sessionIds: reportedAction.sessionIds }),
       });
     }
   }
@@ -306,6 +311,11 @@ export class AutomationDispatcher {
     moduleName: string,
   ): Promise<void> {
     switch (action.action) {
+      // Defensive: escalate is gated out at the call site (outcome === "escalated"),
+      // but listed here so `satisfies never` stays exhaustive if the gate changes.
+      case "none":
+      case "escalate":
+        break;
       case "set-state": {
         this.updateWorkItem(action.workItemId, action.patch);
         break;
@@ -318,6 +328,28 @@ export class AutomationDispatcher {
         }
         await this.actionExecutor.byeAndUntrack(workItemId, action.sessionIds);
         break;
+      }
+      case "emit-event": {
+        const { event: evtName, category: evtCategory, ...rest } = action.event;
+        if (!MONITOR_CATEGORIES.includes(evtCategory as MonitorCategory)) {
+          throw new Error(
+            `emit-event: invalid category "${evtCategory}" — must be one of: ${MONITOR_CATEGORIES.join(", ")}`,
+          );
+        }
+        this.eventBus.publish({
+          ...rest,
+          src: `automation:${moduleName}`,
+          event: evtName,
+          category: evtCategory as MonitorCategory,
+        });
+        break;
+      }
+      case "shell": {
+        throw new Error(`action "shell" is not yet implemented — requires security allowlist (see #2073)`);
+      }
+      default: {
+        const _exhaustive: never = action;
+        throw new Error(`unknown automation action: ${(_exhaustive as { action: string }).action}`);
       }
     }
   }
