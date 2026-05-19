@@ -295,7 +295,8 @@ export class ManifestVersionError extends ManifestError {
 
 /**
  * Find the first matching manifest in `dir`, in preference order.
- * Returns absolute path or null. Does not stat — callers handle ENOENT.
+ * Returns absolute path or null.
+ * Throws on non-absence errors (EACCES, EPERM, ESTALE, etc.).
  */
 export function findManifest(dir: string): string | null {
   for (const name of MANIFEST_FILENAMES) {
