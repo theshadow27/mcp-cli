@@ -368,6 +368,33 @@ describe("CopilotPoller", () => {
       expect(poller.lastError).toBeNull();
     });
 
+    test("repo-scoped rateLimitLow logs warning with remaining count", async () => {
+      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      const warnMessages: string[] = [];
+      const logger = {
+        info() {},
+        warn(msg: string) {
+          warnMessages.push(msg);
+        },
+        error() {},
+        debug() {},
+      };
+      const poller = new CopilotPoller({
+        workItemDb,
+        stateDb: stateDb as unknown as CopilotPollerOptions["stateDb"] extends infer T ? T : never,
+        logger,
+        detectRepo: async () => TEST_REPO,
+        getToken: async () => "test-token",
+        fetchRepoComments: async () => ({ comments: [], rateLimitLow: true, rateLimitRemaining: 42 }),
+        fetchReviews: async () => okReviewResult([]),
+        fetchIssueComments: async () => okIssueCommentResult([]),
+      });
+
+      await poller.poll();
+
+      expect(warnMessages.some((m) => m.includes("rate limit low") && m.includes("42"))).toBe(true);
+    });
+
     test("primary rate-limit error (remaining==0) does not set lastError", async () => {
       workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
