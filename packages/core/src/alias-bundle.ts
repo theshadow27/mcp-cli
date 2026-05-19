@@ -487,6 +487,38 @@ declare module "mcp-cli" {
   export function json(path: string): Promise<unknown>;
   export function defineAlias(def: unknown): void;
   export function defineAutomation(def: unknown): unknown;
+  export interface EventFilterSpec {
+    subscribe?: string[];
+    type?: string | string[];
+    session?: string;
+    pr?: number;
+    workItem?: string;
+    src?: string;
+    phase?: string;
+  }
+  export interface MonitorEvent {
+    seq: number;
+    ts: string;
+    src: string;
+    event: string;
+    category: string;
+    workItemId?: string;
+    sessionId?: string;
+    prNumber?: number;
+    [key: string]: unknown;
+  }
+  export interface AliasContext {
+    mcp: Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
+    args: Record<string, string>;
+    file: (path: string) => Promise<string>;
+    json: (path: string) => Promise<unknown>;
+    state: { get<T = unknown>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void>; all(): Promise<Record<string, unknown>> };
+    globalState: { get<T = unknown>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void>; all(): Promise<Record<string, unknown>> };
+    workItem: { id: string; issueNumber: number | null; prNumber: number | null; branch: string | null; phase: string } | null;
+    repoRoot: string;
+    signal: AbortSignal;
+    waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
+  }
   export interface AliasMonitorEventInput {
     event: string;
     category?: string;
