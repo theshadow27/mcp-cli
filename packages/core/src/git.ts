@@ -108,6 +108,14 @@ function gitDiscoverEnv(): Record<string, string | undefined> {
   return rest;
 }
 
+/** Process-local cache: resolved cwd → git root (null = not a git repo). */
+const gitRootCache = new Map<string, string | null>();
+
+/** Clear the findGitRoot process-local cache. Intended for tests and long-lived processes that move worktrees. */
+export function clearFindGitRootCache(): void {
+  gitRootCache.clear();
+}
+
 /**
  * Resolve the git repository root from a working directory.
  * Returns an absolute path, or null if `cwd` is not inside a git repository.
@@ -117,9 +125,16 @@ function gitDiscoverEnv(): Record<string, string | undefined> {
  * worktree of a repo shares one key. For bare repos, `--show-toplevel`
  * errors and we fall back to `--git-common-dir` as-is (no parent-dir strip,
  * which would have collapsed two bare repos in one directory).
+ *
+ * Common (non-worktree) case: 2 spawns (--show-toplevel + --git-dir).
+ * Linked-worktree case: 3 spawns (+ --git-common-dir, triggered by /worktrees/ in git-dir).
+ * Results are cached process-locally by cwd to eliminate repeated spawns.
  */
 export function findGitRoot(cwd: string = process.cwd()): string | null {
+  if (gitRootCache.has(cwd)) return gitRootCache.get(cwd) as string | null;
+
   const env = gitDiscoverEnv();
+  let result: string | null = null;
   try {
     const top = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--show-toplevel"], {
       stdout: "pipe",
@@ -129,40 +144,58 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
     });
     if (top.exitCode === 0) {
       const toplevel = top.stdout.toString().trim();
-      if (!toplevel) return null;
+      if (!toplevel) {
+        gitRootCache.set(cwd, null);
+        return null;
+      }
       const gitDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], {
         stdout: "pipe",
         stderr: "ignore",
         timeout: 5000,
         env,
       });
-      const commonDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+      if (gitDir.exitCode === 0) {
+        const gitDirStr = gitDir.stdout.toString().trim();
+        // Linked worktrees store their git-dir under .git/worktrees/<name>/,
+        // so /worktrees/ in the path is the cheapest worktree signal.
+        // Only fetch --git-common-dir when we're in a linked worktree.
+        if (gitDirStr.includes("/worktrees/")) {
+          const commonDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
+            stdout: "pipe",
+            stderr: "ignore",
+            timeout: 5000,
+            env,
+          });
+          if (commonDir.exitCode === 0) {
+            const commonDirAbs = resolve(cwd, commonDir.stdout.toString().trim());
+            result =
+              commonDirAbs.endsWith("/.git") || commonDirAbs.endsWith(".git") ? dirname(commonDirAbs) : commonDirAbs;
+          } else {
+            result = toplevel;
+          }
+        } else {
+          result = toplevel;
+        }
+      } else {
+        result = toplevel;
+      }
+    } else {
+      // Bare repo fallback — no working tree, use the common dir directly.
+      const common = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
         stdout: "pipe",
         stderr: "ignore",
         timeout: 5000,
         env,
       });
-      if (gitDir.exitCode === 0 && commonDir.exitCode === 0) {
-        const gitDirAbs = resolve(cwd, gitDir.stdout.toString().trim());
-        const commonDirAbs = resolve(cwd, commonDir.stdout.toString().trim());
-        if (gitDirAbs !== commonDirAbs) {
-          return commonDirAbs.endsWith("/.git") || commonDirAbs.endsWith(".git") ? dirname(commonDirAbs) : commonDirAbs;
-        }
+      if (common.exitCode === 0) {
+        const commonDir = common.stdout.toString().trim();
+        if (commonDir) result = resolve(cwd, commonDir);
       }
-      return toplevel;
     }
-    // Bare repo fallback — no working tree, use the common dir directly.
-    const common = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
-      env,
-    });
-    if (common.exitCode !== 0) return null;
-    const commonDir = common.stdout.toString().trim();
-    if (!commonDir) return null;
-    return resolve(cwd, commonDir);
   } catch {
-    return null;
+    // result stays null
   }
+
+  gitRootCache.set(cwd, result);
+  return result;
 }
