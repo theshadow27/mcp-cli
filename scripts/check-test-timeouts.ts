@@ -1,29 +1,34 @@
 #!/usr/bin/env bun
 /**
- * Lint rule: flag setTimeout with fixed numeric delays in *.spec.ts files.
+ * Lint rule: flag setTimeout with fixed numeric delays AND Bun.sleep with
+ * fixed numeric delays in *.spec.ts files.
  *
- * CLAUDE.md bans setTimeout for waiting in tests: "Never use setTimeout for
- * waiting, always poll with deadlines instead of fixed delays."  This script
- * enforces that rule at commit time.
+ * CLAUDE.md bans these patterns for waiting in tests: "Never use setTimeout
+ * for waiting, always poll with deadlines instead of fixed delays."
+ * Bun.sleep with a literal delay is equally problematic — use FakeClock or
+ * dependency injection for timer-dependent behavior.
  *
  * Patterns flagged:
  *   setTimeout(r, 50)
  *   setTimeout(() => r(null), 50)     ← arrow-function callback
  *   await new Promise((r) => setTimeout(r, 100))
+ *   await Bun.sleep(50)
+ *   Bun.sleep(100)
  *
- * Safe alternative: poll with a deadline helper (e.g. pollUntil / expect.poll)
- * or use Bun.sleep() for the documented exceptions (negative assertions, retry
- * backoff) described in test/CLAUDE.md.
+ * Safe alternatives:
+ *   - poll with a deadline helper (e.g. pollUntil / expect.poll)
+ *   - inject a FakeClock for timer-dependent behavior
+ *   - pass a configurable delay parameter (e.g. Bun.sleep(intervalMs))
  *
  * Detection uses parenthesis-depth tracking so nested parens in callbacks do
- * not cause false negatives, including arrow-function callbacks and setTimeout
- * calls whose arguments span multiple lines.
+ * not cause false negatives, including arrow-function callbacks and calls
+ * whose arguments span multiple lines.
  *
  * Usage:  bun scripts/check-test-timeouts.ts
  *
  * Exit codes:
- *   0 — no violations found
- *   1 — violations found
+ *   0 — no violations found (or Bun.sleep count at/below ratchet baseline)
+ *   1 — setTimeout violations found, or Bun.sleep count exceeds baseline
  */
 
 import { Glob } from "bun";
@@ -31,6 +36,11 @@ import { Glob } from "bun";
 const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 const SCRIPTS_DIR = new URL("../scripts/", import.meta.url).pathname;
 const TEST_DIR = new URL("../test/", import.meta.url).pathname;
+
+// Ratchet baseline: fail if NEW Bun.sleep violations are introduced.
+// Decrease this number as #2100 cleanup proceeds. Once it reaches 0,
+// replace the ratchet with a hard exit(1) like the setTimeout check.
+export const BUN_SLEEP_BASELINE = 138;
 
 /**
  * Extracts the delay (2nd positional argument) from a pre-extracted argument
@@ -136,52 +146,106 @@ export function findViolations(content: string): Array<{ line: number; text: str
   return results;
 }
 
-async function scanDir(dir: string): Promise<Violation[]> {
-  const violations: Violation[] = [];
-  const glob = new Glob("**/*.spec.ts");
+/**
+ * Returns true if the line contains a Bun.sleep call whose argument is a
+ * plain numeric literal (e.g. 50, 1_000).  Delegates to findBunSleepViolations
+ * to keep the detection logic in one place.
+ */
+export function hasBunSleep(line: string): boolean {
+  return findBunSleepViolations(line).length > 0;
+}
 
-  for await (const relPath of glob.scan({ cwd: dir, absolute: false })) {
-    if (relPath.endsWith(".d.ts") || relPath.includes("node_modules")) continue;
-    if (relPath === "check-test-timeouts.spec.ts") continue;
+/**
+ * Scans a full file's content for Bun.sleep calls with fixed numeric delays,
+ * tracking parenthesis depth across newlines so multi-line calls are caught.
+ * Returns one entry per violation with a 1-based line number and the trimmed
+ * text of the line where the Bun.sleep keyword appears.
+ */
+export function findBunSleepViolations(content: string): Array<{ line: number; text: string }> {
+  const results: Array<{ line: number; text: string }> = [];
+  const lines = content.split("\n");
+  const re = /\bBun\.sleep\s*\(/g;
 
-    const absPath = `${dir}${relPath}`;
-    const content = await Bun.file(absPath).text();
+  for (let match = re.exec(content); match !== null; match = re.exec(content)) {
+    const parenOpen = match.index + match[0].length - 1;
 
-    for (const { line, text } of findViolations(content)) {
-      violations.push({ file: absPath, line, text });
+    let depth = 1;
+    let i = parenOpen + 1;
+    while (i < content.length && depth > 0) {
+      if (content[i] === "(") depth++;
+      else if (content[i] === ")") depth--;
+      i++;
     }
+
+    if (depth !== 0) continue;
+
+    const arg = content.slice(parenOpen + 1, i - 1).trim();
+    if (!/^[0-9][0-9_]*$/.test(arg)) continue;
+
+    const lineNum = content.slice(0, match.index).split("\n").length;
+    results.push({ line: lineNum, text: lines[lineNum - 1].trim() });
   }
 
-  return violations;
+  return results;
 }
 
 async function main(): Promise<void> {
   const dirs = [PACKAGES_DIR, SCRIPTS_DIR, TEST_DIR];
-  const allViolations: Violation[] = [];
+  const setTimeoutViolations: Violation[] = [];
+  const bunSleepViolations: Violation[] = [];
 
   for (const dir of dirs) {
-    const violations = await scanDir(dir);
-    allViolations.push(...violations);
+    const glob = new Glob("**/*.spec.ts");
+    for await (const relPath of glob.scan({ cwd: dir, absolute: false })) {
+      if (relPath.endsWith(".d.ts") || relPath.includes("node_modules")) continue;
+      if (relPath === "check-test-timeouts.spec.ts") continue;
+      const absPath = `${dir}${relPath}`;
+      const content = await Bun.file(absPath).text();
+      for (const v of findViolations(content)) setTimeoutViolations.push({ file: absPath, ...v });
+      for (const v of findBunSleepViolations(content)) bunSleepViolations.push({ file: absPath, ...v });
+    }
   }
 
-  if (allViolations.length === 0) {
-    process.stderr.write("No setTimeout violations found in test files.\n");
+  if (setTimeoutViolations.length === 0 && bunSleepViolations.length === 0) {
+    process.stderr.write("No setTimeout / Bun.sleep violations found in test files.\n");
     process.exit(0);
   }
 
-  process.stderr.write(`\n  setTimeout with fixed delay: ${allViolations.length} violation(s) found\n\n`);
-  process.stderr.write("  Fixed-delay setTimeout in tests creates flaky, environment-dependent waits.\n");
-  process.stderr.write("  Use a poll-with-deadline helper instead, or Bun.sleep() for negative assertions.\n\n");
-
-  for (const v of allViolations) {
-    process.stderr.write(`  ${v.file}:${v.line}\n`);
-    process.stderr.write(`    ${v.text}\n\n`);
+  if (setTimeoutViolations.length > 0) {
+    process.stderr.write(`\n  setTimeout with fixed delay: ${setTimeoutViolations.length} violation(s) found\n\n`);
+    process.stderr.write("  Fixed-delay setTimeout in tests creates flaky, environment-dependent waits.\n");
+    process.stderr.write("  Use a poll-with-deadline helper instead.\n\n");
+    for (const v of setTimeoutViolations) {
+      process.stderr.write(`  ${v.file}:${v.line}\n`);
+      process.stderr.write(`    ${v.text}\n\n`);
+    }
+    process.stderr.write("  Bad:   await new Promise((r) => setTimeout(r, 50))\n");
+    process.stderr.write("  Good:  await pollUntil(() => condition(), { timeout: 5000 })\n\n");
   }
 
-  process.stderr.write("  Bad:   await new Promise((r) => setTimeout(r, 50))\n");
-  process.stderr.write("  Good:  await pollUntil(() => condition(), { timeout: 5000 })\n\n");
+  if (bunSleepViolations.length > 0) {
+    const isRegression = bunSleepViolations.length > BUN_SLEEP_BASELINE;
+    const prefix = isRegression ? "" : "[warn] ";
+    process.stderr.write(`\n  ${prefix}Bun.sleep with fixed delay: ${bunSleepViolations.length} violation(s) found`);
+    process.stderr.write(` (baseline: ${BUN_SLEEP_BASELINE})\n\n`);
+    process.stderr.write("  Bun.sleep in tests causes timing-dependent flakiness.\n");
+    process.stderr.write("  Use FakeClock or dependency injection instead.\n\n");
+    for (const v of bunSleepViolations) {
+      process.stderr.write(`  ${v.file}:${v.line}\n`);
+      process.stderr.write(`    ${v.text}\n\n`);
+    }
+    process.stderr.write("  Bad:   await Bun.sleep(50) // then assert\n");
+    process.stderr.write("  Good:  inject FakeClock / use configurable delay param\n\n");
+    if (isRegression) {
+      process.stderr.write(
+        `  ❌ Regression: ${bunSleepViolations.length} > baseline ${BUN_SLEEP_BASELINE}. Fix new violations or update BUN_SLEEP_BASELINE.\n\n`,
+      );
+    }
+  }
 
-  process.exit(1);
+  if (setTimeoutViolations.length > 0 || bunSleepViolations.length > BUN_SLEEP_BASELINE) {
+    process.exit(1);
+  }
 }
 
 if (import.meta.main) {
