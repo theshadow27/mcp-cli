@@ -1040,11 +1040,13 @@ async function agentWait(
   if (mailTo) {
     const totalMs = timeout ?? DEFAULT_TIMEOUT_MS;
     const pollStart = Date.now();
-    const mailPoll = pollMailUntil(d, mailTo, totalMs, pollStart);
+    const ac = new AbortController();
+    const mailPoll = pollMailUntil(d, mailTo, totalMs, pollStart, 2000, ac.signal);
     const winner = await Promise.race([
       waitPromise.then((r) => ({ kind: "session" as const, result: r })),
       mailPoll.then((m) => ({ kind: "mail" as const, message: m })),
     ]);
+    ac.abort();
     if (winner.kind === "mail" && winner.message) {
       emitMailEvent(winner.message, short, d, false);
       return;
