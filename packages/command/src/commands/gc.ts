@@ -351,7 +351,7 @@ function getMergedBranches(deps: WorktreeShimDeps, cwd: string, defaultBranch: s
   if (exitCode !== 0) return [];
   return stdout
     .split("\n")
-    .map((l) => l.replace(/^\*?\s+/, "").trim())
+    .map((l) => l.replace(/^[*+]?\s+/, "").trim())
     .filter(Boolean);
 }
 
