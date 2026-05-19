@@ -1,6 +1,6 @@
 # Sprint 55
 
-> Planned 2026-05-18 08:30 local. Target: 17 issues / ~13 effective PRs (mail-wait + segfaults bundle).
+> Planned 2026-05-18 08:30 local. Started 2026-05-18 09:34 local. Target: 17 issues / ~13 effective PRs (mail-wait + segfaults bundle).
 
 ## Goal
 
