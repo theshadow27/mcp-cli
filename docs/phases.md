@@ -177,6 +177,28 @@ declare module "mcp-cli" {
 
   export type McpProxy = Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
 
+  export interface EventFilterSpec {
+    subscribe?: string[];
+    type?: string | string[];
+    session?: string;
+    pr?: number;
+    workItem?: string;
+    src?: string;
+    phase?: string;
+  }
+
+  export interface MonitorEvent {
+    seq: number;
+    ts: string;
+    src: string;
+    event: string;
+    category: string;
+    workItemId?: string;
+    sessionId?: string;
+    prNumber?: number;
+    [key: string]: unknown;
+  }
+
   export interface AliasContext {
     mcp: McpProxy;
     args: Record<string, string>;
@@ -188,6 +210,7 @@ declare module "mcp-cli" {
     workItem: AliasWorkItemInfo | null;
     repoRoot: string;
     signal: AbortSignal;
+    waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
   }
 
   export interface AliasDefinition<I = unknown, O = unknown> {
