@@ -119,6 +119,39 @@ User suggested the **WIP-commit hack** to bypass `mcx claude resume`'s false-pos
 **Issues filed during sprint**: #2082 (mcx claude resume merge-check false positive), #2088 (docs/phases template gap from #2052 OOS), #2090 (manifest version check polish nits)
 **Outage**: 1× system OOM (Ghostty 458GB) mid-run; full recovery via user-suggested WIP-commit hack — became the load-bearing pattern for the second half of the sprint
 
+## Results
+
+- **Released**: v1.9.1 (patch — bug fixes + tests + CI improvements + automation framework polish)
+- **PRs merged**: 9 (#2077 #2078 #2079 #2080 #2081 #2084 #2085 #2086 #2087)
+- **Issues closed (by PR)**: 11 (#2042 #2051 #2052 #2060 #2061 #2062 #2063 #2071 #2072 #2073 #2075)
+- **Issues closed without PR**: 4 (#2055 #2058 #2067 #2068 — all fixed upstream / already-shipped)
+- **Issues dropped**: 3
+  - #2074 (no MRE — `needs-clarification`)
+  - #2069 (deferred to sprint 56 — quota cap after recovery)
+  - #2022 (deferred to sprint 56 — quota cap; Iris's research worktree preserved for fast resume)
+- **New issues filed during sprint**: 4
+  - #2082 — `mcx claude resume` blocks recovery of branches with 0 commits ahead of main (load-bearing for crash recovery)
+  - #2088 — docs/phases template gap from #2052 scope
+  - #2090 — 3 post-merge polish nits on the manifest version check
+  - #2091 — auto-prune stale `mcx tracked` entries (memory-bloat suspect contributor to the Ghostty OOM)
+
+## Release Notes (v1.9.1)
+
+### What's New
+- **Automation framework** — `executeActionSideEffects` now exhaustively handles all 6 action types (`emit-event`, `shell`, `none`, `escalate`, `set-state`, `bye-and-untrack`) with a runtime category guard for `emit-event` and an `auditedAction` capture so errored audit events report the real action (#2080).
+- **Site browser auto-restart** — `mcx site` Playwright sessions now detect a dead browser after system sleep and auto-restart with the prior engine/site context restored, eliminating "No credentials available" after brief sleeps (#2084).
+- **Manifest schema version check** — `loadManifest` now validates schema version and throws an actionable `ManifestVersionError` with `bun run build && mcx phase install` guidance when a mid-sprint manifest change requires a daemon refresh (#2086).
+- **PTY CI job** — new `pty-test` job runs historically PTY-sensitive specs under `unbuffer bun test` to catch TTY-vs-CI color skew regressions (#2078).
+
+### Fixes
+- `mcx gc` no longer fails on branches with `+` prefix (worktree-checkout marker from `git branch --merged`) (#2081).
+- Mail-wait cluster: `pollMailUntil` now accepts an `AbortSignal` and both `claudeWait`/`agentWait` abort it on race resolution, narrowed catch to re-throw `ProtocolMismatchError`/unknown errors, and guards against `NaN` from malformed `createdAt` (#2087, closes #2060 #2061 #2062).
+- `AliasContext` ambient type stubs now include `waitForEvent`, `EventFilterSpec`, and `MonitorEvent` so freeform aliases get IDE completion (#2085).
+- `daemon-integration.spec.ts` afterAll hooks guarded with optional chaining to prevent test crashes when setup fails (#2079).
+
+### Internal
+- Bun engine floor bumped to `>=1.3.14`; fixes 3 segfault issues (#2055, #2068) and 1 flake cluster (#2058) upstream (#2077).
+
 ## Context
 
 Sprint 54 shipped 15 PRs in 3h01m including the declarative automation framework (#2018) and two consumer modules (bind #2021, cleanup #2020). The framework gate fired during reviews of both modules: action types declared but never executed. Both reviewers self-repaired by inlining executors in the modules. Sprint 55 closes that gap (#2073) and adds the third consumer (#2022 merge module) to validate the refactor. Mail-wait cluster (#2060/61/62) surfaced during sprint 54 phase scripts. Bun segfaults (#2068, #2055) are likely upstream-fixed in 1.3.14 — we'll know after #2072 lands. Sprint started at 100% quota near reset; #2074 (--allow ignored) and #2075 (manifest schema reload) were filed as carry-forward findings from the sprint 54 wind-down notes.
