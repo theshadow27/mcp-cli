@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExecFn, ensureCoreBareUnset, findGitRoot, fixCoreBare } from "./git";
+import { type ExecFn, clearFindGitRootCache, ensureCoreBareUnset, findGitRoot, fixCoreBare } from "./git";
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
@@ -294,6 +294,46 @@ describe("findGitRoot", () => {
       Bun.spawnSync(["git", "-C", repo, "init", "--bare", "-q"], gitOpts);
       const got = findGitRoot(repo);
       expect(got).not.toBeNull();
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("caches result: repeated calls for the same path return identical value", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-cache-"));
+    try {
+      clearFindGitRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      const first = findGitRoot(repo);
+      const second = findGitRoot(repo);
+      expect(first).toBe(second);
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("caches null for directories outside a git repo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "git-cache-null-"));
+    try {
+      clearFindGitRootCache();
+      const first = findGitRoot(dir);
+      const second = findGitRoot(dir);
+      expect(first).toBeNull();
+      expect(second).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("clearFindGitRootCache resets the cache", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-cache-clear-"));
+    try {
+      clearFindGitRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      const before = findGitRoot(repo);
+      clearFindGitRootCache();
+      const after = findGitRoot(repo);
+      expect(before).toBe(after); // same result after cache clear
     } finally {
       rmSync(repo, { recursive: true });
     }
