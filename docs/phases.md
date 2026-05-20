@@ -335,7 +335,7 @@ await ctx.gh.pr(123).requestReview("reviewer-login");
 // Combined: all 4 comment surfaces in parallel
 const surfaces = await ctx.gh.pr(123).allCommentSurfaces({ linkedIssue: 456 });
 // → { bodyComments, inlineComments, reviews, issueComments,
-//     unresolvedThreadCount, byAuthor, substantiveByAuthor }
+//     unrepliedTopLevelCount, byAuthor, substantiveByAuthor }
 ```
 
 ### Issue operations

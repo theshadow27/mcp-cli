@@ -59,7 +59,8 @@ export interface GhPrBody {
   number: number;
   title: string;
   body: string | null;
-  state: "open" | "closed" | "merged";
+  state: "open" | "closed";
+  merged: boolean;
   draft: boolean;
   labels: string[];
   mergeable: boolean | null;
@@ -70,6 +71,7 @@ export interface GhPrBody {
   user: string;
   created_at: string;
   updated_at: string;
+  merged_at: string | null;
 }
 
 export interface GhComment {
@@ -161,7 +163,7 @@ export interface GhAllCommentSurfaces {
   inlineComments: GhInlineComment[];
   reviews: GhReview[];
   issueComments: GhComment[];
-  unresolvedThreadCount: number;
+  unrepliedTopLevelCount: number;
   byAuthor: Record<string, Array<GhComment | GhInlineComment | GhReview>>;
   substantiveByAuthor: Record<string, Array<GhComment | GhInlineComment | GhReview>>;
 }
@@ -311,6 +313,7 @@ function classifyResponse(resp: Response, body: string): never {
 interface RequestOptions {
   token: string;
   fetchFn: FetchFn;
+  getToken?: () => Promise<string>;
   method?: string;
   body?: unknown;
   signal?: AbortSignal;
@@ -345,7 +348,7 @@ async function ghRequest(path: string, opts: RequestOptions): Promise<Response> 
 
     if (resp.status === 401 && attempt === 0) {
       clearTokenCache();
-      opts.token = await resolveToken();
+      opts.token = await resolveToken({ getToken: opts.getToken });
       (init.headers as Record<string, string>).Authorization = `bearer ${opts.token}`;
       const body = await resp.text().catch(() => "");
       lastError = new GhAuthError(`GitHub API authentication failed (401): ${body}`);
@@ -433,6 +436,8 @@ interface RawPr {
   body: string | null;
   state: string;
   draft: boolean;
+  merged: boolean;
+  merged_at: string | null;
   labels: Array<{ name: string }>;
   mergeable: boolean | null;
   mergeable_state: string;
@@ -491,6 +496,7 @@ function mapPr(raw: RawPr): GhPrBody {
     title: raw.title,
     body: raw.body,
     state: raw.state as GhPrBody["state"],
+    merged: raw.merged ?? false,
     draft: raw.draft,
     labels: raw.labels.map((l) => l.name),
     mergeable: raw.mergeable,
@@ -501,6 +507,7 @@ function mapPr(raw: RawPr): GhPrBody {
     user: raw.user.login,
     created_at: raw.created_at,
     updated_at: raw.updated_at,
+    merged_at: raw.merged_at,
   };
 }
 
@@ -725,7 +732,7 @@ export class PrHandle {
       fetchIssueComments(),
     ]);
 
-    const unresolvedThreadCount = inlineComments.filter((c) => c.in_reply_to_id === null).length;
+    const unrepliedTopLevelCount = inlineComments.filter((c) => c.in_reply_to_id === null).length;
 
     const byAuthor: Record<string, Array<GhComment | GhInlineComment | GhReview>> = {};
     const substantiveByAuthor: Record<string, Array<GhComment | GhInlineComment | GhReview>> = {};
@@ -746,7 +753,7 @@ export class PrHandle {
       inlineComments,
       reviews,
       issueComments,
-      unresolvedThreadCount,
+      unrepliedTopLevelCount,
       byAuthor,
       substantiveByAuthor,
     };
@@ -798,6 +805,7 @@ export class IssueHandle {
     if (opts.body !== undefined) patchBody.body = opts.body;
     if (opts.state !== undefined) patchBody.state = opts.state;
     if (opts.labels !== undefined) patchBody.labels = opts.labels;
+    if (Object.keys(patchBody).length === 0) return;
     await ghVoid(`/repos/${this.o}/${this.r}/issues/${this.n}`, {
       ...this.reqOpts(),
       method: "PATCH",
@@ -882,7 +890,7 @@ export class GhClient {
 
   private async makeReqOpts(): Promise<RequestOptions> {
     const token = await resolveToken({ getToken: this.getTokenFn });
-    return { token, fetchFn: this.fetchFn };
+    return { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
   }
 
   pr(prNumber: number): PrHandle {

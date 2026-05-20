@@ -94,6 +94,8 @@ describe("PrHandle", () => {
           body: "Description",
           state: "open",
           draft: false,
+          merged: false,
+          merged_at: null,
           labels: [{ name: "bug" }, { name: "priority" }],
           mergeable: true,
           mergeable_state: "clean",
@@ -282,6 +284,8 @@ describe("PrHandle", () => {
           body: null,
           state: "closed",
           draft: false,
+          merged: false,
+          merged_at: null,
           labels: [],
           mergeable: null,
           mergeable_state: "",
@@ -340,7 +344,7 @@ describe("PrHandle", () => {
     expect(result.inlineComments).toHaveLength(1);
     expect(result.reviews).toHaveLength(1);
     expect(result.issueComments).toHaveLength(1);
-    expect(result.unresolvedThreadCount).toBe(1);
+    expect(result.unrepliedTopLevelCount).toBe(1);
     expect(Object.keys(result.byAuthor)).toEqual(["alice", "bob", "charlie"]);
     expect(result.byAuthor.alice).toHaveLength(2);
   });
@@ -414,6 +418,15 @@ describe("IssueHandle", () => {
     const body = JSON.parse(calls[0].init.body as string);
     expect(body.state).toBe("closed");
     expect(body.labels).toEqual(["wontfix"]);
+  });
+
+  test("edit({}) with empty opts is a no-op", async () => {
+    const { fn, calls } = mockFetch([{ status: 422, body: { message: "should not be called" } }]);
+
+    const client = makeClient({ fetch: fn });
+    await client.issue(100).edit({});
+
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -534,6 +547,8 @@ describe("error handling", () => {
           body: null,
           state: "open",
           draft: false,
+          merged: false,
+          merged_at: null,
           labels: [],
           mergeable: null,
           mergeable_state: "",
@@ -620,6 +635,8 @@ describe("error handling", () => {
           body: null,
           state: "open",
           draft: false,
+          merged: false,
+          merged_at: null,
           labels: [],
           mergeable: null,
           mergeable_state: "",
@@ -658,6 +675,8 @@ describe("error handling", () => {
           body: null,
           state: "open",
           draft: false,
+          merged: false,
+          merged_at: null,
           labels: [],
           mergeable: null,
           mergeable_state: "",

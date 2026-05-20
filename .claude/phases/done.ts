@@ -56,7 +56,8 @@ defineAlias({
           }
           if (jsonField === "statusCheckRollup") {
             const checks = await ctx.gh.pr(prNum).checks();
-            const failing = checks.check_runs.filter((c) => c.conclusion !== "SUCCESS" && c.conclusion !== null);
+            // Match old jq: select(.conclusion != "SUCCESS") — null (pending) counts as non-SUCCESS
+            const failing = checks.check_runs.filter((c) => c.conclusion !== "SUCCESS");
             return { stdout: String(failing.length), stderr: "", exitCode: 0 };
           }
           return { stdout: "", stderr: `unsupported gh args: ${args.join(" ")}`, exitCode: 1 };
@@ -81,11 +82,13 @@ defineAlias({
         return pr.state.toUpperCase();
       },
       async spawn(cmd, opts) {
-        // SIGTERM only — no SIGKILL escalation. The old gh.ts wrapper needed it for
-        // `gh` CLI hangs; these spawns run git/bun which handle SIGTERM cleanly.
         const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+        let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
         const timer = opts?.timeoutMs
-          ? setTimeout(() => { try { proc.kill(); } catch {} }, opts.timeoutMs)
+          ? setTimeout(() => {
+              try { proc.kill(); } catch {}
+              sigkillTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 5_000);
+            }, opts.timeoutMs)
           : null;
         const [stdout, stderr, exitCode] = await Promise.all([
           new Response(proc.stdout).text(),
@@ -93,6 +96,7 @@ defineAlias({
           proc.exited,
         ]);
         if (timer) clearTimeout(timer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
         return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
       },
     });
