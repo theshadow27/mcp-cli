@@ -472,6 +472,29 @@ gh pr view $PR --json labels -q '[.labels[].name]'
 If both `qa:pass` and `qa:fail` appear, hold the merge and resolve
 manually — the QA history needs review, not a silent label cleanup.
 
+### Merging on flaky-CI rerun: flip the label first
+
+When round-N QA returns `qa:fail` with verdict text saying the impl is
+clean and the only blocker is flaky CI (unrelated test failures, often
+followed by "Re-trigger CI to confirm"), the orchestrator can fairly
+skip a fresh QA round after `gh run rerun --failed` clears green —
+re-spawning sonnet QA on a known-clean impl just to flip a label is
+wasteful. But the **PR label must be flipped from `qa:fail` to
+`qa:pass` (with a comment) before arming auto-merge.** A `qa:fail`-
+labelled PR landing on main makes the audit trail misleading: branch
+protection, retro tooling, and any future workflow that keys on the
+literal label sees a failure that wasn't one.
+
+```bash
+gh pr edit $PR --remove-label qa:fail --add-label qa:pass
+gh pr comment $PR --body "Relabeling to qa:pass: prior QA verified impl clean; flaky-CI blocker cleared after \`gh run rerun --failed\` (run $RUN). Flaky test tracked in #NNNN."
+mcx pr merge $PR --squash --auto
+```
+
+Then verify the merge actually fired — see [Verify auto-merge actually
+fired] earlier in this file. Sprint 58 PR #2171 merged on stale
+`qa:fail`; #2177 documents the gap.
+
 ## Sweeping main commits during a sprint
 
 If a commit lands on main mid-sprint that affects *every* branch
