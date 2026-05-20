@@ -1681,6 +1681,12 @@ export class ClaudeWsServer {
         `[_claude] ${label} for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
       );
 
+    // For permission_request events that will be auto-resolved (non-delegate strategies),
+    // suppress the monitor event and wait-notification. Only delegate strategy requires
+    // orchestrator intervention; emitting for auto/rules floods the monitor stream with
+    // noise that orchestrators cannot act on (fixes #2129).
+    let suppressMonitorEvent = false;
+
     switch (event.type) {
       case "session:init":
         // Capture Claude Code's own session ID for JSONL file lookup
@@ -1692,17 +1698,21 @@ export class ClaudeWsServer {
         this.emitToolUseEvents(sessionId, event.message);
         break;
       case "session:permission_request":
-        session.pendingImmediate = true;
         this.recordSessionProgress(sessionId, session);
-        try {
-          this.resolveEventWaiters(sessionId, {
-            sessionId,
-            event: "session:permission_request",
-            requestId: event.requestId,
-            toolName: event.request.tool_name,
-          });
-        } catch (err) {
-          logErr("resolveEventWaiters failed", err);
+        if (session.router.strategy === "delegate") {
+          session.pendingImmediate = true;
+          try {
+            this.resolveEventWaiters(sessionId, {
+              sessionId,
+              event: "session:permission_request",
+              requestId: event.requestId,
+              toolName: event.request.tool_name,
+            });
+          } catch (err) {
+            logErr("resolveEventWaiters failed", err);
+          }
+        } else {
+          suppressMonitorEvent = true;
         }
         this.handlePermissionRequest(sessionId, session, event.requestId, event.request).catch((err) => {
           this.logger.error(
@@ -1837,7 +1847,9 @@ export class ClaudeWsServer {
         break;
     }
 
-    this.publishSessionMonitorEvent(sessionId, event);
+    if (!suppressMonitorEvent) {
+      this.publishSessionMonitorEvent(sessionId, event);
+    }
   }
 
   private static readonly SESSION_EVENT_MAP: Record<string, string> = {
