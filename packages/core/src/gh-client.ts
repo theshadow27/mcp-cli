@@ -921,6 +921,7 @@ export class GhClient {
   private readonly getTokenFn: (() => Promise<string>) | undefined;
   private readonly fetchFn: FetchFn;
   private resolvedRepo: GhRepoInfo | null;
+  private cachedReqOpts: RequestOptions | null = null;
 
   constructor(opts: GhClientOptions) {
     this.repoRoot = opts.repoRoot;
@@ -937,8 +938,10 @@ export class GhClient {
   }
 
   private async makeReqOpts(): Promise<RequestOptions> {
+    if (this.cachedReqOpts) return this.cachedReqOpts;
     const token = await resolveToken({ getToken: this.getTokenFn });
-    return { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    this.cachedReqOpts = { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    return this.cachedReqOpts;
   }
 
   /**
