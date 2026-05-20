@@ -12,6 +12,7 @@ import {
   createGhClient,
   parseGitRemoteUrl,
 } from "./gh-client";
+import { capturingLogger } from "./logger";
 
 function mockFetch(responses: Array<{ status: number; body: unknown; headers?: Record<string, string> }>) {
   let callIndex = 0;
@@ -39,6 +40,7 @@ function makeClient(opts: {
   owner?: string;
   repo?: string;
   getToken?: () => Promise<string>;
+  logger?: import("./logger").Logger;
 }): GhClient {
   return new GhClient({
     repoRoot: "/tmp/test",
@@ -46,6 +48,7 @@ function makeClient(opts: {
     repo: opts.repo ?? "test-repo",
     getToken: opts.getToken ?? (async () => "test-token"),
     fetch: opts.fetch,
+    logger: opts.logger,
   });
 }
 
@@ -720,6 +723,24 @@ describe("error handling", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(GhValidationError);
       expect((err as GhValidationError).errors).toHaveLength(1);
+    }
+  });
+
+  test("422 with malformed body still throws GhValidationError and warns", async () => {
+    const rawBody = "not { valid json body }";
+    const fn = async (): Promise<Response> => new Response(rawBody, { status: 422 });
+    const { logger, messages } = capturingLogger();
+    const client = makeClient({ fetch: fn as unknown as typeof globalThis.fetch, logger });
+
+    try {
+      await client.issue(1).edit({ title: "test" });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GhValidationError);
+      expect((err as GhValidationError).errors).toHaveLength(0);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].level).toBe("warn");
+      expect(messages[0].args[0]).toBe("gh-client: failed to parse 422 response body");
     }
   });
 

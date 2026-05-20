@@ -9,6 +9,8 @@
  * adds daemon-backed caching.
  */
 
+import type { Logger } from "./logger";
+
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -288,7 +290,7 @@ function makeHeaders(token: string): Record<string, string> {
   };
 }
 
-function classifyResponse(resp: Response, body: string): never {
+function classifyResponse(resp: Response, body: string, logger?: Logger): never {
   if (resp.status === 401) {
     clearTokenCache();
     throw new GhAuthError(`GitHub API authentication failed (401): ${body}`);
@@ -313,7 +315,9 @@ function classifyResponse(resp: Response, body: string): never {
     try {
       const parsed = JSON.parse(body);
       errors = parsed.errors ?? [];
-    } catch {}
+    } catch (parseErr) {
+      logger?.warn("gh-client: failed to parse 422 response body", { err: parseErr, body: body.slice(0, 500) });
+    }
     throw new GhValidationError(`GitHub API validation error (422): ${body}`, errors);
   }
   if (resp.status >= 500) {
@@ -329,6 +333,7 @@ interface RequestOptions {
   method?: string;
   body?: unknown;
   signal?: AbortSignal;
+  logger?: Logger;
 }
 
 async function ghRequest(path: string, opts: RequestOptions): Promise<Response> {
@@ -399,7 +404,7 @@ async function ghJson<T>(path: string, opts: RequestOptions): Promise<T> {
   const resp = await ghRequest(path, opts);
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    classifyResponse(resp, body);
+    classifyResponse(resp, body, opts.logger);
   }
   return resp.json();
 }
@@ -408,7 +413,7 @@ async function ghVoid(path: string, opts: RequestOptions): Promise<void> {
   const resp = await ghRequest(path, opts);
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    classifyResponse(resp, body);
+    classifyResponse(resp, body, opts.logger);
   }
 }
 
@@ -433,7 +438,7 @@ async function ghPaginated<T>(path: string, opts: RequestOptions & { page?: numb
     const resp = await ghRequest(fullUrl, opts);
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      classifyResponse(resp, body);
+      classifyResponse(resp, body, opts.logger);
     }
     const items: T[] = await resp.json();
     allItems.push(...items);
@@ -914,12 +919,14 @@ export interface GhClientOptions {
   fetch?: FetchFn;
   owner?: string;
   repo?: string;
+  logger?: Logger;
 }
 
 export class GhClient {
   private readonly repoRoot: string;
   private readonly getTokenFn: (() => Promise<string>) | undefined;
   private readonly fetchFn: FetchFn;
+  private readonly logger: Logger | undefined;
   private resolvedRepo: GhRepoInfo | null;
   private cachedReqOpts: RequestOptions | null = null;
 
@@ -927,6 +934,7 @@ export class GhClient {
     this.repoRoot = opts.repoRoot;
     this.getTokenFn = opts.getToken;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
+    this.logger = opts.logger;
     this.resolvedRepo = opts.owner && opts.repo ? { owner: opts.owner, repo: opts.repo } : null;
   }
 
@@ -940,7 +948,7 @@ export class GhClient {
   private async makeReqOpts(): Promise<RequestOptions> {
     if (this.cachedReqOpts) return this.cachedReqOpts;
     const token = await resolveToken({ getToken: this.getTokenFn });
-    this.cachedReqOpts = { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    this.cachedReqOpts = { token, fetchFn: this.fetchFn, getToken: this.getTokenFn, logger: this.logger };
     return this.cachedReqOpts;
   }
 
@@ -1043,7 +1051,7 @@ export class GhClient {
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      classifyResponse(resp, body);
+      classifyResponse(resp, body, opts.logger);
     }
     const json: { data?: T; errors?: Array<{ message: string }> } = await resp.json();
     if (json.errors?.length) {
