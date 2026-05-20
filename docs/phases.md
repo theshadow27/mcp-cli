@@ -177,8 +177,24 @@ declare module "mcp-cli" {
 
   export type McpProxy = Record<string, Record<string, (args?: Record<string, unknown>) => Promise<unknown>>>;
 
+  export type MonitorCategory =
+    | "session"
+    | "work_item"
+    | "ci"
+    | "copilot"
+    | "review"
+    | "issue"
+    | "mail"
+    | "heartbeat"
+    | "worker"
+    | "daemon"
+    | "gc"
+    | "cost"
+    | "quota"
+    | "automation";
+
   export interface EventFilterSpec {
-    subscribe?: string[];
+    subscribe?: MonitorCategory[];
     type?: string | string[];
     session?: string;
     pr?: number;
@@ -192,7 +208,7 @@ declare module "mcp-cli" {
     ts: string;
     src: string;
     event: string;
-    category: string;
+    category: MonitorCategory;
     workItemId?: string;
     sessionId?: string;
     prNumber?: number;
@@ -263,6 +279,8 @@ exactly like normal aliases. The handler receives a scoped `ctx`:
 | `ctx.args` | CLI `--key value` pairs |
 | `ctx.file`, `ctx.json` | Read utility helpers |
 | `ctx.cache` | TTL-bounded cached producer |
+| `ctx.waitForEvent` | Await a matching daemon event (`EventFilterSpec`); optional `timeoutMs` and `since` seq |
+| `ctx.signal` | `AbortSignal` fired when the phase runner is cancelled or times out |
 
 Bun globals (`Bun.spawnSync`, `fetch`) are available — phases typically shell
 out to `gh`, `git`, or project tooling.
