@@ -280,9 +280,9 @@ export class StateDb {
             )
             .get()?.n ?? 0) > 0;
         if (hasAgentSessions) {
-          const hasCol = (
-            this.db.prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>
-          ).some((r) => r.name === "claude_session_id");
+          const hasCol = (this.db.prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).some(
+            (r) => r.name === "claude_session_id",
+          );
           if (!hasCol) {
             this.db.exec("ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT");
           }
