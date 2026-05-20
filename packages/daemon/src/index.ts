@@ -499,18 +499,24 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
   const claudeServer = new ClaudeServer(db, daemonId, undefined, logger, 10_000, wsPort);
 
+  // Run all binary 'which' checks in parallel to avoid blocking the critical path 4× sequentially.
+  const whichBinary = (bin: string) =>
+    Bun.spawn(["which", bin], { stdout: "pipe", stderr: "pipe" }).exited.then((code) => code === 0);
+  const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled] = await Promise.all([
+    whichBinary("codex"),
+    whichBinary("gh"),
+    whichBinary("gemini"),
+    whichBinary("opencode"),
+  ]);
+
   // Codex server: only created if `codex` binary is installed
-  const codexInstalled = Bun.spawnSync(["which", "codex"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
 
   // ACP server: created if any ACP-compatible agent binary is found on PATH
-  const acpAgentInstalled =
-    Bun.spawnSync(["which", "gh"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0 ||
-    Bun.spawnSync(["which", "gemini"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const acpAgentInstalled = ghInstalled || geminiInstalled;
   const acpServer = acpAgentInstalled ? new AcpServer(db, daemonId, undefined, logger) : null;
 
   // OpenCode server: only created if `opencode` binary is installed
-  const opencodeInstalled = Bun.spawnSync(["which", "opencode"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   const opencodeServer = opencodeInstalled ? new OpenCodeServer(db, daemonId, undefined, logger) : null;
 
   // Mock server: always available (no external binary needed)
