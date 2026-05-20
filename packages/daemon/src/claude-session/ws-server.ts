@@ -1875,11 +1875,13 @@ export class ClaudeWsServer {
     const mapped = ClaudeWsServer.SESSION_EVENT_MAP[event.type];
     if (!mapped) return;
 
+    const sessionRepoRoot = this.sessions.get(sessionId)?.config?.repoRoot;
     const input: MonitorEventInput = {
       src: "daemon.claude-server",
       event: mapped,
       category: "session",
       sessionId,
+      ...(sessionRepoRoot ? { repoRoot: sessionRepoRoot } : {}),
     };
 
     if ("cost" in event) input.cost = event.cost;

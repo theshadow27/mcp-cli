@@ -21,6 +21,8 @@ export interface EventFilterSpec {
   workItem?: string;
   src?: string;
   phase?: string;
+  /** Filter to events scoped to this repo root. Events with no repoRoot pass through. */
+  repo?: string;
 }
 
 export class WaitTimeoutError extends Error {
@@ -67,6 +69,7 @@ export function createEventMatcher(spec: EventFilterSpec): (event: MonitorEvent)
       if (!srcPattern.test(event.src)) return false;
     }
     if (spec.phase !== undefined && event.phase !== spec.phase) return false;
+    if (spec.repo !== undefined && event.repoRoot !== undefined && event.repoRoot !== spec.repo) return false;
     return true;
   };
 }
@@ -97,6 +100,7 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
   type?: string;
   src?: string;
   phase?: string;
+  repo?: string;
 } {
   return {
     subscribe: spec.subscribe?.join(","),
@@ -106,6 +110,7 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
     type: Array.isArray(spec.type) ? spec.type.join(",") : spec.type,
     src: spec.src,
     phase: spec.phase,
+    repo: spec.repo,
   };
 }
 

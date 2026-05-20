@@ -20,8 +20,9 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
   const typeRaw = params.get("type");
   const srcRaw = params.get("src");
   const phase = params.get("phase");
+  const repo = params.get("repo");
 
-  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase) {
+  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase && !repo) {
     return null;
   }
 
@@ -52,6 +53,7 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
       : {}),
     ...(srcRaw ? { src: srcRaw } : {}),
     ...(phase ? { phase } : {}),
+    ...(repo ? { repo } : {}),
   };
 
   const matcher = createEventMatcher(spec);

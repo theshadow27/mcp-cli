@@ -234,6 +234,7 @@ export class EventStreamServer {
    *   type=<glob>              Event name glob filter (comma-separated OR)
    *   src=<pattern>            Source attribution glob filter
    *   phase=<name>             Phase filter on work item phase
+   *   repo=<path>              Scope to repo root (pass-through for events with no repoRoot)
    *   since=<seq>              Replay events after this cursor from the durable log (#1513)
    *   responseTail=<sessionId> Include session.response chunks for this session only
    */

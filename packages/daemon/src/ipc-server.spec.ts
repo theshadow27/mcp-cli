@@ -4194,4 +4194,17 @@ describe("buildEventFilter", () => {
     expect(filter?.({ category: "heartbeat", event: "heartbeat" })).toBe(true);
     expect(filter?.({ category: "heartbeat", event: "heartbeat", src: "daemon" })).toBe(true);
   });
+
+  test("repo filter matches repoRoot field", () => {
+    const filter = buildEventFilter(params({ repo: "/home/user/myrepo" }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ repoRoot: "/home/user/myrepo", event: "session.result" })).toBe(true);
+    expect(filter?.({ repoRoot: "/home/user/other", event: "session.result" })).toBe(false);
+  });
+
+  test("repo filter passes through events with no repoRoot", () => {
+    const filter = buildEventFilter(params({ repo: "/home/user/myrepo" }));
+    expect(filter?.({ event: "mail.sent", category: "mail" })).toBe(true);
+    expect(filter?.({ event: "quota.threshold", category: "quota" })).toBe(true);
+  });
 });
