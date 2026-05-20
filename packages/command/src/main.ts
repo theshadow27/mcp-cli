@@ -44,6 +44,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdMemory } from "./commands/memory";
 import { cmdMonitor } from "./commands/monitor";
 import { cmdNote } from "./commands/note";
 import { cmdPhase } from "./commands/phase";
@@ -359,6 +360,10 @@ async function main(): Promise<void> {
 
       case "note":
         await cmdNote(cleanArgs.slice(1));
+        break;
+
+      case "memory":
+        await cmdMemory(cleanArgs.slice(1));
         break;
 
       case "track":
@@ -954,6 +959,7 @@ Utility:
   mcx monitor [flags]                 Stream unified daemon events (--json for NDJSON)
   mcx logs <server> [-f]              View server stderr
   mcx mail <subcommand>               Inter-session messaging
+  mcx memory audit [--json]           Haiku-driven memory staleness + contradiction check
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
   mcx scope <subcommand>              Directory scope management
