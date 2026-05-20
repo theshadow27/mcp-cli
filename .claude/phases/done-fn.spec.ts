@@ -115,6 +115,52 @@ describe("mergePr", () => {
       async prMerge(_prNumber, _flags) {
         return { stdout: "", stderr: "Pull Request is not mergeable due to conflict", exitCode: 1 };
       },
+      async prView(_prNumber, _fields, _jqExpr?) {
+        return "OPEN";
+      },
+    });
+    const result = await mergePr(42, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("conflicts");
+  });
+
+  test("returns ok:true when concurrent rerun sees 'not mergeable' but PR is already MERGED", async () => {
+    // Concurrent rerun scenario: a previous done invocation already merged the PR
+    // server-side. The second call gets "Pull Request is not mergeable" from GitHub,
+    // which must NOT be classified as conflicts — prView confirms MERGED, so ok:true.
+    const deps = makeDeps({
+      async gh(args) {
+        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async prMerge(_prNumber, _flags) {
+        return { stdout: "", stderr: "Pull Request is not mergeable", exitCode: 1 };
+      },
+      async prView(_prNumber, _fields, _jqExpr?) {
+        return "MERGED";
+      },
+    });
+    const result = await mergePr(42, deps);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.prNumber).toBe(42);
+  });
+
+  test("falls back to conflicts classification when prView fails and stderr matches", async () => {
+    // prView is unreachable (network error), so we fall back to deterministic
+    // stderr pattern matching — "not mergeable" is classified as conflicts.
+    const deps = makeDeps({
+      async gh(args) {
+        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async prMerge(_prNumber, _flags) {
+        return { stdout: "", stderr: "Pull Request is not mergeable due to conflict", exitCode: 1 };
+      },
+      async prView(_prNumber, _fields, _jqExpr?) {
+        throw new Error("network unreachable");
+      },
     });
     const result = await mergePr(42, deps);
     expect(result.ok).toBe(false);
