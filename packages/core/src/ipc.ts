@@ -69,7 +69,8 @@ export type IpcMethod =
   | "setBudgetConfig"
   | "publishEvent"
   | "listAutomation"
-  | "getAutomationLog";
+  | "getAutomationLog"
+  | "getAgentSession";
 
 // -- Request/Response --
 
@@ -599,6 +600,25 @@ export interface GetAutomationLogResult {
   entries: AutomationLogEntry[];
 }
 
+export const GetAgentSessionParamsSchema = z.object({
+  sessionId: z.string(),
+});
+
+export interface GetAgentSessionResult {
+  session: {
+    sessionId: string;
+    name: string | null;
+    provider: string;
+    state: string;
+    cwd: string | null;
+    worktree: string | null;
+    repoRoot: string | null;
+    claudeSessionId: string | null;
+    spawnedAt: string;
+    endedAt: string | null;
+  } | null;
+}
+
 // -- Result types for methods without a named interface --
 
 export interface PingResult {
@@ -817,6 +837,7 @@ export interface IpcMethodResult {
   publishEvent: PublishEventResult;
   listAutomation: ListAutomationResult;
   getAutomationLog: GetAutomationLogResult;
+  getAgentSession: GetAgentSessionResult;
 }
 
 // -- Error codes --
