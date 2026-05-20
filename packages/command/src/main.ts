@@ -44,6 +44,7 @@ import { cmdAddFromClaudeDesktop, cmdImport } from "./commands/import";
 import { cmdInstall } from "./commands/install";
 import { cmdLogs } from "./commands/logs";
 import { cmdMail } from "./commands/mail";
+import { cmdMemory } from "./commands/memory";
 import { cmdMonitor } from "./commands/monitor";
 import { cmdNote } from "./commands/note";
 import { cmdPhase } from "./commands/phase";
@@ -359,6 +360,10 @@ async function main(): Promise<void> {
 
       case "note":
         await cmdNote(cleanArgs.slice(1));
+        break;
+
+      case "memory":
+        await cmdMemory(cleanArgs.slice(1));
         break;
 
       case "track":
