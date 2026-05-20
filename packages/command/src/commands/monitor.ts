@@ -143,7 +143,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     } else if (arg === "--until") {
       until = args[++i];
       if (!until) {
-        error = "--until requires an event type";
+        error = "--until requires a pattern";
         break;
       }
     } else if (arg === "--timeout") {
@@ -207,7 +207,7 @@ Filters (evaluated server-side):
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:
-  --until <pattern>          Exit when this event type is seen (glob: pr.*, session.*)
+  --until <pattern>          Exit when an event matching this pattern is seen (glob: pr.*, session.*)
   --timeout <seconds>        Exit after N seconds
   --max-events <n>           Exit after N events
 
