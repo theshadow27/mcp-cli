@@ -313,7 +313,9 @@ function classifyResponse(resp: Response, body: string): never {
     try {
       const parsed = JSON.parse(body);
       errors = parsed.errors ?? [];
-    } catch {}
+    } catch (parseErr) {
+      console.warn("gh-client: failed to parse 422 response body", { err: parseErr, body: body.slice(0, 500) });
+    }
     throw new GhValidationError(`GitHub API validation error (422): ${body}`, errors);
   }
   if (resp.status >= 500) {

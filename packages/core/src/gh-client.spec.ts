@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   GhAuthError,
   GhClient,
@@ -720,6 +720,25 @@ describe("error handling", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(GhValidationError);
       expect((err as GhValidationError).errors).toHaveLength(1);
+    }
+  });
+
+  test("422 with malformed body still throws GhValidationError and warns", async () => {
+    const rawBody = "not { valid json body }";
+    const fn = async (): Promise<Response> => new Response(rawBody, { status: 422 });
+    const client = makeClient({ fetch: fn as unknown as typeof globalThis.fetch });
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await client.issue(1).edit({ title: "test" });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GhValidationError);
+      expect((err as GhValidationError).errors).toHaveLength(0);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toBe("gh-client: failed to parse 422 response body");
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 
