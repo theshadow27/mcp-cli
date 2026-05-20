@@ -53,6 +53,15 @@ export class GhServerError extends Error {
   }
 }
 
+export class GhPageCapError extends Error {
+  override name = "GhPageCapError" as const;
+  itemCount: number;
+  constructor(message: string, itemCount: number) {
+    super(message);
+    this.itemCount = itemCount;
+  }
+}
+
 // ── Response types ──
 
 export interface GhPrBody {
@@ -112,6 +121,8 @@ export interface GhCheckRun {
 export interface GhChecksResult {
   total_count: number;
   check_runs: GhCheckRun[];
+  /** Legacy commit statuses, mapped to check-run shape for uniform filtering. */
+  commit_statuses: GhCheckRun[];
 }
 
 export interface GhPrFile {
@@ -427,6 +438,12 @@ async function ghPaginated<T>(path: string, opts: RequestOptions & { page?: numb
     const items: T[] = await resp.json();
     allItems.push(...items);
     url = parseNextUrl(resp.headers.get("link"));
+    if (page === MAX_PAGES - 1 && url !== null) {
+      throw new GhPageCapError(
+        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
+        allItems.length,
+      );
+    }
   }
   return allItems;
 }
@@ -478,6 +495,12 @@ interface RawReview {
   body: string;
   user: { login: string };
   submitted_at: string;
+}
+
+interface RawCommitStatus {
+  context: string;
+  state: "pending" | "success" | "failure" | "error";
+  description: string | null;
 }
 
 interface RawIssue {
@@ -601,11 +624,35 @@ export class PrHandle {
 
   async checks(): Promise<GhChecksResult> {
     const pr = await this.body();
-    const raw = await ghJson<{ total_count: number; check_runs: GhCheckRun[] }>(
-      `/repos/${this.o}/${this.r}/commits/${pr.head.sha}/check-runs`,
-      this.reqOpts(),
-    );
-    return { total_count: raw.total_count, check_runs: raw.check_runs };
+    const sha = pr.head.sha;
+    const [checkRunsRaw, statusesRaw] = await Promise.all([
+      ghJson<{ total_count: number; check_runs: GhCheckRun[] }>(
+        `/repos/${this.o}/${this.r}/commits/${sha}/check-runs`,
+        this.reqOpts(),
+      ),
+      ghPaginated<RawCommitStatus>(`/repos/${this.o}/${this.r}/commits/${sha}/statuses`, this.reqOpts()),
+    ]);
+
+    // Deduplicate by context: GitHub returns statuses in reverse-chronological
+    // order, so the first occurrence per context is the most recent.
+    const seen = new Set<string>();
+    const dedupedStatuses: GhCheckRun[] = [];
+    for (const s of statusesRaw) {
+      if (seen.has(s.context)) continue;
+      seen.add(s.context);
+      dedupedStatuses.push({
+        id: 0,
+        name: s.context,
+        status: "completed",
+        conclusion: s.state === "success" ? "SUCCESS" : s.state === "pending" ? null : "FAILURE",
+      });
+    }
+
+    return {
+      total_count: checkRunsRaw.total_count,
+      check_runs: checkRunsRaw.check_runs,
+      commit_statuses: dedupedStatuses,
+    };
   }
 
   async files(): Promise<GhPrFile[]> {

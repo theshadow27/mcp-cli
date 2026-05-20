@@ -3,6 +3,7 @@ import {
   GhAuthError,
   GhClient,
   GhNotFoundError,
+  GhPageCapError,
   GhRateLimitError,
   type GhRepoInfo,
   GhServerError,
@@ -308,6 +309,102 @@ describe("PrHandle", () => {
     expect(calls[2].init.method).toBe("DELETE");
   });
 
+  test("checks() merges check-runs and commit statuses, deduplicating by context", async () => {
+    const prBody = {
+      number: 42,
+      title: "PR",
+      body: null,
+      state: "open",
+      draft: false,
+      merged: false,
+      merged_at: null,
+      labels: [],
+      mergeable: null,
+      mergeable_state: "",
+      merge_commit_sha: null,
+      head: { ref: "feat", sha: "abc123" },
+      base: { ref: "main" },
+      user: { login: "alice" },
+      created_at: "",
+      updated_at: "",
+    };
+
+    const { fn, calls } = mockFetch([
+      { status: 200, body: prBody },
+      {
+        status: 200,
+        body: {
+          total_count: 1,
+          check_runs: [{ id: 1, name: "build", status: "completed", conclusion: "SUCCESS" }],
+        },
+      },
+      {
+        status: 200,
+        body: [
+          { context: "ci/legacy", state: "success", description: null },
+          { context: "ci/legacy", state: "failure", description: null },
+          { context: "ci/other", state: "pending", description: null },
+        ],
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    const result = await client.pr(42).checks();
+
+    expect(result.total_count).toBe(1);
+    expect(result.check_runs).toHaveLength(1);
+    expect(result.check_runs[0].conclusion).toBe("SUCCESS");
+
+    // 2 unique contexts (ci/legacy deduped, ci/other = pending → null conclusion)
+    expect(result.commit_statuses).toHaveLength(2);
+    const legacy = result.commit_statuses.find((s) => s.name === "ci/legacy");
+    expect(legacy?.conclusion).toBe("SUCCESS");
+    const other = result.commit_statuses.find((s) => s.name === "ci/other");
+    expect(other?.conclusion).toBeNull();
+
+    expect(calls[1].url).toContain("/commits/abc123/check-runs");
+    expect(calls[2].url).toContain("/commits/abc123/statuses");
+  });
+
+  test("checks() maps failure/error statuses to FAILURE conclusion", async () => {
+    const prBody = {
+      number: 1,
+      title: "T",
+      body: null,
+      state: "open",
+      draft: false,
+      merged: false,
+      merged_at: null,
+      labels: [],
+      mergeable: null,
+      mergeable_state: "",
+      merge_commit_sha: null,
+      head: { ref: "f", sha: "sha1" },
+      base: { ref: "main" },
+      user: { login: "u" },
+      created_at: "",
+      updated_at: "",
+    };
+
+    const { fn } = mockFetch([
+      { status: 200, body: prBody },
+      { status: 200, body: { total_count: 0, check_runs: [] } },
+      {
+        status: 200,
+        body: [
+          { context: "ctx/fail", state: "failure", description: null },
+          { context: "ctx/error", state: "error", description: null },
+        ],
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    const result = await client.pr(1).checks();
+
+    expect(result.commit_statuses).toHaveLength(2);
+    expect(result.commit_statuses.every((s) => s.conclusion === "FAILURE")).toBe(true);
+  });
+
   test("allCommentSurfaces() combines all 4 surfaces", async () => {
     const { fn } = mockFetch([
       {
@@ -527,6 +624,33 @@ describe("pagination", () => {
 
     expect(comments).toHaveLength(3);
     expect(comments.map((c) => c.id)).toEqual([1, 2, 3]);
+  });
+
+  test("throws GhPageCapError when MAX_PAGES hit with next link present", async () => {
+    // Provide a fetch fn that always returns a next link, simulating an
+    // infinite paginated resource. ghPaginated should throw after MAX_PAGES.
+    let callCount = 0;
+    const alwaysNextFn = async (): Promise<Response> => {
+      callCount++;
+      return new Response(
+        JSON.stringify([{ id: callCount, body: "c", user: { login: "a" }, created_at: "", updated_at: "" }]),
+        {
+          status: 200,
+          headers: { link: `<https://api.github.com/repos/o/r/issues/42/comments?page=${callCount + 1}>; rel="next"` },
+        },
+      );
+    };
+
+    const client = makeClient({ fetch: alwaysNextFn as unknown as typeof globalThis.fetch });
+
+    try {
+      await client.pr(42).bodyComments();
+      expect.unreachable("should have thrown GhPageCapError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GhPageCapError);
+      expect((err as GhPageCapError).itemCount).toBeGreaterThan(0);
+      expect((err as GhPageCapError).message).toContain("MAX_PAGES");
+    }
   });
 });
 
