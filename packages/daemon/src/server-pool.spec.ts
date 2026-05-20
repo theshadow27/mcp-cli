@@ -4,6 +4,7 @@ import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { pollUntil } from "../../../test/harness";
 import {
   BASE_ENV_ALLOWLIST,
   type ConnectFn,
@@ -1703,16 +1704,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      const deadline = Date.now() + 5_000;
-      let dead = false;
-      while (Date.now() < deadline) {
-        if (!isAlive(pid)) {
-          dead = true;
-          break;
-        }
-        await Bun.sleep(100);
-      }
-      expect(dead).toBe(true);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }
@@ -1750,16 +1742,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.closeAll();
 
-      const deadline = Date.now() + 5_000;
-      let dead = false;
-      while (Date.now() < deadline) {
-        if (!isAlive(pid)) {
-          dead = true;
-          break;
-        }
-        await Bun.sleep(100);
-      }
-      expect(dead).toBe(true);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }

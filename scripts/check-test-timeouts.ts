@@ -40,7 +40,7 @@ const TEST_DIR = new URL("../test/", import.meta.url).pathname;
 // Ratchet baseline: fail if NEW Bun.sleep violations are introduced.
 // Decrease this number as #2100 cleanup proceeds. Once it reaches 0,
 // replace the ratchet with a hard exit(1) like the setTimeout check.
-export const BUN_SLEEP_BASELINE = 138;
+export const BUN_SLEEP_BASELINE = 136;
 
 /**
  * Extracts the delay (2nd positional argument) from a pre-extracted argument
