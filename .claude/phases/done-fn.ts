@@ -1,10 +1,7 @@
 /** Core done-phase logic, extracted for testability via dependency injection. */
 
-export interface GhResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
+import type { GhResult } from "./phase-types.js";
+export type { GhResult };
 
 export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
