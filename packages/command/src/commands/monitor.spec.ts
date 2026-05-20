@@ -359,6 +359,10 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--until"]).error).toBeTruthy();
   });
 
+  test("--until without value error message reflects glob semantics", () => {
+    expect(parseMonitorArgs(["--until"]).error).toBe("--until requires a pattern");
+  });
+
   test("--timeout with non-numeric value is an error", () => {
     expect(parseMonitorArgs(["--timeout", "abc"]).error).toBeTruthy();
   });
