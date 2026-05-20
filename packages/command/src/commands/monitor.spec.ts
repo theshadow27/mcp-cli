@@ -366,6 +366,14 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--max-events", "abc"]).error).toBeTruthy();
   });
 
+  test("--max-events 0 is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "0"]).error).toBeTruthy();
+  });
+
+  test("--max-events negative is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "-1"]).error).toBeTruthy();
+  });
+
   test("--help sets error to 'help'", () => {
     expect(parseMonitorArgs(["--help"]).error).toBe("help");
     expect(parseMonitorArgs(["-h"]).error).toBe("help");
@@ -623,6 +631,58 @@ describe("cmdMonitor", () => {
 
     expect(abortCalled).toBe(true);
     expect(exitCalls).toEqual([0]);
+  });
+
+  test("--until satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(PR_MERGED, { category: "work_item" })];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(abortCalled).toBe(true);
+  });
+
+  test("--max-events satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(abortCalled).toBe(true);
   });
 
   test("--until set but stream ends before event → exit 2 with message", async () => {
