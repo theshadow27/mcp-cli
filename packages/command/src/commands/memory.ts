@@ -11,8 +11,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { resolveModelName } from "@mcp-cli/core";
+import { join } from "node:path";
+import { resolveModelName, resolveSourceClaudePath } from "@mcp-cli/core";
 import { printError } from "../output";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ export interface MemoryDeps {
   /** Check whether a directory exists. */
   dirExists: (path: string) => boolean;
   /** Spawn a process and capture stdout. Returns null on non-zero exit. */
-  spawnCapture: (cmd: string[], opts?: { input?: string }) => string | null;
+  spawnCapture: (cmd: string[], opts?: { input?: string; onStderr?: (s: string) => void }) => string | null;
   /** Read a file. Returns null if it doesn't exist or is unreadable. */
   readFile: (path: string) => string | null;
   /** List files in a directory matching an extension. Returns [] if dir missing. */
@@ -56,7 +56,7 @@ const HAIKU_MODEL = resolveModelName("haiku");
 
 const AUDIT_PROMPT = `You are auditing a project's persistent memory rules. Rules are stored as markdown files in .claude/memory/ and indexed in MEMORY.md.
 
-For each rule file listed in the findings, classify it as one of:
+For each rule file provided in the input below, classify it as one of:
 - load-bearing: still actively needed, accurate, no issues
 - stale: the issue it references has been closed and the fix shipped, or the behavior it describes no longer applies
 - contradicts: conflicts with another rule in a meaningful way (set "related" to the conflicting file name)
@@ -94,7 +94,7 @@ The top_prune_candidates list should contain 3-5 files most worth pruning (stale
 // ─── Core logic ───────────────────────────────────────────────────────────────
 
 /**
- * Find the .claude/memory directory by walking up from cwd or using git root.
+ * Find the .claude/memory directory relative to the git root (or cwd if not in a repo).
  */
 export function findMemoryDir(deps: Pick<MemoryDeps, "getGitRoot" | "cwd" | "dirExists">): string | null {
   const root = deps.getGitRoot() ?? deps.cwd();
@@ -106,7 +106,6 @@ export function findMemoryDir(deps: Pick<MemoryDeps, "getGitRoot" | "cwd" | "dir
  * Build the prompt for Haiku by assembling all memory file contents.
  */
 export function buildPrompt(
-  memoryDir: string,
   memoryIndex: string,
   ruleFiles: Array<{ name: string; content: string }>,
   closedIssues: string,
@@ -128,12 +127,16 @@ function callHaiku(prompt: string, deps: MemoryDeps): string | null {
     return null;
   }
 
-  const result = deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], { input: prompt });
-  return result;
+  return deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], {
+    input: prompt,
+    onStderr: (s) => {
+      if (s.trim()) deps.logError(`memory audit: claude stderr: ${s.trim()}`);
+    },
+  });
 }
 
 /**
- * Fetch the last N closed GitHub issues as a compact JSON string.
+ * Fetch the last N closed GitHub issues as a newline-delimited summary for prompt inclusion.
  */
 function fetchClosedIssues(deps: MemoryDeps, limit = 50): string {
   const raw = deps.spawnCapture([
@@ -200,7 +203,7 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
   const closedIssues = fetchClosedIssues(deps);
 
   deps.logError("memory audit: calling Haiku…");
-  const prompt = buildPrompt(memoryDir, memoryIndex, ruleFiles, closedIssues);
+  const prompt = buildPrompt(memoryIndex, ruleFiles, closedIssues);
   const rawResponse = callHaiku(prompt, deps);
 
   if (!rawResponse) {
@@ -268,7 +271,10 @@ export function defaultDeps(): MemoryDeps {
         stderr: "pipe",
         stdin: opts?.input ? Buffer.from(opts.input) : undefined,
       });
-      if (r.exitCode !== 0) return null;
+      if (r.exitCode !== 0) {
+        opts?.onStderr?.(r.stderr.toString());
+        return null;
+      }
       return r.stdout.toString();
     },
     readFile: (path) => {
@@ -288,13 +294,11 @@ export function defaultDeps(): MemoryDeps {
       }
     },
     findClaudeBinary: () => {
-      // Honor MCX_CLAUDE_BINARY first
-      const env = process.env.MCX_CLAUDE_BINARY?.trim();
-      if (env && existsSync(env)) return env;
-      // Fall back to PATH
-      const r = Bun.spawnSync(["which", "claude"], { stdout: "pipe", stderr: "pipe" });
-      if (r.exitCode !== 0) return null;
-      return r.stdout.toString().trim() || null;
+      try {
+        return resolveSourceClaudePath();
+      } catch {
+        return null;
+      }
     },
     log: (msg) => console.log(msg),
     logError: (msg) => console.error(msg),

@@ -959,6 +959,7 @@ Utility:
   mcx monitor [flags]                 Stream unified daemon events (--json for NDJSON)
   mcx logs <server> [-f]              View server stderr
   mcx mail <subcommand>               Inter-session messaging
+  mcx memory audit [--json]           Haiku-driven memory staleness + contradiction check
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
   mcx scope <subcommand>              Directory scope management

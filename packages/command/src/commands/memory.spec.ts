@@ -39,7 +39,6 @@ describe("findMemoryDir", () => {
 describe("buildPrompt", () => {
   test("includes memory index in prompt", () => {
     const prompt = buildPrompt(
-      "/repo/.claude/memory",
       "# Memory Index\n- [foo](foo.md) — bar",
       [{ name: "foo.md", content: "rule content" }],
       "closed issues list",
@@ -51,7 +50,7 @@ describe("buildPrompt", () => {
   });
 
   test("uses placeholder when no rule files", () => {
-    const prompt = buildPrompt("/repo/.claude/memory", "index", [], "issues");
+    const prompt = buildPrompt("index", [], "issues");
     expect(prompt).toContain("(no rule files found)");
   });
 });
@@ -352,6 +351,7 @@ describe("defaultDeps", () => {
   test("getGitRoot() returns the repo root (we are in a git repo)", () => {
     const root = deps.getGitRoot();
     expect(root).not.toBeNull();
-    expect(existsSync(`${root}/.git`) || existsSync(`${root}/../.git`)).toBe(true);
+    // .git may be a directory (main checkout) or a file (worktree)
+    expect(existsSync(`${root}/.git`)).toBe(true);
   });
 });
