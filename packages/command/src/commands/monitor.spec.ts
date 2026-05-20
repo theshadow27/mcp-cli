@@ -7,7 +7,7 @@ import {
   COST_SESSION_OVER_BUDGET,
   COST_SPRINT_OVER_BUDGET,
   HEARTBEAT,
-  MAIL_RECEIVED,
+  MAIL_SENT,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
@@ -153,7 +153,7 @@ describe("formatMonitorEvent", () => {
         from: "impl",
         to: "qa",
       }),
-      makeEvent(MAIL_RECEIVED, {
+      makeEvent(MAIL_SENT, {
         category: "mail",
         src: "daemon.mail",
         sender: "orchestrator@sessions",

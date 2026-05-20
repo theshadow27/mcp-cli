@@ -10,7 +10,7 @@ import type { IpcMethod } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
 import type { EventBus } from "../event-bus";
 import type { RequestHandler } from "../handler-types";
-import { publishMailReceived } from "../mail-events";
+import { publishMailSent } from "../mail-events";
 
 export class MailHandlers {
   constructor(
@@ -23,7 +23,7 @@ export class MailHandlers {
     handlers.set("sendMail", async (params, _ctx) => {
       const { sender, recipient, subject, body, replyTo } = SendMailParamsSchema.parse(params);
       const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
-      publishMailReceived(this.eventBus, { mailId: id, sender, recipient });
+      publishMailSent(this.eventBus, { mailId: id, sender, recipient });
       return { id };
     });
 
@@ -61,7 +61,7 @@ export class MailHandlers {
       }
       const replySubject = subject ?? (original.subject ? `Re: ${original.subject}` : undefined);
       const newId = this.db.insertMail(sender, original.sender, replySubject, body, id);
-      publishMailReceived(this.eventBus, { mailId: newId, sender, recipient: original.sender });
+      publishMailSent(this.eventBus, { mailId: newId, sender, recipient: original.sender });
       return { id: newId };
     });
 
