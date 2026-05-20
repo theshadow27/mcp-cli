@@ -129,11 +129,12 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
         break;
       }
     } else if (arg === "--repo") {
-      repo = args[++i];
-      if (!repo) {
+      const next = args[++i];
+      if (!next || next.startsWith("-")) {
         error = "--repo requires a path";
         break;
       }
+      repo = next;
     } else if (arg === "--all-repos") {
       allRepos = true;
     } else if (arg === "--since") {

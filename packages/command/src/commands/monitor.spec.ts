@@ -406,6 +406,11 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--repo"]).error).toBeTruthy();
   });
 
+  test("--repo followed by a flag is an error", () => {
+    const parsed = parseMonitorArgs(["--repo", "--all-repos"]);
+    expect(parsed.error).toBeTruthy();
+  });
+
   test("--all-repos sets allRepos=true", () => {
     const parsed = parseMonitorArgs(["--all-repos"]);
     expect(parsed.allRepos).toBe(true);
@@ -930,6 +935,7 @@ describe("cmdMonitor", () => {
       },
     });
     await cmdMonitor(["--all-repos"], deps);
+    expect(capturedParams).toBeDefined();
     expect(capturedParams?.repo).toBeUndefined();
   });
 
@@ -943,6 +949,7 @@ describe("cmdMonitor", () => {
       },
     });
     await cmdMonitor(["--all-repos", "--repo", "/custom/repo"], deps);
+    expect(capturedParams).toBeDefined();
     expect(capturedParams?.repo).toBeUndefined();
   });
 });
