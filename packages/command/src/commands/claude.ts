@@ -543,10 +543,16 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     // rather than sessionId (which would try to send a follow-up to a dead session).
     const endedSession = await resolveEndedSessionForResume(parsed.resume, d);
     if (endedSession) {
+      if (parsed.worktree) {
+        d.printError(
+          "--worktree and --resume (ended session) cannot be combined: restoring conversation history requires the original session's working directory, not a new worktree. Drop --worktree to resume, or omit --resume to start fresh in the new worktree.",
+        );
+        d.exit(1);
+      }
       // Spawn a new session restoring history from the ended session's JSONL transcript.
       toolArgs.resumeSessionId = endedSession.claudeSessionId;
       // Inherit the original session's cwd when the caller hasn't set one explicitly.
-      if (!parsed.cwd && !parsed.worktree && endedSession.cwd) {
+      if (!parsed.cwd && endedSession.cwd) {
         toolArgs.cwd = endedSession.cwd;
       }
     } else {

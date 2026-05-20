@@ -987,6 +987,25 @@ describe("mcx claude spawn", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("has no recorded Claude session ID"));
   });
 
+  test("--resume (ended session) + --worktree exits with clear error before creating worktree", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "new", seq: 1 }));
+    const getAgentSession = mock(async () => ({
+      sessionId: "daemon-ended",
+      state: "ended",
+      cwd: "/tmp/worktree",
+      claudeSessionId: "claude-abc123",
+    }));
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    await expect(cmdClaude(["spawn", "--resume", "daemon-ended", "--worktree", "my-branch"], deps)).rejects.toThrow(
+      ExitError,
+    );
+    expect(callTool).not.toHaveBeenCalled();
+    // exec should not have been called — worktree must not be created before the error
+    expect(deps.exec).not.toHaveBeenCalled();
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--worktree and --resume"));
+  });
+
   test("--resume with active session still uses sessionId", async () => {
     const callTool = mock(async () => toolResult({ sessionId: "existing", seq: 5 }));
     const getAgentSession = mock(async () => ({
