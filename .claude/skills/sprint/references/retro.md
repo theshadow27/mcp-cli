@@ -110,6 +110,19 @@ done
 If the orchestrator authored the memory files **directly in the worktree**,
 this sweep is a no-op — `git status` in the main checkout shows nothing.
 
+## Audit memory for staleness
+
+Before pruning manually, run the automated audit to surface candidates:
+
+```bash
+mcx memory audit --json
+```
+
+Review the `top_prune_candidates` list. For each flagged file, verify the
+reason is accurate (the audit is a suggestion, not authoritative). Prune by
+deleting the file and removing its entry from `MEMORY.md`. Commit the
+pruned files as part of the retro commit.
+
 ## Promote applied memories into skill text
 
 A memory file lives in `.claude/memory/` until it earns a place in the
