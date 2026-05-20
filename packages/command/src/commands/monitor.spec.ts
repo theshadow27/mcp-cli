@@ -28,6 +28,7 @@ import {
   SESSION_RESPONSE,
   SESSION_RESULT,
   formatMonitorEvent,
+  type openEventStream,
 } from "@mcp-cli/core";
 import type { MonitorDeps } from "./monitor";
 import { cmdMonitor, parseMonitorArgs } from "./monitor";
@@ -395,6 +396,15 @@ describe("parseMonitorArgs error branches", () => {
     const parsed = parseMonitorArgs(["--since", "42"]);
     expect(parsed.since).toBe(42);
   });
+
+  test("--repo parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--repo", "/home/user/myrepo"]);
+    expect(parsed.repo).toBe("/home/user/myrepo");
+  });
+
+  test("--repo without value is an error", () => {
+    expect(parseMonitorArgs(["--repo"]).error).toBeTruthy();
+  });
 });
 
 // ── cmdMonitor unit tests (dependency-injected) ──
@@ -407,6 +417,7 @@ function makeStreamDeps(events: MonitorEvent[], overrides: Partial<MonitorDeps> 
   return {
     openEventStream: () => ({ events: gen(), abort: () => {} }),
     isTTY: true,
+    getCwd: () => "/test/repo",
     writeStdout: () => {},
     writeStderr: () => {},
     exit: (code) => {
@@ -498,6 +509,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: abortStream, abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -522,6 +534,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: errorStream, abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: (l) => stderr.push(l),
       exit: (code) => {
@@ -547,6 +560,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -569,6 +583,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -611,6 +626,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -647,6 +663,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -673,6 +690,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -778,6 +796,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -845,6 +864,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -863,5 +883,30 @@ describe("cmdMonitor", () => {
     const otherErr = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     capturedErrHandler?.(otherErr);
     expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--repo is passed to openEventStream", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--repo", "/custom/repo"], deps);
+    expect(capturedParams?.repo).toBe("/custom/repo");
+  });
+
+  test("repo defaults to getCwd() when --repo is not specified", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/default/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(capturedParams?.repo).toBe("/default/repo");
   });
 });

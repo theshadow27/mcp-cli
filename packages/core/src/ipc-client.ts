@@ -220,6 +220,8 @@ export function openEventStream(params?: {
   src?: string;
   /** Filter to a specific phase */
   phase?: string;
+  /** Scope to events from sessions in this repo root path. Events with no repoRoot pass through. */
+  repo?: string;
   /** Include session.response chunks for this session ID only */
   responseTail?: string;
 }): { events: AsyncIterable<import("./monitor-event").MonitorEvent>; abort: () => void } {
@@ -232,6 +234,7 @@ export function openEventStream(params?: {
   if (params?.type) qs.set("type", params.type);
   if (params?.src) qs.set("src", params.src);
   if (params?.phase) qs.set("phase", params.phase);
+  if (params?.repo) qs.set("repo", params.repo);
   if (params?.responseTail) qs.set("responseTail", params.responseTail);
 
   const controller = new AbortController();

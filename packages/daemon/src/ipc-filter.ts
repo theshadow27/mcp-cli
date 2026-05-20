@@ -3,7 +3,8 @@
  * Extracted from ipc-server.ts to break the event-stream ↔ ipc-server circular dependency.
  */
 
-import { type EventFilterSpec, type MonitorEvent, createEventMatcher } from "@mcp-cli/core";
+import { resolve } from "node:path";
+import { type EventFilterSpec, type MonitorEvent, createEventMatcher, resolveRealpath } from "@mcp-cli/core";
 
 /**
  * Build a server-side predicate from GET /events query params.
@@ -20,8 +21,10 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
   const typeRaw = params.get("type");
   const srcRaw = params.get("src");
   const phase = params.get("phase");
+  const repoRaw = params.get("repo");
+  const repo = repoRaw ? resolveRealpath(resolve(repoRaw)) : null;
 
-  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase) {
+  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase && !repo) {
     return null;
   }
 
@@ -52,6 +55,7 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
       : {}),
     ...(srcRaw ? { src: srcRaw } : {}),
     ...(phase ? { phase } : {}),
+    ...(repo ? { repo } : {}),
   };
 
   const matcher = createEventMatcher(spec);

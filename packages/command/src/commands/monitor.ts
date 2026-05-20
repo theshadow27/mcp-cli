@@ -8,8 +8,9 @@
  * Part of #1486 (monitor epic), #1515 (projection layer).
  */
 
+import { resolve } from "node:path";
 import type { MonitorEvent } from "@mcp-cli/core";
-import { formatMonitorEvent, globToRegex, openEventStream } from "@mcp-cli/core";
+import { formatMonitorEvent, globToRegex, openEventStream, resolveRealpath } from "@mcp-cli/core";
 
 export interface MonitorArgs {
   json: boolean;
@@ -21,6 +22,7 @@ export interface MonitorArgs {
   type: string | undefined;
   src: string | undefined;
   phase: string | undefined;
+  repo: string | undefined;
   since: number | undefined;
   until: string | undefined;
   timeout: number | undefined;
@@ -31,6 +33,7 @@ export interface MonitorArgs {
 export interface MonitorDeps {
   openEventStream: typeof openEventStream;
   isTTY: boolean;
+  getCwd: () => string;
   writeStdout: (line: string) => void;
   writeStderr: (line: string) => void;
   exit: (code: number) => never;
@@ -42,6 +45,7 @@ export interface MonitorDeps {
 const defaultDeps: MonitorDeps = {
   openEventStream,
   isTTY: Boolean(process.stdout.isTTY),
+  getCwd: () => process.cwd(),
   writeStdout: (line) => process.stdout.write(line),
   writeStderr: (line) => process.stderr.write(line),
   exit: (code) => process.exit(code),
@@ -59,6 +63,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
   let type: string | undefined;
   let src: string | undefined;
   let phase: string | undefined;
+  let repo: string | undefined;
   let since: number | undefined;
   let until: string | undefined;
   let timeout: number | undefined;
@@ -121,6 +126,12 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
         error = "--phase requires a value";
         break;
       }
+    } else if (arg === "--repo") {
+      repo = args[++i];
+      if (!repo) {
+        error = "--repo requires a path";
+        break;
+      }
     } else if (arg === "--since") {
       const next = args[++i];
       const n = Number(next);
@@ -166,6 +177,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     type,
     src,
     phase,
+    repo,
     since,
     until,
     timeout,
@@ -191,6 +203,7 @@ Filters (evaluated server-side):
   --type <name>              Event type filter (e.g. session.result)
   --src <pattern>            Source attribution filter
   --phase <name>             Only items in this phase
+  --repo <path>              Scope to repo root (default: current working directory)
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:
@@ -217,6 +230,8 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   const useJson = parsed.json || !d.isTTY;
 
+  const repo = resolveRealpath(resolve(parsed.repo ?? d.getCwd()));
+
   const { events, abort } = d.openEventStream({
     subscribe: parsed.subscribe,
     session: parsed.session,
@@ -225,6 +240,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     type: parsed.type,
     src: parsed.src,
     phase: parsed.phase,
+    repo,
     since: parsed.since,
     responseTail: parsed.responseTail,
   });
