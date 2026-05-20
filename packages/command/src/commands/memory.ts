@@ -10,7 +10,8 @@
  *   mcx memory audit --json       Machine-readable JSON (for retro-skill)
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveModelName, resolveSourceClaudePath } from "@mcp-cli/core";
 import { printError } from "../output";
@@ -39,8 +40,10 @@ export interface MemoryDeps {
   cwd: () => string;
   /** Check whether a directory exists. */
   dirExists: (path: string) => boolean;
-  /** Spawn a process and capture stdout. Returns null on non-zero exit. */
-  spawnCapture: (cmd: string[], opts?: { input?: string; onStderr?: (s: string) => void }) => string | null;
+  /** Spawn a process and capture stdout/stderr/exitCode. Never throws. */
+  spawnCapture: (cmd: string[], opts?: { input?: string }) => { stdout: string; stderr: string; exitCode: number };
+  /** Write content to a temp file and return the path. */
+  writeTempFile: (content: string) => string;
   /** Read a file. Returns null if it doesn't exist or is unreadable. */
   readFile: (path: string) => string | null;
   /** List files in a directory matching an extension. Returns [] if dir missing. */
@@ -118,7 +121,7 @@ export function buildPrompt(
 }
 
 /**
- * Call claude --print with the given prompt and model, return stdout.
+ * Call claude --print with the given prompt and model, return stdout or null on failure.
  */
 function callHaiku(prompt: string, deps: MemoryDeps): string | null {
   const binary = deps.findClaudeBinary();
@@ -127,19 +130,26 @@ function callHaiku(prompt: string, deps: MemoryDeps): string | null {
     return null;
   }
 
-  return deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], {
-    input: prompt,
-    onStderr: (s) => {
-      if (s.trim()) deps.logError(`memory audit: claude stderr: ${s.trim()}`);
-    },
-  });
+  const result = deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], { input: prompt });
+
+  if (result.exitCode !== 0) {
+    const stderrMsg = result.stderr.trim();
+    deps.logError(`memory audit: claude exited with code ${result.exitCode}${stderrMsg ? `: ${stderrMsg}` : ""}`);
+    return null;
+  }
+
+  if (result.stderr.trim()) {
+    deps.logError(`memory audit: claude stderr: ${result.stderr.trim()}`);
+  }
+
+  return result.stdout;
 }
 
 /**
  * Fetch the last N closed GitHub issues as a newline-delimited summary for prompt inclusion.
  */
 function fetchClosedIssues(deps: MemoryDeps, limit = 50): string {
-  const raw = deps.spawnCapture([
+  const result = deps.spawnCapture([
     "gh",
     "issue",
     "list",
@@ -150,9 +160,9 @@ function fetchClosedIssues(deps: MemoryDeps, limit = 50): string {
     "--json",
     "number,title,closedAt",
   ]);
-  if (!raw) return "(gh unavailable)";
+  if (result.exitCode !== 0) return "(gh unavailable)";
   try {
-    const issues = JSON.parse(raw) as Array<{ number: number; title: string; closedAt: string }>;
+    const issues = JSON.parse(result.stdout) as Array<{ number: number; title: string; closedAt: string }>;
     return issues.map((i) => `#${i.number}: ${i.title} (closed ${i.closedAt.slice(0, 10)})`).join("\n");
   } catch {
     return "(parse error)";
@@ -207,15 +217,23 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
   const rawResponse = callHaiku(prompt, deps);
 
   if (!rawResponse) {
-    deps.logError("memory audit: no response from Haiku");
+    deps.logError("memory audit: claude returned empty response");
     deps.exit(1);
   }
 
   const result = parseHaikuResponse(rawResponse);
   if (!result) {
-    deps.logError("memory audit: failed to parse Haiku response");
-    deps.logError("--- raw response ---");
-    deps.logError(rawResponse);
+    const head = rawResponse.slice(0, 50);
+    const tail = rawResponse.length > 100 ? rawResponse.slice(-50) : "";
+    const preview = tail ? `${head}…${tail}` : head;
+    deps.logError(`memory audit: failed to parse Haiku response (${rawResponse.length} chars)`);
+    deps.logError(`  preview: ${preview}`);
+    try {
+      const tmpPath = deps.writeTempFile(rawResponse);
+      deps.logError(`  full response saved to: ${tmpPath}`);
+    } catch {
+      // disk full / permissions — preview above is the best we can do
+    }
     deps.exit(1);
   }
 
@@ -271,11 +289,16 @@ export function defaultDeps(): MemoryDeps {
         stderr: "pipe",
         stdin: opts?.input ? Buffer.from(opts.input) : undefined,
       });
-      if (r.exitCode !== 0) {
-        opts?.onStderr?.(r.stderr.toString());
-        return null;
-      }
-      return r.stdout.toString();
+      return {
+        stdout: r.stdout.toString(),
+        stderr: r.stderr.toString(),
+        exitCode: r.exitCode ?? 1,
+      };
+    },
+    writeTempFile: (content) => {
+      const path = join(tmpdir(), `memory-audit-response-${Date.now()}.txt`);
+      writeFileSync(path, content, "utf-8");
+      return path;
     },
     readFile: (path) => {
       try {
