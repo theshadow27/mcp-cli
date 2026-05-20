@@ -89,3 +89,23 @@ Sprint 56 cleared the orchestrator-UX polish stack (13 PRs in ~78 min). Sprint 5
 - **#2023 scope**: 1.5K LOC heavy. If the worker overruns into typegen-from-OpenAPI territory, narrow to hand-written types and file the codegen as a follow-up. Hand-written is fine for v1 per the issue body.
 - **#2103 investigation slot**: per investigations.md, gate's hard-fail outcome is `needs-attention`. Sprint 52 paid 2 slots on flake gates that came back partial. Confidence here is moderate — body has a plausible mechanism (CI runner timing on process-lifecycle assertions) and a concrete fix shape (poll-with-deadline). One slot of investigation risk accepted.
 - **Monitor cluster (#1561 → #1560 + #1563)**: 3 PRs serialized on one file. If #1561 takes longer than median sonnet, the cluster bottlenecks Batch 3. Watch for this; consider folding #1560 into #1561 mid-sprint if needed.
+
+## Results
+
+- **Released**: v1.10.0 — `mcx memory audit` is a new top-level command; minor bump.
+- **PRs merged**: 14 (#2118 #2119 #2120 #2123 #2124 #2125 #2126 #2132 #2133 #2134 #2136 #2138 #2139 #2141)
+- **Issues closed**: 14 sprint items (one closed pre-impl as already-done in PR #2080: #2069)
+- **Issues dropped**: 0 from plan. Excluded picks (#1912, #1964, #2022 etc.) deferred to sprint 58 as planned.
+- **New issues filed during sprint**: 7
+  - **#2121** — investigations.md spawn template missing `--allow Bash` (procedural, sprint-skill doc fix)
+  - **#2129** — false-positive Edit/Write permission_request events flooding monitor stream
+  - **#2130** — auto-resolve Copilot review threads via GraphQL resolveReviewThread mutation (user-requested follow-up)
+  - **#2131** — wire `mcx memory audit` into retro.md memory-pruning step (meta, surfaced by #1945 worker self-revert)
+  - **#2135** — production-side race in `ensureConnected`: childPid capture must precede event-loop yield (split off from #2103 investigation)
+  - **#2140** — refactor: eliminate adapter layer between `-fn.ts` phase deps and `ctx.gh` (collapse `done-fn.ts` / `qa-fn.ts` / `review-fn.ts` GhResult dup + flag-parsing duplication)
+  - **#2147** — three ctx.gh tail issues from Copilot round 3 (ghPaginated MAX_PAGES truncation, prView 'MERGED' string check, statusCheckRollup REST vs GraphQL semantic diff)
+  - **#2148** — regression: `phase done.ts` reports `ci_not_green` when all checks pass (ctx.gh statusCheckRollup adapter; manifested on #2139 merge)
+- **Sprint wall time**: ~58 min (21:55 → 22:53 EST), 14 parallel sonnet impls + 2 opus (#2023 ctx.gh + #2103 investigation), aggressive parallelism enabled by user-granted overage authorization at quota=100%.
+- **Investigation gate (#2103)**: Cleared on first opus pass (cost ~$4.03, 68 turns). Identified root cause as `childPid===null` race in `ensureConnected`, not the SIGTERM timing window originally hypothesized. Test fix landed in #2138; production race deferred to #2135 per investigations.md "don't bundle production fix into test repair" rule.
+- **Acceptance criterion 3 (#2092 first manual workflow_dispatch)**: macOS-14 and macOS-15 green at 03:14 UTC. macOS-13 still queued at sprint close (36+ min runner queue — GitHub Actions hosted infrastructure delay, not a code issue). Outcome will land asynchronously.
+- **Daemon restart count**: 2 — once at pre-flight (orchestrator hygiene), once mid-wind-down (post-#2023 to expose ctx.gh in running phase scripts; surfaced #2148).
