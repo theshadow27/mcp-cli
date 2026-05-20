@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
-  # Detect whether this PR touches only docs (*.md, .claude/**).
+  # Detect whether this PR touches only docs (*.md, .claude/*).
   # Config files (*.json, .github/**, scripts/**, .git-hooks/**) and all source
   # code are NOT docs-only. push-to-main and workflow_dispatch events are never
   # docs-only. Sets output docs_only=true to let check/coverage/build skip work.
