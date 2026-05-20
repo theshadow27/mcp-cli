@@ -647,15 +647,17 @@ export class PrHandle {
         ...this.reqOpts(),
         method: "POST",
         body: {
-          query: `mutation($prId: ID!, $mergeMethod: PullRequestMergeMethod!) {
-            enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: $mergeMethod }) {
+          query: `mutation($input: EnablePullRequestAutoMergeInput!) {
+            enablePullRequestAutoMerge(input: $input) {
               clientMutationId
             }
           }`,
           variables: {
-            prId: await this.nodeId(),
-            mergeMethod: method.toUpperCase(),
-            clientMutationId: mutationId,
+            input: {
+              pullRequestId: await this.nodeId(),
+              mergeMethod: method.toUpperCase(),
+              clientMutationId: mutationId,
+            },
           },
         },
       });

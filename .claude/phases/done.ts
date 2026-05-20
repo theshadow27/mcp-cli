@@ -81,6 +81,8 @@ defineAlias({
         return pr.state.toUpperCase();
       },
       async spawn(cmd, opts) {
+        // SIGTERM only — no SIGKILL escalation. The old gh.ts wrapper needed it for
+        // `gh` CLI hangs; these spawns run git/bun which handle SIGTERM cleanly.
         const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
         const timer = opts?.timeoutMs
           ? setTimeout(() => { try { proc.kill(); } catch {} }, opts.timeoutMs)
