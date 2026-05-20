@@ -377,6 +377,28 @@ export interface StartDaemonOptions {
 }
 
 /**
+ * Verify SQLite >= 3.38 (required for unixepoch()). On macOS, bun:sqlite
+ * dlopen's /usr/lib/libsqlite3.dylib — macOS 12 Monterey ships 3.37.0 which
+ * lacks unixepoch(). Returns an error message string on failure, null on success.
+ * See #2092.
+ */
+export function checkSqliteVersion(rawDb: import("bun:sqlite").Database): string | null {
+  try {
+    rawDb.query("SELECT unixepoch()").get();
+    return null;
+  } catch {
+    let version = "unknown";
+    try {
+      version = (rawDb.query("SELECT sqlite_version() AS v").get() as { v: string }).v;
+    } catch {
+      // ignore
+    }
+    const hint = process.platform === "darwin" ? " On macOS this means upgrading to 13 Ventura or later." : "";
+    return `[mcpd] SQLite ${version} lacks unixepoch() — SQLite >= 3.38 is required.${hint}`;
+  }
+}
+
+/**
  * Start the daemon and return a handle for lifecycle management.
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
@@ -426,6 +448,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     writePidData(pidFd, pidData);
   } else {
     writeFileSync(options.PID_PATH, JSON.stringify(pidData));
+  }
+
+  // Preflight: verify SQLite >= 3.38 BEFORE opening StateDb — the constructor
+  // runs migrations whose DEFAULT (unixepoch()) expressions would throw first
+  // on macOS 12 Monterey (SQLite 3.37.0), swallowing the friendly error. See #2092.
+  {
+    const { Database } = await import("bun:sqlite");
+    const rawDb = new Database(options.DB_PATH, { create: true });
+    const sqliteError = checkSqliteVersion(rawDb);
+    rawDb.close();
+    if (sqliteError) {
+      logger.error(sqliteError);
+      throw new Error(sqliteError);
+    }
   }
 
   // Open SQLite database
