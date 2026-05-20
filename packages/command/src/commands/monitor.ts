@@ -8,8 +8,9 @@
  * Part of #1486 (monitor epic), #1515 (projection layer).
  */
 
+import { resolve } from "node:path";
 import type { MonitorEvent } from "@mcp-cli/core";
-import { formatMonitorEvent, globToRegex, openEventStream } from "@mcp-cli/core";
+import { formatMonitorEvent, globToRegex, openEventStream, resolveRealpath } from "@mcp-cli/core";
 
 export interface MonitorArgs {
   json: boolean;
@@ -229,7 +230,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   const useJson = parsed.json || !d.isTTY;
 
-  const repo = parsed.repo ?? d.getCwd();
+  const repo = resolveRealpath(resolve(parsed.repo ?? d.getCwd()));
 
   const { events, abort } = d.openEventStream({
     subscribe: parsed.subscribe,

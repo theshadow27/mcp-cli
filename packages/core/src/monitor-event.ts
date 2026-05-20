@@ -134,7 +134,7 @@ export interface MonitorEventBase {
   workItemId?: string;
   sessionId?: string;
   prNumber?: number;
-  /** Repo root path this event is scoped to. Present on session events; absent on global events (mail, quota, heartbeats). */
+  /** Repo root path this event is scoped to. Present when known / when session is repo-scoped; absent on global events (mail, quota, heartbeats) and sessions started without a configured or discoverable repo root. */
   repoRoot?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];

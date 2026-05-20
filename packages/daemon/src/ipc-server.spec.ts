@@ -4097,6 +4097,8 @@ describe("IpcServer HTTP transport", () => {
 
 // ── buildEventFilter unit tests ──
 
+import { resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import { buildEventFilter } from "./ipc-server";
 
 describe("buildEventFilter", () => {
@@ -4196,10 +4198,13 @@ describe("buildEventFilter", () => {
   });
 
   test("repo filter matches repoRoot field", () => {
-    const filter = buildEventFilter(params({ repo: "/home/user/myrepo" }));
+    // Use canonical paths — /home on macOS is a symlink; resolveRealpath matches daemon normalisation
+    const REPO = resolveRealpath(resolve("/home/user/myrepo"));
+    const OTHER = resolveRealpath(resolve("/home/user/other"));
+    const filter = buildEventFilter(params({ repo: REPO }));
     expect(filter).not.toBeNull();
-    expect(filter?.({ repoRoot: "/home/user/myrepo", event: "session.result" })).toBe(true);
-    expect(filter?.({ repoRoot: "/home/user/other", event: "session.result" })).toBe(false);
+    expect(filter?.({ repoRoot: REPO, event: "session.result" })).toBe(true);
+    expect(filter?.({ repoRoot: OTHER, event: "session.result" })).toBe(false);
   });
 
   test("repo filter passes through events with no repoRoot", () => {
