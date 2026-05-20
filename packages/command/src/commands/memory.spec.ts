@@ -130,13 +130,18 @@ function makeDeps(overrides: Partial<MemoryDeps> = {}): MemoryDeps & { logs: str
     dirExists: () => true,
     spawnCapture: (cmd) => {
       if (cmd[0] === "gh") {
-        return JSON.stringify([{ number: 99, title: "Fix old rule", closedAt: "2026-01-01T00:00:00Z" }]);
+        return {
+          stdout: JSON.stringify([{ number: 99, title: "Fix old rule", closedAt: "2026-01-01T00:00:00Z" }]),
+          stderr: "",
+          exitCode: 0,
+        };
       }
       if (cmd.some((s) => s.includes("claude"))) {
-        return JSON.stringify(auditResult);
+        return { stdout: JSON.stringify(auditResult), stderr: "", exitCode: 0 };
       }
-      return null;
+      return { stdout: "", stderr: "unknown command", exitCode: 1 };
     },
+    writeTempFile: (_content) => "/tmp/memory-audit-response-test.txt",
     readFile: (path) => {
       if (path.endsWith("MEMORY.md")) return "# Memory\n- [feedback_test](feedback_test.md)";
       if (path.endsWith("feedback_test.md")) return "---\nname: test\n---\nrule content";
@@ -191,24 +196,69 @@ describe("runMemoryAudit", () => {
     await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
   });
 
-  test("exits when Haiku returns null", async () => {
+  test("exits when Haiku returns non-zero exit code", async () => {
     const deps = makeDeps({
       spawnCapture: (cmd) => {
-        if (cmd[0] === "gh") return "[]";
-        return null; // claude returns null
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "authentication failed", exitCode: 1 };
       },
     });
     await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    expect(deps.errors.join("\n")).toContain("authentication failed");
+    expect(deps.errors.join("\n")).toContain("code 1");
+  });
+
+  test("logs stderr from failed claude subprocess without conflating with parse failure", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "model not found", exitCode: 2 };
+      },
+    });
+    await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("model not found");
+    expect(errLog).not.toContain("no response from Haiku");
+    expect(errLog).not.toContain("failed to parse");
   });
 
   test("exits when Haiku returns unparseable response", async () => {
     const deps = makeDeps({
       spawnCapture: (cmd) => {
-        if (cmd[0] === "gh") return "[]";
-        return "I cannot help with that."; // not JSON
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "I cannot help with that.", stderr: "", exitCode: 0 };
       },
     });
     await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+  });
+
+  test("parse failure shows truncated preview and temp file path", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "I cannot help with that.", stderr: "", exitCode: 0 };
+      },
+    });
+    await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("failed to parse Haiku response");
+    expect(errLog).toContain("preview:");
+    expect(errLog).toContain("full response saved to:");
+    expect(errLog).toContain("/tmp/memory-audit-response-test.txt");
+  });
+
+  test("parse failure does not dump full response to stderr", async () => {
+    const longResponse = "x".repeat(10000);
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: longResponse, stderr: "", exitCode: 0 };
+      },
+    });
+    await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    const totalErrLen = deps.errors.join("\n").length;
+    // Full 10KB response must not appear in stderr
+    expect(totalErrLen).toBeLessThan(500);
   });
 
   test("handles malformed gh JSON gracefully", async () => {
@@ -218,13 +268,29 @@ describe("runMemoryAudit", () => {
     };
     const deps = makeDeps({
       spawnCapture: (cmd) => {
-        if (cmd[0] === "gh") return "{malformed json}"; // parse error in fetchClosedIssues
-        if (cmd.some((s) => s.includes("claude"))) return JSON.stringify(result);
-        return null;
+        if (cmd[0] === "gh") return { stdout: "{malformed json}", stderr: "", exitCode: 0 };
+        if (cmd.some((s) => s.includes("claude"))) return { stdout: JSON.stringify(result), stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
     await runMemoryAudit({ json: false }, deps);
     // Should still complete even with broken gh output
+    expect(deps.logs.join("\n")).toContain("feedback_test.md");
+  });
+
+  test("gh unavailable (non-zero exit) is handled gracefully", async () => {
+    const result: AuditResult = {
+      findings: [{ file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null }],
+      top_prune_candidates: [],
+    };
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "", stderr: "gh: not found", exitCode: 127 };
+        if (cmd.some((s) => s.includes("claude"))) return { stdout: JSON.stringify(result), stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    await runMemoryAudit({ json: false }, deps);
     expect(deps.logs.join("\n")).toContain("feedback_test.md");
   });
 
@@ -235,9 +301,9 @@ describe("runMemoryAudit", () => {
     };
     const deps = makeDeps({
       spawnCapture: (cmd) => {
-        if (cmd[0] === "gh") return "[]";
-        if (cmd.some((s) => s.includes("claude"))) return JSON.stringify(result);
-        return null;
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        if (cmd.some((s) => s.includes("claude"))) return { stdout: JSON.stringify(result), stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
     await runMemoryAudit({ json: false }, deps);
