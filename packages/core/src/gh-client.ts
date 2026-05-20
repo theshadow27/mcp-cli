@@ -173,7 +173,8 @@ export interface GhAllCommentSurfaces {
 export interface GhPrEditOptions {
   title?: string;
   body?: string;
-  labels?: string[];
+  // labels is intentionally absent: PATCH /pulls/{n} does not accept labels.
+  // Use addLabels / removeLabels which route through the issues endpoint.
   addLabels?: string[];
   removeLabels?: string[];
 }
@@ -324,7 +325,6 @@ async function ghRequest(path: string, opts: RequestOptions): Promise<Response> 
   const init: RequestInit = {
     method: opts.method ?? "GET",
     headers: makeHeaders(opts.token),
-    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   };
   if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
@@ -336,6 +336,9 @@ async function ghRequest(path: string, opts: RequestOptions): Promise<Response> 
       const backoff = INITIAL_BACKOFF_MS * 2 ** (attempt - 1) + Math.random() * 200;
       await new Promise((r) => setTimeout(r, backoff));
     }
+    // Fresh signal per attempt so a timeout on attempt N doesn't abort attempt N+1.
+    // If the caller supplied their own signal, honour it as-is (they manage its lifetime).
+    init.signal = opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 
     let resp: Response;
     try {
@@ -613,8 +616,6 @@ export class PrHandle {
     const patchBody: Record<string, unknown> = {};
     if (opts.title !== undefined) patchBody.title = opts.title;
     if (opts.body !== undefined) patchBody.body = opts.body;
-    if (opts.labels !== undefined) patchBody.labels = opts.labels;
-
     if (Object.keys(patchBody).length > 0) {
       await ghVoid(`/repos/${this.o}/${this.r}/pulls/${this.n}`, {
         ...this.reqOpts(),
