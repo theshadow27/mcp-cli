@@ -377,6 +377,28 @@ export interface StartDaemonOptions {
 }
 
 /**
+ * Verify SQLite >= 3.38 (required for unixepoch()). On macOS, bun:sqlite
+ * dlopen's /usr/lib/libsqlite3.dylib — macOS 12 Monterey ships 3.37.0 which
+ * lacks unixepoch(). Returns an error message string on failure, null on success.
+ * See #2092.
+ */
+export function checkSqliteVersion(rawDb: import("bun:sqlite").Database): string | null {
+  try {
+    rawDb.query("SELECT unixepoch()").get();
+    return null;
+  } catch {
+    let version = "unknown";
+    try {
+      version = (rawDb.query("SELECT sqlite_version() AS v").get() as { v: string }).v;
+    } catch {
+      // ignore
+    }
+    const hint = process.platform === "darwin" ? " On macOS this means upgrading to 13 Ventura or later." : "";
+    return `[mcpd] SQLite ${version} lacks unixepoch() — SQLite >= 3.38 is required.${hint}`;
+  }
+}
+
+/**
  * Start the daemon and return a handle for lifecycle management.
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
@@ -431,6 +453,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
+
+  // Preflight: verify SQLite >= 3.38 (required for unixepoch()). See #2092.
+  const sqliteError = checkSqliteVersion(db.getDatabase());
+  if (sqliteError) {
+    logger.error(sqliteError);
+    process.exit(1);
+  }
 
   // Clean up DB records for sessions whose processes are dead.
   // Alive processes are preserved for restoreActiveSessions() to pick up.

@@ -25,6 +25,18 @@ $ mcx grep page
   14 tool(s)
 ```
 
+## Supported platforms
+
+| Platform | Supported versions | Notes |
+|---|---|---|
+| **macOS** | 13 Ventura, 14 Sonoma, 15 Sequoia | Current + 2 prior major versions (Apple's own support window) |
+| **Linux** | Any glibc ≥ 2.17 | Matches Bun's minimum requirement |
+| **Windows** | Not supported | — |
+
+**Bun ≥ 1.3.14** is required on all platforms.
+
+**macOS SQLite note:** `bun:sqlite` on macOS uses the OS-bundled `/usr/lib/libsqlite3.dylib` rather than embedding SQLite (Linux statically embeds). The daemon requires SQLite ≥ 3.38 for `unixepoch()` support. macOS 13 Ventura ships SQLite 3.39.5, which satisfies this. macOS 12 Monterey ships 3.37.0 and is unsupported.
+
 ## Install
 
 **One-line installer** (macOS/Linux):
