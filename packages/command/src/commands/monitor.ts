@@ -146,8 +146,8 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     } else if (arg === "--max-events") {
       const next = args[++i];
       const n = Number(next);
-      if (!next || Number.isNaN(n)) {
-        error = "--max-events requires a number";
+      if (!next || Number.isNaN(n) || n < 1) {
+        error = "--max-events requires a positive integer";
         break;
       }
       maxEvents = n;
@@ -252,6 +252,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
   });
 
   let count = 0;
+  let terminatorSatisfied = false;
 
   try {
     for await (const event of events) {
@@ -264,10 +265,14 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
       count++;
 
       if (parsed.maxEvents !== undefined && count >= parsed.maxEvents) {
+        terminatorSatisfied = true;
+        abort();
         break;
       }
 
       if (parsed.until !== undefined && (event as MonitorEvent).event === parsed.until) {
+        terminatorSatisfied = true;
+        abort();
         break;
       }
     }
@@ -282,5 +287,14 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+
+  if (!done && !terminatorSatisfied) {
+    const hasTerminator = parsed.until !== undefined || parsed.maxEvents !== undefined;
+    if (hasTerminator) {
+      done = true;
+      d.writeStderr("monitor: stream ended before terminator\n");
+      d.exit(2);
+    }
   }
 }

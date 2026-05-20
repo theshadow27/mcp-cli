@@ -366,6 +366,14 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--max-events", "abc"]).error).toBeTruthy();
   });
 
+  test("--max-events 0 is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "0"]).error).toBeTruthy();
+  });
+
+  test("--max-events negative is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "-1"]).error).toBeTruthy();
+  });
+
   test("--help sets error to 'help'", () => {
     expect(parseMonitorArgs(["--help"]).error).toBe("help");
     expect(parseMonitorArgs(["-h"]).error).toBe("help");
@@ -618,6 +626,173 @@ describe("cmdMonitor", () => {
     };
 
     const promise = cmdMonitor(["--timeout", "1"], deps);
+    capturedTimerFn?.();
+    await promise;
+
+    expect(abortCalled).toBe(true);
+    expect(exitCalls).toEqual([0]);
+  });
+
+  test("--until satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(PR_MERGED, { category: "work_item" })];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(abortCalled).toBe(true);
+  });
+
+  test("--max-events satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(abortCalled).toBe(true);
+  });
+
+  test("--until set but stream ends before event → exit 2 with message", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--max-events set but stream ends with fewer events → exit 2 with message", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--max-events", "5"], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--until satisfied → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(PR_MERGED, { category: "work_item" })];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--max-events satisfied → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("no terminator set, stream exhausts → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--timeout fires before --until event → exit 0, not exit 2", async () => {
+    let abortCalled = false;
+    let resolveStream: (() => void) | undefined;
+
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+
+    const exitCalls: number[] = [];
+    let capturedTimerFn: (() => void) | undefined;
+
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: hangingStream(),
+        abort: () => {
+          abortCalled = true;
+          resolveStream?.();
+        },
+      }),
+      isTTY: true,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+      createTimeout: (fn, _ms) => {
+        capturedTimerFn = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor(["--timeout", "1", "--until", PR_MERGED], deps);
     capturedTimerFn?.();
     await promise;
 
