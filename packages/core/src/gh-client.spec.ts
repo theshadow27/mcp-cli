@@ -491,7 +491,7 @@ describe("auth resolution", () => {
       expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("bearer env-token");
     } finally {
       if (original !== undefined) process.env.GH_TOKEN = original;
-      else delete process.env.GH_TOKEN;
+      else Reflect.deleteProperty(process.env, "GH_TOKEN");
     }
   });
 });
