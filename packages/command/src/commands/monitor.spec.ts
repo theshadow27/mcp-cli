@@ -405,6 +405,16 @@ describe("parseMonitorArgs error branches", () => {
   test("--repo without value is an error", () => {
     expect(parseMonitorArgs(["--repo"]).error).toBeTruthy();
   });
+
+  test("--all-repos sets allRepos=true", () => {
+    const parsed = parseMonitorArgs(["--all-repos"]);
+    expect(parsed.allRepos).toBe(true);
+  });
+
+  test("allRepos defaults to false", () => {
+    const parsed = parseMonitorArgs([]);
+    expect(parsed.allRepos).toBe(false);
+  });
 });
 
 // ── cmdMonitor unit tests (dependency-injected) ──
@@ -908,5 +918,31 @@ describe("cmdMonitor", () => {
     });
     await cmdMonitor([], deps);
     expect(capturedParams?.repo).toBe("/default/repo");
+  });
+
+  test("--all-repos passes no repo to openEventStream", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--all-repos"], deps);
+    expect(capturedParams?.repo).toBeUndefined();
+  });
+
+  test("--all-repos overrides --repo", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--all-repos", "--repo", "/custom/repo"], deps);
+    expect(capturedParams?.repo).toBeUndefined();
   });
 });

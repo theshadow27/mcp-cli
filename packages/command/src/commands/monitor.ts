@@ -23,6 +23,7 @@ export interface MonitorArgs {
   src: string | undefined;
   phase: string | undefined;
   repo: string | undefined;
+  allRepos: boolean;
   since: number | undefined;
   until: string | undefined;
   timeout: number | undefined;
@@ -64,6 +65,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
   let src: string | undefined;
   let phase: string | undefined;
   let repo: string | undefined;
+  let allRepos = false;
   let since: number | undefined;
   let until: string | undefined;
   let timeout: number | undefined;
@@ -132,6 +134,8 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
         error = "--repo requires a path";
         break;
       }
+    } else if (arg === "--all-repos") {
+      allRepos = true;
     } else if (arg === "--since") {
       const next = args[++i];
       const n = Number(next);
@@ -178,6 +182,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     src,
     phase,
     repo,
+    allRepos,
     since,
     until,
     timeout,
@@ -204,6 +209,7 @@ Filters (evaluated server-side):
   --src <pattern>            Source attribution filter
   --phase <name>             Only items in this phase
   --repo <path>              Scope to repo root (default: current working directory)
+  --all-repos               Disable repo scoping — show events from all repos
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:
@@ -230,7 +236,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   const useJson = parsed.json || !d.isTTY;
 
-  const repo = resolveRealpath(resolve(parsed.repo ?? d.getCwd()));
+  const repo = parsed.allRepos ? undefined : resolveRealpath(resolve(parsed.repo ?? d.getCwd()));
 
   const { events, abort } = d.openEventStream({
     subscribe: parsed.subscribe,
