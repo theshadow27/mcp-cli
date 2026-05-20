@@ -9,7 +9,7 @@
  */
 
 import type { MonitorEvent } from "@mcp-cli/core";
-import { formatMonitorEvent, openEventStream } from "@mcp-cli/core";
+import { formatMonitorEvent, globToRegex, openEventStream } from "@mcp-cli/core";
 
 export interface MonitorArgs {
   json: boolean;
@@ -194,7 +194,7 @@ Filters (evaluated server-side):
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:
-  --until <type>             Exit when this event type is seen
+  --until <pattern>          Exit when this event type is seen (glob: pr.*, session.*)
   --timeout <seconds>        Exit after N seconds
   --max-events <n>           Exit after N events
 
@@ -253,6 +253,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   let count = 0;
   let terminatorSatisfied = false;
+  const untilRegex = parsed.until !== undefined ? globToRegex(parsed.until) : undefined;
 
   try {
     for await (const event of events) {
@@ -270,7 +271,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
         break;
       }
 
-      if (parsed.until !== undefined && (event as MonitorEvent).event === parsed.until) {
+      if (untilRegex?.test((event as MonitorEvent).event)) {
         terminatorSatisfied = true;
         abort();
         break;

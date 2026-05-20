@@ -800,6 +800,42 @@ describe("cmdMonitor", () => {
     expect(exitCalls).toEqual([0]);
   });
 
+  test("--until glob pattern matches prefix (pr.*)", async () => {
+    const events = [
+      makeEvent(SESSION_RESULT, {}),
+      makeEvent(PR_MERGED, { category: "work_item" }),
+      makeEvent(SESSION_ENDED, {}),
+    ];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--until", "pr.*"], deps);
+    expect(stdout.length).toBe(2); // SESSION_RESULT + PR_MERGED
+  });
+
+  test("--until glob pattern does not match unrelated events", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", "pr.*"], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--until wildcard * matches any event", async () => {
+    const events = [makeEvent(SESSION_RESULT, {})];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--until", "*"], deps);
+    expect(stdout.length).toBe(1);
+  });
+
   test("non-EPIPE stdout errors do not trigger finish", async () => {
     let capturedErrHandler: ((err: Error) => void) | undefined;
     const exitCalls: number[] = [];
