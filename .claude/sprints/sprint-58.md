@@ -1,6 +1,6 @@
 # Sprint 58
 
-> Planned 2026-05-19 23:20 EST. Started 2026-05-19 23:35 EST. Target: 15 issues.
+> Planned 2026-05-19 23:20 EST. Started 2026-05-19 23:35 EST. Ended 2026-05-20 01:22 EST. Target: 15 issues.
 
 ## Goal
 
@@ -193,3 +193,13 @@ race noted during introspection.
   been heavy" issue surfaces (e.g., #2147 turns out to need GraphQL
   rewrite), it gets re-classified mid-sprint and may need an opus
   promotion. Acceptable risk — current scope estimates are conservative.
+
+## Results
+
+- **Released**: v1.10.1 (sprint container PR #2158, tag at merged sha post-retro)
+- **PRs merged**: 14 (#2159 #2160 #2161 #2162 #2163 #2164 #2165 #2167 #2168 #2170 #2171 #2172 #2174 #2178)
+- **Issues closed**: 15/15 planned — all 15 sprint issues closed (14 via PR merge, #2122 closed-as-already-resolved by PR #2136 from sprint 57)
+- **Issues dropped**: 0
+- **New issues filed**: 4 — #2166 (perf followup for #2150 — Bun.which + stdio:ignore), #2169 (gh-client polish followup from #2147 Copilot review), #2173 (DOTW rule for `.js` extension in local imports — sister of #2144), #2176 (flaky `server-pool.spec.ts` timeouts surfaced during #2143 QA), #2177 (process gap: orchestrator merged #2143 with stale `qa:fail` label after rerun cleared CI; should have flipped label to `qa:pass` first)
+- **QA rounds**: 4 PRs needed repair (#2151, #2143, #2149, #2154); two were single-round (`#2151`, `#2154`); two ran two rounds (`#2143` flaky-CI cleared on rerun, `#2149` needed default consoleLogger to avoid no-op warn). No `needs-attention` exits.
+- **Notable**: zero `needs-attention` exits; the ctx.gh tail (#2147 → #2144/#2149/#2154/#2155) all landed cleanly with serialized rebases; the planned hot-shared-file conflict on gh-client.ts surfaced once (#2174 went DIRTY after #2154 merge) and the repair session rebased successfully on a single send.
