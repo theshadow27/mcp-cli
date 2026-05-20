@@ -1,7 +1,44 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { SessionStateEnum } from "@mcp-cli/core";
-import { pollUntil } from "../../../../test/harness";
-import { StuckDetector, type StuckDetectorConfig, type StuckEvent } from "./stuck-detector";
+import { StuckDetector, type StuckDetectorClock, type StuckDetectorConfig, type StuckEvent } from "./stuck-detector";
+
+// ── FakeClock ──────────────────────────────────────────────────────────────
+
+class FakeClock implements StuckDetectorClock {
+  private _now = 0;
+  private nextId = 1;
+  private timers: { id: number; at: number; callback: () => void }[] = [];
+
+  now(): number {
+    return this._now;
+  }
+
+  setTimeout(callback: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.timers.push({ id, at: this._now + ms, callback });
+    return id;
+  }
+
+  clearTimeout(timer: unknown): void {
+    this.timers = this.timers.filter((t) => t.id !== timer);
+  }
+
+  /** Advance virtual time by `ms` milliseconds, firing expired timers in order. */
+  advance(ms: number): void {
+    const target = this._now + ms;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const next = this.timers.filter((t) => t.at <= target).sort((a, b) => a.at - b.at)[0];
+      if (!next) break;
+      this._now = next.at;
+      this.timers = this.timers.filter((t) => t.id !== next.id);
+      next.callback();
+    }
+    this._now = target;
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 const FAST_CONFIG: StuckDetectorConfig = {
   thresholdsMs: [100, 200, 300],
@@ -17,6 +54,7 @@ interface MockSnapshot {
 }
 
 function setup(overrides?: Partial<MockSnapshot>) {
+  const clock = new FakeClock();
   const snapshot: MockSnapshot = {
     state: "active",
     tokens: 100,
@@ -31,246 +69,259 @@ function setup(overrides?: Partial<MockSnapshot>) {
     FAST_CONFIG,
     () => snapshot,
     (e) => events.push(e),
+    clock,
   );
-  return { detector, snapshot, events };
+  return { detector, snapshot, events, clock };
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────
+
 describe("StuckDetector", () => {
-  let detector: StuckDetector | null = null;
+  test("fires tier 1 after first threshold", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-  afterEach(() => {
-    detector?.dispose();
-    detector = null;
-  });
-
-  test("fires tier 1 after first threshold", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
-
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
     expect(events[0].tier).toBe(1);
     expect(events[0].sessionId).toBe("test-session");
-    expect(events[0].sinceMs).toBeGreaterThanOrEqual(90);
+    expect(events[0].sinceMs).toBeGreaterThanOrEqual(100);
+
+    detector.dispose();
   });
 
-  test("escalates through tiers 1→2→3", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("escalates through tiers 1→2→3", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-    await pollUntil(() => events.length >= 3, 2000);
+    clock.advance(300); // past all three thresholds
+    expect(events).toHaveLength(3);
     expect(events[0].tier).toBe(1);
     expect(events[1].tier).toBe(2);
     expect(events[2].tier).toBe(3);
+
+    detector.dispose();
   });
 
-  test("repeats tier 3 after all thresholds exhausted", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("repeats tier 3 after all thresholds exhausted", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-    await pollUntil(() => events.length >= 4, 3000);
+    clock.advance(600); // 300ms thresholds + 300ms repeatMs
+    expect(events.length).toBeGreaterThanOrEqual(4);
     expect(events[2].tier).toBe(3);
     expect(events[3].tier).toBe(3);
+
+    detector.dispose();
   });
 
-  test("progress resets timer — no stuck event fires", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("progress resets timer — no stuck event fires", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-    // Keep recording progress faster than the threshold
-    const interval = setInterval(() => d.recordProgress(100), 50);
-    await Bun.sleep(250);
-    clearInterval(interval);
+    // Record progress at 50ms (before threshold), then advance past original threshold
+    clock.advance(50);
+    detector.recordProgress(100);
+    clock.advance(80); // 50+80=130ms total, but timer reset at 50ms so only 80ms elapsed
 
-    expect(events.length).toBe(0);
+    expect(events).toHaveLength(0);
+
+    detector.dispose();
   });
 
-  test("progress resets tier counter — restarts from tier 1", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("progress resets tier counter — restarts from tier 1", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
     // Wait for tier 1
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
     expect(events[0].tier).toBe(1);
 
     // Record progress — should reset
-    d.recordProgress(200);
+    detector.recordProgress(200);
 
-    // Next event should be tier 1 again, not tier 2
-    await pollUntil(() => events.length >= 2, 2000);
+    // Next event should be tier 1 again
+    clock.advance(100);
+    expect(events).toHaveLength(2);
     expect(events[1].tier).toBe(1);
+
+    detector.dispose();
   });
 
-  test("permission request suspends detection", async () => {
-    const { detector: d, snapshot, events } = setup();
-    detector = d;
+  test("permission request suspends detection", () => {
+    const { detector, snapshot, events, clock } = setup();
 
     // Start with permission pending
     snapshot.pendingPermissionCount = 1;
     snapshot.state = "waiting_permission";
-    d.recordProgress(100);
+    detector.recordProgress(100);
 
-    // Wait well past threshold — should not fire
-    await Bun.sleep(250);
-    expect(events.length).toBe(0);
+    // Advance past threshold — timer fires but is re-scheduled due to pending permission
+    clock.advance(100);
+    expect(events).toHaveLength(0);
 
-    // Clear permission — detector should eventually fire
+    // Clear permission — next scheduled evaluation should fire
     snapshot.pendingPermissionCount = 0;
     snapshot.state = "active";
 
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100); // advance again to trigger the rescheduled timer
+    expect(events).toHaveLength(1);
     expect(events[0].tier).toBe(1);
+
+    detector.dispose();
   });
 
-  test("non-active state stops detection", async () => {
-    const { detector: d, snapshot, events } = setup({ state: "idle" });
-    detector = d;
-    d.recordProgress(100);
+  test("non-active state stops detection", () => {
+    const { detector, events, clock } = setup({ state: "idle" });
+    detector.recordProgress(100);
 
-    await Bun.sleep(250);
-    expect(events.length).toBe(0);
+    clock.advance(500);
+    expect(events).toHaveLength(0);
+
+    detector.dispose();
   });
 
-  test("tokenDelta tracks token changes between emissions", async () => {
-    const { detector: d, snapshot, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("tokenDelta tracks token changes between emissions", () => {
+    const { detector, snapshot, events, clock } = setup();
+    detector.recordProgress(100);
 
     // Add some tokens before tier 1 fires
     snapshot.tokens = 112;
 
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100); // tier 1 fires
+    expect(events).toHaveLength(1);
     expect(events[0].tokenDelta).toBe(12);
 
     // No more tokens before tier 2
-    await pollUntil(() => events.length >= 2, 2000);
+    clock.advance(100); // tier 2 fires
+    expect(events).toHaveLength(2);
     expect(events[1].tokenDelta).toBe(0);
+
+    detector.dispose();
   });
 
-  test("lastTool and lastToolError from snapshot", async () => {
-    const { detector: d, snapshot, events } = setup();
-    detector = d;
-    snapshot.lastToolCall = { name: "Monitor", errorMessage: "No matching rule", at: Date.now() };
-    d.recordProgress(100);
+  test("lastTool and lastToolError from snapshot", () => {
+    const { detector, snapshot, events, clock } = setup();
+    snapshot.lastToolCall = { name: "Monitor", errorMessage: "No matching rule", at: 0 };
+    detector.recordProgress(100);
 
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
     expect(events[0].lastTool).toBe("Monitor");
     expect(events[0].lastToolError).toBe("No matching rule");
+
+    detector.dispose();
   });
 
-  test("dispose prevents further emissions", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("dispose prevents further emissions", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-    d.dispose();
-    expect(d.isDisposed).toBe(true);
+    detector.dispose();
+    expect(detector.isDisposed).toBe(true);
 
-    await Bun.sleep(200);
-    expect(events.length).toBe(0);
+    clock.advance(500);
+    expect(events).toHaveLength(0);
   });
 
   test("dispose is idempotent", () => {
-    const { detector: d } = setup();
-    detector = d;
-    d.dispose();
-    d.dispose();
-    expect(d.isDisposed).toBe(true);
+    const { detector } = setup();
+    detector.dispose();
+    detector.dispose();
+    expect(detector.isDisposed).toBe(true);
   });
 
-  test("no timer leak after dispose", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("no timer leak after dispose", () => {
+    const { detector, events, clock } = setup();
+    detector.recordProgress(100);
 
-    // Dispose mid-flight
-    d.dispose();
+    detector.dispose();
 
-    // Wait past all thresholds
-    await Bun.sleep(500);
-    expect(events.length).toBe(0);
+    clock.advance(600);
+    expect(events).toHaveLength(0);
   });
 
-  test("recordProgress after dispose is a no-op", async () => {
-    const { detector: d, events } = setup();
-    detector = d;
-    d.dispose();
-    d.recordProgress(100);
+  test("recordProgress after dispose is a no-op", () => {
+    const { detector, events, clock } = setup();
+    detector.dispose();
+    detector.recordProgress(100);
 
-    await Bun.sleep(200);
-    expect(events.length).toBe(0);
+    clock.advance(300);
+    expect(events).toHaveLength(0);
   });
 
-  test("no duplicate emissions on flapping", async () => {
-    const { detector: d, events, snapshot } = setup();
-    detector = d;
-    d.recordProgress(100);
+  test("no duplicate emissions on flapping", () => {
+    const { detector, snapshot, events, clock } = setup();
+    detector.recordProgress(100);
 
     // Let tier 1 fire
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
 
-    // Flap: permission blocks, then unblocks rapidly
+    // Flap: permission blocks (timer fires but reschedules), then unblocks
     snapshot.state = "waiting_permission";
     snapshot.pendingPermissionCount = 1;
-    await Bun.sleep(30);
+    clock.advance(50); // mid-flight timer fires, reschedules
     snapshot.state = "active";
     snapshot.pendingPermissionCount = 0;
 
     // Should eventually get tier 2, not a duplicate tier 1
-    await pollUntil(() => events.length >= 2, 2000);
+    clock.advance(100);
+    expect(events.length).toBeGreaterThanOrEqual(2);
     expect(events[1].tier).toBe(2);
+
+    detector.dispose();
   });
 
-  test("active tool call suppresses stuck events (false positive: long bun test)", async () => {
-    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
-    detector = d;
-    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
-    d.recordProgress(100);
+  test("active tool call suppresses stuck events", () => {
+    const { detector, snapshot, events, clock } = setup({ hasActiveToolCall: true });
+    snapshot.lastToolCall = { name: "Bash", at: 0 };
+    detector.recordProgress(100);
 
-    // Wait well past all thresholds — no event should fire while tool is active
-    await Bun.sleep(500);
-    expect(events.length).toBe(0);
+    clock.advance(600);
+    expect(events).toHaveLength(0);
+
+    detector.dispose();
   });
 
-  test("stuck fires after active tool call completes with no progress (true positive: frozen session)", async () => {
-    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
-    detector = d;
-    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
-    d.recordProgress(100);
+  test("stuck fires after active tool call completes with no progress (true positive: frozen session)", () => {
+    const { detector, snapshot, events, clock } = setup({ hasActiveToolCall: true });
+    snapshot.lastToolCall = { name: "Bash", at: 0 };
+    detector.recordProgress(100);
 
-    // Tool active — no events
-    await Bun.sleep(150);
-    expect(events.length).toBe(0);
+    // Tool active — timer fires but reschedules
+    clock.advance(100);
+    expect(events).toHaveLength(0);
 
-    // Tool completes but session makes no progress (frozen)
+    // Tool completes — next scheduled evaluation fires the stuck event
     snapshot.hasActiveToolCall = false;
-
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
     expect(events[0].tier).toBe(1);
     expect(events[0].lastTool).toBe("Bash");
+
+    detector.dispose();
   });
 
-  test("active tool call resumes detection after tool completes with progress", async () => {
-    const { detector: d, snapshot, events } = setup({ hasActiveToolCall: true });
-    detector = d;
-    snapshot.lastToolCall = { name: "Bash", at: Date.now() };
-    d.recordProgress(100);
+  test("active tool call resumes detection after tool completes with progress", () => {
+    const { detector, snapshot, events, clock } = setup({ hasActiveToolCall: true });
+    snapshot.lastToolCall = { name: "Bash", at: 0 };
+    detector.recordProgress(100);
 
     // Tool active — suppressed
-    await Bun.sleep(150);
-    expect(events.length).toBe(0);
+    clock.advance(100);
+    expect(events).toHaveLength(0);
 
-    // Tool completes, progress recorded (normal flow)
+    // Tool completes, progress recorded (normal flow) — resets timer
     snapshot.hasActiveToolCall = false;
-    d.recordProgress(200);
+    detector.recordProgress(200);
 
-    // Timer reset — wait past threshold, should get tier 1
-    await pollUntil(() => events.length >= 1, 2000);
+    clock.advance(100);
+    expect(events).toHaveLength(1);
     expect(events[0].tier).toBe(1);
+
+    detector.dispose();
   });
 
   test("constructor throws on empty thresholdsMs", () => {
