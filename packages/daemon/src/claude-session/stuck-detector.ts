@@ -1,5 +1,17 @@
 import type { SessionStateEnum } from "@mcp-cli/core";
 
+export interface StuckDetectorClock {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}
+
+export const REAL_CLOCK: StuckDetectorClock = {
+  now: () => performance.now(),
+  setTimeout: (cb, ms) => setTimeout(cb, ms),
+  clearTimeout: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+};
+
 export interface StuckEvent {
   sessionId: string;
   tier: number;
@@ -28,7 +40,7 @@ interface SessionSnapshot {
 }
 
 export class StuckDetector {
-  private timer: Timer | null = null;
+  private timer: unknown = null;
   private lastProgressAt = 0;
   private emissionCount = 0;
   private tokenSnapshot = 0;
@@ -37,12 +49,14 @@ export class StuckDetector {
   private readonly sessionId: string;
   private readonly getSnapshot: () => SessionSnapshot;
   private readonly onStuck: (event: StuckEvent) => void;
+  private readonly clock: StuckDetectorClock;
 
   constructor(
     sessionId: string,
     config: StuckDetectorConfig,
     getSnapshot: () => SessionSnapshot,
     onStuck: (event: StuckEvent) => void,
+    clock: StuckDetectorClock = REAL_CLOCK,
   ) {
     if (config.thresholdsMs.length === 0) {
       throw new Error("StuckDetectorConfig.thresholdsMs must be non-empty");
@@ -68,6 +82,7 @@ export class StuckDetector {
     this.config = config;
     this.getSnapshot = getSnapshot;
     this.onStuck = onStuck;
+    this.clock = clock;
   }
 
   get isDisposed(): boolean {
@@ -80,7 +95,7 @@ export class StuckDetector {
 
   recordProgress(tokens: number): void {
     if (this.disposed) return;
-    this.lastProgressAt = performance.now();
+    this.lastProgressAt = this.clock.now();
     this.emissionCount = 0;
     this.tokenSnapshot = tokens;
     this.scheduleNext();
@@ -88,7 +103,7 @@ export class StuckDetector {
 
   stop(): void {
     if (this.timer !== null) {
-      clearTimeout(this.timer);
+      this.clock.clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -101,7 +116,7 @@ export class StuckDetector {
   private scheduleNext(): void {
     this.stop();
     const delayMs = this.nextDelayMs(this.emissionCount);
-    this.timer = setTimeout(() => {
+    this.timer = this.clock.setTimeout(() => {
       this.timer = null;
       this.evaluate();
     }, delayMs);
@@ -126,7 +141,7 @@ export class StuckDetector {
       return;
     }
 
-    const elapsed = performance.now() - this.lastProgressAt;
+    const elapsed = this.clock.now() - this.lastProgressAt;
     const nextTier = this.tierForEmission(this.emissionCount);
 
     const tokenDelta = snapshot.tokens - this.tokenSnapshot;
