@@ -56,8 +56,9 @@ defineAlias({
           }
           if (jsonField === "statusCheckRollup") {
             const checks = await ctx.gh.pr(prNum).checks();
-            // Match old jq: select(.conclusion != "SUCCESS") — null (pending) counts as non-SUCCESS
-            const failing = checks.check_runs.filter((c) => c.conclusion !== "SUCCESS");
+            // Merge check-runs and legacy commit statuses; null (pending) counts as non-SUCCESS.
+            const all = [...checks.check_runs, ...checks.commit_statuses];
+            const failing = all.filter((c) => c.conclusion !== "SUCCESS");
             return { stdout: String(failing.length), stderr: "", exitCode: 0 };
           }
           return { stdout: "", stderr: `unsupported gh args: ${args.join(" ")}`, exitCode: 1 };
@@ -79,6 +80,7 @@ defineAlias({
       },
       async prView(prNumber, _fields, _jqExpr?) {
         const pr = await ctx.gh.pr(prNumber).body();
+        if (pr.merged) return "MERGED";
         return pr.state.toUpperCase();
       },
       async spawn(cmd, opts) {
