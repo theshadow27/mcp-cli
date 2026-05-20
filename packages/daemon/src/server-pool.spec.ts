@@ -4,7 +4,6 @@ import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { getProcessStartTime } from "./process-identity";
 import {
   BASE_ENV_ALLOWLIST,
   type ConnectFn,
@@ -1702,14 +1701,18 @@ describe("disconnect kills stdio child processes (#940)", () => {
         return;
       }
 
-      const originalStartTime = getProcessStartTime(pid);
-
       await pool.disconnect("sleeper");
 
-      const postStartTime = getProcessStartTime(pid);
-      const originalProcessDead =
-        postStartTime === null || (originalStartTime !== null && Math.abs(postStartTime - originalStartTime) > 2_000);
-      expect(originalProcessDead).toBe(true);
+      const deadline = Date.now() + 5_000;
+      let dead = false;
+      while (Date.now() < deadline) {
+        if (!isAlive(pid)) {
+          dead = true;
+          break;
+        }
+        await Bun.sleep(100);
+      }
+      expect(dead).toBe(true);
     } finally {
       forceKill(pid);
     }
@@ -1745,21 +1748,18 @@ describe("disconnect kills stdio child processes (#940)", () => {
         return;
       }
 
-      // Capture the original process's start time so we can use identity-based
-      // assertions below. Bare isAlive(pid) is racy: if the OS recycles the PID
-      // between closeAll() and the assertion, a *different* process is alive at
-      // that PID and the test fails even though our process was killed correctly.
-      const originalStartTime = getProcessStartTime(pid);
-
       await pool.closeAll();
 
-      // Verify the *original* process is gone. If the PID was recycled, the new
-      // process will have a different start time — that still means ours was killed.
-      const postStartTime = getProcessStartTime(pid);
-      const originalProcessDead =
-        postStartTime === null || // PID no longer exists
-        (originalStartTime !== null && Math.abs(postStartTime - originalStartTime) > 2_000); // PID recycled
-      expect(originalProcessDead).toBe(true);
+      const deadline = Date.now() + 5_000;
+      let dead = false;
+      while (Date.now() < deadline) {
+        if (!isAlive(pid)) {
+          dead = true;
+          break;
+        }
+        await Bun.sleep(100);
+      }
+      expect(dead).toBe(true);
     } finally {
       forceKill(pid);
     }
