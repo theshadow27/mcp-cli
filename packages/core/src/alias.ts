@@ -168,6 +168,12 @@ export interface AliasContext {
    * operations via `ctx.gh.pr(123).body()`, `ctx.gh.issue(456).comments()`,
    * etc. Also exposes `ctx.gh.graphql()` and `ctx.gh.rest()` escape hatches.
    * Auth resolves from GH_TOKEN → GITHUB_TOKEN → `gh auth token`.
+   *
+   * **Lazy contract**: `pr()`, `issue()`, and `repo()` return handles that
+   * defer auth and repo detection until the first method call. Auth failures
+   * therefore surface at call time, not at handle creation. Phase scripts that
+   * build multiple handles should call `await ctx.gh.validate()` at setup time
+   * to fail fast before any handle is used.
    */
   gh: GhClient;
   /**

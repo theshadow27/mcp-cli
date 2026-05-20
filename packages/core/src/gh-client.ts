@@ -9,6 +9,8 @@
  * adds daemon-backed caching.
  */
 
+import type { Logger } from "./logger";
+
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -50,6 +52,15 @@ export class GhServerError extends Error {
   constructor(message: string, status: number) {
     super(message);
     this.status = status;
+  }
+}
+
+export class GhPageCapError extends Error {
+  override name = "GhPageCapError" as const;
+  itemCount: number;
+  constructor(message: string, itemCount: number) {
+    super(message);
+    this.itemCount = itemCount;
   }
 }
 
@@ -112,6 +123,8 @@ export interface GhCheckRun {
 export interface GhChecksResult {
   total_count: number;
   check_runs: GhCheckRun[];
+  /** Legacy commit statuses, mapped to check-run shape for uniform filtering. */
+  commit_statuses: GhCheckRun[];
 }
 
 export interface GhPrFile {
@@ -277,7 +290,7 @@ function makeHeaders(token: string): Record<string, string> {
   };
 }
 
-function classifyResponse(resp: Response, body: string): never {
+function classifyResponse(resp: Response, body: string, logger?: Logger): never {
   if (resp.status === 401) {
     clearTokenCache();
     throw new GhAuthError(`GitHub API authentication failed (401): ${body}`);
@@ -302,7 +315,9 @@ function classifyResponse(resp: Response, body: string): never {
     try {
       const parsed = JSON.parse(body);
       errors = parsed.errors ?? [];
-    } catch {}
+    } catch (parseErr) {
+      logger?.warn("gh-client: failed to parse 422 response body", { err: parseErr, body: body.slice(0, 500) });
+    }
     throw new GhValidationError(`GitHub API validation error (422): ${body}`, errors);
   }
   if (resp.status >= 500) {
@@ -318,6 +333,7 @@ interface RequestOptions {
   method?: string;
   body?: unknown;
   signal?: AbortSignal;
+  logger?: Logger;
 }
 
 async function ghRequest(path: string, opts: RequestOptions): Promise<Response> {
@@ -388,7 +404,7 @@ async function ghJson<T>(path: string, opts: RequestOptions): Promise<T> {
   const resp = await ghRequest(path, opts);
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    classifyResponse(resp, body);
+    classifyResponse(resp, body, opts.logger);
   }
   return resp.json();
 }
@@ -397,7 +413,7 @@ async function ghVoid(path: string, opts: RequestOptions): Promise<void> {
   const resp = await ghRequest(path, opts);
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    classifyResponse(resp, body);
+    classifyResponse(resp, body, opts.logger);
   }
 }
 
@@ -422,11 +438,17 @@ async function ghPaginated<T>(path: string, opts: RequestOptions & { page?: numb
     const resp = await ghRequest(fullUrl, opts);
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      classifyResponse(resp, body);
+      classifyResponse(resp, body, opts.logger);
     }
     const items: T[] = await resp.json();
     allItems.push(...items);
     url = parseNextUrl(resp.headers.get("link"));
+    if (page === MAX_PAGES - 1 && url !== null) {
+      throw new GhPageCapError(
+        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
+        allItems.length,
+      );
+    }
   }
   return allItems;
 }
@@ -478,6 +500,12 @@ interface RawReview {
   body: string;
   user: { login: string };
   submitted_at: string;
+}
+
+interface RawCommitStatus {
+  context: string;
+  state: "pending" | "success" | "failure" | "error";
+  description: string | null;
 }
 
 interface RawIssue {
@@ -601,11 +629,35 @@ export class PrHandle {
 
   async checks(): Promise<GhChecksResult> {
     const pr = await this.body();
-    const raw = await ghJson<{ total_count: number; check_runs: GhCheckRun[] }>(
-      `/repos/${this.o}/${this.r}/commits/${pr.head.sha}/check-runs`,
-      this.reqOpts(),
-    );
-    return { total_count: raw.total_count, check_runs: raw.check_runs };
+    const sha = pr.head.sha;
+    const [checkRunsRaw, statusesRaw] = await Promise.all([
+      ghJson<{ total_count: number; check_runs: GhCheckRun[] }>(
+        `/repos/${this.o}/${this.r}/commits/${sha}/check-runs`,
+        this.reqOpts(),
+      ),
+      ghPaginated<RawCommitStatus>(`/repos/${this.o}/${this.r}/commits/${sha}/statuses`, this.reqOpts()),
+    ]);
+
+    // Deduplicate by context: GitHub returns statuses in reverse-chronological
+    // order, so the first occurrence per context is the most recent.
+    const seen = new Set<string>();
+    const dedupedStatuses: GhCheckRun[] = [];
+    for (const s of statusesRaw) {
+      if (seen.has(s.context)) continue;
+      seen.add(s.context);
+      dedupedStatuses.push({
+        id: 0,
+        name: s.context,
+        status: "completed",
+        conclusion: s.state === "success" ? "SUCCESS" : s.state === "pending" ? null : "FAILURE",
+      });
+    }
+
+    return {
+      total_count: checkRunsRaw.total_count,
+      check_runs: checkRunsRaw.check_runs,
+      commit_statuses: dedupedStatuses,
+    };
   }
 
   async files(): Promise<GhPrFile[]> {
@@ -867,18 +919,22 @@ export interface GhClientOptions {
   fetch?: FetchFn;
   owner?: string;
   repo?: string;
+  logger?: Logger;
 }
 
 export class GhClient {
   private readonly repoRoot: string;
   private readonly getTokenFn: (() => Promise<string>) | undefined;
   private readonly fetchFn: FetchFn;
+  private readonly logger: Logger | undefined;
   private resolvedRepo: GhRepoInfo | null;
+  private cachedReqOpts: RequestOptions | null = null;
 
   constructor(opts: GhClientOptions) {
     this.repoRoot = opts.repoRoot;
     this.getTokenFn = opts.getToken;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
+    this.logger = opts.logger;
     this.resolvedRepo = opts.owner && opts.repo ? { owner: opts.owner, repo: opts.repo } : null;
   }
 
@@ -890,8 +946,23 @@ export class GhClient {
   }
 
   private async makeReqOpts(): Promise<RequestOptions> {
+    if (this.cachedReqOpts) return this.cachedReqOpts;
     const token = await resolveToken({ getToken: this.getTokenFn });
-    return { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    this.cachedReqOpts = { token, fetchFn: this.fetchFn, getToken: this.getTokenFn, logger: this.logger };
+    return this.cachedReqOpts;
+  }
+
+  /**
+   * Eagerly resolve the GitHub token and repo, throwing immediately if either
+   * fails. Call this at phase-script setup time to surface auth/repo errors
+   * before building handles — useful when a phase script constructs multiple
+   * handles and would otherwise only fail on the third `.body()` call.
+   *
+   * Safe to call multiple times; resolution is cached after the first call.
+   */
+  async validate(): Promise<void> {
+    await this.ensureRepo();
+    await this.makeReqOpts();
   }
 
   pr(prNumber: number): PrHandle {
@@ -980,7 +1051,7 @@ export class GhClient {
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      classifyResponse(resp, body);
+      classifyResponse(resp, body, opts.logger);
     }
     const json: { data?: T; errors?: Array<{ message: string }> } = await resp.json();
     if (json.errors?.length) {

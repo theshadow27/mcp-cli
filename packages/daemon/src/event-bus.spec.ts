@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
+import { MAIL_SENT } from "@mcp-cli/core";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
@@ -13,7 +14,7 @@ function workItemEvent(event = "pr.merged", prNumber = 42): MonitorEventInput {
 }
 
 function mailEvent(mailId = 1): MonitorEventInput {
-  return { src: "daemon.mail", event: "mail.sent", category: "mail", mailId };
+  return { src: "daemon.mail", event: MAIL_SENT, category: "mail", mailId };
 }
 
 describe("EventBus", () => {
@@ -47,7 +48,7 @@ describe("EventBus", () => {
     expect(received).toHaveLength(3);
     expect(received[0].event).toBe("session.result");
     expect(received[1].event).toBe("pr.merged");
-    expect(received[2].event).toBe("mail.sent");
+    expect(received[2].event).toBe(MAIL_SENT);
   });
 
   test("multiple subscribers all receive events", () => {
@@ -94,7 +95,7 @@ describe("EventBus", () => {
     bus.publish(workItemEvent());
 
     expect(received).toHaveLength(1);
-    expect(received[0].event).toBe("mail.sent");
+    expect(received[0].event).toBe(MAIL_SENT);
   });
 
   test("unsubscribe stops delivery", () => {

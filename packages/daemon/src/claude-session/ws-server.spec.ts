@@ -1641,7 +1641,7 @@ describe("ClaudeWsServer", () => {
     }
   });
 
-  test("session.permission_blocked does not fire when strategy=auto", async () => {
+  test("session.permission_blocked and session.permission_request do not fire when strategy=auto", async () => {
     const ms = mockSpawn();
     const monitorEvents: MonitorEventInput[] = [];
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
@@ -1655,17 +1655,20 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("perm-auto-1"));
+      // Wait for the auto-approval response before checking monitor events
+      const responsePromise = waitForMessage(ws);
       ws.send(canUseToolMessage("req-auto-1"));
-      // Wait for permission_request monitor event (auto-approved)
-      await pollUntil(() => monitorEvents.some((e) => e.event === SESSION_PERMISSION_REQUEST));
+      await responsePromise;
 
+      // Neither permission_request nor permission_blocked should appear for auto strategy
+      expect(monitorEvents.some((e) => e.event === SESSION_PERMISSION_REQUEST)).toBe(false);
       expect(monitorEvents.some((e) => e.event === SESSION_PERMISSION_BLOCKED)).toBe(false);
     } finally {
       ws.close();
     }
   });
 
-  test("session.permission_request still fires for all strategies (informational)", async () => {
+  test("session.permission_request fires only for delegate strategy", async () => {
     const ms = mockSpawn();
     const monitorEvents: MonitorEventInput[] = [];
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

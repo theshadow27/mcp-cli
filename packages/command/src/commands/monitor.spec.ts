@@ -359,6 +359,10 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--until"]).error).toBeTruthy();
   });
 
+  test("--until without value error message reflects glob semantics", () => {
+    expect(parseMonitorArgs(["--until"]).error).toBe("--until requires a pattern");
+  });
+
   test("--timeout with non-numeric value is an error", () => {
     expect(parseMonitorArgs(["--timeout", "abc"]).error).toBeTruthy();
   });
@@ -404,6 +408,21 @@ describe("parseMonitorArgs error branches", () => {
 
   test("--repo without value is an error", () => {
     expect(parseMonitorArgs(["--repo"]).error).toBeTruthy();
+  });
+
+  test("--repo followed by a flag is an error", () => {
+    const parsed = parseMonitorArgs(["--repo", "--all-repos"]);
+    expect(parsed.error).toBeTruthy();
+  });
+
+  test("--all-repos sets allRepos=true", () => {
+    const parsed = parseMonitorArgs(["--all-repos"]);
+    expect(parsed.allRepos).toBe(true);
+  });
+
+  test("allRepos defaults to false", () => {
+    const parsed = parseMonitorArgs([]);
+    expect(parsed.allRepos).toBe(false);
   });
 });
 
@@ -908,5 +927,33 @@ describe("cmdMonitor", () => {
     });
     await cmdMonitor([], deps);
     expect(capturedParams?.repo).toBe("/default/repo");
+  });
+
+  test("--all-repos passes no repo to openEventStream", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--all-repos"], deps);
+    expect(capturedParams).toBeDefined();
+    expect(capturedParams?.repo).toBeUndefined();
+  });
+
+  test("--all-repos overrides --repo", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--all-repos", "--repo", "/custom/repo"], deps);
+    expect(capturedParams).toBeDefined();
+    expect(capturedParams?.repo).toBeUndefined();
   });
 });
