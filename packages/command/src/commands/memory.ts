@@ -217,6 +217,7 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
   const rawResponse = callHaiku(prompt, deps);
 
   if (!rawResponse) {
+    deps.logError("memory audit: claude returned empty response");
     deps.exit(1);
   }
 
@@ -225,10 +226,14 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
     const head = rawResponse.slice(0, 50);
     const tail = rawResponse.length > 100 ? rawResponse.slice(-50) : "";
     const preview = tail ? `${head}…${tail}` : head;
-    const tmpPath = deps.writeTempFile(rawResponse);
     deps.logError(`memory audit: failed to parse Haiku response (${rawResponse.length} chars)`);
     deps.logError(`  preview: ${preview}`);
-    deps.logError(`  full response saved to: ${tmpPath}`);
+    try {
+      const tmpPath = deps.writeTempFile(rawResponse);
+      deps.logError(`  full response saved to: ${tmpPath}`);
+    } catch {
+      // disk full / permissions — preview above is the best we can do
+    }
     deps.exit(1);
   }
 

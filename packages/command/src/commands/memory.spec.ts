@@ -208,6 +208,35 @@ describe("runMemoryAudit", () => {
     expect(deps.errors.join("\n")).toContain("code 1");
   });
 
+  test("logs diagnostic when claude returns empty stdout with exitCode 0", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+    await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("claude returned empty response");
+  });
+
+  test("parse failure survives writeTempFile throwing", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        return { stdout: "not json at all", stderr: "", exitCode: 0 };
+      },
+      writeTempFile: () => {
+        throw new Error("disk full");
+      },
+    });
+    await expect(runMemoryAudit({ json: false }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("failed to parse Haiku response");
+    expect(errLog).toContain("preview:");
+    expect(errLog).not.toContain("disk full");
+  });
+
   test("logs stderr from failed claude subprocess without conflating with parse failure", async () => {
     const deps = makeDeps({
       spawnCapture: (cmd) => {
