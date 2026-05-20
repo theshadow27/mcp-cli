@@ -1297,13 +1297,6 @@ describe("checkSqliteVersion (#2092)", () => {
   });
 
   test("returns error message when unixepoch() throws", () => {
-    const { Database } = require("bun:sqlite");
-    const db = new Database(":memory:");
-    // Create a view that shadows unixepoch to simulate the failure
-    // Instead, directly mock by using a db that fails the query.
-    // We'll use a proxy approach: pass an object with a .query() that throws.
-    db.close();
-
     const fakeDb = {
       query(sql: string) {
         if (sql.includes("unixepoch")) {

@@ -450,16 +450,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     writeFileSync(options.PID_PATH, JSON.stringify(pidData));
   }
 
+  // Preflight: verify SQLite >= 3.38 BEFORE opening StateDb — the constructor
+  // runs migrations whose DEFAULT (unixepoch()) expressions would throw first
+  // on macOS 12 Monterey (SQLite 3.37.0), swallowing the friendly error. See #2092.
+  {
+    const { Database } = await import("bun:sqlite");
+    const rawDb = new Database(options.DB_PATH, { create: true });
+    const sqliteError = checkSqliteVersion(rawDb);
+    rawDb.close();
+    if (sqliteError) {
+      logger.error(sqliteError);
+      throw new Error(sqliteError);
+    }
+  }
+
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
-
-  // Preflight: verify SQLite >= 3.38 (required for unixepoch()). See #2092.
-  const sqliteError = checkSqliteVersion(db.getDatabase());
-  if (sqliteError) {
-    logger.error(sqliteError);
-    process.exit(1);
-  }
 
   // Clean up DB records for sessions whose processes are dead.
   // Alive processes are preserved for restoreActiveSessions() to pick up.
